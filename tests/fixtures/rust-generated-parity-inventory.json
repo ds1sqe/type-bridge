@@ -45,7 +45,7 @@
       "evidence": [
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live.rs",
-          "anchors": ["generated_rust_projection_round_trips_exact_live_models", "dependency-isolated client consumer starts", "test result: ok. {} passed; 0 failed", "CONSUMER_TESTS.len()"]
+          "anchors": ["generated_rust_projection_round_trips_exact_live_models", "dependency-isolated client consumer starts", "CONSUMER_TESTS.len()"]
         }
       ]
     },

@@ -1,9 +1,12 @@
 /// Public names exported by the fixed TypeScript runtime resource.
 pub(super) const PUBLIC_RUNTIME_NAMES: &[&str] = &[
     "Cardinality",
+    "CanonicalCodecOptions",
     "CompleteFacet",
     "FieldToken",
     "FunctionToken",
+    "FunctionInput",
+    "FunctionCall",
     "ModelToken",
     "ModelUse",
     "Multiplicity",
@@ -29,6 +32,8 @@ pub(super) const PUBLIC_RUNTIME_NAMES: &[&str] = &[
     "RemoteQueryLimits",
     "RemoteQuerySession",
     "Query",
+    "QueryCancellation",
+    "QueryExecutionResourceLimits",
     "QueryModelToken",
     "QueryOrder",
     "QuerySession",
@@ -45,7 +50,22 @@ pub(super) const PUBLIC_RUNTIME_NAMES: &[&str] = &[
     "definePlaysToken",
     "defineRoleToken",
     "defineStruct",
+    "decodeArchive",
+    "decodeArchiveControlled",
+    "encodeArchive",
+    "encodeArchiveControlled",
+    "__installOrderedRuntimeProjectionPackage",
     "__installRuntimeProjectionPackage",
+];
+
+/// Additional public names exported only by ordered successor runtime resources.
+pub(super) const ORDERED_PUBLIC_RUNTIME_NAMES: &[&str] = &[
+    "OrderedModelToken",
+    "OrderedProjectedModelManager",
+    "ProjectedBatchUpdate",
+    "ProjectedManagerComparison",
+    "ProjectedModelFilter",
+    "defineOrderedModel",
 ];
 
 /// Fixed public schema/evidence names re-exported from the package root.

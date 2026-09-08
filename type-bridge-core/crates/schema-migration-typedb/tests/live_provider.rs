@@ -4,17 +4,22 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use type_bridge_contract::codec::FormatVersion;
-use type_bridge_contract::id::{TypeId, TypeKind};
+use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::managed_scope::{ManagedScopeId, SemanticProfileBinding};
 use type_bridge_contract::migration::{
     MigrationAppLabel, MigrationId, MigrationStep, MigrationStepId, SchemaDeltaStep,
 };
 use type_bridge_contract::migration_assertion::AssertionExpectation;
+use type_bridge_contract::migration_backfill::{
+    AttributeBackfillPlan, BackfillPartition, BackfillReverseProgram,
+};
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
-    DocumentId, SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
+    DocumentId, OwnsFact, OwnsFactId, SchemaAnnotationValue, SchemaFact, SourceSpan,
+    SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
 };
+use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_orm::{ConnectOptions, Database};
 use type_bridge_query::{MigrationAssertionValidationContext, lower_condition_to_plan};
 use type_bridge_schema::{
@@ -22,7 +27,8 @@ use type_bridge_schema::{
     inverse_delta, managed_schema_state, resolve,
 };
 use type_bridge_schema_migration::{
-    ExecutionScope, LeaseHolderId, MigrationApplyTarget, MigrationExecutionJournal,
+    BackfillExecutionDirection, ExecutionScope, GroupCommitCertainty, LeaseHolderId,
+    MigrationApplyTarget, MigrationExecutionControl, MigrationExecutionJournal,
     MigrationExecutionOutcome, MigrationExecutionProvider, MigrationHistoryGraph,
     MigrationLeaseStore, MigrationSafetyPolicy, SchemaLoweringBinding, SchemaMigrationDraft,
     VerifiedSchemaMigrationManifest, build_verified_manifest, build_verified_migration_apply_plan,
@@ -113,6 +119,56 @@ fn declared_facts(facts: Vec<SchemaFact>) -> DeclaredSchema {
         .expect("declared schema")
 }
 
+fn sdk_backfill_schema() -> DeclaredSchema {
+    let owner = TypeId::new(TypeKind::Entity, "person").expect("person type");
+    let person_id = AttributeId::new("person-id").expect("person ID attribute");
+    let legacy_name = AttributeId::new("legacy-name").expect("legacy name attribute");
+    let display_name = AttributeId::new("display-name").expect("display name attribute");
+    let mut facts = vec![type_fact("person")];
+    for attribute in [&person_id, &legacy_name, &display_name] {
+        facts.push(SchemaFact::Type(
+            TypeFact::new(
+                TypeId::new(TypeKind::Attribute, attribute.label().as_str())
+                    .expect("attribute type"),
+            )
+            .expect("attribute type fact"),
+        ));
+        facts.push(SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(attribute.clone()),
+            ValueTypeTag::String,
+        )));
+        facts.push(SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(owner.clone(), attribute.clone()).expect("ownership"),
+        )));
+    }
+    facts.push(SchemaFact::Annotation(
+        AnnotationFact::new(
+            AnnotationFactId::new(
+                AnnotationSubjectId::Owns(
+                    OwnsFactId::new(owner, person_id).expect("key ownership"),
+                ),
+                AnnotationKindId::Key,
+            ),
+            SchemaAnnotationValue::Presence,
+        )
+        .expect("key annotation"),
+    ));
+    declared_facts(facts)
+}
+
+async fn query_document_count(database: &Database, query: &str) -> usize {
+    let mut transaction = database
+        .read_transaction()
+        .await
+        .expect("open fixture read transaction");
+    let count = match transaction.query(query).await.expect("fixture query") {
+        type_bridge_orm::session::backend::QueryResult::Documents(documents) => documents.len(),
+        result => panic!("fixture query must return documents, got {result:?}"),
+    };
+    transaction.close().await.expect("close fixture read");
+    count
+}
+
 fn context() -> ManagedDeltaContext {
     ManagedDeltaContext::new(
         ManagedScopeId::new("provider-live-scope").expect("scope"),
@@ -127,6 +183,42 @@ fn migration_id(name: &str) -> MigrationId {
         MigrationAppLabel::new("live-provider").expect("app"),
         type_bridge_contract::migration::MigrationName::new(name).expect("name"),
     )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+async fn raw_attribute_type_undefinition_removes_its_dependencies_on_3_12_3() {
+    let (managed, journal) = databases().await;
+    let mut define = managed
+        .schema_transaction()
+        .await
+        .expect("open fixture schema transaction");
+    define
+        .query("define\nattribute legacy-name, value string;\nentity person, owns legacy-name;")
+        .await
+        .expect("define owned attribute");
+    define.commit().await.expect("commit fixture schema");
+
+    let mut remove = managed
+        .schema_transaction()
+        .await
+        .expect("open removal schema transaction");
+    remove
+        .query("undefine\nlegacy-name;")
+        .await
+        .expect("remove attribute type and its dependencies");
+    remove.commit().await.expect("commit attribute removal");
+
+    let export = managed.schema_text().await.expect("export final schema");
+    assert!(!export.contains("legacy-name"), "{export}");
+    managed
+        .delete_database()
+        .await
+        .expect("delete isolated managed database");
+    journal
+        .delete_database()
+        .await
+        .expect("delete isolated journal database");
 }
 
 fn derived_assertion_step(
@@ -207,8 +299,8 @@ fn conditional_manifest(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.1 server"]
-async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_1() {
+#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_3() {
     let (managed, journal_database) = databases().await;
     let context = context();
     let genesis = declared_facts(Vec::new());
@@ -266,7 +358,7 @@ async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_1() {
     let outcome = execute_verified_migration_apply_plan(&store, &provider, &holder, &plan)
         .await
         .expect("coordinator execution against live TypeDB");
-    assert!(matches!(outcome, MigrationExecutionOutcome::Applied));
+    assert!(matches!(outcome, MigrationExecutionOutcome::Applied { .. }));
 
     let export = managed
         .schema_text()
@@ -313,6 +405,198 @@ async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_1() {
         .await
         .expect("release inspection lease");
 
+    managed
+        .delete_database()
+        .await
+        .expect("delete isolated managed database");
+    journal_database
+        .delete_database()
+        .await
+        .expect("delete isolated journal database");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
+    let (managed, journal_database) = databases().await;
+    let context = context();
+    let genesis = declared_facts(Vec::new());
+    let expanded = sdk_backfill_schema();
+    let expand = additive_manifest(
+        "0001_expand_names",
+        Vec::new(),
+        &genesis,
+        &expanded,
+        &context,
+    );
+    let graph = MigrationHistoryGraph::from_verified([expand.clone()]).expect("expand history");
+    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
+        .expect("lowering binding");
+    let expand_plan = build_verified_migration_apply_plan(
+        &graph,
+        &BTreeSet::new(),
+        &MigrationApplyTarget::DefaultHead,
+        &context,
+        &lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        &[],
+    )
+    .expect("expand plan");
+    let binding = TypeDbExecutionBinding::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal_database),
+        context.clone(),
+    )
+    .expect("exact execution binding");
+    let catalog = VerifiedMigrationCatalog::new([&expand]).expect("expand catalog");
+    let store = TypeDbMigrationStore::new(&binding, catalog)
+        .expect("paired store")
+        .bind_plan(&expand_plan)
+        .expect("bind expand plan");
+    let provider = TypeDbMigrationProvider::new(&binding).expect("backfill provider");
+    execute_verified_migration_apply_plan(
+        &store,
+        &provider,
+        &LeaseHolderId::new("live-backfill-expand").expect("holder"),
+        &expand_plan,
+    )
+    .await
+    .expect("apply expand schema");
+
+    let mut seed = managed
+        .write_transaction()
+        .await
+        .expect("open seed transaction");
+    seed.query(
+        "insert\n  $first isa person, has person-id \"p1\", has legacy-name \"Ada\";\n  $second isa person, has person-id \"p2\", has legacy-name \"Bob\", has display-name \"conflict\";",
+    )
+    .await
+    .expect("seed source and conflicting destination rows");
+    seed.commit().await.expect("commit fixture rows");
+
+    let semantics = managed_schema_state(&expanded, &context)
+        .expect("expanded managed state")
+        .managed_semantic_schema()
+        .clone();
+    let backfill = AttributeBackfillPlan::new(
+        TypeId::new(TypeKind::Entity, "person").expect("owner"),
+        AttributeId::new("legacy-name").expect("source"),
+        AttributeId::new("display-name").expect("destination"),
+        BackfillPartition::new(1, AttributeId::new("person-id").expect("partition key"))
+            .expect("single-row deterministic groups"),
+        semantics,
+        Some(BackfillReverseProgram::RemoveEqualCopiedDestination),
+    )
+    .expect("closed backfill plan");
+    let scope = ExecutionScope::new(context.scope_id().clone());
+    let lease = store
+        .acquire(
+            &scope,
+            &LeaseHolderId::new("live-backfill-executor").expect("holder"),
+        )
+        .await
+        .expect("backfill lease");
+    let control = MigrationExecutionControl::default();
+
+    let conflict = provider
+        .execute_backfill(
+            &lease,
+            &backfill,
+            BackfillExecutionDirection::Forward,
+            &control,
+        )
+        .await
+        .expect_err("unequal destination rejects before mutation");
+    assert_eq!(
+        conflict.certainty(),
+        GroupCommitCertainty::DefinitelyAborted
+    );
+    assert_eq!(
+        conflict.diagnostic().code().as_str(),
+        "migration_typedb_backfill_destination_conflict"
+    );
+    assert_eq!(
+        query_document_count(
+            &managed,
+            "match $person isa person, has display-name $name; fetch { \"name\": $name };",
+        )
+        .await,
+        1,
+        "the conflict precheck publishes no partial copy",
+    );
+
+    let mut repair = managed
+        .write_transaction()
+        .await
+        .expect("open fixture repair transaction");
+    repair
+        .query(
+            "match $person isa person, has person-id \"p2\", has display-name $name; delete has $name of $person;",
+        )
+        .await
+        .expect("remove deliberate conflict");
+    repair.commit().await.expect("commit conflict repair");
+
+    let applied = provider
+        .execute_backfill(
+            &lease,
+            &backfill,
+            BackfillExecutionDirection::Forward,
+            &control,
+        )
+        .await
+        .expect("execute exact copy backfill");
+    assert_eq!(applied.counts().changed(), 2);
+    assert_eq!(applied.counts().transaction_groups(), 2);
+    assert_eq!(
+        query_document_count(
+            &managed,
+            "match $person isa person, has legacy-name $source, has display-name $destination; $source == $destination; fetch { \"name\": $destination };",
+        )
+        .await,
+        2,
+    );
+
+    let retried = provider
+        .execute_backfill(
+            &lease,
+            &backfill,
+            BackfillExecutionDirection::Forward,
+            &control,
+        )
+        .await
+        .expect("idempotent retry");
+    assert_eq!(retried.counts().changed(), 0);
+
+    let reversed = provider
+        .execute_backfill(
+            &lease,
+            &backfill,
+            BackfillExecutionDirection::Reverse,
+            &control,
+        )
+        .await
+        .expect("checked reverse");
+    assert_eq!(reversed.counts().changed(), 2);
+    assert_eq!(
+        query_document_count(
+            &managed,
+            "match $person isa person, has display-name $name; fetch { \"name\": $name };",
+        )
+        .await,
+        0,
+    );
+    assert_eq!(
+        query_document_count(
+            &managed,
+            "match $person isa person, has legacy-name $name; fetch { \"name\": $name };",
+        )
+        .await,
+        2,
+        "reverse preserves the historical source meaning",
+    );
+
+    store.release(&lease).await.expect("release backfill lease");
     managed
         .delete_database()
         .await

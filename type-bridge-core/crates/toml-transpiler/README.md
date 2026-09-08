@@ -9,7 +9,7 @@ boundary.
 
 ```toml
 [dependencies]
-type-bridge-toml-transpiler = "2.1.0"
+type-bridge-toml-transpiler = "2.2.0"
 ```
 
 ```rust
@@ -32,10 +32,10 @@ assert_eq!(
 The converter validates the complete TOML document before returning TypeQL and
 performs no filesystem or database I/O. It has no optional features.
 
-The crate is released in lockstep with TypeBridge 2.1.0 and requires Rust
+The crate is released in lockstep with TypeBridge 2.2.0 and requires Rust
 1.88+. Database-facing TypeBridge 2.1 components support TypeDB
 3.11.x–3.12.x, with 3.12.1 as the V2 semantic baseline.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
-[API documentation](https://docs.rs/type-bridge-toml-transpiler/2.1.0) ·
+[API documentation](https://docs.rs/type-bridge-toml-transpiler/2.2.0) ·
 [MIT license](https://github.com/ds1sqe/type-bridge/blob/master/LICENSE)

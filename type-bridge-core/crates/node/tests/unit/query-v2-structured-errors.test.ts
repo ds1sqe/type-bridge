@@ -5,6 +5,8 @@ type NativeCall = (...args: unknown[]) => unknown;
 
 const validDiagnostic = Object.freeze({
   category: "invalid_contract",
+  sdkCategory: "invalid_input",
+  queryCategory: "invalid_contract",
   code: "query_v2_fixture",
   message: "fixture diagnostic",
   path: [
@@ -38,12 +40,16 @@ test("QueryV2Error accepts only the complete canonical Rust diagnostic shape", a
     raw["queryV2Authority"] = original;
   });
 
-  const { QueryV2Authority, QueryV2Error } = await import("../../typescript/index.js");
-  const invoke = () => new QueryV2Authority(Buffer.from([0]), "scope", "profile");
+  const { QueryV2Authority, QueryV2Error } =
+    await import("../../typescript/index.js");
+  const invoke = () =>
+    new QueryV2Authority(Buffer.from([0]), "scope", "profile");
 
   assert.throws(invoke, (error: unknown) => {
     assert.ok(error instanceof QueryV2Error);
     assert.equal(error.category, validDiagnostic.category);
+    assert.equal(error.sdkCategory, validDiagnostic.sdkCategory);
+    assert.equal(error.queryCategory, validDiagnostic.queryCategory);
     assert.equal(error.code, validDiagnostic.code);
     assert.equal(error.diagnosticMessage, validDiagnostic.message);
     assert.deepEqual(error.path, validDiagnostic.path);
@@ -56,7 +62,10 @@ test("QueryV2Error accepts only the complete canonical Rust diagnostic shape", a
     { ...validDiagnostic, code: "Not_Canonical" },
     { ...validDiagnostic, extra: true },
     { ...validDiagnostic, path: [{ kind: "index", value: -1 }] },
-    { ...validDiagnostic, path: [{ kind: "index", value: Number.MAX_SAFE_INTEGER + 1 }] },
+    {
+      ...validDiagnostic,
+      path: [{ kind: "index", value: Number.MAX_SAFE_INTEGER + 1 }],
+    },
     { ...validDiagnostic, path: [{ kind: "field", value: "x", extra: true }] },
     {
       ...validDiagnostic,

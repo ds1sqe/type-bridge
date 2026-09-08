@@ -1,5 +1,6 @@
 import type { NativeModule, NativeRustDatabase, NativeRustTransactionContext } from "./index.js";
-import type { NativeProjectedManager } from "./runtime-projection.js";
+import type { NativeProjectedFacadeProof, NativeProjectedManager, NativeProjectedValueEnvelope, RuntimeProjectionInstall } from "./runtime-projection.js";
+type NativeProjectedBatchAuthority = Parameters<NonNullable<RuntimeProjectionInstall["projectedBatchMaterializer"]>>[3];
 type NativeMatchComparison = "equal" | "not_equal" | "less_than" | "less_than_or_equal" | "greater_than" | "greater_than_or_equal" | "contains" | "starts_with" | "ends_with" | "regex";
 type NativeMatchDirection = "ascending" | "descending";
 type NativeMatchMissingOrder = "reject" | "first" | "last";
@@ -8,8 +9,12 @@ type NativeMatchReduction = "count" | "sum" | "min" | "max" | "mean" | "median" 
 declare const nativeMatchHandleKind: unique symbol;
 interface NativeMatchSessionHandle {
     readonly [nativeMatchHandleKind]: "session";
+    readonly isClosed: boolean;
+    close(): void;
     exact(typeName: string): NativeMatchBindingHandle;
     subtypes(typeName: string): NativeMatchBindingHandle;
+    functionById(functionId: string): NativeMatchFunctionHandle;
+    functionValueJson(attributeTypeKey: string, valueJson: string): NativeMatchFunctionValueHandle;
     reachable(relationType: string, roleFrom: string, roleTo: string, source: NativeMatchBindingHandle, target: NativeMatchBindingHandle, minDepth: number, maxDepth: number): NativeMatchPredicateHandle;
     positional(selections: NativeMatchSelectionHandle[]): NativeMatchShapeHandle;
     named(names: string[], selections: NativeMatchSelectionHandle[]): NativeMatchShapeHandle;
@@ -25,6 +30,25 @@ interface NativeMatchBindingHandle {
     roleOwnedBy(ownerType: string, roleName: string): NativeMatchRoleHandle;
     one(): NativeMatchSelectionHandle;
     collect(): NativeMatchSelectionHandle;
+    functionArgument(): NativeMatchFunctionArgumentHandle;
+}
+interface NativeMatchFunctionHandle {
+    readonly [nativeMatchHandleKind]: "function";
+    call(arguments_: NativeMatchFunctionArgumentHandle[]): NativeMatchFunctionCallHandle;
+}
+interface NativeMatchFunctionValueHandle {
+    readonly [nativeMatchHandleKind]: "function-value";
+    functionArgument(): NativeMatchFunctionArgumentHandle;
+}
+interface NativeMatchFunctionArgumentHandle {
+    readonly [nativeMatchHandleKind]: "function-argument";
+}
+interface NativeMatchFunctionCallHandle {
+    readonly [nativeMatchHandleKind]: "function-call";
+    functionArgument(): NativeMatchFunctionArgumentHandle;
+    compareField(comparison: NativeMatchComparison, field: NativeMatchFieldHandle): NativeMatchPredicateHandle;
+    compareValue(comparison: NativeMatchComparison, value: NativeMatchFunctionValueHandle): NativeMatchPredicateHandle;
+    compareCall(comparison: NativeMatchComparison, other: NativeMatchFunctionCallHandle): NativeMatchPredicateHandle;
 }
 interface NativeMatchFieldHandle {
     readonly [nativeMatchHandleKind]: "field";
@@ -56,6 +80,9 @@ interface NativeMatchShapeHandle {
 }
 interface NativeMatchQueryHandle {
     readonly [nativeMatchHandleKind]: "query";
+    readonly isClosed: boolean;
+    close(): void;
+    fork(): NativeMatchQueryHandle;
     addHidden(binding: NativeMatchBindingHandle): NativeMatchQueryHandle;
     wherePredicate(predicate: NativeMatchPredicateHandle): NativeMatchQueryHandle;
     allowCrossJoin(left: NativeMatchBindingHandle, right: NativeMatchBindingHandle): NativeMatchQueryHandle;
@@ -122,12 +149,31 @@ interface NativeValidatedThingHandle {
 }
 interface NativeRemoteModelQueryContext {
 }
+export interface NativeQueryExecutionResources {
+    readonly timeoutMilliseconds: bigint;
+    readonly items: bigint;
+    readonly bytes: bigint;
+    readonly graphNodes: bigint;
+    readonly attributeValues: bigint;
+    readonly collectionMembers: bigint;
+    readonly rolePlayers: bigint;
+    readonly statements: bigint;
+}
+export interface NativeQueryCancellation {
+    readonly isCancelled: boolean;
+    cancel(): void;
+}
 interface NativePendingRemoteModelQuery {
+    readonly isClosed: boolean;
+    close(): void;
     requestBytes(): Uint8Array;
     decodeReply(response: Uint8Array): Promise<NativeValidatedMatchResultHandle>;
 }
 interface NativeRemoteModelQueryModule {
+    NodeQueryExecutionResources: new (timeoutMilliseconds: bigint, items: bigint, bytes: bigint, graphNodes: bigint, attributeValues: bigint, collectionMembers: bigint, rolePlayers: bigint, statements: bigint) => NativeQueryExecutionResources;
+    NodeQueryCancellation: new () => NativeQueryCancellation;
     queryV2RemoteModelContext(authority: ReturnType<NativeModule["queryV2Authority"]>, advertisement: Uint8Array, maxItems: bigint, maxBytes: bigint, maxCollectionMembers: bigint, maxGraphNodes: bigint, maxAttributeValues: bigint, maxRolePlayers: bigint, deadlineMs?: bigint | null): NativeRemoteModelQueryContext;
+    queryV2RemoteModelContextWithResources(authority: ReturnType<NativeModule["queryV2Authority"]>, advertisement: Uint8Array, resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation): NativeRemoteModelQueryContext;
     queryV2PrepareRemoteModelRows(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): NativePendingRemoteModelQuery;
     queryV2PrepareRemoteModelPage(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): NativePendingRemoteModelQuery;
     queryV2PrepareRemoteModelCount(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle): NativePendingRemoteModelQuery;
@@ -137,17 +183,41 @@ interface NativeRemoteModelQueryModule {
     queryV2PrepareRemoteModelReduceByFields(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativePendingRemoteModelQuery;
 }
 interface NativeRuntimeProjectionHandle {
+    connectDirect(endpoint: string, database: string, username: string, password: string, httpPort: number, tlsMode: string, tlsRootCa?: string, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation): NativeRustDatabase;
     managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
     managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
     matchSession(): NativeMatchSessionHandle;
+    matchSessionWithResources(resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation): NativeMatchSessionHandle;
     matchModelType(typeKey: string): string;
     validateAttributeValueJson(typeKey: string, valueJson: string): void;
+    validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;
     validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
+    validateCreateJson(typeKey: string, valueJson: string): void;
+    encodeAttributeJson(typeKey: string, valueJson: string): Uint8Array;
+    decodeAttributeJson(typeKey: string, bytes: Uint8Array): string;
+    encodeCreateJson(typeKey: string, valueJson: string): Uint8Array;
+    decodeCreateJson(typeKey: string, bytes: Uint8Array): string;
+    encodeReferenceJson(typeKey: string, valueJson: string): Uint8Array;
+    decodeReferenceJson(typeKey: string, bytes: Uint8Array): string;
+    encodeSnapshotJson(typeKey: string, valueJson: string): Uint8Array;
+    decodeSnapshotJson(typeKey: string, bytes: Uint8Array): string;
+    detachedSnapshotProof(): NativeProjectedFacadeProof;
+    encodeStructJson(typeKey: string, valueJson: string): Uint8Array;
+    decodeStructJson(typeKey: string, bytes: Uint8Array): string;
+    encodeArchive(records: readonly Uint8Array[]): Uint8Array;
+    decodeArchive(bytes: Uint8Array): Uint8Array[];
+    encodeArchiveControlled(records: readonly Uint8Array[], cancellation?: NativeQueryCancellation, timeoutMilliseconds?: number, maxInputBytes?: number, maxOutputBytes?: number, maxDepth?: number, maxRecords?: number, maxMembers?: number): Uint8Array;
+    decodeArchiveControlled(bytes: Uint8Array, cancellation?: NativeQueryCancellation, timeoutMilliseconds?: number, maxInputBytes?: number, maxOutputBytes?: number, maxDepth?: number, maxRecords?: number, maxMembers?: number): Uint8Array[];
+    encodeRecordJsonControlled(recordKind: string, typeKey: string, valueJson: string, cancellation?: NativeQueryCancellation, timeoutMilliseconds?: number, maxInputBytes?: number, maxOutputBytes?: number, maxDepth?: number, maxMembers?: number): Uint8Array;
+    decodeRecordJsonControlled(recordKind: string, typeKey: string, bytes: Uint8Array, cancellation?: NativeQueryCancellation, timeoutMilliseconds?: number, maxInputBytes?: number, maxOutputBytes?: number, maxDepth?: number, maxMembers?: number): string;
+    validateThingJson(typeKey: string, valueJson: string): void;
+    rejectGeneratedTokenPackageMismatch(pathJson: string): void;
     revalidateMatchDiagnostic(diagnostic: string): string;
     materializeMatchThingJson(thing: NativeValidatedThingHandle): string;
+    materializeMatchThingProjected(thing: NativeValidatedThingHandle): NativeProjectedValueEnvelope;
 }
 interface NativeRuntimeProjectionModule {
-    NodeRuntimeProjection: new (projectionJson: string, semanticFingerprintJson: string, projectionFingerprintJson: string, registrationsJson: string) => NativeRuntimeProjectionHandle;
+    NodeRuntimeProjection: new (projectionJson: string, semanticFingerprintJson: string, projectionFingerprintJson: string, registrationsJson: string, schemaAuthorityJson?: string, projectedBatchMaterializer?: (typeKey: string, ordinal: number, json: string, authority: NativeProjectedBatchAuthority) => object) => NativeRuntimeProjectionHandle;
 }
 type LoadedNativeModule = NativeModule & NativeRemoteModelQueryModule & NativeRuntimeProjectionModule;
 /**

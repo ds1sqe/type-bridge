@@ -270,7 +270,7 @@ def test_prerelease_version_is_rejected_before_latest_publication(tmp_path: Path
         )
 
 
-def test_prerelease_version_is_accepted_only_for_nonpublishing_candidate(
+def test_prerelease_version_is_accepted_only_for_nonpublishing_artifact(
     tmp_path: Path,
 ) -> None:
     repository = tmp_path / "package.json"
@@ -296,7 +296,7 @@ def test_cli_prerelease_flag_is_explicit_and_defaults_off() -> None:
     parser = validator.build_parser()
 
     stable = parser.parse_args(["--artifact", "package.tgz", "--tag", "v2.0.0"])
-    candidate = parser.parse_args(
+    artifact = parser.parse_args(
         [
             "--artifact",
             "package.tgz",
@@ -307,7 +307,7 @@ def test_cli_prerelease_flag_is_explicit_and_defaults_off() -> None:
     )
 
     assert stable.allow_prerelease is False
-    assert candidate.allow_prerelease is True
+    assert artifact.allow_prerelease is True
 
 
 @pytest.mark.parametrize("hostility", ["duplicate", "unsafe"])

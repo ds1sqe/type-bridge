@@ -3,6 +3,7 @@ import {
   Container,
   Employment,
   Event,
+  FunctionCall,
   Identifier,
   Membership,
   Person,
@@ -18,6 +19,7 @@ import {
   ValDuration,
   QuerySession,
   aggregate,
+  qualifyingScore,
 } from "./generated_v2/src/index.js";
 import { Person as ForeignPerson } from "./generated_foreign/src/index.js";
 import type { RustDatabase } from "@type-bridge/node";
@@ -47,6 +49,7 @@ const employmentVar = querySession.var(Employment);
 const exactActorVar = querySession.exact(Actor);
 const exactRobotVar = querySession.exact(Robot);
 const subtypeRobotVar = querySession.subtypes(Robot);
+declare const booleanCall: FunctionCall<boolean>;
 
 // @ts-expect-error subject is required
 Event.create({});
@@ -80,6 +83,8 @@ exactPersonManager.filter({ identifier: maybeIdentifier });
 eventVar.field(Person.identifier);
 // @ts-expect-error comparisons retain the exact generated attribute wrapper
 personVar.field(Person.identifier).eq(Score.create(3n));
+// @ts-expect-error prior function calls retain their exact scalar domain
+qualifyingScore(querySession, personVar, booleanCall);
 // @ts-expect-error generated relation roles retain their accepted player union
 employmentVar.role(Employment.employee).connects(eventVar);
 // @ts-expect-error an exact abstract ancestor is not itself an accepted player

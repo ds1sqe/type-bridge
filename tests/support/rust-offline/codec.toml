@@ -1,0 +1,7 @@
+name = "rust-sdk-v5-codec"
+version = "0.0.0"
+dependencies = [
+ "type-bridge",
+ "type-bridge-generated-schema",
+ "type-bridge-generated-schema-foreign",
+]

@@ -4,6 +4,7 @@ mod filters;
 mod migration_assertion_v2;
 mod multivalue_attributes;
 mod mutations;
+mod projected_batch_executor;
 mod query_v2;
 mod query_v2_parity;
 mod relation_roles;

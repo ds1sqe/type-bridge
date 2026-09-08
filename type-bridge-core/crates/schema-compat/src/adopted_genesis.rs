@@ -22,11 +22,11 @@ use serde_json::Value;
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::fingerprint::{CanonicalizationVersion, Fingerprint, FingerprintDomain};
-use type_bridge_contract::id::{AttributeId, FunctionId, RoleId, StructId, TypeId, TypeKind};
+use type_bridge_contract::id::{AttributeId, FunctionId, StructId, TypeId, TypeKind};
 use type_bridge_contract::reserved::is_typebridge_internal_label;
 use type_bridge_contract::schema::{
-    AnnotationSubjectId, DeclaredSchema, DocumentId, OwnsFactId, RelatesFactId, SchemaFact,
-    SchemaFactId, SourcedSchemaFact,
+    AnnotationSubjectId, DeclaredSchema, DocumentId, OwnsFactId, SchemaFact, SchemaFactId,
+    SourcedSchemaFact,
 };
 
 use crate::function_references::reject_reserved_function_references;
@@ -34,12 +34,12 @@ use crate::{released_typeql_to_declared_projection_with_references, typeql_to_de
 
 /// Lossless authority view of one released pre-adoption schema.
 ///
-/// `declared` is the portable V2 fact projection used by canonical migration
-/// verification. `legacy_identity` additionally binds every construct the
-/// released parser understands, including ordered list capabilities and
-/// `@distinct`, `@cascade`, and `@subkey`; comparison must use both. The raw
-/// TypeQL remains the durable artifact and can always be re-parsed into this
-/// exact pair.
+/// `declared` is the portable canonical fact projection used by migration
+/// verification, including ordered list capabilities and `@distinct`.
+/// `legacy_identity` additionally binds every construct the released parser
+/// understands, including released-only `@cascade` and `@subkey`; comparison
+/// must use both. The raw TypeQL remains the durable artifact and can always be
+/// re-parsed into this exact pair.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdoptedGenesisAuthority {
     declared: DeclaredSchema,
@@ -87,10 +87,9 @@ impl AdoptedGenesisAuthority {
 
     /// Require a canonical target to retain every fact carrying a V1-only extension.
     ///
-    /// Ordered/list capabilities and `@distinct`, `@cascade`, and `@subkey`
-    /// are deliberately outside the portable V2 fact vocabulary. A canonical
-    /// migration may safely evolve other facts around them, but removing the
-    /// underlying ownership or related-role fact would silently erase schema
+    /// `@cascade` and `@subkey` remain outside the canonical fact vocabulary.
+    /// A canonical migration may safely evolve other facts around them, but
+    /// removing the underlying ownership fact would silently erase schema
     /// authority that the migration cannot describe or restore.
     pub fn ensure_released_extension_subjects_survive(
         &self,
@@ -122,7 +121,7 @@ impl AdoptedGenesisAuthority {
                     }
                     continue;
                 }
-                ReleasedExtensionFact::Owns { .. } | ReleasedExtensionFact::Relates { .. } => {}
+                ReleasedExtensionFact::Owns { .. } => {}
             }
             let (subject, annotation_subject, extension_owner) = match extension {
                 ReleasedExtensionFact::Owns {
@@ -150,18 +149,6 @@ impl AdoptedGenesisAuthority {
                     (
                         SchemaFactId::Owns(id.clone()),
                         AnnotationSubjectId::Owns(id),
-                        extension_owner,
-                    )
-                }
-                ReleasedExtensionFact::Relates { relation, role, .. } => {
-                    let id = RelatesFactId::new(
-                        TypeId::new(TypeKind::Relation, relation.as_str())?,
-                        RoleId::new(relation.as_str(), role.as_str())?,
-                    )?;
-                    let extension_owner = id.relation().clone();
-                    (
-                        SchemaFactId::Relates(id.clone()),
-                        AnnotationSubjectId::Relates(id),
                         extension_owner,
                     )
                 }
@@ -571,16 +558,8 @@ enum ReleasedExtensionFact {
         owner_kind: &'static str,
         owner: String,
         attribute: String,
-        ordered: bool,
-        distinct: bool,
         cascade: bool,
         subkey: Option<String>,
-    },
-    Relates {
-        relation: String,
-        role: String,
-        ordered: bool,
-        distinct: bool,
     },
     OmittedFunction {
         name: String,
@@ -633,16 +612,6 @@ fn released_extensions(
     }
     for (owner, relation) in &schema.relations {
         collect_owns_extensions("relation", owner, &relation.owns, &mut facts);
-        for role in &relation.roles {
-            if role.ordered || role.distinct {
-                facts.push(ReleasedExtensionFact::Relates {
-                    relation: owner.clone(),
-                    role: role.name.clone(),
-                    ordered: role.ordered,
-                    distinct: role.distinct,
-                });
-            }
-        }
     }
     let mut final_definitions = BTreeMap::new();
     for definition in type_bridge_core_lib::_parser::released_definition_extents(source) {
@@ -1014,17 +983,11 @@ fn collect_owns_extensions(
     facts: &mut Vec<ReleasedExtensionFact>,
 ) {
     for ownership in ownerships {
-        if ownership.ordered
-            || ownership.distinct
-            || ownership.is_cascade
-            || ownership.subkey_group.is_some()
-        {
+        if ownership.is_cascade || ownership.subkey_group.is_some() {
             facts.push(ReleasedExtensionFact::Owns {
                 owner_kind,
                 owner: owner.to_owned(),
                 attribute: ownership.name.clone(),
-                ordered: ownership.ordered,
-                distinct: ownership.distinct,
                 cascade: ownership.is_cascade,
                 subkey: ownership.subkey_group.clone(),
             });
@@ -1189,14 +1152,14 @@ mod tests {
         let cascade = parse_adopted_genesis_authority(
             document(),
             "define\nattribute tag, value string;\nattribute name, value string;\n\
-             entity person, owns tag[] @card(0..5) @distinct, owns name @cascade @subkey(primary);\n\
+             entity person, owns tag[] @card(0..5) @distinct, owns name @card(0..1) @cascade @subkey(primary);\n\
              entity employee sub person;\n",
         )
         .expect("released constructs are adoptable");
         let without_cascade = parse_adopted_genesis_authority(
             document(),
             "define\nattribute tag, value string;\nattribute name, value string;\n\
-             entity person, owns tag[] @card(0..5) @distinct, owns name @subkey(primary);\n\
+             entity person, owns tag[] @card(0..5) @distinct, owns name @card(0..1) @subkey(primary);\n\
              entity employee sub person;\n",
         )
         .expect("comparison schema parses");
@@ -1237,7 +1200,7 @@ mod tests {
         let modified = typeql_to_declared(
             document(),
             "define\nattribute tag, value string;\nattribute name, value string;\n\
-             entity person, owns tag @card(0..4), owns name;\n\
+             entity person, owns tag[] @card(0..5) @distinct, owns name @card(0..2);\n\
              entity employee sub person;\n",
         )
         .expect("target with changed portable annotation parses");
@@ -1252,7 +1215,7 @@ mod tests {
         let detached = typeql_to_declared(
             document(),
             "define\nattribute tag, value string;\nattribute name, value string;\n\
-             entity person, owns tag @card(0..5), owns name;\nentity employee;\n",
+             entity person, owns tag[] @card(0..5) @distinct, owns name @card(0..1);\nentity employee;\n",
         )
         .expect("target with detached subtype parses");
         let error = cascade
@@ -1265,24 +1228,43 @@ mod tests {
     }
 
     #[test]
-    fn released_ordered_role_subject_must_survive_canonical_replay() {
+    fn released_ordered_role_and_distinct_are_canonical_authority() {
         let authority = parse_adopted_genesis_authority(
             document(),
             "define\nrelation team, relates member[] @distinct;\n",
         )
         .expect("released ordered role is adoptable");
-        authority
-            .ensure_released_extension_subjects_survive(authority.declared())
-            .expect("the projected relates subject survives");
-
-        let removed = typeql_to_declared(document(), "define\nrelation team;\n")
-            .expect("target without role parses");
-        let error = authority
-            .ensure_released_extension_subjects_survive(&removed)
-            .expect_err("a canonical target cannot silently erase ordered roles");
+        let relates = authority
+            .declared()
+            .facts()
+            .find_map(|fact| match fact {
+                SchemaFact::Relates(relates) => Some(relates),
+                _ => None,
+            })
+            .expect("ordered role is a canonical relates fact");
         assert_eq!(
-            error.code().as_str(),
-            "adopted_genesis_extension_subject_removed",
+            relates.collection_mode(),
+            type_bridge_contract::schema::CollectionMode::OrderedList,
+        );
+        assert!(authority.declared().facts().any(|fact| matches!(
+            fact,
+            SchemaFact::Annotation(annotation)
+                if annotation.id().kind()
+                    == &type_bridge_contract::schema::AnnotationKindId::Distinct
+        )));
+
+        let unordered =
+            parse_adopted_genesis_authority(document(), "define\nrelation team, relates member;\n")
+                .expect("unordered role is adoptable");
+        assert_ne!(
+            authority.declared().declared_identity_fingerprint(),
+            unordered.declared().declared_identity_fingerprint(),
+            "collection semantics belong to canonical declared authority",
+        );
+        assert_eq!(
+            authority.released_extension_identity(),
+            unordered.released_extension_identity(),
+            "ordered and distinct are no longer released-only extensions",
         );
     }
 

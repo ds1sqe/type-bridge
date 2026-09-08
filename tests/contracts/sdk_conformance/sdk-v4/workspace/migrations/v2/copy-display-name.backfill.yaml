@@ -1,0 +1,9 @@
+format: typebridge.migration-backfill-intent/v1
+copy-attribute:
+  owner-kind: entity
+  owner: person
+  source: legacy-name
+  destination: display-name
+  partition-key: person-id
+  batch-rows: 1
+  reverse: remove-equal-copied-destination

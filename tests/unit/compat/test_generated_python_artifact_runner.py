@@ -159,10 +159,10 @@ def test_interpreter_version_uses_supplied_python(
 
     monkeypatch.setattr(runner, "run_command", fake_run)
     assert (
-        runner.interpreter_language_version(Path("/candidate/python"), cwd=tmp_path, environment={})
+        runner.interpreter_language_version(Path("/artifact/python"), cwd=tmp_path, environment={})
         == "3.14"
     )
-    assert calls[0][:3] == ["/candidate/python", "-I", "-c"]
+    assert calls[0][:3] == ["/artifact/python", "-I", "-c"]
 
 
 def test_parser_requires_wheels_generated_stage_and_prepared_tools() -> None:

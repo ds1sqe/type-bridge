@@ -1,0 +1,26 @@
+format: typebridge.schema/v2
+
+attributes:
+  tag:
+    value: string
+
+entities:
+  person:
+    owns:
+      tag:
+        card: { min: 0, max: 4 }
+        ordered: true
+        distinct: true
+
+relations:
+  membership:
+    relates:
+      member:
+        card: { min: 1, max: 4 }
+        ordered: true
+        distinct: true
+
+plays:
+  person:
+    membership:
+      member: { card: { min: 0, max: 4 } }

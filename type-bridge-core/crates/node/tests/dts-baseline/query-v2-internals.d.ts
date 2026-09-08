@@ -108,24 +108,32 @@ export interface NativeQueryV2BuilderRuntime {
 export declare function registerQueryV2AuthorityHandle(authority: object, native: NativeQueryV2Authority): void;
 export declare function queryV2AuthorityHandle(authority: object): NativeQueryV2Authority | undefined;
 /** Stable V2 contract diagnostic categories. */
-export type QueryV2ErrorCategory = "invalid_contract" | "unsupported_capability" | "resource_limit" | "integrity";
+export type QueryV2ErrorCategory = "invalid_contract" | "invalid_input" | "invalid_plan" | "cardinality" | "unsupported_capability" | "stale_schema" | "resource_limit" | "integrity" | "cancelled" | "provider" | "result_decode" | "transaction" | "internal";
 /** One typed location inside a rejected V2 contract. */
 export type QueryV2ErrorPathSegment = Readonly<{
-    kind: "field" | "identifier";
-    value: string;
+    kind: "request" | "plan" | "operation" | "predicate" | "output" | "provider_evidence" | "result" | "unknown";
 }> | Readonly<{
-    kind: "index";
+    kind: "argument" | "identifier" | "type" | "contract_field" | "contract_identity";
+    value: string | Readonly<Record<string, unknown>>;
+}> | Readonly<{
+    kind: "field" | "role";
+    value: string | Readonly<Record<string, unknown>>;
+}> | Readonly<{
+    kind: "index" | "binding" | "role_edge" | "output_slot";
     value: number;
+}> | Readonly<{
+    kind: "output_name";
+    value: string;
 }>;
 /** One deterministic structured V2 diagnostic detail. */
 export type QueryV2ErrorDetail = Readonly<{
-    kind: "text" | "long";
+    kind: "text" | "long" | "signed" | "unsigned" | "count" | "byte_count" | "query_identity";
     value: string;
 }> | Readonly<{
     kind: "boolean";
     value: boolean;
 }> | Readonly<{
-    kind: "text_list";
+    kind: "text_list" | "query_identity_list";
     value: readonly string[];
 }>;
 /** Structured diagnostic preserved from the Rust V2 semantic engine. */
@@ -135,8 +143,10 @@ export declare class QueryV2Error extends Error {
     readonly diagnosticMessage: string;
     readonly path: readonly QueryV2ErrorPathSegment[];
     readonly details: Readonly<Record<string, QueryV2ErrorDetail>>;
+    readonly sdkCategory: QueryV2ErrorCategory;
+    readonly queryCategory: QueryV2ErrorCategory | null;
     readonly name = "QueryV2Error";
-    constructor(category: QueryV2ErrorCategory, code: string, diagnosticMessage: string, path: readonly QueryV2ErrorPathSegment[], details: Readonly<Record<string, QueryV2ErrorDetail>>);
+    constructor(category: QueryV2ErrorCategory, code: string, diagnosticMessage: string, path: readonly QueryV2ErrorPathSegment[], details: Readonly<Record<string, QueryV2ErrorDetail>>, sdkCategory?: QueryV2ErrorCategory, queryCategory?: QueryV2ErrorCategory | null);
 }
 export declare function queryV2NativeCall<Result>(operation: () => Result): Result;
 export declare function queryV2NativePromise<Result>(promise: Promise<Result>): Promise<Result>;

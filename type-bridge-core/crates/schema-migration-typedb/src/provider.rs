@@ -8,37 +8,41 @@
 
 use std::sync::Arc;
 
-use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
+#[cfg(test)]
+use type_bridge_contract::capability::CapabilityId;
+use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::limits::StructuralLimits;
-use type_bridge_contract::migration::CONDITIONAL_RESOLUTION_CAPABILITY;
-use type_bridge_contract::migration_assertion_capability_vocabulary;
+use type_bridge_contract::migration_backfill::AttributeBackfillPlan;
+#[cfg(test)]
+use type_bridge_contract::migration_backfill::COPY_ATTRIBUTE_BACKFILL_CAPABILITY;
 use type_bridge_contract::schema::{DocumentId, ManagedSchemaState};
-use type_bridge_contract::schema_delta::{
-    SCHEMA_REDEFINE_CAPABILITY, schema_transition_capability_vocabulary,
-};
 use type_bridge_orm::migration_assertion::{
     MigrationAssertionExecutionContext, MigrationAssertionExecutionError,
     execute_migration_assertion,
 };
+use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
     ClassifiedCommitError, CommitFailureCertainty, Database, OrmError, Transaction,
 };
 use type_bridge_query::ValidatedMigrationAssertionPlan;
-use type_bridge_schema::{BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext};
+use type_bridge_schema::ManagedDeltaContext;
 use type_bridge_schema_migration::{
-    ExecutionBindingToken, ExecutionFuture, GroupCommitCertainty, GroupCommitFailure,
-    GroupCommitFuture, MigrationExecutionProvider, MigrationLease, PreparedMigrationGroup,
-    StatementUnit, typedb_3_12_1_profile,
+    BackfillCompletionEvidence, BackfillExecutionCounts, BackfillExecutionDirection,
+    BackfillExecutionFuture, BackfillRecoveryObservation, ExecutionBindingToken, ExecutionFuture,
+    GroupCommitCertainty, GroupCommitFailure, GroupCommitFuture, MigrationExecutionProvider,
+    MigrationLease, PreparedMigrationGroup, StatementUnit, migration_runtime_capability_vocabulary,
+    typedb_3_12_1_profile,
 };
 
+use crate::backfill::LoweredBackfill;
 use crate::observation::{
     ManagedObservationAuthority, observe_managed_state_from_export_with_authority,
 };
 use crate::runner::LegacyExecutionBinding;
 use crate::store::{require_active_managed_fence, require_migration_database_pair_identity};
 
-const SUPPORTED_SERVER: (u32, u32, u32) = (3, 12, 1);
+const SUPPORTED_SERVER: (u32, u32, u32) = (3, 12, 3);
 
 /// One validated, process-local TypeDB migration execution binding.
 ///
@@ -57,7 +61,7 @@ pub struct TypeDbExecutionBinding {
 }
 
 impl TypeDbExecutionBinding {
-    /// Validate and bind one exact TypeDB 3.12.1 database pair and context.
+    /// Validate and bind one exact TypeDB 3.12.3 database pair and context.
     ///
     /// Reuse this value (or a clone) for every provider and store that must
     /// participate in one execution. Each successful call creates a fresh
@@ -222,6 +226,170 @@ impl TypeDbMigrationProvider {
 impl MigrationExecutionProvider for TypeDbMigrationProvider {
     fn available_capabilities(&self) -> &CapabilitySet {
         self.binding.context.available_capabilities()
+    }
+
+    fn supports_backfill_execution(&self) -> bool {
+        true
+    }
+
+    fn observe_backfill<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        plan: &'a AttributeBackfillPlan,
+        direction: BackfillExecutionDirection,
+    ) -> ExecutionFuture<'a, BackfillRecoveryObservation> {
+        Box::pin(async move {
+            self.binding.require_lease(lease)?;
+            plan.required_capabilities()
+                .ensure_supported_by(self.available_capabilities())?;
+            let lowered = LoweredBackfill::new(plan, direction);
+            let mut transaction = self
+                .binding
+                .managed_database
+                .write_transaction()
+                .await
+                .map_err(map_orm_error)?;
+            let observed = async {
+                require_active_managed_fence(&mut transaction, lease).await?;
+                require_no_backfill_conflict(&mut transaction, &lowered).await?;
+                let incomplete =
+                    query_has_answers(&mut transaction, &lowered.incomplete_witness()).await?;
+                require_active_managed_fence(&mut transaction, lease).await?;
+                if incomplete {
+                    Ok(BackfillRecoveryObservation::Incomplete)
+                } else {
+                    Ok(BackfillRecoveryObservation::Complete(
+                        BackfillCompletionEvidence::new(
+                            plan.fingerprint()?,
+                            direction,
+                            BackfillExecutionCounts::new(0, 0, 0, 1)?,
+                        ),
+                    ))
+                }
+            }
+            .await;
+            finish_provider_data_guard(&mut transaction, observed, "backfill observation").await
+        })
+    }
+
+    fn execute_backfill<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        plan: &'a AttributeBackfillPlan,
+        direction: BackfillExecutionDirection,
+        control: &'a type_bridge_schema_migration::MigrationExecutionControl,
+    ) -> BackfillExecutionFuture<'a> {
+        Box::pin(async move {
+            self.binding
+                .require_lease(lease)
+                .map_err(definitely_aborted)?;
+            plan.required_capabilities()
+                .ensure_supported_by(self.available_capabilities())
+                .map_err(definitely_aborted)?;
+            let plan_fingerprint = plan.fingerprint().map_err(definitely_aborted)?;
+            let lowered = LoweredBackfill::new(plan, direction);
+            let mut changed = 0_u64;
+            let mut transaction_groups = 0_u32;
+            loop {
+                control
+                    .check()
+                    .map_err(|error| backfill_failure(transaction_groups, error))?;
+                let mut transaction = self
+                    .binding
+                    .managed_database
+                    .write_transaction()
+                    .await
+                    .map_err(map_orm_error)
+                    .map_err(|error| backfill_failure(transaction_groups, error))?;
+                let mutation = async {
+                    require_active_managed_fence(&mut transaction, lease).await?;
+                    require_no_backfill_conflict(&mut transaction, &lowered).await?;
+                    let affected =
+                        query_answer_count(&mut transaction, &lowered.mutation_group()).await?;
+                    if affected > u64::from(plan.partition().batch_rows()) {
+                        return Err(failure(
+                            DiagnosticCategory::Integrity,
+                            "migration_typedb_backfill_batch_overflow",
+                            "TypeDB returned more backfill answers than the canonical batch bound",
+                        ));
+                    }
+                    require_active_managed_fence(&mut transaction, lease).await?;
+                    Ok(affected)
+                }
+                .await;
+                let affected = match mutation {
+                    Ok(0) => {
+                        finish_provider_data_guard(
+                            &mut transaction,
+                            Ok(()),
+                            "empty backfill transaction group",
+                        )
+                        .await
+                        .map_err(|error| backfill_failure(transaction_groups, error))?;
+                        break;
+                    }
+                    Ok(affected) => affected,
+                    Err(error) => {
+                        let error = finish_provider_data_guard::<()>(
+                            &mut transaction,
+                            Err(error),
+                            "backfill transaction group",
+                        )
+                        .await
+                        .expect_err("an error remains an error after cleanup");
+                        return Err(backfill_failure(transaction_groups, error));
+                    }
+                };
+                transaction.commit_classified().await.map_err(|error| {
+                    let certainty = if transaction_groups == 0 {
+                        group_commit_certainty(&error)
+                    } else {
+                        GroupCommitCertainty::Unknown
+                    };
+                    GroupCommitFailure::new(certainty, map_orm_error(error.into_orm_error()))
+                })?;
+                changed = changed.checked_add(affected).ok_or_else(|| {
+                    backfill_failure(
+                        transaction_groups.saturating_add(1),
+                        failure(
+                            DiagnosticCategory::ResourceLimit,
+                            "migration_typedb_backfill_count_overflow",
+                            "backfill changed-row count exceeded the supported range",
+                        ),
+                    )
+                })?;
+                transaction_groups = transaction_groups.checked_add(1).ok_or_else(|| {
+                    backfill_failure(
+                        transaction_groups.saturating_add(1),
+                        failure(
+                            DiagnosticCategory::ResourceLimit,
+                            "migration_typedb_backfill_group_count_overflow",
+                            "backfill transaction-group count exceeded the supported range",
+                        ),
+                    )
+                })?;
+                control
+                    .check()
+                    .map_err(|error| backfill_failure(transaction_groups, error))?;
+            }
+            let observation = self
+                .observe_backfill(lease, plan, direction)
+                .await
+                .map_err(|error| backfill_failure(transaction_groups, error))?;
+            if !matches!(observation, BackfillRecoveryObservation::Complete(_)) {
+                return Err(backfill_failure(
+                    transaction_groups,
+                    failure(
+                        DiagnosticCategory::Integrity,
+                        "migration_typedb_backfill_postcondition_failed",
+                        "backfill mutation ended without satisfying its exact postcondition",
+                    ),
+                ));
+            }
+            BackfillExecutionCounts::new(changed, changed, 0, transaction_groups.max(1))
+                .map(|counts| BackfillCompletionEvidence::new(plan_fingerprint, direction, counts))
+                .map_err(definitely_aborted)
+        })
     }
 
     fn observe_managed_state<'a>(
@@ -410,16 +578,66 @@ fn group_commit_certainty(error: &ClassifiedCommitError) -> GroupCommitCertainty
 
 /// Compose the exact execution capability vocabulary for TypeDB 3.12.1.
 pub fn execution_capability_vocabulary() -> Result<CapabilitySet, Diagnostic> {
-    let mut capabilities = schema_transition_capability_vocabulary();
-    for capability in BUILTIN_SCHEMA_CAPABILITY_IDS {
-        capabilities.insert(CapabilityId::new(*capability)?);
+    migration_runtime_capability_vocabulary()
+}
+
+async fn require_no_backfill_conflict(
+    transaction: &mut Transaction,
+    lowered: &LoweredBackfill<'_>,
+) -> Result<(), Diagnostic> {
+    let Some(query) = lowered.conflict_witness() else {
+        return Ok(());
+    };
+    if query_has_answers(transaction, &query).await? {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_typedb_backfill_destination_conflict",
+            "backfill destination contains a value different from its source",
+        ));
     }
-    for capability in migration_assertion_capability_vocabulary().iter().cloned() {
-        capabilities.insert(capability);
-    }
-    capabilities.insert(CapabilityId::new(SCHEMA_REDEFINE_CAPABILITY)?);
-    capabilities.insert(CapabilityId::new(CONDITIONAL_RESOLUTION_CAPABILITY)?);
-    Ok(capabilities)
+    Ok(())
+}
+
+async fn query_has_answers(transaction: &mut Transaction, query: &str) -> Result<bool, Diagnostic> {
+    Ok(query_answer_count(transaction, query).await? != 0)
+}
+
+async fn query_answer_count(transaction: &mut Transaction, query: &str) -> Result<u64, Diagnostic> {
+    let count = match transaction.query(query).await.map_err(map_orm_error)? {
+        QueryResult::Ok => 0,
+        QueryResult::Rows(rows) => rows.len(),
+        QueryResult::Documents(documents) => documents.len(),
+    };
+    u64::try_from(count).map_err(|_| {
+        failure(
+            DiagnosticCategory::ResourceLimit,
+            "migration_typedb_backfill_answer_count_overflow",
+            "backfill provider answer count exceeded the supported range",
+        )
+    })
+}
+
+fn definitely_aborted(diagnostic: Diagnostic) -> GroupCommitFailure {
+    GroupCommitFailure::new(GroupCommitCertainty::DefinitelyAborted, diagnostic)
+}
+
+fn backfill_failure(committed_groups: u32, diagnostic: Diagnostic) -> GroupCommitFailure {
+    GroupCommitFailure::new(
+        if committed_groups == 0 {
+            GroupCommitCertainty::DefinitelyAborted
+        } else {
+            GroupCommitCertainty::Unknown
+        },
+        diagnostic,
+    )
+}
+
+async fn finish_provider_data_guard<T>(
+    transaction: &mut Transaction,
+    primary: Result<T, Diagnostic>,
+    operation: &'static str,
+) -> Result<T, Diagnostic> {
+    finish_provider_schema_guard(transaction, primary, operation).await
 }
 
 /// Require the exact TypeDB server version supported by migration execution.
@@ -450,7 +668,7 @@ pub fn require_supported_migration_execution_binding(
         return Err(failure(
             DiagnosticCategory::InvalidContract,
             "migration_typedb_semantic_profile_unsupported",
-            "migration execution requires exactly the TypeDB 3.12.1 semantic profile",
+            "migration execution requires exactly the typedb-3.12.1/v1 semantic profile",
         )
         .with_detail(
             "semantic_profile",
@@ -543,7 +761,7 @@ fn require_supported_server_version(version: Option<(u32, u32, u32)>) -> Result<
         return Err(failure(
             DiagnosticCategory::InvalidContract,
             "migration_typedb_server_version_unsupported",
-            "migration execution requires exactly TypeDB 3.12.1",
+            "migration execution requires exactly TypeDB 3.12.3",
         )
         .with_detail(
             "server_version",
@@ -630,8 +848,12 @@ mod tests {
     use super::*;
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::managed_scope::ManagedScopeId;
+    use type_bridge_contract::migration::CONDITIONAL_RESOLUTION_CAPABILITY;
+    use type_bridge_contract::migration_assertion_capability_vocabulary;
+    use type_bridge_contract::schema_delta::SCHEMA_REDEFINE_CAPABILITY;
     use type_bridge_orm::DatabaseConnectionAuthority;
     use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, TransactionOps, TxType};
+    use type_bridge_schema::BUILTIN_SCHEMA_CAPABILITY_IDS;
     use type_bridge_schema_migration::typedb_3_12_1_profile;
 
     struct NoIoBackend {
@@ -695,10 +917,10 @@ mod tests {
                 "migration_typedb_server_version_unsupported"
             );
         }
-        require_supported_server_version(Some((3, 12, 1)))
+        require_supported_server_version(Some((3, 12, 3)))
             .expect("only the exact migration server is supported");
 
-        let managed = require_supported_pair_server_versions(None, Some((3, 12, 1)))
+        let managed = require_supported_pair_server_versions(None, Some((3, 12, 3)))
             .expect_err("managed identity is checked first");
         assert_eq!(
             managed.details().get("database_role"),
@@ -708,7 +930,7 @@ mod tests {
                 )
             )
         );
-        let journal = require_supported_pair_server_versions(Some((3, 12, 1)), Some((3, 11, 5)))
+        let journal = require_supported_pair_server_versions(Some((3, 12, 3)), Some((3, 11, 5)))
             .expect_err("journal identity is checked after the managed identity");
         assert_eq!(
             journal.details().get("database_role"),
@@ -718,7 +940,7 @@ mod tests {
                 )
             )
         );
-        require_supported_pair_server_versions(Some((3, 12, 1)), Some((3, 12, 1)))
+        require_supported_pair_server_versions(Some((3, 12, 3)), Some((3, 12, 3)))
             .expect("both pair members carry the exact negotiated version");
     }
 
@@ -810,6 +1032,7 @@ mod tests {
         for extra in [
             SCHEMA_REDEFINE_CAPABILITY,
             CONDITIONAL_RESOLUTION_CAPABILITY,
+            COPY_ATTRIBUTE_BACKFILL_CAPABILITY,
         ] {
             let id = CapabilityId::new(extra).expect("extra capability");
             assert!(capabilities.contains(&id));
@@ -832,6 +1055,7 @@ mod tests {
                 [
                     SCHEMA_REDEFINE_CAPABILITY,
                     CONDITIONAL_RESOLUTION_CAPABILITY,
+                    COPY_ATTRIBUTE_BACKFILL_CAPABILITY,
                 ]
                 .iter()
                 .map(ToString::to_string),
@@ -840,9 +1064,15 @@ mod tests {
         let actual: std::collections::BTreeSet<String> =
             capabilities.iter().map(ToString::to_string).collect();
         assert_eq!(actual, expected);
-        capabilities
+        let backfill = CapabilityId::new(COPY_ATTRIBUTE_BACKFILL_CAPABILITY).unwrap();
+        let schema_only: CapabilitySet = capabilities
+            .iter()
+            .filter(|capability| *capability != &backfill)
+            .cloned()
+            .collect();
+        schema_only
             .ensure_supported_by(&authority_capabilities)
-            .expect("schema authority consumers understand every workspace execution requirement");
+            .expect("schema authority consumers understand every schema execution requirement");
     }
 
     #[test]
@@ -873,5 +1103,31 @@ mod tests {
             group_commit_certainty(&lifecycle),
             GroupCommitCertainty::Unknown,
         );
+    }
+
+    #[test]
+    fn backfill_failure_certainty_accounts_for_prior_commits() {
+        let before_commit = backfill_failure(
+            0,
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "test_backfill_failure",
+                "test backfill failure",
+            ),
+        );
+        assert_eq!(
+            before_commit.certainty(),
+            GroupCommitCertainty::DefinitelyAborted
+        );
+
+        let after_commit = backfill_failure(
+            1,
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "test_backfill_failure",
+                "test backfill failure",
+            ),
+        );
+        assert_eq!(after_commit.certainty(), GroupCommitCertainty::Unknown);
     }
 }

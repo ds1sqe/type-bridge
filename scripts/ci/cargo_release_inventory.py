@@ -14,6 +14,13 @@ PUBLIC_FIRST_PARTY = "public-first-party"
 PUBLIC_IMMUTABLE = "public-immutable"
 PRIVATE_BINDING = "private-binding"
 CLASSIFICATIONS = frozenset({PUBLIC_FIRST_PARTY, PUBLIC_IMMUTABLE, PRIVATE_BINDING})
+EXPECTED_PRIVATE_BINDINGS = frozenset(
+    {
+        "type-bridge-c",
+        "type-bridge-core",
+        "type-bridge-node",
+    }
+)
 
 
 class InventoryError(RuntimeError):
@@ -202,8 +209,13 @@ def load_inventory(path: Path = INVENTORY_PATH) -> CargoReleaseInventory:
         raise InventoryError("Cargo inventory must contain exactly 17 first-party public packages")
     if len(inventory.immutable_packages) != 2:
         raise InventoryError("Cargo inventory must contain exactly two immutable packages")
-    if len(inventory.private_packages) != 2:
-        raise InventoryError("Cargo inventory must contain exactly two private binding packages")
+    private_bindings = frozenset(package.name for package in inventory.private_packages)
+    if private_bindings != EXPECTED_PRIVATE_BINDINGS:
+        raise InventoryError(
+            "Cargo inventory private binding package set must be exact: "
+            f"expected {sorted(EXPECTED_PRIVATE_BINDINGS)!r}, "
+            f"found {sorted(private_bindings)!r}"
+        )
     return inventory
 
 

@@ -152,6 +152,55 @@ write.commit().await?;
 Dropping an open write transaction never commits it; `commit` and `rollback`
 consume the transaction.
 
+## Exact manager filters
+
+Generated field tokens also build immutable single-model filters without
+opening the broader typed-query grammar:
+
+```rust
+use type_bridge::ProjectedManagerComparison;
+
+let adult = db.entities::<Person>().where_(
+    PersonType::age,
+    ProjectedManagerComparison::Gte,
+    &Age::new(18)?,
+)?;
+let people: Vec<Person> = adult.all().await?;
+
+let ada = db.entities::<Person>().where_(
+    PersonType::person_id,
+    ProjectedManagerComparison::Eq,
+    &PersonId::new("ada")?,
+)?.first().await?;
+```
+
+`where_` returns a sibling and accepts only the six canonical scalar
+comparisons. `first` requires equality evidence for every effective
+reference-key field and proves that at most one exact IID matched. Use an
+explicit read transaction when several manager terminals and typed queries
+must share one snapshot:
+
+```rust
+let read = db.read().await?;
+let adults = read.entities::<Person>().where_(
+    PersonType::age,
+    ProjectedManagerComparison::Gte,
+    &Age::new(18)?,
+)?;
+let count = adults.count().await?;
+let exists = adults.exists().await?;
+assert_eq!(exists, count != 0);
+drop(adults);
+read.close().await?;
+```
+
+Generated token types provide the package fence for ordinary Rust code, and
+foreign-package tokens fail to compile against a local manager. The public
+low-level `FieldToken` constructor remains available for compatibility; a
+manually reconstructed token is therefore admitted only when its canonical
+owner, ownership fact, attribute domain, and metadata are indistinguishable
+from the installed projection.
+
 ## Immutable typed queries
 
 ```rust
@@ -268,6 +317,10 @@ Direct and remote query paths map canonical failures to the same
 `ErrorCategory` and preserve stable codes and structured paths when supplied
 by the engine or remote diagnostic. Authenticated remote failures also expose
 their exact typed path through `diagnostic_path()` and deterministic detail map
-through `details()`. Implementations of `RemoteQueryTransport` should wrap
+through `details()`. Generated manager and projected-batch failures additionally
+retain the binding-neutral category through `sdk_category()`; for example,
+`wrong_scalar_domain` reports `Some("invalid_input")` even though the released
+Rust compatibility category remains `ErrorCategory::ModelValidation`.
+Implementations of `RemoteQueryTransport` should wrap
 application-owned transport failures with
 `Error::remote("stable_snake_case_code", message, source)`.

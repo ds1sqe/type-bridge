@@ -58,8 +58,12 @@ fn emits_exact_deterministic_single_dependency_crate() {
             "src/schema.rs",
             "src/structs.rs",
             "src/tokens.rs",
+            "typebridge/migration-history.json",
         ]),
     );
+    let schema = String::from_utf8(first.get("src/schema.rs").unwrap().to_vec()).unwrap();
+    assert!(schema.contains("pub fn open_migration_catalog()"));
+    assert!(schema.contains("include_bytes!(\"../typebridge/migration-history.json\")"));
     let declarations =
         String::from_utf8(first.get("src/declaration.rs").unwrap().to_vec()).unwrap();
     for import in [
@@ -120,7 +124,7 @@ fn emits_exact_deterministic_single_dependency_crate() {
     assert!(tokens.contains("pub const plays_event_container_item"));
     let manifest = String::from_utf8(first.get("Cargo.toml").unwrap().to_vec()).unwrap();
     assert!(manifest.contains("[dependencies]"));
-    assert!(manifest.contains("type-bridge = { version = \"=2.1.0\", default-features = false }"));
+    assert!(manifest.contains("type-bridge = { version = \"=2.2.0\", default-features = false }"));
     let schema = String::from_utf8(first.get("src/schema.rs").unwrap().to_vec()).unwrap();
     assert!(schema.contains("pub(crate) const SCHEMA_AUTHORITY_JSON"));
     assert!(schema.contains("typebridge.schema-authority/v1"));
@@ -163,11 +167,13 @@ entities:
 
     assert!(manifest.contains("doctest = false"));
     assert!(read.contains(&format!(
-        "{documentation}#[derive(Clone, Debug, PartialEq)]\npub struct Person"
+        "{documentation}#[derive(Clone, PartialEq)]\npub struct Person"
     )));
     assert!(reference.contains(&format!(
-        "{documentation}#[derive(Clone, Debug, PartialEq)]\npub struct PersonRef"
+        "{documentation}#[derive(Clone, PartialEq)]\npub struct PersonRef"
     )));
+    assert!(read.contains("impl core::fmt::Debug for Person"));
+    assert!(reference.contains("impl core::fmt::Debug for PersonRef"));
 }
 
 #[test]

@@ -43,26 +43,36 @@ def hostile_inventory(tmp_path: Path, old: str, new: str) -> Path:
 def test_repository_inventory_closes_every_cargo_product_class() -> None:
     inventory = inventory_module.load_inventory()
 
-    assert inventory.release_version == "2.1.0"
+    assert inventory.release_version == "2.2.0"
     assert inventory.first_party_msrv == "1.88"
-    assert len(inventory.packages) == 21
+    assert len(inventory.packages) == 22
     assert len(inventory.public_packages) == 19
     assert len(inventory.first_party_packages) == 17
     assert len(inventory.immutable_packages) == 2
-    assert len(inventory.private_packages) == 2
+    assert len(inventory.private_packages) == 3
     assert [package.publish_order for package in inventory.public_packages] == list(range(1, 20))
     assert {package.name for package in inventory.private_packages} == {
+        "type-bridge-c",
         "type-bridge-core",
         "type-bridge-node",
     }
+    for package in inventory.private_packages:
+        assert package.role == "binding"
+        assert package.version_policy == "lockstep"
+        assert package.version == "2.2.0"
+        assert package.docs_target == "none"
+        assert package.public is False
+        assert package.publish_order is None
+        assert package.readme is None
+        assert package.documentation is None
     server = next(
         package
         for package in inventory.first_party_packages
         if package.name == "type-bridge-server"
     )
     assert server.public is True
-    assert server.version == "2.1.0"
-    assert server.documentation == "https://docs.rs/type-bridge-server/2.1.0"
+    assert server.version == "2.2.0"
+    assert server.documentation == "https://docs.rs/type-bridge-server/2.2.0"
 
 
 def test_public_cargo_package_index_is_inventory_closed_and_linked() -> None:
@@ -144,6 +154,11 @@ def test_inventory_classifies_the_real_workspace_without_omissions() -> None:
             'name = "type-bridge-node"',
             'name = "type-bridge-core"',
             "duplicate Cargo package name",
+        ),
+        (
+            'name = "type-bridge-c"',
+            'name = "type-bridge-ffi"',
+            "private binding package set must be exact",
         ),
         (
             "publish-order = 19",

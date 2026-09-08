@@ -38,7 +38,7 @@ CORE_WHEELS = {
 
 
 def write_validated_fixture(tmp_path: Path) -> tuple[Path, Path]:
-    """Write five hash-bound core candidates and their validator manifest."""
+    """Write five hash-bound core artifacts and their validator manifest."""
     wheel_directory = tmp_path / "wheels"
     wheel_directory.mkdir(parents=True)
     artifacts: list[dict[str, Any]] = []
@@ -72,7 +72,7 @@ def passing_result(policy_name: str) -> Any:
     )
 
 
-def test_audits_both_hash_bound_gnu_candidates(
+def test_audits_both_hash_bound_gnu_artifacts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -98,7 +98,7 @@ def test_audits_both_hash_bound_gnu_candidates(
     ]
 
 
-def test_missing_or_changed_gnu_candidate_fails_before_auditwheel(
+def test_missing_or_changed_gnu_artifact_fails_before_auditwheel(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:

@@ -34,8 +34,10 @@ fn main() {
     let profile = SemanticProfileId::new(&profile_name).expect("semantic profile is valid");
     let resolved = resolve(&declared, &profile).expect("acceptance schema resolves");
     let emitter = PythonEmitter::new();
-    let handlers = emitter.generator_handlers();
-    let resources = emitter.code_resources().expect("emitter resources hash");
+    let handlers = emitter.generator_handlers_for(&resolved);
+    let resources = emitter
+        .code_resources_for(&resolved)
+        .expect("emitter resources hash");
     let projection = project(
         &resolved,
         BindingTarget::Python,
@@ -61,6 +63,10 @@ fn main() {
 
     fs::create_dir_all(&output_path).expect("output directory is created");
     for (relative, bytes) in package.files() {
-        fs::write(output_path.join(relative), bytes).expect("generated file is written");
+        let destination = output_path.join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).expect("generated parent directory is created");
+        }
+        fs::write(destination, bytes).expect("generated file is written");
     }
 }

@@ -26,6 +26,8 @@ pub enum MatchErrorCategory {
     StaleSchema,
     /// A canonical or provider/session resource ceiling was exceeded.
     ResourceLimit,
+    /// Cooperative cancellation interrupted query processing.
+    Cancelled,
     /// The provider failed before it could produce complete evidence.
     Provider,
     /// Provider evidence or hydrated output did not match the validated request.
@@ -41,6 +43,7 @@ impl MatchErrorCategory {
             Self::UnsupportedCapability => "unsupported_capability",
             Self::StaleSchema => "stale_schema",
             Self::ResourceLimit => "resource_limit",
+            Self::Cancelled => "cancelled",
             Self::Provider => "provider",
             Self::ResultDecode => "result_decode",
         }
@@ -325,6 +328,7 @@ mod tests {
             ),
             (MatchErrorCategory::StaleSchema, "stale_schema"),
             (MatchErrorCategory::ResourceLimit, "resource_limit"),
+            (MatchErrorCategory::Cancelled, "cancelled"),
             (MatchErrorCategory::Provider, "provider"),
             (MatchErrorCategory::ResultDecode, "result_decode"),
         ];

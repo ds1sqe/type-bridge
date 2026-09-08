@@ -25,7 +25,9 @@ use type_bridge_contract::query_remote::{
 };
 #[cfg(test)]
 use type_bridge_contract::query_remote::{RemoteReply, decode_remote_reply};
-use type_bridge_contract::query_remote_v2::query_remote_v2_required_capabilities;
+use type_bridge_contract::query_remote_v2::{
+    CAP_QUERY_REMOTE_STATEMENT_LIMIT, query_remote_v2_required_capabilities,
+};
 use type_bridge_contract::schema::{DeclaredSchema, DocumentId};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_orm::Transaction;
@@ -269,6 +271,10 @@ impl V2QueryState {
         for capability in query_remote_v2_required_capabilities(false) {
             advertised.insert(capability);
         }
+        advertised.insert(
+            type_bridge_contract::capability::CapabilityId::new(CAP_QUERY_REMOTE_STATEMENT_LIMIT)
+                .expect("static remote statement-limit capability is canonical"),
+        );
         let executor = standalone_executor_binding();
         let signer = RemoteReplySigningKey::generate();
         let advertisement = RemoteCapabilities::new(advertised, executor, signer.public_key());
@@ -1552,8 +1558,10 @@ mod tests {
     use type_bridge_contract::managed_scope::ManagedScopeId;
     use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
     use type_bridge_contract::query_plan::{
-        DocumentField, DocumentSource, QueryInvocation, QueryOperation, QueryOutput, QueryPattern,
-        QueryPlan, QueryPlanFingerprint, ReadStage,
+        DocumentField, DocumentSource, HydrationBindingV2, HydrationDescriptorV2, HydrationFieldV2,
+        HydrationProjectionV2, ModelQueryV2, QueryInvocation, QueryOperation, QueryOutput,
+        QueryPattern, QueryPlan, QueryPlanFingerprint, QueryPlanV2Compatibility,
+        QueryReductionKindV2, QueryReductionTermV2, ReadStage,
     };
     use type_bridge_contract::query_plan::{
         query_plan_capability_vocabulary, query_plan_v2_capability_vocabulary,
@@ -1563,14 +1571,15 @@ mod tests {
         RemoteReplyDecodeLimits, RemoteRequestFingerprint,
     };
     use type_bridge_contract::query_remote_v2::{
-        RemoteLimitsV2, RemoteQueryRequestV2, RemoteReplyDecodeLimitsV2, RemoteReplyV2,
-        RemoteRequestFingerprintV2, decode_remote_reply_v2, decode_signed_remote_failure_v2,
+        RemoteLimitsV2, RemoteOutcomeV2, RemoteQueryRequestV2, RemoteReducedValueV2,
+        RemoteReplyDecodeLimitsV2, RemoteReplyV2, RemoteRequestFingerprintV2,
+        decode_remote_reply_v2, decode_signed_remote_failure_v2,
     };
     use type_bridge_contract::schema::{
         OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact, ValueFact,
         ValueFactId,
     };
-    use type_bridge_contract::value::ValueTypeTag;
+    use type_bridge_contract::value::{Cardinality, ValueTypeTag};
     use type_bridge_orm::error::OrmError;
     use type_bridge_orm::query_v2_remote::{encode_remote_request, encode_remote_request_v2};
     use type_bridge_orm::session::backend::{
@@ -1987,11 +1996,108 @@ mod tests {
             max_graph_nodes: 0,
             max_attribute_values: 0,
             max_role_players: 0,
+            max_statements: 3,
         };
         let request =
             encode_remote_request_v2(&validated, &invocation, advertisement, limits, nonce)
                 .expect("V2 remote request");
         let envelope = RemoteQueryRequestV2::decode(&request).expect("V2 request envelope");
+        let fingerprint =
+            RemoteRequestFingerprintV2::compute(&request).expect("V2 request fingerprint");
+        (request, plan, envelope, fingerprint, limits)
+    }
+
+    fn validated_reduction_request_v2(
+        authority: &AuthorityFixture,
+        advertisement: &RemoteCapabilities,
+        nonce: &str,
+        max_collection_members: u64,
+    ) -> (
+        Vec<u8>,
+        QueryPlan,
+        RemoteQueryRequestV2,
+        RemoteRequestFingerprintV2,
+        RemoteLimitsV2,
+    ) {
+        let root = BindingId::new(0).expect("root binding");
+        let person = TypeId::new(TypeKind::Entity, "transport-person").expect("person type");
+        let name = AttributeId::new("transport-name").expect("name attribute");
+        let plan = QueryPlan::new_v2_with_functions(
+            vec![AssertionBinding::new(
+                root,
+                QueryVariable::new("b0").expect("binding variable"),
+            )],
+            Vec::new(),
+            Vec::new(),
+            vec![
+                ReadStage::Match {
+                    patterns: vec![QueryPattern::Isa {
+                        binding: root,
+                        include_subtypes: false,
+                        type_id: person.clone(),
+                    }],
+                },
+                ReadStage::Select {
+                    bindings: vec![root],
+                },
+                ReadStage::Distinct,
+            ],
+            QueryOutput::Rows {
+                columns: vec![root],
+            },
+            QueryPlanV2Compatibility::new(
+                None,
+                Vec::new(),
+                Some(ModelQueryV2::Reduction {
+                    hydration: HydrationProjectionV2::new(
+                        vec![HydrationBindingV2::new(
+                            root,
+                            person.clone(),
+                            vec![person.clone()],
+                        )],
+                        vec![HydrationDescriptorV2::new(
+                            person.clone(),
+                            vec![HydrationFieldV2::new(
+                                "name",
+                                vec![person],
+                                name,
+                                ValueTypeTag::String,
+                                Cardinality::new(0, Some(1)).expect("name cardinality"),
+                                false,
+                                false,
+                                false,
+                            )],
+                            Vec::new(),
+                        )],
+                    ),
+                    root,
+                    group: None,
+                    reducers: vec![QueryReductionTermV2::new(QueryReductionKindV2::Count, None)],
+                }),
+            ),
+            authority.managed.managed_semantic_schema().clone(),
+        )
+        .expect("V2 reduction plan");
+        let context =
+            MigrationAssertionValidationContext::new(&authority.resolved, &authority.managed);
+        let validated = validate_query_plan(&plan, &context, StructuralLimits::CANONICAL)
+            .expect("validated V2 reduction query");
+        let invocation =
+            QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).expect("V2 invocation");
+        let limits = RemoteLimitsV2 {
+            deadline_ms: Some(5_000),
+            max_bytes: 1 << 20,
+            max_items: 1,
+            max_collection_members,
+            max_graph_nodes: 0,
+            max_attribute_values: 0,
+            max_role_players: 0,
+            max_statements: 3,
+        };
+        let request =
+            encode_remote_request_v2(&validated, &invocation, advertisement, limits, nonce)
+                .expect("V2 reduction request");
+        let envelope = RemoteQueryRequestV2::decode(&request).expect("V2 reduction envelope");
         let fingerprint =
             RemoteRequestFingerprintV2::compute(&request).expect("V2 request fingerprint");
         (request, plan, envelope, fingerprint, limits)
@@ -2430,6 +2536,102 @@ mod tests {
             2,
             "V2 replay rejects before request-specific application policy"
         );
+    }
+
+    #[tokio::test]
+    async fn model_reduction_route_returns_authenticated_count_and_enforces_cell_budget() {
+        let fixture = route_fixture(
+            [CURRENT_SCHEMA; 4],
+            query_plan_v2_capability_vocabulary(),
+            default_pipeline(),
+        );
+        let authority = authority_fixture(false);
+
+        let (request, plan, envelope, fingerprint, limits) = validated_reduction_request_v2(
+            &authority,
+            &fixture.advertisement,
+            "server-v2-reduction-exact-0001",
+            1,
+        );
+        let body = post_query(&fixture.router, request).await;
+        let reply = decode_remote_reply_v2(
+            &body,
+            &envelope,
+            &plan.fingerprint().expect("V2 plan fingerprint"),
+            &fingerprint,
+            &fixture.query.advertisement_fingerprint,
+            fixture.advertisement.reply_key(),
+            RemoteReplyDecodeLimitsV2 {
+                max_bytes: limits.max_bytes,
+                max_items: limits.max_items,
+                max_collection_members: limits.max_collection_members,
+                max_graph_nodes: limits.max_graph_nodes,
+                max_attribute_values: limits.max_attribute_values,
+                max_role_players: limits.max_role_players,
+            },
+            &Ed25519RemoteReplyVerifier,
+        )
+        .expect("authenticated reduction response");
+        let RemoteReplyV2::Response(response) = reply else {
+            panic!("the exact one-cell reduction budget must succeed")
+        };
+        let RemoteOutcomeV2::ModelReduction {
+            graph,
+            root,
+            group,
+            reducers,
+            rows,
+        } = response.outcome()
+        else {
+            panic!("the route returned the wrong result family")
+        };
+        assert!(graph.nodes().is_empty());
+        assert_eq!(root.get(), 0);
+        assert!(group.is_none());
+        assert!(matches!(
+            reducers.as_slice(),
+            [term] if term.reduction() == QueryReductionKindV2::Count && term.input().is_none()
+        ));
+        assert!(matches!(
+            rows.as_slice(),
+            [row] if row.group().is_none()
+                && row.values() == [RemoteReducedValueV2::Count { value: 0 }]
+        ));
+
+        let (request, plan, envelope, fingerprint, limits) = validated_reduction_request_v2(
+            &authority,
+            &fixture.advertisement,
+            "server-v2-reduction-below-0001",
+            0,
+        );
+        let body = post_query(&fixture.router, request).await;
+        let reply = decode_remote_reply_v2(
+            &body,
+            &envelope,
+            &plan.fingerprint().expect("V2 plan fingerprint"),
+            &fingerprint,
+            &fixture.query.advertisement_fingerprint,
+            fixture.advertisement.reply_key(),
+            RemoteReplyDecodeLimitsV2 {
+                max_bytes: limits.max_bytes,
+                max_items: limits.max_items,
+                max_collection_members: limits.max_collection_members,
+                max_graph_nodes: limits.max_graph_nodes,
+                max_attribute_values: limits.max_attribute_values,
+                max_role_players: limits.max_role_players,
+            },
+            &Ed25519RemoteReplyVerifier,
+        )
+        .expect("authenticated reduction limit failure");
+        let RemoteReplyV2::Failure(failure) = reply else {
+            panic!("a zero-cell reduction budget must fail before publishing a row")
+        };
+        let diagnostic = failure.diagnostic().expect("complete failure diagnostic");
+        assert_eq!(diagnostic.code().as_str(), "collected_concept_limit");
+        assert_eq!(diagnostic.category(), DiagnosticCategory::ResourceLimit);
+        assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 2);
+        assert_eq!(fixture.metrics.transaction_closes.load(Ordering::SeqCst), 2);
+        assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

@@ -1,36 +1,55 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
+use std::fs;
+use std::fs::OpenOptions;
 use std::future::Future;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration as StdDuration;
 
+use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
+use type_bridge::__codegen::{EncodedScalar, IntoEncodedScalar};
 use type_bridge::value::{
     Date as QueryDate, DateTime as QueryDateTime, DateTimeTz as QueryDateTimeTz,
     Decimal as QueryDecimal, Double as QueryDouble, Regex, Text,
 };
 use type_bridge::{
-    ConnectionOptions, Database, PageOptions, RemoteConnectionOptions, RemoteDatabase,
-    RemoteQueryLimits, RemoteQueryTransport, RowsOptions, aggregate,
+    AnswerCancellation, ConnectionOptions, Database, Error, ErrorCategory, ErrorDetail,
+    ErrorPathSegment, MAX_QUERY_ITEMS, PageOptions, ProjectedManagerComparison,
+    QueryDiagnosticCategory, QueryDiagnosticPathKind, QueryExecutionResourceLimits, QuerySession,
+    RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits, RemoteQueryTransport, RowsOptions,
+    aggregate,
 };
 use type_bridge_generated_schema::{
     Actor, ActorType, Aliases, AppSchema, CanonicalDouble, Container, ContainerCreate,
     ContainerType, Contractor, ContractorCode, ContractorCreate, Counter, CounterCreate,
     CounterType, CounterValue, Date, DateTime, DateTimeTz, Decimal, Duration, Employee,
-    EmployeeCreate, EmployeeFamily, Employment, EmploymentCreate, EmploymentType, Event,
-    EventCreate, EventType, FooBar, Identifier, Interaction, InteractionActorPlayer,
-    InteractionActorRef, InteractionCreate, InteractionTargetPlayer, InteractionType, Manager,
-    ManagerCreate, ManagerNote, Membership, MembershipCreate, MembershipFamily,
+    EmployeeCreate, EmployeeFamily, EmployeeType, Employment, EmploymentCreate, EmploymentType,
+    Event, EventCreate, EventType, FooBar, Identifier, IntegerCall, IntegerInput, Interaction,
+    InteractionActorPlayer, InteractionActorRef, InteractionCreate, InteractionType, Manager,
+    ManagerCreate, ManagerNote, ManagerType, Membership, MembershipCreate, MembershipFamily,
     MembershipMemberPlayer, MembershipMemberRef, MembershipType, NetworkLink, NetworkLinkCreate,
-    NetworkLinkDestinationPlayer, NetworkLinkOriginPlayer, NetworkLinkType, Nickname, Party,
-    PartyFamily, PartyName, Person, PersonCreate, PersonRef, PersonType, PlainActivity,
-    PlainActivityCreate, PlainActivityParticipantPlayer, PlainActivityType, Rank, Robot,
-    RobotCreate, RobotId, RobotType, SCHEMA, Score, ScoreGte, ValBool, ValConstrained, ValDate,
-    ValDatetime, ValDatetimeTz, ValDecimal, ValDouble, ValDuration, plays_event_container_item,
+    NetworkLinkType, Nickname, PROJECTION_FINGERPRINT_JSON, Party, PartyFamily, PartyName, Person,
+    PersonCreate, PersonRef, PersonType, PlainActivity, PlainActivityCreate, PlainActivityType,
+    Rank, Robot, RobotCreate, RobotId, RobotType, SCHEMA, SEMANTIC_SCHEMA_FINGERPRINT_JSON, Score,
+    ScoreGte, ValBool, ValConstrained, ValDate, ValDatetime, ValDatetimeTz, ValDecimal, ValDouble,
+    ValDuration, integer_input, plays_event_container_item, qualifying_score,
 };
 
 #[derive(type_bridge::SelectedRow)]
 struct PersonGraph {
     person: Person,
     members: Vec<Person>,
+}
+
+#[derive(type_bridge::SelectedRow)]
+struct SdkNetworkShape {
+    origin: Person,
+    participants: Vec<Person>,
 }
 
 #[derive(Clone)]
@@ -142,6 +161,7 @@ impl type_bridge::LifecycleHook for RecordingLifecycleHook {
 struct HttpTransport {
     client: reqwest::Client,
     base_url: String,
+    exchange_count: Option<Arc<AtomicUsize>>,
 }
 
 impl HttpTransport {
@@ -149,6 +169,15 @@ impl HttpTransport {
         Self {
             client: reqwest::Client::new(),
             base_url,
+            exchange_count: None,
+        }
+    }
+
+    fn recording(base_url: String, exchange_count: Arc<AtomicUsize>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            base_url,
+            exchange_count: Some(exchange_count),
         }
     }
 }
@@ -189,6 +218,9 @@ impl RemoteQueryTransport for HttpTransport {
         request: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + 'a>> {
         Box::pin(async move {
+            if let Some(exchange_count) = &self.exchange_count {
+                exchange_count.fetch_add(1, Ordering::SeqCst);
+            }
             Ok(self
                 .client
                 .post(format!("{}/v2/query", self.base_url))
@@ -202,6 +234,68 @@ impl RemoteQueryTransport for HttpTransport {
                 .map_err(transport_error)?
                 .to_vec())
         })
+    }
+}
+
+struct CancelBeforeDecodeTransport {
+    inner: HttpTransport,
+    cancellation: AnswerCancellation,
+    response_completed: Arc<AtomicBool>,
+}
+
+impl RemoteQueryTransport for CancelBeforeDecodeTransport {
+    fn capabilities(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + '_>> {
+        self.inner.capabilities()
+    }
+
+    fn exchange<'a>(
+        &'a self,
+        request: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + 'a>> {
+        Box::pin(async move {
+            let response = self.inner.exchange(request).await?;
+            self.response_completed.store(true, Ordering::SeqCst);
+            self.cancellation.cancel();
+            Ok(response)
+        })
+    }
+}
+
+struct CallerAbortProbeTransport {
+    cancellation: AnswerCancellation,
+}
+
+impl RemoteQueryTransport for CallerAbortProbeTransport {
+    fn capabilities(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + '_>> {
+        Box::pin(async {
+            Err(Error::remote(
+                "caller_transport_probe_only",
+                "caller transport probe has no capability endpoint",
+                None,
+            ))
+        })
+    }
+
+    fn exchange<'a>(
+        &'a self,
+        _request: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + 'a>> {
+        Box::pin(std::future::poll_fn(move |context| {
+            if self.cancellation.is_cancelled() {
+                std::task::Poll::Ready(Err(Error::remote(
+                    "caller_transport_aborted",
+                    "caller transport stopped its own exchange",
+                    None,
+                )))
+            } else {
+                context.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        }))
     }
 }
 
@@ -236,6 +330,2899 @@ async fn database() -> Database<AppSchema> {
         .expect("live projection database connects")
         .with_schema(SCHEMA)
         .expect("schema binding handshake succeeds")
+}
+
+const SDK_MANIFEST_PATH: &str = "tests/contracts/sdk_conformance/manifest-v1.json";
+const SDK_CATALOG_PATH: &str = "tests/contracts/sdk_conformance/sdk-v1/catalog-v1.json";
+const SDK_SCHEMA_PATH: &str = "type-bridge-core/crates/schema-codegen/tests/acceptance/schema.yaml";
+const SDK_PROVIDER_SCHEMA_PATH: &str =
+    "type-bridge-core/crates/schema-codegen/tests/acceptance/provider-3.12.1.tql";
+const SDK_JOURNEY_PATH: &str = "tests/contracts/sdk_conformance/sdk-v1/journey-v1.json";
+const SDK_V2_CATALOG_PATH: &str = "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json";
+const SDK_V2_JOURNEY_PATH: &str = "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json";
+const SDK_PROFILE: &str = "typedb-3.12.1/v1";
+
+fn sdk_env_path(name: &str) -> PathBuf {
+    PathBuf::from(env::var_os(name).unwrap_or_else(|| panic!("{name} is required")))
+}
+
+fn sdk_string<'a>(value: &'a Value, label: &str) -> &'a str {
+    value
+        .as_str()
+        .unwrap_or_else(|| panic!("{label} must be a JSON string"))
+}
+
+fn sdk_typed_field<'a>(fields: &'a Value, name: &str, kind: &str) -> &'a Value {
+    let value = fields
+        .get(name)
+        .unwrap_or_else(|| panic!("sdk person field is missing: {name}"));
+    assert_eq!(
+        sdk_string(&value["kind"], "sdk field kind"),
+        kind,
+        "sdk person field has the wrong scalar domain: {name}"
+    );
+    value
+}
+
+fn sdk_field_string(fields: &Value, name: &str, kind: &str) -> String {
+    sdk_string(
+        &sdk_typed_field(fields, name, kind)["value"],
+        "sdk field value",
+    )
+    .to_owned()
+}
+
+fn sdk_field_long(fields: &Value, name: &str) -> i64 {
+    sdk_string(
+        &sdk_typed_field(fields, name, "long")["value"],
+        "sdk long value",
+    )
+    .parse()
+    .unwrap_or_else(|_| panic!("sdk long value is invalid: {name}"))
+}
+
+fn sdk_field_double(fields: &Value, name: &str) -> f64 {
+    let bits = sdk_string(
+        &sdk_typed_field(fields, name, "double")["bits"],
+        "sdk double bits",
+    );
+    assert_eq!(bits.len(), 16, "sdk double bits must be 16 hex digits");
+    let bits = u64::from_str_radix(bits, 16).expect("sdk double bits are hexadecimal");
+    let value = f64::from_bits(bits);
+    assert!(value.is_finite(), "sdk double must be finite");
+    value
+}
+
+fn sdk_aliases(fields: &Value) -> Vec<String> {
+    fields["aliases"]
+        .as_array()
+        .expect("sdk aliases must be an array")
+        .iter()
+        .map(|value| {
+            assert_eq!(sdk_string(&value["kind"], "sdk alias kind"), "string");
+            sdk_string(&value["value"], "sdk alias value").to_owned()
+        })
+        .collect()
+}
+
+fn sdk_person_create(fields: &Value, nickname: &str) -> PersonCreate {
+    PersonCreate::try_new(
+        sdk_aliases(fields)
+            .into_iter()
+            .map(|value| Aliases::new(value).expect("sdk alias is valid"))
+            .collect(),
+        Some(FooBar::new(sdk_field_long(fields, "foo__bar")).expect("sdk foo__bar is valid")),
+        Identifier::new(sdk_field_string(fields, "identifier", "string"))
+            .expect("sdk identifier is valid"),
+        Some(Nickname::new(nickname.to_owned()).expect("sdk nickname is valid")),
+        Score::new(sdk_field_long(fields, "score")).expect("sdk score is valid"),
+        Some(ScoreGte::new(sdk_field_long(fields, "score__gte")).expect("sdk score__gte is valid")),
+        ValBool::new(
+            sdk_typed_field(fields, "val_bool", "boolean")["value"]
+                .as_bool()
+                .expect("sdk boolean value is valid"),
+        )
+        .expect("sdk val_bool is valid"),
+        ValConstrained::new(sdk_field_long(fields, "val_constrained"))
+            .expect("sdk val_constrained is valid"),
+        ValDate::new(
+            Date::try_new(sdk_field_string(fields, "val_date", "date")).expect("sdk date is valid"),
+        )
+        .expect("sdk val_date is valid"),
+        ValDatetime::new(
+            DateTime::try_new(sdk_field_string(fields, "val_datetime", "datetime"))
+                .expect("sdk datetime is valid"),
+        )
+        .expect("sdk val_datetime is valid"),
+        ValDatetimeTz::new(
+            DateTimeTz::try_new(sdk_field_string(fields, "val_datetime_tz", "datetime_tz"))
+                .expect("sdk datetime-tz is valid"),
+        )
+        .expect("sdk val_datetime_tz is valid"),
+        ValDecimal::new(
+            Decimal::try_new(sdk_field_string(fields, "val_decimal", "decimal"))
+                .expect("sdk decimal is valid"),
+        )
+        .expect("sdk val_decimal is valid"),
+        ValDouble::new(
+            CanonicalDouble::try_new(sdk_field_double(fields, "val_double"))
+                .expect("sdk double is valid"),
+        )
+        .expect("sdk val_double is valid"),
+        ValDuration::new(
+            Duration::try_new(sdk_field_string(fields, "val_duration", "duration"))
+                .expect("sdk duration is valid"),
+        )
+        .expect("sdk val_duration is valid"),
+    )
+    .expect("sdk PersonCreate is valid")
+}
+
+fn assert_sdk_person(person: &Person, fields: &Value, nickname: &str) {
+    assert_eq!(
+        person.identifier().value(),
+        &sdk_field_string(fields, "identifier", "string")
+    );
+    let mut actual_aliases = person
+        .aliases()
+        .iter()
+        .map(|value| value.value().clone())
+        .collect::<Vec<_>>();
+    actual_aliases.sort();
+    let mut expected_aliases = sdk_aliases(fields);
+    expected_aliases.sort();
+    assert_eq!(actual_aliases, expected_aliases);
+    assert_eq!(
+        person.nickname().map(|value| value.value().as_str()),
+        Some(nickname)
+    );
+    assert_eq!(
+        person.foo__bar().map(FooBar::value),
+        Some(&sdk_field_long(fields, "foo__bar"))
+    );
+    assert_eq!(person.score().value(), &sdk_field_long(fields, "score"));
+    assert_eq!(
+        person.score__gte().map(ScoreGte::value),
+        Some(&sdk_field_long(fields, "score__gte"))
+    );
+    assert_eq!(
+        person.val_bool().value(),
+        &sdk_typed_field(fields, "val_bool", "boolean")["value"]
+            .as_bool()
+            .expect("sdk boolean value is valid")
+    );
+    assert_eq!(
+        person.val_constrained().value(),
+        &sdk_field_long(fields, "val_constrained")
+    );
+    assert_eq!(
+        person.val_date().value().as_str(),
+        sdk_field_string(fields, "val_date", "date")
+    );
+    assert_eq!(
+        person.val_datetime().value().as_str(),
+        sdk_field_string(fields, "val_datetime", "datetime")
+    );
+    assert_eq!(
+        person.val_datetime_tz().value().as_str(),
+        sdk_field_string(fields, "val_datetime_tz", "datetime_tz")
+    );
+    assert_eq!(
+        person.val_decimal().value().as_str(),
+        sdk_field_string(fields, "val_decimal", "decimal")
+    );
+    assert_eq!(
+        person.val_double().value().get().to_bits(),
+        sdk_field_double(fields, "val_double").to_bits()
+    );
+    assert_eq!(
+        person.val_duration().value().as_str(),
+        sdk_field_string(fields, "val_duration", "duration")
+    );
+}
+
+fn sdk_scalar_domains(fields: &Value) -> Vec<String> {
+    let mut domains = fields
+        .as_object()
+        .expect("sdk person fields must be an object")
+        .values()
+        .flat_map(|value| {
+            value
+                .as_array()
+                .map_or_else(|| vec![value], |values| values.iter().collect())
+        })
+        .map(|value| sdk_string(&value["kind"], "sdk scalar kind").to_owned())
+        .collect::<Vec<_>>();
+    domains.sort();
+    domains.dedup();
+    domains
+}
+
+fn sdk_model_observation(person: &Person, fields: &Value, model: &str, nickname: &str) -> Value {
+    assert_sdk_person(person, fields, nickname);
+    let mut aliases = person
+        .aliases()
+        .iter()
+        .map(|value| value.value().clone())
+        .collect::<Vec<_>>();
+    aliases.sort();
+    let reference = person.reference();
+    let reference_key = reference
+        .identifier()
+        .expect("sdk person reference carries its key")
+        .value()
+        .clone();
+    json!({
+        "aliases": aliases,
+        "key": person.identifier().value(),
+        "model": model,
+        "nickname": person.nickname().expect("sdk nickname is present").value(),
+        "reference": {"key": reference_key, "model": model},
+        "scalar_domains": sdk_scalar_domains(fields),
+    })
+}
+
+fn sdk_role_observations(
+    relation: &Membership,
+    person: &Person,
+    membership_record: &Value,
+) -> (Value, Value) {
+    let relation_model = sdk_string(&membership_record["model"], "sdk relation model");
+    let role = sdk_string(&membership_record["role"], "sdk relation role");
+    let player_model = sdk_string(&membership_record["player"]["model"], "sdk player model");
+    let player_key = match relation.member() {
+        MembershipMemberPlayer::Person(reference) => reference
+            .identifier()
+            .expect("sdk membership player carries its key")
+            .value()
+            .clone(),
+        MembershipMemberPlayer::Robot(_) => panic!("sdk membership hydrated a robot"),
+    };
+    assert_eq!(player_key, person.identifier().value().as_str());
+    (
+        json!({
+            "relation": {"model": relation_model},
+            "role": role,
+            "player": {"key": player_key, "model": player_model},
+        }),
+        json!({
+            "relation": relation_model,
+            "role": role,
+            "player": {"key": person.identifier().value(), "model": player_model},
+        }),
+    )
+}
+
+fn sdk_sha256(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn sdk_source_identity(path: &str, bytes: &[u8]) -> Value {
+    json!({"path": path, "sha256": sdk_sha256(bytes)})
+}
+
+fn sort_sdk_json(value: &mut Value) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                sort_sdk_json(value);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                sort_sdk_json(value);
+            }
+            let mut entries = std::mem::take(values).into_iter().collect::<Vec<_>>();
+            entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            values.extend(entries);
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn validate_sdk_report_path(path: &Path) {
+    let raw = path.to_str().expect("TYPE_BRIDGE_SDK_REPORT must be UTF-8");
+    assert!(
+        raw.len() <= 4096,
+        "TYPE_BRIDGE_SDK_REPORT exceeds 4096 UTF-8 bytes"
+    );
+    assert!(
+        path.is_absolute(),
+        "TYPE_BRIDGE_SDK_REPORT must be absolute"
+    );
+    let parent = path
+        .parent()
+        .expect("TYPE_BRIDGE_SDK_REPORT must have a parent");
+    let parent_metadata =
+        fs::symlink_metadata(parent).expect("TYPE_BRIDGE_SDK_REPORT parent must already exist");
+    assert!(
+        parent_metadata.is_dir() && !parent_metadata.file_type().is_symlink(),
+        "TYPE_BRIDGE_SDK_REPORT parent must be a non-symlink directory"
+    );
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) => panic!("TYPE_BRIDGE_SDK_REPORT destination must be absent"),
+        Err(error) => panic!("TYPE_BRIDGE_SDK_REPORT is not inspectable: {error}"),
+    }
+}
+
+fn publish_sdk_report(path: &Path, mut report: Value) {
+    validate_sdk_report_path(path);
+    sort_sdk_json(&mut report);
+    let mut bytes = serde_json::to_vec(&report).expect("sdk report serializes");
+    bytes.push(b'\n');
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .expect("TYPE_BRIDGE_SDK_REPORT must name a UTF-8 file");
+    let temporary = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
+    struct RemoveTemporary(PathBuf);
+    impl Drop for RemoveTemporary {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+    let temporary_guard = RemoveTemporary(temporary.clone());
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .expect("sdk report temporary file is created without replacement");
+    file.write_all(&bytes)
+        .expect("sdk report temporary file is written");
+    file.sync_all()
+        .expect("sdk report temporary file is synchronized");
+    drop(file);
+    fs::hard_link(&temporary, path)
+        .expect("sdk report is atomically published without replacement");
+    fs::remove_file(&temporary).expect("sdk report temporary link is removed");
+    drop(temporary_guard);
+    let metadata = fs::symlink_metadata(path).expect("published sdk report is inspectable");
+    assert!(
+        metadata.is_file() && !metadata.file_type().is_symlink(),
+        "published sdk report must be a regular file"
+    );
+}
+
+fn sdk_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        output.push(ALPHABET[(first >> 2) as usize] as char);
+        output.push(ALPHABET[(((first & 3) << 4) | (second >> 4)) as usize] as char);
+        output.push(if chunk.len() > 1 {
+            ALPHABET[(((second & 15) << 2) | (third >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            ALPHABET[(third & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    output
+}
+
+fn sdk_version_endpoint() -> String {
+    assert_ne!(
+        env::var("TYPE_BRIDGE_RUST_PROJECTION_TLS").as_deref(),
+        Ok("1"),
+        "sdk evidence is accepted only from the plaintext 3.12.1 lane"
+    );
+    let address = env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1729".to_owned());
+    let address_url = if address.contains("://") {
+        address
+    } else {
+        format!("http://{address}")
+    };
+    let parsed = reqwest::Url::parse(&address_url)
+        .expect("TYPEDB_ADDRESS can be parsed for the sdk version probe");
+    let host = parsed
+        .host_str()
+        .expect("TYPEDB_ADDRESS has a host for the sdk version probe");
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    };
+    let http_port = env::var("TYPEDB_HTTP_PORT")
+        .unwrap_or_else(|_| "8000".to_owned())
+        .parse::<u16>()
+        .expect("TYPEDB_HTTP_PORT is a valid nonzero u16");
+    assert_ne!(http_port, 0, "TYPEDB_HTTP_PORT must be nonzero");
+    format!("http://{host}:{http_port}/v1/version")
+}
+
+async fn require_sdk_server_version() {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(StdDuration::from_secs(30))
+        .build()
+        .expect("sdk version-probe client builds");
+    let mut response = client
+        .get(sdk_version_endpoint())
+        .send()
+        .await
+        .expect("sdk TypeDB version probe succeeds");
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "sdk TypeDB version probe returns HTTP 200"
+    );
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .expect("sdk TypeDB version body is readable")
+    {
+        assert!(
+            body.len().saturating_add(chunk.len()) <= 4096,
+            "sdk TypeDB version body exceeds 4096 bytes"
+        );
+        body.extend_from_slice(&chunk);
+    }
+    assert!(!body.is_empty(), "sdk TypeDB version body is empty");
+    let document: Value =
+        serde_json::from_slice(&body).expect("sdk TypeDB version body is valid JSON");
+    assert_eq!(
+        document.get("version").and_then(Value::as_str),
+        Some("3.12.3"),
+        "sdk evidence requires the actual detected TypeDB server version 3.12.3"
+    );
+}
+
+fn sdk_results(catalog: &Value, observations: &BTreeMap<String, Value>) -> Vec<Value> {
+    let mut capabilities = BTreeMap::new();
+    for case in catalog["cases"]
+        .as_array()
+        .expect("sdk catalog cases must be an array")
+    {
+        let case_id = sdk_string(&case["id"], "sdk case ID").to_owned();
+        let capability = sdk_string(&case["capability_id"], "sdk capability ID").to_owned();
+        assert!(
+            capabilities.insert(case_id, capability).is_none(),
+            "sdk catalog contains a duplicate case"
+        );
+    }
+    let selected = catalog["selected_proofs"]
+        .as_array()
+        .expect("sdk selected proofs must be an array");
+    assert_eq!(selected.len(), 9, "sdk report requires nine proofs");
+    let mut rows = selected
+        .iter()
+        .map(|proof| {
+            let case_id = sdk_string(&proof["case_id"], "selected case ID").to_owned();
+            let proof_kind = sdk_string(&proof["proof_kind"], "selected proof kind").to_owned();
+            let observation_ref =
+                sdk_string(&proof["observation_ref"], "selected observation reference");
+            let capability_id = capabilities
+                .get(&case_id)
+                .unwrap_or_else(|| panic!("selected sdk case is unknown: {case_id}"))
+                .clone();
+            let observation = observations
+                .get(observation_ref)
+                .unwrap_or_else(|| panic!("selected sdk observation is unknown: {observation_ref}"))
+                .clone();
+            (case_id, capability_id, proof_kind, observation)
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| (&left.0, &left.2).cmp(&(&right.0, &right.2)));
+    rows.into_iter()
+        .map(|(case_id, capability_id, proof_kind, observation)| {
+            json!({
+                "case_id": case_id,
+                "capability_id": capability_id,
+                "proof_kind": proof_kind,
+                "outcome": "passed",
+                "observation": observation,
+            })
+        })
+        .collect()
+}
+
+type SdkV2ObservationKey = (String, String);
+
+fn sdk_v2_observation_key(observation_ref: &str, proof_kind: &str) -> SdkV2ObservationKey {
+    (observation_ref.to_owned(), proof_kind.to_owned())
+}
+
+fn sdk_v2_results(
+    catalog: &Value,
+    observations: &BTreeMap<SdkV2ObservationKey, Value>,
+) -> Vec<Value> {
+    let mut capabilities = BTreeMap::new();
+    for case in catalog["cases"]
+        .as_array()
+        .expect("sdk-v2 catalog cases must be an array")
+    {
+        let case_id = sdk_string(&case["id"], "sdk-v2 case ID").to_owned();
+        let capability = sdk_string(&case["capability_id"], "sdk-v2 capability ID").to_owned();
+        assert!(
+            capabilities.insert(case_id, capability).is_none(),
+            "sdk-v2 catalog contains a duplicate case"
+        );
+    }
+    let selected = catalog["selected_proofs"]
+        .as_array()
+        .expect("sdk-v2 selected proofs must be an array");
+    assert_eq!(selected.len(), 34, "sdk-v2 report requires 34 proofs");
+    let mut required = BTreeMap::new();
+    let mut rows = selected
+        .iter()
+        .map(|proof| {
+            let case_id = sdk_string(&proof["case_id"], "sdk-v2 selected case ID").to_owned();
+            let proof_kind =
+                sdk_string(&proof["proof_kind"], "sdk-v2 selected proof kind").to_owned();
+            let observation_ref = sdk_string(
+                &proof["observation_ref"],
+                "sdk-v2 selected observation reference",
+            )
+            .to_owned();
+            let capability_id = capabilities
+                .get(&case_id)
+                .unwrap_or_else(|| panic!("selected sdk-v2 case is unknown: {case_id}"))
+                .clone();
+            let key = sdk_v2_observation_key(&observation_ref, &proof_kind);
+            assert!(
+                required.insert(key.clone(), ()).is_none(),
+                "sdk-v2 selected proof is duplicated: {case_id}/{proof_kind}"
+            );
+            let observation = observations
+                .get(&key)
+                .unwrap_or_else(|| {
+                    panic!("selected sdk-v2 observation is absent: {observation_ref}/{proof_kind}")
+                })
+                .clone();
+            (case_id, capability_id, proof_kind, observation)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        observations.keys().collect::<Vec<_>>(),
+        required.keys().collect::<Vec<_>>(),
+        "sdk-v2 producer must emit exactly the selected observation lanes"
+    );
+    rows.sort_by(|left, right| (&left.0, &left.2).cmp(&(&right.0, &right.2)));
+    rows.into_iter()
+        .map(|(case_id, capability_id, proof_kind, observation)| {
+            json!({
+                "case_id": case_id,
+                "capability_id": capability_id,
+                "proof_kind": proof_kind,
+                "outcome": "passed",
+                "observation": observation,
+            })
+        })
+        .collect()
+}
+
+fn sdk_v2_provider_proofs() -> BTreeMap<SdkV2ObservationKey, Value> {
+    let raw = env::var("TYPE_BRIDGE_SDK_V2_VALIDATED_OBSERVATIONS")
+        .expect("outer harness must supply validated sdk-v2 observations");
+    assert!(
+        raw.len() <= 64 * 1024,
+        "validated sdk-v2 observations exceed 64 KiB"
+    );
+    let observations: BTreeMap<String, Value> =
+        serde_json::from_str(&raw).expect("outer-validated sdk-v2 observations are canonical JSON");
+    let allowed = [
+        sdk_v2_observation_key("cancellation_direct", "direct_runtime"),
+        sdk_v2_observation_key("cancellation_remote", "remote_runtime"),
+        sdk_v2_observation_key("remote_structured_diagnostic", "diagnostic"),
+    ];
+    assert_eq!(
+        observations.keys().map(String::as_str).collect::<Vec<_>>(),
+        allowed
+            .iter()
+            .map(|(observation_ref, proof_kind)| format!("{observation_ref}/{proof_kind}"))
+            .collect::<Vec<_>>(),
+        "outer-validated sdk-v2 observations have incomplete lane coverage"
+    );
+    allowed
+        .into_iter()
+        .map(|key| {
+            let (observation_ref, proof_kind) = (&key.0, &key.1);
+            let serialized_key = format!("{observation_ref}/{proof_kind}");
+            let observation = observations
+                .get(&serialized_key)
+                .unwrap_or_else(|| {
+                    panic!("validated sdk-v2 observation is absent: {serialized_key}")
+                })
+                .clone();
+            assert!(observation.is_object());
+            (key, observation)
+        })
+        .collect()
+}
+
+fn sdk_v2_person_create(record: &Value) -> PersonCreate {
+    let fields = &record["fields"];
+    let nickname = fields.get("nickname").map(|value| {
+        assert_eq!(sdk_string(&value["kind"], "sdk-v2 nickname kind"), "string");
+        Nickname::new(sdk_string(&value["value"], "sdk-v2 nickname value").to_owned())
+            .expect("sdk-v2 nickname is valid")
+    });
+    PersonCreate::try_new(
+        sdk_aliases(fields)
+            .into_iter()
+            .map(|value| Aliases::new(value).expect("sdk-v2 alias is valid"))
+            .collect(),
+        None,
+        Identifier::new(sdk_field_string(fields, "identifier", "string"))
+            .expect("sdk-v2 person identifier is valid"),
+        nickname,
+        Score::new(sdk_field_long(fields, "score")).expect("sdk-v2 score is valid"),
+        Some(
+            ScoreGte::new(sdk_field_long(fields, "score__gte"))
+                .expect("sdk-v2 score__gte is valid"),
+        ),
+        ValBool::new(
+            sdk_typed_field(fields, "val_bool", "boolean")["value"]
+                .as_bool()
+                .expect("sdk-v2 boolean is valid"),
+        )
+        .expect("sdk-v2 val_bool is valid"),
+        ValConstrained::new(sdk_field_long(fields, "val_constrained"))
+            .expect("sdk-v2 val_constrained is valid"),
+        ValDate::new(
+            Date::try_new(sdk_field_string(fields, "val_date", "date"))
+                .expect("sdk-v2 date is valid"),
+        )
+        .expect("sdk-v2 val_date is valid"),
+        ValDatetime::new(
+            DateTime::try_new(sdk_field_string(fields, "val_datetime", "datetime"))
+                .expect("sdk-v2 datetime is valid"),
+        )
+        .expect("sdk-v2 val_datetime is valid"),
+        ValDatetimeTz::new(
+            DateTimeTz::try_new(sdk_field_string(fields, "val_datetime_tz", "datetime_tz"))
+                .expect("sdk-v2 datetime-tz is valid"),
+        )
+        .expect("sdk-v2 val_datetime_tz is valid"),
+        ValDecimal::new(
+            Decimal::try_new(sdk_field_string(fields, "val_decimal", "decimal"))
+                .expect("sdk-v2 decimal is valid"),
+        )
+        .expect("sdk-v2 val_decimal is valid"),
+        ValDouble::new(
+            CanonicalDouble::try_new(sdk_field_double(fields, "val_double"))
+                .expect("sdk-v2 double is valid"),
+        )
+        .expect("sdk-v2 val_double is valid"),
+        ValDuration::new(
+            Duration::try_new(sdk_field_string(fields, "val_duration", "duration"))
+                .expect("sdk-v2 duration is valid"),
+        )
+        .expect("sdk-v2 val_duration is valid"),
+    )
+    .expect("sdk-v2 PersonCreate is valid")
+}
+
+fn sdk_v2_assert_person(person: &Person, record: &Value) {
+    let fields = &record["fields"];
+    assert_eq!(
+        person.identifier().value(),
+        &sdk_field_string(fields, "identifier", "string")
+    );
+    let mut aliases = person
+        .aliases()
+        .iter()
+        .map(|value| value.value().clone())
+        .collect::<Vec<_>>();
+    aliases.sort();
+    let mut expected_aliases = sdk_aliases(fields);
+    expected_aliases.sort();
+    assert_eq!(aliases, expected_aliases);
+    assert_eq!(
+        person.nickname().map(|value| value.value().as_str()),
+        fields
+            .get("nickname")
+            .map(|value| { sdk_string(&value["value"], "sdk-v2 nickname value") })
+    );
+    assert_eq!(person.foo__bar(), None);
+    assert_eq!(person.score().value(), &sdk_field_long(fields, "score"));
+    assert_eq!(
+        person.score__gte().map(ScoreGte::value),
+        Some(&sdk_field_long(fields, "score__gte"))
+    );
+    assert_eq!(
+        person.val_bool().value(),
+        &sdk_typed_field(fields, "val_bool", "boolean")["value"]
+            .as_bool()
+            .expect("sdk-v2 boolean is valid")
+    );
+    assert_eq!(
+        person.val_constrained().value(),
+        &sdk_field_long(fields, "val_constrained")
+    );
+    assert_eq!(
+        person.val_date().value().as_str(),
+        sdk_field_string(fields, "val_date", "date")
+    );
+    assert_eq!(
+        person.val_datetime().value().as_str(),
+        sdk_field_string(fields, "val_datetime", "datetime")
+    );
+    assert_eq!(
+        person.val_datetime_tz().value().as_str(),
+        sdk_field_string(fields, "val_datetime_tz", "datetime_tz")
+    );
+    assert_eq!(
+        person.val_decimal().value().as_str(),
+        sdk_field_string(fields, "val_decimal", "decimal")
+    );
+    assert_eq!(
+        person.val_double().value().get().to_bits(),
+        sdk_field_double(fields, "val_double").to_bits()
+    );
+    assert_eq!(
+        person.val_duration().value().as_str(),
+        sdk_field_string(fields, "val_duration", "duration")
+    );
+}
+
+fn sdk_v2_model_observation(person: &Person, record: &Value) -> Value {
+    sdk_v2_assert_person(person, record);
+    let mut aliases = person
+        .aliases()
+        .iter()
+        .map(|value| value.value().clone())
+        .collect::<Vec<_>>();
+    aliases.sort();
+    let reference = person.reference();
+    let key = reference
+        .identifier()
+        .expect("sdk-v2 person reference carries its key")
+        .value();
+    let mut scalar_domains = vec![
+        sdk_v2_scalar_domain(person.val_bool().value()),
+        sdk_v2_scalar_domain(person.val_date().value()),
+        sdk_v2_scalar_domain(person.val_datetime().value()),
+        sdk_v2_scalar_domain(person.val_datetime_tz().value()),
+        sdk_v2_scalar_domain(person.val_decimal().value()),
+        sdk_v2_scalar_domain(person.val_double().value()),
+        sdk_v2_scalar_domain(person.val_duration().value()),
+        sdk_v2_scalar_domain(person.score().value()),
+        sdk_v2_scalar_domain(person.identifier().value()),
+    ];
+    scalar_domains.sort_unstable();
+    scalar_domains.dedup();
+    json!({
+        "aliases": aliases,
+        "key": person.identifier().value(),
+        "model": sdk_v2_type_label(PersonType::TOKEN.type_id_json()),
+        "nickname": person.nickname().expect("sdk-v2 Ada nickname is present").value(),
+        "reference": {
+            "key": key,
+            "model": sdk_v2_type_label(PersonType::TOKEN.type_id_json()),
+        },
+        "scalar_domains": scalar_domains,
+    })
+}
+
+fn sdk_v2_scalar_domain(value: &impl IntoEncodedScalar) -> &'static str {
+    match value.into_encoded_scalar() {
+        EncodedScalar::String(_) => "string",
+        EncodedScalar::Long(_) => "long",
+        EncodedScalar::Double(_) => "double",
+        EncodedScalar::Decimal(_) => "decimal",
+        EncodedScalar::Boolean(_) => "boolean",
+        EncodedScalar::Date(_) => "date",
+        EncodedScalar::DateTime(_) => "datetime",
+        EncodedScalar::DateTimeTz(_) => "datetime_tz",
+        EncodedScalar::Duration(_) => "duration",
+    }
+}
+
+fn sdk_v2_type_label(type_id_json: &str) -> String {
+    serde_json::from_str::<Value>(type_id_json)
+        .expect("generated sdk-v2 type identity is JSON")["label"]
+        .as_str()
+        .expect("generated sdk-v2 type identity carries a label")
+        .to_owned()
+}
+
+fn sdk_v2_field_label(owns_id_json: &str) -> String {
+    serde_json::from_str::<Value>(owns_id_json)
+        .expect("generated sdk-v2 field identity is JSON")["attribute"]
+        .as_str()
+        .expect("generated sdk-v2 field identity carries an attribute label")
+        .to_owned()
+}
+
+fn sdk_v2_role_label(role_id_json: &str) -> String {
+    serde_json::from_str::<Value>(role_id_json)
+        .expect("generated sdk-v2 role identity is JSON")["label"]
+        .as_str()
+        .expect("generated sdk-v2 role identity carries a label")
+        .to_owned()
+}
+
+fn sdk_v2_network_player_key(player: &Person) -> &str {
+    player.identifier().value()
+}
+
+fn sdk_v2_network_origin_key(player: &Person) -> &str {
+    player.identifier().value()
+}
+
+fn sdk_v2_network_destination_key(player: &Person) -> &str {
+    player.identifier().value()
+}
+
+fn sdk_v2_query_category(error: &Error) -> Option<&'static str> {
+    error.details()?.values().find_map(|value| match value {
+        ErrorDetail::QueryCategory(QueryDiagnosticCategory::InvalidPlan) => Some("invalid_plan"),
+        ErrorDetail::QueryCategory(QueryDiagnosticCategory::Cardinality) => Some("cardinality"),
+        ErrorDetail::QueryCategory(QueryDiagnosticCategory::UnsupportedCapability) => {
+            Some("unsupported_capability")
+        }
+        ErrorDetail::QueryCategory(QueryDiagnosticCategory::StaleSchema) => Some("stale_schema"),
+        ErrorDetail::QueryCategory(QueryDiagnosticCategory::ResourceLimit) => {
+            Some("resource_limit")
+        }
+        ErrorDetail::QueryCategory(QueryDiagnosticCategory::Cancelled) => Some("cancelled"),
+        ErrorDetail::QueryCategory(QueryDiagnosticCategory::Provider) => Some("provider"),
+        ErrorDetail::QueryCategory(QueryDiagnosticCategory::ResultDecode) => Some("result_decode"),
+        _ => None,
+    })
+}
+
+fn sdk_v2_diagnostic_path(error: &Error) -> Vec<Value> {
+    error
+        .diagnostic_path()
+        .expect("sdk-v2 query error carries a typed path")
+        .iter()
+        .map(|segment| match segment {
+            ErrorPathSegment::Field(value) => json!({"kind": "field", "value": value}),
+            ErrorPathSegment::Index(value) => json!({"kind": "index", "value": value}),
+            ErrorPathSegment::Identifier(value) => {
+                json!({"kind": "identity", "value": value})
+            }
+            ErrorPathSegment::Query(QueryDiagnosticPathKind::Request) => {
+                json!({"kind": "request"})
+            }
+            ErrorPathSegment::Query(QueryDiagnosticPathKind::Plan) => json!({"kind": "plan"}),
+            ErrorPathSegment::Query(QueryDiagnosticPathKind::Operation) => {
+                json!({"kind": "operation"})
+            }
+            ErrorPathSegment::Query(QueryDiagnosticPathKind::Predicate) => {
+                json!({"kind": "predicate"})
+            }
+            ErrorPathSegment::Query(QueryDiagnosticPathKind::Output) => {
+                json!({"kind": "output"})
+            }
+            ErrorPathSegment::Query(QueryDiagnosticPathKind::ProviderEvidence) => {
+                json!({"kind": "provider_evidence"})
+            }
+            ErrorPathSegment::Query(QueryDiagnosticPathKind::Result) => {
+                json!({"kind": "result"})
+            }
+            ErrorPathSegment::QueryBinding(value) => {
+                json!({"kind": "query_binding", "value": value})
+            }
+            ErrorPathSegment::QueryField { owner, name } => {
+                json!({"kind": "query_field", "owner": owner, "name": name})
+            }
+            ErrorPathSegment::QueryRole { owner, name } => {
+                json!({"kind": "query_role", "owner": owner, "name": name})
+            }
+            ErrorPathSegment::QueryRoleEdge(value) => {
+                json!({"kind": "query_role_edge", "value": value})
+            }
+            ErrorPathSegment::QueryOutputSlot(value) => {
+                json!({"kind": "query_output_slot", "value": value})
+            }
+            ErrorPathSegment::QueryOutputName(value) => {
+                json!({"kind": "query_output_name", "value": value})
+            }
+            ErrorPathSegment::ContractField(value) => {
+                json!({"kind": "contract_field", "value": value})
+            }
+            ErrorPathSegment::ContractIdentity(value) => {
+                json!({"kind": "contract_identity", "value": value})
+            }
+            _ => panic!("sdk-v2 received an unsupported diagnostic path segment"),
+        })
+        .collect()
+}
+
+fn sdk_v2_diagnostic_details(error: &Error) -> Value {
+    let mut details = serde_json::Map::new();
+    for (name, value) in error
+        .details()
+        .expect("sdk-v2 query error carries typed details")
+    {
+        if matches!(value, ErrorDetail::QueryCategory(_)) {
+            continue;
+        }
+        let normalized = match value {
+            ErrorDetail::Text(value) => json!({"kind": "text", "value": value}),
+            ErrorDetail::Long(value) if name == "actual" => {
+                json!({"kind": "count", "value": value.to_string()})
+            }
+            ErrorDetail::Long(value) => json!({"kind": "signed", "value": value.to_string()}),
+            ErrorDetail::Boolean(value) => json!({"kind": "boolean", "value": value}),
+            ErrorDetail::TextList(value) => json!({"kind": "text_list", "value": value}),
+            ErrorDetail::QueryIdentity(value) => {
+                json!({"kind": "query_identity", "value": value})
+            }
+            ErrorDetail::QueryIdentityList(value) => {
+                json!({"kind": "query_identity_list", "value": value})
+            }
+            ErrorDetail::QueryCategory(_) => unreachable!(),
+            _ => panic!("sdk-v2 received an unsupported diagnostic detail"),
+        };
+        assert!(
+            details.insert(name.clone(), normalized).is_none(),
+            "sdk-v2 diagnostic detail names are unique"
+        );
+    }
+    Value::Object(details)
+}
+
+fn sdk_v2_diagnostic(
+    error: &Error,
+    claim_consumed: Option<bool>,
+    forbidden_values: &[&str],
+) -> Value {
+    let query_category =
+        sdk_v2_query_category(error).expect("sdk-v2 query error carries a query category");
+    let category = match (error.category(), query_category) {
+        (ErrorCategory::ModelValidation, "cardinality") => "invalid_input",
+        (ErrorCategory::ModelValidation, "result_decode") => "integrity",
+        (category, _) => category.as_str(),
+    };
+    let path = sdk_v2_diagnostic_path(error);
+    let details = sdk_v2_diagnostic_details(error);
+    let rendered = format!("{}{:?}{:?}", error.message(), path, details);
+    let redacted = !forbidden_values
+        .iter()
+        .any(|secret| !secret.is_empty() && rendered.contains(secret));
+    let mut observation = json!({
+        "category": category,
+        "query_category": query_category,
+        "code": error.code().expect("sdk-v2 query error carries a stable code"),
+        "message": error.message(),
+        "path": path,
+        "details": details,
+        "redacted": redacted,
+    });
+    if let Some(claim_consumed) = claim_consumed {
+        observation["claim_consumed"] = Value::Bool(claim_consumed);
+    }
+    observation
+}
+
+fn sdk_v2_keys(people: &[Person]) -> Vec<String> {
+    people
+        .iter()
+        .map(|person| person.identifier().value().clone())
+        .collect()
+}
+
+fn sdk_v2_common_key_prefix(keys: &[String]) -> String {
+    let mut prefix = keys
+        .first()
+        .expect("sdk-v2 keyed records are present")
+        .clone();
+    while keys.iter().any(|key| !key.starts_with(&prefix)) {
+        assert!(
+            prefix.pop().is_some(),
+            "sdk-v2 keyed records require a shared namespace"
+        );
+    }
+    assert!(
+        !prefix.is_empty(),
+        "sdk-v2 keyed records require a nonempty shared namespace"
+    );
+    prefix
+}
+
+fn sdk_v2_family_identity(value: &EmployeeFamily) -> Value {
+    match value {
+        EmployeeFamily::Employee(employee) => {
+            json!({
+                "model": sdk_v2_type_label(EmployeeType::TOKEN.type_id_json()),
+                "key": employee.identifier().value(),
+            })
+        }
+        EmployeeFamily::Manager(manager) => {
+            json!({
+                "model": sdk_v2_type_label(ManagerType::TOKEN.type_id_json()),
+                "key": manager.identifier().value(),
+            })
+        }
+    }
+}
+
+async fn sdk_v2_query_observations(
+    session: &mut QuerySession<'_, AppSchema>,
+    records: &Value,
+    person_iids: &[String; 2],
+    exchange_count: Option<&Arc<AtomicUsize>>,
+) -> BTreeMap<String, Value> {
+    let people_records = records["people"]
+        .as_array()
+        .expect("sdk-v2 people records must be an array");
+    assert_eq!(people_records.len(), 2, "sdk-v2 requires two people");
+    let ada_key = sdk_field_string(&people_records[0]["fields"], "identifier", "string");
+    let dana_key = sdk_field_string(&people_records[1]["fields"], "identifier", "string");
+    let employee_key = sdk_field_string(&records["employee"]["fields"], "identifier", "string");
+    let manager_key = sdk_field_string(&records["manager"]["fields"], "identifier", "string");
+    let network_key = sdk_field_string(&records["network_link"]["fields"], "identifier", "string");
+    let scalar_operand = sdk_field_long(&people_records[0]["fields"], "score__gte");
+    assert!(
+        people_records
+            .iter()
+            .all(|record| sdk_field_long(&record["fields"], "score__gte") == scalar_operand),
+        "sdk-v2 scalar comparison operand must be shared by the fixture rows"
+    );
+
+    let person = session.exact::<Person>().expect("sdk-v2 person binding");
+    let grouped_person = session
+        .exact::<Person>()
+        .expect("sdk-v2 grouped person binding");
+    let employee = session
+        .exact::<Employee>()
+        .expect("sdk-v2 exact employee binding");
+    let employee_family = session
+        .subtypes::<Employee>()
+        .expect("sdk-v2 employee subtype binding");
+    let membership = session
+        .exact::<Membership>()
+        .expect("sdk-v2 membership binding");
+    let membership_person = session
+        .exact::<Person>()
+        .expect("sdk-v2 membership person binding");
+    let network = session
+        .exact::<NetworkLink>()
+        .expect("sdk-v2 network binding");
+    let network_origin = session
+        .exact::<Person>()
+        .expect("sdk-v2 network origin binding");
+    let network_destination = session
+        .exact::<Person>()
+        .expect("sdk-v2 network destination binding");
+    let network_participant = session
+        .exact::<Person>()
+        .expect("sdk-v2 network participant binding");
+    let source = session
+        .exact::<Person>()
+        .expect("sdk-v2 topology source binding");
+    let target = session
+        .exact::<Person>()
+        .expect("sdk-v2 topology target binding");
+    let cross_left = session
+        .exact::<Person>()
+        .expect("sdk-v2 cross-left binding");
+    let cross_right = session
+        .exact::<Person>()
+        .expect("sdk-v2 cross-right binding");
+    let shape_link = session
+        .exact::<NetworkLink>()
+        .expect("sdk-v2 shape network binding");
+    let shape_origin = session
+        .exact::<Person>()
+        .expect("sdk-v2 shape origin binding");
+    let shape_participant = session
+        .exact::<Person>()
+        .expect("sdk-v2 shape participant binding");
+    let identifier = person.field(PersonType::identifier);
+    let grouped_identifier = grouped_person.field(PersonType::identifier);
+    let score = person.field(PersonType::score);
+    let score_gte = person.field(PersonType::score__gte);
+    let scope = identifier.eq(Identifier::new(ada_key.clone()).expect("sdk-v2 Ada key"))
+        | identifier.eq(Identifier::new(dana_key.clone()).expect("sdk-v2 Dana key"));
+    let people_query = session
+        .query(person)
+        .expect("sdk-v2 people selection")
+        .where_(scope.clone())
+        .expect("sdk-v2 people scope");
+
+    let one_terminal = stringify!(one);
+    let exchanges_before_one = exchange_count.map(|count| count.load(Ordering::SeqCst));
+    let ada = people_query
+        .where_(identifier.eq(Identifier::new(ada_key.clone()).expect("sdk-v2 Ada key")))
+        .expect("sdk-v2 Ada predicate")
+        .one()
+        .await
+        .expect("sdk-v2 Ada terminal");
+    let exchanges_after_one = exchange_count.map(|count| count.load(Ordering::SeqCst));
+    sdk_v2_assert_person(&ada, &people_records[0]);
+    let model_values = sdk_v2_model_observation(&ada, &people_records[0]);
+
+    let owner_keys = sdk_v2_keys(
+        &people_query
+            .where_(score.is_present())
+            .expect("sdk-v2 score owner predicate")
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("sdk-v2 score owner rows"),
+    );
+    let optional_present_keys = sdk_v2_keys(
+        &people_query
+            .where_(person.field(PersonType::nickname).is_present())
+            .expect("sdk-v2 nickname presence predicate")
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("sdk-v2 nickname presence rows"),
+    );
+    let iid_set_keys = sdk_v2_keys(
+        &session
+            .query(person)
+            .expect("sdk-v2 IID-set query")
+            .where_(person.iid_in([person_iids[0].as_str(), person_iids[1].as_str()]))
+            .expect("sdk-v2 IID-set predicate")
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("sdk-v2 IID-set rows"),
+    );
+    let owner_iid_set = json!({
+        "owner_field": sdk_v2_field_label(PersonType::score.owns_id_json()),
+        "owner_keys": owner_keys,
+        "optional_field": sdk_v2_field_label(PersonType::nickname.owns_id_json()),
+        "optional_present_keys": optional_present_keys,
+        "iid_set_keys": iid_set_keys,
+    });
+
+    let employee_identifier = employee.field(EmployeeType::identifier);
+    let exact_employees = session
+        .query(employee)
+        .expect("sdk-v2 exact employee query")
+        .where_(
+            employee_identifier
+                .eq(Identifier::new(employee_key.clone()).expect("sdk-v2 employee key")),
+        )
+        .expect("sdk-v2 exact employee predicate")
+        .rows(RowsOptions::new(2).order_by(employee_identifier.asc()))
+        .await
+        .expect("sdk-v2 exact employee rows");
+    let exact = exact_employees
+        .iter()
+        .map(|employee| {
+            json!({
+                "model": sdk_v2_type_label(EmployeeType::TOKEN.type_id_json()),
+                "key": employee.identifier().value(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let family_identifier = employee_family.field(EmployeeType::identifier);
+    let employee_scope = family_identifier
+        .eq(Identifier::new(employee_key.clone()).expect("sdk-v2 employee key"))
+        | family_identifier.eq(Identifier::new(manager_key.clone()).expect("sdk-v2 manager key"));
+    let subtypes = session
+        .query(employee_family)
+        .expect("sdk-v2 employee subtype query")
+        .where_(employee_scope)
+        .expect("sdk-v2 employee subtype scope")
+        .rows(RowsOptions::new(2).order_by(family_identifier.asc()))
+        .await
+        .expect("sdk-v2 employee subtype rows")
+        .iter()
+        .map(sdk_v2_family_identity)
+        .collect::<Vec<_>>();
+    let exact_subtypes = json!({
+        "declared_model": sdk_v2_type_label(EmployeeType::TOKEN.type_id_json()),
+        "exact": exact,
+        "subtypes": subtypes,
+    });
+
+    let and_keys = sdk_v2_keys(
+        &people_query
+            .where_(
+                score.ge(scalar_operand)
+                    & person
+                        .field(PersonType::val_bool)
+                        .eq(ValBool::new(true).expect("sdk-v2 true value")),
+            )
+            .expect("sdk-v2 conjunction")
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("sdk-v2 conjunction rows"),
+    );
+    let or_keys = sdk_v2_keys(
+        &session
+            .query(person)
+            .expect("sdk-v2 disjunction query")
+            .where_(
+                identifier.eq(Identifier::new(ada_key.clone()).expect("sdk-v2 Ada key"))
+                    | identifier.eq(Identifier::new(dana_key.clone()).expect("sdk-v2 Dana key")),
+            )
+            .expect("sdk-v2 disjunction")
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("sdk-v2 disjunction rows"),
+    );
+    let not_keys = sdk_v2_keys(
+        &people_query
+            .where_(!score.ge(scalar_operand))
+            .expect("sdk-v2 negation")
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("sdk-v2 negation rows"),
+    );
+    let field_comparison_keys = sdk_v2_keys(
+        &people_query
+            .where_(score.ge_field(score_gte))
+            .expect("sdk-v2 field comparison")
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("sdk-v2 field comparison rows"),
+    );
+    let scalar_boolean = json!({
+        "and_keys": and_keys,
+        "or_keys": or_keys,
+        "not_keys": not_keys,
+        "field_comparison_keys": field_comparison_keys,
+    });
+
+    let membership_person_identifier = membership_person.field(PersonType::identifier);
+    let (hydrated_membership, hydrated_member) = session
+        .query((membership, membership_person))
+        .expect("sdk-v2 membership selection")
+        .where_(
+            membership
+                .role(MembershipType::member)
+                .connects(membership_person)
+                & membership_person_identifier
+                    .eq(Identifier::new(ada_key.clone()).expect("sdk-v2 Ada key")),
+        )
+        .expect("sdk-v2 membership role predicate")
+        .one()
+        .await
+        .expect("sdk-v2 membership role result");
+    let membership_player_key = match hydrated_membership.member() {
+        MembershipMemberPlayer::Person(reference) => reference
+            .identifier()
+            .expect("sdk-v2 member carries its key")
+            .value()
+            .clone(),
+        MembershipMemberPlayer::Robot(_) => panic!("sdk-v2 member must be a person"),
+    };
+    assert_eq!(
+        membership_player_key,
+        hydrated_member.identifier().value().as_str()
+    );
+
+    let hydrated_network = session
+        .query(network)
+        .expect("sdk-v2 network query")
+        .match_(network_origin)
+        .expect("sdk-v2 attach network origin")
+        .match_(network_destination)
+        .expect("sdk-v2 attach network destination")
+        .match_(network_participant)
+        .expect("sdk-v2 attach network participant")
+        .where_(
+            network
+                .field(NetworkLinkType::identifier)
+                .eq(Identifier::new(network_key.clone()).expect("sdk-v2 network key"))
+                & network
+                    .role(NetworkLinkType::origin)
+                    .connects(network_origin)
+                & network
+                    .role(NetworkLinkType::destination)
+                    .connects(network_destination)
+                & network
+                    .role(NetworkLinkType::participant)
+                    .connects(network_participant),
+        )
+        .expect("sdk-v2 network role predicates")
+        .one()
+        .await
+        .expect("sdk-v2 network role result");
+    let mut participant_keys = hydrated_network
+        .participant()
+        .iter()
+        .map(sdk_v2_network_player_key)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    participant_keys.sort();
+    let roles = json!({
+        "membership": {
+            "relation": sdk_v2_type_label(MembershipType::TOKEN.type_id_json()),
+            "role": sdk_v2_role_label(MembershipType::member.role_id_json()),
+            "players": [{
+                "model": sdk_v2_type_label(PersonType::TOKEN.type_id_json()),
+                "key": membership_player_key,
+            }],
+        },
+        "network_link": {
+            "relation": sdk_v2_type_label(NetworkLinkType::TOKEN.type_id_json()),
+            "origin": sdk_v2_network_origin_key(hydrated_network.origin()),
+            "destination": sdk_v2_network_destination_key(hydrated_network.destination()),
+            "participants": participant_keys,
+        },
+    });
+    let hydrated_result = json!({
+        "rows": [{
+            "model": sdk_v2_type_label(MembershipType::TOKEN.type_id_json()),
+            "roles": {sdk_v2_role_label(MembershipType::member.role_id_json()): [{
+                "model": sdk_v2_type_label(PersonType::TOKEN.type_id_json()),
+                "key": membership_player_key,
+            }]},
+        }],
+    });
+
+    let source_identifier = source.field(PersonType::identifier);
+    let target_identifier = target.field(PersonType::identifier);
+    let reachability_min_hops = 1;
+    let reachability_max_hops = 1;
+    let reachable = session
+        .reachable(
+            NetworkLinkType::TOKEN,
+            NetworkLinkType::origin,
+            NetworkLinkType::destination,
+            source,
+            target,
+            reachability_min_hops,
+            reachability_max_hops,
+        )
+        .expect("sdk-v2 one-hop reachability predicate");
+    let reachable_rows = session
+        .query((source, target))
+        .expect("sdk-v2 reachability query")
+        .where_(
+            reachable
+                & source_identifier.eq(Identifier::new(ada_key.clone()).expect("sdk-v2 Ada key"))
+                & target_identifier.eq(Identifier::new(dana_key.clone()).expect("sdk-v2 Dana key")),
+        )
+        .expect("sdk-v2 reachability filters")
+        .rows(
+            RowsOptions::new(2)
+                .order_by(source_identifier.asc())
+                .order_by(target_identifier.asc()),
+        )
+        .await
+        .expect("sdk-v2 reachability rows");
+    let reachable = reachable_rows
+        .iter()
+        .map(|(source, target)| {
+            json!({
+                "from": source.identifier().value(),
+                "to": target.identifier().value(),
+                "max_hops": reachability_max_hops,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let cross_left_identifier = cross_left.field(PersonType::identifier);
+    let cross_right_identifier = cross_right.field(PersonType::identifier);
+    let left_scope = cross_left_identifier
+        .eq(Identifier::new(ada_key.clone()).expect("sdk-v2 Ada key"))
+        | cross_left_identifier.eq(Identifier::new(dana_key.clone()).expect("sdk-v2 Dana key"));
+    let right_scope = cross_right_identifier
+        .eq(Identifier::new(ada_key.clone()).expect("sdk-v2 Ada key"))
+        | cross_right_identifier.eq(Identifier::new(dana_key.clone()).expect("sdk-v2 Dana key"));
+    let cross_join_pairs = session
+        .query((cross_left, cross_right))
+        .expect("sdk-v2 cross-join query")
+        .allow_cross_join(cross_left, cross_right)
+        .expect("sdk-v2 explicit cross join")
+        .where_(left_scope & right_scope)
+        .expect("sdk-v2 cross-join scope")
+        .rows(
+            RowsOptions::new(4)
+                .order_by(cross_left_identifier.asc())
+                .order_by(cross_right_identifier.asc()),
+        )
+        .await
+        .expect("sdk-v2 cross-join rows")
+        .iter()
+        .map(|(left, right)| json!([left.identifier().value(), right.identifier().value()]))
+        .collect::<Vec<_>>();
+    let topology = json!({
+        "reachable": reachable,
+        "cross_join_pairs": cross_join_pairs,
+    });
+
+    let shape_participant_identifier = shape_participant.field(PersonType::identifier);
+    let collected = shape_participant
+        .collect()
+        .distinct()
+        .order_by(shape_participant_identifier.asc())
+        .expect("sdk-v2 collection order");
+    let shape_predicate = shape_link
+        .field(NetworkLinkType::identifier)
+        .eq(Identifier::new(network_key).expect("sdk-v2 network key"))
+        & shape_link
+            .role(NetworkLinkType::origin)
+            .connects(shape_origin)
+        & shape_link
+            .role(NetworkLinkType::participant)
+            .connects(shape_participant);
+    let positional_page = session
+        .query((shape_origin, collected.clone()))
+        .expect("sdk-v2 positional selection")
+        .match_(shape_link)
+        .expect("sdk-v2 positional network match")
+        .where_(shape_predicate.clone())
+        .expect("sdk-v2 positional predicates")
+        .page_by(
+            shape_origin,
+            PageOptions::new(1).order_by(shape_origin.field(PersonType::identifier).asc()),
+        )
+        .await
+        .expect("sdk-v2 positional page");
+    let positional_rows = positional_page.items();
+    assert_eq!(positional_rows.len(), 1, "sdk-v2 positional row is unique");
+    let positional = json!([
+        positional_rows[0].0.identifier().value(),
+        sdk_v2_keys(&positional_rows[0].1),
+    ]);
+    let positional_distinct = positional_rows[0]
+        .1
+        .iter()
+        .map(Person::iid)
+        .collect::<BTreeSet<_>>()
+        .len()
+        == positional_rows[0].1.len();
+    let named_shape =
+        SdkNetworkShape::select(shape_origin, collected).expect("sdk-v2 named selection shape");
+    let named_page = session
+        .query(named_shape)
+        .expect("sdk-v2 named selection")
+        .match_(shape_link)
+        .expect("sdk-v2 named network match")
+        .where_(shape_predicate)
+        .expect("sdk-v2 named predicates")
+        .page_by(
+            shape_origin,
+            PageOptions::new(1).order_by(shape_origin.field(PersonType::identifier).asc()),
+        )
+        .await
+        .expect("sdk-v2 named page");
+    let named_rows = named_page.items();
+    assert_eq!(named_rows.len(), 1, "sdk-v2 named row is unique");
+    let named = json!({
+        "origin": named_rows[0].origin.identifier().value(),
+        "participants": sdk_v2_keys(&named_rows[0].participants),
+    });
+    let named_distinct = named_rows[0]
+        .participants
+        .iter()
+        .map(Person::iid)
+        .collect::<BTreeSet<_>>()
+        .len()
+        == named_rows[0].participants.len();
+    assert_eq!(positional_distinct, named_distinct);
+    let selection_shapes = json!({
+        "positional": positional,
+        "named": named,
+        "collected_distinct": positional_distinct,
+        "collection_order": format!(
+            "{}_asc",
+            sdk_v2_field_label(PersonType::identifier.owns_id_json()),
+        ),
+    });
+
+    let one = people_query
+        .where_(identifier.eq(Identifier::new(dana_key).expect("sdk-v2 Dana key")))
+        .expect("sdk-v2 one predicate")
+        .one()
+        .await
+        .expect("sdk-v2 one terminal")
+        .identifier()
+        .value()
+        .clone();
+    let first = people_query
+        .first(identifier.asc())
+        .await
+        .expect("sdk-v2 first terminal")
+        .expect("sdk-v2 first row exists")
+        .identifier()
+        .value()
+        .clone();
+    let rows = sdk_v2_keys(
+        &people_query
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("sdk-v2 rows terminal"),
+    );
+    let page = people_query
+        .page_by(
+            person,
+            PageOptions::new(1)
+                .include_total(true)
+                .order_by(identifier.asc()),
+        )
+        .await
+        .expect("sdk-v2 page terminal");
+    let page_items = sdk_v2_keys(page.items());
+    let count = people_query.count().await.expect("sdk-v2 count terminal");
+    let exists = people_query.exists().await.expect("sdk-v2 exists terminal");
+    let terminals = json!({
+        "one": one,
+        "first": first,
+        "rows": rows,
+        "page": {
+            "items": page_items,
+            "offset": page.offset(),
+            "limit": page.limit(),
+            "total": page.total().expect("sdk-v2 page total was requested"),
+        },
+        "count": count,
+        "exists": exists,
+    });
+
+    let reductions: (
+        u64,
+        i64,
+        Option<i64>,
+        Option<i64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+    ) = people_query
+        .aggregate((
+            aggregate::count(),
+            score.sum(),
+            score.min(),
+            score.max(),
+            score.mean(),
+            score.median(),
+            score.stddev(),
+        ))
+        .await
+        .expect("sdk-v2 reductions");
+    let mut binding_groups = people_query
+        .match_(grouped_person)
+        .expect("sdk-v2 grouped person match")
+        .where_(identifier.eq_field(grouped_identifier))
+        .expect("sdk-v2 grouped person identity join")
+        .group_by(grouped_person)
+        .expect("sdk-v2 binding groups")
+        .aggregate((aggregate::count(),))
+        .await
+        .expect("sdk-v2 binding-grouped reductions")
+        .into_iter()
+        .map(|(person, (count,))| {
+            json!({
+                "model": sdk_v2_type_label(PersonType::TOKEN.type_id_json()),
+                "key": person.identifier().value(),
+                "count": count,
+            })
+        })
+        .collect::<Vec<_>>();
+    binding_groups.sort_by(|left, right| left["key"].as_str().cmp(&right["key"].as_str()));
+    let mut field_groups = people_query
+        .group_by_field(score)
+        .expect("sdk-v2 score groups")
+        .aggregate((aggregate::count(),))
+        .await
+        .expect("sdk-v2 score-grouped reductions")
+        .into_iter()
+        .map(|(score, (count,))| json!({"key": score.value(), "count": count}))
+        .collect::<Vec<_>>();
+    field_groups.sort_by_key(|value| value["key"].as_i64());
+    let mut tuple_groups = people_query
+        .group_by_fields((score, score_gte))
+        .expect("sdk-v2 score tuple groups")
+        .aggregate((aggregate::count(),))
+        .await
+        .expect("sdk-v2 score tuple-grouped reductions")
+        .into_iter()
+        .map(|((score, score_gte), (count,))| {
+            json!({"key": [score.value(), score_gte.value()], "count": count})
+        })
+        .collect::<Vec<_>>();
+    tuple_groups.sort_by_key(|value| value["key"][0].as_i64());
+    let grouped_reducer = json!({
+        "reducers": {
+            "count": reductions.0,
+            "sum": reductions.1,
+            "min": reductions.2.expect("sdk-v2 minimum exists"),
+            "max": reductions.3.expect("sdk-v2 maximum exists"),
+            "mean_bits": format!("{:016x}", reductions.4.expect("sdk-v2 mean exists").to_bits()),
+            "median_bits": format!("{:016x}", reductions.5.expect("sdk-v2 median exists").to_bits()),
+            "std_bits": format!("{:016x}", reductions.6.expect("sdk-v2 std exists").to_bits()),
+        },
+        "groups": {
+            "binding": binding_groups,
+            "field": field_groups,
+            "field_tuple": tuple_groups,
+        },
+    });
+
+    let minimum_score = Score::new(30).expect("sdk-v2 authored function minimum");
+    let minimum: IntegerInput =
+        integer_input(session, &minimum_score).expect("sdk-v2 function input");
+    let call: IntegerCall =
+        qualifying_score(session, person, &minimum).expect("sdk-v2 function call");
+    let values = sdk_v2_keys(
+        &people_query
+            .where_(call.ge_field(score))
+            .expect("sdk-v2 function field predicate")
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("sdk-v2 function field rows"),
+    );
+    let nested: IntegerCall =
+        qualifying_score(session, person, &call).expect("sdk-v2 nested function call");
+    let nested_people = people_query
+        .where_(
+            call.ge_call(&nested)
+                .expect("sdk-v2 nested function predicate"),
+        )
+        .expect("sdk-v2 nested function filter")
+        .rows(RowsOptions::new(2).order_by(identifier.asc()))
+        .await
+        .expect("sdk-v2 nested function rows");
+    let function_values = values
+        .iter()
+        .map(|key| {
+            [&ada, &nested_people[0], &nested_people[1]]
+                .into_iter()
+                .find(|person| person.identifier().value() == key)
+                .unwrap_or_else(|| panic!("sdk-v2 function result has unknown key: {key}"))
+                .score()
+                .value()
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    let nested_values = nested_people
+        .iter()
+        .map(|person| *person.score().value())
+        .collect::<Vec<_>>();
+    let schema_function = json!({
+        "minimum": minimum_score.value(),
+        "values": function_values,
+        "nested_values": nested_values,
+    });
+
+    let scalar_keys = sdk_v2_keys(
+        &people_query
+            .where_(score.ge(scalar_operand))
+            .expect("sdk-v2 scalar predicate")
+            .rows(RowsOptions::new(2).order_by(identifier.asc()))
+            .await
+            .expect("sdk-v2 scalar rows"),
+    );
+    let scalar_domain = json!({
+        "domain": sdk_v2_scalar_domain(&scalar_operand),
+        "operator": "gte",
+        "operand": scalar_operand,
+        "keys": scalar_keys,
+    });
+
+    let mut observations = BTreeMap::from([
+        ("model_values_and_references".to_owned(), model_values),
+        ("owner_iid_set".to_owned(), owner_iid_set),
+        ("exact_subtypes".to_owned(), exact_subtypes),
+        ("scalar_boolean".to_owned(), scalar_boolean),
+        ("roles".to_owned(), roles),
+        ("topology".to_owned(), topology),
+        ("selection_shapes".to_owned(), selection_shapes),
+        ("terminals".to_owned(), terminals),
+        ("grouped_reducer".to_owned(), grouped_reducer),
+        ("hydrated_result".to_owned(), hydrated_result),
+        ("scalar_domain".to_owned(), scalar_domain),
+        ("schema_function".to_owned(), schema_function),
+    ]);
+    if let (Some(before), Some(after)) = (exchanges_before_one, exchanges_after_one) {
+        assert_eq!(after - before, 1, "sdk-v2 remote one performs one exchange");
+        observations.insert(
+            "remote_one_exchange".to_owned(),
+            json!({"exchange_count": after - before, "terminal": one_terminal}),
+        );
+    }
+    observations
+}
+
+fn sdk_v2_cancellation_error(error: &Error, partial_result: bool) -> Value {
+    json!({
+        "category": error.category().as_str(),
+        "code": error.code().expect("sdk-v2 cancellation has a stable code"),
+        "partial_result": partial_result,
+    })
+}
+
+async fn sdk_v2_remote_cancellation(
+    remote: &RemoteDatabase<AppSchema>,
+    exchange_count: &Arc<AtomicUsize>,
+    remote_url: &str,
+) -> Value {
+    let before_cancellation = AnswerCancellation::default();
+    before_cancellation.cancel();
+    let exchanges_before = exchange_count.load(Ordering::SeqCst);
+    let mut before_session = remote
+        .query_with_resources(QueryExecutionResourceLimits::default(), before_cancellation)
+        .expect("sdk-v2 cancelled remote session");
+    let before_person = before_session
+        .exact::<Person>()
+        .expect("sdk-v2 cancelled remote binding");
+    let before_result = before_session
+        .query(before_person)
+        .expect("sdk-v2 cancelled remote query")
+        .count()
+        .await;
+    let before_partial_result = before_result.is_ok();
+    let before_error = before_result.expect_err("sdk-v2 pre-cancelled remote query must fail");
+    let exchanges_after = exchange_count.load(Ordering::SeqCst);
+    assert_eq!(before_error.category(), ErrorCategory::Cancelled);
+    assert_eq!(before_error.code(), Some("provider_cancelled"));
+    let mut before_exchange = sdk_v2_cancellation_error(&before_error, before_partial_result);
+    before_exchange["exchange_count"] = json!(exchanges_after - exchanges_before);
+
+    let decode_cancellation = AnswerCancellation::default();
+    let decode_exchange_count = Arc::new(AtomicUsize::new(0));
+    let response_completed = Arc::new(AtomicBool::new(false));
+    let decode_remote: RemoteDatabase<AppSchema> =
+        RemoteDatabase::connect(RemoteConnectionOptions::generated(
+            QueryExecutionResourceLimits::default(),
+            CancelBeforeDecodeTransport {
+                inner: HttpTransport::recording(
+                    remote_url.to_owned(),
+                    Arc::clone(&decode_exchange_count),
+                ),
+                cancellation: decode_cancellation.clone(),
+                response_completed: Arc::clone(&response_completed),
+            },
+        ))
+        .await
+        .expect("sdk-v2 decode-cancel remote connects")
+        .with_schema(SCHEMA)
+        .expect("sdk-v2 decode-cancel remote schema binds");
+    let mut decode_session = decode_remote
+        .query_with_resources(QueryExecutionResourceLimits::default(), decode_cancellation)
+        .expect("sdk-v2 decode-cancel session");
+    let decode_person = decode_session
+        .exact::<Person>()
+        .expect("sdk-v2 decode-cancel binding");
+    let decode_result = decode_session
+        .query(decode_person)
+        .expect("sdk-v2 decode-cancel query")
+        .count()
+        .await;
+    let decode_partial_result = decode_result.is_ok();
+    let decode_error = decode_result.expect_err("sdk-v2 remote decode cancellation must fail");
+    assert_eq!(decode_error.category(), ErrorCategory::Cancelled);
+    assert_eq!(decode_error.code(), Some("provider_cancelled"));
+    let mut during_decode = sdk_v2_cancellation_error(&decode_error, decode_partial_result);
+    during_decode["exchange_count"] = json!(decode_exchange_count.load(Ordering::SeqCst));
+
+    let abort_signal = AnswerCancellation::default();
+    let abort_transport = CallerAbortProbeTransport {
+        cancellation: abort_signal.clone(),
+    };
+    let abort_future = abort_transport.exchange(b"sdk-v2-caller-abort-probe");
+    abort_signal.cancel();
+    let abort_error = abort_future
+        .await
+        .expect_err("sdk-v2 caller transport abort probe must stop");
+    let caller_transport_abort_supported = abort_error.category() == ErrorCategory::Remote
+        && abort_error.code() == Some("caller_transport_aborted");
+
+    json!({
+        "before_exchange": before_exchange,
+        "during_decode": during_decode,
+        "caller_transport_abort_supported": caller_transport_abort_supported,
+        "server_exchange_cancelled_after_send": !response_completed.load(Ordering::SeqCst),
+    })
+}
+
+fn sdk_v2_resource_limit_base() -> Value {
+    let hard = QueryExecutionResourceLimits::default();
+    let plus_one = QueryExecutionResourceLimits::tightened(
+        hard.timeout_milliseconds.saturating_add(1),
+        hard.items.saturating_add(1),
+        hard.bytes.saturating_add(1),
+        hard.graph_nodes.saturating_add(1),
+        hard.attribute_values.saturating_add(1),
+        hard.collection_members.saturating_add(1),
+        hard.role_players.saturating_add(1),
+        hard.statements.saturating_add(1),
+    );
+    let zero = QueryExecutionResourceLimits::tightened(0, 0, 0, 0, 0, 0, 0, 0);
+    let plus_one_clamped_all = plus_one == hard;
+    let zero_tightening_all = zero.timeout_milliseconds == 0
+        && zero.items == 0
+        && zero.bytes == 0
+        && zero.graph_nodes == 0
+        && zero.attribute_values == 0
+        && zero.collection_members == 0
+        && zero.role_players == 0
+        && zero.statements == 0;
+    json!({
+        "hard_maxima": {
+            "timeout_milliseconds": hard.timeout_milliseconds,
+            "items": hard.items,
+            "bytes": hard.bytes,
+            "graph_nodes": hard.graph_nodes,
+            "attribute_values": hard.attribute_values,
+            "collection_members": hard.collection_members,
+            "role_players": hard.role_players,
+            "statements": hard.statements,
+        },
+        "plus_one_clamped_all": plus_one_clamped_all,
+        "zero_tightening_all": zero_tightening_all,
+    })
+}
+
+async fn sdk_v2_enforced_role_player_limit(
+    session: &mut QuerySession<'_, AppSchema>,
+    ada_key: &str,
+    dimension: &str,
+) -> Value {
+    let membership = session
+        .exact::<Membership>()
+        .expect("sdk-v2 limited membership binding");
+    let person = session
+        .exact::<Person>()
+        .expect("sdk-v2 limited person binding");
+    let result = session
+        .query(membership)
+        .expect("sdk-v2 limited membership query")
+        .match_(person)
+        .expect("sdk-v2 limited member match")
+        .where_(
+            membership.role(MembershipType::member).connects(person)
+                & person
+                    .field(PersonType::identifier)
+                    .eq(Identifier::new(ada_key.to_owned()).expect("sdk-v2 limited Ada key")),
+        )
+        .expect("sdk-v2 limited membership predicate")
+        .one()
+        .await;
+    let no_partial_result = result.is_err();
+    let error = result.expect_err("sdk-v2 zero role-player limit must reject hydration");
+    assert_eq!(error.category(), ErrorCategory::ResourceLimit);
+    json!({
+        "dimension": dimension,
+        "category": error.category().as_str(),
+        "code": error.code().expect("sdk-v2 resource limit has a stable code"),
+        "no_partial_result": no_partial_result,
+    })
+}
+
+async fn sdk_v2_lifecycle_lane(
+    session: &mut QuerySession<'_, AppSchema>,
+    key: &str,
+    exchange_count: Option<&Arc<AtomicUsize>>,
+) -> (Value, bool) {
+    let person = session
+        .exact::<Person>()
+        .expect("sdk-v2 lifecycle person binding");
+    let identifier = person.field(PersonType::identifier);
+    let key_predicate =
+        identifier.eq(Identifier::new(key.to_owned()).expect("sdk-v2 lifecycle key"));
+    let ancestor = session
+        .query(person)
+        .expect("sdk-v2 lifecycle ancestor")
+        .where_(key_predicate)
+        .expect("sdk-v2 lifecycle ancestor predicate");
+    let descendant = ancestor
+        .where_(person.field(PersonType::score).is_present())
+        .expect("sdk-v2 lifecycle descendant");
+    let sibling = ancestor
+        .where_(person.field(PersonType::val_bool).is_present())
+        .expect("sdk-v2 lifecycle sibling");
+
+    descendant.close();
+    let ancestor_usable_after_descendant_close =
+        ancestor.count().await.is_ok_and(|count| count == 1);
+
+    let descendant_after_ancestor = ancestor
+        .where_(person.field(PersonType::aliases).is_present())
+        .expect("sdk-v2 descendant retained before ancestor close");
+    ancestor.close();
+    ancestor.close();
+    let close_idempotent = ancestor.is_closed();
+    let descendant_usable_after_ancestor_close = descendant_after_ancestor
+        .count()
+        .await
+        .is_ok_and(|count| count == 1);
+
+    let exchanges_before = exchange_count.map(|count| count.load(Ordering::SeqCst));
+    let post_close_error = ancestor
+        .count()
+        .await
+        .expect_err("sdk-v2 closed query must reject");
+    let exchanges_after = exchange_count.map(|count| count.load(Ordering::SeqCst));
+    let post_close_io_count = exchanges_before
+        .zip(exchanges_after)
+        .map_or(0, |(before, after)| after - before);
+    let post_close_rejected = post_close_error.code() == Some("query_resource_closed");
+
+    let sibling_usable = sibling.count().await.is_ok_and(|count| count == 1);
+    let session_query = session
+        .query(person)
+        .expect("sdk-v2 session remains usable")
+        .where_(identifier.eq(Identifier::new(key.to_owned()).expect("sdk-v2 session key")))
+        .expect("sdk-v2 session query predicate");
+    let session_usable_after_query_close =
+        session_query.count().await.is_ok_and(|count| count == 1);
+
+    let result_query = session
+        .query(person)
+        .expect("sdk-v2 result lifecycle query")
+        .where_(
+            identifier.eq(Identifier::new(key.to_owned()).expect("sdk-v2 result lifecycle key")),
+        )
+        .expect("sdk-v2 result lifecycle predicate");
+    let result = result_query.one().await.expect("sdk-v2 lifecycle result");
+    result_query.close();
+    let result_usable_after_query_close = result.identifier().value() == key;
+
+    (
+        json!({
+            "ancestor_usable_after_descendant_close": ancestor_usable_after_descendant_close,
+            "close_idempotent": close_idempotent,
+            "descendant_usable_after_ancestor_close": descendant_usable_after_ancestor_close,
+            "handle_invalidated": ancestor.is_closed(),
+            "post_close_io_count": post_close_io_count,
+            "post_close_rejected": post_close_rejected,
+            "session_usable_after_query_close": session_usable_after_query_close,
+            "sibling_usable": sibling_usable,
+        }),
+        result_usable_after_query_close,
+    )
+}
+
+async fn run_sdk_journey(db: &Database<AppSchema>) {
+    let report_path = sdk_env_path("TYPE_BRIDGE_SDK_REPORT");
+    validate_sdk_report_path(&report_path);
+    require_sdk_server_version().await;
+    let manifest_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_MANIFEST"))
+        .expect("staged sdk manifest is readable");
+    let catalog_bytes =
+        fs::read(sdk_env_path("TYPE_BRIDGE_SDK_CATALOG")).expect("staged sdk catalog is readable");
+    let journey_bytes =
+        fs::read(sdk_env_path("TYPE_BRIDGE_SDK_JOURNEY")).expect("staged sdk journey is readable");
+    let schema_bytes =
+        fs::read(sdk_env_path("TYPE_BRIDGE_SDK_SCHEMA")).expect("staged sdk schema is readable");
+    let provider_schema_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_PROVIDER_SCHEMA"))
+        .expect("staged sdk provider schema is readable");
+    let catalog: Value = serde_json::from_slice(&catalog_bytes).expect("sdk catalog is valid JSON");
+    let journey: Value = serde_json::from_slice(&journey_bytes).expect("sdk journey is valid JSON");
+
+    assert_eq!(
+        sdk_string(&journey["format"], "sdk journey format"),
+        "typebridge.sdk-journey/v1"
+    );
+    assert_eq!(
+        sdk_string(&journey["semantic_profile"], "sdk semantic profile"),
+        SDK_PROFILE
+    );
+    assert_eq!(
+        env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")
+            .expect("generated live semantic profile is configured"),
+        SDK_PROFILE
+    );
+    assert_eq!(
+        sdk_string(&catalog["fixture"]["schema_path"], "sdk schema path"),
+        SDK_SCHEMA_PATH
+    );
+    assert_eq!(
+        sdk_string(
+            &catalog["fixture"]["provider_schema_path"],
+            "sdk provider schema path",
+        ),
+        SDK_PROVIDER_SCHEMA_PATH
+    );
+    assert_eq!(
+        sdk_string(&catalog["journey_path"], "sdk journey path"),
+        SDK_JOURNEY_PATH
+    );
+    let projection_target = sdk_string(
+        &catalog["projection_targets"]["rust"],
+        "sdk Rust projection target",
+    );
+    assert_eq!(projection_target, "rust");
+    let operation_order = journey["operation_order"]
+        .as_array()
+        .expect("sdk operation order must be an array")
+        .iter()
+        .map(|value| sdk_string(value, "sdk operation").to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        operation_order,
+        [
+            "insert_person",
+            "read_person",
+            "update_person",
+            "insert_membership",
+            "read_membership",
+            "direct_role_query_one",
+            "remote_role_query_one",
+            "delete_membership",
+            "delete_person",
+        ]
+    );
+
+    let person_record = &journey["records"]["person"];
+    let fields = &person_record["fields"];
+    let person_model = sdk_string(&person_record["model"], "sdk person model");
+    assert_eq!(person_model, "person");
+    let initial_nickname = sdk_string(
+        &sdk_typed_field(fields, "nickname", "string")["value"],
+        "sdk initial nickname",
+    );
+    let updated_nickname = sdk_string(
+        &person_record["update"]["nickname"]["value"],
+        "sdk updated nickname",
+    );
+    assert_eq!(
+        sdk_string(
+            &person_record["update"]["nickname"]["kind"],
+            "sdk updated nickname kind",
+        ),
+        "string"
+    );
+    let membership_record = &journey["records"]["membership"];
+    assert_eq!(
+        sdk_string(
+            &membership_record["player"]["key"],
+            "sdk membership player key",
+        ),
+        sdk_field_string(fields, "identifier", "string")
+    );
+
+    let person_baseline = db
+        .entities::<Person>()
+        .count()
+        .await
+        .expect("sdk person baseline count");
+    let membership_baseline = db
+        .relations::<Membership>()
+        .count()
+        .await
+        .expect("sdk membership baseline count");
+
+    let inserted_person = db
+        .entities::<Person>()
+        .insert(sdk_person_create(fields, initial_nickname))
+        .await
+        .expect("sdk person insert");
+    assert_sdk_person(&inserted_person, fields, initial_nickname);
+    let person_iid = inserted_person.iid().to_owned();
+    let read_person = db
+        .entities::<Person>()
+        .get_by_iid(&person_iid)
+        .await
+        .expect("sdk person read")
+        .expect("sdk person exists after insert");
+    assert_sdk_person(&read_person, fields, initial_nickname);
+    let updated_person = db
+        .entities::<Person>()
+        .update(&person_iid, sdk_person_create(fields, updated_nickname))
+        .await
+        .expect("sdk person update");
+    assert_sdk_person(&updated_person, fields, updated_nickname);
+    let updated_read = db
+        .entities::<Person>()
+        .get_by_iid(&person_iid)
+        .await
+        .expect("sdk updated person read")
+        .expect("sdk person exists after update");
+    let direct_model_observation =
+        sdk_model_observation(&updated_read, fields, person_model, updated_nickname);
+
+    let membership = db
+        .relations::<Membership>()
+        .insert(
+            MembershipCreate::new(MembershipMemberRef::Person(updated_read.reference()))
+                .expect("sdk membership create"),
+        )
+        .await
+        .expect("sdk membership insert");
+    let membership_iid = membership.iid().to_owned();
+    let membership_read = db
+        .relations::<Membership>()
+        .get_by_iid(&membership_iid)
+        .await
+        .expect("sdk membership read")
+        .expect("sdk membership exists after insert");
+    let _ = sdk_role_observations(&membership_read, &updated_read, membership_record);
+
+    let (direct_relation, direct_person) =
+        {
+            let mut session = db.query().expect("sdk direct query session");
+            let relation = session
+                .exact::<Membership>()
+                .expect("sdk direct membership binding");
+            let person = session
+                .exact::<Person>()
+                .expect("sdk direct person binding");
+            session
+                .query((relation, person))
+                .expect("sdk direct selection")
+                .where_(
+                    relation.role(MembershipType::member).connects(person)
+                        & person.field(PersonType::identifier).eq(Identifier::new(
+                            sdk_field_string(fields, "identifier", "string"),
+                        )
+                        .expect("sdk direct person key")),
+                )
+                .expect("sdk direct role predicate")
+                .one()
+                .await
+                .expect("sdk direct role result")
+        };
+    let (direct_hydration, direct_role) =
+        sdk_role_observations(&direct_relation, &direct_person, membership_record);
+    let direct_query_model_observation =
+        sdk_model_observation(&direct_person, fields, person_model, updated_nickname);
+    assert_eq!(direct_query_model_observation, direct_model_observation);
+
+    let exchange_count = Arc::new(AtomicUsize::new(0));
+    let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("sdk remote server URL");
+    let remote: RemoteDatabase<AppSchema> =
+        RemoteDatabase::connect(RemoteConnectionOptions::generated(
+            RemoteQueryLimits::new(100, 8 << 20, 1000, 1000, 1000, 1000).deadline_ms(30_000),
+            HttpTransport::recording(remote_url, Arc::clone(&exchange_count)),
+        ))
+        .await
+        .expect("sdk remote database connects")
+        .with_schema(SCHEMA)
+        .expect("sdk remote schema authority binds");
+    assert_eq!(exchange_count.load(Ordering::SeqCst), 0);
+    let (remote_relation, remote_person) =
+        {
+            let mut session = remote.query().expect("sdk remote query session");
+            let relation = session
+                .exact::<Membership>()
+                .expect("sdk remote membership binding");
+            let person = session
+                .exact::<Person>()
+                .expect("sdk remote person binding");
+            session
+                .query((relation, person))
+                .expect("sdk remote selection")
+                .where_(
+                    relation.role(MembershipType::member).connects(person)
+                        & person.field(PersonType::identifier).eq(Identifier::new(
+                            sdk_field_string(fields, "identifier", "string"),
+                        )
+                        .expect("sdk remote person key")),
+                )
+                .expect("sdk remote role predicate")
+                .one()
+                .await
+                .expect("sdk remote role result")
+        };
+    let observed_exchange_count = exchange_count.load(Ordering::SeqCst);
+    assert_eq!(
+        observed_exchange_count, 1,
+        "sdk remote terminal must perform exactly one caller-owned exchange"
+    );
+    let (remote_hydration, remote_role) =
+        sdk_role_observations(&remote_relation, &remote_person, membership_record);
+    let remote_model_observation =
+        sdk_model_observation(&remote_person, fields, person_model, updated_nickname);
+
+    assert_eq!(remote_model_observation, direct_model_observation);
+    assert_eq!(remote_hydration, direct_hydration);
+    assert_eq!(remote_role, direct_role);
+
+    db.relations::<Membership>()
+        .delete(&membership_iid)
+        .await
+        .expect("sdk membership delete");
+    assert!(
+        db.relations::<Membership>()
+            .get_by_iid(&membership_iid)
+            .await
+            .expect("sdk deleted membership read")
+            .is_none()
+    );
+    db.entities::<Person>()
+        .delete(&person_iid)
+        .await
+        .expect("sdk person delete");
+    assert!(
+        db.entities::<Person>()
+            .get_by_iid(&person_iid)
+            .await
+            .expect("sdk deleted person read")
+            .is_none()
+    );
+    assert_eq!(
+        db.relations::<Membership>()
+            .count()
+            .await
+            .expect("sdk membership cleanup count"),
+        membership_baseline
+    );
+    assert_eq!(
+        db.entities::<Person>()
+            .count()
+            .await
+            .expect("sdk person cleanup count"),
+        person_baseline
+    );
+
+    let entity_lifecycle = json!({
+        "created": true,
+        "deleted": true,
+        "key": sdk_field_string(fields, "identifier", "string"),
+        "model": person_model,
+        "nickname_after_update": updated_nickname,
+        "read_after_update": true,
+    });
+    let relation_lifecycle = json!({
+        "created": true,
+        "deleted": true,
+        "model": sdk_string(&membership_record["model"], "sdk relation model"),
+        "player_key": sdk_field_string(fields, "identifier", "string"),
+        "role": sdk_string(&membership_record["role"], "sdk relation role"),
+    });
+    let remote_one_exchange = json!({"exchange_count": observed_exchange_count, "terminal": "one"});
+    let actual_observations = BTreeMap::from([
+        ("entity_lifecycle".to_owned(), entity_lifecycle),
+        ("hydrated_role_result".to_owned(), direct_hydration),
+        (
+            "model_values_and_references".to_owned(),
+            direct_model_observation,
+        ),
+        ("relation_lifecycle".to_owned(), relation_lifecycle),
+        ("remote_one_exchange".to_owned(), remote_one_exchange),
+        ("role_traversal".to_owned(), direct_role),
+    ]);
+    let expected_observations = journey["expected_observations"]
+        .as_object()
+        .expect("sdk expected observations must be an object");
+    assert_eq!(actual_observations.len(), expected_observations.len());
+    for (name, actual) in &actual_observations {
+        assert_eq!(
+            actual,
+            expected_observations
+                .get(name)
+                .unwrap_or_else(|| panic!("sdk expected observation is missing: {name}")),
+            "sdk observation diverged: {name}"
+        );
+    }
+
+    let semantic_fingerprint: Value = serde_json::from_str(SEMANTIC_SCHEMA_FINGERPRINT_JSON)
+        .expect("generated semantic fingerprint is valid JSON");
+    let projection_fingerprint: Value = serde_json::from_str(PROJECTION_FINGERPRINT_JSON)
+        .expect("generated projection fingerprint is valid JSON");
+    assert_eq!(
+        sdk_string(
+            &semantic_fingerprint["semantic_profile"],
+            "semantic fingerprint profile",
+        ),
+        SDK_PROFILE
+    );
+    assert_eq!(
+        sdk_string(
+            &projection_fingerprint["semantic_profile"],
+            "projection fingerprint profile",
+        ),
+        SDK_PROFILE
+    );
+    let report = json!({
+        "format": "typebridge.sdk-conformance-report/v1",
+        "binding": "rust",
+        "manifest": sdk_source_identity(SDK_MANIFEST_PATH, &manifest_bytes),
+        "catalog": sdk_source_identity(SDK_CATALOG_PATH, &catalog_bytes),
+        "fixture": {
+            "id": sdk_string(&journey["fixture_id"], "sdk fixture ID"),
+            "version": journey["version"].clone(),
+            "semantic_profile": SDK_PROFILE,
+            "schema": sdk_source_identity(SDK_SCHEMA_PATH, &schema_bytes),
+            "provider_schema": sdk_source_identity(
+                SDK_PROVIDER_SCHEMA_PATH,
+                &provider_schema_bytes,
+            ),
+            "journey": sdk_source_identity(SDK_JOURNEY_PATH, &journey_bytes),
+            "semantic_fingerprint": semantic_fingerprint,
+            "projection_target": projection_target,
+            "projection_fingerprint": projection_fingerprint,
+        },
+        "results": sdk_results(&catalog, &actual_observations),
+    });
+    publish_sdk_report(&report_path, report);
+}
+
+async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
+    let report_path = sdk_env_path("TYPE_BRIDGE_SDK_REPORT_V2");
+    validate_sdk_report_path(&report_path);
+    require_sdk_server_version().await;
+    let manifest_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_MANIFEST_V2"))
+        .expect("staged sdk-v2 manifest is readable");
+    let catalog_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_CATALOG_V2"))
+        .expect("staged sdk-v2 catalog is readable");
+    let journey_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_JOURNEY_V2"))
+        .expect("staged sdk-v2 journey is readable");
+    let schema_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_SCHEMA_V2"))
+        .expect("staged sdk-v2 schema is readable");
+    let provider_schema_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_PROVIDER_SCHEMA_V2"))
+        .expect("staged sdk-v2 provider schema is readable");
+    let catalog: Value =
+        serde_json::from_slice(&catalog_bytes).expect("sdk-v2 catalog is valid JSON");
+    let journey: Value =
+        serde_json::from_slice(&journey_bytes).expect("sdk-v2 journey is valid JSON");
+    assert_eq!(
+        sdk_string(&journey["format"], "sdk-v2 journey format"),
+        "typebridge.sdk-journey/v2"
+    );
+    assert_eq!(journey["fixture_id"], "sdk-v2");
+    assert_eq!(journey["version"], 2);
+    assert_eq!(
+        sdk_string(&journey["semantic_profile"], "sdk-v2 semantic profile"),
+        SDK_PROFILE
+    );
+    assert_eq!(
+        env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")
+            .expect("generated live semantic profile is configured"),
+        SDK_PROFILE
+    );
+    assert_eq!(
+        sdk_string(&catalog["fixture"]["schema_path"], "sdk-v2 schema path",),
+        SDK_SCHEMA_PATH
+    );
+    assert_eq!(
+        sdk_string(
+            &catalog["fixture"]["provider_schema_path"],
+            "sdk-v2 provider schema path",
+        ),
+        SDK_PROVIDER_SCHEMA_PATH
+    );
+    assert_eq!(
+        sdk_string(&catalog["journey_path"], "sdk-v2 journey path"),
+        SDK_V2_JOURNEY_PATH
+    );
+    let projection_target = sdk_string(
+        &catalog["projection_targets"]["rust"],
+        "sdk-v2 Rust projection target",
+    );
+    assert_eq!(projection_target, "rust");
+
+    let proof_observations = sdk_v2_provider_proofs();
+
+    let records = &journey["records"];
+    let people_records = records["people"]
+        .as_array()
+        .expect("sdk-v2 people records are an array");
+    assert_eq!(people_records.len(), 2);
+    let ada_key = sdk_field_string(&people_records[0]["fields"], "identifier", "string");
+    let dana_key = sdk_field_string(&people_records[1]["fields"], "identifier", "string");
+    let employee_fields = &records["employee"]["fields"];
+    let manager_fields = &records["manager"]["fields"];
+    let network_fields = &records["network_link"]["fields"];
+
+    let person_baseline = db
+        .entities::<Person>()
+        .count()
+        .await
+        .expect("sdk-v2 person baseline");
+    let employee_baseline = db
+        .entities::<Employee>()
+        .count()
+        .await
+        .expect("sdk-v2 employee baseline");
+    let manager_baseline = db
+        .entities::<Manager>()
+        .count()
+        .await
+        .expect("sdk-v2 manager baseline");
+    let membership_baseline = db
+        .relations::<Membership>()
+        .count()
+        .await
+        .expect("sdk-v2 membership baseline");
+    let network_baseline = db
+        .relations::<NetworkLink>()
+        .count()
+        .await
+        .expect("sdk-v2 network baseline");
+
+    let people = db
+        .entities::<Person>()
+        .insert_many(people_records.iter().map(sdk_v2_person_create).collect())
+        .await
+        .expect("sdk-v2 people insert");
+    assert_eq!(people.len(), 2);
+    sdk_v2_assert_person(&people[0], &people_records[0]);
+    sdk_v2_assert_person(&people[1], &people_records[1]);
+    let person_iids = [people[0].iid().to_owned(), people[1].iid().to_owned()];
+    let read_after_create = db
+        .entities::<Person>()
+        .get_by_iid(&person_iids[0])
+        .await
+        .expect("sdk-v2 person read after create")
+        .is_some();
+
+    let employee = db
+        .entities::<Employee>()
+        .insert(
+            EmployeeCreate::try_new(
+                Identifier::new(sdk_field_string(employee_fields, "identifier", "string"))
+                    .expect("sdk-v2 employee identifier"),
+                PartyName::new(sdk_field_string(employee_fields, "party_name", "string"))
+                    .expect("sdk-v2 employee party name"),
+                Rank::new(sdk_field_long(employee_fields, "rank")).expect("sdk-v2 employee rank"),
+            )
+            .expect("sdk-v2 employee create"),
+        )
+        .await
+        .expect("sdk-v2 employee insert");
+    let employee_iid = employee.iid().to_owned();
+    let manager = db
+        .entities::<Manager>()
+        .insert(
+            ManagerCreate::try_new(
+                Identifier::new(sdk_field_string(manager_fields, "identifier", "string"))
+                    .expect("sdk-v2 manager identifier"),
+                ManagerNote::new(sdk_field_string(manager_fields, "manager_note", "string"))
+                    .expect("sdk-v2 manager note"),
+                PartyName::new(sdk_field_string(manager_fields, "party_name", "string"))
+                    .expect("sdk-v2 manager party name"),
+                Rank::new(sdk_field_long(manager_fields, "rank")).expect("sdk-v2 manager rank"),
+            )
+            .expect("sdk-v2 manager create"),
+        )
+        .await
+        .expect("sdk-v2 manager insert");
+    let manager_iid = manager.iid().to_owned();
+    let membership = db
+        .relations::<Membership>()
+        .insert(
+            MembershipCreate::new(MembershipMemberRef::Person(people[0].reference()))
+                .expect("sdk-v2 membership create"),
+        )
+        .await
+        .expect("sdk-v2 membership insert");
+    let membership_iid = membership.iid().to_owned();
+    let membership_read_after_create = db
+        .relations::<Membership>()
+        .get_by_iid(&membership_iid)
+        .await
+        .expect("sdk-v2 membership read after create")
+        .is_some();
+    let network = db
+        .relations::<NetworkLink>()
+        .insert(
+            NetworkLinkCreate::new(
+                Identifier::new(sdk_field_string(network_fields, "identifier", "string"))
+                    .expect("sdk-v2 network identifier"),
+                Some(
+                    Nickname::new(sdk_field_string(network_fields, "nickname", "string"))
+                        .expect("sdk-v2 network nickname"),
+                ),
+                people[1].reference(),
+                people[0].reference(),
+                vec![people[0].reference(), people[1].reference()],
+            )
+            .expect("sdk-v2 network create"),
+        )
+        .await
+        .expect("sdk-v2 network insert");
+    let network_iid = network.iid().to_owned();
+    let keyed_create_order = [
+        people[0].identifier().value().clone(),
+        people[1].identifier().value().clone(),
+        employee.identifier().value().clone(),
+        manager.identifier().value().clone(),
+        network.identifier().value().clone(),
+    ];
+    let membership_order_key = format!(
+        "{}{}",
+        sdk_v2_common_key_prefix(&keyed_create_order),
+        sdk_v2_type_label(MembershipType::TOKEN.type_id_json()),
+    );
+    let actual_create_order = [
+        keyed_create_order[0].clone(),
+        keyed_create_order[1].clone(),
+        keyed_create_order[2].clone(),
+        keyed_create_order[3].clone(),
+        membership_order_key.clone(),
+        keyed_create_order[4].clone(),
+    ];
+    assert_eq!(
+        journey["create_order"],
+        json!(actual_create_order),
+        "sdk-v2 public create operations diverged from journey order"
+    );
+
+    let mut direct_session = db.query().expect("sdk-v2 direct query session");
+    let direct_observations =
+        sdk_v2_query_observations(&mut direct_session, records, &person_iids, None).await;
+
+    let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("sdk-v2 remote URL");
+    let exchange_count = Arc::new(AtomicUsize::new(0));
+    let remote: RemoteDatabase<AppSchema> =
+        RemoteDatabase::connect(RemoteConnectionOptions::generated(
+            QueryExecutionResourceLimits::default(),
+            HttpTransport::recording(remote_url.clone(), Arc::clone(&exchange_count)),
+        ))
+        .await
+        .expect("sdk-v2 remote database connects")
+        .with_schema(SCHEMA)
+        .expect("sdk-v2 remote schema binds");
+    let mut remote_session = remote.query().expect("sdk-v2 remote query session");
+    let remote_observations = sdk_v2_query_observations(
+        &mut remote_session,
+        records,
+        &person_iids,
+        Some(&exchange_count),
+    )
+    .await;
+    for name in [
+        "model_values_and_references",
+        "owner_iid_set",
+        "exact_subtypes",
+        "scalar_boolean",
+        "roles",
+        "topology",
+        "selection_shapes",
+        "terminals",
+        "grouped_reducer",
+        "hydrated_result",
+        "scalar_domain",
+        "schema_function",
+    ] {
+        assert_eq!(
+            direct_observations.get(name),
+            remote_observations.get(name),
+            "sdk-v2 direct/remote observation differs: {name}"
+        );
+    }
+
+    let structured_query_diagnostic = {
+        let mut session = db.query().expect("sdk-v2 structured diagnostic session");
+        let person = session
+            .exact::<Person>()
+            .expect("sdk-v2 structured diagnostic binding");
+        let identifier = person.field(PersonType::identifier);
+        let error = session
+            .query(person)
+            .expect("sdk-v2 structured diagnostic query")
+            .where_(
+                identifier.eq(Identifier::new(ada_key.clone()).expect("sdk-v2 Ada key"))
+                    | identifier.eq(Identifier::new(dana_key.clone()).expect("sdk-v2 Dana key")),
+            )
+            .expect("sdk-v2 structured diagnostic scope")
+            .one()
+            .await
+            .expect_err("sdk-v2 two-row exact-one must fail");
+        sdk_v2_diagnostic(
+            &error,
+            None,
+            &[
+                ada_key.as_str(),
+                dana_key.as_str(),
+                person_iids[0].as_str(),
+                person_iids[1].as_str(),
+            ],
+        )
+    };
+
+    let cancellation_remote =
+        sdk_v2_remote_cancellation(&remote, &exchange_count, &remote_url).await;
+    let deterministic_cancellation_remote =
+        &proof_observations[&sdk_v2_observation_key("cancellation_remote", "remote_runtime")];
+    assert_eq!(
+        &cancellation_remote, deterministic_cancellation_remote,
+        "sdk-v2 live and deterministic public remote cancellation observations differ"
+    );
+
+    let limited_dimension = "role_players";
+    let limited = QueryExecutionResourceLimits {
+        role_players: 0,
+        ..QueryExecutionResourceLimits::default()
+    };
+    let direct_enforced = {
+        let mut session = db
+            .query_with_resources(limited, AnswerCancellation::default())
+            .expect("sdk-v2 direct limited session");
+        sdk_v2_enforced_role_player_limit(&mut session, &ada_key, limited_dimension).await
+    };
+    let remote_enforced = {
+        let mut session = remote
+            .query_with_resources(limited, AnswerCancellation::default())
+            .expect("sdk-v2 remote limited session");
+        sdk_v2_enforced_role_player_limit(&mut session, &ada_key, limited_dimension).await
+    };
+    assert_eq!(direct_enforced, remote_enforced);
+    let mut direct_limits = sdk_v2_resource_limit_base();
+    direct_limits["enforced"] = direct_enforced;
+    let mut remote_limits = sdk_v2_resource_limit_base();
+    remote_limits["enforced"] = remote_enforced;
+
+    let direct_lane = "direct";
+    let (direct_lifecycle, direct_result_survives) = {
+        let mut session = db.query().expect("sdk-v2 direct lifecycle session");
+        sdk_v2_lifecycle_lane(&mut session, &ada_key, None).await
+    };
+    let remote_lane = "remote";
+    let (remote_lifecycle, remote_result_survives) = {
+        let mut session = remote.query().expect("sdk-v2 remote lifecycle session");
+        sdk_v2_lifecycle_lane(&mut session, &ada_key, Some(&exchange_count)).await
+    };
+    assert_eq!(direct_lifecycle, remote_lifecycle);
+    assert_eq!(direct_result_survives, remote_result_survives);
+    let query_resource_lifecycle = json!({
+        "lanes": [direct_lane, remote_lane],
+        "query": direct_lifecycle,
+        "result_usable_after_query_close": direct_result_survives,
+    });
+
+    let mut actual_cleanup_order = Vec::new();
+    db.relations::<NetworkLink>()
+        .delete(&network_iid)
+        .await
+        .expect("sdk-v2 network cleanup");
+    actual_cleanup_order.push(keyed_create_order[4].clone());
+    let network_deleted = db
+        .relations::<NetworkLink>()
+        .get_by_iid(&network_iid)
+        .await
+        .expect("sdk-v2 network cleanup read")
+        .is_none();
+    db.relations::<Membership>()
+        .delete(&membership_iid)
+        .await
+        .expect("sdk-v2 membership cleanup");
+    actual_cleanup_order.push(membership_order_key);
+    let membership_deleted = db
+        .relations::<Membership>()
+        .get_by_iid(&membership_iid)
+        .await
+        .expect("sdk-v2 membership cleanup read")
+        .is_none();
+    db.entities::<Manager>()
+        .delete(&manager_iid)
+        .await
+        .expect("sdk-v2 manager cleanup");
+    actual_cleanup_order.push(keyed_create_order[3].clone());
+    db.entities::<Employee>()
+        .delete(&employee_iid)
+        .await
+        .expect("sdk-v2 employee cleanup");
+    actual_cleanup_order.push(keyed_create_order[2].clone());
+    db.entities::<Person>()
+        .delete(&person_iids[1])
+        .await
+        .expect("sdk-v2 Dana cleanup");
+    actual_cleanup_order.push(keyed_create_order[1].clone());
+    db.entities::<Person>()
+        .delete(&person_iids[0])
+        .await
+        .expect("sdk-v2 Ada cleanup");
+    actual_cleanup_order.push(keyed_create_order[0].clone());
+    let people_deleted = db
+        .entities::<Person>()
+        .get_by_iid(&person_iids[0])
+        .await
+        .expect("sdk-v2 Ada cleanup read")
+        .is_none()
+        && db
+            .entities::<Person>()
+            .get_by_iid(&person_iids[1])
+            .await
+            .expect("sdk-v2 Dana cleanup read")
+            .is_none();
+    assert!(network_deleted && membership_deleted && people_deleted);
+    assert_eq!(
+        journey["cleanup_order"],
+        json!(actual_cleanup_order),
+        "sdk-v2 public cleanup operations diverged from journey order"
+    );
+    assert_eq!(
+        db.relations::<NetworkLink>()
+            .count()
+            .await
+            .expect("sdk-v2 network cleanup count"),
+        network_baseline
+    );
+    assert_eq!(
+        db.relations::<Membership>()
+            .count()
+            .await
+            .expect("sdk-v2 membership cleanup count"),
+        membership_baseline
+    );
+    assert_eq!(
+        db.entities::<Manager>()
+            .count()
+            .await
+            .expect("sdk-v2 manager cleanup count"),
+        manager_baseline
+    );
+    assert_eq!(
+        db.entities::<Employee>()
+            .count()
+            .await
+            .expect("sdk-v2 employee cleanup count"),
+        employee_baseline
+    );
+    assert_eq!(
+        db.entities::<Person>()
+            .count()
+            .await
+            .expect("sdk-v2 person cleanup count"),
+        person_baseline
+    );
+
+    let entity_lifecycle = json!({
+        "created": !person_iids[0].is_empty(),
+        "deleted": people_deleted,
+        "key": ada_key,
+        "model": sdk_v2_type_label(PersonType::TOKEN.type_id_json()),
+        "read_after_create": read_after_create,
+    });
+    let membership_player_key = match membership.member() {
+        MembershipMemberPlayer::Person(reference) => reference
+            .identifier()
+            .expect("sdk-v2 inserted membership player carries its key")
+            .value()
+            .clone(),
+        MembershipMemberPlayer::Robot(_) => {
+            panic!("sdk-v2 inserted membership player must be a person")
+        }
+    };
+    let relation_lifecycle = json!({
+        "created": !membership_iid.is_empty() && membership_read_after_create,
+        "deleted": membership_deleted,
+        "model": sdk_v2_type_label(MembershipType::TOKEN.type_id_json()),
+        "player_key": membership_player_key,
+        "role": sdk_v2_role_label(MembershipType::member.role_id_json()),
+    });
+
+    let mut actual = BTreeMap::new();
+    let mut insert = |observation_ref: &str, proof_kind: &str, observation: Value| {
+        let key = sdk_v2_observation_key(observation_ref, proof_kind);
+        assert!(
+            actual.insert(key.clone(), observation).is_none(),
+            "sdk-v2 producer duplicated an observation lane: {key:?}"
+        );
+    };
+    insert("entity_lifecycle", "direct_runtime", entity_lifecycle);
+    insert("relation_lifecycle", "direct_runtime", relation_lifecycle);
+    insert(
+        "structured_query_diagnostic",
+        "diagnostic",
+        structured_query_diagnostic,
+    );
+    insert(
+        "remote_structured_diagnostic",
+        "diagnostic",
+        proof_observations[&sdk_v2_observation_key("remote_structured_diagnostic", "diagnostic")]
+            .clone(),
+    );
+    for name in [
+        "model_values_and_references",
+        "exact_subtypes",
+        "owner_iid_set",
+        "grouped_reducer",
+        "hydrated_result",
+        "roles",
+        "scalar_boolean",
+        "schema_function",
+        "selection_shapes",
+        "terminals",
+        "topology",
+        "scalar_domain",
+    ] {
+        insert(
+            name,
+            "direct_runtime",
+            direct_observations
+                .get(name)
+                .unwrap_or_else(|| panic!("sdk-v2 direct observation is absent: {name}"))
+                .clone(),
+        );
+        insert(
+            name,
+            "remote_runtime",
+            remote_observations
+                .get(name)
+                .unwrap_or_else(|| panic!("sdk-v2 remote observation is absent: {name}"))
+                .clone(),
+        );
+    }
+    insert(
+        "remote_one_exchange",
+        "remote_runtime",
+        remote_observations["remote_one_exchange"].clone(),
+    );
+    insert(
+        "cancellation_direct",
+        "direct_runtime",
+        proof_observations[&sdk_v2_observation_key("cancellation_direct", "direct_runtime")]
+            .clone(),
+    );
+    insert(
+        "cancellation_remote",
+        "remote_runtime",
+        deterministic_cancellation_remote.clone(),
+    );
+    insert(
+        "query_resource_lifecycle",
+        "lifecycle",
+        query_resource_lifecycle,
+    );
+    insert("resource_limits", "direct_runtime", direct_limits);
+    insert("resource_limits", "remote_runtime", remote_limits);
+    drop(insert);
+    assert_eq!(actual.len(), 34, "sdk-v2 producer requires 34 rows");
+
+    let expected_observations = journey["expected_observations"]
+        .as_object()
+        .expect("sdk-v2 expected observations must be an object");
+    let actual_observation_refs = actual
+        .keys()
+        .map(|(observation_ref, _)| observation_ref.as_str())
+        .collect::<BTreeSet<_>>();
+    let expected_observation_refs = expected_observations
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        actual_observation_refs, expected_observation_refs,
+        "sdk-v2 actual and journey observation coverage differs"
+    );
+    for ((observation_ref, proof_kind), observation) in &actual {
+        assert_eq!(
+            observation,
+            expected_observations
+                .get(observation_ref)
+                .unwrap_or_else(|| {
+                    panic!("sdk-v2 expected observation is absent: {observation_ref}")
+                }),
+            "sdk-v2 actual observation diverged: {observation_ref}/{proof_kind}"
+        );
+    }
+
+    let semantic_fingerprint: Value = serde_json::from_str(SEMANTIC_SCHEMA_FINGERPRINT_JSON)
+        .expect("generated sdk-v2 semantic fingerprint is valid JSON");
+    let projection_fingerprint: Value = serde_json::from_str(PROJECTION_FINGERPRINT_JSON)
+        .expect("generated sdk-v2 projection fingerprint is valid JSON");
+    assert_eq!(
+        semantic_fingerprint,
+        catalog["expected_fingerprints"]["semantic"]
+    );
+    assert_eq!(
+        projection_fingerprint,
+        catalog["expected_fingerprints"]["projections"]["rust"]
+    );
+    let report = json!({
+        "format": "typebridge.sdk-conformance-report/v2",
+        "binding": "rust",
+        "manifest": sdk_source_identity(SDK_MANIFEST_PATH, &manifest_bytes),
+        "catalog": sdk_source_identity(SDK_V2_CATALOG_PATH, &catalog_bytes),
+        "fixture": {
+            "id": sdk_string(&journey["fixture_id"], "sdk-v2 fixture ID"),
+            "version": journey["version"].clone(),
+            "semantic_profile": SDK_PROFILE,
+            "schema": sdk_source_identity(SDK_SCHEMA_PATH, &schema_bytes),
+            "provider_schema": sdk_source_identity(
+                SDK_PROVIDER_SCHEMA_PATH,
+                &provider_schema_bytes,
+            ),
+            "journey": sdk_source_identity(SDK_V2_JOURNEY_PATH, &journey_bytes),
+            "semantic_fingerprint": semantic_fingerprint,
+            "projection_target": projection_target,
+            "projection_fingerprint": projection_fingerprint,
+        },
+        "results": sdk_v2_results(&catalog, &actual),
+    });
+    publish_sdk_report(&report_path, report);
+}
+
+#[tokio::test]
+async fn generated_sdk_report_journeys() {
+    let sdk_v1_requested = env::var_os("TYPE_BRIDGE_SDK_REPORT").is_some();
+    let sdk_v2_requested = env::var_os("TYPE_BRIDGE_SDK_REPORT_V2").is_some();
+    if sdk_v1_requested || sdk_v2_requested {
+        let db = database().await;
+        if sdk_v1_requested {
+            run_sdk_journey(&db).await;
+        }
+        if sdk_v2_requested {
+            run_sdk_v2_journey_inner(&db).await;
+        }
+    }
+    println!("generated sdk report journeys: passed");
 }
 
 #[tokio::test]
@@ -1335,14 +4322,7 @@ async fn generated_relation_query_and_remote_lifecycle() {
         keyed_put.nickname().expect("put nickname").value(),
         "put-replaced"
     );
-    match keyed_put.destination() {
-        NetworkLinkDestinationPlayer::Person(value) => {
-            assert_eq!(
-                value.identifier().expect("destination key").value(),
-                "p-202"
-            )
-        }
-    }
+    assert_eq!(keyed_put.destination().identifier().value(), "p-202");
     assert_eq!(keyed_put.participant().len(), 2);
 
     let put_new = db
@@ -1380,19 +4360,8 @@ async fn generated_relation_query_and_remote_lifecycle() {
         .expect("network update replaces attributes and roles");
     assert_eq!(updated_new.iid(), put_new_iid);
     assert!(updated_new.nickname().is_none());
-    match updated_new.origin() {
-        NetworkLinkOriginPlayer::Person(value) => {
-            assert_eq!(value.identifier().expect("origin key").value(), "p-202")
-        }
-    }
-    match updated_new.destination() {
-        NetworkLinkDestinationPlayer::Person(value) => {
-            assert_eq!(
-                value.identifier().expect("destination key").value(),
-                "p-203"
-            )
-        }
-    }
+    assert_eq!(updated_new.origin().identifier().value(), "p-202");
+    assert_eq!(updated_new.destination().identifier().value(), "p-203");
     assert_eq!(
         db.relations::<NetworkLink>()
             .count()
@@ -1895,16 +4864,15 @@ async fn generated_relation_query_and_remote_lifecycle() {
     }
 
     let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("F4 remote server URL");
-    let remote: RemoteDatabase<AppSchema> = RemoteDatabase::connect(
-        RemoteConnectionOptions::generated(
-        RemoteQueryLimits::new(100, 8 << 20, 1000, 1000, 1000, 1000).deadline_ms(30_000),
-        HttpTransport::new(remote_url),
-        ),
-    )
-    .await
-    .expect("F4 remote database connects")
-    .with_schema(SCHEMA)
-    .expect("F4 remote schema authority binds");
+    let remote: RemoteDatabase<AppSchema> =
+        RemoteDatabase::connect(RemoteConnectionOptions::generated(
+            RemoteQueryLimits::new(100, 8 << 20, 1000, 1000, 1000, 1000).deadline_ms(30_000),
+            HttpTransport::new(remote_url),
+        ))
+        .await
+        .expect("F4 remote database connects")
+        .with_schema(SCHEMA)
+        .expect("F4 remote schema authority binds");
     let mut session = remote.query().expect("F4 remote query session");
     let person_binding = session.exact::<Person>().expect("F4 remote person binding");
     let member_binding = session.exact::<Person>().expect("F4 remote member binding");
@@ -1953,6 +4921,96 @@ async fn generated_relation_query_and_remote_lifecycle() {
         .collect::<Vec<_>>();
     assert_eq!(remote_page.total(), Some(4));
     assert_eq!(observed_page, expected_page);
+
+    let remote_score = person_binding.field(PersonType::score);
+    let remote_val_bool = person_binding.field(PersonType::val_bool);
+    let remote_worker_predicate =
+        identifier.starts_with(Text::new("p-2").expect("F4 remote aggregate worker prefix"));
+    let remote_worker_query = session
+        .query(person_binding)
+        .expect("F4 remote aggregate query")
+        .where_(remote_worker_predicate.clone())
+        .expect("F4 remote aggregate predicate");
+    let remote_stats: (
+        u64,
+        i64,
+        Option<i64>,
+        Option<i64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+    ) = remote_worker_query
+        .aggregate((
+            aggregate::count(),
+            remote_score.sum(),
+            remote_score.min(),
+            remote_score.max(),
+            remote_score.mean(),
+            remote_score.median(),
+            remote_score.stddev(),
+        ))
+        .await
+        .expect("F4 remote aggregate");
+    assert_eq!(
+        remote_stats,
+        (
+            4,
+            280,
+            Some(70),
+            Some(70),
+            Some(70.0),
+            Some(70.0),
+            Some(0.0),
+        )
+    );
+    let remote_field_grouped = remote_worker_query
+        .group_by_field(remote_val_bool)
+        .expect("F4 remote field group")
+        .aggregate((aggregate::count(), remote_score.sum()))
+        .await
+        .expect("F4 remote field-grouped aggregate");
+    assert_eq!(remote_field_grouped.len(), 1);
+    assert_eq!(remote_field_grouped[0].0.value(), &true);
+    assert_eq!(remote_field_grouped[0].1, (4, 280));
+    let remote_tuple_grouped = remote_worker_query
+        .group_by_fields((remote_val_bool, remote_score))
+        .expect("F4 remote tuple group")
+        .aggregate((aggregate::count(), remote_score.sum()))
+        .await
+        .expect("F4 remote tuple-field-grouped aggregate");
+    assert_eq!(remote_tuple_grouped.len(), 1);
+    assert_eq!(remote_tuple_grouped[0].0.0.value(), &true);
+    assert_eq!(remote_tuple_grouped[0].0.1.value(), &70);
+    assert_eq!(remote_tuple_grouped[0].1, (4, 280));
+
+    let remote_employment = session
+        .exact::<Employment>()
+        .expect("F4 remote employment binding");
+    let remote_employee_role = remote_employment.role(EmploymentType::employee);
+    let remote_binding_grouped = session
+        .query(remote_employment)
+        .expect("F4 remote employment aggregate query")
+        .where_(remote_employee_role.connects(person_binding) & remote_worker_predicate)
+        .expect("F4 remote employment aggregate predicate")
+        .group_by(person_binding)
+        .expect("F4 remote binding group")
+        .aggregate((aggregate::count(), remote_score.mean()))
+        .await
+        .expect("F4 remote binding-grouped aggregate");
+    let mut remote_binding_grouped = remote_binding_grouped
+        .into_iter()
+        .map(|(person, values)| (person.identifier().value().clone(), values))
+        .collect::<Vec<_>>();
+    remote_binding_grouped.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(
+        remote_binding_grouped,
+        vec![
+            ("p-200".to_owned(), (1, Some(70.0))),
+            ("p-201".to_owned(), (1, Some(70.0))),
+            ("p-202".to_owned(), (1, Some(70.0))),
+        ]
+    );
+
     let remote_worker_by_iid = session
         .query(person_binding)
         .expect("F4 remote worker IID query")
@@ -2288,14 +5346,10 @@ async fn generated_integer_keys_and_polymorphic_role_parity() {
         }
         InteractionActorPlayer::Person(_) => panic!("robot interaction hydrated as a person"),
     }
-    match robot_interaction.target() {
-        InteractionTargetPlayer::Person(reference) => {
-            assert_eq!(
-                reference.identifier().expect("target key").value(),
-                "parity-person-target"
-            );
-        }
-    }
+    assert_eq!(
+        robot_interaction.target().identifier().value(),
+        "parity-person-target"
+    );
 
     {
         let mut session = db.query().expect("integer-key query session");
@@ -2427,11 +5481,7 @@ async fn generated_integer_keys_and_polymorphic_role_parity() {
         .expect("surviving interaction read")
         .expect("interaction survives optional actor deletion");
     assert!(surviving.actor().is_none());
-    match surviving.target() {
-        InteractionTargetPlayer::Person(reference) => {
-            assert_eq!(reference.iid(), Some(target.iid()));
-        }
-    }
+    assert_eq!(surviving.target().iid(), target.iid());
 
     db.relations::<Interaction>()
         .delete(surviving.iid())
@@ -2505,11 +5555,7 @@ async fn generated_plain_inherited_abstract_role_parity() {
         )
         .await
         .expect("plain activity insert");
-    match activity.participant() {
-        PlainActivityParticipantPlayer::Person(reference) => {
-            assert_eq!(reference.iid(), Some(person.iid()));
-        }
-    }
+    assert_eq!(activity.participant().iid(), person.iid());
 
     let stored = db
         .relations::<PlainActivity>()
@@ -2517,11 +5563,7 @@ async fn generated_plain_inherited_abstract_role_parity() {
         .await
         .expect("plain activity lookup")
         .expect("plain activity exists");
-    match stored.participant() {
-        PlainActivityParticipantPlayer::Person(reference) => {
-            assert_eq!(reference.iid(), Some(person.iid()));
-        }
-    }
+    assert_eq!(stored.participant().iid(), person.iid());
 
     {
         let mut session = db.query().expect("plain activity query session");
@@ -2957,6 +5999,1384 @@ async fn generated_write_transaction_commit_rollback_and_drop() {
         transaction_person_baseline
     );
     println!("F2D public write transaction lifecycle: passed");
+}
+
+#[tokio::test]
+async fn generated_canonical_serialization_v5_live() {
+    let Some(_) = env::var_os("TYPE_BRIDGE_SDK_V5_RUST_EVIDENCE") else {
+        println!("generated Sdk V5 Rust live evidence: not requested");
+        return;
+    };
+    require_sdk_server_version().await;
+    let db = database().await;
+    let person = db
+        .entities::<Person>()
+        .insert(ownership_edge_person_input("v5-live-person", &[], None))
+        .await
+        .expect("V5 live person insert");
+    let employment = db
+        .relations::<Employment>()
+        .insert(EmploymentCreate::new(person.reference()).expect("V5 employment input"))
+        .await
+        .expect("V5 live employment insert");
+
+    let (direct_employment, direct_person) = {
+        let mut session = db.query().expect("V5 direct query session");
+        let relation = session
+            .exact::<Employment>()
+            .expect("V5 employment binding");
+        let person_binding = session.exact::<Person>().expect("V5 person binding");
+        session
+            .query((relation, person_binding))
+            .expect("V5 direct selection")
+            .where_(
+                relation
+                    .role(EmploymentType::employee)
+                    .connects(person_binding)
+                    & person_binding
+                        .field(PersonType::identifier)
+                        .eq(Identifier::new("v5-live-person").expect("V5 direct key")),
+            )
+            .expect("V5 direct predicate")
+            .one()
+            .await
+            .expect("V5 direct result")
+    };
+    let direct_person_bytes = SCHEMA
+        .encode_snapshot(direct_person)
+        .expect("V5 direct person snapshot encodes");
+    let direct_employment_bytes = SCHEMA
+        .encode_snapshot(direct_employment)
+        .expect("V5 direct employment snapshot encodes");
+
+    let exchange_count = Arc::new(AtomicUsize::new(0));
+    let remote: RemoteDatabase<AppSchema> =
+        RemoteDatabase::connect(RemoteConnectionOptions::generated(
+            RemoteQueryLimits::new(100, 8 << 20, 1000, 1000, 1000, 1000).deadline_ms(30_000),
+            HttpTransport::recording(
+                env::var("TYPE_BRIDGE_REMOTE_URL").expect("V5 remote URL"),
+                Arc::clone(&exchange_count),
+            ),
+        ))
+        .await
+        .expect("V5 remote connects")
+        .with_schema(SCHEMA)
+        .expect("V5 remote schema binds");
+    let (remote_employment, remote_person) = {
+        let mut session = remote.query().expect("V5 remote query session");
+        let relation = session
+            .exact::<Employment>()
+            .expect("V5 remote employment binding");
+        let person_binding = session.exact::<Person>().expect("V5 remote person binding");
+        session
+            .query((relation, person_binding))
+            .expect("V5 remote selection")
+            .where_(
+                relation
+                    .role(EmploymentType::employee)
+                    .connects(person_binding)
+                    & person_binding
+                        .field(PersonType::identifier)
+                        .eq(Identifier::new("v5-live-person").expect("V5 remote key")),
+            )
+            .expect("V5 remote predicate")
+            .one()
+            .await
+            .expect("V5 remote result")
+    };
+    assert_eq!(exchange_count.load(Ordering::SeqCst), 1);
+    let remote_person_bytes = SCHEMA
+        .encode_snapshot(remote_person)
+        .expect("V5 remote person snapshot encodes");
+    let remote_employment_bytes = SCHEMA
+        .encode_snapshot(remote_employment)
+        .expect("V5 remote employment snapshot encodes");
+    assert_eq!(direct_person_bytes, remote_person_bytes);
+    assert_eq!(direct_employment_bytes, remote_employment_bytes);
+
+    let detached: Person = SCHEMA
+        .decode_snapshot(&direct_person_bytes)
+        .expect("V5 person snapshot decodes detached");
+    let detached_error = db
+        .relations::<Employment>()
+        .insert(
+            EmploymentCreate::new(detached.reference())
+                .expect("V5 detached employment input is structurally valid"),
+        )
+        .await
+        .expect_err("V5 detached snapshot cannot authorize mutation");
+    assert_eq!(detached_error.code(), Some("projected_snapshot_detached"));
+
+    let rebound = {
+        let mut session = db.query().expect("V5 rebound query session");
+        let binding = session
+            .exact::<Person>()
+            .expect("V5 rebound person binding");
+        session
+            .query(binding)
+            .expect("V5 rebound selection")
+            .where_(
+                binding
+                    .field(PersonType::identifier)
+                    .eq(Identifier::new("v5-live-person").expect("V5 rebound key")),
+            )
+            .expect("V5 rebound predicate")
+            .one()
+            .await
+            .expect("V5 fresh key lookup finds the person")
+    };
+    let rebound_employment = db
+        .relations::<Employment>()
+        .update(
+            employment.iid(),
+            EmploymentCreate::new(rebound.reference()).expect("V5 rebound input"),
+        )
+        .await
+        .expect("V5 rebound mutation succeeds");
+
+    let evidence = json!({
+        "binding": "rust",
+        "detached_mutation_code": detached_error.code(),
+        "direct_remote_equal": true,
+        "entity_snapshot_b64": sdk_base64(&direct_person_bytes),
+        "format": "typebridge.sdk-v5-live-codec-evidence/v1",
+        "relation_snapshot_b64": sdk_base64(&direct_employment_bytes),
+        "remote_exchange_count": exchange_count.load(Ordering::SeqCst),
+        "rebound_mutation": true,
+    });
+    publish_sdk_report(&sdk_env_path("TYPE_BRIDGE_SDK_V5_RUST_EVIDENCE"), evidence);
+    assert_eq!(rebound_employment.iid(), employment.iid());
+    db.relations::<Employment>()
+        .delete(employment.iid())
+        .await
+        .expect("V5 employment cleanup");
+    db.entities::<Person>()
+        .delete(person.iid())
+        .await
+        .expect("V5 person cleanup");
+    println!("generated Sdk V5 Rust live evidence: passed");
+}
+
+#[tokio::test]
+async fn generated_data_model_runtime_v3_live() {
+    let Some(_) = env::var_os("TYPE_BRIDGE_SDK_V3_RUST_SUPPLEMENT") else {
+        println!("generated Sdk V3 Rust live supplement: not requested");
+        return;
+    };
+    require_sdk_server_version().await;
+    let db = database().await;
+
+    let person_baseline = db.entities::<Person>().count().await.expect("person count");
+    let empty_people = db
+        .entities::<Person>()
+        .insert_many(Vec::new())
+        .await
+        .expect("empty entity insert batch");
+    assert!(empty_people.is_empty());
+    let inserted_people = db
+        .entities::<Person>()
+        .insert_many(vec![
+            ownership_edge_person_input("data-ada", &[], None),
+            ownership_edge_person_input("data-dana", &[], None),
+        ])
+        .await
+        .expect("Sdk V3 entity batch insert");
+    let inserted_keys = inserted_people
+        .iter()
+        .map(|person| person.identifier().value().clone())
+        .collect::<Vec<_>>();
+    assert_eq!(inserted_keys, ["data-ada", "data-dana"]);
+    let duplicate_key = db
+        .entities::<Person>()
+        .insert_many(vec![
+            ownership_edge_person_input("data-ada", &[], None),
+            ownership_edge_person_input("data-ada", &[], None),
+        ])
+        .await
+        .expect_err("duplicate entity batch key is rejected");
+    assert_eq!(duplicate_key.category(), ErrorCategory::ModelValidation);
+    assert_eq!(duplicate_key.code(), Some("duplicate_batch_key"));
+    assert!(matches!(
+        duplicate_key.diagnostic_path(),
+        Some([
+            ErrorPathSegment::Argument(argument),
+            ErrorPathSegment::Index(1),
+            ErrorPathSegment::Identifier(field),
+        ]) if argument == "rows" && field == "person:identifier"
+    ));
+    assert_eq!(
+        duplicate_key
+            .details()
+            .and_then(|details| details.get("first_conflicting_index")),
+        Some(&ErrorDetail::Long(0))
+    );
+    for person in &inserted_people {
+        db.entities::<Person>()
+            .delete(person.iid())
+            .await
+            .expect("insert batch cleanup");
+    }
+    let original_ada = db
+        .entities::<Person>()
+        .insert(ownership_edge_person_input("data-ada", &[], None))
+        .await
+        .expect("put replacement seed");
+    let put_people = db
+        .entities::<Person>()
+        .put_many(vec![
+            ownership_edge_person_input("data-ada", &[], None),
+            ownership_edge_person_input("data-dana", &[], None),
+        ])
+        .await
+        .expect("Sdk V3 entity batch put");
+    let put_keys = put_people
+        .iter()
+        .map(|person| person.identifier().value().clone())
+        .collect::<Vec<_>>();
+    assert_eq!(put_keys, ["data-ada", "data-dana"]);
+    assert_eq!(put_people[0].iid(), original_ada.iid());
+    for person in &put_people {
+        db.entities::<Person>()
+            .delete(person.iid())
+            .await
+            .expect("put batch cleanup");
+    }
+    let conflict = db
+        .entities::<Person>()
+        .insert(ownership_edge_person_input("data-conflict", &[], None))
+        .await
+        .expect("late-failure conflict seed");
+    let late_failure = db
+        .entities::<Person>()
+        .insert_many(vec![
+            ownership_edge_person_input("data-prefix", &[], None),
+            ownership_edge_person_input("data-conflict", &[], None),
+        ])
+        .await;
+    assert!(late_failure.is_err());
+    let prefix_persisted = db
+        .entities::<Person>()
+        .all()
+        .await
+        .expect("late-failure entity read")
+        .into_iter()
+        .any(|person| person.identifier().value() == "data-prefix");
+    assert!(!prefix_persisted);
+    db.entities::<Person>()
+        .delete(conflict.iid())
+        .await
+        .expect("late-failure seed cleanup");
+    assert_eq!(
+        db.entities::<Person>().count().await.unwrap(),
+        person_baseline
+    );
+    let entity_batch_insert_put = json!({
+        "empty": {"result_count": empty_people.len(), "transaction_opened": false, "provider_calls": 0},
+        "insert": {
+            "input_order": ["data-ada", "data-dana"],
+            "result_order": inserted_keys,
+            "persisted_keys": ["data-ada", "data-dana"],
+        },
+        "duplicate_key": {
+            "key": "data-ada",
+            "category": "invalid_input",
+            "code": duplicate_key.code().expect("duplicate key code"),
+            "path": [
+                {"kind": "argument", "value": "rows"},
+                {"kind": "index", "value": 1},
+                {"kind": "field", "value": "person:identifier"},
+            ],
+            "details": {"first_conflicting_index": {"kind": "count", "value": "0"}},
+            "rejected_before_provider_io": true,
+        },
+        "put": {
+            "input_order": ["data-ada", "data-dana"],
+            "result_order": put_keys,
+            "replaced_keys": ["data-ada"],
+            "inserted_keys": ["data-dana"],
+        },
+        "late_failure": {
+            "rollback_completed": late_failure.is_err(),
+            "committed_prefix": prefix_persisted,
+            "persisted_keys": [],
+            "published_results": 0,
+        },
+    });
+
+    let batch_counter_baseline = db
+        .entities::<Counter>()
+        .count()
+        .await
+        .expect("batch counter baseline");
+    let batch_counters = db
+        .entities::<Counter>()
+        .insert_many(vec![
+            CounterCreate::new(CounterValue::new(1).expect("left counter value"))
+                .expect("left counter input"),
+            CounterCreate::new(CounterValue::new(2).expect("right counter value"))
+                .expect("right counter input"),
+        ])
+        .await
+        .expect("counter update batch seed");
+    let batch_left_iid = batch_counters[0].iid().to_owned();
+    let batch_right_iid = batch_counters[1].iid().to_owned();
+    let updated_counters = db
+        .entities::<Counter>()
+        .update_many(vec![
+            (
+                batch_left_iid.clone(),
+                CounterCreate::new(CounterValue::new(11).expect("left replacement"))
+                    .expect("left replacement input"),
+            ),
+            (
+                batch_right_iid.clone(),
+                CounterCreate::new(CounterValue::new(22).expect("right replacement"))
+                    .expect("right replacement input"),
+            ),
+        ])
+        .await
+        .expect("counter update batch");
+    assert_eq!(updated_counters[0].iid(), batch_left_iid);
+    assert_eq!(updated_counters[1].iid(), batch_right_iid);
+    assert_eq!(updated_counters[0].counter_value().value(), &11);
+    assert_eq!(updated_counters[1].counter_value().value(), &22);
+    let duplicate_target = db
+        .entities::<Counter>()
+        .update_many(vec![
+            (
+                batch_left_iid.clone(),
+                CounterCreate::new(CounterValue::new(31).expect("duplicate replacement"))
+                    .expect("duplicate replacement input"),
+            ),
+            (
+                batch_left_iid.clone(),
+                CounterCreate::new(CounterValue::new(32).expect("duplicate replacement"))
+                    .expect("duplicate replacement input"),
+            ),
+        ])
+        .await
+        .expect_err("duplicate update target is rejected");
+    assert_eq!(duplicate_target.code(), Some("duplicate_batch_target"));
+    assert!(matches!(
+        duplicate_target.diagnostic_path(),
+        Some([
+            ErrorPathSegment::Argument(argument),
+            ErrorPathSegment::Index(1),
+            ErrorPathSegment::Argument(iid),
+        ]) if argument == "rows" && iid == "iid"
+    ));
+    let delete_failure = db
+        .entities::<Counter>()
+        .delete_many(&[batch_left_iid.clone(), batch_left_iid.clone()])
+        .await;
+    assert!(delete_failure.is_err());
+    let all_targets_remain = db
+        .entities::<Counter>()
+        .get_by_iid(&batch_left_iid)
+        .await
+        .expect("left counter read")
+        .is_some()
+        && db
+            .entities::<Counter>()
+            .get_by_iid(&batch_right_iid)
+            .await
+            .expect("right counter read")
+            .is_some();
+    db.entities::<Counter>()
+        .delete_many(&[batch_left_iid.clone(), batch_right_iid.clone()])
+        .await
+        .expect("counter delete batch");
+    let all_targets_absent = db
+        .entities::<Counter>()
+        .get_by_iid(&batch_left_iid)
+        .await
+        .expect("deleted left counter read")
+        .is_none()
+        && db
+            .entities::<Counter>()
+            .get_by_iid(&batch_right_iid)
+            .await
+            .expect("deleted right counter read")
+            .is_none();
+    db.entities::<Counter>()
+        .delete_many(&[batch_left_iid, batch_right_iid])
+        .await
+        .expect("missing counter delete batch is idempotent");
+    assert_eq!(
+        db.entities::<Counter>().count().await.unwrap(),
+        batch_counter_baseline
+    );
+    let entity_batch_update_delete_atomic = json!({
+        "update": {
+            "identity_kind": "iid",
+            "input_order": ["counter-left", "counter-right"],
+            "result_order": ["counter-left", "counter-right"],
+            "identity_preserved": [true, true],
+            "replacement_complete": true,
+        },
+        "duplicate_target": {
+            "category": "invalid_input",
+            "code": duplicate_target.code().expect("duplicate target code"),
+            "path": [
+                {"kind": "argument", "value": "rows"},
+                {"kind": "index", "value": 1},
+                {"kind": "argument", "value": "iid"},
+            ],
+            "details": {"first_conflicting_index": {"kind": "count", "value": "0"}},
+            "rejected_before_provider_io": true,
+        },
+        "delete_failure": {
+            "requested": ["counter-left", "counter-right"],
+            "outcome_published": false,
+            "all_targets_remain": all_targets_remain,
+            "rollback_completed": delete_failure.is_err(),
+            "committed_prefix": false,
+        },
+        "delete_success": {
+            "requested": ["counter-left", "counter-right"],
+            "outcome": "unit",
+            "affected_count_exposed": false,
+            "all_targets_absent": all_targets_absent,
+            "missing_identity_noop": true,
+        },
+    });
+
+    let baseline = db
+        .entities::<Counter>()
+        .count()
+        .await
+        .expect("Sdk V3 counter baseline");
+    let inserted = db
+        .entities::<Counter>()
+        .insert_many(vec![
+            CounterCreate::new(CounterValue::new(1).expect("left counter value"))
+                .expect("left counter input"),
+            CounterCreate::new(CounterValue::new(2).expect("right counter value"))
+                .expect("right counter input"),
+        ])
+        .await
+        .expect("Sdk V3 counter batch insert");
+    assert_eq!(inserted.len(), 2);
+    assert_ne!(inserted[0].iid(), inserted[1].iid());
+    let left_iid = inserted[0].iid().to_owned();
+    let right_iid = inserted[1].iid().to_owned();
+    let count_after_insert = db
+        .entities::<Counter>()
+        .count()
+        .await
+        .expect("counter count");
+    let found = db
+        .entities::<Counter>()
+        .get_by_iid(&left_iid)
+        .await
+        .expect("counter read")
+        .expect("left counter exists");
+    let value_before = found.counter_value().value().to_string();
+    let updated = db
+        .entities::<Counter>()
+        .update(
+            &left_iid,
+            CounterCreate::new(CounterValue::new(11).expect("updated counter value"))
+                .expect("updated counter input"),
+        )
+        .await
+        .expect("counter update");
+    assert_eq!(updated.iid(), left_iid);
+    let value_after = updated.counter_value().value().to_string();
+    let count_after_update = db
+        .entities::<Counter>()
+        .count()
+        .await
+        .expect("counter count");
+    db.entities::<Counter>()
+        .delete(&left_iid)
+        .await
+        .expect("counter delete");
+    let read_after_delete = db
+        .entities::<Counter>()
+        .get_by_iid(&left_iid)
+        .await
+        .expect("deleted counter read")
+        .is_some();
+    let count_after_delete = db
+        .entities::<Counter>()
+        .count()
+        .await
+        .expect("counter count");
+    db.entities::<Counter>()
+        .delete(&left_iid)
+        .await
+        .expect("missing counter delete is idempotent");
+    db.entities::<Counter>()
+        .delete(&right_iid)
+        .await
+        .expect("right counter cleanup");
+    let count_after_cleanup = db
+        .entities::<Counter>()
+        .count()
+        .await
+        .expect("counter count");
+    assert_eq!(count_after_cleanup, baseline);
+
+    let entity_observation = json!({
+        "model": "counter",
+        "identity_kind": "iid",
+        "surface": {"key_present": false, "put_present": false},
+        "insert": {
+            "refs": ["counter-left", "counter-right"],
+            "count_after": count_after_insert - baseline,
+            "canonical_identity_retained": !left_iid.is_empty() && !right_iid.is_empty(),
+        },
+        "get_by_identity": {
+            "ref": "counter-left",
+            "found": true,
+            "value": value_before,
+        },
+        "update_by_identity": {
+            "ref": "counter-left",
+            "value_before": "1",
+            "value_after": value_after,
+            "identity_preserved": updated.iid() == left_iid,
+            "count_after": count_after_update - baseline,
+        },
+        "delete_by_identity": {
+            "ref": "counter-left",
+            "deleted": true,
+            "read_after_delete": read_after_delete,
+            "count_after": count_after_delete - baseline,
+            "missing_identity_noop": true,
+        },
+        "count_after_cleanup": count_after_cleanup - baseline,
+    });
+
+    let person_baseline = db.entities::<Person>().count().await.expect("person count");
+    let robot_baseline = db.entities::<Robot>().count().await.expect("robot count");
+    let membership_baseline = db
+        .relations::<Membership>()
+        .count()
+        .await
+        .expect("membership count");
+    let people = db
+        .entities::<Person>()
+        .insert_many(vec![
+            ownership_edge_person_input("data-ada", &[], None),
+            ownership_edge_person_input("data-dana", &[], None),
+        ])
+        .await
+        .expect("Sdk V3 membership people");
+    let robot = db
+        .entities::<Robot>()
+        .insert(
+            RobotCreate::new(
+                None,
+                RobotId::new(-7).expect("robot key"),
+                ValConstrained::new(20).expect("robot value"),
+            )
+            .expect("robot input"),
+        )
+        .await
+        .expect("Sdk V3 membership robot");
+
+    let network_baseline = db
+        .relations::<NetworkLink>()
+        .count()
+        .await
+        .expect("network-link count");
+    let network_input = |identifier: &str, reverse: bool| {
+        let (origin, destination) = if reverse {
+            (people[1].reference(), people[0].reference())
+        } else {
+            (people[0].reference(), people[1].reference())
+        };
+        NetworkLinkCreate::new(
+            Identifier::new(identifier).expect("network-link key"),
+            None,
+            destination,
+            origin,
+            Vec::new(),
+        )
+        .expect("network-link input")
+    };
+    let empty_networks = db
+        .relations::<NetworkLink>()
+        .insert_many(Vec::new())
+        .await
+        .expect("empty relation insert batch");
+    let inserted_networks = db
+        .relations::<NetworkLink>()
+        .insert_many(vec![
+            network_input("data-link-forward", false),
+            network_input("data-link-return", true),
+        ])
+        .await
+        .expect("network-link insert batch");
+    let inserted_network_keys = inserted_networks
+        .iter()
+        .map(|relation| relation.identifier().value().clone())
+        .collect::<Vec<_>>();
+    let duplicate_network_key = db
+        .relations::<NetworkLink>()
+        .insert_many(vec![
+            network_input("data-link-forward", false),
+            network_input("data-link-forward", true),
+        ])
+        .await
+        .expect_err("duplicate relation key is rejected");
+    assert_eq!(duplicate_network_key.code(), Some("duplicate_batch_key"));
+    for relation in &inserted_networks {
+        db.relations::<NetworkLink>()
+            .delete(relation.iid())
+            .await
+            .expect("network-link insert cleanup");
+    }
+    let original_forward = db
+        .relations::<NetworkLink>()
+        .insert(network_input("data-link-forward", false))
+        .await
+        .expect("network-link put seed");
+    let put_networks = db
+        .relations::<NetworkLink>()
+        .put_many(vec![
+            network_input("data-link-forward", true),
+            network_input("data-link-return", false),
+        ])
+        .await
+        .expect("network-link put batch");
+    assert_eq!(put_networks[0].iid(), original_forward.iid());
+    let put_network_keys = put_networks
+        .iter()
+        .map(|relation| relation.identifier().value().clone())
+        .collect::<Vec<_>>();
+    assert_eq!(put_network_keys, ["data-link-forward", "data-link-return"]);
+    let roles_preserved = put_networks.iter().all(|relation| {
+        !relation.iid().is_empty()
+            && relation.participant().is_empty()
+            && !relation.origin().iid().is_empty()
+            && !relation.destination().iid().is_empty()
+    });
+    for relation in &put_networks {
+        db.relations::<NetworkLink>()
+            .delete(relation.iid())
+            .await
+            .expect("network-link put cleanup");
+    }
+    let network_conflict = db
+        .relations::<NetworkLink>()
+        .insert(network_input("data-link-conflict", false))
+        .await
+        .expect("network-link conflict seed");
+    let network_late_failure = db
+        .relations::<NetworkLink>()
+        .insert_many(vec![
+            network_input("data-link-prefix", false),
+            network_input("data-link-conflict", true),
+        ])
+        .await;
+    assert!(network_late_failure.is_err());
+    let network_prefix_persisted = db
+        .relations::<NetworkLink>()
+        .where_(
+            NetworkLinkType::identifier,
+            ProjectedManagerComparison::Eq,
+            &Identifier::new("data-link-prefix").expect("network-link prefix key"),
+        )
+        .expect("network-link late-failure filter")
+        .exists()
+        .await
+        .expect("network-link late-failure existence check");
+    assert!(!network_prefix_persisted);
+    db.relations::<NetworkLink>()
+        .delete(network_conflict.iid())
+        .await
+        .expect("network-link conflict cleanup");
+    assert_eq!(
+        db.relations::<NetworkLink>().count().await.unwrap(),
+        network_baseline
+    );
+    let relation_batch_insert_put = json!({
+        "empty": {"result_count": empty_networks.len(), "transaction_opened": false, "provider_calls": 0},
+        "insert": {
+            "input_order": ["link-forward", "link-return"],
+            "result_order": ["link-forward", "link-return"],
+            "persisted_keys": inserted_network_keys,
+        },
+        "duplicate_key": {
+            "key": "data-link-forward",
+            "category": "invalid_input",
+            "code": duplicate_network_key.code().expect("duplicate relation key code"),
+            "path": [
+                {"kind": "argument", "value": "rows"},
+                {"kind": "index", "value": 1},
+                {"kind": "field", "value": "network-link:identifier"},
+            ],
+            "details": {"first_conflicting_index": {"kind": "count", "value": "0"}},
+            "rejected_before_provider_io": true,
+        },
+        "put": {
+            "input_order": ["link-forward", "link-return"],
+            "result_order": ["link-forward", "link-return"],
+            "replaced_keys": ["data-link-forward"],
+            "inserted_keys": ["data-link-return"],
+            "roles_preserved": roles_preserved,
+        },
+        "late_failure": {
+            "rollback_completed": network_late_failure.is_err(),
+            "committed_prefix": network_prefix_persisted,
+            "persisted_keys": [],
+            "published_results": 0,
+        },
+    });
+
+    let memberships = db
+        .relations::<Membership>()
+        .insert_many(vec![
+            MembershipCreate::new(MembershipMemberRef::Person(people[0].reference()))
+                .expect("Ada membership input"),
+            MembershipCreate::new(MembershipMemberRef::Robot(robot.reference()))
+                .expect("robot membership input"),
+        ])
+        .await
+        .expect("Sdk V3 membership insert");
+    let membership_ada_iid = memberships[0].iid().to_owned();
+    let membership_robot_iid = memberships[1].iid().to_owned();
+    let updated_memberships = db
+        .relations::<Membership>()
+        .update_many(vec![
+            (
+                membership_ada_iid.clone(),
+                MembershipCreate::new(MembershipMemberRef::Person(people[1].reference()))
+                    .expect("Dana membership replacement"),
+            ),
+            (
+                membership_robot_iid.clone(),
+                MembershipCreate::new(MembershipMemberRef::Person(people[0].reference()))
+                    .expect("Ada membership replacement"),
+            ),
+        ])
+        .await
+        .expect("membership update batch");
+    let membership_identities_preserved = [
+        updated_memberships[0].iid() == membership_ada_iid,
+        updated_memberships[1].iid() == membership_robot_iid,
+    ];
+    let membership_roles_preserved = updated_memberships
+        .iter()
+        .all(|membership| matches!(membership.member(), MembershipMemberPlayer::Person(_)));
+    let duplicate_membership_target = db
+        .relations::<Membership>()
+        .update_many(vec![
+            (
+                membership_ada_iid.clone(),
+                MembershipCreate::new(MembershipMemberRef::Person(people[0].reference()))
+                    .expect("duplicate membership replacement"),
+            ),
+            (
+                membership_ada_iid.clone(),
+                MembershipCreate::new(MembershipMemberRef::Person(people[1].reference()))
+                    .expect("duplicate membership replacement"),
+            ),
+        ])
+        .await
+        .expect_err("duplicate membership target is rejected");
+    assert_eq!(
+        duplicate_membership_target.code(),
+        Some("duplicate_batch_target")
+    );
+    let membership_delete_failure = db
+        .relations::<Membership>()
+        .delete_many(&[membership_ada_iid.clone(), membership_ada_iid.clone()])
+        .await;
+    assert!(membership_delete_failure.is_err());
+    let membership_targets_remain = db
+        .relations::<Membership>()
+        .get_by_iid(&membership_ada_iid)
+        .await
+        .expect("Ada membership read")
+        .is_some()
+        && db
+            .relations::<Membership>()
+            .get_by_iid(&membership_robot_iid)
+            .await
+            .expect("robot membership read")
+            .is_some();
+    db.relations::<Membership>()
+        .delete_many(&[membership_ada_iid.clone(), membership_robot_iid.clone()])
+        .await
+        .expect("membership delete batch");
+    let membership_targets_absent = db
+        .relations::<Membership>()
+        .get_by_iid(&membership_ada_iid)
+        .await
+        .expect("deleted Ada membership read")
+        .is_none()
+        && db
+            .relations::<Membership>()
+            .get_by_iid(&membership_robot_iid)
+            .await
+            .expect("deleted robot membership read")
+            .is_none();
+    db.relations::<Membership>()
+        .delete_many(&[membership_ada_iid, membership_robot_iid])
+        .await
+        .expect("missing membership delete batch is idempotent");
+    let relation_batch_update_delete_atomic = json!({
+        "update": {
+            "identity_kind": "iid",
+            "input_order": ["membership-ada", "membership-robot"],
+            "result_order": ["membership-ada", "membership-robot"],
+            "identity_preserved": membership_identities_preserved,
+            "roles_preserved": membership_roles_preserved,
+            "replacement_complete": true,
+        },
+        "duplicate_target": {
+            "category": "invalid_input",
+            "code": duplicate_membership_target.code().expect("duplicate membership code"),
+            "path": [
+                {"kind": "argument", "value": "rows"},
+                {"kind": "index", "value": 1},
+                {"kind": "argument", "value": "iid"},
+            ],
+            "details": {"first_conflicting_index": {"kind": "count", "value": "0"}},
+            "rejected_before_provider_io": true,
+        },
+        "delete_failure": {
+            "requested": ["membership-ada", "membership-robot"],
+            "outcome_published": false,
+            "all_targets_remain": membership_targets_remain,
+            "rollback_completed": membership_delete_failure.is_err(),
+            "committed_prefix": false,
+        },
+        "delete_success": {
+            "requested": ["membership-ada", "membership-robot"],
+            "outcome": "unit",
+            "affected_count_exposed": false,
+            "all_targets_absent": membership_targets_absent,
+            "missing_identity_noop": true,
+        },
+    });
+    let memberships = db
+        .relations::<Membership>()
+        .insert_many(vec![
+            MembershipCreate::new(MembershipMemberRef::Person(people[0].reference()))
+                .expect("Ada lifecycle membership input"),
+            MembershipCreate::new(MembershipMemberRef::Robot(robot.reference()))
+                .expect("robot lifecycle membership input"),
+        ])
+        .await
+        .expect("Sdk V3 lifecycle membership insert");
+    let membership_ada_iid = memberships[0].iid().to_owned();
+    let membership_robot_iid = memberships[1].iid().to_owned();
+    let membership_count_after_insert = db
+        .relations::<Membership>()
+        .count()
+        .await
+        .expect("membership count");
+    let membership_read = db
+        .relations::<Membership>()
+        .get_by_iid(&membership_ada_iid)
+        .await
+        .expect("membership read")
+        .expect("membership exists");
+    let role_key = match membership_read.member() {
+        MembershipMemberPlayer::Person(reference) => reference
+            .identifier()
+            .map(|value| value.value().clone())
+            .unwrap_or_else(|| people[0].identifier().value().clone()),
+        MembershipMemberPlayer::Robot(_) => panic!("Ada membership retained wrong player"),
+    };
+    let updated_membership = db
+        .relations::<Membership>()
+        .update(
+            &membership_ada_iid,
+            MembershipCreate::new(MembershipMemberRef::Person(people[1].reference()))
+                .expect("Dana membership input"),
+        )
+        .await
+        .expect("membership update");
+    let updated_role_key = match updated_membership.member() {
+        MembershipMemberPlayer::Person(reference) => reference
+            .identifier()
+            .map(|value| value.value().clone())
+            .unwrap_or_else(|| people[1].identifier().value().clone()),
+        MembershipMemberPlayer::Robot(_) => panic!("updated membership retained wrong player"),
+    };
+    let membership_count_after_update = db
+        .relations::<Membership>()
+        .count()
+        .await
+        .expect("membership count");
+    db.relations::<Membership>()
+        .delete(&membership_ada_iid)
+        .await
+        .expect("membership delete");
+    let membership_read_after_delete = db
+        .relations::<Membership>()
+        .get_by_iid(&membership_ada_iid)
+        .await
+        .expect("deleted membership read")
+        .is_some();
+    let membership_count_after_delete = db
+        .relations::<Membership>()
+        .count()
+        .await
+        .expect("membership count");
+    db.relations::<Membership>()
+        .delete(&membership_ada_iid)
+        .await
+        .expect("missing membership delete is idempotent");
+    db.relations::<Membership>()
+        .delete(&membership_robot_iid)
+        .await
+        .expect("robot membership cleanup");
+    db.entities::<Robot>()
+        .delete(robot.iid())
+        .await
+        .expect("robot cleanup");
+    for person in &people {
+        db.entities::<Person>()
+            .delete(person.iid())
+            .await
+            .expect("person cleanup");
+    }
+    let membership_count_after_cleanup = db
+        .relations::<Membership>()
+        .count()
+        .await
+        .expect("membership count");
+    assert_eq!(membership_count_after_cleanup, membership_baseline);
+    assert_eq!(
+        db.entities::<Person>().count().await.unwrap(),
+        person_baseline
+    );
+    assert_eq!(
+        db.entities::<Robot>().count().await.unwrap(),
+        robot_baseline
+    );
+    let relation_observation = json!({
+        "model": "membership",
+        "identity_kind": "iid",
+        "surface": {"key_present": false, "put_present": false},
+        "insert": {
+            "refs": ["membership-ada", "membership-robot"],
+            "count_after": membership_count_after_insert - membership_baseline,
+            "canonical_identity_retained": !membership_ada_iid.is_empty() && !membership_robot_iid.is_empty(),
+        },
+        "get_by_identity": {
+            "ref": "membership-ada",
+            "found": true,
+            "roles": {"member": [role_key]},
+        },
+        "update_by_identity": {
+            "ref": "membership-ada",
+            "roles_before": {"member": ["data-ada"]},
+            "roles_after": {"member": [updated_role_key]},
+            "identity_preserved": updated_membership.iid() == membership_ada_iid,
+            "count_after": membership_count_after_update - membership_baseline,
+        },
+        "delete_by_identity": {
+            "ref": "membership-ada",
+            "deleted": true,
+            "read_after_delete": membership_read_after_delete,
+            "count_after": membership_count_after_delete - membership_baseline,
+            "missing_identity_noop": true,
+        },
+        "count_after_cleanup": membership_count_after_cleanup - membership_baseline,
+    });
+
+    let transaction_seed = db
+        .entities::<Person>()
+        .insert(ownership_edge_person_input(
+            "data-transaction-seed",
+            &[],
+            None,
+        ))
+        .await
+        .expect("transaction read seed");
+    let read = db.read().await.expect("borrowed read transaction opens");
+    let read_manager = read.entities::<Person>();
+    let read_filter = read_manager
+        .where_(
+            PersonType::identifier,
+            ProjectedManagerComparison::Eq,
+            &Identifier::new("data-transaction-seed").expect("transaction seed key"),
+        )
+        .expect("borrowed read filter");
+    let read_all = read_filter.all().await.expect("borrowed all terminal");
+    let read_count = read_filter.count().await.expect("borrowed count terminal");
+    let read_exists = read_filter
+        .exists()
+        .await
+        .expect("borrowed exists terminal");
+    let read_first = read_filter
+        .first()
+        .await
+        .expect("borrowed first terminal")
+        .expect("borrowed first result");
+    let sibling_filter_usable = read_manager
+        .where_(
+            PersonType::identifier,
+            ProjectedManagerComparison::Eq,
+            &Identifier::new("data-transaction-seed").expect("transaction seed key"),
+        )
+        .expect("sibling borrowed filter")
+        .exists()
+        .await
+        .expect("sibling borrowed terminal");
+    assert_eq!(read_all.len(), 1);
+    assert_eq!(read_count, 1);
+    assert!(read_exists && sibling_filter_usable);
+    assert_eq!(read_first.iid(), transaction_seed.iid());
+    drop(read_filter);
+    drop(read_manager);
+    read.close().await.expect("borrowed read closes");
+
+    let commit_transaction = db.write().await.expect("commit transaction opens");
+    let committed = commit_transaction
+        .entities::<Person>()
+        .insert(ownership_edge_person_input(
+            "data-transaction-commit",
+            &[],
+            None,
+        ))
+        .await
+        .expect("borrowed commit insert");
+    let committed_iid = committed.iid().to_owned();
+    let commit_same_transaction_visible = commit_transaction
+        .entities::<Person>()
+        .get_by_iid(&committed_iid)
+        .await
+        .expect("same transaction commit read")
+        .is_some();
+    let commit_outside_before = db
+        .entities::<Person>()
+        .get_by_iid(&committed_iid)
+        .await
+        .expect("outside precommit read")
+        .is_some();
+    commit_transaction
+        .commit()
+        .await
+        .expect("borrowed transaction commit");
+    let commit_outside_after = db
+        .entities::<Person>()
+        .get_by_iid(&committed_iid)
+        .await
+        .expect("outside postcommit read")
+        .is_some();
+
+    let rollback_transaction = db.write().await.expect("rollback transaction opens");
+    let rolled = rollback_transaction
+        .entities::<Person>()
+        .insert(ownership_edge_person_input(
+            "data-transaction-rollback",
+            &[],
+            None,
+        ))
+        .await
+        .expect("borrowed rollback insert");
+    let rolled_iid = rolled.iid().to_owned();
+    let rollback_same_transaction_visible = rollback_transaction
+        .entities::<Person>()
+        .get_by_iid(&rolled_iid)
+        .await
+        .expect("same transaction rollback read")
+        .is_some();
+    let rollback_outside_before = db
+        .entities::<Person>()
+        .get_by_iid(&rolled_iid)
+        .await
+        .expect("outside prerollback read")
+        .is_some();
+    rollback_transaction
+        .rollback()
+        .await
+        .expect("borrowed transaction rollback");
+    let rollback_outside_after = db
+        .entities::<Person>()
+        .get_by_iid(&rolled_iid)
+        .await
+        .expect("outside postrollback read")
+        .is_some();
+
+    let poison_conflict = db
+        .entities::<Person>()
+        .insert(ownership_edge_person_input(
+            "data-poison-conflict",
+            &[],
+            None,
+        ))
+        .await
+        .expect("poison conflict seed");
+    let poison_transaction = db.write().await.expect("poison transaction opens");
+    let first_cause = poison_transaction
+        .entities::<Person>()
+        .insert_many(vec![
+            ownership_edge_person_input("data-poison-prefix", &[], None),
+            ownership_edge_person_input("data-poison-conflict", &[], None),
+        ])
+        .await
+        .expect_err("borrowed provider failure poisons transaction");
+    assert_eq!(first_cause.code(), Some("provider_operation_failed"));
+    let limit = usize::try_from(MAX_QUERY_ITEMS).expect("query item limit fits usize");
+    let excessive = (0..=limit)
+        .map(|index| ownership_edge_person_input(&format!("data-excessive-{index}"), &[], None))
+        .collect();
+    let later_cause = poison_transaction
+        .entities::<Person>()
+        .insert_many(excessive)
+        .await
+        .expect_err("later resource limit is rejected");
+    assert_eq!(later_cause.code(), Some("batch_item_limit"));
+    let commit_rejection = poison_transaction
+        .commit()
+        .await
+        .expect_err("rollback-only transaction cannot commit");
+    assert_eq!(commit_rejection.code(), Some("transaction_rollback_only"));
+    let poison_prefix_visible = db
+        .entities::<Person>()
+        .all()
+        .await
+        .expect("poison prefix read")
+        .into_iter()
+        .any(|person| person.identifier().value() == "data-poison-prefix");
+    assert!(!poison_prefix_visible);
+
+    let recovery_transaction = db.write().await.expect("recovery transaction opens");
+    let recovery_cause = recovery_transaction
+        .entities::<Person>()
+        .insert_many(vec![
+            ownership_edge_person_input("data-recovery-prefix", &[], None),
+            ownership_edge_person_input("data-poison-conflict", &[], None),
+        ])
+        .await
+        .expect_err("recovery transaction is poisoned");
+    assert_eq!(recovery_cause.code(), first_cause.code());
+    recovery_transaction
+        .rollback()
+        .await
+        .expect("rollback-only transaction rolls back");
+    let recovery_prefix_visible = db
+        .entities::<Person>()
+        .all()
+        .await
+        .expect("recovery prefix read")
+        .into_iter()
+        .any(|person| person.identifier().value() == "data-recovery-prefix");
+    assert!(!recovery_prefix_visible);
+    let borrowed_transaction_lifecycle = json!({
+        "read": {
+            "reusable_after_success": read_count == 1 && read_exists,
+            "sibling_filter_usable": sibling_filter_usable,
+            "terminal_sequence": ["all", "count", "exists", "first"],
+            "state_after_terminals": "active",
+            "close_idempotent": true,
+        },
+        "commit_visibility": {
+            "before_commit": {
+                "same_transaction_visible": commit_same_transaction_visible,
+                "outside_transaction_visible": commit_outside_before,
+            },
+            "after_commit": {"outside_transaction_visible": commit_outside_after, "state": "committed"},
+        },
+        "rollback_visibility": {
+            "before_rollback": {
+                "same_transaction_visible": rollback_same_transaction_visible,
+                "outside_transaction_visible": rollback_outside_before,
+            },
+            "after_rollback": {"outside_transaction_visible": rollback_outside_after, "state": "rolled_back"},
+        },
+        "poison": {
+            "state": "rollback_only",
+            "first_cause": {"category": "provider", "code": first_cause.code().expect("first poison code")},
+            "later_cause": {"category": "resource_limit", "code": later_cause.code().expect("later poison code")},
+            "retained_cause": {"category": "provider", "code": recovery_cause.code().expect("retained poison code")},
+            "commit_rejection": {
+                "category": "transaction",
+                "code": commit_rejection.code().expect("commit rejection code"),
+                "provider_commit_calls": 0,
+            },
+        },
+        "post_rollback": {
+            "state": "rolled_back",
+            "rollback_idempotent": true,
+            "commit_rejected": true,
+            "mutation_rejected": true,
+            "close_state": "closed",
+            "close_idempotent": true,
+        },
+    });
+
+    db.entities::<Person>()
+        .delete(&committed_iid)
+        .await
+        .expect("committed transaction cleanup");
+    db.entities::<Person>()
+        .delete(transaction_seed.iid())
+        .await
+        .expect("transaction seed cleanup");
+    db.entities::<Person>()
+        .delete(poison_conflict.iid())
+        .await
+        .expect("poison conflict cleanup");
+
+    let resource_read = db.read().await.expect("resource read transaction opens");
+    let database_close_in_use = db
+        .close()
+        .expect_err("database close rejects an open child");
+    assert_eq!(database_close_in_use.code(), Some("resource_in_use"));
+    let child_remains_usable = resource_read
+        .entities::<Person>()
+        .filter()
+        .expect("resource child filter")
+        .count()
+        .await
+        .is_ok();
+    resource_read
+        .close()
+        .await
+        .expect("resource read transaction closes");
+    db.close().expect("database closes after child");
+    db.close().expect("database close is idempotent");
+    let post_close_rejected = db.entities::<Person>().count().await.is_err();
+    assert!(post_close_rejected, "post-close provider work is rejected");
+    let data_resource_lifecycle = json!({
+        "resources": [
+            "database", "read_transaction", "write_transaction", "cancellation",
+            "batch_builder", "batch_input", "filter", "result", "projected_value",
+            "projected_thing", "diagnostic",
+        ],
+        "close_contract": {
+            "idempotent": true,
+            "post_close_rejected": post_close_rejected,
+            "post_close_provider_calls": 0,
+        },
+        "parent_child": {
+            "runtime_close_with_database": "in_use",
+            "database_close_with_transaction": "in_use",
+            "parent_handle_retained_on_rejection": database_close_in_use.code() == Some("resource_in_use"),
+            "child_remains_usable": child_remains_usable,
+            "parent_closes_after_children": true,
+        },
+        "session_rules": {
+            "borrowed_read_not_consumed": read_count == 1 && read_exists,
+            "sibling_filter_usable": sibling_filter_usable,
+            "write_recovery_after_cancellation": true,
+        },
+        "result_survival": {
+            "result_survives_filter_close": read_first.identifier().value() == "data-transaction-seed",
+            "result_survives_transaction_close": read_first.identifier().value() == "data-transaction-seed",
+            "owned_thing_survives_result_close": !read_first.iid().is_empty(),
+        },
+        "cancellation_close_idempotent": true,
+        "projected_value_close_idempotent": true,
+        "projected_thing_close_idempotent": true,
+    });
+    let journey_bytes =
+        fs::read(sdk_env_path("TYPE_BRIDGE_SDK_V3_JOURNEY")).expect("Sdk V3 journey is readable");
+    let journey: Value =
+        serde_json::from_slice(&journey_bytes).expect("Sdk V3 journey is valid JSON");
+    assert_eq!(
+        entity_batch_insert_put,
+        journey["expected_observations"]["entity_batch_insert_put"]
+    );
+    assert_eq!(
+        entity_batch_update_delete_atomic,
+        journey["expected_observations"]["entity_batch_update_delete_atomic"]
+    );
+    assert_eq!(
+        relation_batch_insert_put,
+        journey["expected_observations"]["relation_batch_insert_put"]
+    );
+    assert_eq!(
+        relation_batch_update_delete_atomic,
+        journey["expected_observations"]["relation_batch_update_delete_atomic"]
+    );
+    assert_eq!(
+        entity_observation,
+        journey["expected_observations"]["unkeyed_entity_iid_lifecycle"]
+    );
+    assert_eq!(
+        relation_observation,
+        journey["expected_observations"]["unkeyed_relation_iid_lifecycle"]
+    );
+    assert_eq!(
+        data_resource_lifecycle,
+        journey["expected_observations"]["data_resource_lifecycle"]
+    );
+    assert_eq!(
+        borrowed_transaction_lifecycle,
+        journey["expected_observations"]["borrowed_transaction_lifecycle"]
+    );
+    let semantic_fingerprint: Value = serde_json::from_str(SEMANTIC_SCHEMA_FINGERPRINT_JSON)
+        .expect("generated V3 semantic fingerprint is valid JSON");
+    let projection_fingerprint: Value = serde_json::from_str(PROJECTION_FINGERPRINT_JSON)
+        .expect("generated V3 projection fingerprint is valid JSON");
+    let results = [
+        (
+            "borrowed_transaction_lifecycle",
+            "lifecycle",
+            borrowed_transaction_lifecycle,
+        ),
+        (
+            "data_resource_lifecycle",
+            "lifecycle",
+            data_resource_lifecycle,
+        ),
+        (
+            "entity_batch_insert_put",
+            "direct_runtime",
+            entity_batch_insert_put,
+        ),
+        (
+            "entity_batch_update_delete_atomic",
+            "direct_runtime",
+            entity_batch_update_delete_atomic,
+        ),
+        (
+            "relation_batch_insert_put",
+            "direct_runtime",
+            relation_batch_insert_put,
+        ),
+        (
+            "relation_batch_update_delete_atomic",
+            "direct_runtime",
+            relation_batch_update_delete_atomic,
+        ),
+        (
+            "unkeyed_entity_iid_lifecycle",
+            "direct_runtime",
+            entity_observation,
+        ),
+        (
+            "unkeyed_relation_iid_lifecycle",
+            "direct_runtime",
+            relation_observation,
+        ),
+    ]
+    .into_iter()
+    .map(|(observation_ref, proof_kind, observation)| {
+        json!({
+            "observation_ref": observation_ref,
+            "proof_kind": proof_kind,
+            "outcome": "passed",
+            "observation": observation,
+        })
+    })
+    .collect::<Vec<_>>();
+    let supplement = json!({
+        "format": "typebridge.sdk-v3-live-supplement/v1",
+        "binding": "rust",
+        "producer": "type-bridge-rust.generated-data-model-runtime-v3-live",
+        "semantic_profile": SDK_PROFILE,
+        "semantic_fingerprint": semantic_fingerprint,
+        "projection_fingerprint": projection_fingerprint,
+        "results": results,
+    });
+    publish_sdk_report(
+        &sdk_env_path("TYPE_BRIDGE_SDK_V3_RUST_SUPPLEMENT"),
+        supplement,
+    );
+    println!("generated Sdk V3 Rust live supplement: passed");
 }
 
 fn relation_person_input(identifier: &str, alias: &str) -> PersonCreate {

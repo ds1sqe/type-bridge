@@ -425,7 +425,7 @@ const MOCK_CUTOVER_FINGERPRINT: &str =
 fn managed_fence_schema_with_extensions() -> String {
     MANAGED_FENCE_SCHEMA_TYPEQL.replace(
         "owns typebridge-internal-v2-lease-holder @card(0..1)",
-        "owns typebridge-internal-v2-lease-holder[] @distinct @card(0..1)",
+        "owns typebridge-internal-v2-lease-holder @cascade @card(0..1)",
     )
 }
 

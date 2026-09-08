@@ -5,12 +5,19 @@ repository. Split-YAML is the sole schema/model authority. The old handwritten
 descriptor and model-manager suites are intentionally not part of this
 inventory.
 
-## Parity Authority
+## Parity Authority and Retained Inventory
 
-`tests/fixtures/generated-only-operation-parity-inventory.json` is the
-executable operation inventory. Every accepted row names source anchors in a
-clean generated Python, TypeScript/Node, or Rust package. The inventory test
-rejects handwritten CRUD/query sources as successor evidence.
+`tests/contracts/sdk_conformance/manifest-v1.json` and the versioned
+`tests/contracts/sdk_conformance/sdk-v*/` contracts are the executable
+acceptance authority. The manifest owns canonical capabilities, proof profiles,
+binding states, and transitions; sdk catalogs, journeys, report schemas,
+and comparators own the executable conformance checkpoints.
+
+`tests/fixtures/generated-only-operation-parity-inventory.json` is the old
+operation inventory retained from the generated-only cutover and used as a
+manifest seed. Its rows still name generated Python, TypeScript/Node, and Rust
+source anchors, and its test still rejects handwritten CRUD/query sources as
+successor evidence, but it does not define current FULL-SDK acceptance.
 
 `tests/fixtures/handwritten-operation-removal-map.json` records the exact
 pre-cutover test identities and their generated successor or retained-contract
@@ -24,21 +31,28 @@ path.
 | Python | `crates/schema-codegen/tests/acceptance/check.py`, emitter tests, Pyright positive/negative fixtures | `tests/integration/schema/test_generated_projection_live.py` |
 | TypeScript/Node | `crates/schema-codegen/tests/typescript_acceptance/check.mjs`, emitter tests, TypeScript compile fixtures | `crates/node/tests/projection-integration/generated-package-live.test.ts` via `npm run test:projection-integration` |
 | Rust | schema-codegen Rust acceptance and an external generated consumer crate | `crates/schema-codegen/tests/rust_projection_live.rs` and its external consumer |
+| Internal C foundation | `crates/schema-codegen/tests/c_emitter.rs`, C ABI suites, and installed C17/C++17 consumers via `./scripts/check.sh c` | Exact-3.12.3 generated CRUD and typed-query consumers via `./test.sh` |
 
-The three live applications cover model construction, scalar and multivalue
-ownership, references, entity/relation CRUD, batch operations where advertised,
-transactions, exact/subtype hydration, immutable queries, ordering, pages,
-aggregates, grouping, reachability, IID predicates, and direct/remote result
-materialization. Binding-specific operations such as Python filtered mutations
-and hooks are required only in the binding that advertises them.
+The three current public SDK live applications cover model construction, scalar
+and multivalue ownership, references, entity/relation CRUD, batch operations
+where advertised, transactions, exact/subtype hydration, immutable queries,
+ordering, pages, aggregates, grouping, reachability, IID predicates, and direct/
+remote result materialization. Binding-specific operations such as Python
+filtered mutations and hooks are required only in the binding that advertises
+them.
+
+The C source gate is native-host scoped. Current accepted evidence covers the
+host on which it ran; configured hosted macOS and Windows lanes remain
+unverified, so the C row is neither a multi-platform nor a public-support claim.
 
 ## Cross-Binding Gate
 
 The CI job identity `cross-language-parity` is retained for branch protection.
-It now runs:
+It now runs retained cutover checks plus projection parity:
 
-- the generated operation inventory and source-removal map tests; and
-- schema-codegen's `cross_binding` test over Python, TypeScript, and Rust
+- the old generated operation inventory and source-removal map evidence tests;
+  and
+- schema-codegen's `cross_binding` test over Python, TypeScript, Rust, and C
   projection output.
 
 Live behavior is executed in each binding's integration job. CI requires all of
@@ -64,7 +78,7 @@ schema-authoring examples and are not imported by generated packages.
 ## Provider and TLS Coverage
 
 Ordinary live lanes exercise the retained TypeDB 3.11 and 3.12 provider window.
-The 3.12.1 lane is the full generated-projection conformance baseline. Dedicated
+The 3.12.3 lane is the full generated-projection conformance baseline. Dedicated
 TLS lanes run generated Python, Node, and Rust applications with a verified
 custom root, alongside the retained low-level Query V2 transport probe.
 

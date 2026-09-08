@@ -57,7 +57,10 @@ impl MigrationSafetyPolicy {
                     SafetyPolicyDecision::RequireApproval,
                 ),
                 (SafetyClass::Opaque, SafetyPolicyDecision::RequireApproval),
-                (SafetyClass::BackfillRequired, SafetyPolicyDecision::Reject),
+                (
+                    SafetyClass::BackfillRequired,
+                    SafetyPolicyDecision::RequireApproval,
+                ),
                 (SafetyClass::Unsupported, SafetyPolicyDecision::Reject),
             ]),
         }
@@ -76,12 +79,16 @@ impl MigrationSafetyPolicy {
                     "destructive and opaque work cannot carry a standing allowance",
                 ));
             }
-            (SafetyClass::BackfillRequired | SafetyClass::Unsupported, decision)
-                if decision != SafetyPolicyDecision::Reject =>
-            {
+            (SafetyClass::BackfillRequired, SafetyPolicyDecision::Allow) => {
+                return Err(failure(
+                    "migration_policy_forbidden_allow",
+                    "backfill work cannot carry a standing allowance",
+                ));
+            }
+            (SafetyClass::Unsupported, decision) if decision != SafetyPolicyDecision::Reject => {
                 return Err(failure(
                     "migration_policy_unresolvable_class",
-                    "classes the manifest verifier refuses cannot be admitted by policy",
+                    "unsupported work cannot be admitted by policy",
                 ));
             }
             _ => {}

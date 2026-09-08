@@ -4,6 +4,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use sha2::{Digest, Sha256};
+use type_bridge_contract::id::FunctionId;
+use type_bridge_contract::projection::{
+    BindingProjectionFingerprint, BindingTarget, FunctionProjection,
+};
+use type_bridge_contract::schema_fingerprint::SemanticSchemaFingerprint;
 use type_bridge_core_lib::compiler::is_valid_typeql_label;
 
 use crate::_descriptor::{EntityDescriptor, RelationDescriptor, TypeDescriptor, TypeDescriptorRef};
@@ -45,11 +50,25 @@ impl DescriptorFingerprintRoot {
 /// The registry is intentionally standalone: it has no database, transaction,
 /// manager, Python, or TypeScript dependency. Bindings normalize their metadata
 /// into descriptors before registration.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 enum MatchExecutionAuthority {
     #[default]
     ReleasedAdapter,
-    InstalledProjectionNative,
+    InstalledProjectionNative(Arc<InstalledMatchProjectionAuthority>),
+}
+
+/// Immutable query authority retained from one verified runtime projection.
+///
+/// Dynamic descriptor registries deliberately have no schema-function table.
+/// Generated-query sessions retain this exact projection-derived authority so
+/// function signatures cannot be reconstructed from labels or facade-local
+/// metadata.
+#[derive(Debug)]
+struct InstalledMatchProjectionAuthority {
+    semantic_fingerprint: SemanticSchemaFingerprint,
+    target: BindingTarget,
+    projection_fingerprint: BindingProjectionFingerprint,
+    functions: BTreeMap<FunctionId, FunctionProjection>,
 }
 
 #[derive(Debug, Default)]
@@ -64,15 +83,83 @@ impl DescriptorRegistry {
         Self::default()
     }
 
-    pub(crate) fn for_installed_projection() -> Self {
+    pub(crate) fn for_installed_projection(
+        semantic_fingerprint: SemanticSchemaFingerprint,
+        target: BindingTarget,
+        projection_fingerprint: BindingProjectionFingerprint,
+        functions: BTreeMap<FunctionId, FunctionProjection>,
+    ) -> Self {
         Self {
             descriptors: RwLock::new(HashMap::new()),
-            match_execution_authority: MatchExecutionAuthority::InstalledProjectionNative,
+            match_execution_authority: MatchExecutionAuthority::InstalledProjectionNative(
+                Arc::new(InstalledMatchProjectionAuthority {
+                    semantic_fingerprint,
+                    target,
+                    projection_fingerprint,
+                    functions,
+                }),
+            ),
         }
     }
 
     pub(crate) fn uses_installed_projection_native_execution(&self) -> bool {
-        self.match_execution_authority == MatchExecutionAuthority::InstalledProjectionNative
+        matches!(
+            self.match_execution_authority,
+            MatchExecutionAuthority::InstalledProjectionNative(_)
+        )
+    }
+
+    /// Resolve one exact schema-function signature retained by a verified
+    /// generated runtime projection.
+    ///
+    /// Released dynamic descriptor registries return `None`; callers must not
+    /// manufacture generated function authority from a label alone.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn projected_function(&self, id: &FunctionId) -> Option<&FunctionProjection> {
+        match &self.match_execution_authority {
+            MatchExecutionAuthority::ReleasedAdapter => None,
+            MatchExecutionAuthority::InstalledProjectionNative(authority) => {
+                authority.functions.get(id)
+            }
+        }
+    }
+
+    /// Return the semantic-schema fingerprint which owns projected function
+    /// signatures in this registry.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn projected_function_schema_fingerprint(&self) -> Option<&SemanticSchemaFingerprint> {
+        match &self.match_execution_authority {
+            MatchExecutionAuthority::ReleasedAdapter => None,
+            MatchExecutionAuthority::InstalledProjectionNative(authority) => {
+                Some(&authority.semantic_fingerprint)
+            }
+        }
+    }
+
+    /// Return the exact generated binding target which owns projected query values.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn projected_function_binding_target(&self) -> Option<BindingTarget> {
+        match &self.match_execution_authority {
+            MatchExecutionAuthority::ReleasedAdapter => None,
+            MatchExecutionAuthority::InstalledProjectionNative(authority) => Some(authority.target),
+        }
+    }
+
+    /// Return the exact generated projection fingerprint which owns query values.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn projected_function_projection_fingerprint(
+        &self,
+    ) -> Option<&BindingProjectionFingerprint> {
+        match &self.match_execution_authority {
+            MatchExecutionAuthority::ReleasedAdapter => None,
+            MatchExecutionAuthority::InstalledProjectionNative(authority) => {
+                Some(&authority.projection_fingerprint)
+            }
+        }
     }
 
     /// Register an entity descriptor.
@@ -200,9 +287,14 @@ impl DescriptorRegistry {
     #[doc(hidden)]
     pub fn owned_registry_snapshot(&self) -> Result<Self> {
         let descriptors = self.owned_snapshot()?;
-        let snapshot = match self.match_execution_authority {
+        let snapshot = match &self.match_execution_authority {
             MatchExecutionAuthority::ReleasedAdapter => Self::new(),
-            MatchExecutionAuthority::InstalledProjectionNative => Self::for_installed_projection(),
+            MatchExecutionAuthority::InstalledProjectionNative(authority) => Self {
+                descriptors: RwLock::new(HashMap::new()),
+                match_execution_authority: MatchExecutionAuthority::InstalledProjectionNative(
+                    Arc::clone(authority),
+                ),
+            },
         };
         for descriptor in descriptors.into_values() {
             match descriptor {
@@ -817,11 +909,41 @@ mod tests {
 
     #[test]
     fn installed_projection_execution_authority_survives_owned_snapshot() {
-        let registry = DescriptorRegistry::for_installed_projection();
+        use type_bridge_contract::fingerprint::SemanticProfileId;
+        use type_bridge_contract::projection::{ProjectionConfig, ProjectionHandler};
+        use type_bridge_contract::schema_fingerprint::SemanticSchemaFingerprint;
+
+        let semantic_fingerprint = SemanticSchemaFingerprint::compute(
+            SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+            b"registry-test",
+        )
+        .unwrap();
+        let registry = DescriptorRegistry::for_installed_projection(
+            semantic_fingerprint.clone(),
+            BindingTarget::Rust,
+            BindingProjectionFingerprint::compute(
+                BindingTarget::Rust,
+                &semantic_fingerprint,
+                &ProjectionConfig::rust(),
+                &[ProjectionHandler::rust_v1()],
+                &[],
+            )
+            .unwrap(),
+            BTreeMap::new(),
+        );
         let snapshot = registry.owned_registry_snapshot().unwrap();
 
         assert!(registry.uses_installed_projection_native_execution());
         assert!(snapshot.uses_installed_projection_native_execution());
+        assert_eq!(
+            snapshot.projected_function_schema_fingerprint(),
+            Some(&semantic_fingerprint)
+        );
         assert!(!DescriptorRegistry::new().uses_installed_projection_native_execution());
+        assert!(
+            DescriptorRegistry::new()
+                .projected_function_schema_fingerprint()
+                .is_none()
+        );
     }
 }

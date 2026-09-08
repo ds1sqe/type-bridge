@@ -81,6 +81,48 @@ Generated entity and relation managers expose `insert`, `insertMany`, `put`,
 `putMany`, immutable replacement `update`, `delete`, `getByIid`, `filter`,
 `all`, `first`, `count`, and `exists`.
 
+Packages whose schema uses ordered collections select the successor manager and
+also expose atomic `updateMany` and `deleteMany`. Updates are readonly
+`[iid, replacement]` tuples; deletes accept canonical IID strings. Insert, put,
+and update batches return frozen values in input order, while delete returns no
+affected-row count:
+
+```ts
+if (stored.iid !== null) {
+  const replacements = [
+    [stored.iid, Person.create({
+      personId: PersonId.create("ada"),
+      age: Age.create(38n),
+    })],
+  ] as const;
+
+  const updated = manager.updateMany(replacements);
+  manager.deleteMany(replacements.map(([iid]) => iid));
+}
+```
+
+Legacy unordered packages retain their existing manager surface and runtime
+resource exactly; regenerate from an ordered schema to use the successor batch
+methods.
+
+The successor manager also exposes immutable, token-branded canonical filters:
+
+```ts
+const threshold = Person.manager(db)
+  .where(Person.fields.age, "gte", Age.create(18n));
+const adults = threshold.all();
+const ada = Person.manager(db)
+  .where(Person.fields.personId, "eq", PersonId.create("ada"))
+  .first();
+```
+
+Each `where` returns a reusable sibling. Canonical filters accept only generated
+field tokens, exact generated values, and `eq`, `ne`, `lt`, `lte`, `gt`, or
+`gte`; Boolean ordering rejects before I/O. Their `first` requires equality for
+every effective reference-key field and proves optional singularity. The
+object-based `filter(...)` API remains available for compatibility lookups and
+keeps its existing arbitrary-first behavior.
+
 Filter keys use generated TypeScript field names plus optional `__eq`, `__ne`,
 `__gt`, `__gte`, `__lt`, or `__lte` suffixes. Use a trailing `__eq` when a
 generated field name itself collides with a lookup suffix.
@@ -184,12 +226,10 @@ const rows = await remote.query(person).rows({ limit: 50n });
 or be pinned out of band. `exchange` performs one authenticated request and
 returns the exact response bytes; TypeBridge does not choose an HTTP client,
 credential policy, or retry policy. Query composition performs no I/O; `one`,
-`first`, bounded `rows`, `pageBy`, `countBy`, or `existsBy` performs one
-exchange and hydrates the same generated classes as direct execution.
-
-Remote reductions/grouping fail before exchange with
-`query_remote_v2_native_only_operation`. Generated remote mutation APIs are not
-advertised.
+`first`, bounded `rows`, `pageBy`, `countBy`, `existsBy`, and typed
+`aggregate`/`groupBy` each perform one exchange and hydrate the same generated
+classes and scalar groups as direct execution. Generated remote mutation APIs
+are not advertised.
 
 ## Runtime boundary
 

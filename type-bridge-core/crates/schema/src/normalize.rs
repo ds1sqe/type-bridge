@@ -8,11 +8,12 @@ use type_bridge_contract::id::{
 };
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CanonicalValueRange,
-    CanonicalValueSet, DeclaredSchema, DocText, FunctionBody, FunctionFact, FunctionParameter,
-    FunctionReturnElement, FunctionReturnMode, FunctionSignature, OwnsFact, OwnsFactId, PlaysFact,
-    PlaysFactId, RegexPattern, RelatesFact, RelatesFactId, SchemaAnnotationValue, SchemaDiagnostic,
-    SchemaDiagnostics, SchemaFact, SchemaFactId, SourceSpan, SourcedSchemaFact, StructFact,
-    StructField, SubFact, SubFactId, TypeFact, TypeReference, ValueFact, ValueFactId,
+    CanonicalValueSet, CollectionMode, DeclaredSchema, DocText, FunctionBody, FunctionFact,
+    FunctionParameter, FunctionReturnElement, FunctionReturnMode, FunctionSignature, OwnsFact,
+    OwnsFactId, PlaysFact, PlaysFactId, RegexPattern, RelatesFact, RelatesFactId,
+    SchemaAnnotationValue, SchemaDiagnostic, SchemaDiagnostics, SchemaFact, SchemaFactId,
+    SourceSpan, SourcedSchemaFact, StructFact, StructField, SubFact, SubFactId, TypeFact,
+    TypeReference, ValueFact, ValueFactId,
 };
 use type_bridge_contract::temporal::{CanonicalDate, CanonicalDateTime, CanonicalDuration};
 use type_bridge_contract::value::{
@@ -20,7 +21,10 @@ use type_bridge_contract::value::{
 };
 
 use crate::parse_provider_datetime_tz;
-use crate::{FactAssembler, SchemaDocument, SchemaDocumentSet, YamlMapping, YamlNode, YamlScalar};
+use crate::{
+    FactAssembler, SchemaDocument, SchemaDocumentSet, YamlMapping, YamlNode, YamlScalar,
+    YamlScalarStyle,
+};
 
 /// Exact discriminator for the first YAML Schema V2 document grammar.
 pub const SCHEMA_V2_FORMAT: &str = "typebridge.schema/v2";
@@ -368,8 +372,17 @@ impl Normalizer {
         for named in named_bodies(node)? {
             let attribute = contract(AttributeId::new(named.name.value()), named.name.span())?;
             let id = contract(OwnsFactId::new(owner.clone(), attribute), &named.source)?;
+            let collection_mode = named
+                .body
+                .as_ref()
+                .map(collection_mode)
+                .transpose()?
+                .unwrap_or_default();
             self.push(
-                SchemaFact::Owns(OwnsFact::new(id.clone())),
+                SchemaFact::Owns(OwnsFact::new_with_collection_mode(
+                    id.clone(),
+                    collection_mode,
+                )),
                 named.source.clone(),
             );
 
@@ -377,10 +390,12 @@ impl Normalizer {
                 check_keys(
                     body,
                     &[
-                        "key", "unique", "card", "regex", "range", "values", "doc", "meta",
+                        "ordered", "distinct", "key", "unique", "card", "regex", "range", "values",
+                        "doc", "meta",
                     ],
                 )?;
                 let subject = AnnotationSubjectId::Owns(id);
+                self.queue_collection_distinct(body, subject.clone())?;
                 self.queue_presence(body, "key", subject.clone(), AnnotationKindId::Key)?;
                 self.queue_presence(body, "unique", subject.clone(), AnnotationKindId::Unique)?;
                 self.queue_if_present(
@@ -417,16 +432,29 @@ impl Normalizer {
             } else {
                 None
             };
+            let collection_mode = named
+                .body
+                .as_ref()
+                .map(collection_mode)
+                .transpose()?
+                .unwrap_or_default();
             let id = contract(RelatesFactId::new(relation.clone(), role), &named.source)?;
             self.pending_relates.push(PendingRelates {
                 id: id.clone(),
                 specializes,
+                collection_mode,
                 source: named.source.clone(),
             });
 
             if let Some(body) = &named.body {
-                check_keys(body, &["as", "abstract", "card", "doc", "meta"])?;
+                check_keys(
+                    body,
+                    &[
+                        "as", "ordered", "distinct", "abstract", "card", "doc", "meta",
+                    ],
+                )?;
                 let subject = AnnotationSubjectId::Relates(id);
+                self.queue_collection_distinct(body, subject.clone())?;
                 self.queue_presence(
                     body,
                     "abstract",
@@ -553,23 +581,52 @@ impl Normalizer {
             }
 
             let returns = mapping(required_entry(body, "returns")?.value())?;
-            check_keys(returns, &["stream"])?;
-            let stream = sequence(required_entry(returns, "stream")?.value())?;
-            let mut return_elements = Vec::with_capacity(stream.items().len());
-            for element in stream.items() {
-                let type_token = scalar(element)?;
-                let type_ref = contract(
-                    TypeReference::from_token(type_token.value()),
-                    type_token.span(),
-                )?;
-                return_elements.push(FunctionReturnElement::new(type_ref, false));
+            check_keys(returns, &["scalar", "tuple", "stream"])?;
+            let return_kind_count = ["scalar", "tuple", "stream"]
+                .into_iter()
+                .filter(|kind| entry(returns, kind).is_some())
+                .count();
+            if return_kind_count != 1 {
+                return Err(error(
+                    "invalid_function_return_shape",
+                    "function returns require exactly one scalar, tuple, or stream shape",
+                    Some(returns.span().clone()),
+                ));
             }
+            let return_element =
+                |node: &YamlNode| -> Result<FunctionReturnElement, SchemaDiagnostics> {
+                    let type_token = scalar(node)?;
+                    let type_ref = contract(
+                        TypeReference::from_token(type_token.value()),
+                        type_token.span(),
+                    )?;
+                    Ok(FunctionReturnElement::new(type_ref, false))
+                };
+            let returns = if let Some(scalar_return) = entry(returns, "scalar") {
+                FunctionReturnMode::scalar(return_element(scalar_return.value())?)
+            } else {
+                let (kind, return_elements) = if let Some(tuple) = entry(returns, "tuple") {
+                    ("tuple", sequence(tuple.value())?)
+                } else {
+                    let stream = required_entry(returns, "stream")?;
+                    ("stream", sequence(stream.value())?)
+                };
+                let elements = return_elements
+                    .items()
+                    .iter()
+                    .map(return_element)
+                    .collect::<Result<Vec<_>, _>>()?;
+                if kind == "tuple" {
+                    contract(FunctionReturnMode::tuple(elements), returns.span())?
+                } else {
+                    contract(FunctionReturnMode::stream(elements), returns.span())?
+                }
+            };
 
             let id = contract(
                 FunctionId::new(declaration.key().value()),
                 declaration.key().span(),
             )?;
-            let returns = contract(FunctionReturnMode::stream(return_elements), returns.span())?;
             let signature = contract(FunctionSignature::new(parameters_out, returns), body.span())?;
             let function_body = contract(FunctionBody::new(body_text.value()), body_text.span())?;
             self.push(
@@ -601,6 +658,24 @@ impl Normalizer {
         self.pending.push(PendingAnnotation {
             subject,
             kind,
+            input: PendingInput::Presence,
+            source: entry.value().span().clone(),
+        });
+        Ok(())
+    }
+
+    fn queue_collection_distinct(
+        &mut self,
+        body: &YamlMapping,
+        subject: AnnotationSubjectId,
+    ) -> Result<(), SchemaDiagnostics> {
+        let Some(entry) = entry(body, "distinct") else {
+            return Ok(());
+        };
+        require_positive_schema_flag(entry.value())?;
+        self.pending.push(PendingAnnotation {
+            subject,
+            kind: AnnotationKindId::Distinct,
             input: PendingInput::Presence,
             source: entry.value().span().clone(),
         });
@@ -731,7 +806,11 @@ impl Normalizer {
                 .transpose()?;
             self.push(
                 SchemaFact::Relates(contract(
-                    RelatesFact::new(declaration.id.clone(), specializes),
+                    RelatesFact::new_with_collection_mode(
+                        declaration.id.clone(),
+                        specializes,
+                        declaration.collection_mode,
+                    ),
                     &declaration.source,
                 )?),
                 declaration.source.clone(),
@@ -788,6 +867,7 @@ impl Normalizer {
 struct PendingRelates {
     id: RelatesFactId,
     specializes: Option<(String, SourceSpan)>,
+    collection_mode: CollectionMode,
     source: SourceSpan,
 }
 
@@ -1112,6 +1192,38 @@ fn canonical_u64(value: &YamlScalar) -> Result<u64, SchemaDiagnostics> {
         ));
     }
     Ok(parsed)
+}
+
+fn collection_mode(body: &YamlMapping) -> Result<CollectionMode, SchemaDiagnostics> {
+    let Some(entry) = entry(body, "ordered") else {
+        return Ok(CollectionMode::Unordered);
+    };
+    require_positive_schema_flag(entry.value())?;
+    Ok(CollectionMode::OrderedList)
+}
+
+fn require_positive_schema_flag(node: &YamlNode) -> Result<(), SchemaDiagnostics> {
+    let value = scalar(node)?;
+    if value.style() != YamlScalarStyle::Plain {
+        return Err(error(
+            "invalid_schema_boolean",
+            "schema collection flags must use the plain Boolean token `true`",
+            Some(value.span().clone()),
+        ));
+    }
+    match value.value() {
+        "true" => Ok(()),
+        "false" => Err(error(
+            "false_presence_annotation",
+            "collection flags must be omitted rather than set to false",
+            Some(value.span().clone()),
+        )),
+        _ => Err(error(
+            "invalid_schema_boolean",
+            "schema collection flags must use the plain Boolean token `true`",
+            Some(value.span().clone()),
+        )),
+    }
 }
 
 fn strict_bool(node: &YamlNode) -> Result<bool, SchemaDiagnostics> {

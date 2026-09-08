@@ -11,8 +11,9 @@
 
 use std::sync::Arc;
 
-use napi::NapiRaw;
-use napi::bindgen_prelude::{AsyncTask, BigInt, Buffer, Env, FromNapiValue, Unknown};
+use napi::bindgen_prelude::{
+    AsyncTask, BigInt, Buffer, Env, FromNapiValue, JsValue, Object, Unknown,
+};
 use napi_derive::napi;
 use type_bridge_contract::codec::{from_canonical_json, to_canonical_json};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
@@ -428,7 +429,7 @@ pub fn query_v2_authority(
     })
 }
 
-fn schema_authority_diagnostic(error: &SchemaAuthorityError) -> Diagnostic {
+pub(crate) fn schema_authority_diagnostic(error: &SchemaAuthorityError) -> Diagnostic {
     if let Some(contract) = error.contract() {
         return contract.clone();
     }
@@ -573,14 +574,14 @@ pub fn query_v2_query_only_authority(
 /// final deferred resolution enters Node, so a stalled provider cannot consume
 /// one of libuv's shared blocking-worker slots indefinitely.
 #[napi(js_name = "queryV2ExecuteLocal", ts_return_type = "Promise<string>")]
-pub fn query_v2_execute_local(
+pub fn query_v2_execute_local<'env>(
     env: Env,
     database: &NodeRustDatabase,
     authority: &NodeQueryV2Authority,
-    plan: Unknown,
-    invocation_json: Unknown,
+    plan: Unknown<'env>,
+    invocation_json: Unknown<'env>,
     deadline_ms: Option<BigInt>,
-) -> napi::Result<napi::JsObject> {
+) -> napi::Result<Object<'env>> {
     let plan = non_shared_buffer(&env, plan)?;
     let invocation_json = bounded_string(
         &env,
@@ -632,7 +633,7 @@ pub fn query_v2_execute_local(
         }
         drop(runtime_owner);
     });
-    Ok(promise)
+    Ok(Object::from_raw(env.raw(), promise.raw()))
 }
 
 /// Convert one caller-supplied `BigInt` limit through the shared range check.
@@ -826,7 +827,7 @@ mod tests {
     fn local_provider_wait_does_not_use_napi_async_work() {
         let source = include_str!("query_v2_runtime.rs");
         let start = source
-            .find("pub fn query_v2_execute_local(")
+            .find("pub fn query_v2_execute_local")
             .expect("local entry point");
         let end = source[start..]
             .find("fn remote_limit(")

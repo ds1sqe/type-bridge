@@ -48,14 +48,47 @@ fn collections_have_page_terminals_only(
     let _ = query.rows(type_bridge::RowsOptions::new(10));
 }
 
-async fn active_read_borrow_prevents_close(
-    read: type_bridge::ReadTransaction<'_, AppSchema>,
-) {
+async fn active_read_borrow_prevents_close(read: type_bridge::ReadTransaction<'_, AppSchema>) {
     let mut session = read.query();
     let person = session.exact::<Person>().unwrap();
     let query = session.query(person).unwrap();
     read.close().await.unwrap();
     let _ = query.count().await;
+}
+
+fn manager_filter_owner_and_value_are_static(database: &type_bridge::Database<AppSchema>) {
+    let identifier = Identifier::new("data-ada").unwrap();
+    let _ = database.entities::<Person>().where_(
+        RobotType::robot_id,
+        type_bridge::ProjectedManagerComparison::Eq,
+        &RobotId::new(7).unwrap(),
+    );
+    let _ = database.entities::<Person>().where_(
+        PersonType::score,
+        type_bridge::ProjectedManagerComparison::Eq,
+        &identifier,
+    );
+}
+
+fn canonical_filter_exposes_no_mutations(database: &type_bridge::Database<AppSchema>) {
+    let identifier = Identifier::new("data-ada").unwrap();
+    let filter = database
+        .entities::<Person>()
+        .where_(
+            PersonType::identifier,
+            type_bridge::ProjectedManagerComparison::Eq,
+            &identifier,
+        )
+        .unwrap();
+    let _ = filter.insert();
+}
+
+async fn active_manager_filter_borrow_prevents_close(
+    read: type_bridge::ReadTransaction<'_, AppSchema>,
+) {
+    let filter = read.entities::<Person>().filter().unwrap();
+    read.close().await.unwrap();
+    let _ = filter.count().await;
 }
 
 fn requires_event_reference(_: EventRef) {}
@@ -86,6 +119,14 @@ fn reachability_endpoint_roles_are_static(
 
 fn required_create_inputs_are_static() {
     let _ = EventCreate::try_new();
+}
+
+fn function_call_domain_is_static(
+    session: &type_bridge::QuerySession<'_, AppSchema>,
+    person: type_bridge::Binding<AppSchema, Person>,
+    wrong_domain: &type_bridge::FunctionCall<AppSchema, bool>,
+) {
+    let _ = qualifying_score(session, person, wrong_domain);
 }
 
 fn main() {}

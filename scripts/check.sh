@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Local source-tree CI checks. Release-artifact acceptance is workflow-only:
 # this script neither builds/installs Python wheels nor claims publication parity.
-# Run from repo root: ./scripts/check.sh [rust|python|node|all]
+# Run from repo root: ./scripts/check.sh [rust|python|node|c|projected-parity|projected-live|all]
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -50,7 +50,7 @@ run_rust() {
         python scripts/ci/validate_cargo_rustdoc.py --toolchain 1.88.0
 
     run_step "cargo test --all-targets" \
-        cargo test --manifest-path type-bridge-core/Cargo.toml --all-targets
+        cargo test --manifest-path type-bridge-core/Cargo.toml --all-targets --no-fail-fast
 
     run_step "contract alternate serde_json backend conformance" \
         cargo test --manifest-path type-bridge-core/Cargo.toml \
@@ -117,6 +117,11 @@ run_node() {
 
     run_step "npm ci"                npm ci
     run_step "npm run build"         npm run build
+    run_step "ordered four-binding generated package compiler smoke" \
+        cargo test --locked --manifest-path ../../Cargo.toml \
+        -p type-bridge-schema-codegen --test ordered_collections \
+        ordered_generated_packages_pass_all_four_language_compilers \
+        -- --exact --ignored
     run_step "npm run typecheck"     npm run typecheck
     run_step "npm run typecheck:projection-integration" npm run typecheck:projection-integration
     run_step "npm run scope:probe"    npm run scope:probe
@@ -131,10 +136,122 @@ run_node() {
     popd >/dev/null
 }
 
+# ── C foundation checks (matching ci.yml rust-check C steps) ──────────────
+run_c() {
+    printf "${BOLD}━━━ C foundation (internal) ━━━${RESET}\n\n"
+
+    run_step "C distribution contract" \
+        python scripts/ci/validate_c_distribution_contract.py
+
+    run_step "C distribution cross-slice broad-case ledger" \
+        uv run pytest tests/unit/compat/test_c_broad_case_ledger.py -q
+
+    run_step "artifact-bound Sdk V6 fan-in contract" \
+        uv run pytest \
+        tests/unit/compat/test_sdk_conformance_v6.py \
+        tests/unit/compat/test_sdk_conformance_v6_assembler.py \
+        tests/unit/compat/test_persist_binding_reports.py \
+        tests/unit/compat/test_sdk_v1_v2_artifact_runner.py \
+        tests/unit/compat/test_sdk_v3_artifact_runner.py \
+        tests/unit/compat/test_sdk_v4_live_runner.py \
+        tests/unit/compat/test_sdk_v5_artifact_runner.py \
+        tests/unit/compat/test_sdk_v6_artifact_runner.py \
+        tests/unit/compat/test_sdk_v6_evidence_composer.py \
+        tests/unit/compat/test_sdk_v6_surfaces.py \
+        tests/unit/compat/test_sdk_v6_surface_consumer.py -q
+
+    run_step "independent FULL-C artifact auditor" \
+        uv run pytest tests/unit/compat/test_full_c_artifact_auditor.py -q
+
+    run_step "standalone CLI artifact and hostile archive contracts" \
+        uv run pytest tests/unit/compat/test_standalone_cli_artifact.py -q
+
+    run_step "C runtime/generated-package artifact and hostile archive contracts" \
+        uv run pytest tests/unit/compat/test_c_package_artifacts.py -q
+
+    run_step "C artifact supply-chain and hostile evidence contracts" \
+        uv run pytest tests/unit/compat/test_c_distribution_security.py -q
+
+    run_step "C artifact-only clean-consumer and hostile report contracts" \
+        uv run pytest tests/unit/compat/test_c_artifact_journey.py -q
+
+    local c_shared_target c_shared_library
+    c_shared_target="$(mktemp -d)"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        c_shared_library="$c_shared_target/debug/libtype_bridge_c.dylib"
+    else
+        c_shared_library="$c_shared_target/debug/libtype_bridge_c.so"
+    fi
+    trap 'rm -rf -- "$c_shared_target"' EXIT
+
+    run_step "generated C package and strict installed-compiler checks" \
+        cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-schema-codegen --test c_emitter
+
+    run_step "generated ordered C17 and C++17 consumers" \
+        cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-schema-codegen --test c_projection_live \
+        query_successor_consumers_compile_as_strict_c17_and_cpp17 -- --exact
+
+    run_step "C runtime, transaction, and cancellation ABI" \
+        cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-c --lib --test execution_abi
+
+    run_step "C typed-query, diagnostic, function, and remote ABI" \
+        cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-c \
+        --test query_abi \
+        --test query_diagnostic_abi \
+        --test query_function_abi \
+        --test query_remote_abi
+
+    run_step "build the isolated C ABI shared library" \
+        env CARGO_TARGET_DIR="$c_shared_target" \
+        cargo build --locked --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-c --lib
+
+    run_step "C ABI header, exports, and package" \
+        env TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
+        TYPE_BRIDGE_C_SHARED_LIBRARY="$c_shared_library" \
+        cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-c --test abi
+
+    run_step "C provider-free Projected parity producer" \
+        env TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
+        TYPE_BRIDGE_C_SHARED_LIBRARY="$c_shared_library" \
+        cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-c --test projected_parity
+
+    run_step "C schema-package ABI and standalone consumer" \
+        env TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
+        TYPE_BRIDGE_C_SHARED_LIBRARY="$c_shared_library" \
+        cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-c --test schema_package_abi
+
+    run_step "C foundation on MSRV 1.88" \
+        cargo +1.88.0 check --locked --manifest-path type-bridge-core/Cargo.toml \
+        -p type-bridge-c --all-targets
+
+    rm -rf -- "$c_shared_target"
+    trap - EXIT
+}
+
 run_generated_examples() {
     printf "${BOLD}━━━ Generated examples ━━━${RESET}\n\n"
     run_step "generated-only example workspace" \
         scripts/ci/validate_generated_examples.sh
+}
+
+run_projected_parity() {
+    printf "${BOLD}━━━ Provider-free Projected value parity ━━━${RESET}\n\n"
+    run_step "four-binding provider-free Projected parity fan-in" \
+        uv run python scripts/ci/run_projected_parity.py
+}
+
+run_projected_live() {
+    printf "${BOLD}━━━ Exact-TypeDB-3.12.3 Projected live parity ━━━${RESET}\n\n"
+    run_step "four-binding exact-TypeDB-3.12.3 Projected live fan-in" \
+        uv run python scripts/ci/run_projected_live.py
 }
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────
@@ -143,9 +260,12 @@ case "$target" in
     rust)   run_rust   ;;
     python) run_python ;;
     node)   run_node   ;;
-    all)    run_rust; run_python; run_node; run_generated_examples ;;
+    c)      run_c      ;;
+    projected-parity) run_projected_parity ;;
+    projected-live) run_projected_live ;;
+    all)    run_rust; run_python; run_node; run_c; run_projected_parity; run_generated_examples ;;
     *)
-        echo "Usage: $0 [rust|python|node|all]"
+        echo "Usage: $0 [rust|python|node|c|projected-parity|projected-live|all]"
         exit 1
         ;;
 esac

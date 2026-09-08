@@ -59,6 +59,7 @@ CORE_WHEEL_BUCKETS = frozenset(
 )
 CORE_WHEEL_NOTICE = "type_bridge_core/THIRD_PARTY_NOTICES.md"
 CORE_SDIST_NOTICE = "python/type_bridge_core/THIRD_PARTY_NOTICES.md"
+CORE_SDIST_CRATE_NOTICES = frozenset({"crates/cli/THIRD_PARTY_NOTICES.md"})
 MIT_LICENSE = "MIT"
 ROOT_LICENSE_FILE = "LICENSE"
 RETIRED_PROVIDER_COMPONENT = re.compile(r"(?:^|-)typedb-(?:driver|protocol)-(?:b7|b9)(?:-|$)")
@@ -102,6 +103,32 @@ CORE_SDIST_SOURCE_ROOTS = (
 # against an isolated serde_json feature set; it is not a core sdist input.
 CORE_SDIST_EXCLUDED_NESTED_PACKAGE_ROOTS = frozenset(
     {"crates/core/tests/fixtures/rule-wire-standalone"}
+)
+# Cargo and Maturin apply the repository's generated-output ignores while
+# collecting package sources. Keep this closed list aligned with those build
+# and cache identities so a dirty checkout cannot turn local output into sdist
+# authority. Exact names avoid suppressing ordinary source paths with similar
+# names such as ``targeting`` or ``distribution``.
+CORE_SDIST_EXCLUDED_GENERATED_DIRECTORY_NAMES = frozenset(
+    {
+        ".cache",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+        "htmlcov",
+        "node_modules",
+        "target",
+        "tmp",
+        "wheels",
+    }
+)
+CORE_SDIST_EXCLUDED_GENERATED_DIRECTORY_SUFFIXES = (".egg-info",)
+CORE_SDIST_EXCLUDED_COMPILED_SUFFIXES = frozenset(
+    {".dylib", ".node", ".pyc", ".pyd", ".pyo", ".so"}
 )
 CORE_SDIST_TRANSFORMED_FIRST_PARTY_CRATE_ROOTS = tuple(
     source_root for source_root in CORE_SDIST_WORKSPACE_MEMBERS if source_root.startswith("crates/")
@@ -204,6 +231,23 @@ def require_regular_authority(path: Path, *, label: str) -> None:
         raise ValidationError(f"{label} is missing, non-regular, or symbolic: {path}")
 
 
+def is_excluded_core_sdist_authority(relative: Path) -> bool:
+    """Return whether Maturin/Cargo excludes one generated checkout path."""
+    name = relative.as_posix()
+    if any(
+        name == excluded_root or name.startswith(f"{excluded_root}/")
+        for excluded_root in CORE_SDIST_EXCLUDED_NESTED_PACKAGE_ROOTS
+    ):
+        return True
+    if any(
+        part in CORE_SDIST_EXCLUDED_GENERATED_DIRECTORY_NAMES
+        or part.endswith(CORE_SDIST_EXCLUDED_GENERATED_DIRECTORY_SUFFIXES)
+        for part in relative.parts
+    ):
+        return True
+    return relative.suffix.lower() in CORE_SDIST_EXCLUDED_COMPILED_SUFFIXES
+
+
 def core_sdist_source_authorities(repository_root: Path) -> dict[str, Path]:
     """Derive the exact checked-out source inventory maturin must place in the core sdist."""
     core_root = repository_root / "type-bridge-core"
@@ -220,28 +264,37 @@ def core_sdist_source_authorities(repository_root: Path) -> dict[str, Path]:
         directory = core_root / source_root
         if directory.is_symlink() or not directory.is_dir():
             raise ValidationError(f"Core sdist source root is missing or symbolic: {directory}")
-        for candidate in sorted(directory.rglob("*")):
-            relative = candidate.relative_to(core_root)
-            name = relative.as_posix()
-            if any(
-                name == excluded_root or name.startswith(f"{excluded_root}/")
-                for excluded_root in CORE_SDIST_EXCLUDED_NESTED_PACKAGE_ROOTS
-            ):
-                continue
-            if candidate.is_symlink():
-                raise ValidationError(f"Core sdist authority is symbolic: {relative}")
-            if candidate.is_dir():
-                continue
-            if not candidate.is_file():
-                raise ValidationError(f"Core sdist authority is non-regular: {relative}")
-            if source_root == "python/type_bridge_core" and (
-                "__pycache__" in relative.parts
-                or candidate.suffix in {".pyc", ".pyo", ".so", ".pyd", ".dylib"}
-            ):
-                continue
-            if name in authorities:
-                raise ValidationError(f"Duplicate core sdist authority: {name}")
-            authorities[name] = candidate
+
+        def reject_walk_error(error: OSError) -> None:
+            raise ValidationError(
+                f"Could not enumerate core sdist source root {directory}: {error}"
+            ) from error
+
+        for current, directory_names, file_names in directory.walk(
+            top_down=True,
+            follow_symlinks=False,
+            on_error=reject_walk_error,
+        ):
+            directory_names[:] = sorted(
+                directory_name
+                for directory_name in directory_names
+                if not is_excluded_core_sdist_authority(
+                    (current / directory_name).relative_to(core_root)
+                )
+            )
+            for file_name in sorted(file_names):
+                candidate = current / file_name
+                relative = candidate.relative_to(core_root)
+                if is_excluded_core_sdist_authority(relative):
+                    continue
+                name = relative.as_posix()
+                if candidate.is_symlink():
+                    raise ValidationError(f"Core sdist authority is symbolic: {relative}")
+                if not candidate.is_file():
+                    raise ValidationError(f"Core sdist authority is non-regular: {relative}")
+                if name in authorities:
+                    raise ValidationError(f"Duplicate core sdist authority: {name}")
+                authorities[name] = candidate
     canonical_license = core_root / ROOT_LICENSE_FILE
     canonical_license_bytes = canonical_license.read_bytes()
     for generated_license in CORE_SDIST_GENERATED_LICENSES:
@@ -1228,6 +1281,7 @@ def validate_sdist(path: Path, spec: PackageSpec) -> dict[str, Any]:
             else {
                 ROOT_LICENSE_FILE,
                 CORE_SDIST_NOTICE,
+                *CORE_SDIST_CRATE_NOTICES,
                 *CORE_SDIST_GENERATED_LICENSES,
                 *CORE_SDIST_VENDOR_LICENSES,
             }

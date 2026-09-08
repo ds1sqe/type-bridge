@@ -13,7 +13,8 @@ use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::{Cardinality, ValueTypeTag};
 
 use crate::{
-    EmbeddedAuthority, GeneratedPackage, documentation_annotation, invalid, model_documentation,
+    EmbeddedAuthority, GeneratedPackage, MIGRATION_HISTORY_BUNDLE_RESOURCE,
+    documentation_annotation, invalid, model_documentation, projection_uses_ordered_collections,
 };
 
 macro_rules! canonical_text {
@@ -57,6 +58,14 @@ const FIXED_PUBLIC_NAMES: &[&str] = &[
     "SubtypeRootModel",
     "ReferenceModel",
     "StructValue",
+    "DecodedStruct",
+    "EncodedStruct",
+    "IntoEncodedStruct",
+    "IntoHydratedSnapshot",
+    "MaterializeStruct",
+    "MaterializeCreate",
+    "MaterializeReference",
+    "DecodedCreate",
     "NominalUpcast",
     "RoleUpcast",
     "RoleTokenCompatible",
@@ -92,6 +101,7 @@ const FIXED_PUBLIC_NAMES: &[&str] = &[
     "ModelFamily",
     "EncodedScalar",
     "EncodedReference",
+    "ReferenceOrigin",
     "EncodedCreate",
     "HydratedRow",
     "HydratedPlayer",
@@ -105,6 +115,7 @@ const FIXED_PUBLIC_NAMES: &[&str] = &[
     "validate_canonical_string",
     "prefix_validation_path",
     "materialize_model_for_test",
+    "hydrated_player_from_encoded_reference",
     "Schema",
     "SchemaPackage",
     "Unbound",
@@ -145,6 +156,7 @@ pub(super) fn render(
     runtime: &[u8],
 ) -> Result<GeneratedPackage, Diagnostic> {
     validate_projection(projection)?;
+    let ordered = projection_uses_ordered_collections(projection);
     GeneratedPackage::try_new([
         ("Cargo.toml".to_owned(), cargo_toml.to_vec()),
         ("src/lib.rs".to_owned(), render_lib().into_bytes()),
@@ -155,11 +167,11 @@ pub(super) fn render(
         ),
         (
             "src/create.rs".to_owned(),
-            render_create(projection)?.into_bytes(),
+            render_create(projection, ordered)?.into_bytes(),
         ),
         (
             "src/read.rs".to_owned(),
-            render_read(projection)?.into_bytes(),
+            render_read(projection, ordered)?.into_bytes(),
         ),
         (
             "src/reference.rs".to_owned(),
@@ -181,6 +193,7 @@ pub(super) fn render(
             "src/schema.rs".to_owned(),
             render_schema(projection, authority)?.into_bytes(),
         ),
+        (MIGRATION_HISTORY_BUNDLE_RESOURCE.to_owned(), Vec::new()),
     ])
 }
 
@@ -405,7 +418,7 @@ fn render_declaration(projection: &RuntimeProjection) -> Result<String, Diagnost
     Ok(output)
 }
 
-fn render_create(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
+fn render_create(projection: &RuntimeProjection, ordered: bool) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
     output.push_str("use crate::read::*;\nuse crate::reference::*;\nuse crate::runtime::*;\nuse crate::structs::*;\n\n");
     for id in projection.emission().model_shells() {
@@ -431,6 +444,7 @@ fn render_create(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
             "try_new",
             true,
             &validation_checks,
+            ordered,
         );
         let read_name = model.target_name().as_str();
 
@@ -450,7 +464,7 @@ fn render_create(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
                     (ProjectedContainer::Scalar, false) => {
                         let _ = writeln!(
                             enc_roles_code,
-                            "    if let Some(__tb_reference) = self.{mname}.as_ref() {{ __tb_roles.push(({token_str:?}, vec![__tb_reference.clone().into_encoded_reference()?])); }} else {{ __tb_roles.push(({token_str:?}, vec![])); }}"
+                            "    if let Some(__tb_reference) = self.{mname}.as_ref() {{ __tb_roles.push(({token_str:?}, vec![__tb_reference.clone().into_encoded_reference()?])); }}"
                         );
                     }
                     (ProjectedContainer::Sequence, _) => {
@@ -471,7 +485,7 @@ fn render_create(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
                     (ProjectedContainer::Scalar, false) => {
                         let _ = writeln!(
                             enc_fields_code,
-                            "    if let Some(__tb_value) = self.{mname}.as_ref() {{ __tb_fields.push(({token_str:?}, vec![__tb_value.value().into_encoded_scalar()])); }} else {{ __tb_fields.push(({token_str:?}, vec![])); }}"
+                            "    if let Some(__tb_value) = self.{mname}.as_ref() {{ __tb_fields.push(({token_str:?}, vec![__tb_value.value().into_encoded_scalar()])); }}"
                         );
                     }
                     (ProjectedContainer::Sequence, _) => {
@@ -487,6 +501,70 @@ fn render_create(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
         let _ = writeln!(
             output,
             "impl IntoEncodedCreate for {name} {{\n  fn into_encoded_create(self) -> Result<EncodedCreate, ValidationError> {{\n    let mut __tb_fields = Vec::new();\n{enc_fields_code}    let mut __tb_roles = Vec::new();\n{enc_roles_code}    Ok(EncodedCreate::new({read_name}::TYPE_ID_JSON, __tb_fields, __tb_roles))\n  }}\n}}\n"
+        );
+
+        let expected_fields = members
+            .iter()
+            .filter(|member| !member.is_role)
+            .map(|member| format!("{:?}", member.token.as_deref().unwrap_or(&member.name)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let expected_roles = members
+            .iter()
+            .filter(|member| member.is_role)
+            .map(|member| format!("{:?}", member.token.as_deref().unwrap_or(&member.name)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut decode_members = String::new();
+        for member in &members {
+            let mname = &member.name;
+            let mtype = &member.value;
+            let token = member.token.as_deref().unwrap_or(mname);
+            let source = if member.is_role { "roles" } else { "fields" };
+            let duplicate = if member.is_role {
+                "duplicate_role_evidence"
+            } else {
+                "duplicate_scalar_evidence"
+            };
+            let materialize = if member.is_role {
+                format!("{mtype}::materialize_reference(__tb_item, &__tb_path.join({mname:?}))?")
+            } else {
+                decode_field_expr(
+                    projection,
+                    mtype,
+                    "__tb_item",
+                    &format!("__tb_path.join({mname:?})"),
+                )?
+            };
+            match (member.container, member.required) {
+                (ProjectedContainer::Scalar, true) => {
+                    let _ = writeln!(
+                        decode_members,
+                        "    let {mname} = {{ let __tb_values = __tb_value.{source}().iter().find(|(__tb_token, _)| __tb_token.as_str() == {token:?}).map(|(_, __tb_values)| __tb_values.as_slice()).ok_or_else(|| ValidationError::new(__tb_path.join({mname:?}).path(), \"missing_required_member\"))?; if __tb_values.len() != 1 {{ return Err(ValidationError::new(__tb_path.join({mname:?}).path(), {duplicate:?})); }} let __tb_item = &__tb_values[0]; {materialize} }};"
+                    );
+                }
+                (ProjectedContainer::Scalar, false) => {
+                    let _ = writeln!(
+                        decode_members,
+                        "    let {mname} = if let Some(__tb_values) = __tb_value.{source}().iter().find(|(__tb_token, _)| __tb_token.as_str() == {token:?}).map(|(_, __tb_values)| __tb_values.as_slice()) {{ if __tb_values.len() != 1 {{ return Err(ValidationError::new(__tb_path.join({mname:?}).path(), {duplicate:?})); }} let __tb_item = &__tb_values[0]; Some({materialize}) }} else {{ None }};"
+                    );
+                }
+                (ProjectedContainer::Sequence, _) => {
+                    let _ = writeln!(
+                        decode_members,
+                        "    let {mname} = {{ let __tb_values = __tb_value.{source}().iter().find(|(__tb_token, _)| __tb_token.as_str() == {token:?}).map(|(_, __tb_values)| __tb_values.as_slice()).ok_or_else(|| ValidationError::new(__tb_path.join({mname:?}).path(), \"missing_collection_member\"))?; let mut __tb_output = Vec::with_capacity(__tb_values.len()); for __tb_item in __tb_values {{ __tb_output.push({materialize}); }} __tb_output }};"
+                    );
+                }
+            }
+        }
+        let arguments = members
+            .iter()
+            .map(|member| member.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(
+            output,
+            "impl MaterializeCreate for {name} {{\n  type Schema = crate::AppSchema;\n  fn materialize_create(__tb_value: &DecodedCreate, __tb_path: &ValidationPath) -> Result<Self, ValidationError> {{\n    if __tb_value.type_id_json() != {read_name}::TYPE_ID_JSON {{ return Err(ValidationError::new(__tb_path.path(), \"wrong_concrete_model_type\")); }}\n    let mut __tb_seen = std::collections::BTreeSet::<&str>::new();\n    for (__tb_token, _) in __tb_value.fields() {{ if !__tb_seen.insert(__tb_token.as_str()) {{ return Err(ValidationError::new(__tb_path.path(), \"duplicate_scalar_evidence\")); }} if ![{expected_fields}].contains(&__tb_token.as_str()) {{ return Err(ValidationError::new(__tb_path.path(), \"unexpected_field_evidence\")); }} }}\n    __tb_seen.clear();\n    for (__tb_token, _) in __tb_value.roles() {{ if !__tb_seen.insert(__tb_token.as_str()) {{ return Err(ValidationError::new(__tb_path.path(), \"duplicate_role_evidence\")); }} if ![{expected_roles}].contains(&__tb_token.as_str()) {{ return Err(ValidationError::new(__tb_path.path(), \"unexpected_role_evidence\")); }} }}\n{decode_members}    Self::try_new({arguments})\n  }}\n}}\n"
         );
     }
     Ok(output)
@@ -573,7 +651,7 @@ fn decode_field_expr(
     }
 }
 
-fn render_read(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
+fn render_read(projection: &RuntimeProjection, ordered: bool) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
     output.push_str("use crate::reference::*;\nuse crate::runtime::*;\nuse crate::structs::*;\nuse crate::tokens::*;\n\n");
     for id in projection.emission().model_shells() {
@@ -663,12 +741,21 @@ fn render_read(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
             let members = read_members(projection, model)?;
             let _ = writeln!(
                 output,
-                "#[derive(Clone, Debug, PartialEq)]\npub struct {name} {{"
+                "#[derive(Clone, PartialEq)]\npub struct {name} {{\n  __tb_origin: ReferenceOrigin,"
             );
             for member in &members {
                 let _ = writeln!(output, "  {}: {},", member.name, member.stored_type());
             }
-            output.push_str("}\n\nimpl ");
+            output.push_str("}\n\n");
+            let _ = writeln!(
+                output,
+                "impl core::fmt::Debug for {name} {{\n  fn fmt(&self, __tb_formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {{\n    let mut __tb_debug = __tb_formatter.debug_struct({name:?});"
+            );
+            for member in &members {
+                let mname = &member.name;
+                let _ = writeln!(output, "    __tb_debug.field({mname:?}, &self.{mname});");
+            }
+            output.push_str("    __tb_debug.finish()\n  }\n}\n\nimpl ");
             output.push_str(name);
             output.push_str(" {\n");
             for member in &members {
@@ -694,7 +781,7 @@ fn render_read(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
 
             let _ = writeln!(
                 output,
-                "impl MaterializeModel for {name} {{\n  fn materialize(__tb_row: &HydratedRow, __tb_cap: &HydrationCapability) -> Result<Self, ValidationError> {{\n    let __tb_path = ValidationPath::root();\n    __tb_row.validate_shape(Self::TYPE_ID_JSON, &[{exp_fields_str}], &[{exp_roles_str}], &__tb_path)?;\n    let __tb_iid = __tb_row.iid().to_owned();\n    if __tb_iid.trim().is_empty() {{\n      return Err(ValidationError::new(__tb_path.path(), \"empty_iid\"));\n    }}"
+                "impl MaterializeModel for {name} {{\n  fn materialize(__tb_row: &HydratedRow, __tb_cap: &HydrationCapability) -> Result<Self, ValidationError> {{\n    let __tb_path = ValidationPath::root();\n    __tb_row.validate_shape(Self::TYPE_ID_JSON, &[{exp_fields_str}], &[{exp_roles_str}], &__tb_path)?;\n    let __tb_iid = __tb_row.iid().to_owned();\n    if __tb_iid.trim().is_empty() {{\n      return Err(ValidationError::new(__tb_path.path(), \"empty_iid\"));\n    }}",
             );
             for member in &members {
                 if member.name == "iid" {
@@ -769,7 +856,11 @@ fn render_read(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
                     }
                 }
             }
-            output.push_str("    Ok(Self {\n      iid: __tb_iid,\n");
+            output.push_str(if ordered {
+                "    let __tb_value = Self {\n      __tb_origin: __tb_row.origin().clone(),\n      iid: __tb_iid,\n"
+            } else {
+                "    Ok(Self {\n      __tb_origin: __tb_row.origin().clone(),\n      iid: __tb_iid,\n"
+            });
             for member in &members {
                 if member.name == "iid" {
                     continue;
@@ -792,11 +883,70 @@ fn render_read(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
                     }
                 }
             }
-            output.push_str("    })\n  }\n}\n\n");
+            output.push_str(if ordered {
+                "    };\n    __tb_validate_generated_hydration(__tb_row)?;\n    Ok(__tb_value)\n  }\n}\n\n"
+            } else {
+                "    })\n  }\n}\n\n"
+            });
+            let _ = writeln!(
+                output,
+                "impl {name} {{\n  pub(crate) fn __tb_from_player(__tb_player: &HydratedPlayer, __tb_path: &ValidationPath) -> Result<Self, ValidationError> {{\n    let __tb_row = __tb_player.complete_row().ok_or_else(|| ValidationError::new(__tb_path.path(), \"complete_role_player_evidence_missing\"))?;\n    Self::materialize(&__tb_row, &HydrationCapability::new()).map_err(|__tb_error| prefix_validation_path(__tb_error, __tb_path))\n  }}\n}}\n"
+            );
+
+            let mut snapshot_fields = String::new();
+            let mut snapshot_roles = String::new();
+            for member in &members {
+                if member.name == "iid" {
+                    continue;
+                }
+                let mname = &member.name;
+                let token = member.token.as_deref().unwrap_or(mname);
+                let target = if member.is_role {
+                    &mut snapshot_roles
+                } else {
+                    &mut snapshot_fields
+                };
+                let encode = if member.is_role {
+                    if member.role_complete {
+                        "HydratedPlayer::from_complete_row(__tb_value.clone().into_hydrated_snapshot()?)"
+                    } else {
+                        "hydrated_player_from_encoded_reference(__tb_value.clone().into_encoded_reference()?)"
+                    }
+                } else {
+                    "__tb_value.into_encoded_scalar()"
+                };
+                match (member.container, member.required) {
+                    (ProjectedContainer::Scalar, true) => {
+                        let _ = writeln!(
+                            target,
+                            "    __tb_values.push(({token:?}, vec![{{ let __tb_value = self.{mname}(); {encode} }}]));"
+                        );
+                    }
+                    (ProjectedContainer::Scalar, false) => {
+                        let _ = writeln!(
+                            target,
+                            "    if let Some(__tb_value) = self.{mname}() {{ __tb_values.push(({token:?}, vec![{encode}])); }}"
+                        );
+                    }
+                    (ProjectedContainer::Sequence, _) => {
+                        let _ = writeln!(
+                            target,
+                            "    let mut __tb_members = Vec::new(); for __tb_value in self.{mname}() {{ __tb_members.push({encode}); }} __tb_values.push(({token:?}, __tb_members));"
+                        );
+                    }
+                }
+            }
+            let _ = writeln!(
+                output,
+                "impl IntoHydratedSnapshot for {name} {{\n  fn into_hydrated_snapshot(self) -> Result<HydratedRow, ValidationError> {{\n    let mut __tb_values = Vec::new();\n{snapshot_fields}    let __tb_fields = __tb_values;\n    let mut __tb_values = Vec::new();\n{snapshot_roles}    Ok(HydratedRow::new(Self::TYPE_ID_JSON, self.iid().to_owned(), __tb_fields, __tb_values))\n  }}\n}}\n"
+            );
 
             if let Some(reference_name) = model.reference_read().target_name() {
                 let ref_name = reference_name.as_str();
-                let mut ref_args = vec!["Some(self.iid().to_owned())".to_owned()];
+                let mut ref_args = vec![
+                    "self.__tb_origin.clone()".to_owned(),
+                    "Some(self.iid().to_owned())".to_owned(),
+                ];
                 for key in model.reference_read().key_fields() {
                     let token = model
                         .query_tokens()
@@ -856,24 +1006,33 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
 
         let _ = writeln!(
             output,
-            "#[derive(Clone, Debug, PartialEq)]\npub struct {name} {{\n  iid: Option<String>,"
+            "#[derive(Clone, PartialEq)]\npub struct {name} {{\n  __tb_origin: ReferenceOrigin,\n  iid: Option<String>,"
         );
         for member in &members {
             let _ = writeln!(output, "  {}: Option<{}>,", member.name, member.value);
         }
-        output.push_str("}\n\nimpl ");
+        output.push_str("}\n\n");
+        let _ = writeln!(
+            output,
+            "impl core::fmt::Debug for {name} {{\n  fn fmt(&self, __tb_formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {{\n    let mut __tb_debug = __tb_formatter.debug_struct({name:?});\n    __tb_debug.field(\"iid\", &self.iid);"
+        );
+        for member in &members {
+            let mname = &member.name;
+            let _ = writeln!(output, "    __tb_debug.field({mname:?}, &self.{mname});");
+        }
+        output.push_str("    __tb_debug.finish()\n  }\n}\n\nimpl ");
         output.push_str(name);
-        output.push_str(" {\n  pub(crate) fn __tb_from_parts(iid: Option<String>, ");
+        output.push_str(" {\n  pub(crate) fn __tb_from_parts(__tb_origin: ReferenceOrigin, iid: Option<String>, ");
         for member in &members {
             let _ = write!(output, "{}: Option<{}>, ", member.name, member.value);
         }
-        output.push_str(") -> Self {\n    Self { iid, ");
+        output.push_str(") -> Self {\n    Self { __tb_origin, iid, ");
         for member in &members {
             let _ = write!(output, "{}, ", member.name);
         }
         output.push_str("}\n  }\n\n");
 
-        output.push_str("  pub fn from_iid(iid: impl Into<String>) -> Result<Self, ValidationError> {\n    let iid = iid.into();\n    if iid.trim().is_empty() { return Err(ValidationError::new(\"iid\", \"empty_iid\")); }\n    Ok(Self { iid: Some(iid),\n");
+        output.push_str("  pub fn from_iid(iid: impl Into<String>) -> Result<Self, ValidationError> {\n    let iid = iid.into();\n    if iid.trim().is_empty() { return Err(ValidationError::new(\"iid\", \"empty_iid\")); }\n    Ok(Self { __tb_origin: ReferenceOrigin::default(), iid: Some(iid),\n");
         for member in &members {
             let _ = writeln!(output, "      {}: None,", member.name);
         }
@@ -888,7 +1047,7 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
                 let mtype = &member.value;
                 let _ = writeln!(
                     output,
-                    "  pub fn from_key({mname}: {mtype}) -> Result<Self, ValidationError> {{\n    Ok(Self {{ iid: None, {mname}: Some({mname}) }})\n  }}\n"
+                    "  pub fn from_key({mname}: {mtype}) -> Result<Self, ValidationError> {{\n    Ok(Self {{ __tb_origin: ReferenceOrigin::default(), iid: None, {mname}: Some({mname}) }})\n  }}\n"
                 );
             } else {
                 for member in &members {
@@ -897,7 +1056,7 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
                     let fn_name = format!("from_{mname}");
                     let _ = write!(
                         output,
-                        "  pub fn {fn_name}({mname}: {mtype}) -> Result<Self, ValidationError> {{\n    Ok(Self {{ iid: None,\n"
+                        "  pub fn {fn_name}({mname}: {mtype}) -> Result<Self, ValidationError> {{\n    Ok(Self {{ __tb_origin: ReferenceOrigin::default(), iid: None,\n"
                     );
                     for other in &members {
                         if other.name == member.name {
@@ -957,7 +1116,7 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
                 "    let {mname} = if let Some((_, __tb_scalar)) = __tb_player.keys().iter().find(|(__tb_key, _)| __tb_key.as_str() == {token_str:?}) {{\n      let __tb_member_path = __tb_path.join({mname:?});\n      Some({decode_expr})\n    }} else {{ None }};"
             );
         }
-        output.push_str("    Ok(Self { iid: __tb_iid, ");
+        output.push_str("    Ok(Self { __tb_origin: __tb_player.origin().clone(), iid: __tb_iid, ");
         for member in &members {
             let _ = write!(output, "{}, ", member.name);
         }
@@ -975,7 +1134,11 @@ fn render_reference(projection: &RuntimeProjection) -> Result<String, Diagnostic
 
         let _ = writeln!(
             output,
-            "impl IntoEncodedReference for {name} {{\n  fn into_encoded_reference(self) -> Result<EncodedReference, ValidationError> {{\n    let mut __tb_keys = Vec::new();\n{enc_keys_code}    EncodedReference::try_new({read_name}::TYPE_ID_JSON, self.iid, __tb_keys, &ValidationPath::root())\n  }}\n}}\n"
+            "impl IntoEncodedReference for {name} {{\n  fn into_encoded_reference(self) -> Result<EncodedReference, ValidationError> {{\n    let mut __tb_keys = Vec::new();\n{enc_keys_code}    EncodedReference::try_new_with_origin({read_name}::TYPE_ID_JSON, self.iid, __tb_keys, self.__tb_origin, &ValidationPath::root())\n  }}\n}}\n"
+        );
+        let _ = writeln!(
+            output,
+            "impl MaterializeReference for {name} {{\n  type Schema = crate::AppSchema;\n  fn materialize_reference(__tb_value: &HydratedPlayer, __tb_path: &ValidationPath) -> Result<Self, ValidationError> {{\n    Self::__tb_from_player(__tb_value, __tb_path)\n  }}\n}}\n"
         );
     }
     Ok(output)
@@ -1303,6 +1466,19 @@ fn render_tokens(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
                 output,
                 "      _ => Err(ValidationError::new(__tb_path.path(), \"wrong_concrete_model_type\")),\n    }}\n  }}\n}}\n\n"
             );
+            let _ = writeln!(output, "impl sealed::Sealed for {union} {{}}");
+            let _ = writeln!(
+                output,
+                "impl IntoEncodedReference for {union} {{\n  fn into_encoded_reference(self) -> Result<EncodedReference, ValidationError> {{\n    match self {{"
+            );
+            for player in token.accepted_players() {
+                let player_name = model(projection, player)?.target_name().as_str();
+                let _ = writeln!(
+                    output,
+                    "      Self::{player_name}(__tb_inner) => __tb_inner.into_encoded_reference(),"
+                );
+            }
+            output.push_str("    }\n  }\n}\n\n");
             for player in token.accepted_players() {
                 let player_name = model(projection, player)?.target_name().as_str();
                 let _ = writeln!(output, "impl RolePlayer<{player_name}> for {union} {{}}");
@@ -1401,7 +1577,7 @@ fn render_tokens(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
 
 fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
-    output.push_str("use crate::runtime::{self, StructValue};\nuse crate::schema::AppSchema;\n\n");
+    output.push_str("use crate::runtime::*;\nuse crate::schema::AppSchema;\n\n");
     for id in projection.emission().structs() {
         let structure = projection
             .structs()
@@ -1463,8 +1639,49 @@ fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> 
         }
         let _ = writeln!(
             output,
-            "}}\n\nimpl runtime::sealed::Sealed for {name} {{}}\nimpl StructValue for {name} {{ type Schema = AppSchema; const STRUCT_ID_JSON: &'static str = {}; }}\n",
+            "}}\n\nimpl sealed::Sealed for {name} {{}}\nimpl StructValue for {name} {{ type Schema = AppSchema; const STRUCT_ID_JSON: &'static str = {}; }}",
             rust_literal(&canonical_text!(id))
+        );
+        let mut encoded_members = Vec::new();
+        let mut decoded_members = String::new();
+        let mut arguments = Vec::new();
+        for (index, field) in structure.fields().iter().enumerate() {
+            let field_name = field.target_name().as_str();
+            arguments.push(field_name.to_owned());
+            if field.optional() {
+                encoded_members.push(format!(
+                    "self.{field_name}.as_ref().map(IntoEncodedScalar::into_encoded_scalar)"
+                ));
+                let decoded = decode_field_expr(
+                    projection,
+                    scalar_type(field.value_type()),
+                    "__tb_scalar",
+                    &format!("__tb_path.join({field_name:?})"),
+                )?;
+                let _ = writeln!(
+                    decoded_members,
+                    "    let {field_name} = match &__tb_value.members()[{index}] {{ Some(__tb_scalar) => Some({decoded}), None => None }};"
+                );
+            } else {
+                encoded_members.push(format!("Some(self.{field_name}.into_encoded_scalar())"));
+                let decoded = decode_field_expr(
+                    projection,
+                    scalar_type(field.value_type()),
+                    "__tb_scalar",
+                    &format!("__tb_path.join({field_name:?})"),
+                )?;
+                let _ = writeln!(
+                    decoded_members,
+                    "    let Some(__tb_scalar) = &__tb_value.members()[{index}] else {{ return Err(ValidationError::new(__tb_path.join({field_name:?}).path(), \"missing_required_struct_member\")); }};\n    let {field_name} = {decoded};"
+                );
+            }
+        }
+        let expected_count = structure.fields().len();
+        let _ = writeln!(
+            output,
+            "impl IntoEncodedStruct for {name} {{\n  fn into_encoded_struct(self) -> EncodedStruct {{\n    EncodedStruct::new(Self::STRUCT_ID_JSON, vec![{}])\n  }}\n}}\n\nimpl MaterializeStruct for {name} {{\n  fn materialize_struct(__tb_value: &DecodedStruct, __tb_path: &ValidationPath) -> Result<Self, ValidationError> {{\n    if __tb_value.type_id_json() != Self::STRUCT_ID_JSON {{ return Err(ValidationError::new(__tb_path.path(), \"wrong_concrete_struct_type\")); }}\n    if __tb_value.members().len() != {expected_count} {{ return Err(ValidationError::new(__tb_path.path(), \"wrong_struct_member_count\")); }}\n{decoded_members}    Ok(Self::try_new({}))\n  }}\n}}\n",
+            encoded_members.join(", "),
+            arguments.join(", ")
         );
     }
     Ok(output)
@@ -1473,6 +1690,8 @@ fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> 
 fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
     output.push_str("use crate::read::*;\nuse crate::reference::*;\nuse crate::runtime::*;\nuse crate::schema::AppSchema;\nuse crate::structs::*;\n\n");
+    let mut emitted_inputs = BTreeSet::new();
+    let mut emitted_calls = BTreeSet::new();
     for id in projection.emission().functions() {
         let function = projection
             .functions()
@@ -1486,18 +1705,154 @@ fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic
                 .collect::<Result<Vec<_>, _>>()?,
         );
         let returns = function_return_type(projection, function.returns())?;
+        let supported_return = match function.returns() {
+            FunctionReturnProjection::Scalar(element) if !element.optional() => {
+                if let ProjectedTypeRef::Scalar(domain) = element.type_ref() {
+                    Some(*domain)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let supported = supported_return.is_some()
+            && function.parameters().iter().all(|parameter| {
+                matches!(
+                    parameter.type_ref(),
+                    ProjectedTypeRef::Model(_) | ProjectedTypeRef::Scalar(_)
+                )
+            });
+        let token_name = if supported {
+            format!("__tb_{}_token", function.target_name().as_str())
+        } else {
+            function.target_name().as_str().to_owned()
+        };
         if let Some(documentation) = documentation_annotation(function.annotations()) {
             render_rustdoc(&mut output, documentation);
         }
         let _ = writeln!(
             output,
-            "#[allow(non_upper_case_globals)]\npub const {}: FunctionToken<AppSchema, {arguments}, {returns}> = FunctionToken::new({}, {});\n",
-            function.target_name().as_str(),
+            "#[allow(non_upper_case_globals)]\n{}const {token_name}: FunctionToken<AppSchema, {arguments}, {returns}> = FunctionToken::new({}, {});\n",
+            if supported { "" } else { "pub " },
             rust_literal(function.id().label().as_str()),
             rust_literal(&canonical_text!(function)),
         );
+
+        let Some(return_domain) = supported_return.filter(|_| supported) else {
+            continue;
+        };
+
+        let call_domain = scalar_type(return_domain);
+        let call_alias = format!("{}Call", scalar_domain_name(return_domain));
+        let input_domains = function
+            .parameters()
+            .iter()
+            .filter_map(|parameter| match parameter.type_ref() {
+                ProjectedTypeRef::Scalar(domain) => Some(*domain),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        for domain in input_domains {
+            let alias = format!("{}Input", scalar_domain_name(domain));
+            let scalar = scalar_type(domain);
+            if emitted_inputs.insert(alias.clone()) {
+                let constructor = format!("{}_input", scalar_domain_function_name(domain));
+                let _ = writeln!(
+                    output,
+                    "pub type {alias} = FunctionInput<AppSchema, {scalar}>;\n\npub fn {constructor}<Value>(session: &QuerySession<'_, AppSchema>, value: &Value) -> type_bridge::Result<{alias}>\nwhere\n    Value: Model<Schema = AppSchema> + QueryValued<Domain = {scalar}>,\n{{\n    session.__function_input(value)\n}}"
+                );
+            }
+        }
+        if emitted_calls.insert(call_alias.clone()) {
+            let _ = writeln!(
+                output,
+                "pub type {call_alias} = FunctionCall<AppSchema, {call_domain}>;"
+            );
+        }
+
+        let mut generics = Vec::new();
+        let mut parameters = Vec::new();
+        let mut where_bounds = Vec::new();
+        let mut arguments_expr = Vec::new();
+        for (index, parameter) in function.parameters().iter().enumerate() {
+            let parameter_name = parameter.target_name().as_str();
+            match parameter.type_ref() {
+                ProjectedTypeRef::Model(model_use) => {
+                    let model_name = model(projection, model_use.id())?.target_name().as_str();
+                    let model_generic = format!("M{index}");
+                    let mode_generic = format!("Mode{index}");
+                    generics.push(model_generic.clone());
+                    generics.push(mode_generic.clone());
+                    parameters.push(format!(
+                        "{parameter_name}: type_bridge::Binding<AppSchema, {model_generic}, {mode_generic}>"
+                    ));
+                    where_bounds.push(format!(
+                        "{model_generic}: ThingModel<Schema = AppSchema> + NominalUpcast<{model_name}>"
+                    ));
+                    where_bounds.push(format!("{mode_generic}: type_bridge::SelectionMode"));
+                    arguments_expr.push(format!("{parameter_name}.__function_argument()"));
+                }
+                ProjectedTypeRef::Scalar(domain) => {
+                    let argument_generic = format!("Argument{index}");
+                    generics.push(argument_generic.clone());
+                    parameters.push(format!("{parameter_name}: &{argument_generic}"));
+                    where_bounds.push(format!(
+                        "{argument_generic}: FunctionScalarArgument<AppSchema, {}>",
+                        scalar_type(*domain)
+                    ));
+                    arguments_expr.push(format!("{parameter_name}.__function_argument()"));
+                }
+                ProjectedTypeRef::Struct(_) => unreachable!("struct parameters were filtered"),
+            }
+        }
+        let generic_clause = if generics.is_empty() {
+            String::new()
+        } else {
+            format!("<{}>", generics.join(", "))
+        };
+        let where_clause = if where_bounds.is_empty() {
+            String::new()
+        } else {
+            format!("\nwhere\n    {},", where_bounds.join(",\n    "))
+        };
+        let _ = writeln!(
+            output,
+            "pub fn {}{generic_clause}(session: &QuerySession<'_, AppSchema>, {}) -> type_bridge::Result<{call_alias}>{where_clause}\n{{\n    session.__call_function({}, [{}])\n}}\n",
+            function.target_name().as_str(),
+            parameters.join(", "),
+            token_name,
+            arguments_expr.join(", "),
+        );
     }
     Ok(output)
+}
+
+fn scalar_domain_name(tag: ValueTypeTag) -> &'static str {
+    match tag {
+        ValueTypeTag::String => "String",
+        ValueTypeTag::Long => "Integer",
+        ValueTypeTag::Double => "Double",
+        ValueTypeTag::Boolean => "Boolean",
+        ValueTypeTag::Date => "Date",
+        ValueTypeTag::DateTime => "DateTime",
+        ValueTypeTag::DateTimeTz => "DateTimeTz",
+        ValueTypeTag::Decimal => "Decimal",
+        ValueTypeTag::Duration => "Duration",
+    }
+}
+
+fn scalar_domain_function_name(tag: ValueTypeTag) -> &'static str {
+    match tag {
+        ValueTypeTag::String => "string",
+        ValueTypeTag::Long => "integer",
+        ValueTypeTag::Double => "double",
+        ValueTypeTag::Boolean => "boolean",
+        ValueTypeTag::Date => "date",
+        ValueTypeTag::DateTime => "date_time",
+        ValueTypeTag::DateTimeTz => "date_time_tz",
+        ValueTypeTag::Decimal => "decimal",
+        ValueTypeTag::Duration => "duration",
+    }
 }
 
 fn render_schema(
@@ -1525,7 +1880,7 @@ fn render_schema(
     output.push_str(&rust_literal(&authority.managed_scope_id));
     output.push_str(";\npub(crate) const SEMANTIC_PROFILE_ID: &str = ");
     output.push_str(&rust_literal(&authority.semantic_profile_id));
-    output.push_str(";\n\npub const SCHEMA: type_bridge::schema::SchemaPackage<AppSchema> = type_bridge::schema::SchemaPackage::new_with_authority(\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  RUNTIME_PROJECTION_JSON,\n  SCHEMA_AUTHORITY_JSON,\n  DECLARED_SCHEMA_JSON,\n  MANAGED_SCOPE_ID,\n  SEMANTIC_PROFILE_ID,\n);\n\n");
+    output.push_str(";\n\npub const SCHEMA: type_bridge::schema::SchemaPackage<AppSchema> = type_bridge::schema::SchemaPackage::new_with_authority(\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  RUNTIME_PROJECTION_JSON,\n  SCHEMA_AUTHORITY_JSON,\n  DECLARED_SCHEMA_JSON,\n  MANAGED_SCOPE_ID,\n  SEMANTIC_PROFILE_ID,\n);\n\npub const MIGRATION_HISTORY_RESOURCE: &str = \"typebridge/migration-history.json\";\npub static MIGRATION_HISTORY_BUNDLE: &[u8] = include_bytes!(\"../typebridge/migration-history.json\");\n\n/// Open this generated package's immutable verified migration catalog.\npub fn open_migration_catalog() -> type_bridge::Result<type_bridge::MigrationCatalog<AppSchema>> {\n  SCHEMA.open_migration_catalog(MIGRATION_HISTORY_BUNDLE)\n}\n\n");
 
     output.push_str("pub const MODEL_SHELLS: &[&str] = &[\n");
     for id in projection.emission().model_shells() {
@@ -1582,6 +1937,7 @@ struct Member {
     max: Option<u64>,
     token: Option<String>,
     is_role: bool,
+    role_complete: bool,
 }
 
 impl Member {
@@ -1602,6 +1958,7 @@ impl Member {
             max: cardinality.max(),
             token,
             is_role,
+            role_complete: false,
         }
     }
 
@@ -1615,6 +1972,7 @@ impl Member {
             max: Some(1),
             token: None,
             is_role: false,
+            role_complete: false,
         }
     }
 
@@ -1687,6 +2045,7 @@ fn render_record(
     constructor: &str,
     fallible: bool,
     validation_checks: &str,
+    validate_projected_create: bool,
 ) {
     let _ = writeln!(
         output,
@@ -1714,7 +2073,11 @@ fn render_record(
             output.push_str("    if iid.trim().is_empty() { return Err(ValidationError::new(\"iid\", \"empty_iid\")); }\n");
         }
         output.push_str(validation_checks);
-        output.push_str("    Ok(Self {\n");
+        if validate_projected_create {
+            output.push_str("    let __tb_value = Self {\n");
+        } else {
+            output.push_str("    Ok(Self {\n");
+        }
     } else {
         output.push_str(") -> Self {\n    Self {\n");
     }
@@ -1722,7 +2085,11 @@ fn render_record(
         let _ = writeln!(output, "      {}: {},", member.name, member.initializer());
     }
     if fallible {
-        output.push_str("    })\n  }\n");
+        if validate_projected_create {
+            output.push_str("    };\n    __tb_validate_generated_create(&__tb_value.clone().into_encoded_create()?)?;\n    Ok(__tb_value)\n  }\n");
+        } else {
+            output.push_str("    })\n  }\n");
+        }
     } else {
         output.push_str("    }\n  }\n");
     }
@@ -1904,6 +2271,16 @@ fn create_role_player_union<'a>(
         );
     }
     code.push_str("    }\n  }\n}\n\n");
+    code.push_str("impl MaterializeReference for ");
+    code.push_str(&union_name);
+    code.push_str(" {\n  type Schema = crate::AppSchema;\n  fn materialize_reference(__tb_value: &HydratedPlayer, __tb_path: &ValidationPath) -> Result<Self, ValidationError> {\n    match __tb_value.type_id_json() {\n");
+    for (variant, ref_t) in &ref_types {
+        let _ = writeln!(
+            code,
+            "      {ref_t}::TYPE_ID_JSON => {ref_t}::materialize_reference(__tb_value, __tb_path).map(Self::{variant}),"
+        );
+    }
+    code.push_str("      _ => Err(ValidationError::new(__tb_path.path(), \"wrong_concrete_model_type\")),\n    }\n  }\n}\n\n");
     Ok((union_name, Some(code)))
 }
 fn scalar_literal_expr(
@@ -2024,18 +2401,27 @@ fn read_members(
             .roles()
             .get(role_id)
             .ok_or_else(|| facet_error("read role has no query token"))?;
-        let role_type = if let Some(union_name) = token.player_union_target_name() {
+        let role_complete = role.players().len() == 1
+            && role
+                .players()
+                .iter()
+                .all(|player| player.form() == ProjectedModelForm::Complete);
+        let role_type = if role_complete {
+            model_use_union(projection, role.players())?
+        } else if let Some(union_name) = token.player_union_target_name() {
             union_name.as_str().to_owned()
         } else {
             model_use_union(projection, role.players())?
         };
-        members.push(Member::from_multiplicity(
+        let mut member = Member::from_multiplicity(
             token.target_name().as_str(),
             role_type,
             role.multiplicity(),
             Some(canonical_text!(role_id)),
             true,
-        ));
+        );
+        member.role_complete = role_complete;
+        members.push(member);
     }
     Ok(members)
 }

@@ -18,18 +18,19 @@ use type_bridge_contract::query_remote::{
 };
 use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
 use type_bridge_orm::{
-    ClaimedRemoteModelReplyV2, PendingRemoteModelQueryV2, RemoteModelQueryV2Error, Window,
-    prepare_remote_model_query_v2, validate_public_order_term_count,
+    AnswerCancellation, ClaimedRemoteModelReplyV2, PendingRemoteModelQueryV2,
+    QueryExecutionDeadline, QueryExecutionResourceLimits, RemoteModelQueryV2Error, Window,
+    lower_remote_query_diagnostic, prepare_remote_model_query_v2_with_budget,
+    validate_public_order_term_count,
 };
 
 use crate::match_runtime::{
     NodeMatchBindingHandle, NodeMatchFieldHandle, NodeMatchOrderHandle, NodeMatchQueryHandle,
-    NodeMatchResultContext, NodeValidatedMatchResultHandle, borrow_reduce_terms, napi_match_error,
+    NodeMatchResultContext, NodeQueryCancellation, NodeQueryExecutionResources,
+    NodeValidatedMatchResultHandle, borrow_reduce_terms, napi_match_error, napi_sdk_diagnostic,
     order_handles, parse_cardinality, reduce_terms,
 };
-use crate::query_v2_runtime::{
-    NodeQueryV2Authority, bounded_response_snapshot, napi_error, non_shared_buffer,
-};
+use crate::query_v2_runtime::{NodeQueryV2Authority, bounded_response_snapshot, non_shared_buffer};
 
 /// Immutable native authority, advertisement, and explicit remote limit set.
 #[napi]
@@ -37,6 +38,8 @@ pub struct NodeRemoteModelQueryContext {
     advertisement: Vec<u8>,
     authority: Arc<type_bridge_orm::query_v2_prepared::QueryAuthority>,
     limits: RemoteLimitsV2,
+    resources: QueryExecutionResourceLimits,
+    cancellation: AnswerCancellation,
 }
 
 /// One prepared model request with an atomic one-shot reply decoder.
@@ -44,6 +47,7 @@ pub struct NodeRemoteModelQueryContext {
 pub struct NodePendingRemoteModelQuery {
     pending: Arc<PendingRemoteModelQueryV2>,
     result_context: NodeMatchResultContext,
+    cancellation: AnswerCancellation,
 }
 
 /// One claimed response decode scheduled on the libuv worker pool.
@@ -56,6 +60,7 @@ enum DecodeRemoteModelReplyTaskState {
         claimed: Box<Option<ClaimedRemoteModelReplyV2>>,
         response: Vec<u8>,
         result_context: Option<NodeMatchResultContext>,
+        cancellation: AnswerCancellation,
     },
     Rejected {
         error: Option<napi::Error>,
@@ -72,16 +77,17 @@ impl napi::Task for DecodeRemoteModelReplyTask {
                 claimed,
                 response,
                 result_context,
+                cancellation,
             } => {
-                let (request, result, _registry) = claimed
+                let (request, result, registry) = claimed
                     .take()
                     .ok_or_else(|| napi::Error::from_reason("remote model reply task already ran"))?
-                    .decode(response)
+                    .decode_with_cancellation(response, cancellation)
                     .map_err(remote_model_error)?;
-                Ok(result_context
+                result_context
                     .take()
                     .ok_or_else(|| napi::Error::from_reason("remote model reply task already ran"))?
-                    .attach(request, result))
+                    .attach(request, result, registry)
             }
             DecodeRemoteModelReplyTaskState::Rejected { error } => {
                 Err(error.take().unwrap_or_else(|| {
@@ -100,8 +106,25 @@ impl napi::Task for DecodeRemoteModelReplyTask {
 impl NodePendingRemoteModelQuery {
     /// Return an owned copy of the exact request bytes for caller transport.
     #[napi(js_name = "requestBytes")]
-    pub fn request_bytes(&self) -> Buffer {
-        self.pending.request_bytes().to_vec().into()
+    pub fn request_bytes(&self) -> napi::Result<Buffer> {
+        if self.pending.is_closed() {
+            return Err(napi_sdk_diagnostic(
+                type_bridge_orm::query_resource_closed_diagnostic(),
+            ));
+        }
+        Ok(self.pending.request_bytes().to_vec().into())
+    }
+
+    /// Close this pending request before its reply slot is claimed.
+    #[napi]
+    pub fn close(&self) {
+        self.pending.close();
+    }
+
+    /// Whether this request was explicitly closed before claim.
+    #[napi(getter, js_name = "isClosed")]
+    pub fn is_closed(&self) -> bool {
+        self.pending.is_closed()
     }
 
     /// Claim before inspecting or copying response storage, then decode off
@@ -115,16 +138,21 @@ impl NodePendingRemoteModelQuery {
         env: Env,
         response: Unknown,
     ) -> napi::Result<AsyncTask<DecodeRemoteModelReplyTask>> {
-        let state = match self.pending.claim_reply() {
-            Ok(claimed) => {
-                let snapshot_limit = claimed.response_snapshot_limit();
-                let response = non_shared_buffer(&env, response)?;
-                DecodeRemoteModelReplyTaskState::Claimed {
-                    claimed: Box::new(Some(claimed)),
-                    response: bounded_response_snapshot(&response, snapshot_limit),
-                    result_context: Some(self.result_context.clone()),
-                }
-            }
+        // Complete N-API type validation and the bounded caller-owned copy
+        // before the semantic one-shot claim, so FFI mistakes remain retryable.
+        let response = non_shared_buffer(&env, response)?;
+        let response =
+            bounded_response_snapshot(&response, MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1));
+        let state = match self
+            .pending
+            .claim_reply_with_cancellation(&self.cancellation)
+        {
+            Ok(claimed) => DecodeRemoteModelReplyTaskState::Claimed {
+                claimed: Box::new(Some(claimed)),
+                response,
+                result_context: Some(self.result_context.clone()),
+                cancellation: self.cancellation.clone(),
+            },
             Err(error) => DecodeRemoteModelReplyTaskState::Rejected {
                 error: Some(remote_model_error(error)),
             },
@@ -160,11 +188,51 @@ pub fn query_v2_remote_model_context(
         max_role_players,
         deadline_ms,
     )?;
-    RemoteCapabilities::decode(&advertisement).map_err(|diagnostic| napi_error(&diagnostic))?;
+    let resources = QueryExecutionResourceLimits::tightened(
+        limits
+            .deadline_ms
+            .unwrap_or(type_bridge_orm::MAX_QUERY_TIMEOUT_MILLISECONDS),
+        limits.max_items,
+        limits.max_bytes,
+        limits.max_graph_nodes,
+        limits.max_attribute_values,
+        limits.max_collection_members,
+        limits.max_role_players,
+        limits.max_statements,
+    );
+    RemoteCapabilities::decode(&advertisement)
+        .map_err(|diagnostic| napi_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))?;
     Ok(NodeRemoteModelQueryContext {
         advertisement,
         authority: authority.authority(),
         limits,
+        resources,
+        cancellation: AnswerCancellation::default(),
+    })
+}
+
+/// Build the same remote context from the common direct/remote resource and
+/// cancellation owners.
+#[napi(js_name = "queryV2RemoteModelContextWithResources")]
+pub fn query_v2_remote_model_context_with_resources(
+    env: Env,
+    authority: &NodeQueryV2Authority,
+    advertisement: Unknown,
+    resources: &NodeQueryExecutionResources,
+    cancellation: &NodeQueryCancellation,
+) -> napi::Result<NodeRemoteModelQueryContext> {
+    let advertisement = non_shared_buffer(&env, advertisement)?;
+    let advertisement =
+        bounded_response_snapshot(&advertisement, MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1));
+    RemoteCapabilities::decode(&advertisement)
+        .map_err(|diagnostic| napi_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))?;
+    let resources = resources.inner();
+    Ok(NodeRemoteModelQueryContext {
+        advertisement,
+        authority: authority.authority(),
+        limits: resources.remote(),
+        resources,
+        cancellation: cancellation.inner(),
     })
 }
 
@@ -178,6 +246,7 @@ pub fn query_v2_prepare_remote_model_rows(
     limit: Unknown,
     cardinality: String,
 ) -> napi::Result<NodePendingRemoteModelQuery> {
+    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
     let orders = bounded_order_handles(&orders)?;
     let request = query
         .inner()
@@ -190,7 +259,7 @@ pub fn query_v2_prepare_remote_model_rows(
             parse_cardinality(&cardinality)?,
         )
         .map_err(crate::napi_orm_error)?;
-    prepare_pending(query, context, request)
+    prepare_pending(query, context, request, deadline, cancellation)
 }
 
 /// Prepare one distinct-root remote page.
@@ -208,6 +277,7 @@ pub fn query_v2_prepare_remote_model_page(
     limit: Unknown,
     include_total: Unknown,
 ) -> napi::Result<NodePendingRemoteModelQuery> {
+    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
     let orders = bounded_order_handles(&orders)?;
     let request = query
         .inner()
@@ -221,7 +291,7 @@ pub fn query_v2_prepare_remote_model_page(
             node_bool(include_total, "includeTotal")?,
         )
         .map_err(crate::napi_orm_error)?;
-    prepare_pending(query, context, request)
+    prepare_pending(query, context, request, deadline, cancellation)
 }
 
 /// Prepare one lossless distinct-root remote count.
@@ -231,11 +301,12 @@ pub fn query_v2_prepare_remote_model_count(
     context: &NodeRemoteModelQueryContext,
     root: &NodeMatchBindingHandle,
 ) -> napi::Result<NodePendingRemoteModelQuery> {
+    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
     let request = query
         .inner()
         .validate_count_by(root.inner())
         .map_err(crate::napi_orm_error)?;
-    prepare_pending(query, context, request)
+    prepare_pending(query, context, request, deadline, cancellation)
 }
 
 /// Prepare one distinct-root remote existence query.
@@ -245,11 +316,12 @@ pub fn query_v2_prepare_remote_model_exists(
     context: &NodeRemoteModelQueryContext,
     root: &NodeMatchBindingHandle,
 ) -> napi::Result<NodePendingRemoteModelQuery> {
+    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
     let request = query
         .inner()
         .validate_exists_by(root.inner())
         .map_err(crate::napi_orm_error)?;
-    prepare_pending(query, context, request)
+    prepare_pending(query, context, request, deadline, cancellation)
 }
 
 /// Prepare one typed ungrouped or grouped reduction over a distinct root.
@@ -262,6 +334,7 @@ pub fn query_v2_prepare_remote_model_reduce(
     reducers: Vec<String>,
     inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
 ) -> napi::Result<NodePendingRemoteModelQuery> {
+    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
     let terms = reduce_terms(&reducers, &inputs)?;
     let terms = borrow_reduce_terms(&terms);
     let request = query
@@ -272,7 +345,7 @@ pub fn query_v2_prepare_remote_model_reduce(
             &terms,
         )
         .map_err(crate::napi_orm_error)?;
-    prepare_pending(query, context, request)
+    prepare_pending(query, context, request, deadline, cancellation)
 }
 
 /// Prepare one typed reduction grouped by a projected owned field.
@@ -285,13 +358,14 @@ pub fn query_v2_prepare_remote_model_reduce_by_field(
     reducers: Vec<String>,
     inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
 ) -> napi::Result<NodePendingRemoteModelQuery> {
+    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
     let terms = reduce_terms(&reducers, &inputs)?;
     let terms = borrow_reduce_terms(&terms);
     let request = query
         .inner()
         .validate_reduce_by_field(root.inner(), group.inner(), &terms)
         .map_err(crate::napi_orm_error)?;
-    prepare_pending(query, context, request)
+    prepare_pending(query, context, request, deadline, cancellation)
 }
 
 /// Prepare one typed reduction grouped by an ordered tuple of projected owned fields.
@@ -304,6 +378,7 @@ pub fn query_v2_prepare_remote_model_reduce_by_fields(
     reducers: Vec<String>,
     inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
 ) -> napi::Result<NodePendingRemoteModelQuery> {
+    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
     let groups = groups.iter().map(|group| group.inner()).collect::<Vec<_>>();
     let terms = reduce_terms(&reducers, &inputs)?;
     let terms = borrow_reduce_terms(&terms);
@@ -311,27 +386,58 @@ pub fn query_v2_prepare_remote_model_reduce_by_fields(
         .inner()
         .validate_reduce_by_fields(root.inner(), &groups, &terms)
         .map_err(crate::napi_orm_error)?;
-    prepare_pending(query, context, request)
+    prepare_pending(query, context, request, deadline, cancellation)
+}
+
+fn begin_remote_invocation(
+    query: &NodeMatchQueryHandle,
+    context: &NodeRemoteModelQueryContext,
+) -> napi::Result<(QueryExecutionDeadline, AnswerCancellation)> {
+    query.ensure_open()?;
+    let deadline = QueryExecutionDeadline::for_limits(context.resources);
+    deadline
+        .check(&context.cancellation)
+        .map_err(crate::match_runtime::napi_sdk_diagnostic)?;
+    Ok((deadline, context.cancellation.clone()))
 }
 
 fn prepare_pending(
     query: &NodeMatchQueryHandle,
     context: &NodeRemoteModelQueryContext,
     request: type_bridge_orm::ValidatedMatchRequest,
+    deadline: QueryExecutionDeadline,
+    cancellation: AnswerCancellation,
 ) -> napi::Result<NodePendingRemoteModelQuery> {
     let registry = query.inner().registry_arc();
-    let pending = prepare_remote_model_query_v2(
+    let pending = prepare_remote_model_query_v2_with_budget(
         &context.authority,
         &registry,
         request,
         &context.advertisement,
         context.limits,
+        deadline,
+        &cancellation,
     )
     .map_err(remote_model_error)?;
     Ok(NodePendingRemoteModelQuery {
         pending: Arc::new(pending),
-        result_context: query.result_context(),
+        result_context: remote_result_context(
+            query,
+            context.resources,
+            deadline,
+            cancellation.clone(),
+        ),
+        cancellation,
     })
+}
+
+pub(crate) fn remote_result_context(
+    query: &NodeMatchQueryHandle,
+    resources: QueryExecutionResourceLimits,
+    deadline: QueryExecutionDeadline,
+    cancellation: AnswerCancellation,
+) -> NodeMatchResultContext {
+    query.result_context(resources, deadline, cancellation)
 }
 
 #[allow(clippy::too_many_arguments, reason = "flat explicit limit contract")]
@@ -353,9 +459,10 @@ fn remote_limits_v2(
             max_graph_nodes: checked_remote_limit(node_limit(max_graph_nodes)?)?,
             max_attribute_values: checked_remote_limit(node_limit(max_attribute_values)?)?,
             max_role_players: checked_remote_limit(node_limit(max_role_players)?)?,
+            max_statements: 3,
         })
     };
-    build().map_err(|diagnostic| napi_error(&diagnostic))
+    build().map_err(|diagnostic| napi_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))
 }
 
 fn node_limit(value: Unknown) -> Result<i128, Diagnostic> {
@@ -376,7 +483,7 @@ fn node_unsigned(value: Unknown) -> napi::Result<u64> {
     let value = BigInt::from_unknown(value)
         .map_err(|_| remote_limit_invalid())
         .and_then(|value| checked_node_limit_bigint(&value));
-    value.map_err(|diagnostic| napi_error(&diagnostic))
+    value.map_err(|diagnostic| napi_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))
 }
 
 fn checked_node_limit_bigint(value: &BigInt) -> Result<u64, Diagnostic> {
@@ -408,7 +515,9 @@ fn bounded_order_handles(orders: &Array) -> napi::Result<Vec<type_bridge_orm::Or
 
 fn remote_model_error(error: RemoteModelQueryV2Error) -> napi::Error {
     match error {
-        RemoteModelQueryV2Error::Diagnostic(diagnostic) => napi_error(&diagnostic),
+        RemoteModelQueryV2Error::Diagnostic(diagnostic) => {
+            napi_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic))
+        }
         RemoteModelQueryV2Error::Match(error) => napi_match_error(error),
     }
 }

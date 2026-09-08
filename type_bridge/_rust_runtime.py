@@ -531,6 +531,20 @@ def rust_database_for(connection: Any) -> PyRustDatabase:
         return rust_db
 
 
+def database_from_rust(
+    endpoint: str,
+    database_name: str,
+    rust_database: PyRustDatabase,
+) -> Any:
+    """Wrap one package-owned native database without reconnecting."""
+    from type_bridge.session import Database
+
+    database = Database(address=endpoint, database=database_name)
+    setattr(database, "_rust_backend_database", rust_database)
+    database._transport_committed = True
+    return database
+
+
 def state_reader_for(connection: Any) -> Any:
     """Return the native read-only frozen-ledger reader."""
     return rust_core().PyMigrationStateReader(rust_database_for(connection))

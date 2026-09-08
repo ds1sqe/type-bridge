@@ -127,7 +127,6 @@ fn unique_database(prefix: &str) -> String {
 // close acknowledgement under a fully concurrent matrix. Keep every live
 // stage bounded while leaving enough headroom to distinguish load from a hang.
 const LIVE_TLS_STAGE_TIMEOUT: Duration = Duration::from_secs(30);
-const FORCE_CLOSE_RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
 const FORCE_CLOSE_RELEASE_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const DATABASE_IN_USE_DIAGNOSTIC: &str = "Cannot delete database since it is in use";
 
@@ -156,42 +155,33 @@ async fn delete_owned_database_after_force_close(
     context: &LiveTlsContext,
     database: &str,
 ) -> SecureResult<()> {
-    let deadline = tokio::time::Instant::now() + FORCE_CLOSE_RELEASE_TIMEOUT;
-    loop {
-        let result = tokio::time::timeout_at(
-            deadline,
-            delete_database_secure(
+    await_live_tls_stage("raw-stop/delete-after-force-close", async {
+        loop {
+            let result = delete_database_secure(
                 &context.address,
                 database,
                 &context.username,
                 &context.password,
                 context.custom_root_options(),
-            ),
-        )
-        .await
-        .map_err(|_| {
-            SecureConnectError::Runtime(RuntimeError::Connection(format!(
-                "Database delete did not complete within {} seconds after force-close",
-                FORCE_CLOSE_RELEASE_TIMEOUT.as_secs()
-            )))
-        })?;
-        match result {
-            Err(error) if database_release_is_pending_after_force_close(&error) => {
-                // The official driver acknowledges local shutdown dispatch,
-                // not the server's observation of the closed transport. This
-                // fixture owns the unique database, so only the exact
-                // DBD2/in-use/SRV13 diagnostic is safe to classify as release
-                // propagation.
-                // This poll is not evidence for issue #196's upstream-removal
-                // gate, which still requires release without a downstream
-                // retry.
-                let retry_at = (tokio::time::Instant::now() + FORCE_CLOSE_RELEASE_RETRY_INTERVAL)
-                    .min(deadline);
-                tokio::time::sleep_until(retry_at).await;
+            )
+            .await;
+            match result {
+                Err(error) if database_release_is_pending_after_force_close(&error) => {
+                    // The official driver acknowledges local shutdown dispatch,
+                    // not the server's observation of the closed transport. This
+                    // fixture owns the unique database, so only the exact
+                    // DBD2/in-use/SRV13 diagnostic is safe to classify as release
+                    // propagation.
+                    // This poll is not evidence for issue #196's upstream-removal
+                    // gate, which still requires release without a downstream
+                    // retry.
+                    tokio::time::sleep(FORCE_CLOSE_RELEASE_RETRY_INTERVAL).await;
+                }
+                result => break result,
             }
-            result => return result,
         }
-    }
+    })
+    .await
 }
 
 #[test]
@@ -446,6 +436,7 @@ async fn custom_root_raw_stop_requires_force_close_before_delete_live() {
     await_live_tls_stage("raw-stop/commit-schema", schema.commit())
         .await
         .expect("terminal-close schema commits over TLS");
+    drop(schema);
 
     let mut write = await_live_tls_stage(
         "raw-stop/open-write",
@@ -466,6 +457,7 @@ async fn custom_root_raw_stop_requires_force_close_before_delete_live() {
     await_live_tls_stage("raw-stop/commit-write", write.commit())
         .await
         .expect("terminal-close rows commit over TLS");
+    drop(write);
 
     let mut read = await_live_tls_stage(
         "raw-stop/open-read",
@@ -491,27 +483,26 @@ async fn custom_root_raw_stop_requires_force_close_before_delete_live() {
     .expect("bounded TLS query delivers its first row");
     assert_eq!(stats.processed_items, 1);
     assert!(stats.stopped_early);
-    // A raw `Stop` deliberately leaves a resumable driver stream. TypeDB
-    // 3.12.1 does not acknowledge transaction close, so this low-level test
-    // must not claim that close alone proves server-side release (issue #196).
-    // Make the shared driver terminal first. RuntimeTransaction::close then
-    // observes that shutdown has started and drops the driver transaction
-    // locally instead of waiting forever for that absent acknowledgement.
+    // Stopping leaves a resumable driver stream. The active transaction
+    // retains the connection, so shutdown must reject without invalidating it.
+    assert!(matches!(
+        runtime.force_close(),
+        Err(RuntimeError::ResourceLimit {
+            code: "resource_in_use",
+            ..
+        })
+    ));
+    // Release the child locally before terminating the driver. The server
+    // release check below still proves deletion and immediate name reuse.
+    drop(read);
     runtime
         .force_close()
-        .expect("raw-stop TLS runtime connection force-closes");
-    await_live_tls_stage("raw-stop/close-after-force-close", read.close())
-        .await
-        .expect("raw-stop transaction releases locally after force-close");
-    drop(read);
+        .expect("TLS connection closes after its transaction is released");
     drop(runtime);
 
-    await_live_tls_stage(
-        "raw-stop/delete-after-force-close",
-        delete_owned_database_after_force_close(&context, &database),
-    )
-    .await
-    .expect("a fresh TLS connection deletes the database after force-close");
+    delete_owned_database_after_force_close(&context, &database)
+        .await
+        .expect("a fresh TLS connection deletes the database after force-close");
     assert!(
         !await_live_tls_stage(
             "raw-stop/verify-deleted",

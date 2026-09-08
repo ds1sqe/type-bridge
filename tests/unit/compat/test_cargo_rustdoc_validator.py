@@ -106,7 +106,7 @@ def test_target_plan_rejects_missing_or_ambiguous_documentation_targets(
     metadata = synthetic_metadata()
     packages = metadata["packages"]
     assert isinstance(packages, list)
-    package = next(candidate for candidate in packages if candidate["name"] == package_name)
+    package = next(artifact for artifact in packages if artifact["name"] == package_name)
     package["targets"] = replacement
 
     with pytest.raises(validator.RustdocValidationError, match=message):
@@ -122,9 +122,7 @@ def test_target_plan_rejects_manifest_and_documentation_policy_drift() -> None:
     metadata = synthetic_metadata()
     packages = metadata["packages"]
     assert isinstance(packages, list)
-    contract = next(
-        candidate for candidate in packages if candidate["name"] == "type-bridge-contract"
-    )
+    contract = next(artifact for artifact in packages if artifact["name"] == "type-bridge-contract")
     contract["manifest_path"] = str(CORE / "crates/query/Cargo.toml")
 
     with pytest.raises(validator.RustdocValidationError, match="manifest disagrees"):
@@ -146,9 +144,7 @@ def test_target_plan_rejects_manifest_and_documentation_policy_drift() -> None:
     metadata = synthetic_metadata()
     packages = metadata["packages"]
     assert isinstance(packages, list)
-    contract = next(
-        candidate for candidate in packages if candidate["name"] == "type-bridge-contract"
-    )
+    contract = next(artifact for artifact in packages if artifact["name"] == "type-bridge-contract")
     contract_targets = contract["targets"]
     assert isinstance(contract_targets, list)
     contract_targets[0]["doc"] = False

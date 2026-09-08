@@ -1,0 +1,22 @@
+{
+  "format": "typebridge.c-artifact-journey-contract/v1",
+  "authority_state": "frozen",
+  "publication_authority": false,
+  "platform": "x86_64-unknown-linux-gnu",
+  "steps": [
+    {"id": "01-install-cli-sdk", "evidence": ["provider-free.cli-smoke.relocation", "provider-free.archive-package-smoke.relocation"]},
+    {"id": "02-check-workspace", "evidence": ["provider-free.cli-smoke.commands"]},
+    {"id": "03-generate-package", "evidence": ["provider-free.cli-smoke.four-binding-generation", "provider-free.archive-package-smoke.generated-artifact-id"]},
+    {"id": "04-create-migrate-isolated", "evidence": ["live.migration.operations", "live.cleanup.migration-database"]},
+    {"id": "05-positive-negative-compile", "evidence": ["provider-free.canonical-live-sources-compile", "provider-free.compile-negative"]},
+    {"id": "06-connect-install-authority", "evidence": ["live.data-query-remote.plaintext-direct", "live.data-query-remote.tls"]},
+    {"id": "07-insert-put-bulk", "evidence": ["live.data-query-remote.full-c17-marker-count", "live.data-query-remote.query"]},
+    {"id": "08-read-update-aggregate-page-delete", "evidence": ["live.data-query-remote.full-c17-marker-count", "live.data-query-remote.query"]},
+    {"id": "09-polymorphic-owner-role-hydration", "evidence": ["live.data-query-remote.full-c17-marker-count"]},
+    {"id": "10-caller-transport-remote", "evidence": ["live.data-query-remote.remote"]},
+    {"id": "11-direct-remote-results-failures", "evidence": ["live.data-query-remote.full-c17-marker-count", "live.data-query-remote.model-codec.direct-remote-equal"]},
+    {"id": "12-migration-reverse-backfill-recovery", "evidence": ["live.migration.operations", "live.migration.history-length"]},
+    {"id": "13-hostile-operational-cases", "evidence": ["provider-free.compile-negative", "provider-free.sanitizers", "live.data-query-remote.full-c17-marker-count"]},
+    {"id": "14-close-leak-unload-cleanup", "evidence": ["provider-free.loader-unload", "provider-free.sanitizers", "live.cleanup", "live.test-infrastructure"]}
+  ]
+}

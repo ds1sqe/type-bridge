@@ -10,10 +10,10 @@ depend on [`type-bridge`](https://crates.io/crates/type-bridge) instead.
 
 ```toml
 [dependencies]
-type-bridge-contract = "2.1.0"
+type-bridge-contract = "2.2.0"
 ```
 
-Start with the [crate API](https://docs.rs/type-bridge-contract/2.1.0): create
+Start with the [crate API](https://docs.rs/type-bridge-contract/2.2.0): create
 values through their validated constructors and use the canonical codec APIs
 when bytes cross a process or persistence boundary. Do not invent a parallel
 serialization for these contracts.
@@ -26,5 +26,5 @@ require Rust 1.88+. Database-facing TypeBridge 2.1 components support TypeDB
 3.11.x–3.12.x, with 3.12.1 as the V2 semantic baseline.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
-[API documentation](https://docs.rs/type-bridge-contract/2.1.0) ·
+[API documentation](https://docs.rs/type-bridge-contract/2.2.0) ·
 [MIT license](https://github.com/ds1sqe/type-bridge/blob/master/LICENSE)

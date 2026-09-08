@@ -4,8 +4,12 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Poll, Waker};
+use std::time::Instant;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::fingerprint::Fingerprint;
 use type_bridge_contract::managed_scope::{ManagedScopeId, SemanticProfileFingerprint};
 use type_bridge_contract::migration::{
     MigrationId, MigrationManifestDigest, MigrationPlanFingerprint,
@@ -22,6 +26,171 @@ use crate::{
 };
 
 const MAX_LEASE_HOLDER_BYTES: usize = 128;
+
+/// Shared maximum number of migration transaction groups in one invocation.
+pub const MAX_MIGRATION_EXECUTION_GROUPS: usize = 65_536;
+/// Shared maximum number of retained terminal backfill observations.
+pub const MAX_MIGRATION_BACKFILL_OBSERVATIONS: usize = 65_536;
+
+/// Cloneable, wakeable cancellation authority for migration operations.
+#[derive(Clone, Debug, Default)]
+pub struct MigrationCancellation {
+    inner: Arc<MigrationCancellationInner>,
+}
+
+#[derive(Debug, Default)]
+struct MigrationCancellationInner {
+    cancelled: AtomicBool,
+    waiters: std::sync::Mutex<Vec<Waker>>,
+}
+
+impl MigrationCancellation {
+    /// Request cancellation and wake every currently registered provider wait.
+    pub fn cancel(&self) {
+        if !self.inner.cancelled.swap(true, Ordering::AcqRel) {
+            let waiters = {
+                let mut waiters = self.inner.waiters.lock().expect("cancellation waiters");
+                std::mem::take(&mut *waiters)
+            };
+            for waiter in waiters {
+                waiter.wake();
+            }
+        }
+    }
+
+    /// Return whether cancellation has been requested.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.inner.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Await cancellation without polling or spawning a worker thread.
+    pub async fn cancelled(&self) {
+        std::future::poll_fn(|context| {
+            if self.is_cancelled() {
+                return Poll::Ready(());
+            }
+            let mut waiters = self.inner.waiters.lock().expect("cancellation waiters");
+            if self.is_cancelled() {
+                return Poll::Ready(());
+            }
+            if !waiters
+                .iter()
+                .any(|waiter| waiter.will_wake(context.waker()))
+            {
+                waiters.push(context.waker().clone());
+            }
+            Poll::Pending
+        })
+        .await
+    }
+}
+
+/// Tighten-only bounded resources for one migration execution invocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MigrationExecutionResourceLimits {
+    transaction_groups: usize,
+    backfill_observations: usize,
+}
+
+impl MigrationExecutionResourceLimits {
+    /// Construct limits clamped to the shared ceilings.
+    #[must_use]
+    pub const fn tightened(transaction_groups: usize, backfill_observations: usize) -> Self {
+        Self {
+            transaction_groups: if transaction_groups < MAX_MIGRATION_EXECUTION_GROUPS {
+                transaction_groups
+            } else {
+                MAX_MIGRATION_EXECUTION_GROUPS
+            },
+            backfill_observations: if backfill_observations < MAX_MIGRATION_BACKFILL_OBSERVATIONS {
+                backfill_observations
+            } else {
+                MAX_MIGRATION_BACKFILL_OBSERVATIONS
+            },
+        }
+    }
+
+    /// Return the maximum transaction groups admitted by this invocation.
+    pub const fn transaction_groups(self) -> usize {
+        self.transaction_groups
+    }
+
+    /// Return the maximum retained terminal backfill observations.
+    pub const fn backfill_observations(self) -> usize {
+        self.backfill_observations
+    }
+}
+
+impl Default for MigrationExecutionResourceLimits {
+    fn default() -> Self {
+        Self::tightened(
+            MAX_MIGRATION_EXECUTION_GROUPS,
+            MAX_MIGRATION_BACKFILL_OBSERVATIONS,
+        )
+    }
+}
+
+/// Immutable controls shared by apply and rollback execution.
+#[derive(Clone, Debug, Default)]
+pub struct MigrationExecutionControl {
+    cancellation: MigrationCancellation,
+    deadline: Option<Instant>,
+    resources: MigrationExecutionResourceLimits,
+}
+
+impl MigrationExecutionControl {
+    /// Bind cancellation, one absolute monotonic deadline, and tightened limits.
+    #[must_use]
+    pub const fn new(
+        cancellation: MigrationCancellation,
+        deadline: Option<Instant>,
+        resources: MigrationExecutionResourceLimits,
+    ) -> Self {
+        Self {
+            cancellation,
+            deadline,
+            resources,
+        }
+    }
+
+    /// Return the cancellation authority.
+    pub const fn cancellation(&self) -> &MigrationCancellation {
+        &self.cancellation
+    }
+
+    /// Return the absolute monotonic deadline, when bounded.
+    pub const fn deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
+    /// Return caller-tightened resource limits.
+    pub const fn resources(&self) -> MigrationExecutionResourceLimits {
+        self.resources
+    }
+
+    /// Reject work at a safe coordinator boundary before another effect begins.
+    pub fn check(&self) -> Result<(), Diagnostic> {
+        if self.cancellation.is_cancelled() {
+            return Err(failure(
+                DiagnosticCategory::Cancelled,
+                "migration_execution_cancelled",
+                "migration execution was cancelled before the next effect",
+            ));
+        }
+        if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(failure(
+                DiagnosticCategory::ResourceLimit,
+                "migration_execution_deadline_exceeded",
+                "migration execution reached its absolute deadline before the next effect",
+            ));
+        }
+        Ok(())
+    }
+}
 
 /// Boxed future returned by provider-neutral execution stores.
 pub type ExecutionFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, Diagnostic>> + Send + 'a>>;
@@ -270,6 +439,167 @@ pub enum GroupRecoveryDecision {
     RequiresExplicitRecovery,
 }
 
+/// Direction of one closed backfill program at execution time.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackfillExecutionDirection {
+    /// Execute the canonical forward data program.
+    Forward,
+    /// Execute its independently verified reverse program.
+    Reverse,
+}
+
+/// Bounded aggregate counts from a completely verified backfill execution.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BackfillExecutionCounts {
+    matched: u64,
+    changed: u64,
+    skipped: u64,
+    transaction_groups: u32,
+}
+
+impl BackfillExecutionCounts {
+    /// Construct internally consistent terminal counts.
+    pub fn new(
+        matched: u64,
+        changed: u64,
+        skipped: u64,
+        transaction_groups: u32,
+    ) -> Result<Self, Diagnostic> {
+        if transaction_groups == 0 {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_backfill_zero_transaction_groups",
+                "terminal backfill evidence must include at least one transaction group",
+            ));
+        }
+        if changed.checked_add(skipped) != Some(matched) {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_backfill_count_mismatch",
+                "backfill matched count must equal changed plus skipped counts",
+            ));
+        }
+        Ok(Self {
+            matched,
+            changed,
+            skipped,
+            transaction_groups,
+        })
+    }
+
+    /// Return the number of source rows selected by the closed plan.
+    pub const fn matched(self) -> u64 {
+        self.matched
+    }
+
+    /// Return the number of destination rows changed.
+    pub const fn changed(self) -> u64 {
+        self.changed
+    }
+
+    /// Return the number of already-equal rows skipped idempotently.
+    pub const fn skipped(self) -> u64 {
+        self.skipped
+    }
+
+    /// Return the number of committed deterministic transaction groups.
+    pub const fn transaction_groups(self) -> u32 {
+        self.transaction_groups
+    }
+}
+
+/// Exact terminal proof that one closed backfill program satisfies its postcondition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BackfillCompletionEvidence {
+    plan_fingerprint: Fingerprint,
+    direction: BackfillExecutionDirection,
+    counts: BackfillExecutionCounts,
+}
+
+impl BackfillCompletionEvidence {
+    /// Bind terminal counts to one exact canonical plan and execution direction.
+    #[must_use]
+    pub const fn new(
+        plan_fingerprint: Fingerprint,
+        direction: BackfillExecutionDirection,
+        counts: BackfillExecutionCounts,
+    ) -> Self {
+        Self {
+            plan_fingerprint,
+            direction,
+            counts,
+        }
+    }
+
+    /// Return the exact canonical backfill-plan identity.
+    pub const fn plan_fingerprint(&self) -> &Fingerprint {
+        &self.plan_fingerprint
+    }
+
+    /// Return whether the forward or checked reverse program completed.
+    pub const fn direction(&self) -> BackfillExecutionDirection {
+        self.direction
+    }
+
+    /// Return internally consistent aggregate counts.
+    pub const fn counts(&self) -> BackfillExecutionCounts {
+        self.counts
+    }
+}
+
+/// Fresh provider observation of one exact backfill postcondition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BackfillRecoveryObservation {
+    /// No trustworthy data observation is available.
+    Unavailable,
+    /// The exact postcondition is not currently satisfied.
+    Incomplete,
+    /// The exact plan and direction have a verified terminal postcondition.
+    Complete(BackfillCompletionEvidence),
+}
+
+/// Decide whether a complete backfill may execute or only repair its checkpoint.
+///
+/// Unlike schema groups, an incomplete data observation after a before-commit
+/// or unknown-commit event cannot prove that no partition committed. Automatic
+/// replay therefore remains forbidden until partition checkpoints are present.
+/// With no prior event, both incomplete and already-complete postconditions are
+/// safe to execute: the journal proves that execution has never begun, and an
+/// already-complete closed backfill is a deterministic no-op.
+pub fn decide_backfill_recovery(
+    last_event: Option<GroupJournalEventKind>,
+    observation: &BackfillRecoveryObservation,
+    expected_plan: &Fingerprint,
+    expected_direction: BackfillExecutionDirection,
+) -> GroupRecoveryDecision {
+    let complete = matches!(
+        observation,
+        BackfillRecoveryObservation::Complete(evidence)
+            if evidence.plan_fingerprint() == expected_plan
+                && evidence.direction() == expected_direction
+    );
+    match last_event {
+        None if matches!(
+            observation,
+            BackfillRecoveryObservation::Incomplete | BackfillRecoveryObservation::Complete(_)
+        ) =>
+        {
+            GroupRecoveryDecision::ExecuteNormally
+        }
+        Some(GroupJournalEventKind::DefinitelyAborted)
+            if matches!(observation, BackfillRecoveryObservation::Incomplete) =>
+        {
+            GroupRecoveryDecision::ExecuteNormally
+        }
+        Some(
+            GroupJournalEventKind::BeforeCommit
+            | GroupJournalEventKind::CommitOutcomeUnknown
+            | GroupJournalEventKind::Committed,
+        ) if complete => GroupRecoveryDecision::RepairCheckpoint,
+        _ => GroupRecoveryDecision::RequiresExplicitRecovery,
+    }
+}
+
 /// Decide recovery from durable event and freshly observed managed semantics.
 ///
 /// Equal source and target fingerprints are intentionally uninformative for
@@ -387,6 +717,7 @@ impl<T> JournalEntry<T> {
 pub struct OpenPlanRecord {
     plan: JournalEntry<PlanRecord>,
     events: Vec<JournalEntry<GroupEventRecord>>,
+    backfill_events: Vec<JournalEntry<BackfillEventRecord>>,
 }
 
 impl OpenPlanRecord {
@@ -400,19 +731,52 @@ impl OpenPlanRecord {
         plan: JournalEntry<PlanRecord>,
         events: Vec<JournalEntry<GroupEventRecord>>,
     ) -> Result<Self, Diagnostic> {
+        Self::from_store_with_backfills(plan, events, Vec::new())
+    }
+
+    /// Rebuild store output including independently journaled data-step events.
+    pub fn from_store_with_backfills(
+        plan: JournalEntry<PlanRecord>,
+        events: Vec<JournalEntry<GroupEventRecord>>,
+        backfill_events: Vec<JournalEntry<BackfillEventRecord>>,
+    ) -> Result<Self, Diagnostic> {
         let mut previous = plan.sequence();
         let mut previous_fence = plan.record().fence();
-        for event in &events {
+        let mut ordered: Vec<(
+            JournalSequence,
+            ExecutionFence,
+            &MigrationId,
+            MigrationManifestDigest,
+        )> = events
+            .iter()
+            .map(|event| {
+                (
+                    event.sequence(),
+                    event.record().fence(),
+                    event.record().migration_id(),
+                    event.record().manifest_digest(),
+                )
+            })
+            .chain(backfill_events.iter().map(|event| {
+                (
+                    event.sequence(),
+                    event.record().fence(),
+                    event.record().migration_id(),
+                    event.record().manifest_digest(),
+                )
+            }))
+            .collect();
+        ordered.sort_by_key(|event| event.0);
+        for (sequence, fence, migration_id, manifest_digest) in ordered {
             let manifest_index = plan
                 .record()
                 .manifest_digests()
                 .iter()
-                .position(|digest| digest == &event.record().manifest_digest());
-            if event.sequence() <= previous
-                || event.record().scope() != plan.record().scope()
-                || event.record().fence() < previous_fence
+                .position(|digest| digest == &manifest_digest);
+            if sequence <= previous
+                || fence < previous_fence
                 || manifest_index.is_none_or(|index| {
-                    plan.record().migration_ids().get(index) != Some(event.record().migration_id())
+                    plan.record().migration_ids().get(index) != Some(migration_id)
                 })
             {
                 return Err(failure(
@@ -421,10 +785,27 @@ impl OpenPlanRecord {
                     "loaded open-plan events are not ordered and bound to the plan",
                 ));
             }
-            previous = event.sequence();
-            previous_fence = event.record().fence();
+            previous = sequence;
+            previous_fence = fence;
         }
-        Ok(Self { plan, events })
+        if events
+            .iter()
+            .any(|event| event.record().scope() != plan.record().scope())
+            || backfill_events
+                .iter()
+                .any(|event| event.record().scope() != plan.record().scope())
+        {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_invalid_open_plan",
+                "loaded open-plan events are not bound to the plan scope",
+            ));
+        }
+        Ok(Self {
+            plan,
+            events,
+            backfill_events,
+        })
     }
 
     /// Return the sequenced plan record.
@@ -435,6 +816,11 @@ impl OpenPlanRecord {
     /// Return ordered sequenced group events.
     pub fn events(&self) -> &[JournalEntry<GroupEventRecord>] {
         &self.events
+    }
+
+    /// Return ordered sequenced backfill events.
+    pub fn backfill_events(&self) -> &[JournalEntry<BackfillEventRecord>] {
+        &self.backfill_events
     }
 }
 
@@ -768,6 +1154,250 @@ impl GroupEventRecord {
     /// Return exact target evidence carried only by committed events.
     pub const fn observed_target(&self) -> Option<&ManagedSemanticSchemaFingerprint> {
         self.observed_target.as_ref()
+    }
+}
+
+/// Durable positional event for one exact forward or reverse backfill step.
+///
+/// Data effects cannot be inferred from unchanged schema semantics. This
+/// record therefore carries the canonical plan identity on every boundary and
+/// admits terminal counts only when the provider has verified the complete
+/// postcondition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BackfillEventRecord {
+    scope: ExecutionScope,
+    fence: ExecutionFence,
+    manifest_digest: MigrationManifestDigest,
+    migration_id: MigrationId,
+    operation_ordinal: u32,
+    manifest_step_index: u32,
+    plan_fingerprint: Fingerprint,
+    direction: BackfillExecutionDirection,
+    kind: GroupJournalEventKind,
+    completion: Option<BackfillCompletionEvidence>,
+}
+
+impl BackfillEventRecord {
+    /// Derive a forward event from one exact verified apply step position.
+    pub fn new_apply(
+        lease: &MigrationLease,
+        migration: &VerifiedMigrationApplyManifest,
+        step_index: usize,
+        kind: GroupJournalEventKind,
+        completion: Option<BackfillCompletionEvidence>,
+    ) -> Result<Self, Diagnostic> {
+        if lease.scope().managed_scope_id() != migration.manifest().managed_scope().id() {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_scope_mismatch",
+                "lease scope differs from the verified migration scope",
+            ));
+        }
+        if !migration.backfill_step_indices().contains(&step_index) {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_backfill_step_position",
+                "backfill event position is outside the verified apply manifest",
+            ));
+        }
+        let step = migration.steps().get(step_index).ok_or_else(|| {
+            failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_backfill_step_position",
+                "backfill event position is outside the verified apply manifest",
+            )
+        })?;
+        let (contract, _) = step.step().as_backfill().ok_or_else(|| {
+            failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_backfill_step_position",
+                "verified backfill position does not contain a backfill step",
+            )
+        })?;
+        Self::new_checked(
+            lease,
+            migration.digest(),
+            migration.manifest().id().clone(),
+            step_index,
+            step_index,
+            contract.plan_fingerprint().clone(),
+            BackfillExecutionDirection::Forward,
+            kind,
+            completion,
+        )
+    }
+
+    /// Derive a reverse event from one exact mixed rollback operation position.
+    pub fn new_rollback(
+        lease: &MigrationLease,
+        rollback: &VerifiedMigrationRollbackManifest,
+        operation_index: usize,
+        kind: GroupJournalEventKind,
+        completion: Option<BackfillCompletionEvidence>,
+    ) -> Result<Self, Diagnostic> {
+        if lease.scope().managed_scope_id() != rollback.manifest().managed_scope().id() {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_scope_mismatch",
+                "lease scope differs from the verified rollback scope",
+            ));
+        }
+        let backfill_index = match rollback.operations().get(operation_index) {
+            Some(crate::VerifiedMigrationRollbackOperation::Backfill(index)) => *index,
+            _ => {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_backfill_step_position",
+                    "backfill event position is outside the verified rollback operations",
+                ));
+            }
+        };
+        let step = rollback
+            .backfills()
+            .get(backfill_index)
+            .ok_or_else(|| {
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_backfill_step_position",
+                    "rollback backfill index is outside the verified reverse program",
+                )
+            })?
+            .forward_step();
+        let (contract, _) = step.as_backfill().ok_or_else(|| {
+            failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_backfill_step_position",
+                "verified rollback backfill does not contain a backfill step",
+            )
+        })?;
+        let manifest_step_index = rollback
+            .manifest()
+            .steps()
+            .iter()
+            .position(|candidate| candidate == step)
+            .ok_or_else(|| {
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_backfill_step_position",
+                    "rollback backfill is absent from its verified manifest",
+                )
+            })?;
+        Self::new_checked(
+            lease,
+            *rollback.digest(),
+            rollback.manifest().id().clone(),
+            operation_index,
+            manifest_step_index,
+            contract.plan_fingerprint().clone(),
+            BackfillExecutionDirection::Reverse,
+            kind,
+            completion,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_checked(
+        lease: &MigrationLease,
+        manifest_digest: MigrationManifestDigest,
+        migration_id: MigrationId,
+        operation_ordinal: usize,
+        manifest_step_index: usize,
+        plan_fingerprint: Fingerprint,
+        direction: BackfillExecutionDirection,
+        kind: GroupJournalEventKind,
+        completion: Option<BackfillCompletionEvidence>,
+    ) -> Result<Self, Diagnostic> {
+        match kind {
+            GroupJournalEventKind::Committed
+                if completion.as_ref().is_some_and(|evidence| {
+                    evidence.plan_fingerprint() == &plan_fingerprint
+                        && evidence.direction() == direction
+                }) => {}
+            GroupJournalEventKind::Committed => {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_execution_backfill_completion_mismatch",
+                    "committed backfill event requires exact terminal plan evidence",
+                ));
+            }
+            GroupJournalEventKind::FormalOnlyAdvanced => {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "migration_execution_backfill_formal_advance",
+                    "a data backfill cannot advance as a formal-only operation",
+                ));
+            }
+            _ if completion.is_none() => {}
+            _ => {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "migration_execution_unexpected_backfill_completion",
+                    "only a committed backfill event may carry terminal evidence",
+                ));
+            }
+        }
+        Ok(Self {
+            scope: lease.scope().clone(),
+            fence: lease.fence(),
+            manifest_digest,
+            migration_id,
+            operation_ordinal: position(operation_ordinal)?,
+            manifest_step_index: position(manifest_step_index)?,
+            plan_fingerprint,
+            direction,
+            kind,
+            completion,
+        })
+    }
+
+    /// Return the execution scope.
+    pub const fn scope(&self) -> &ExecutionScope {
+        &self.scope
+    }
+
+    /// Return the event fence.
+    pub const fn fence(&self) -> ExecutionFence {
+        self.fence
+    }
+
+    /// Return the exact manifest digest.
+    pub const fn manifest_digest(&self) -> MigrationManifestDigest {
+        self.manifest_digest
+    }
+
+    /// Return the migration identity.
+    pub const fn migration_id(&self) -> &MigrationId {
+        &self.migration_id
+    }
+
+    /// Return the position in forward steps or mixed reverse operations.
+    pub const fn operation_ordinal(&self) -> u32 {
+        self.operation_ordinal
+    }
+
+    /// Return the original canonical manifest step position.
+    pub const fn manifest_step_index(&self) -> u32 {
+        self.manifest_step_index
+    }
+
+    /// Return the exact canonical backfill plan identity.
+    pub const fn plan_fingerprint(&self) -> &Fingerprint {
+        &self.plan_fingerprint
+    }
+
+    /// Return the execution direction.
+    pub const fn direction(&self) -> BackfillExecutionDirection {
+        self.direction
+    }
+
+    /// Return the commit-boundary event kind.
+    pub const fn kind(&self) -> GroupJournalEventKind {
+        self.kind
+    }
+
+    /// Return terminal evidence carried only by committed events.
+    pub const fn completion(&self) -> Option<&BackfillCompletionEvidence> {
+        self.completion.as_ref()
     }
 }
 
@@ -1232,6 +1862,7 @@ impl RolledBackRecord {
 pub struct OpenRollbackPlanRecord {
     plan: JournalEntry<RollbackPlanRecord>,
     events: Vec<JournalEntry<RollbackStepEventRecord>>,
+    backfill_events: Vec<JournalEntry<BackfillEventRecord>>,
 }
 
 impl OpenRollbackPlanRecord {
@@ -1243,19 +1874,52 @@ impl OpenRollbackPlanRecord {
         plan: JournalEntry<RollbackPlanRecord>,
         events: Vec<JournalEntry<RollbackStepEventRecord>>,
     ) -> Result<Self, Diagnostic> {
+        Self::from_store_with_backfills(plan, events, Vec::new())
+    }
+
+    /// Rebuild store output including independently journaled reverse data-step events.
+    pub fn from_store_with_backfills(
+        plan: JournalEntry<RollbackPlanRecord>,
+        events: Vec<JournalEntry<RollbackStepEventRecord>>,
+        backfill_events: Vec<JournalEntry<BackfillEventRecord>>,
+    ) -> Result<Self, Diagnostic> {
         let mut previous = plan.sequence();
         let mut previous_fence = plan.record().fence();
-        for event in &events {
+        let mut ordered: Vec<(
+            JournalSequence,
+            ExecutionFence,
+            &MigrationId,
+            MigrationManifestDigest,
+        )> = events
+            .iter()
+            .map(|event| {
+                (
+                    event.sequence(),
+                    event.record().fence(),
+                    event.record().migration_id(),
+                    event.record().manifest_digest(),
+                )
+            })
+            .chain(backfill_events.iter().map(|event| {
+                (
+                    event.sequence(),
+                    event.record().fence(),
+                    event.record().migration_id(),
+                    event.record().manifest_digest(),
+                )
+            }))
+            .collect();
+        ordered.sort_by_key(|event| event.0);
+        for (sequence, fence, migration_id, manifest_digest) in ordered {
             let manifest_index = plan
                 .record()
                 .manifest_digests()
                 .iter()
-                .position(|digest| digest == &event.record().manifest_digest());
-            if event.sequence() <= previous
-                || event.record().scope() != plan.record().scope()
-                || event.record().fence() < previous_fence
+                .position(|digest| digest == &manifest_digest);
+            if sequence <= previous
+                || fence < previous_fence
                 || manifest_index.is_none_or(|index| {
-                    plan.record().rollback_ids().get(index) != Some(event.record().migration_id())
+                    plan.record().rollback_ids().get(index) != Some(migration_id)
                 })
             {
                 return Err(failure(
@@ -1264,10 +1928,27 @@ impl OpenRollbackPlanRecord {
                     "loaded open-rollback events are not ordered and bound to the plan",
                 ));
             }
-            previous = event.sequence();
-            previous_fence = event.record().fence();
+            previous = sequence;
+            previous_fence = fence;
         }
-        Ok(Self { plan, events })
+        if events
+            .iter()
+            .any(|event| event.record().scope() != plan.record().scope())
+            || backfill_events
+                .iter()
+                .any(|event| event.record().scope() != plan.record().scope())
+        {
+            return Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_execution_invalid_open_plan",
+                "loaded open-rollback events are not bound to the plan scope",
+            ));
+        }
+        Ok(Self {
+            plan,
+            events,
+            backfill_events,
+        })
     }
 
     /// Return the sequenced rollback plan record.
@@ -1278,6 +1959,11 @@ impl OpenRollbackPlanRecord {
     /// Return ordered sequenced rollback step events.
     pub fn events(&self) -> &[JournalEntry<RollbackStepEventRecord>] {
         &self.events
+    }
+
+    /// Return ordered sequenced reverse backfill events.
+    pub fn backfill_events(&self) -> &[JournalEntry<BackfillEventRecord>] {
+        &self.backfill_events
     }
 }
 
@@ -1320,6 +2006,13 @@ pub trait MigrationExecutionJournal: Send + Sync {
         lease: &'a MigrationLease,
         record: GroupEventRecord,
     ) -> ExecutionFuture<'a, JournalEntry<GroupEventRecord>>;
+
+    /// Append one exact forward or reverse backfill commit-boundary event.
+    fn record_backfill_event<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        record: BackfillEventRecord,
+    ) -> ExecutionFuture<'a, JournalEntry<BackfillEventRecord>>;
 
     /// Add one exact verified manifest from the open plan to the applied ledger.
     ///
@@ -1456,14 +2149,49 @@ fn failure(category: DiagnosticCategory, code: &'static str, message: &'static s
 mod tests {
     use std::collections::BTreeMap;
     use std::future::Future;
-    use std::sync::{Arc, Mutex};
-    use std::task::{Context, Poll, Wake, Waker};
+    use std::sync::Mutex;
+    use std::task::{Context, Poll, Waker};
 
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::managed_scope::{ManagedScopeId, SemanticProfileBinding};
     use type_bridge_contract::migration::{MigrationAppLabel, MigrationName};
 
     use super::*;
+
+    #[test]
+    fn migration_controls_cancel_and_only_tighten_shared_ceilings() {
+        let cancellation = MigrationCancellation::default();
+        let limits = MigrationExecutionResourceLimits::tightened(7, usize::MAX);
+        let control = MigrationExecutionControl::new(cancellation.clone(), None, limits);
+
+        assert_eq!(control.resources().transaction_groups(), 7);
+        assert_eq!(
+            control.resources().backfill_observations(),
+            MAX_MIGRATION_BACKFILL_OBSERVATIONS
+        );
+        assert!(control.check().is_ok());
+
+        cancellation.cancel();
+        cancellation.cancel();
+        let diagnostic = control.check().expect_err("cancelled control");
+        assert_eq!(diagnostic.category(), DiagnosticCategory::Cancelled);
+        assert_eq!(diagnostic.code().as_str(), "migration_execution_cancelled");
+    }
+
+    #[test]
+    fn migration_control_uses_one_absolute_deadline() {
+        let control = MigrationExecutionControl::new(
+            MigrationCancellation::default(),
+            Some(Instant::now()),
+            MigrationExecutionResourceLimits::default(),
+        );
+        let diagnostic = control.check().expect_err("expired deadline");
+        assert_eq!(diagnostic.category(), DiagnosticCategory::ResourceLimit);
+        assert_eq!(
+            diagnostic.code().as_str(),
+            "migration_execution_deadline_exceeded"
+        );
+    }
     use crate::schema_lowering_profile_binding;
 
     #[derive(Default)]
@@ -1475,6 +2203,7 @@ mod tests {
         rolled_back: Vec<JournalEntry<RolledBackRecord>>,
         open_plan: Option<JournalEntry<PlanRecord>>,
         events: Vec<JournalEntry<GroupEventRecord>>,
+        backfill_events: Vec<JournalEntry<BackfillEventRecord>>,
         open_rollback_plan: Option<JournalEntry<RollbackPlanRecord>>,
         rollback_events: Vec<JournalEntry<RollbackStepEventRecord>>,
     }
@@ -1618,6 +2347,40 @@ mod tests {
             })
         }
 
+        fn record_backfill_event<'a>(
+            &'a self,
+            lease: &'a MigrationLease,
+            record: BackfillEventRecord,
+        ) -> ExecutionFuture<'a, JournalEntry<BackfillEventRecord>> {
+            Box::pin(async move {
+                let mut scopes = self.scopes.lock().expect("store mutex");
+                let state = scopes.get_mut(lease.scope()).ok_or_else(stale_fence)?;
+                Self::check_lease(state, lease)?;
+                if record.scope() != lease.scope() || record.fence() != lease.fence() {
+                    return Err(stale_fence());
+                }
+                let member = state.open_plan.as_ref().is_some_and(|plan| {
+                    plan.record()
+                        .manifest_digests()
+                        .contains(&record.manifest_digest())
+                }) || state.open_rollback_plan.as_ref().is_some_and(|plan| {
+                    plan.record()
+                        .manifest_digests()
+                        .contains(&record.manifest_digest())
+                });
+                if !member {
+                    return Err(failure(
+                        DiagnosticCategory::Integrity,
+                        "migration_execution_foreign_event",
+                        "backfill event manifest is absent from the open plan",
+                    ));
+                }
+                let entry = JournalEntry::from_store(Self::sequence(state)?, record);
+                state.backfill_events.push(entry.clone());
+                Ok(entry)
+            })
+        }
+
         fn record_applied<'a>(
             &'a self,
             lease: &'a MigrationLease,
@@ -1679,6 +2442,7 @@ mod tests {
                 if complete {
                     state.open_plan = None;
                     state.events.clear();
+                    state.backfill_events.clear();
                 }
                 Ok(entry)
             })
@@ -1707,9 +2471,17 @@ mod tests {
                 let Some(plan) = state.open_plan.clone() else {
                     return Ok(None);
                 };
-                Ok(Some(OpenPlanRecord::from_store(
+                Ok(Some(OpenPlanRecord::from_store_with_backfills(
                     plan,
                     state.events.clone(),
+                    state
+                        .backfill_events
+                        .iter()
+                        .filter(|event| {
+                            event.record().direction() == BackfillExecutionDirection::Forward
+                        })
+                        .cloned()
+                        .collect(),
                 )?))
             })
         }
@@ -1838,6 +2610,7 @@ mod tests {
                 if complete {
                     state.open_rollback_plan = None;
                     state.rollback_events.clear();
+                    state.backfill_events.clear();
                 }
                 Ok(entry)
             })
@@ -1866,9 +2639,17 @@ mod tests {
                 let Some(plan) = state.open_rollback_plan.clone() else {
                     return Ok(None);
                 };
-                Ok(Some(OpenRollbackPlanRecord::from_store(
+                Ok(Some(OpenRollbackPlanRecord::from_store_with_backfills(
                     plan,
                     state.rollback_events.clone(),
+                    state
+                        .backfill_events
+                        .iter()
+                        .filter(|event| {
+                            event.record().direction() == BackfillExecutionDirection::Reverse
+                        })
+                        .cloned()
+                        .collect(),
                 )?))
             })
         }
@@ -2217,6 +2998,87 @@ mod tests {
         }
     }
 
+    #[test]
+    fn backfill_counts_and_recovery_fail_closed_without_exact_completion() {
+        assert_eq!(
+            BackfillExecutionCounts::new(5, 3, 1, 1)
+                .expect_err("inconsistent counts reject")
+                .code()
+                .as_str(),
+            "migration_backfill_count_mismatch"
+        );
+        assert_eq!(
+            BackfillExecutionCounts::new(0, 0, 0, 0)
+                .expect_err("zero transaction groups reject")
+                .code()
+                .as_str(),
+            "migration_backfill_zero_transaction_groups"
+        );
+
+        let plan = semantic_fingerprint(b"backfill-plan")
+            .as_fingerprint()
+            .clone();
+        let foreign = semantic_fingerprint(b"foreign-backfill-plan")
+            .as_fingerprint()
+            .clone();
+        let counts = BackfillExecutionCounts::new(5, 3, 2, 2).expect("valid counts");
+        let complete = BackfillRecoveryObservation::Complete(BackfillCompletionEvidence::new(
+            plan.clone(),
+            BackfillExecutionDirection::Forward,
+            counts,
+        ));
+
+        assert_eq!(
+            decide_backfill_recovery(
+                None,
+                &BackfillRecoveryObservation::Incomplete,
+                &plan,
+                BackfillExecutionDirection::Forward,
+            ),
+            GroupRecoveryDecision::ExecuteNormally
+        );
+        assert_eq!(
+            decide_backfill_recovery(None, &complete, &plan, BackfillExecutionDirection::Forward,),
+            GroupRecoveryDecision::ExecuteNormally
+        );
+        assert_eq!(
+            decide_backfill_recovery(
+                Some(GroupJournalEventKind::BeforeCommit),
+                &BackfillRecoveryObservation::Incomplete,
+                &plan,
+                BackfillExecutionDirection::Forward,
+            ),
+            GroupRecoveryDecision::RequiresExplicitRecovery
+        );
+        assert_eq!(
+            decide_backfill_recovery(
+                Some(GroupJournalEventKind::CommitOutcomeUnknown),
+                &complete,
+                &plan,
+                BackfillExecutionDirection::Forward,
+            ),
+            GroupRecoveryDecision::RepairCheckpoint
+        );
+        assert_eq!(
+            decide_backfill_recovery(
+                Some(GroupJournalEventKind::Committed),
+                &complete,
+                &foreign,
+                BackfillExecutionDirection::Forward,
+            ),
+            GroupRecoveryDecision::RequiresExplicitRecovery
+        );
+        assert_eq!(
+            decide_backfill_recovery(
+                Some(GroupJournalEventKind::Committed),
+                &complete,
+                &plan,
+                BackfillExecutionDirection::Reverse,
+            ),
+            GroupRecoveryDecision::RequiresExplicitRecovery
+        );
+    }
+
     fn expected_distinct(
         event: Option<GroupJournalEventKind>,
         observation: &GroupRecoveryObservation,
@@ -2261,15 +3123,8 @@ mod tests {
         }
     }
 
-    struct NoopWake;
-
-    impl Wake for NoopWake {
-        fn wake(self: Arc<Self>) {}
-    }
-
     fn block_on<F: Future>(future: F) -> F::Output {
-        let waker = Waker::from(Arc::new(NoopWake));
-        let mut context = Context::from_waker(&waker);
+        let mut context = Context::from_waker(Waker::noop());
         let mut future = Box::pin(future);
         loop {
             match future.as_mut().poll(&mut context) {

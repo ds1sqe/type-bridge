@@ -1,0 +1,10 @@
+prefix=${pcfiledir}/@TYPE_BRIDGE_PC_PREFIX_FROM_PCDIR@
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: TypeBridge C
+Description: Rust-owned TypeBridge C ABI v1 (query product version at runtime)
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -ltype_bridge_c
+Cflags: -I${includedir}

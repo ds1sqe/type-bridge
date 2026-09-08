@@ -5,9 +5,15 @@ use std::sync::Arc;
 
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::projection::{ModelProjection, ProjectedAnnotation, RuntimeProjection};
-use type_bridge_contract::schema::SchemaAnnotationValue;
+use type_bridge_contract::schema::{
+    AnnotationKindId, DeclaredIdentityFingerprint, SchemaAnnotationValue,
+};
+use type_bridge_contract::sdk_diagnostic::{
+    SdkDiagnosticCode, SdkDiagnosticDetailValue, SdkDiagnosticMessage, SdkDiagnosticName,
+    SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
+};
 use type_bridge_contract::temporal::{
-    CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
+    CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration, TimeZoneDesignator,
 };
 use type_bridge_contract::value::{
     CanonicalDouble, CanonicalString, CanonicalValue, Cardinality, DecimalValue, ValueTypeTag,
@@ -26,6 +32,7 @@ use crate::value::AttributeValue;
 /// One package-scoped trusted projection and its provider-facing descriptors.
 pub struct InstalledRuntimeProjection {
     projection: Arc<RuntimeProjection>,
+    declared_schema_identity: Option<DeclaredIdentityFingerprint>,
     descriptors: BTreeMap<TypeId, TypeDescriptor>,
 }
 
@@ -45,8 +52,23 @@ impl InstalledRuntimeProjection {
         }
         Ok(Self {
             projection: Arc::new(projection),
+            declared_schema_identity: None,
             descriptors,
         })
+    }
+
+    /// Bind verified target-independent declared-schema authority to this installation.
+    ///
+    /// Legacy installations may omit this evidence, but canonical projected-record
+    /// encoding and decoding require it and fail closed when it is absent.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_declared_schema_identity(
+        mut self,
+        declared_schema_identity: DeclaredIdentityFingerprint,
+    ) -> Self {
+        self.declared_schema_identity = Some(declared_schema_identity);
+        self
     }
 
     /// Decode a verified Rust runtime projection from JSON bytes and derive provider descriptors.
@@ -79,6 +101,13 @@ impl InstalledRuntimeProjection {
     /// Return the trusted source projection.
     pub fn projection(&self) -> &Arc<RuntimeProjection> {
         &self.projection
+    }
+
+    /// Return the verified declared-schema authority available to canonical codecs.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn declared_schema_identity(&self) -> Option<&DeclaredIdentityFingerprint> {
+        self.declared_schema_identity.as_ref()
     }
 
     /// Resolve one provider descriptor by its kind-qualified identity.
@@ -116,7 +145,12 @@ impl InstalledRuntimeProjection {
     /// executor instead of reconstructing schema authority from lossy dynamic
     /// descriptors.
     pub fn match_registry(&self) -> Result<DescriptorRegistry> {
-        let registry = DescriptorRegistry::for_installed_projection();
+        let registry = DescriptorRegistry::for_installed_projection(
+            self.projection.semantic_fingerprint().clone(),
+            self.projection.target(),
+            self.projection.projection_fingerprint().clone(),
+            self.projection.functions().clone(),
+        );
         for descriptor in self.descriptors.values().cloned() {
             match descriptor {
                 TypeDescriptor::Entity(entity) => {
@@ -159,8 +193,9 @@ impl InstalledRuntimeProjection {
                 "generated scalar validation requires an attribute type",
             ));
         }
-        let annotations = model.declaration().value_annotations();
-        if !annotations
+        if !model
+            .declaration()
+            .value_annotations()
             .values()
             .any(|annotation| is_value_constraint(annotation.value()))
         {
@@ -168,7 +203,8 @@ impl InstalledRuntimeProjection {
         }
         let canonical = canonical_attribute_value(value)
             .map_err(|code| projected_value_error(id, "value", code))?;
-        validate_projected_annotations(id, "value", &canonical, annotations.values())
+        self.validate_canonical_attribute_value(id, &canonical)
+            .map_err(|diagnostic| projected_diagnostic_error(id, "value", diagnostic))
     }
 
     /// Validate one generated owned-field scalar against attribute and ownership constraints.
@@ -206,7 +242,107 @@ impl InstalledRuntimeProjection {
         }
         let canonical = canonical_attribute_value(value)
             .map_err(|code| projected_value_error(id, target_name, code))?;
-        validate_projected_annotations(id, target_name, &canonical, field.annotations().values())
+        self.validate_canonical_field_value(id, field.id(), &canonical)
+            .map_err(|diagnostic| projected_diagnostic_error(id, target_name, diagnostic))
+    }
+
+    /// Validate one canonical scalar against an exact projected attribute type.
+    pub fn validate_canonical_attribute_value(
+        &self,
+        id: &TypeId,
+        value: &CanonicalValue,
+    ) -> std::result::Result<(), SdkExecutionDiagnostic> {
+        let path = vec![SdkDiagnosticPathSegment::Type(id.clone())];
+        let model = self.projection.models().get(id).ok_or_else(|| {
+            invalid_input(
+                "attribute_not_projected",
+                "The attribute type is absent from the installed runtime projection",
+                path.clone(),
+            )
+        })?;
+        if id.kind() != TypeKind::Attribute {
+            return Err(invalid_input(
+                "wrong_attribute_kind",
+                "Canonical scalar validation requires an attribute type",
+                path,
+            ));
+        }
+        let expected = model.declaration().value_type().ok_or_else(|| {
+            integrity(
+                "projected_attribute_domain_missing",
+                "The projected attribute omits its canonical scalar domain",
+                vec![SdkDiagnosticPathSegment::Type(id.clone())],
+            )
+        })?;
+        if value.value_type() != expected {
+            return Err(invalid_input(
+                "wrong_scalar_domain",
+                "The canonical scalar belongs to a different attribute domain",
+                vec![SdkDiagnosticPathSegment::Type(id.clone())],
+            )
+            .try_with_detail(
+                sdk_name("expected_value_type"),
+                SdkDiagnosticDetailValue::ValueType(expected),
+            )
+            .expect("the static scalar-domain detail is unique")
+            .try_with_detail(
+                sdk_name("actual_value_type"),
+                SdkDiagnosticDetailValue::ValueType(value.value_type()),
+            )
+            .expect("the static scalar-domain details fit the contract"));
+        }
+        validate_canonical_annotations(
+            value,
+            model.declaration().value_annotations().values(),
+            vec![SdkDiagnosticPathSegment::Type(id.clone())],
+        )
+    }
+
+    /// Validate one canonical scalar against an exact owner-branded field token.
+    pub fn validate_canonical_field_value(
+        &self,
+        owner: &TypeId,
+        field_id: &type_bridge_contract::schema::OwnsFactId,
+        value: &CanonicalValue,
+    ) -> std::result::Result<(), SdkExecutionDiagnostic> {
+        let path = vec![
+            SdkDiagnosticPathSegment::Type(owner.clone()),
+            SdkDiagnosticPathSegment::Field(field_id.clone()),
+        ];
+        if field_id.owner() != owner {
+            return Err(invalid_input(
+                "field_owner_mismatch",
+                "The ownership token belongs to a different projected model",
+                path,
+            ));
+        }
+        let model = self.projection.models().get(owner).ok_or_else(|| {
+            invalid_input(
+                "model_not_projected",
+                "The model type is absent from the installed runtime projection",
+                path.clone(),
+            )
+        })?;
+        let field = model.query_tokens().fields().get(field_id).ok_or_else(|| {
+            invalid_input(
+                "field_not_projected",
+                "The ownership token is absent from the selected projected model",
+                path.clone(),
+            )
+        })?;
+        let attribute_id =
+            TypeId::new(TypeKind::Attribute, field.id().attribute().label().as_str()).map_err(
+                |_| {
+                    integrity(
+                        "projected_attribute_identity_invalid",
+                        "The projected ownership has an invalid attribute identity",
+                        path.clone(),
+                    )
+                },
+            )?;
+        self.validate_canonical_attribute_value(&attribute_id, value)
+            .map_err(|diagnostic| replace_sdk_path(diagnostic, path.clone()))?;
+        validate_canonical_annotations(value, field.annotations().values(), path)
     }
 }
 
@@ -219,49 +355,83 @@ const fn is_value_constraint(value: &SchemaAnnotationValue) -> bool {
     )
 }
 
-fn validate_projected_annotations<'a>(
-    id: &TypeId,
-    path: &str,
+fn validate_canonical_annotations<'a>(
     value: &CanonicalValue,
     annotations: impl IntoIterator<Item = &'a ProjectedAnnotation>,
-) -> Result<()> {
+    path: Vec<SdkDiagnosticPathSegment>,
+) -> std::result::Result<(), SdkExecutionDiagnostic> {
     for annotation in annotations {
         match annotation.value() {
             SchemaAnnotationValue::Regex(pattern) => {
                 let CanonicalValue::String(text) = value else {
-                    return Err(projected_value_error(id, path, "wrong_scalar_domain"));
+                    return Err(integrity(
+                        "projected_regex_domain_mismatch",
+                        "The installed regular-expression constraint has a different scalar domain",
+                        path,
+                    ));
                 };
-                let expression = regex::Regex::new(pattern.as_str())
-                    .map_err(|_| projected_value_error(id, path, "invalid_regex_pattern"))?;
+                let expression = regex::Regex::new(pattern.as_str()).map_err(|_| {
+                    integrity(
+                        "invalid_projected_regex",
+                        "The installed projection contains an invalid regular expression",
+                        path.clone(),
+                    )
+                })?;
                 if !expression.is_match(text.as_str()) {
-                    return Err(projected_value_error(id, path, "regex_violation"));
+                    return Err(invalid_input(
+                        "regex_constraint_violation",
+                        "The canonical scalar violates a projected regular expression",
+                        path,
+                    ));
                 }
             }
             SchemaAnnotationValue::Range(range) => {
                 if let Some(lower) = range.lower() {
-                    let ordering = value
-                        .semantic_cmp_same_domain(lower)
-                        .ok_or_else(|| projected_value_error(id, path, "wrong_scalar_domain"))?;
+                    let ordering = value.semantic_cmp_same_domain(lower).ok_or_else(|| {
+                        integrity(
+                            "projected_range_domain_mismatch",
+                            "The installed range constraint has a different scalar domain",
+                            path.clone(),
+                        )
+                    })?;
                     if ordering == std::cmp::Ordering::Less {
-                        return Err(projected_value_error(id, path, "range_violation"));
+                        return Err(range_violation(value, lower, "minimum", path));
                     }
                 }
                 if let Some(upper) = range.upper() {
-                    let ordering = value
-                        .semantic_cmp_same_domain(upper)
-                        .ok_or_else(|| projected_value_error(id, path, "wrong_scalar_domain"))?;
+                    let ordering = value.semantic_cmp_same_domain(upper).ok_or_else(|| {
+                        integrity(
+                            "projected_range_domain_mismatch",
+                            "The installed range constraint has a different scalar domain",
+                            path.clone(),
+                        )
+                    })?;
                     if ordering == std::cmp::Ordering::Greater {
-                        return Err(projected_value_error(id, path, "range_violation"));
+                        return Err(range_violation(value, upper, "maximum", path));
                     }
                 }
             }
             SchemaAnnotationValue::Values(allowed) => {
+                if allowed
+                    .iter()
+                    .any(|candidate| candidate.value_type() != value.value_type())
+                {
+                    return Err(integrity(
+                        "projected_values_domain_mismatch",
+                        "The installed allowed-values constraint has a different scalar domain",
+                        path,
+                    ));
+                }
                 let accepted = allowed.iter().any(|candidate| {
                     value.semantic_cmp_same_domain(candidate) == Some(std::cmp::Ordering::Equal)
                         || value == candidate
                 });
                 if !accepted {
-                    return Err(projected_value_error(id, path, "values_violation"));
+                    return Err(invalid_input(
+                        "values_constraint_violation",
+                        "The canonical scalar is absent from the projected allowed values",
+                        path,
+                    ));
                 }
             }
             SchemaAnnotationValue::Presence
@@ -273,7 +443,101 @@ fn validate_projected_annotations<'a>(
     Ok(())
 }
 
-fn canonical_attribute_value(
+fn range_violation(
+    value: &CanonicalValue,
+    bound: &CanonicalValue,
+    bound_name: &'static str,
+    path: Vec<SdkDiagnosticPathSegment>,
+) -> SdkExecutionDiagnostic {
+    let diagnostic = invalid_input(
+        "range_constraint_violation",
+        "The canonical scalar is outside a projected range",
+        path,
+    );
+    let (CanonicalValue::Long(actual), CanonicalValue::Long(bound)) = (value, bound) else {
+        return diagnostic;
+    };
+    diagnostic
+        .try_with_detail(
+            sdk_name("actual"),
+            SdkDiagnosticDetailValue::Signed(*actual),
+        )
+        .expect("the static range detail is unique")
+        .try_with_detail(
+            sdk_name(bound_name),
+            SdkDiagnosticDetailValue::Signed(*bound),
+        )
+        .expect("the static range details fit the contract")
+}
+
+fn invalid_input(
+    code: &'static str,
+    message: &'static str,
+    path: Vec<SdkDiagnosticPathSegment>,
+) -> SdkExecutionDiagnostic {
+    sdk_path(
+        SdkExecutionDiagnostic::invalid_input(sdk_code(code), sdk_message(message)),
+        path,
+    )
+}
+
+fn integrity(
+    code: &'static str,
+    message: &'static str,
+    path: Vec<SdkDiagnosticPathSegment>,
+) -> SdkExecutionDiagnostic {
+    sdk_path(
+        SdkExecutionDiagnostic::integrity(sdk_code(code), sdk_message(message)),
+        path,
+    )
+}
+
+fn replace_sdk_path(
+    diagnostic: SdkExecutionDiagnostic,
+    path: Vec<SdkDiagnosticPathSegment>,
+) -> SdkExecutionDiagnostic {
+    let mut replaced = match diagnostic.category() {
+        type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory::InvalidInput => {
+            SdkExecutionDiagnostic::invalid_input(diagnostic.code().clone(), diagnostic.message())
+        }
+        type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory::Integrity => {
+            SdkExecutionDiagnostic::integrity(diagnostic.code().clone(), diagnostic.message())
+        }
+        _ => return diagnostic,
+    };
+    for (key, value) in diagnostic.details() {
+        replaced = replaced
+            .try_with_detail(key.clone(), value.clone())
+            .expect("validated SDK diagnostic details remain bounded and unique");
+    }
+    sdk_path(replaced, path)
+}
+
+fn sdk_path(
+    mut diagnostic: SdkExecutionDiagnostic,
+    path: Vec<SdkDiagnosticPathSegment>,
+) -> SdkExecutionDiagnostic {
+    for segment in path {
+        diagnostic = diagnostic
+            .try_at(segment)
+            .expect("projected-value diagnostic paths fit the SDK contract");
+    }
+    diagnostic
+}
+
+fn sdk_code(value: &'static str) -> SdkDiagnosticCode {
+    SdkDiagnosticCode::new(value).expect("static projected-value diagnostic code is canonical")
+}
+
+fn sdk_message(value: &'static str) -> SdkDiagnosticMessage {
+    SdkDiagnosticMessage::new(value).expect("static projected-value diagnostic message is valid")
+}
+
+fn sdk_name(value: &'static str) -> SdkDiagnosticName {
+    SdkDiagnosticName::new(value).expect("static projected-value diagnostic name is canonical")
+}
+
+pub(crate) fn canonical_attribute_value(
     value: &AttributeValue,
 ) -> std::result::Result<CanonicalValue, &'static str> {
     match value {
@@ -293,12 +557,11 @@ fn canonical_attribute_value(
             .parse::<CanonicalDateTime>()
             .map(CanonicalValue::DateTime)
             .map_err(|_| "wrong_scalar_domain"),
-        AttributeValue::DateTimeTZ(value) => value
-            .strip_suffix("+00:00")
-            .map_or_else(|| value.clone(), |local| format!("{local}Z"))
-            .parse::<CanonicalDateTimeTz>()
-            .map(CanonicalValue::DateTimeTz)
-            .map_err(|_| "wrong_scalar_domain"),
+        AttributeValue::DateTimeTZ(value) => {
+            type_bridge_schema::parse_provider_datetime_tz_evidence(value)
+                .map(CanonicalValue::DateTimeTz)
+                .map_err(|_| "wrong_scalar_domain")
+        }
         AttributeValue::Decimal(value) => DecimalValue::new(value)
             .map(CanonicalValue::Decimal)
             .map_err(|_| "wrong_scalar_domain"),
@@ -309,11 +572,72 @@ fn canonical_attribute_value(
     }
 }
 
+pub(crate) fn attribute_value_from_canonical(value: &CanonicalValue) -> AttributeValue {
+    match value {
+        CanonicalValue::String(value) => AttributeValue::String(value.as_str().to_owned()),
+        CanonicalValue::Long(value) => AttributeValue::Long(*value),
+        CanonicalValue::Double(value) => AttributeValue::Double(value.get()),
+        CanonicalValue::Boolean(value) => AttributeValue::Boolean(*value),
+        CanonicalValue::Date(value) => AttributeValue::Date(value.to_string()),
+        CanonicalValue::DateTime(value) => AttributeValue::DateTime(value.to_string()),
+        CanonicalValue::DateTimeTz(value) => {
+            AttributeValue::DateTimeTZ(datetime_tz_evidence(value))
+        }
+        CanonicalValue::Decimal(value) => AttributeValue::Decimal(value.as_str().to_owned()),
+        CanonicalValue::Duration(value) => AttributeValue::Duration(value.to_string()),
+    }
+}
+
+fn datetime_tz_evidence(value: &CanonicalDateTimeTz) -> String {
+    let TimeZoneDesignator::Named(name) = value.zone() else {
+        return value.to_string();
+    };
+    format!(
+        "{}{}[{name}]",
+        value.local(),
+        canonical_offset(value.effective_offset_seconds())
+    )
+}
+
+fn canonical_offset(seconds: i32) -> String {
+    if seconds == 0 {
+        return "Z".to_owned();
+    }
+    let sign = if seconds < 0 { '-' } else { '+' };
+    let absolute = seconds.unsigned_abs();
+    let hours = absolute / 3_600;
+    let minutes = absolute % 3_600 / 60;
+    let seconds = absolute % 60;
+    if seconds == 0 {
+        format!("{sign}{hours:02}:{minutes:02}")
+    } else {
+        format!("{sign}{hours:02}:{minutes:02}:{seconds:02}")
+    }
+}
+
 fn projected_value_error(id: &TypeId, path: &str, code: &str) -> OrmError {
     OrmError::DescriptorValidation {
         type_name: id.label().as_str().to_owned(),
         message: format!("{code} at {path}"),
     }
+}
+
+fn projected_diagnostic_error(
+    id: &TypeId,
+    path: &str,
+    diagnostic: SdkExecutionDiagnostic,
+) -> OrmError {
+    let legacy_code = match diagnostic.code().as_str() {
+        "invalid_projected_regex" => "invalid_regex_pattern",
+        "regex_constraint_violation" => "regex_violation",
+        "projected_range_domain_mismatch" | "projected_values_domain_mismatch" => {
+            "wrong_scalar_domain"
+        }
+        "range_constraint_violation" => "range_violation",
+        "values_constraint_violation" => "values_violation",
+        code => code,
+    };
+    projected_value_error(id, path, legacy_code)
 }
 
 fn decode_role_player_attributes(
@@ -369,6 +693,10 @@ fn relation_descriptor(
 ) -> Result<RelationDescriptor> {
     let mut roles = Vec::new();
     for role in model.query_tokens().roles().values() {
+        let distinct = role
+            .annotations()
+            .keys()
+            .any(|id| id.kind() == &AnnotationKindId::Distinct);
         roles.push(RoleDescriptor {
             role_name: role.role().label().as_str().to_owned(),
             player_type_names: role
@@ -379,8 +707,8 @@ fn relation_descriptor(
             cardinality: Some(provider_cardinality(role.multiplicity().cardinality())?),
             overrides: role.specializes().map(|id| id.label().as_str().to_owned()),
             is_abstract: role.is_abstract(),
-            ordered: false,
-            distinct: false,
+            ordered: !role.multiplicity().collection_mode().is_unordered(),
+            distinct,
             plays_cardinality: None,
             doc: None,
             meta: BTreeMap::new(),
@@ -427,6 +755,13 @@ fn owned_attributes(
             } else if field.is_unique() {
                 annotations.push(Annotation::Unique);
             }
+            if field
+                .annotations()
+                .keys()
+                .any(|id| id.kind() == &AnnotationKindId::Distinct)
+            {
+                annotations.push(Annotation::Distinct);
+            }
             annotations.push(Annotation::Card(
                 provider_cardinality(field.multiplicity().cardinality())?.0,
                 provider_cardinality(field.multiplicity().cardinality())?.1,
@@ -437,7 +772,7 @@ fn owned_attributes(
                 value_type: provider_value_type(value_type),
                 annotations,
                 is_optional: !field.multiplicity().required(),
-                is_ordered: false,
+                is_ordered: !field.multiplicity().collection_mode().is_unordered(),
                 doc: None,
                 meta: BTreeMap::new(),
             })
@@ -509,6 +844,7 @@ const fn kind_name(kind: TypeKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use type_bridge_contract::temporal::TimeZoneDesignator;
 
     #[test]
     fn provider_role_player_arrays_decode_once_in_the_orm() {
@@ -538,6 +874,36 @@ mod tests {
                 &[("unknown".into(), serde_json::json!(1))],
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn canonical_match_value_conversion_preserves_double_bits_and_named_zone_evidence() {
+        let double = CanonicalValue::Double(CanonicalDouble::new(-0.0).unwrap());
+        let AttributeValue::Double(projected) = attribute_value_from_canonical(&double) else {
+            panic!("double changed scalar domain")
+        };
+        assert_eq!(projected.to_bits(), (-0.0_f64).to_bits());
+
+        let named = CanonicalDateTimeTz::new_named_resolved(
+            "2024-10-27T01:30:00".parse().unwrap(),
+            "Europe/London",
+            3_600,
+        )
+        .unwrap();
+        let value = CanonicalValue::DateTimeTz(named.clone());
+        let AttributeValue::DateTimeTZ(projected) = attribute_value_from_canonical(&value) else {
+            panic!("datetime-tz changed scalar domain")
+        };
+        assert_eq!(projected, "2024-10-27T01:30:00+01:00[Europe/London]");
+        let round_trip = canonical_attribute_value(&AttributeValue::DateTimeTZ(projected)).unwrap();
+        assert_eq!(round_trip, CanonicalValue::DateTimeTz(named));
+        assert_eq!(
+            match round_trip {
+                CanonicalValue::DateTimeTz(value) => value.zone().clone(),
+                _ => unreachable!(),
+            },
+            TimeZoneDesignator::Named("Europe/London".to_owned())
         );
     }
 }

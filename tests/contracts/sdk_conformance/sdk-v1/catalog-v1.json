@@ -1,0 +1,143 @@
+{
+  "format": "typebridge.sdk-catalog/v1",
+  "fixture": {
+    "id": "sdk-v1",
+    "version": 1,
+    "semantic_profile": "typedb-3.12.1/v1",
+    "schema_path": "type-bridge-core/crates/schema-codegen/tests/acceptance/schema.yaml",
+    "provider_schema_path": "type-bridge-core/crates/schema-codegen/tests/acceptance/provider-3.12.1.tql"
+  },
+  "journey_path": "tests/contracts/sdk_conformance/sdk-v1/journey-v1.json",
+  "report_schema_path": "tests/contracts/sdk_conformance/sdk-v1/report-schema-v1.json",
+  "report_bindings": ["python", "node", "rust"],
+  "projection_targets": {
+    "python": "python",
+    "node": "typescript",
+    "rust": "rust"
+  },
+  "expected_fingerprints": {
+    "semantic": {
+      "algorithm": "sha256",
+      "canonicalization": "typebridge.schema-canonical-json/v1",
+      "digest": "fe5159d4a8abc99e361810d62e9ade8ebe9b4196355d1fe0622395da036baea4",
+      "domain": "typebridge.schema.semantic",
+      "semantic_profile": "typedb-3.12.1/v1"
+    },
+    "projections": {
+      "python": {
+        "algorithm": "sha256",
+        "canonicalization": "typebridge.binding-projection/v1",
+        "digest": "397d04f9dfa69407dbba196dee8814621c87fdc018e6d7b61c1ad2b307884a48",
+        "domain": "typebridge.binding.projection",
+        "semantic_profile": "typedb-3.12.1/v1"
+      },
+      "node": {
+        "algorithm": "sha256",
+        "canonicalization": "typebridge.binding-projection/v1",
+        "digest": "5f4bad879a2cc287003121b98fe540234141046c49b93b330917279a17658239",
+        "domain": "typebridge.binding.projection",
+        "semantic_profile": "typedb-3.12.1/v1"
+      },
+      "rust": {
+        "algorithm": "sha256",
+        "canonicalization": "typebridge.binding-projection/v1",
+        "digest": "347ce0475e4c0d2c49c228a16e7e07585cc75991c16fbb6d14f06ee547a2ef48",
+        "domain": "typebridge.binding.projection",
+        "semantic_profile": "typedb-3.12.1/v1"
+      }
+    }
+  },
+  "selected_proofs": [
+    {
+      "case_id": "sdk.crud.entity-single",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "entity_lifecycle"
+    },
+    {
+      "case_id": "sdk.crud.relation-single",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "relation_lifecycle"
+    },
+    {
+      "case_id": "sdk.model.values-and-references",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "model_values_and_references"
+    },
+    {
+      "case_id": "sdk.model.values-and-references",
+      "proof_kind": "remote_runtime",
+      "observation_ref": "model_values_and_references"
+    },
+    {
+      "case_id": "sdk.query.remote-hydration",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "hydrated_role_result"
+    },
+    {
+      "case_id": "sdk.query.remote-hydration",
+      "proof_kind": "remote_runtime",
+      "observation_ref": "hydrated_role_result"
+    },
+    {
+      "case_id": "sdk.query.remote-one-exchange",
+      "proof_kind": "remote_runtime",
+      "observation_ref": "remote_one_exchange"
+    },
+    {
+      "case_id": "sdk.query.roles",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "role_traversal"
+    },
+    {
+      "case_id": "sdk.query.roles",
+      "proof_kind": "remote_runtime",
+      "observation_ref": "role_traversal"
+    }
+  ],
+  "cases": [
+    {"id": "sdk.schema.generate.atomic", "capability_id": "schema.generate.atomic-multibinding", "disposition": "retained_evidence"},
+    {"id": "sdk.model.values-and-references", "capability_id": "model.generated-values-and-references", "disposition": "shared_smoke"},
+    {"id": "sdk.model.constraints", "capability_id": "model.projected-constraint-validation", "disposition": "retained_evidence"},
+    {"id": "sdk.crud.entity-single", "capability_id": "crud.entity.single", "disposition": "shared_smoke"},
+    {"id": "sdk.crud.entity-batch-insert-put", "capability_id": "crud.entity.batch-insert-put", "disposition": "retained_evidence"},
+    {"id": "sdk.crud.relation-single", "capability_id": "crud.relation.single", "disposition": "shared_smoke"},
+    {"id": "sdk.crud.relation-batch-insert-put", "capability_id": "crud.relation.batch-insert-put", "disposition": "retained_evidence"},
+    {"id": "sdk.crud.entity-batch-update-delete", "capability_id": "crud.entity.batch-update-delete-atomic", "disposition": "retained_evidence"},
+    {"id": "sdk.crud.relation-batch-update-delete", "capability_id": "crud.relation.batch-update-delete-atomic", "disposition": "retained_evidence"},
+    {"id": "sdk.transaction.borrowed", "capability_id": "transaction.borrowed-read-write-lifecycle", "disposition": "retained_evidence"},
+    {"id": "sdk.manager.filter", "capability_id": "manager.single-type-filter", "disposition": "retained_evidence"},
+    {"id": "sdk.projection.field-name-identity", "capability_id": "projection.field-name-identity", "disposition": "retained_evidence"},
+    {"id": "sdk.query.owner-iid-set", "capability_id": "query.owner-iid-set-predicates", "disposition": "retained_evidence"},
+    {"id": "sdk.query.exact-subtypes", "capability_id": "query.exact-subtype-hydration", "disposition": "retained_evidence"},
+    {"id": "sdk.query.scalar-boolean-predicates", "capability_id": "query.scalar-boolean-predicates", "disposition": "retained_evidence"},
+    {"id": "sdk.query.roles", "capability_id": "query.role-traversal-and-relation-references", "disposition": "shared_smoke"},
+    {"id": "sdk.query.topology", "capability_id": "query.reachability-and-explicit-cross-join", "disposition": "retained_evidence"},
+    {"id": "sdk.query.selection-shapes", "capability_id": "query.selected-output-shapes", "disposition": "retained_evidence"},
+    {"id": "sdk.query.terminals", "capability_id": "query.ordered-windowed-model-terminals", "disposition": "retained_evidence"},
+    {"id": "sdk.query.reducers-direct", "capability_id": "query.direct-reducers-and-grouping", "disposition": "retained_evidence"},
+    {"id": "sdk.query.remote-one-exchange", "capability_id": "query.remote-model-terminals-one-exchange", "disposition": "shared_smoke"},
+    {"id": "sdk.query.remote-hydration", "capability_id": "query.remote-reply-verification-and-hydration", "disposition": "shared_smoke"},
+    {"id": "sdk.diagnostic.remote-structured", "capability_id": "diagnostic.remote-structured", "disposition": "retained_evidence"},
+    {"id": "sdk.model.integer-key-polymorphic-role", "capability_id": "model.integer-key-polymorphic-role-optionality", "disposition": "retained_evidence"},
+    {"id": "sdk.model.inherited-relation-role", "capability_id": "model.inherited-relation-role-lifecycle", "disposition": "retained_evidence"},
+    {"id": "sdk.crud.unkeyed-entity", "capability_id": "crud.entity.unkeyed-iid-lifecycle", "disposition": "retained_evidence"},
+    {"id": "sdk.crud.unkeyed-relation", "capability_id": "crud.relation.unkeyed-iid-lifecycle", "disposition": "retained_evidence"},
+    {"id": "sdk.value.scalar-domain-comparison", "capability_id": "value.scalar-domain-comparison", "disposition": "retained_evidence"},
+    {"id": "sdk.projection.evidence-integrity", "capability_id": "projection.evidence-integrity", "disposition": "retained_evidence"},
+    {"id": "sdk.projection.token-package-fencing", "capability_id": "projection.token-package-fencing", "disposition": "retained_evidence"},
+    {"id": "sdk.query.reducers-remote", "capability_id": "query.remote-reducers-and-grouping", "disposition": "retained_evidence"},
+    {"id": "sdk.schema.ordered-distinct", "capability_id": "schema.ordered-distinct-collections", "disposition": "retained_evidence"},
+    {"id": "sdk.query.schema-function", "capability_id": "query.schema-function-invocation", "disposition": "retained_evidence"},
+    {"id": "sdk.runtime.connection-policy", "capability_id": "runtime.complete-connection-policy", "disposition": "retained_evidence"},
+    {"id": "sdk.runtime.database-administration", "capability_id": "runtime.database-administration", "disposition": "retained_evidence"},
+    {"id": "sdk.runtime.cancellation", "capability_id": "runtime.cancellation", "disposition": "known_gap"},
+    {"id": "sdk.runtime.timeout-resource-limits", "capability_id": "runtime.timeout-and-resource-limits", "disposition": "known_gap"},
+    {"id": "sdk.model.serialization", "capability_id": "model.canonical-serialization", "disposition": "retained_evidence"},
+    {"id": "sdk.diagnostic.all-workflows", "capability_id": "diagnostic.all-workflows-structured", "disposition": "known_gap"},
+    {"id": "sdk.migration.rollback", "capability_id": "migration.reverse-cli", "disposition": "retained_evidence"},
+    {"id": "sdk.migration.backfill", "capability_id": "migration.binding-neutral-backfill", "disposition": "retained_evidence"},
+    {"id": "sdk.migration.runtime-facade", "capability_id": "migration.sdk-runtime-facade", "disposition": "retained_evidence"},
+    {"id": "sdk.distribution.standalone-cli", "capability_id": "distribution.standalone-cli", "disposition": "known_gap"},
+    {"id": "sdk.runtime.explicit-close", "capability_id": "runtime.explicit-close", "disposition": "known_gap"}
+  ]
+}

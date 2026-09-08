@@ -347,18 +347,71 @@ canonical_scalar!(
     }
 );
 
-canonical_scalar!(
-    DateTimeTz,
-    "A timezone-aware date-time in the shared canonical lexical form.",
-    "noncanonical_datetime_tz",
-    |s| {
-        if let Ok(dtz) = s.parse::<type_bridge_contract::temporal::CanonicalDateTimeTz>() {
-            dtz.to_string() == s
-        } else {
-            false
+/// A timezone-aware date-time in the shared canonical lexical form.
+///
+/// Named-zone values retain their provider-resolved effective offset in the
+/// private canonical value so both sides of a daylight-saving overlap survive
+/// generated-model hydration and later CRUD/query lowering.
+#[derive(Clone, Eq, PartialEq, Hash)]
+pub struct DateTimeTz {
+    spelling: String,
+    canonical: type_bridge_contract::temporal::CanonicalDateTimeTz,
+}
+
+impl std::fmt::Debug for DateTimeTz {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Preserve the released tuple-wrapper Debug shape.
+        formatter
+            .debug_tuple("DateTimeTz")
+            .field(&self.spelling)
+            .finish()
+    }
+}
+
+impl DateTimeTz {
+    /// Validate and wrap a canonical timezone-aware scalar spelling.
+    ///
+    /// # Errors
+    ///
+    /// Returns `noncanonical_datetime_tz` when the spelling is not the exact
+    /// canonical rendering under the frozen provider timezone policy.
+    pub fn try_new(value: impl Into<String>) -> Result<Self, ValidationError> {
+        let spelling = value.into();
+        if type_bridge_contract::value::CanonicalString::new(&spelling).is_err() {
+            return Err(ValidationError::new("", "string_limit_exceeded"));
+        }
+        let canonical = type_bridge_schema::parse_provider_datetime_tz(&spelling)
+            .map_err(|_| ValidationError::new("", "noncanonical_datetime_tz"))?;
+        if canonical.to_string() != spelling {
+            return Err(ValidationError::new("", "noncanonical_datetime_tz"));
+        }
+        Ok(Self {
+            spelling,
+            canonical,
+        })
+    }
+
+    #[must_use]
+    pub(crate) fn from_canonical(
+        canonical: type_bridge_contract::temporal::CanonicalDateTimeTz,
+    ) -> Self {
+        Self {
+            spelling: canonical.to_string(),
+            canonical,
         }
     }
-);
+
+    /// Return the canonical scalar spelling.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.spelling
+    }
+
+    #[must_use]
+    pub(crate) const fn canonical(&self) -> &type_bridge_contract::temporal::CanonicalDateTimeTz {
+        &self.canonical
+    }
+}
 
 canonical_scalar!(
     Duration,
@@ -381,7 +434,9 @@ pub struct HydrationCapability {
 }
 
 impl HydrationCapability {
-    pub(crate) const fn new() -> Self {
+    /// Construct the generated-code-only materialization capability.
+    #[doc(hidden)]
+    pub const fn new() -> Self {
         Self { _private: () }
     }
 }
@@ -680,13 +735,11 @@ impl EncodedScalar {
         }
     }
 
-    fn to_canonical_value(
+    pub(crate) fn to_canonical_value(
         &self,
         path: &ValidationPath,
     ) -> Result<type_bridge_contract::value::CanonicalValue, ValidationError> {
-        use type_bridge_contract::temporal::{
-            CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
-        };
+        use type_bridge_contract::temporal::{CanonicalDate, CanonicalDateTime, CanonicalDuration};
         use type_bridge_contract::value::{CanonicalDouble, CanonicalString, CanonicalValue};
         match self {
             Self::String(s) => CanonicalString::new(s)
@@ -716,11 +769,7 @@ impl EncodedScalar {
                 .parse::<CanonicalDateTime>()
                 .map(CanonicalValue::DateTime)
                 .map_err(|_| ValidationError::new(path.path(), "noncanonical_datetime")),
-            Self::DateTimeTz(dtz) => dtz
-                .as_str()
-                .parse::<CanonicalDateTimeTz>()
-                .map(CanonicalValue::DateTimeTz)
-                .map_err(|_| ValidationError::new(path.path(), "noncanonical_datetime_tz")),
+            Self::DateTimeTz(dtz) => Ok(CanonicalValue::DateTimeTz(dtz.canonical().clone())),
             Self::Duration(dur) => dur
                 .as_str()
                 .parse::<CanonicalDuration>()
@@ -846,6 +895,62 @@ impl ConstraintDescriptor {
     }
 }
 
+/// Opaque origin state retained by generated complete models and references.
+///
+/// The state is deliberately uninspectable, redacted in debug output, and
+/// ignored by value equality. User-authored references carry the unbound
+/// default; only runtime hydration can construct a bound origin.
+#[doc(hidden)]
+#[derive(Clone, Default)]
+pub struct ReferenceOrigin {
+    projected: Option<type_bridge_orm::ProjectedReferenceOrigin>,
+    detached_snapshot: bool,
+}
+
+impl ReferenceOrigin {
+    #[must_use]
+    pub(crate) const fn from_projected(
+        origin: Option<type_bridge_orm::ProjectedReferenceOrigin>,
+    ) -> Self {
+        Self {
+            projected: origin,
+            detached_snapshot: false,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn projected(&self) -> Option<type_bridge_orm::ProjectedReferenceOrigin> {
+        self.projected.clone()
+    }
+
+    #[must_use]
+    pub(crate) const fn detached_snapshot() -> Self {
+        Self {
+            projected: None,
+            detached_snapshot: true,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn is_detached_snapshot(&self) -> bool {
+        self.detached_snapshot
+    }
+}
+
+impl fmt::Debug for ReferenceOrigin {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ReferenceOrigin([REDACTED])")
+    }
+}
+
+impl PartialEq for ReferenceOrigin {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for ReferenceOrigin {}
+
 /// A transport-neutral encoded IID-or-typed-key reference.
 #[doc(hidden)]
 #[derive(Clone, Debug, PartialEq)]
@@ -853,6 +958,7 @@ pub struct EncodedReference {
     type_id_json: &'static str,
     iid: Option<String>,
     keys: Vec<(&'static str, EncodedScalar)>,
+    origin: ReferenceOrigin,
 }
 
 impl EncodedReference {
@@ -860,6 +966,17 @@ impl EncodedReference {
         type_id_json: &'static str,
         iid: Option<String>,
         keys: Vec<(&'static str, EncodedScalar)>,
+        path: &ValidationPath,
+    ) -> Result<Self, ValidationError> {
+        Self::try_new_with_origin(type_id_json, iid, keys, ReferenceOrigin::default(), path)
+    }
+
+    #[doc(hidden)]
+    pub fn try_new_with_origin(
+        type_id_json: &'static str,
+        iid: Option<String>,
+        keys: Vec<(&'static str, EncodedScalar)>,
+        origin: ReferenceOrigin,
         path: &ValidationPath,
     ) -> Result<Self, ValidationError> {
         if iid.as_deref().is_some_and(|value| value.trim().is_empty()) {
@@ -890,6 +1007,7 @@ impl EncodedReference {
             type_id_json,
             iid,
             keys,
+            origin,
         })
     }
 
@@ -906,6 +1024,12 @@ impl EncodedReference {
     #[must_use]
     pub fn keys(&self) -> &[(&'static str, EncodedScalar)] {
         &self.keys
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn origin(&self) -> &ReferenceOrigin {
+        &self.origin
     }
 }
 
@@ -955,6 +1079,9 @@ pub struct HydratedPlayer {
     type_id_json: String,
     iid: Option<String>,
     keys: Vec<(String, EncodedScalar)>,
+    fields: Option<Vec<(String, Vec<EncodedScalar>)>>,
+    exact_reference: bool,
+    origin: ReferenceOrigin,
 }
 
 impl HydratedPlayer {
@@ -971,6 +1098,9 @@ impl HydratedPlayer {
                 .into_iter()
                 .map(|(identity, value)| (identity.to_owned(), value))
                 .collect(),
+            fields: None,
+            exact_reference: false,
+            origin: ReferenceOrigin::default(),
         }
     }
 
@@ -985,6 +1115,64 @@ impl HydratedPlayer {
             type_id_json,
             iid,
             keys,
+            fields: None,
+            exact_reference: false,
+            origin: ReferenceOrigin::default(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn from_reference_owned(
+        type_id_json: String,
+        iid: Option<String>,
+        keys: Vec<(String, EncodedScalar)>,
+    ) -> Self {
+        Self {
+            type_id_json,
+            iid,
+            keys,
+            fields: None,
+            exact_reference: true,
+            origin: ReferenceOrigin::default(),
+        }
+    }
+
+    /// Convert one complete nonrecursive hydrated entity row into exact role-player evidence.
+    #[must_use]
+    pub fn from_complete_row(row: HydratedRow) -> Self {
+        Self::from_complete_row_with_keys(row, Vec::new())
+    }
+
+    #[must_use]
+    pub(crate) fn from_complete_row_with_keys(
+        row: HydratedRow,
+        keys: Vec<(String, EncodedScalar)>,
+    ) -> Self {
+        debug_assert!(row.roles.is_empty());
+        Self {
+            type_id_json: row.type_id_json,
+            iid: Some(row.iid),
+            keys,
+            fields: Some(row.fields),
+            exact_reference: false,
+            origin: row.origin,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn from_owned_with_origin(
+        type_id_json: String,
+        iid: Option<String>,
+        keys: Vec<(String, EncodedScalar)>,
+        origin: ReferenceOrigin,
+    ) -> Self {
+        Self {
+            type_id_json,
+            iid,
+            keys,
+            fields: None,
+            exact_reference: true,
+            origin,
         }
     }
 
@@ -1002,6 +1190,35 @@ impl HydratedPlayer {
     pub fn keys(&self) -> &[(String, EncodedScalar)] {
         &self.keys
     }
+
+    /// Return complete nonrecursive field evidence, or `None` for reference-form players.
+    #[must_use]
+    pub fn fields(&self) -> Option<&[(String, Vec<EncodedScalar>)]> {
+        self.fields.as_deref()
+    }
+
+    #[must_use]
+    pub(crate) const fn is_exact_reference(&self) -> bool {
+        self.exact_reference
+    }
+
+    /// Reconstruct the complete nonrecursive hydrated row carried by this player.
+    #[must_use]
+    pub fn complete_row(&self) -> Option<HydratedRow> {
+        Some(HydratedRow {
+            type_id_json: self.type_id_json.clone(),
+            iid: self.iid.clone()?,
+            fields: self.fields.clone()?,
+            roles: Vec::new(),
+            origin: self.origin.clone(),
+        })
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn origin(&self) -> &ReferenceOrigin {
+        &self.origin
+    }
 }
 
 /// A transport-neutral hydrated thing with exact concrete type identity, mandatory IID, owned-value evidence, and role-player evidence.
@@ -1012,6 +1229,7 @@ pub struct HydratedRow {
     iid: String,
     fields: Vec<(String, Vec<EncodedScalar>)>,
     roles: Vec<(String, Vec<HydratedPlayer>)>,
+    origin: ReferenceOrigin,
 }
 
 impl HydratedRow {
@@ -1033,6 +1251,7 @@ impl HydratedRow {
                 .into_iter()
                 .map(|(identity, players)| (identity.to_owned(), players))
                 .collect(),
+            origin: ReferenceOrigin::default(),
         }
     }
 
@@ -1049,7 +1268,29 @@ impl HydratedRow {
             iid,
             fields,
             roles,
+            origin: ReferenceOrigin::default(),
         }
+    }
+
+    #[must_use]
+    pub(crate) fn from_owned_with_origin(
+        type_id_json: String,
+        iid: String,
+        fields: Vec<(String, Vec<EncodedScalar>)>,
+        roles: Vec<(String, Vec<HydratedPlayer>)>,
+        origin: ReferenceOrigin,
+    ) -> Self {
+        Self {
+            type_id_json,
+            iid,
+            fields,
+            roles,
+            origin,
+        }
+    }
+
+    pub(crate) fn mark_detached_snapshot(&mut self) {
+        self.origin = ReferenceOrigin::detached_snapshot();
     }
 
     #[must_use]
@@ -1070,6 +1311,12 @@ impl HydratedRow {
     #[must_use]
     pub fn roles(&self) -> &[(String, Vec<HydratedPlayer>)] {
         &self.roles
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn origin(&self) -> &ReferenceOrigin {
+        &self.origin
     }
 
     pub fn validate_shape(
@@ -1122,6 +1369,65 @@ pub trait IntoEncodedCreate: sealed::Sealed {
     fn into_encoded_create(self) -> Result<EncodedCreate, ValidationError>;
 }
 
+/// Materializing trait for one exact generated create type from canonical evidence.
+#[doc(hidden)]
+pub trait MaterializeCreate: IntoEncodedCreate + Sized {
+    type Schema: crate::schema::Schema;
+    fn materialize_create(
+        value: &DecodedCreate,
+        path: &ValidationPath,
+    ) -> Result<Self, ValidationError>;
+}
+
+/// Materializing trait for one exact generated reference type from detached evidence.
+#[doc(hidden)]
+pub trait MaterializeReference: IntoEncodedReference + Sized {
+    type Schema: crate::schema::Schema;
+    fn materialize_reference(
+        value: &HydratedPlayer,
+        path: &ValidationPath,
+    ) -> Result<Self, ValidationError>;
+}
+
+/// Owned canonical create evidence used only at generated nominal decode.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecodedCreate {
+    type_id_json: String,
+    fields: Vec<(String, Vec<EncodedScalar>)>,
+    roles: Vec<(String, Vec<HydratedPlayer>)>,
+}
+
+impl DecodedCreate {
+    #[must_use]
+    pub fn new(
+        type_id_json: String,
+        fields: Vec<(String, Vec<EncodedScalar>)>,
+        roles: Vec<(String, Vec<HydratedPlayer>)>,
+    ) -> Self {
+        Self {
+            type_id_json,
+            fields,
+            roles,
+        }
+    }
+
+    #[must_use]
+    pub fn type_id_json(&self) -> &str {
+        &self.type_id_json
+    }
+
+    #[must_use]
+    pub fn fields(&self) -> &[(String, Vec<EncodedScalar>)] {
+        &self.fields
+    }
+
+    #[must_use]
+    pub fn roles(&self) -> &[(String, Vec<HydratedPlayer>)] {
+        &self.roles
+    }
+}
+
 /// Uninhabited create payload for a concrete read model whose schema shape
 /// cannot be instantiated at its own scope.
 #[doc(hidden)]
@@ -1148,6 +1454,26 @@ pub trait MaterializeModel: Model + Sized {
     fn materialize(row: &HydratedRow, cap: &HydrationCapability) -> Result<Self, ValidationError>;
 }
 
+/// Lowering trait from one exact generated hydrated model into detached snapshot evidence.
+#[doc(hidden)]
+pub trait IntoHydratedSnapshot: Model + Sized {
+    fn into_hydrated_snapshot(self) -> Result<HydratedRow, ValidationError>;
+}
+
+/// Convert generated encoded reference evidence into a detached hydrated role player.
+#[doc(hidden)]
+pub fn hydrated_player_from_encoded_reference(value: EncodedReference) -> HydratedPlayer {
+    HydratedPlayer::from_reference_owned(
+        value.type_id_json().to_owned(),
+        value.iid().map(str::to_owned),
+        value
+            .keys()
+            .iter()
+            .map(|(identity, scalar)| ((*identity).to_owned(), scalar.clone()))
+            .collect(),
+    )
+}
+
 /// A closed subtype family enum representing a concrete descendant closure for a root `Root`.
 pub trait ModelFamily: sealed::Sealed {
     /// The generated root model whose concrete descendants form this family.
@@ -1164,6 +1490,77 @@ pub trait StructValue: sealed::Sealed {
     type Schema: Schema;
     /// Canonical JSON identity for the projected schema struct.
     const STRUCT_ID_JSON: &'static str;
+}
+
+/// Lowering trait from one exact generated struct into ordered scalar evidence.
+#[doc(hidden)]
+pub trait IntoEncodedStruct: StructValue + Sized {
+    fn into_encoded_struct(self) -> EncodedStruct;
+}
+
+/// Materializing trait for one exact generated struct from canonical evidence.
+#[doc(hidden)]
+pub trait MaterializeStruct: IntoEncodedStruct + Sized {
+    fn materialize_struct(
+        value: &DecodedStruct,
+        path: &ValidationPath,
+    ) -> Result<Self, ValidationError>;
+}
+
+/// Ordered generated struct evidence before installed-projection validation.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EncodedStruct {
+    type_id_json: &'static str,
+    members: Vec<Option<EncodedScalar>>,
+}
+
+impl EncodedStruct {
+    #[must_use]
+    pub fn new(type_id_json: &'static str, members: Vec<Option<EncodedScalar>>) -> Self {
+        Self {
+            type_id_json,
+            members,
+        }
+    }
+
+    #[must_use]
+    pub const fn type_id_json(&self) -> &'static str {
+        self.type_id_json
+    }
+
+    #[must_use]
+    pub fn members(&self) -> &[Option<EncodedScalar>] {
+        &self.members
+    }
+}
+
+/// Owned canonical struct evidence used only at generated nominal decode.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecodedStruct {
+    type_id_json: String,
+    members: Vec<Option<EncodedScalar>>,
+}
+
+impl DecodedStruct {
+    #[must_use]
+    pub fn new(type_id_json: String, members: Vec<Option<EncodedScalar>>) -> Self {
+        Self {
+            type_id_json,
+            members,
+        }
+    }
+
+    #[must_use]
+    pub fn type_id_json(&self) -> &str {
+        &self.type_id_json
+    }
+
+    #[must_use]
+    pub fn members(&self) -> &[Option<EncodedScalar>] {
+        &self.members
+    }
 }
 
 /// A resolver-proven nominal upcast relation.
@@ -1255,6 +1652,11 @@ impl<Owner: Model, Value> FieldToken<Owner, Value> {
     pub const fn metadata_json(self) -> &'static str {
         self.metadata_json
     }
+
+    /// Borrow both canonical evidence fragments without consuming the token.
+    pub(crate) const fn evidence_json(&self) -> (&'static str, &'static str) {
+        (self.owns_id_json, self.metadata_json)
+    }
 }
 
 /// A related-role token branded by owner and exact accepted-player enum.
@@ -1341,9 +1743,13 @@ impl<S: Schema, Arguments, Output> FunctionToken<S, Arguments, Output> {
         }
     }
 
-    /// Return the schema function identifier.
+    /// Return the schema function identifier to the generated query facade.
+    ///
+    /// Application code invokes the nominal generated function wrapper rather
+    /// than resolving a function by this provider-facing spelling.
+    #[doc(hidden)]
     #[must_use]
-    pub const fn function_id(self) -> &'static str {
+    pub const fn __function_id(self) -> &'static str {
         self.function_id
     }
 
@@ -1413,6 +1819,33 @@ mod tests {
 
         let dtz = DateTimeTz::try_new("2026-07-28T03:55:00Z").unwrap();
         assert_eq!(dtz.as_str(), "2026-07-28T03:55:00Z");
+        let named = DateTimeTz::try_new("2026-07-28T03:55:00[Europe/Amsterdam]").unwrap();
+        assert_eq!(named.as_str(), "2026-07-28T03:55:00[Europe/Amsterdam]");
+
+        let overlap_earlier = type_bridge_schema::parse_provider_datetime_tz_evidence(
+            "2024-10-27T01:30:00+01:00[Europe/London]",
+        )
+        .unwrap();
+        let overlap_later = type_bridge_schema::parse_provider_datetime_tz_evidence(
+            "2024-10-27T01:30:00Z[Europe/London]",
+        )
+        .unwrap();
+        let earlier = DateTimeTz::from_canonical(overlap_earlier.clone());
+        let later = DateTimeTz::from_canonical(overlap_later.clone());
+        assert_eq!(earlier.as_str(), later.as_str());
+        assert_ne!(earlier, later);
+        assert_eq!(
+            EncodedScalar::DateTimeTz(earlier)
+                .to_canonical_value(&path)
+                .unwrap(),
+            type_bridge_contract::value::CanonicalValue::DateTimeTz(overlap_earlier)
+        );
+        assert_eq!(
+            EncodedScalar::DateTimeTz(later)
+                .to_canonical_value(&path)
+                .unwrap(),
+            type_bridge_contract::value::CanonicalValue::DateTimeTz(overlap_later)
+        );
 
         let dur = Duration::try_new("P1D").unwrap();
         assert_eq!(dur.as_str(), "P1D");

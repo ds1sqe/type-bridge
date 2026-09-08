@@ -1,8 +1,8 @@
 from collections.abc import Callable, Mapping, Sequence
-from enum import Enum
-from typing import Literal, Never, overload
+from enum import Enum, StrEnum
+from typing import Any, Literal, Never, TypedDict, Unpack, overload
 
-from type_bridge_core import PyRuntimeProjection
+from type_bridge_core import PyRuntimeProjection, QueryCancellation
 
 from type_bridge._runtime_projection import GeneratedEntityProjection, GeneratedRelationProjection
 from type_bridge.session import Database, TransactionContext
@@ -25,9 +25,20 @@ type _OwnerLookup = Literal[
     "present",
 ]
 
+class _CanonicalCodecOptions(TypedDict, total=False):
+    cancellation: QueryCancellation | None
+    timeout_milliseconds: int | None
+    max_input_bytes: int | None
+    max_output_bytes: int | None
+    max_depth: int | None
+    max_members: int | None
+
+CREATE_ABSENT: Any
+
 class FieldToken[OwnerT: ModelBase, AttributeT: AttributeBase]:
     owner: type[OwnerT]
     fact: Mapping[str, object]
+    def _field_value_invariant(self, value: AttributeT) -> AttributeT: ...
 
 class RoleToken[OwnerT: ModelBase, PlayerT_co: ModelBase, CompatibleBindingT_contra]:
     owner: type[OwnerT]
@@ -35,13 +46,15 @@ class RoleToken[OwnerT: ModelBase, PlayerT_co: ModelBase, CompatibleBindingT_con
     def _accepts_binding(self, binding: CompatibleBindingT_contra) -> None: ...
 
 class FunctionRef[**P, R_co]:
-    id: str
-    signature: Mapping[str, object]
-    def __init__(
-        self,
-        function_id: str,
-        signature: Mapping[str, object],
-    ) -> None: ...
+    def __new__(cls) -> Never: ...
+
+def function_identity_for_query(
+    function: FunctionRef[..., object],
+) -> tuple[str, Mapping[str, object]]: ...
+def function_ref_for_projection(
+    function_id: str,
+    signature: Mapping[str, object],
+) -> FunctionRef[..., object]: ...
 
 class ModelBase:
     __projection__: Mapping[str, object]
@@ -61,6 +74,16 @@ class ModelBase:
         connection: Database | TransactionContext,
     ) -> QuerySession: ...
     def runtime_values(self) -> dict[str, object]: ...
+    def encode_create(self, **options: Unpack[_CanonicalCodecOptions]) -> bytes: ...
+    @classmethod
+    def decode_create[ModelT: ModelBase](
+        cls: type[ModelT], data: bytes, **options: Unpack[_CanonicalCodecOptions]
+    ) -> ModelT: ...
+    def encode_snapshot(self, **options: Unpack[_CanonicalCodecOptions]) -> bytes: ...
+    @classmethod
+    def decode_snapshot[ModelT: ModelBase](
+        cls: type[ModelT], data: bytes, **options: Unpack[_CanonicalCodecOptions]
+    ) -> ModelT: ...
     def initialize_runtime_values(
         self,
         values: Mapping[str, object],
@@ -71,6 +94,11 @@ class AttributeBase(ModelBase):
     @property
     def value(self) -> object: ...
     def runtime_attribute_value(self) -> object: ...
+    def encode_attribute(self, **options: Unpack[_CanonicalCodecOptions]) -> bytes: ...
+    @classmethod
+    def decode_attribute[AttributeT: AttributeBase](
+        cls: type[AttributeT], data: bytes, **options: Unpack[_CanonicalCodecOptions]
+    ) -> AttributeT: ...
     def initialize_runtime_attribute(self, value: object, scalar: str) -> None: ...
     @classmethod
     def _from_validated_query_value(cls, value: object) -> AttributeBase: ...
@@ -162,6 +190,26 @@ class CrudHook[ModelT: ModelBase]:
 
 class ProjectedModelNotFoundError(LookupError): ...
 
+class ProjectedManagerComparison(StrEnum):
+    EQ = "eq"
+    NE = "ne"
+    LT = "lt"
+    LTE = "lte"
+    GT = "gt"
+    GTE = "gte"
+
+class ProjectedModelFilter[ModelT: ModelBase]:
+    def where[AttributeT: AttributeBase](
+        self,
+        field: FieldToken[ModelT, AttributeT],
+        comparison: ProjectedManagerComparison,
+        value: AttributeT,
+    ) -> ProjectedModelFilter[ModelT]: ...
+    def all(self) -> list[ModelT]: ...
+    def first(self) -> ModelT | None: ...
+    def count(self) -> int: ...
+    def exists(self) -> bool: ...
+
 class ProjectedModelManager[ModelT: ModelBase]:
     def add_hook(self, hook: CrudHook[ModelT]) -> ProjectedModelManager[ModelT]: ...
     def remove_hook(self, hook: CrudHook[ModelT]) -> None: ...
@@ -185,6 +233,15 @@ class ProjectedModelManager[ModelT: ModelBase]:
     ) -> list[ModelT]: ...
     def update_with(self, function: Callable[[ModelT], None]) -> list[ModelT]: ...
     def filter(self, **filters: object) -> ProjectedModelManager[ModelT]: ...
+    @overload
+    def where(self) -> ProjectedModelFilter[ModelT]: ...
+    @overload
+    def where[AttributeT: AttributeBase](
+        self,
+        field: FieldToken[ModelT, AttributeT],
+        comparison: ProjectedManagerComparison,
+        value: AttributeT,
+    ) -> ProjectedModelFilter[ModelT]: ...
     def all(self) -> list[ModelT]: ...
     def first(self) -> ModelT | None: ...
     def count(self) -> int: ...
@@ -196,16 +253,52 @@ class ReferenceBase:
     __type_id__: str
     __model_form__: str
     @property
-    def iid(self) -> str: ...
+    def iid(self) -> str | None: ...
     def runtime_values(self) -> dict[str, object]: ...
+    def encode_reference(self, **options: Unpack[_CanonicalCodecOptions]) -> bytes: ...
+    @classmethod
+    def decode_reference[ReferenceT: ReferenceBase](
+        cls: type[ReferenceT], data: bytes, **options: Unpack[_CanonicalCodecOptions]
+    ) -> ReferenceT: ...
     def initialize_runtime_reference(
         self,
-        iid: str,
+        iid: str | None,
         values: Mapping[str, object],
     ) -> None: ...
 
 class StructValueBase:
     __struct_id__: str
+    __runtime_projection__: PyRuntimeProjection
+    def encode(self, **options: Unpack[_CanonicalCodecOptions]) -> bytes: ...
+    @classmethod
+    def decode[StructT: StructValueBase](
+        cls: type[StructT], data: bytes, **options: Unpack[_CanonicalCodecOptions]
+    ) -> StructT: ...
+
+def encode_archive(records: Sequence[bytes]) -> bytes: ...
+def decode_archive(data: bytes) -> list[bytes]: ...
+def encode_archive_controlled(
+    records: Sequence[bytes],
+    *,
+    cancellation: QueryCancellation | None = ...,
+    timeout_milliseconds: int | None = ...,
+    max_input_bytes: int | None = ...,
+    max_output_bytes: int | None = ...,
+    max_depth: int | None = ...,
+    max_records: int | None = ...,
+    max_members: int | None = ...,
+) -> bytes: ...
+def decode_archive_controlled(
+    data: bytes,
+    *,
+    cancellation: QueryCancellation | None = ...,
+    timeout_milliseconds: int | None = ...,
+    max_input_bytes: int | None = ...,
+    max_output_bytes: int | None = ...,
+    max_depth: int | None = ...,
+    max_records: int | None = ...,
+    max_members: int | None = ...,
+) -> list[bytes]: ...
 
 class FieldDescriptor[
     OwnerT: ModelBase,
@@ -285,4 +378,6 @@ def install_runtime_projection(
     semantic_fingerprint_json: str,
     projection_fingerprint_json: str,
     models: Sequence[tuple[type[ModelBase], type[ReferenceBase] | None]],
+    schema_authority: bytes,
+    structs: Sequence[type[StructValueBase]] = ...,
 ) -> None: ...

@@ -1,0 +1,171 @@
+name: C release
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Verify complete C artifacts or promote an accepted verification run
+        required: true
+        type: choice
+        default: verify
+        options: [verify, publish]
+      ci_run_id:
+        description: Successful attempt-one CI run on the exact master source (verify only)
+        required: false
+        type: string
+      verify_run_id:
+        description: Successful attempt-one same-source C verification run (publish only)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: c-release-2.2.0-${{ inputs.mode }}
+  cancel-in-progress: false
+
+env:
+  CARGO_HOME: ${{ github.workspace }}/../.cargo-home
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+  RUSTUP_TOOLCHAIN: "1.94.1"
+  CARGO_BUILD_JOBS: "2"
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  verify:
+    name: Verify FULL C release artifacts
+    if: >-
+      inputs.mode == 'verify' &&
+      (github.ref == 'refs/heads/master' ||
+       github.ref == 'refs/heads/release/c-sdk-readiness' ||
+       github.ref == 'refs/tags/v2.2.0')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    services:
+      typedb:
+        image: typedb/typedb:3.12.3
+        ports: [1729:1729, 8000:8000]
+    steps:
+      - name: Checkout exact release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Capture exact successful master CI artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_CI_RUN: ${{ inputs.ci_run_id }}
+        run: >-
+          python scripts/ci/promote_c_release.py capture
+          --ci-run "$SOURCE_CI_RUN" --output "$RUNNER_TEMP/c-release-inputs"
+
+      - name: Install exact verification Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: "1.94.1"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Install verification dependencies
+        run: |
+          uv sync --extra dev
+          npm ci --prefix type-bridge-core/crates/node
+          gcc --version
+          clang --version
+          cmake --version
+          pkg-config --version
+
+      - name: Wait for the exact TypeDB fixture
+        run: |
+          for attempt in {1..45}; do
+            version="$(curl --fail --silent --max-time 3 http://localhost:8000/v1/version || true)"
+            if python -c 'import json,sys; raise SystemExit(json.loads(sys.argv[1]).get("version") != "3.12.3")' "$version"; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+
+      - name: Produce and compare all real Sdk V1 through V6 reports
+        run: >-
+          uv run python scripts/ci/run_full_c_artifact.py
+          --inputs "$RUNNER_TEMP/c-release-inputs" --output "$RUNNER_TEMP/c-release-reports"
+
+      - name: Independently audit FULL C and seal the unchanged release bytes
+        run: >-
+          uv run python scripts/ci/promote_c_release.py seal
+          --inputs "$RUNNER_TEMP/c-release-inputs" --reports "$RUNNER_TEMP/c-release-reports"
+          --output "$RUNNER_TEMP/c-verified-release"
+
+      - name: Upload immutable verified C release bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: c-verified-release-2.2.0
+          path: ${{ runner.temp }}/c-verified-release/*
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Promote verified C release artifacts
+    if: inputs.mode == 'publish' && github.ref == 'refs/tags/v2.2.0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+    steps:
+      - name: Checkout exact tagged promotion control
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Stage accepted verification bytes and validate the annotated tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACCEPTED_VERIFY_RUN: ${{ inputs.verify_run_id }}
+        run: >-
+          python scripts/ci/promote_c_release.py stage
+          --verify-run "$ACCEPTED_VERIFY_RUN" --output "$RUNNER_TEMP/c-promotion"
+
+      - name: Install pinned Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
+
+      - name: Sign accepted bytes and add absent or identical draft assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python scripts/ci/promote_c_release.py publish --output "$RUNNER_TEMP/c-promotion"
+
+      - name: Preserve verified promotion evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: c-release-promotion-2.2.0
+          path: ${{ runner.temp }}/c-promotion
+          if-no-files-found: error
+          retention-days: 30

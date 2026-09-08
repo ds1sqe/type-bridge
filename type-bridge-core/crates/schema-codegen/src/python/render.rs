@@ -12,7 +12,8 @@ use type_bridge_contract::projection::{
 use type_bridge_contract::value::ValueTypeTag;
 
 use crate::{
-    EmbeddedAuthority, GeneratedPackage, documentation_annotation, invalid, model_documentation,
+    EmbeddedAuthority, GeneratedPackage, MIGRATION_HISTORY_BUNDLE_RESOURCE,
+    documentation_annotation, invalid, model_documentation, projection_uses_ordered_collections,
 };
 
 const PUBLIC_RUNTIME_NAMES: &[&str] = &[
@@ -21,6 +22,8 @@ const PUBLIC_RUNTIME_NAMES: &[&str] = &[
     "FieldToken",
     "FunctionRef",
     "HookCancelled",
+    "ProjectedManagerComparison",
+    "ProjectedModelFilter",
     "ProjectedModelManager",
     "ProjectedModelNotFoundError",
     "RoleToken",
@@ -31,10 +34,14 @@ const PUBLIC_QUERY_NAMES: &[&str] = &[
     "BoundRole",
     "BoundVar",
     "Collected",
+    "FunctionCall",
+    "FunctionInput",
     "GroupedQuery",
     "Page",
     "Predicate",
     "Query",
+    "QueryCancellation",
+    "QueryExecutionResourceLimits",
     "QueryOrder",
     "QuerySession",
     "RemoteQuery",
@@ -45,10 +52,13 @@ const PUBLIC_QUERY_NAMES: &[&str] = &[
     "aggregate",
 ];
 const PUBLIC_SCHEMA_NAMES: &[&str] = &[
+    "MIGRATION_HISTORY_RESOURCE",
+    "MigrationCatalog",
     "PLAYING_FACTS",
     "PROJECTION_FINGERPRINT_JSON",
     "RUNTIME_PROJECTION_JSON",
     "SEMANTIC_SCHEMA_FINGERPRINT_JSON",
+    "open_migration_catalog",
 ];
 const MODEL_RESERVED_NAMES: &[&str] = &[
     "value",
@@ -84,6 +94,7 @@ pub(super) fn render(
     py_typed: &[u8],
 ) -> Result<GeneratedPackage, Diagnostic> {
     validate_projection(projection)?;
+    let ordered = projection_uses_ordered_collections(projection);
     GeneratedPackage::try_new([
         (
             "_authority.py".to_owned(),
@@ -91,19 +102,19 @@ pub(super) fn render(
         ),
         (
             "__init__.py".to_owned(),
-            finish(render_init(projection, false)),
+            finish(render_init(projection, false, ordered)),
         ),
         (
             "__init__.pyi".to_owned(),
-            finish(render_init(projection, true)),
+            finish(render_init(projection, true, ordered)),
         ),
         (
             "_models.py".to_owned(),
-            finish(render_models(projection, false)?),
+            finish(render_models(projection, false, ordered)?),
         ),
         (
             "_models.pyi".to_owned(),
-            finish(render_models(projection, true)?),
+            finish(render_models(projection, true, ordered)?),
         ),
         ("_runtime.py".to_owned(), runtime_source.to_vec()),
         ("_runtime.pyi".to_owned(), runtime_stub.to_vec()),
@@ -111,6 +122,7 @@ pub(super) fn render(
         ("_query.pyi".to_owned(), query_stub.to_vec()),
         ("_schema.py".to_owned(), finish(render_schema(projection)?)),
         ("py.typed".to_owned(), py_typed.to_vec()),
+        (MIGRATION_HISTORY_BUNDLE_RESOURCE.to_owned(), Vec::new()),
     ])
 }
 
@@ -129,25 +141,43 @@ fn finish(mut source: String) -> Vec<u8> {
     source.into_bytes()
 }
 
-fn render_init(projection: &RuntimeProjection, stub: bool) -> String {
+fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> String {
     let mut output = String::from(
         "from ._runtime import CrudEvent as CrudEvent\n\
          from ._runtime import CrudHook as CrudHook\n\
          from ._runtime import FieldToken as FieldToken\n\
          from ._runtime import FunctionRef as FunctionRef\n\
          from ._runtime import HookCancelled as HookCancelled\n\
+         from ._runtime import ProjectedManagerComparison as ProjectedManagerComparison\n\
+         from ._runtime import ProjectedModelFilter as ProjectedModelFilter\n\
          from ._runtime import ProjectedModelManager as ProjectedModelManager\n\
          from ._runtime import ProjectedModelNotFoundError as ProjectedModelNotFoundError\n\
          from ._runtime import RoleToken as RoleToken\n\
-         from ._query import Aggregate as Aggregate\n\
+         from ._runtime import decode_archive as decode_archive\n\
+         from ._runtime import decode_archive_controlled as decode_archive_controlled\n\
+         from ._runtime import encode_archive as encode_archive\n\
+         from ._runtime import encode_archive_controlled as encode_archive_controlled\n",
+    );
+    if ordered {
+        output.push_str(
+            "from ._runtime import DirectConnectionPolicy as DirectConnectionPolicy\n\
+             from ._runtime import DirectTlsMode as DirectTlsMode\n\
+             from ._runtime import connect as connect\n",
+        );
+    }
+    let query_imports = "from ._query import Aggregate as Aggregate\n\
          from ._query import BoundField as BoundField\n\
          from ._query import BoundRole as BoundRole\n\
          from ._query import BoundVar as BoundVar\n\
          from ._query import Collected as Collected\n\
+         from ._query import FunctionCall as FunctionCall\n\
+         from ._query import FunctionInput as FunctionInput\n\
          from ._query import GroupedQuery as GroupedQuery\n\
          from ._query import Page as Page\n\
          from ._query import Predicate as Predicate\n\
          from ._query import Query as Query\n\
+         from ._query import QueryCancellation as QueryCancellation\n\
+         from ._query import QueryExecutionResourceLimits as QueryExecutionResourceLimits\n\
          from ._query import QueryOrder as QueryOrder\n\
          from ._query import QuerySession as QuerySession\n\
          from ._query import RemoteGroupedQuery as RemoteGroupedQuery\n\
@@ -155,22 +185,34 @@ fn render_init(projection: &RuntimeProjection, stub: bool) -> String {
          from ._query import RemoteQueryLimits as RemoteQueryLimits\n\
          from ._query import RemoteQuerySession as RemoteQuerySession\n\
          from ._query import SubtypeBoundVar as SubtypeBoundVar\n\
-         from ._query import aggregate as aggregate\n",
-    );
+         from ._query import aggregate as aggregate\n";
+    if stub || !ordered {
+        output.push_str(query_imports);
+    }
     if stub {
         output.push_str(
-            "from collections.abc import Mapping\nfrom typing import Final\n\n\
+            "from collections.abc import Mapping\nfrom typing import Final\nfrom type_bridge_core import MigrationCatalog as MigrationCatalog\n\n\
+             MIGRATION_HISTORY_RESOURCE: Final[str]\n\
              SEMANTIC_SCHEMA_FINGERPRINT_JSON: Final[str]\n\
              PROJECTION_FINGERPRINT_JSON: Final[str]\n\
              RUNTIME_PROJECTION_JSON: Final[str]\n\
-             PLAYING_FACTS: Final[Mapping[str, object]]\n",
+             PLAYING_FACTS: Final[Mapping[str, object]]\n\n\
+             def open_migration_catalog() -> MigrationCatalog: ...\n",
         );
     } else {
         output.push_str(
-            "from ._schema import PLAYING_FACTS as PLAYING_FACTS\n\
+            "from pathlib import Path as _Path\n\
+             from type_bridge_core import MigrationCatalog as MigrationCatalog\n\
+             from type_bridge_core import open_migration_catalog as _open_migration_catalog\n\
+             from ._authority import SCHEMA_AUTHORITY_BYTES as _SCHEMA_AUTHORITY_BYTES\n\
+             from ._schema import PLAYING_FACTS as PLAYING_FACTS\n\
              from ._schema import PROJECTION_FINGERPRINT_JSON as PROJECTION_FINGERPRINT_JSON\n\
              from ._schema import RUNTIME_PROJECTION_JSON as RUNTIME_PROJECTION_JSON\n\
-             from ._schema import SEMANTIC_SCHEMA_FINGERPRINT_JSON as SEMANTIC_SCHEMA_FINGERPRINT_JSON\n",
+             from ._schema import SEMANTIC_SCHEMA_FINGERPRINT_JSON as SEMANTIC_SCHEMA_FINGERPRINT_JSON\n\n\
+             MIGRATION_HISTORY_RESOURCE = \"typebridge/migration-history.json\"\n\n\
+             def open_migration_catalog() -> MigrationCatalog:\n\
+             \x20\x20\x20\x20history = (_Path(__file__).parent / MIGRATION_HISTORY_RESOURCE).read_bytes()\n\
+             \x20\x20\x20\x20return _open_migration_catalog(_SCHEMA_AUTHORITY_BYTES, history)\n",
         );
     }
     let mut exports = PUBLIC_RUNTIME_NAMES
@@ -197,6 +239,53 @@ fn render_init(projection: &RuntimeProjection, stub: bool) -> String {
         let name = projection.functions()[id].target_name().as_str();
         import(&mut output, name);
         exports.push(name.to_owned());
+    }
+    let mut generated_function_names = BTreeSet::new();
+    for id in projection.emission().functions() {
+        let function = &projection.functions()[id];
+        let return_domain = match function.returns() {
+            FunctionReturnProjection::Scalar(element) if !element.optional() => {
+                match element.type_ref() {
+                    ProjectedTypeRef::Scalar(domain) => Some(*domain),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if return_domain.is_none()
+            || !function.parameters().iter().all(|parameter| {
+                matches!(
+                    parameter.type_ref(),
+                    ProjectedTypeRef::Model(_) | ProjectedTypeRef::Scalar(_)
+                )
+            })
+        {
+            continue;
+        }
+        generated_function_names.insert(format!(
+            "{}Call",
+            scalar_domain_name(return_domain.expect("checked scalar return"))
+        ));
+        for domain in
+            function
+                .parameters()
+                .iter()
+                .filter_map(|parameter| match parameter.type_ref() {
+                    ProjectedTypeRef::Scalar(domain) => Some(*domain),
+                    _ => None,
+                })
+        {
+            generated_function_names.insert(format!("{}Input", scalar_domain_name(domain)));
+            generated_function_names
+                .insert(format!("{}_input", scalar_domain_function_name(domain)));
+        }
+    }
+    for name in generated_function_names {
+        import(&mut output, &name);
+        exports.push(name);
+    }
+    if ordered && !stub {
+        output.push_str(query_imports);
     }
     exports.sort();
     output.push_str("\n__all__ = (\n");
@@ -253,10 +342,20 @@ fn render_schema(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     Ok(output)
 }
 
-fn render_models(projection: &RuntimeProjection, stub: bool) -> Result<String, Diagnostic> {
+fn render_models(
+    projection: &RuntimeProjection,
+    stub: bool,
+    ordered: bool,
+) -> Result<String, Diagnostic> {
     let mut body = String::new();
     for id in projection.emission().model_shells() {
-        render_model(&mut body, projection, &projection.models()[id], stub)?;
+        render_model(
+            &mut body,
+            projection,
+            &projection.models()[id],
+            stub,
+            ordered,
+        )?;
     }
     for id in projection.emission().structs() {
         render_struct(&mut body, &projection.structs()[id], stub)?;
@@ -293,18 +392,42 @@ fn render_models(projection: &RuntimeProjection, stub: bool) -> Result<String, D
                 model.target_name().as_str()
             );
         }
+        body.push_str("    ],\n    _SCHEMA_AUTHORITY_BYTES,\n    [\n");
+        for id in projection.emission().structs() {
+            let _ = writeln!(
+                body,
+                "        {},",
+                projection.structs()[id].target_name().as_str()
+            );
+        }
         body.push_str("    ],\n)\n");
         body.push('\n');
     }
+    let mut function_body = String::new();
+    let mut emitted_inputs = BTreeSet::new();
+    let mut emitted_calls = BTreeSet::new();
     for id in projection.emission().functions() {
-        render_function(&mut body, projection, &projection.functions()[id], stub)?;
+        render_function(
+            &mut function_body,
+            projection,
+            &projection.functions()[id],
+            stub,
+            &mut emitted_inputs,
+            &mut emitted_calls,
+        )?;
     }
-    let mut output = render_model_header(&body, stub);
+    let defer_query_imports = ordered && !stub;
+    if defer_query_imports {
+        render_model_query_imports(&mut body, &function_body);
+        body.push('\n');
+    }
+    body.push_str(&function_body);
+    let mut output = render_model_header(&body, stub, defer_query_imports);
     output.push_str(&body);
     Ok(output)
 }
 
-fn render_model_header(body: &str, stub: bool) -> String {
+fn render_model_header(body: &str, stub: bool, defer_query_imports: bool) -> String {
     let mut output = if stub {
         String::new()
     } else {
@@ -354,6 +477,9 @@ fn render_model_header(body: &str, stub: bool) -> String {
     if body.contains("FunctionRef") {
         runtime.push("FunctionRef");
     }
+    if body.contains("_function_ref_for_projection(") {
+        runtime.push("function_ref_for_projection as _function_ref_for_projection");
+    }
     if body.contains("(_Attribute)") {
         runtime.push("AttributeBase as _Attribute");
     }
@@ -387,6 +513,9 @@ fn render_model_header(body: &str, stub: bool) -> String {
     if body.contains("_initialize(") {
         runtime.push("initialize_model as _initialize");
     }
+    if body.contains("_CREATE_ABSENT") {
+        runtime.push("CREATE_ABSENT as _CREATE_ABSENT");
+    }
     if body.contains("_initialize_attribute(") {
         runtime.push("initialize_attribute as _initialize_attribute");
     }
@@ -405,14 +534,13 @@ fn render_model_header(body: &str, stub: bool) -> String {
     if !runtime.is_empty() {
         let _ = writeln!(output, "from ._runtime import {}", runtime.join(", "));
     }
-    if body.contains("_BoundVar[") || body.contains("_SubtypeBoundVar[") {
-        output.push_str(
-            "from ._query import BoundVar as _BoundVar, SubtypeBoundVar as _SubtypeBoundVar\n",
-        );
+    if !defer_query_imports {
+        render_model_query_imports(&mut output, body);
     }
     if body.contains("_install_runtime_projection(") {
         output.push_str(
-            "from ._schema import PROJECTION_FINGERPRINT_JSON as _PROJECTION_FINGERPRINT_JSON\n\
+            "from ._authority import SCHEMA_AUTHORITY_BYTES as _SCHEMA_AUTHORITY_BYTES\n\
+             from ._schema import PROJECTION_FINGERPRINT_JSON as _PROJECTION_FINGERPRINT_JSON\n\
              from ._schema import RUNTIME_PROJECTION_JSON as _RUNTIME_PROJECTION_JSON\n\
              from ._schema import SEMANTIC_SCHEMA_FINGERPRINT_JSON as _SEMANTIC_SCHEMA_FINGERPRINT_JSON\n",
         );
@@ -421,11 +549,37 @@ fn render_model_header(body: &str, stub: bool) -> String {
     output
 }
 
+fn render_model_query_imports(output: &mut String, body: &str) {
+    let mut query = Vec::new();
+    if body.contains("_BoundVar[") {
+        query.push("BoundVar as _BoundVar");
+    }
+    if body.contains("_SubtypeBoundVar[") {
+        query.push("SubtypeBoundVar as _SubtypeBoundVar");
+    }
+    if body.contains("_FunctionInput[") {
+        query.push("FunctionInput as _FunctionInput");
+    }
+    if body.contains("_FunctionCall[") {
+        query.push("FunctionCall as _FunctionCall");
+    }
+    if body.contains("_QuerySession") {
+        query.push("QuerySession as _QuerySession");
+    }
+    if body.contains("_RemoteQuerySession") {
+        query.push("RemoteQuerySession as _RemoteQuerySession");
+    }
+    if !query.is_empty() {
+        let _ = writeln!(output, "from ._query import {}", query.join(", "));
+    }
+}
+
 fn render_model(
     output: &mut String,
     projection: &RuntimeProjection,
     model: &ModelProjection,
     stub: bool,
+    ordered: bool,
 ) -> Result<(), Diagnostic> {
     let name = model.target_name().as_str();
     let documentation = model_documentation(model);
@@ -451,7 +605,15 @@ fn render_model(
     if !stub {
         let id = canonical_text!(model.id());
         let _ = writeln!(output, "    __type_id__ = {}", python_string(&id)?);
-        output.push_str("    __model_form__ = \"complete\"\n    __slots__ = ()\n");
+        output.push_str("    __model_form__ = \"complete\"\n");
+        if ordered
+            && model.declaration().parent().is_none()
+            && matches!(model.id().kind(), TypeKind::Entity | TypeKind::Relation)
+        {
+            output.push_str("    __slots__ = (\"__weakref__\",)\n");
+        } else {
+            output.push_str("    __slots__ = ()\n");
+        }
     }
     if stub {
         render_descriptors(output, projection, model)?;
@@ -467,11 +629,11 @@ fn render_model(
 
     if let Some(reference) = model.reference_read().target_name() {
         let reference = reference.as_str();
-        let base = model
+        let inherited_reference = model
             .declaration()
             .parent()
-            .and_then(|parent| projection.models()[parent].reference_read().target_name())
-            .map_or("_Reference", |name| name.as_str());
+            .and_then(|parent| projection.models()[parent].reference_read().target_name());
+        let base = inherited_reference.map_or("_Reference", |name| name.as_str());
         let _ = writeln!(output, "class {reference}({base}):");
         if let Some(documentation) = &documentation {
             let _ = writeln!(output, "    {}", python_string(documentation)?);
@@ -479,7 +641,12 @@ fn render_model(
         if !stub {
             let id = canonical_text!(model.id());
             let _ = writeln!(output, "    __type_id__ = {}", python_string(&id)?);
-            output.push_str("    __model_form__ = \"reference\"\n    __slots__ = ()\n");
+            output.push_str("    __model_form__ = \"reference\"\n");
+            if ordered && inherited_reference.is_none() {
+                output.push_str("    __slots__ = (\"__weakref__\",)\n");
+            } else {
+                output.push_str("    __slots__ = ()\n");
+            }
         }
         render_reference_constructor(output, projection, model, stub)?;
         output.push('\n');
@@ -643,11 +810,16 @@ fn render_constructor(
             field.multiplicity(),
             Position::Create,
         );
-        parameters.push(format!(
-            "{name}: {annotation}{}",
+        let default = if !stub
+            && !field.multiplicity().required()
+            && field.multiplicity().container() == ProjectedContainer::Sequence
+        {
+            " = _CREATE_ABSENT"
+        } else {
             default_value(field.multiplicity())
-        ));
-        names.push(name);
+        };
+        parameters.push(format!("{name}: {annotation}{default}"));
+        names.push((name, default == " = _CREATE_ABSENT"));
     }
     for (id, role) in model.create().roles() {
         let name = model.query_tokens().roles()[id].target_name().as_str();
@@ -656,11 +828,16 @@ fn render_constructor(
             role.multiplicity(),
             Position::Create,
         );
-        parameters.push(format!(
-            "{name}: {annotation}{}",
+        let default = if !stub
+            && !role.multiplicity().required()
+            && role.multiplicity().container() == ProjectedContainer::Sequence
+        {
+            " = _CREATE_ABSENT"
+        } else {
             default_value(role.multiplicity())
-        ));
-        names.push(name);
+        };
+        parameters.push(format!("{name}: {annotation}{default}"));
+        names.push((name, default == " = _CREATE_ABSENT"));
     }
     let signature = if parameters.is_empty() {
         "self".to_owned()
@@ -672,8 +849,15 @@ fn render_constructor(
         output.push_str("        ...\n");
     } else {
         output.push_str("        _initialize(self, {\n");
-        for name in names {
-            let _ = writeln!(output, "            \"{name}\": {name},");
+        for (name, absent_sentinel) in names {
+            if absent_sentinel {
+                let _ = writeln!(
+                    output,
+                    "            **({{}} if {name} is _CREATE_ABSENT else {{\"{name}\": {name}}}),"
+                );
+            } else {
+                let _ = writeln!(output, "            \"{name}\": {name},");
+            }
         }
         output.push_str("        })\n");
     }
@@ -737,7 +921,8 @@ fn render_struct(
     let name = structure.target_name().as_str();
     let _ = writeln!(output, "class {name}(_StructValue):");
     if !stub {
-        let id = canonical_text!(structure.id());
+        let id = TypeId::new(TypeKind::Struct, structure.id().label().as_str())?;
+        let id = canonical_text!(&id);
         let _ = writeln!(output, "    __struct_id__ = {}", python_string(&id)?);
         let slots = structure
             .fields()
@@ -799,6 +984,8 @@ fn render_function(
     projection: &RuntimeProjection,
     function: &type_bridge_contract::projection::FunctionProjection,
     stub: bool,
+    emitted_inputs: &mut BTreeSet<String>,
+    emitted_calls: &mut BTreeSet<String>,
 ) -> Result<(), Diagnostic> {
     let name = function.target_name().as_str();
     let parameters = function
@@ -808,25 +995,196 @@ fn render_function(
         .collect::<Result<Vec<_>, _>>()?
         .join(", ");
     let returns = function_return(projection, function.returns())?;
+    let supported_return = match function.returns() {
+        FunctionReturnProjection::Scalar(element) if !element.optional() => {
+            if let ProjectedTypeRef::Scalar(domain) = element.type_ref() {
+                Some(*domain)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    let supported = supported_return.is_some()
+        && function.parameters().iter().all(|parameter| {
+            matches!(
+                parameter.type_ref(),
+                ProjectedTypeRef::Model(_) | ProjectedTypeRef::Scalar(_)
+            )
+        });
     if let Some(documentation) = documentation_annotation(function.annotations()) {
         render_python_doc_comment(output, "", documentation);
     }
-    if stub {
+    if !supported && stub {
         let _ = writeln!(
             output,
             "{name}: Final[FunctionRef[[{parameters}], {returns}]]"
         );
-    } else {
-        let id = canonical_text!(function.id());
+    } else if !supported {
         let metadata = canonical_text!(function);
         let _ = writeln!(
             output,
-            "{name}: FunctionRef[[{parameters}], {returns}] = FunctionRef({}, _load_mapping({}))",
-            python_string(&id)?,
+            "{name} = _function_ref_for_projection({}, _load_mapping({}))",
+            python_string(function.id().label().as_str())?,
             python_string(&metadata)?
         );
+    } else {
+        let return_domain = supported_return.expect("supported scalar function has a domain");
+        let token_name = format!("__tb_{name}_token");
+        let metadata = canonical_text!(function);
+        if stub {
+            let _ = writeln!(
+                output,
+                "{token_name}: Final[FunctionRef[[{parameters}], {returns}]]"
+            );
+        } else {
+            let _ = writeln!(
+                output,
+                "{token_name} = _function_ref_for_projection({}, _load_mapping({}))",
+                python_string(function.id().label().as_str())?,
+                python_string(&metadata)?
+            );
+        }
+
+        let call_alias = format!("{}Call", scalar_domain_name(return_domain));
+        if emitted_calls.insert(call_alias.clone()) {
+            if stub {
+                let _ = writeln!(
+                    output,
+                    "type {call_alias} = _FunctionCall[{}]",
+                    scalar_type(return_domain)
+                );
+            } else {
+                let _ = writeln!(
+                    output,
+                    "{call_alias} = _FunctionCall[{}]",
+                    scalar_type(return_domain)
+                );
+            }
+        }
+        for domain in
+            function
+                .parameters()
+                .iter()
+                .filter_map(|parameter| match parameter.type_ref() {
+                    ProjectedTypeRef::Scalar(domain) => Some(*domain),
+                    _ => None,
+                })
+        {
+            let alias = format!("{}Input", scalar_domain_name(domain));
+            if emitted_inputs.insert(alias.clone()) {
+                let constructor = format!("{}_input", scalar_domain_function_name(domain));
+                if stub {
+                    let _ = writeln!(
+                        output,
+                        "type {alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession | _RemoteQuerySession, value: {}) -> {alias}: ...",
+                        scalar_type(domain),
+                        python_attribute_base(domain)
+                    );
+                } else {
+                    let _ = writeln!(
+                        output,
+                        "{alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession | _RemoteQuerySession, value: {}) -> {alias}:\n    return session._function_input(value, {})",
+                        scalar_type(domain),
+                        python_attribute_base(domain),
+                        scalar_type(domain)
+                    );
+                }
+            }
+        }
+
+        let function_parameters = function
+            .parameters()
+            .iter()
+            .map(|parameter| {
+                let value = match parameter.type_ref() {
+                    ProjectedTypeRef::Model(model_use) => {
+                        let model_name = projection
+                            .models()
+                            .get(model_use.id())
+                            .ok_or_else(|| {
+                                facet_error("function parameter references an absent model")
+                            })?
+                            .target_name()
+                            .as_str();
+                        format!("_BoundVar[{model_name}] | _SubtypeBoundVar[{model_name}]")
+                    }
+                    ProjectedTypeRef::Scalar(domain) => {
+                        format!(
+                            "{}Input | _FunctionCall[{}]",
+                            scalar_domain_name(*domain),
+                            scalar_type(*domain)
+                        )
+                    }
+                    ProjectedTypeRef::Struct(_) => {
+                        unreachable!("struct parameters were filtered")
+                    }
+                };
+                Ok(format!("{}: {value}", parameter.target_name().as_str()))
+            })
+            .collect::<Result<Vec<_>, Diagnostic>>()?;
+        let arguments = function
+            .parameters()
+            .iter()
+            .map(|parameter| parameter.target_name().as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let signature = std::iter::once("session: _QuerySession | _RemoteQuerySession".to_owned())
+            .chain(function_parameters)
+            .collect::<Vec<_>>()
+            .join(", ");
+        if stub {
+            let _ = writeln!(output, "def {name}({signature}) -> {call_alias}: ...");
+        } else {
+            let tuple = if function.parameters().len() == 1 {
+                format!("({arguments},)")
+            } else {
+                format!("({arguments})")
+            };
+            let _ = writeln!(
+                output,
+                "def {name}({signature}) -> {call_alias}:\n    return session._call_function({token_name}, {tuple}, {})",
+                scalar_type(return_domain)
+            );
+        }
     }
     Ok(())
+}
+
+fn scalar_domain_name(tag: ValueTypeTag) -> &'static str {
+    match tag {
+        ValueTypeTag::String => "String",
+        ValueTypeTag::Long => "Integer",
+        ValueTypeTag::Double => "Double",
+        ValueTypeTag::Boolean => "Boolean",
+        ValueTypeTag::Date => "Date",
+        ValueTypeTag::DateTime => "DateTime",
+        ValueTypeTag::DateTimeTz => "DateTimeTz",
+        ValueTypeTag::Decimal => "Decimal",
+        ValueTypeTag::Duration => "Duration",
+    }
+}
+
+fn scalar_domain_function_name(tag: ValueTypeTag) -> &'static str {
+    match tag {
+        ValueTypeTag::String => "string",
+        ValueTypeTag::Long => "integer",
+        ValueTypeTag::Double => "double",
+        ValueTypeTag::Boolean => "boolean",
+        ValueTypeTag::Date => "date",
+        ValueTypeTag::DateTime => "date_time",
+        ValueTypeTag::DateTimeTz => "date_time_tz",
+        ValueTypeTag::Decimal => "decimal",
+        ValueTypeTag::Duration => "duration",
+    }
+}
+
+fn python_attribute_base(tag: ValueTypeTag) -> &'static str {
+    match tag {
+        ValueTypeTag::Long => "_LongAttribute",
+        ValueTypeTag::Double => "_DoubleAttribute",
+        _ => "_Attribute",
+    }
 }
 
 fn function_return(

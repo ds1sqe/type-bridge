@@ -62,9 +62,23 @@ function verifyInstalledPackage(installedRoot) {
   );
   const queryV2 = requirePackage("@type-bridge/node/query-v2");
   assert.equal(queryV2.QueryV2Authority, typeBridge.QueryV2Authority);
+  const runtimeProjection = requirePackage("@type-bridge/node/runtime-projection");
+  assert.deepEqual(Object.keys(runtimeProjection).sort(), [
+    "InstalledRuntimeProjection",
+    "QueryCancellation",
+    "QueryExecutionResourceLimits",
+    "installGeneratedSchemaAuthority",
+    "installRuntimeProjection",
+    "projectedManagerNativeCall",
+  ]);
 
   assert.equal(packageJson.main, "dist/public.js");
   assert.equal(packageJson.types, "dist/public.d.ts");
+  assert.deepEqual(packageJson.exports["./runtime-projection"], {
+    types: "./dist/runtime-projection.d.ts",
+    require: "./dist/runtime-projection.js",
+    default: "./dist/runtime-projection.js",
+  });
   assert.equal(Object.hasOwn(packageJson.exports, "./typed"), false);
 
   const native = require(path.join(installedRoot, "dist", "native.js")).loadNative();

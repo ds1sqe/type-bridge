@@ -27,13 +27,22 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
+#[cfg(feature = "typedb")]
+use super::backend::AnswerCancellation;
+#[cfg(test)]
+use super::backend::BoxFuture;
 use super::backend::{DriverBackend, GivenRowsSpec, QueryResult, TxType};
 use super::context::TransactionContext;
 use super::transaction::Transaction;
 use crate::_registry::DescriptorRegistry;
 use crate::error::Result;
-use crate::match_request::selected_result_executor::SelectedResultExecutor;
+use crate::match_request::selected_result_executor::{
+    ManagerHydratedRoots, ManagerRootSelection, SelectedResultExecutor,
+};
 use crate::match_request::{MatchExecutionLimits, ValidatedMatchRequest, ValidatedMatchResult};
+#[cfg(feature = "typedb")]
+use crate::query_execution_limits::QueryExecutionDeadline;
+use crate::query_execution_limits::QueryExecutionResourceLimits;
 
 /// Primary connection handle wrapping a TypeDB driver.
 ///
@@ -42,16 +51,52 @@ use crate::match_request::{MatchExecutionLimits, ValidatedMatchRequest, Validate
 ///
 /// `Database` is `Send + Sync`, so it can be shared across tasks via
 /// [`Arc`]. The TypeDB driver handles connection pooling internally.
+#[derive(Clone)]
 pub struct Database {
-    backend: Box<dyn DriverBackend>,
+    backend: Arc<dyn DriverBackend>,
     connection_authority: DatabaseConnectionAuthority,
     database_name: String,
+    answer_limits: Option<QueryExecutionResourceLimits>,
+}
+
+/// Normalized outcome of creating the one database bound to a connection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DatabaseCreateOutcome {
+    /// This operation created the database.
+    Created,
+    /// The database already existed or a concurrent creator won the race.
+    AlreadyExists,
+}
+
+/// Normalized outcome of deleting the one database bound to a connection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DatabaseDeleteOutcome {
+    /// This operation observed the database present and established its absence.
+    Deleted,
+    /// The database was already absent before destructive dispatch.
+    AlreadyAbsent,
 }
 
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) struct DatabaseExecutionIdentity {
     connection_authority: DatabaseConnectionAuthority,
     database_name: String,
+}
+
+impl DatabaseExecutionIdentity {
+    #[cfg(test)]
+    pub(crate) fn isolated(database_name: impl Into<String>) -> Self {
+        Self {
+            connection_authority: DatabaseConnectionAuthority::isolated(),
+            database_name: database_name.into(),
+        }
+    }
+}
+
+impl fmt::Debug for DatabaseExecutionIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DatabaseExecutionIdentity([REDACTED])")
+    }
 }
 
 /// Opaque authority proving that database handles target one provider endpoint.
@@ -84,7 +129,7 @@ impl DatabaseConnectionAuthority {
     }
 
     fn for_typedb_address(address: &str) -> Self {
-        if !identity_safe_provider_address(address) {
+        if !is_identity_safe_provider_address(address) {
             // Released connection constructors continue to pass unusual
             // addresses to the driver unchanged. They simply cannot acquire a
             // reusable V2 migration authority because credential-free provider
@@ -100,7 +145,11 @@ impl DatabaseConnectionAuthority {
     }
 }
 
-fn identity_safe_provider_address(address: &str) -> bool {
+/// Return whether an address is a credential-free canonical provider endpoint
+/// or comma-delimited endpoint list suitable for stable authority derivation.
+#[doc(hidden)]
+#[must_use]
+pub fn is_identity_safe_provider_address(address: &str) -> bool {
     !address.is_empty() && address.split(',').all(identity_safe_provider_endpoint)
 }
 
@@ -173,6 +222,35 @@ impl fmt::Debug for DatabaseConnectionAuthority {
 }
 
 impl Database {
+    /// Connect one verified generated package through the canonical bounded
+    /// direct-connection policy.
+    #[cfg(feature = "typedb")]
+    #[doc(hidden)]
+    pub async fn connect_direct(
+        installed: &crate::InstalledRuntimeProjection,
+        policy: &super::direct_connection::DirectConnectionPolicy,
+        cancellation: AnswerCancellation,
+    ) -> std::result::Result<Self, type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic>
+    {
+        let prepared =
+            super::direct_connection::prepare_direct_connection(installed, policy, &cancellation)?;
+        let transport = prepared.transport.with_generated_3_12_3_requirement();
+        let mut database = Self::connect_prepared_secure_with_control(
+            &prepared.endpoint,
+            &prepared.database,
+            &prepared.username,
+            &prepared.password,
+            transport,
+            prepared.connection_limits,
+            prepared.deadline,
+            cancellation,
+        )
+        .await
+        .map_err(super::direct_connection::lower_secure_connection)?;
+        database.answer_limits = Some(prepared.answer_limits);
+        Ok(database)
+    }
+
     /// Create a Database with a custom backend (for testing).
     pub fn with_backend(backend: Box<dyn DriverBackend>, database_name: impl Into<String>) -> Self {
         Self::with_backend_authority(
@@ -194,9 +272,10 @@ impl Database {
         connection_authority: DatabaseConnectionAuthority,
     ) -> Self {
         Self {
-            backend,
+            backend: Arc::from(backend),
             connection_authority,
             database_name: database_name.into(),
+            answer_limits: None,
         }
     }
 
@@ -235,9 +314,10 @@ impl Database {
         let backend =
             super::real_driver::RealBackend::connect(address, username, password, options).await?;
         Ok(Self {
-            backend: Box::new(backend),
+            backend: Arc::new(backend),
             connection_authority: DatabaseConnectionAuthority::for_typedb_address(address),
             database_name: database.to_string(),
+            answer_limits: None,
         })
     }
 
@@ -258,9 +338,10 @@ impl Database {
             super::real_driver::RealBackend::connect_secure(address, username, password, options)
                 .await?;
         Ok(Self {
-            backend: Box::new(backend),
+            backend: Arc::new(backend),
             connection_authority: DatabaseConnectionAuthority::for_typedb_address(address),
             database_name: database.to_string(),
+            answer_limits: None,
         })
     }
 
@@ -279,10 +360,51 @@ impl Database {
         )
         .await?;
         Ok(Self {
-            backend: Box::new(backend),
+            backend: Arc::new(backend),
             connection_authority: DatabaseConnectionAuthority::for_typedb_address(address),
             database_name: database.to_string(),
+            answer_limits: None,
         })
+    }
+
+    /// Connect through prepared trust using one common bounded invocation.
+    ///
+    /// The caller must capture `deadline` before any credential resolution or
+    /// provider work. Only connection-applicable dimensions are forwarded:
+    /// items, bytes, and statements. Graph, attribute, collection, and role
+    /// ceilings remain uncharged because opening a connection performs none of
+    /// that work.
+    #[cfg(feature = "typedb")]
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn connect_prepared_secure_with_control(
+        address: &str,
+        database: &str,
+        username: &str,
+        password: &str,
+        options: super::real_driver::PreparedSecureConnectOptions,
+        limits: QueryExecutionResourceLimits,
+        deadline: QueryExecutionDeadline,
+        cancellation: AnswerCancellation,
+    ) -> super::real_driver::SecureResult<Self> {
+        let limits = limits.effective();
+        let control = type_bridge_typedb_runtime::RuntimeConnectionControl::new(
+            limits.items,
+            limits.bytes,
+            limits.statements,
+            deadline.instant(),
+            type_bridge_typedb_runtime::RuntimeAnswerCancellation::from_shared(
+                cancellation.shared(),
+            ),
+        );
+        Self::connect_prepared_secure_with_options(
+            address,
+            database,
+            username,
+            password,
+            options.with_connection_control(control),
+        )
+        .await
     }
 
     /// Open a read transaction.
@@ -349,6 +471,8 @@ impl Database {
             tx_type,
             capabilities,
             self.server_version(),
+            self.execution_identity(),
+            self.answer_limits,
         ))
     }
 
@@ -371,6 +495,18 @@ impl Database {
     ) -> Result<ValidatedMatchResult> {
         SelectedResultExecutor::new(registry, self.backend.match_capabilities(), limits)
             .execute_compatible_owned(self, validated)
+            .await
+    }
+
+    pub(crate) async fn execute_manager_roots_with_limits(
+        &self,
+        registry: &DescriptorRegistry,
+        validated: &ValidatedMatchRequest,
+        selection: ManagerRootSelection,
+        limits: MatchExecutionLimits,
+    ) -> Result<ManagerHydratedRoots> {
+        SelectedResultExecutor::new(registry, self.backend.match_capabilities(), limits)
+            .execute_manager_roots_owned(self, validated, selection)
             .await
     }
 
@@ -400,6 +536,33 @@ impl Database {
     /// Get the database name.
     pub fn database_name(&self) -> &str {
         &self.database_name
+    }
+
+    /// Bind the reserved migration journal name through this exact backend.
+    ///
+    /// The returned handle shares provider authority, transport lifecycle, and
+    /// immutable answer limits with this handle. It cannot select an arbitrary
+    /// application database name and performs no provider I/O.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn derived_journal_database(&self) -> Self {
+        Self {
+            backend: Arc::clone(&self.backend),
+            connection_authority: self.connection_authority.clone(),
+            database_name: format!(
+                "{}{}",
+                self.database_name,
+                type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX
+            ),
+            answer_limits: self.answer_limits,
+        }
+    }
+
+    /// Return the immutable generated direct-connection answer ceiling.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn answer_limits(&self) -> Option<QueryExecutionResourceLimits> {
+        self.answer_limits
     }
 
     pub(crate) fn execution_identity(&self) -> DatabaseExecutionIdentity {
@@ -496,18 +659,42 @@ impl Database {
 
     /// Create this database if it does not already exist.
     pub async fn create_database(&self) -> Result<()> {
-        if !self.database_exists().await? {
-            self.backend.create_database(&self.database_name).await?;
-        }
+        self.create_database_outcome().await?;
         Ok(())
+    }
+
+    /// Create the bound database and return a race-normalized outcome.
+    pub async fn create_database_outcome(&self) -> Result<DatabaseCreateOutcome> {
+        if self.database_exists().await? {
+            return Ok(DatabaseCreateOutcome::AlreadyExists);
+        }
+        match self.backend.create_database(&self.database_name).await {
+            Ok(()) => Ok(DatabaseCreateOutcome::Created),
+            Err(error) => match self.database_exists().await {
+                Ok(true) => Ok(DatabaseCreateOutcome::AlreadyExists),
+                Ok(false) | Err(_) => Err(error),
+            },
+        }
     }
 
     /// Delete this database if it exists.
     pub async fn delete_database(&self) -> Result<()> {
-        if self.database_exists().await? {
-            self.backend.delete_database(&self.database_name).await?;
-        }
+        self.delete_database_outcome().await?;
         Ok(())
+    }
+
+    /// Delete the bound database and return a race-normalized outcome.
+    pub async fn delete_database_outcome(&self) -> Result<DatabaseDeleteOutcome> {
+        if !self.database_exists().await? {
+            return Ok(DatabaseDeleteOutcome::AlreadyAbsent);
+        }
+        match self.backend.delete_database(&self.database_name).await {
+            Ok(()) => Ok(DatabaseDeleteOutcome::Deleted),
+            Err(error) => match self.database_exists().await {
+                Ok(false) => Ok(DatabaseDeleteOutcome::Deleted),
+                Ok(true) | Err(_) => Err(error),
+            },
+        }
     }
 
     /// Export the database schema as TypeQL text.
@@ -621,6 +808,111 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use crate::error::OrmError;
+
+    struct LifecycleBackend {
+        exists: AtomicBool,
+        fail_create_after_effect: bool,
+        fail_delete_after_effect: bool,
+    }
+
+    impl DriverBackend for LifecycleBackend {
+        fn open_transaction(
+            &self,
+            _database: &str,
+            _tx_type: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn super::super::backend::TransactionOps>>> {
+            Box::pin(async { Err(OrmError::Connection("unused fixture transaction".into())) })
+        }
+
+        fn is_open(&self) -> bool {
+            true
+        }
+
+        fn database_exists(&self, _database: &str) -> BoxFuture<'_, Result<bool>> {
+            Box::pin(async { Ok(self.exists.load(Ordering::SeqCst)) })
+        }
+
+        fn create_database(&self, _database: &str) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async {
+                self.exists.store(true, Ordering::SeqCst);
+                if self.fail_create_after_effect {
+                    Err(OrmError::Connection("simulated concurrent create".into()))
+                } else {
+                    Ok(())
+                }
+            })
+        }
+
+        fn delete_database(&self, _database: &str) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async {
+                self.exists.store(false, Ordering::SeqCst);
+                if self.fail_delete_after_effect {
+                    Err(OrmError::Connection("simulated concurrent delete".into()))
+                } else {
+                    Ok(())
+                }
+            })
+        }
+    }
+
+    fn lifecycle_database(
+        exists: bool,
+        fail_create_after_effect: bool,
+        fail_delete_after_effect: bool,
+    ) -> Database {
+        Database::with_backend(
+            Box::new(LifecycleBackend {
+                exists: AtomicBool::new(exists),
+                fail_create_after_effect,
+                fail_delete_after_effect,
+            }),
+            "bound-database",
+        )
+    }
+
+    #[test]
+    fn derived_journal_binding_retains_exact_provider_authority() {
+        let database = lifecycle_database(false, false, false);
+        let journal = database.derived_journal_database();
+
+        assert_eq!(journal.database_name(), "bound-database__tbv2_journal");
+        assert!(database.shares_connection_authority_with(&journal));
+    }
+
+    #[tokio::test]
+    async fn bound_administration_outcomes_are_idempotent_and_race_normalized() {
+        let database = lifecycle_database(false, false, false);
+        assert_eq!(
+            database.create_database_outcome().await.unwrap(),
+            DatabaseCreateOutcome::Created
+        );
+        assert_eq!(
+            database.create_database_outcome().await.unwrap(),
+            DatabaseCreateOutcome::AlreadyExists
+        );
+        assert_eq!(
+            database.delete_database_outcome().await.unwrap(),
+            DatabaseDeleteOutcome::Deleted
+        );
+        assert_eq!(
+            database.delete_database_outcome().await.unwrap(),
+            DatabaseDeleteOutcome::AlreadyAbsent
+        );
+
+        let concurrent_create = lifecycle_database(false, true, false);
+        assert_eq!(
+            concurrent_create.create_database_outcome().await.unwrap(),
+            DatabaseCreateOutcome::AlreadyExists
+        );
+        let concurrent_delete = lifecycle_database(true, false, true);
+        assert_eq!(
+            concurrent_delete.delete_database_outcome().await.unwrap(),
+            DatabaseDeleteOutcome::Deleted
+        );
+    }
 
     #[test]
     fn connection_authority_is_opaque_redacted_and_exact() {
@@ -645,5 +937,110 @@ mod tests {
         let isolated = DatabaseConnectionAuthority::isolated();
         assert_eq!(isolated, isolated.clone());
         assert_ne!(isolated, DatabaseConnectionAuthority::isolated());
+    }
+
+    #[test]
+    fn public_identity_safe_address_validator_reuses_authority_grammar() {
+        for valid in [
+            "provider.example:1729",
+            "provider.example:1729,backup.example:1730",
+            "[2001:db8::1]:1729",
+        ] {
+            assert!(is_identity_safe_provider_address(valid), "{valid}");
+        }
+        for invalid in [
+            "",
+            "typedb://provider.example:1729",
+            "admin@provider.example:1729",
+            " provider.example:1729",
+            "provider.example:0",
+        ] {
+            assert!(!is_identity_safe_provider_address(invalid), "{invalid}");
+        }
+    }
+
+    #[cfg(feature = "typedb")]
+    #[tokio::test]
+    async fn controlled_prepared_connect_forwards_common_pre_dispatch_cancellation() {
+        const SENTINEL: &str = "TB_ORM_CONTROLLED_CONNECT_SECRET";
+        let options = super::super::real_driver::SecureConnectOptions {
+            http_port: 8123,
+            tls_mode: super::super::real_driver::TlsMode::Disabled,
+            server_version: Some(type_bridge_core_lib::version::Version::new(3, 12, 1)),
+        }
+        .prepare_transport()
+        .expect("prepare credential-free transport before controlled connect");
+        let limits = QueryExecutionResourceLimits::default();
+        let deadline = QueryExecutionDeadline::for_limits(limits);
+        let cancellation = AnswerCancellation::default();
+        cancellation.cancel();
+
+        let error = Database::connect_prepared_secure_with_control(
+            SENTINEL,
+            "database",
+            SENTINEL,
+            SENTINEL,
+            options,
+            limits,
+            deadline,
+            cancellation,
+        )
+        .await
+        .err()
+        .expect("pre-cancelled controlled connection must reject without provider I/O");
+
+        assert!(matches!(
+            error,
+            super::super::real_driver::SecureConnectError::Runtime(
+                type_bridge_typedb_runtime::RuntimeError::ResourceLimit {
+                    code: "provider_cancelled",
+                    ..
+                }
+            )
+        ));
+        assert!(!error.to_string().contains(SENTINEL));
+    }
+
+    #[cfg(feature = "typedb")]
+    #[tokio::test]
+    async fn controlled_prepared_connect_forwards_zero_statement_ceiling_before_credentials() {
+        const SENTINEL: &str = "TB_ORM_CONNECTION_CREDENTIAL_SECRET";
+        let options = super::super::real_driver::SecureConnectOptions {
+            http_port: 8123,
+            tls_mode: super::super::real_driver::TlsMode::Disabled,
+            server_version: Some(type_bridge_core_lib::version::Version::new(3, 12, 1)),
+        }
+        .prepare_transport()
+        .expect("prepare transport before supplying credentials");
+        let limits = QueryExecutionResourceLimits {
+            statements: 0,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let deadline = QueryExecutionDeadline::for_limits(limits);
+
+        let error = Database::connect_prepared_secure_with_control(
+            "127.0.0.1:1",
+            "database",
+            SENTINEL,
+            SENTINEL,
+            options,
+            limits,
+            deadline,
+            AnswerCancellation::default(),
+        )
+        .await
+        .err()
+        .expect("zero statements must reject before driver credential construction");
+
+        assert!(matches!(
+            error,
+            super::super::real_driver::SecureConnectError::Runtime(
+                type_bridge_typedb_runtime::RuntimeError::ResourceLimit {
+                    code: "provider_statement_limit",
+                    ..
+                }
+            )
+        ));
+        assert!(!error.to_string().contains(SENTINEL));
     }
 }

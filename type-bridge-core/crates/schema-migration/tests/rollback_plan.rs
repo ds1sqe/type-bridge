@@ -29,8 +29,8 @@ use type_bridge_schema_migration::{
     MigrationSafetyPolicy, RollbackPlanRecord, RollbackStepEventRecord, SafetyPolicyDecision,
     SchemaLoweringBinding, SchemaMigrationDraft, VerifiedMigrationRollbackPlan,
     VerifiedSchemaMigrationManifest, build_verified_manifest, build_verified_migration_apply_plan,
-    build_verified_migration_rollback_plan, execute_verified_migration_rollback_plan,
-    typedb_3_12_1_profile,
+    build_verified_migration_rollback_plan, build_verified_migration_rollback_preview,
+    execute_verified_migration_rollback_plan, typedb_3_12_1_profile,
 };
 
 fn migration_id(name: &str) -> MigrationId {
@@ -259,6 +259,20 @@ fn rollback_requires_an_approval_bound_to_the_reverse_transition() {
         "migration_rollback_approval_required"
     );
 
+    let preview = build_verified_migration_rollback_preview(
+        &chain.graph,
+        &applied,
+        &removals,
+        &chain.context,
+        &chain.lowering,
+    )
+    .expect("provider-free preview derives safety without approval");
+    assert!(!preview.execution_authorized());
+    assert_eq!(
+        preview.rollbacks()[0].rollback_safety(),
+        SafetyClass::Destructive
+    );
+
     // A forward approval never authorizes the reverse transition.
     let forward = MigrationApplyApproval::for_manifest(&chain.second).expect("forward approval");
     assert!(build(&[forward]).is_err());
@@ -271,6 +285,7 @@ fn rollback_requires_an_approval_bound_to_the_reverse_transition() {
             .expect("binding check")
     );
     let plan = build(std::slice::from_ref(&approval)).expect("approved rollback plan");
+    assert!(plan.execution_authorized());
     assert_eq!(plan.rollbacks().len(), 1);
     let rolled = &plan.rollbacks()[0];
     assert_eq!(rolled.manifest().id(), chain.second.id());
@@ -450,7 +465,10 @@ fn full_chain_rollback_executes_reverse_programs_and_retires_the_ledger() {
         &plan,
     ))
     .expect("rollback execution");
-    assert!(matches!(outcome, MigrationRollbackOutcome::RolledBack));
+    assert!(matches!(
+        outcome,
+        MigrationRollbackOutcome::RolledBack { .. }
+    ));
 
     let calls = provider.calls.lock().expect("provider calls").clone();
     assert_eq!(calls.iter().filter(|call| **call == "prepare").count(), 2);
@@ -518,7 +536,10 @@ fn partial_rollback_reopens_the_head_for_a_fresh_apply_plan() {
         &plan,
     ))
     .expect("rollback execution");
-    assert!(matches!(outcome, MigrationRollbackOutcome::RolledBack));
+    assert!(matches!(
+        outcome,
+        MigrationRollbackOutcome::RolledBack { .. }
+    ));
 
     let active_basis: BTreeSet<_> = {
         let state = store.state.lock().expect("coordinator store");
@@ -661,7 +682,10 @@ fn rollback_resumes_from_a_committed_checkpoint_without_replaying() {
         &plan,
     ))
     .expect("resumed rollback execution");
-    assert!(matches!(outcome, MigrationRollbackOutcome::RolledBack));
+    assert!(matches!(
+        outcome,
+        MigrationRollbackOutcome::RolledBack { .. }
+    ));
     let calls = provider.calls.lock().expect("provider calls").clone();
     assert!(!calls.contains(&"prepare"), "calls: {calls:?}");
     assert!(!calls.contains(&"commit"), "calls: {calls:?}");

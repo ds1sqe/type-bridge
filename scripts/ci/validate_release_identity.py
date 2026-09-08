@@ -1690,7 +1690,7 @@ def validate_server_oci_release_channels(workflow: Path) -> None:
     preamble = source.split("\njobs:\n", maxsplit=1)[0]
     alias_selector = (
         "  SERVER_OCI_MINOR_ALIAS: ${{ github.event_name == 'workflow_dispatch' && "
-        "inputs.release_channel == 'recovery' && '2.0' || '2.1' }}"
+        "inputs.release_channel == 'recovery' && '2.0' || '2.2' }}"
     )
     if preamble.count(alias_selector) != 1:
         raise ValidationError("Release workflow has no exact OCI minor-alias selector")
@@ -1782,7 +1782,7 @@ def validate_server_oci_release_channels(workflow: Path) -> None:
             signature_step,
             "release.yml@refs/heads/master$' || "
             "'^https://github.com/ds1sqe/type-bridge/.github/workflows/"
-            "release.yml@refs/tags/v2[.]1[.]0$'",
+            "release.yml@refs/tags/v2[.]2[.]0$'",
             "closed recovery/stable Cosign identities",
         ),
     )
@@ -2652,9 +2652,13 @@ def validate_release_identity(
         "server_oci_recovery_signing_identity": (
             "https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/heads/master"
         ),
-        "server_oci_stable_aliases": ["2.1", "2", "latest"],
+        "server_oci_stable_aliases": [
+            ".".join(version.split(".")[:2]),
+            version.split(".")[0],
+            "latest",
+        ],
         "server_oci_stable_signing_identity": (
-            "https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2.1.0"
+            f"https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v{version}"
         ),
         "version": version,
     }

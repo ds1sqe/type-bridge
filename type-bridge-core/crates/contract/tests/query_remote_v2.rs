@@ -1,5 +1,5 @@
 use sha2::{Digest, Sha256};
-use type_bridge_contract::capability::CapabilitySet;
+use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::diagnostic::{
     Diagnostic, DiagnosticCategory, DiagnosticCode, DiagnosticPath, DiagnosticPathSegment,
 };
@@ -11,7 +11,8 @@ use type_bridge_contract::query_plan::{
     HydrationPlayerV2, HydrationProjectionV2, HydrationRoleV2, ModelQueryV2, QueryBindingPairV2,
     QueryFieldV2, QueryMissingOrderV2, QueryModelOutputSlotV2, QueryModelOutputV2, QueryOperation,
     QueryOrderDirectionV2, QueryOrderTermV2, QueryOutput, QueryPattern, QueryPlan,
-    QueryPlanV2Compatibility, QueryRowCardinalityV2, QueryStableOrderV2, QueryWindowV2, ReadStage,
+    QueryPlanV2Compatibility, QueryReductionGroupV2, QueryReductionKindV2, QueryReductionTermV2,
+    QueryRowCardinalityV2, QueryStableOrderV2, QueryWindowV2, ReadStage,
 };
 use type_bridge_contract::query_remote::{
     RemoteCapabilities, RemoteExecutorBinding, RemoteReplySignature, RemoteReplySigner,
@@ -19,17 +20,19 @@ use type_bridge_contract::query_remote::{
 };
 use type_bridge_contract::query_remote_v2::{
     CAP_QUERY_OUTPUT_HYDRATED, CAP_QUERY_PLAN_V2, CAP_QUERY_REMOTE_ENVELOPE_V2,
-    CAP_QUERY_REMOTE_STRUCTURED_DIAGNOSTIC, CAP_QUERY_SAME_SNAPSHOT_HYDRATION, HydratedRowV2,
+    CAP_QUERY_REMOTE_STATEMENT_LIMIT, CAP_QUERY_REMOTE_STRUCTURED_DIAGNOSTIC,
+    CAP_QUERY_SAME_SNAPSHOT_HYDRATION, DEFAULT_REMOTE_MAX_STATEMENTS_V2, HydratedRowV2,
     HydrationAttributeEvidenceV2, HydrationGraphV2, HydrationNodeIdV2, HydrationNodeKindV2,
     HydrationNodeV2, HydrationReferenceV2, HydrationRoleEvidenceV2, HydrationSlotV2,
     QUERY_REMOTE_REQUEST_CANONICALIZATION_V2, RemoteLimitsV2, RemoteOutcomeV2,
-    RemoteQueryFailureV2, RemoteQueryRequestV2, RemoteQueryResponseV2, RemoteReplyDecodeLimitsV2,
-    RemoteReplyV2, RemoteResultKindV2, decode_remote_reply_v2, decode_signed_remote_failure_v2,
+    RemoteQueryFailureV2, RemoteQueryRequestV2, RemoteQueryResponseV2, RemoteReducedValueV2,
+    RemoteReductionGroupV2, RemoteReductionRowV2, RemoteReplyDecodeLimitsV2, RemoteReplyV2,
+    RemoteResultKindV2, decode_remote_reply_v2, decode_signed_remote_failure_v2,
     query_remote_v2_required_capabilities, validate_remote_outcome_v2,
 };
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use type_bridge_contract::value::{
-    CanonicalString, CanonicalValue, Cardinality, DecimalValue, ValueTypeTag,
+    CanonicalDouble, CanonicalString, CanonicalValue, Cardinality, DecimalValue, ValueTypeTag,
 };
 
 const NONCE: &str = "remote-v2-nonce-0123456789";
@@ -67,6 +70,7 @@ fn limits() -> RemoteLimitsV2 {
         max_graph_nodes: 100,
         max_attribute_values: 100,
         max_role_players: 100,
+        max_statements: 3,
     }
 }
 
@@ -144,6 +148,18 @@ fn advertisement(plan: &QueryPlan, model: bool) -> RemoteCapabilities {
     )
 }
 
+fn advertisement_with_statement_limit(plan: &QueryPlan, model: bool) -> RemoteCapabilities {
+    let mut capabilities = capabilities(plan, model);
+    capabilities
+        .insert(CapabilityId::new(CAP_QUERY_REMOTE_STATEMENT_LIMIT).expect("statement capability"));
+    RemoteCapabilities::new(
+        capabilities,
+        RemoteExecutorBinding::new("remote-v2-test-executor", "remote-v2-test-epoch")
+            .expect("executor"),
+        TestSigner.public_key(),
+    )
+}
+
 fn advertisement_without_hydration(plan: &QueryPlan) -> RemoteCapabilities {
     let capabilities = capabilities(plan, true)
         .iter()
@@ -196,7 +212,8 @@ fn result_operation(result: RemoteResultKindV2) -> QueryOperation {
         RemoteResultKindV2::Rows
         | RemoteResultKindV2::Documents
         | RemoteResultKindV2::HydratedRows
-        | RemoteResultKindV2::HydratedPage => QueryOperation::Rows,
+        | RemoteResultKindV2::HydratedPage
+        | RemoteResultKindV2::ModelReduction => QueryOperation::Rows,
         RemoteResultKindV2::Count | RemoteResultKindV2::DistinctCount => QueryOperation::Count,
         RemoteResultKindV2::Exists | RemoteResultKindV2::DistinctExists => QueryOperation::Exists,
     }
@@ -535,6 +552,109 @@ fn distinct_scalar_plan(exists: bool) -> QueryPlan {
         semantics(),
     )
     .expect("distinct scalar plan")
+}
+
+fn reduction_field(binding: u16, attribute: &str, value_type: ValueTypeTag) -> QueryFieldV2 {
+    QueryFieldV2::new(
+        binding_id(binding),
+        person(),
+        AttributeId::new(attribute).expect("reduction attribute"),
+        value_type,
+    )
+}
+
+fn reduction_hydration() -> HydrationProjectionV2 {
+    let person = person();
+    HydrationProjectionV2::new(
+        vec![
+            HydrationBindingV2::new(binding_id(0), person.clone(), vec![person.clone()]),
+            HydrationBindingV2::new(binding_id(1), person.clone(), vec![person.clone()]),
+        ],
+        vec![HydrationDescriptorV2::new(
+            person.clone(),
+            vec![
+                HydrationFieldV2::new(
+                    "balance",
+                    vec![person.clone()],
+                    AttributeId::new("balance").expect("balance attribute"),
+                    ValueTypeTag::Decimal,
+                    Cardinality::new(0, Some(1)).expect("balance cardinality"),
+                    false,
+                    false,
+                    false,
+                ),
+                HydrationFieldV2::new(
+                    "ratio",
+                    vec![person.clone()],
+                    AttributeId::new("ratio").expect("ratio attribute"),
+                    ValueTypeTag::Double,
+                    Cardinality::new(0, Some(1)).expect("ratio cardinality"),
+                    false,
+                    false,
+                    false,
+                ),
+                HydrationFieldV2::new(
+                    "score",
+                    vec![person],
+                    AttributeId::new("score").expect("score attribute"),
+                    ValueTypeTag::Long,
+                    Cardinality::new(0, Some(1)).expect("score cardinality"),
+                    false,
+                    false,
+                    false,
+                ),
+            ],
+            vec![],
+        )],
+    )
+}
+
+fn reduction_plan(
+    group: Option<QueryReductionGroupV2>,
+    reducers: Vec<QueryReductionTermV2>,
+) -> QueryPlan {
+    QueryPlan::new_v2_with_functions(
+        vec![binding(0, "root"), binding(1, "group")],
+        vec![],
+        vec![],
+        vec![ReadStage::Match {
+            patterns: vec![
+                QueryPattern::Isa {
+                    binding: binding_id(0),
+                    include_subtypes: true,
+                    type_id: person(),
+                },
+                QueryPattern::Isa {
+                    binding: binding_id(1),
+                    include_subtypes: true,
+                    type_id: person(),
+                },
+            ],
+        }],
+        QueryOutput::Rows {
+            columns: vec![binding_id(0), binding_id(1)],
+        },
+        QueryPlanV2Compatibility::new(
+            None,
+            vec![],
+            Some(ModelQueryV2::Reduction {
+                hydration: reduction_hydration(),
+                root: binding_id(0),
+                group,
+                reducers,
+            }),
+        ),
+        semantics(),
+    )
+    .expect("typed reduction plan")
+}
+
+fn count_reducer() -> QueryReductionTermV2 {
+    QueryReductionTermV2::new(QueryReductionKindV2::Count, None)
+}
+
+fn empty_reduction_graph() -> HydrationGraphV2 {
+    HydrationGraphV2::new(vec![]).expect("empty reduction graph")
 }
 
 fn inherited_rows_plan(order_owner: TypeId) -> Result<QueryPlan, Diagnostic> {
@@ -977,6 +1097,30 @@ fn person_node(id: u32, iid: &str) -> HydrationNodeV2 {
     person_node_named(id, iid, "Alice")
 }
 
+fn reduction_person_node(id: u32, iid: &str) -> HydrationNodeV2 {
+    HydrationNodeV2::new(
+        HydrationNodeIdV2::new(id),
+        iid.to_owned(),
+        person(),
+        HydrationNodeKindV2::Entity,
+        vec![
+            HydrationAttributeEvidenceV2::new(
+                AttributeId::new("balance").expect("balance attribute"),
+                vec![],
+            ),
+            HydrationAttributeEvidenceV2::new(
+                AttributeId::new("ratio").expect("ratio attribute"),
+                vec![],
+            ),
+            HydrationAttributeEvidenceV2::new(
+                AttributeId::new("score").expect("score attribute"),
+                vec![],
+            ),
+        ],
+        vec![],
+    )
+}
+
 fn employee_node(id: u32, iid: &str, name: &str) -> HydrationNodeV2 {
     HydrationNodeV2::new(
         HydrationNodeIdV2::new(id),
@@ -1128,6 +1272,12 @@ fn string_value(value: &str) -> CompatibilityValueV2 {
 fn decimal_value(value: &str) -> CompatibilityValueV2 {
     CompatibilityValueV2::canonical(CanonicalValue::Decimal(
         DecimalValue::new(value).expect("decimal"),
+    ))
+}
+
+fn double_value(value: f64) -> CompatibilityValueV2 {
+    CompatibilityValueV2::canonical(CanonicalValue::Double(
+        CanonicalDouble::new(value).expect("finite double"),
     ))
 }
 
@@ -1736,6 +1886,300 @@ fn local_compatibility_outcomes_use_the_same_plan_and_budget_gate_as_wire_decode
         .as_str(),
         "query_remote_v2_outcome_mismatch",
     );
+}
+
+#[test]
+fn model_reduction_requires_the_exact_echo_and_enforces_cells_and_finite_bits() {
+    let reducers = vec![
+        count_reducer(),
+        QueryReductionTermV2::new(
+            QueryReductionKindV2::Sum,
+            Some(reduction_field(0, "score", ValueTypeTag::Long)),
+        ),
+        QueryReductionTermV2::new(
+            QueryReductionKindV2::Mean,
+            Some(reduction_field(0, "score", ValueTypeTag::Long)),
+        ),
+    ];
+    let plan = reduction_plan(None, reducers.clone());
+    let outcome = RemoteOutcomeV2::ModelReduction {
+        graph: empty_reduction_graph(),
+        root: binding_id(0),
+        group: None,
+        reducers: reducers.clone(),
+        rows: vec![RemoteReductionRowV2::new(
+            None,
+            vec![
+                RemoteReducedValueV2::Count { value: 0 },
+                RemoteReducedValueV2::Long { value: Some(0) },
+                RemoteReducedValueV2::DoubleBits { value: None },
+            ],
+        )],
+    };
+    let mut exact = decode_limits();
+    exact.max_items = 1;
+    exact.max_collection_members = 3;
+    validate_remote_outcome_v2(&outcome, RemoteResultKindV2::ModelReduction, exact, &plan)
+        .expect("ungrouped empty reduction retains one total row at its exact cell boundary");
+
+    let mut too_few_cells = exact;
+    too_few_cells.max_collection_members = 2;
+    assert_eq!(
+        validate_remote_outcome_v2(
+            &outcome,
+            RemoteResultKindV2::ModelReduction,
+            too_few_cells,
+            &plan,
+        )
+        .expect_err("one reducer cell beyond the ceiling")
+        .code()
+        .as_str(),
+        "query_remote_v2_collection_member_limit",
+    );
+
+    let mut wrong_root = outcome.clone();
+    let RemoteOutcomeV2::ModelReduction { root, .. } = &mut wrong_root else {
+        unreachable!()
+    };
+    *root = binding_id(1);
+    assert_eq!(
+        validate_remote_outcome_v2(
+            &wrong_root,
+            RemoteResultKindV2::ModelReduction,
+            decode_limits(),
+            &plan,
+        )
+        .expect_err("the response cannot change the reduced root")
+        .code()
+        .as_str(),
+        "query_remote_v2_evidence_mismatch",
+    );
+
+    let mut wrong_reducers = outcome.clone();
+    let RemoteOutcomeV2::ModelReduction { reducers, .. } = &mut wrong_reducers else {
+        unreachable!()
+    };
+    reducers.swap(0, 1);
+    assert_eq!(
+        validate_remote_outcome_v2(
+            &wrong_reducers,
+            RemoteResultKindV2::ModelReduction,
+            decode_limits(),
+            &plan,
+        )
+        .expect_err("the response cannot reorder reducer terms")
+        .code()
+        .as_str(),
+        "query_remote_v2_evidence_mismatch",
+    );
+
+    let mut non_finite = outcome;
+    let RemoteOutcomeV2::ModelReduction { rows, .. } = &mut non_finite else {
+        unreachable!()
+    };
+    rows[0] = RemoteReductionRowV2::new(
+        None,
+        vec![
+            RemoteReducedValueV2::Count { value: 0 },
+            RemoteReducedValueV2::Long { value: Some(0) },
+            RemoteReducedValueV2::DoubleBits {
+                value: Some(f64::INFINITY.to_bits()),
+            },
+        ],
+    );
+    assert_eq!(
+        validate_remote_outcome_v2(
+            &non_finite,
+            RemoteResultKindV2::ModelReduction,
+            decode_limits(),
+            &plan,
+        )
+        .expect_err("non-finite reducer bits fail closed")
+        .code()
+        .as_str(),
+        "query_remote_v2_evidence_mismatch",
+    );
+}
+
+#[test]
+fn model_reduction_groups_use_semantic_order_positive_zero_and_tuple_cell_limits() {
+    let count = vec![count_reducer()];
+    let double_group =
+        QueryReductionGroupV2::field(reduction_field(1, "ratio", ValueTypeTag::Double));
+    let double_plan = reduction_plan(Some(double_group.clone()), count.clone());
+    let double_rows = |zero: f64| {
+        vec![
+            RemoteReductionRowV2::new(
+                Some(RemoteReductionGroupV2::field(double_value(-2.0))),
+                vec![RemoteReducedValueV2::Count { value: 1 }],
+            ),
+            RemoteReductionRowV2::new(
+                Some(RemoteReductionGroupV2::field(double_value(-1.0))),
+                vec![RemoteReducedValueV2::Count { value: 1 }],
+            ),
+            RemoteReductionRowV2::new(
+                Some(RemoteReductionGroupV2::field(double_value(zero))),
+                vec![RemoteReducedValueV2::Count { value: 1 }],
+            ),
+        ]
+    };
+    let double_outcome = RemoteOutcomeV2::ModelReduction {
+        graph: empty_reduction_graph(),
+        root: binding_id(0),
+        group: Some(double_group.clone()),
+        reducers: count.clone(),
+        rows: double_rows(0.0),
+    };
+    validate_remote_outcome_v2(
+        &double_outcome,
+        RemoteResultKindV2::ModelReduction,
+        decode_limits(),
+        &double_plan,
+    )
+    .expect("negative double groups use numeric rather than bit ordering");
+
+    let negative_zero = RemoteOutcomeV2::ModelReduction {
+        graph: empty_reduction_graph(),
+        root: binding_id(0),
+        group: Some(double_group),
+        reducers: count.clone(),
+        rows: double_rows(-0.0),
+    };
+    assert_eq!(
+        validate_remote_outcome_v2(
+            &negative_zero,
+            RemoteResultKindV2::ModelReduction,
+            decode_limits(),
+            &double_plan,
+        )
+        .expect_err("signed zero has one canonical positive representative")
+        .code()
+        .as_str(),
+        "query_remote_v2_evidence_mismatch",
+    );
+
+    let tuple_group = QueryReductionGroupV2::fields(vec![
+        reduction_field(1, "balance", ValueTypeTag::Decimal),
+        reduction_field(1, "ratio", ValueTypeTag::Double),
+    ]);
+    let tuple_plan = reduction_plan(Some(tuple_group.clone()), count.clone());
+    let tuple_rows = [("-2", -2.0), ("-2", -1.0), ("2", -2.0), ("2", -1.0)]
+        .into_iter()
+        .map(|(decimal, double)| {
+            RemoteReductionRowV2::new(
+                Some(RemoteReductionGroupV2::fields(vec![
+                    decimal_value(decimal),
+                    double_value(double),
+                ])),
+                vec![RemoteReducedValueV2::Count { value: 1 }],
+            )
+        })
+        .collect::<Vec<_>>();
+    let tuple_outcome = RemoteOutcomeV2::ModelReduction {
+        graph: empty_reduction_graph(),
+        root: binding_id(0),
+        group: Some(tuple_group),
+        reducers: count,
+        rows: tuple_rows,
+    };
+    let mut exact = decode_limits();
+    exact.max_items = 4;
+    exact.max_collection_members = 12;
+    validate_remote_outcome_v2(
+        &tuple_outcome,
+        RemoteResultKindV2::ModelReduction,
+        exact,
+        &tuple_plan,
+    )
+    .expect("tuple groups use lexicographic semantic ordering at the exact cell ceiling");
+    exact.max_collection_members = 11;
+    assert_eq!(
+        validate_remote_outcome_v2(
+            &tuple_outcome,
+            RemoteResultKindV2::ModelReduction,
+            exact,
+            &tuple_plan,
+        )
+        .expect_err("one tuple cell beyond the ceiling")
+        .code()
+        .as_str(),
+        "query_remote_v2_collection_member_limit",
+    );
+}
+
+#[test]
+fn model_reduction_binding_groups_are_graph_bound_and_budgeted_per_edge_and_cell() {
+    let group = QueryReductionGroupV2::binding(binding_id(1));
+    let reducers = vec![count_reducer()];
+    let plan = reduction_plan(Some(group.clone()), reducers.clone());
+    let graph = HydrationGraphV2::new(vec![
+        reduction_person_node(0, "0x10"),
+        reduction_person_node(1, "0x11"),
+    ])
+    .expect("binding-group graph");
+    let outcome = RemoteOutcomeV2::ModelReduction {
+        graph,
+        root: binding_id(0),
+        group: Some(group),
+        reducers,
+        rows: vec![
+            RemoteReductionRowV2::new(
+                Some(RemoteReductionGroupV2::thing(HydrationReferenceV2::new(
+                    person(),
+                    HydrationNodeIdV2::new(0),
+                ))),
+                vec![RemoteReducedValueV2::Count { value: 2 }],
+            ),
+            RemoteReductionRowV2::new(
+                Some(RemoteReductionGroupV2::thing(HydrationReferenceV2::new(
+                    person(),
+                    HydrationNodeIdV2::new(1),
+                ))),
+                vec![RemoteReducedValueV2::Count { value: 1 }],
+            ),
+        ],
+    };
+    let mut exact = decode_limits();
+    exact.max_items = 2;
+    exact.max_graph_nodes = 2;
+    exact.max_collection_members = 4;
+    validate_remote_outcome_v2(&outcome, RemoteResultKindV2::ModelReduction, exact, &plan)
+        .expect("binding groups retain graph identity at exact item, graph, and cell ceilings");
+
+    for (tight, code) in [
+        (
+            {
+                let mut limits = exact;
+                limits.max_items = 1;
+                limits
+            },
+            "query_remote_v2_item_limit",
+        ),
+        (
+            {
+                let mut limits = exact;
+                limits.max_graph_nodes = 1;
+                limits
+            },
+            "query_remote_v2_graph_node_limit",
+        ),
+        (
+            {
+                let mut limits = exact;
+                limits.max_collection_members = 3;
+                limits
+            },
+            "query_remote_v2_collection_member_limit",
+        ),
+    ] {
+        assert_eq!(
+            validate_remote_outcome_v2(&outcome, RemoteResultKindV2::ModelReduction, tight, &plan,)
+                .expect_err("each independent reduction budget rejects max plus one")
+                .code()
+                .as_str(),
+            code,
+        );
+    }
 }
 
 #[test]
@@ -2711,6 +3155,88 @@ fn v2_wire_goldens_are_independent_from_v1() {
         hex_digest(&failure_bytes),
         "203ae1cf589c53658299c4641c1d1a7288b25477ae7197c89d81f36896eefb92",
     );
+}
+
+#[test]
+fn default_statement_budget_preserves_old_bytes_and_tighter_values_negotiate_capability() {
+    let plan = low_level_plan();
+    let default_request = request(&plan, RemoteResultKindV2::Rows, false);
+    let default_bytes = default_request.encode().expect("default request bytes");
+    assert!(
+        !std::str::from_utf8(&default_bytes)
+            .expect("canonical UTF-8")
+            .contains("max_statements"),
+        "the historical default must remain absent from V2 request bytes"
+    );
+    let decoded = RemoteQueryRequestV2::decode(&default_bytes).expect("old-shape request decode");
+    assert_eq!(
+        decoded.limits().max_statements,
+        DEFAULT_REMOTE_MAX_STATEMENTS_V2
+    );
+    assert_eq!(
+        decoded.encode().expect("canonical re-encode"),
+        default_bytes
+    );
+
+    let invocation = type_bridge_contract::query_plan::QueryInvocation::new(
+        &plan,
+        QueryOperation::Rows,
+        Vec::new(),
+    )
+    .expect("invocation");
+    for max_statements in 0..DEFAULT_REMOTE_MAX_STATEMENTS_V2 {
+        let mut tightened = limits();
+        tightened.max_statements = max_statements;
+        let error = RemoteQueryRequestV2::new(
+            &plan,
+            &invocation,
+            RemoteResultKindV2::Rows,
+            &advertisement(&plan, false),
+            tightened,
+            NONCE,
+            NOW_MS,
+        )
+        .expect_err("old advertisement cannot accept the additive member");
+        assert_eq!(error.code().as_str(), "unsupported_required_capability");
+
+        let request = RemoteQueryRequestV2::new(
+            &plan,
+            &invocation,
+            RemoteResultKindV2::Rows,
+            &advertisement_with_statement_limit(&plan, false),
+            tightened,
+            NONCE,
+            NOW_MS,
+        )
+        .expect("new advertisement admits a tighter statement budget");
+        let bytes = request.encode().expect("tightened request bytes");
+        assert!(
+            std::str::from_utf8(&bytes)
+                .expect("canonical UTF-8")
+                .contains(&format!("\"max_statements\":{max_statements}"))
+        );
+        assert_eq!(
+            RemoteQueryRequestV2::decode(&bytes)
+                .expect("tightened request decode")
+                .limits()
+                .max_statements,
+            max_statements
+        );
+    }
+
+    let mut widened = limits();
+    widened.max_statements = DEFAULT_REMOTE_MAX_STATEMENTS_V2 + 1;
+    let error = RemoteQueryRequestV2::new(
+        &plan,
+        &invocation,
+        RemoteResultKindV2::Rows,
+        &advertisement_with_statement_limit(&plan, false),
+        widened,
+        NONCE,
+        NOW_MS,
+    )
+    .expect_err("statement ceiling is tighten-only");
+    assert_eq!(error.code().as_str(), "query_remote_v2_statement_limit");
 }
 
 fn hex_digest(bytes: &[u8]) -> String {

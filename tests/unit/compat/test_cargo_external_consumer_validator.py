@@ -133,7 +133,7 @@ def test_closed_archive_inventory_requires_all_19_exact_files(tmp_path: Path) ->
         validator.validate_archive_inventory(tmp_path, inventory)
 
     (tmp_path / missing).touch()
-    (tmp_path / "unexpected-2.1.0.crate").touch()
+    (tmp_path / "unexpected-2.2.0.crate").touch()
     with pytest.raises(validator.ExternalConsumerError, match="unexpected"):
         validator.validate_archive_inventory(tmp_path, inventory)
 
@@ -216,11 +216,11 @@ def test_generated_consumers_have_only_exact_registry_declarations(tmp_path: Pat
         features=("v2-query",),
     )
     assert tomllib.loads(no_default.read_text())["dependencies"]["type-bridge-server"] == {
-        "version": "=2.1.0",
+        "version": "=2.2.0",
         "default-features": False,
     }
     assert tomllib.loads(v2_only.read_text())["dependencies"]["type-bridge-server"] == {
-        "version": "=2.1.0",
+        "version": "=2.2.0",
         "default-features": False,
         "features": ["v2-query"],
     }
@@ -309,12 +309,12 @@ def test_metadata_rejects_source_tree_or_non_registry_resolution(tmp_path: Path)
 def test_server_feature_probes_are_isolated(
     features: list[str], expected_v2: bool, accepted: bool
 ) -> None:
-    package_id = "path+file:///server#type-bridge-server@2.1.0"
+    package_id = "path+file:///server#type-bridge-server@2.2.0"
     metadata = {
         "packages": [
             {
                 "name": "type-bridge-server",
-                "version": "2.1.0",
+                "version": "2.2.0",
                 "id": package_id,
             }
         ],
@@ -322,12 +322,12 @@ def test_server_feature_probes_are_isolated(
     }
 
     if accepted:
-        validator.validate_server_features(metadata, version="2.1.0", expected_v2=expected_v2)
+        validator.validate_server_features(metadata, version="2.2.0", expected_v2=expected_v2)
     else:
         with pytest.raises(validator.ExternalConsumerError):
             validator.validate_server_features(
                 metadata,
-                version="2.1.0",
+                version="2.2.0",
                 expected_v2=expected_v2,
             )
 
@@ -344,9 +344,9 @@ def test_installed_binary_version_must_be_exact(tmp_path: Path) -> None:
     with pytest.raises(validator.ExternalConsumerError, match="version output drifted"):
         validator._install_and_run_binary(
             cargo=("cargo", "+1.94.1"),
-            package_root=tmp_path / "type-bridge-cli-2.1.0",
+            package_root=tmp_path / "type-bridge-cli-2.2.0",
             binary="type-bridge",
-            expected_version="2.1.0",
+            expected_version="2.2.0",
             install_root=tmp_path / "installed",
             work_root=tmp_path,
             environment={},

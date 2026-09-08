@@ -2,8 +2,8 @@ use type_bridge_contract::capability::CapabilityId;
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::id::{Label, RoleId, TypeId, TypeKind};
 use type_bridge_contract::schema::{
-    DocumentId, PlaysFactId, RelatesFactId, SchemaFact, SchemaFactId, SourceSpan, SubFact,
-    SubFactId, TypeFact,
+    CollectionMode, DocumentId, PlaysFactId, RelatesFactId, SchemaFact, SchemaFactId, SourceSpan,
+    SubFact, SubFactId, TypeFact,
 };
 use type_bridge_schema::{FactAssembler, SchemaDocumentSet, normalize_documents};
 
@@ -101,6 +101,33 @@ fn forward_plays_resolves_after_type_and_role_declarations() {
     let player = TypeId::new(TypeKind::Entity, "person").unwrap();
     let id = SchemaFactId::Plays(PlaysFactId::new(player, role).unwrap());
     assert!(matches!(schema.fact(&id), Some(SchemaFact::Plays(_))));
+}
+
+#[test]
+fn pending_relates_preserves_explicit_collection_mode() {
+    let mut assembler = FactAssembler::new(FormatVersion::V1);
+    let relation = TypeId::new(TypeKind::Relation, "collection").unwrap();
+    assembler
+        .insert_fact(
+            type_fact(TypeKind::Relation, "collection"),
+            span("types", 0),
+        )
+        .unwrap();
+    let id = RelatesFactId::new(relation, RoleId::new("collection", "member").unwrap()).unwrap();
+    assembler
+        .insert_relates_with_collection_mode(
+            id.clone(),
+            None,
+            CollectionMode::OrderedList,
+            span("relates", 1),
+        )
+        .unwrap();
+
+    let schema = assembler.finish().expect("ordered relates resolves");
+    let Some(SchemaFact::Relates(fact)) = schema.fact(&SchemaFactId::Relates(id)) else {
+        panic!("ordered relates fact exists");
+    };
+    assert_eq!(fact.collection_mode(), CollectionMode::OrderedList);
 }
 
 #[test]

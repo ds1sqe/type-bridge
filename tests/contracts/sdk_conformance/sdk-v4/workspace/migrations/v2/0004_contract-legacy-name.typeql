@@ -1,0 +1,5 @@
+undefine
+owns legacy-name from person;
+
+undefine
+legacy-name;

@@ -4,6 +4,18 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### C distribution preparation
+
+- Prepare the 2.2.0 standalone CLI and ABI 1.6 C shared runtime for Linux
+  x86_64 on Ubuntu 24.04, with independent generated schema packages and
+  complete V1–V6 application acceptance. Public C support requires the
+  protected promotion and independent public-consumer gates.
+- Add exact-source artifact verification and signed promotion to the GitHub
+  release draft, preserving accepted archive bytes and supporting only
+  absent-or-identical partial-upload recovery.
+- Use TypeDB 3.12.3 for the exact connected migration baseline while retaining
+  the canonical `typedb-3.12.1/v1` semantic profile.
+
 ## [2.1.0] - 2026-09-08
 
 ### Security and release reliability

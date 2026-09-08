@@ -487,7 +487,7 @@ fn bridge_applies_as_a_pure_ledger_checkpoint() {
         &plan,
     ))
     .expect("bridged apply execution");
-    assert!(matches!(outcome, MigrationExecutionOutcome::Applied));
+    assert!(matches!(outcome, MigrationExecutionOutcome::Applied { .. }));
     let calls = provider.calls.lock().expect("provider calls").clone();
     assert_eq!(
         calls.iter().filter(|call| **call == "prepare").count(),

@@ -99,12 +99,14 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
     }
 
     migration_recovery_tests = {
-        "runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1",
-        "control_schema_and_fenced_lease_round_trip_on_3_12_1",
+        "runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3",
+        "control_schema_and_fenced_lease_round_trip_on_3_12_3",
     }
 
-    assert workflow.count(gate_call) == len(positive_tests) + 5
-    assert local.count(gate_call) == 7
+    # In addition to the CLI/recovery selectors, CI gates the production V2
+    # server, generated Rust, generated C, and C runtime live probes exactly.
+    assert workflow.count(gate_call) == len(positive_tests) + 8
+    assert local.count(gate_call) == 9
     assert "-- --ignored --exact --nocapture" not in local
     for test_name in (
         positive_tests
@@ -159,14 +161,14 @@ def test_migration_live_lanes_are_bound_to_the_exact_server_leg() -> None:
             "documented_examples_initial_constraints_apply_and_verify_live"
         ),
         "Run connected migration rollback and reapply lifecycle": (
-            "runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1"
+            "runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3"
         ),
         "Run interrupted-plan fenced recovery lifecycle": (
-            "control_schema_and_fenced_lease_round_trip_on_3_12_1"
+            "control_schema_and_fenced_lease_round_trip_on_3_12_3"
         ),
     }.items():
         step = steps[name]
-        assert step["if"] == "matrix.typedb-server == 'typedb/typedb:3.12.1'"
+        assert step["if"] == "matrix.typedb-server == 'typedb/typedb:3.12.3'"
         assert test_name in step["run"]
 
     rollback = steps["Run connected migration rollback and reapply lifecycle"]
@@ -189,11 +191,11 @@ def test_migration_live_lanes_are_bound_to_the_exact_server_leg() -> None:
     (
         (
             "type-bridge-core/crates/schema-migration-typedb/tests/live_runner.rs",
-            "runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1",
+            "runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3",
         ),
         (
             "type-bridge-core/crates/schema-migration-typedb/tests/live_store.rs",
-            "control_schema_and_fenced_lease_round_trip_on_3_12_1",
+            "control_schema_and_fenced_lease_round_trip_on_3_12_3",
         ),
     ),
 )

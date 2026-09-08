@@ -1,4 +1,4 @@
-use type_bridge_contract::schema::{DocumentId, SchemaFact};
+use type_bridge_contract::schema::{AnnotationKindId, CollectionMode, DocumentId, SchemaFact};
 use type_bridge_schema_compat::{
     released_typeql_to_declared_projection, typeql_to_declared, typeql_to_declared_with_references,
     typeql_to_facts,
@@ -155,10 +155,6 @@ fn nonportable_v1_annotations_fail_at_the_adapter_boundary() {
             "unsupported_typeql_annotation",
         ),
         (
-            "define\nattribute name, value string;\nentity person, owns name[] @distinct;\n",
-            "unsupported_typeql_owns",
-        ),
-        (
             "define\nattribute name, value string;\nentity person, owns name @subkey(primary);\n",
             "unsupported_typeql_annotation",
         ),
@@ -176,6 +172,76 @@ fn nonportable_v1_annotations_fail_at_the_adapter_boundary() {
             expected_code,
             "fixture must parse and reject at the portability boundary: {source}"
         );
+    }
+}
+
+#[test]
+fn ordered_owns_and_relates_with_distinct_are_canonical_facts() {
+    let declared = typeql_to_declared(
+        document(),
+        "define\nattribute tag, value string;\n\
+         entity person, owns tag[] @distinct;\n\
+         relation team, relates member[] @distinct;\n",
+    )
+    .expect("ordered capability facts adapt exactly");
+
+    let mut ordered_owns = 0;
+    let mut ordered_relates = 0;
+    let mut distinct_annotations = 0;
+    for fact in declared.facts() {
+        match fact {
+            SchemaFact::Owns(owns) => {
+                assert_eq!(owns.collection_mode(), CollectionMode::OrderedList);
+                ordered_owns += 1;
+            }
+            SchemaFact::Relates(relates) => {
+                assert_eq!(relates.collection_mode(), CollectionMode::OrderedList);
+                ordered_relates += 1;
+            }
+            SchemaFact::Annotation(annotation)
+                if annotation.id().kind() == &AnnotationKindId::Distinct =>
+            {
+                distinct_annotations += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(ordered_owns, 1);
+    assert_eq!(ordered_relates, 1);
+    assert_eq!(distinct_annotations, 2);
+}
+
+#[test]
+fn ordered_role_specialization_is_canonical_in_strict_and_released_adapters() {
+    let source = "define\n\
+        relation membership, relates member[] @distinct;\n\
+        relation curated-membership, sub membership,\n\
+          relates curated-member[] as member[];\n";
+
+    for declared in [
+        typeql_to_declared(document(), source)
+            .expect("strict adapter accepts ordered specialization"),
+        released_typeql_to_declared_projection(document(), source)
+            .expect("released adapter accepts ordered specialization"),
+    ] {
+        let specialized = declared
+            .facts()
+            .find_map(|fact| match fact {
+                SchemaFact::Relates(relates)
+                    if relates.id().role().label().as_str() == "curated-member" =>
+                {
+                    Some(relates)
+                }
+                _ => None,
+            })
+            .expect("specialized role is a canonical fact");
+
+        assert_eq!(specialized.collection_mode(), CollectionMode::OrderedList);
+        let parent = specialized
+            .specializes()
+            .expect("specialization target is preserved");
+        assert_eq!(parent.declaring_relation().as_str(), "membership");
+        assert_eq!(parent.label().as_str(), "member");
     }
 }
 

@@ -331,7 +331,8 @@ impl LocatedConfigSpec {
             builder = builder.require_capability(value);
         }
         for (target, output) in wire.outputs {
-            let path = resolve_owned_path(&origin, &output, output_field(target))?;
+            let field = output_field(target)?;
+            let path = resolve_owned_path(&origin, &output, field)?;
             let directory = OutputDirectory::new(path)
                 .map_err(|error| sourced(error, &origin, &output.span))?;
             builder = builder.output(target, directory);
@@ -440,11 +441,7 @@ fn validate_manifest_path_disjointness(
         ),
     ];
     for (target, directory) in config.outputs() {
-        let name = match target {
-            BindingTarget::Python => "output.python",
-            BindingTarget::TypeScript => "output.typescript",
-            BindingTarget::Rust => "output.rust",
-        };
+        let name = output_name(*target)?;
         owned_paths.push((name, directory.as_path()));
     }
     if let Some(output) = config.schema_authority_output() {
@@ -507,12 +504,32 @@ fn contract_value(
     )
 }
 
-fn output_field(target: BindingTarget) -> &'static str {
+fn output_field(target: BindingTarget) -> Result<&'static str, WorkspaceConfigError> {
     match target {
-        BindingTarget::Python => "bindings.python.output",
-        BindingTarget::TypeScript => "bindings.typescript.output",
-        BindingTarget::Rust => "bindings.rust.output",
+        BindingTarget::Python => Ok("bindings.python.output"),
+        BindingTarget::TypeScript => Ok("bindings.typescript.output"),
+        BindingTarget::Rust => Ok("bindings.rust.output"),
+        BindingTarget::C => Ok("bindings.c.output"),
+        _ => Err(unsupported_binding_target(target)),
     }
+}
+
+fn output_name(target: BindingTarget) -> Result<&'static str, WorkspaceConfigError> {
+    match target {
+        BindingTarget::Python => Ok("output.python"),
+        BindingTarget::TypeScript => Ok("output.typescript"),
+        BindingTarget::Rust => Ok("output.rust"),
+        BindingTarget::C => Ok("output.c"),
+        _ => Err(unsupported_binding_target(target)),
+    }
+}
+
+fn unsupported_binding_target(target: BindingTarget) -> WorkspaceConfigError {
+    WorkspaceConfigError::new(
+        WorkspaceConfigErrorCode::UnsupportedBindingTarget,
+        "workspace implementation does not support this binding target",
+    )
+    .with_detail(target.as_str())
 }
 
 fn resolve_environment_transport(
@@ -1060,28 +1077,25 @@ fn parse_bindings(
             "python" => BindingTarget::Python,
             "typescript" => BindingTarget::TypeScript,
             "rust" => BindingTarget::Rust,
+            "c" => BindingTarget::C,
             unknown => return Err(unknown_key("bindings", unknown, entry.key().span(), origin)),
         };
-        let binding = mapping(entry.value(), output_field(target), origin)?;
+        let field_name = output_field(target)?;
+        let binding = mapping(entry.value(), field_name, origin)?;
         let mut output = None;
         for field in binding.entries() {
             match field.key().value() {
                 "output" => output = Some(field.value()),
                 unknown => {
-                    return Err(unknown_key(
-                        output_field(target),
-                        unknown,
-                        field.key().span(),
-                        origin,
-                    ));
+                    return Err(unknown_key(field_name, unknown, field.key().span(), origin));
                 }
             }
         }
         outputs.push((
             target,
             scalar(
-                required(output, output_field(target), binding, origin)?,
-                output_field(target),
+                required(output, field_name, binding, origin)?,
+                field_name,
                 origin,
             )?,
         ));

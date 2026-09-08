@@ -10,11 +10,11 @@ Most applications should depend on [`type-bridge`](https://crates.io/crates/type
 
 ```toml
 [dependencies]
-type-bridge-orm = "2.1.0"
+type-bridge-orm = "2.2.0"
 ```
 
 Direct runtime integrations should begin with `Database` and the secure
-connection types in the [crate API](https://docs.rs/type-bridge-orm/2.1.0), then
+connection types in the [crate API](https://docs.rs/type-bridge-orm/2.2.0), then
 execute generated projections rather than handwritten descriptors.
 
 ## Feature flags
@@ -26,9 +26,9 @@ execute generated projections rather than handwritten descriptors.
 | `band9` | yes | Enables TypeDB 3.12 provider support |
 | `integration-tests` | no | Exposes the repository's live parity test seam |
 
-The crate is released in lockstep with TypeBridge 2.1.0, requires Rust 1.88+,
+The crate is released in lockstep with TypeBridge 2.2.0, requires Rust 1.88+,
 and supports TypeDB 3.11.x–3.12.x.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
-[API documentation](https://docs.rs/type-bridge-orm/2.1.0) ·
+[API documentation](https://docs.rs/type-bridge-orm/2.2.0) ·
 [MIT license](https://github.com/ds1sqe/type-bridge/blob/master/LICENSE)

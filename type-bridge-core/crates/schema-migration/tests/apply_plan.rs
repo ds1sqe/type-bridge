@@ -7,7 +7,7 @@ use common::{CoordinatorProvider, CoordinatorStore, block_on};
 use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::id::{TypeId, TypeKind};
+use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::managed_scope::{ManagedScopeId, SemanticProfileBinding};
 use type_bridge_contract::migration::{
@@ -15,25 +15,34 @@ use type_bridge_contract::migration::{
     MigrationStep, MigrationStepId, SchemaDeltaStep,
 };
 use type_bridge_contract::migration_assertion::AssertionExpectation;
+use type_bridge_contract::migration_backfill::{
+    AttributeBackfillPlan, BackfillPartition, BackfillReverseProgram,
+    COPY_ATTRIBUTE_BACKFILL_CAPABILITY,
+};
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
-    DocumentId, SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact, SubFact,
-    SubFactId, TypeFact,
+    DocumentId, OwnsFact, OwnsFactId, SchemaAnnotationValue, SchemaFact, SourceSpan,
+    SourcedSchemaFact, SubFact, SubFactId, TypeFact, ValueFact, ValueFactId,
 };
+use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_query::{MigrationAssertionValidationContext, lower_condition_to_plan};
 use type_bridge_schema::{
     ManagedDeltaContext, SafetyClass, SafetyDerivationProfile, derive_safety_conditions,
     diff_managed, inverse_delta, managed_schema_state, resolve,
 };
 use type_bridge_schema_migration::{
-    AppliedRecord, ExecutionFence, ExecutionScope, GroupEventRecord, GroupJournalEventKind,
-    JournalEntry, JournalSequence, LeaseHolderId, LegacyAppliedSetDigest, LegacyMigrationChecksum,
-    LegacyMigrationReference, MigrationApplyApproval, MigrationApplyPlanError,
-    MigrationApplyTarget, MigrationExecutionOutcome, MigrationExecutionPosition,
-    MigrationHistoryGraph, MigrationLease, MigrationSafetyPolicy, PlanRecord, SafetyPolicyDecision,
-    SchemaLoweringBinding, SchemaMigrationDraft, StatementUnit, VerifiedMigrationApplyStep,
-    build_legacy_frontier_bridge, build_verified_manifest, build_verified_migration_apply_plan,
-    execute_verified_migration_apply_plan, schema_lowering_profile_binding, typedb_3_12_1_profile,
+    AppliedRecord, BackfillCompletionEvidence, BackfillEventRecord, BackfillExecutionCounts,
+    BackfillExecutionDirection, ExecutionFence, ExecutionScope, GroupEventRecord,
+    GroupJournalEventKind, JournalEntry, JournalSequence, LeaseHolderId, LegacyAppliedSetDigest,
+    LegacyMigrationChecksum, LegacyMigrationReference, MigrationApplyApproval,
+    MigrationApplyPlanError, MigrationApplyTarget, MigrationExecutionOutcome,
+    MigrationExecutionPosition, MigrationHistoryGraph, MigrationLease, MigrationSafetyPolicy,
+    PlanRecord, SafetyPolicyDecision, SchemaLoweringBinding, SchemaMigrationDraft, StatementUnit,
+    VerifiedMigrationApplyStep, VerifiedMigrationRollbackOperation, build_legacy_frontier_bridge,
+    build_verified_manifest, build_verified_migration_apply_plan,
+    build_verified_migration_apply_preview, build_verified_migration_rollback_plan,
+    execute_verified_migration_apply_plan, execute_verified_migration_rollback_plan,
+    schema_lowering_profile_binding, typedb_3_12_1_profile,
 };
 
 fn type_fact(label: &str) -> SchemaFact {
@@ -85,6 +94,38 @@ fn declared_facts(facts: Vec<SchemaFact>) -> DeclaredSchema {
     });
     DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
         .expect("declared schema")
+}
+
+fn backfill_declared() -> DeclaredSchema {
+    let owner = TypeId::new(TypeKind::Entity, "person").unwrap();
+    let source = AttributeId::new("legacy-name").unwrap();
+    let destination = AttributeId::new("display-name").unwrap();
+    let partition = AttributeId::new("person-id").unwrap();
+    let mut facts = vec![type_fact("person")];
+    for attribute in [&source, &destination, &partition] {
+        facts.push(SchemaFact::Type(
+            TypeFact::new(TypeId::new(TypeKind::Attribute, attribute.label().as_str()).unwrap())
+                .unwrap(),
+        ));
+        facts.push(SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(attribute.clone()),
+            ValueTypeTag::String,
+        )));
+        facts.push(SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(owner.clone(), attribute.clone()).unwrap(),
+        )));
+    }
+    facts.push(SchemaFact::Annotation(
+        AnnotationFact::new(
+            AnnotationFactId::new(
+                AnnotationSubjectId::Owns(OwnsFactId::new(owner, partition).unwrap()),
+                AnnotationKindId::Key,
+            ),
+            SchemaAnnotationValue::Presence,
+        )
+        .unwrap(),
+    ));
+    declared_facts(facts)
 }
 
 fn abstract_fact(label: &str) -> SchemaFact {
@@ -189,6 +230,242 @@ fn additive_policy() -> MigrationSafetyPolicy {
     MigrationSafetyPolicy::default_policy()
         .with_decision(SafetyClass::Conditional, SafetyPolicyDecision::Reject)
         .expect("additive-only policy")
+}
+
+#[test]
+fn backfill_apply_evidence_retains_exact_manifest_position_and_requires_approval() {
+    let source = backfill_declared();
+    let mut capabilities = context().available_capabilities().clone();
+    capabilities.insert(CapabilityId::new(COPY_ATTRIBUTE_BACKFILL_CAPABILITY).unwrap());
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("example-schema").unwrap(),
+        SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+        capabilities,
+    );
+    let semantics = managed_schema_state(&source, &context)
+        .unwrap()
+        .managed_semantic_schema()
+        .clone();
+    let backfill = AttributeBackfillPlan::new(
+        TypeId::new(TypeKind::Entity, "person").unwrap(),
+        AttributeId::new("legacy-name").unwrap(),
+        AttributeId::new("display-name").unwrap(),
+        BackfillPartition::new(128, AttributeId::new("person-id").unwrap()).unwrap(),
+        semantics,
+        Some(BackfillReverseProgram::RemoveEqualCopiedDestination),
+    )
+    .unwrap();
+    let manifest = build_verified_manifest(
+        SchemaMigrationDraft::new(
+            migration_id("0001_backfill"),
+            Vec::new(),
+            vec![
+                MigrationStep::backfill(MigrationStepId::new("copy-name").unwrap(), backfill)
+                    .unwrap(),
+            ],
+        )
+        .unwrap(),
+        (&source, &context),
+    )
+    .unwrap();
+    let graph = MigrationHistoryGraph::from_verified([manifest.clone()]).unwrap();
+    let lowering =
+        SchemaLoweringBinding::current(context.available_capabilities().clone()).unwrap();
+    let rejected = build_verified_migration_apply_plan(
+        &graph,
+        &BTreeSet::new(),
+        &MigrationApplyTarget::DefaultHead,
+        &context,
+        &lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        &[],
+    )
+    .unwrap_err();
+    assert!(matches!(rejected, MigrationApplyPlanError::Contract(_)));
+
+    let approval = MigrationApplyApproval::for_manifest(&manifest).unwrap();
+    let plan = build_verified_migration_apply_plan(
+        &graph,
+        &BTreeSet::new(),
+        &MigrationApplyTarget::DefaultHead,
+        &context,
+        &lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        &[approval],
+    )
+    .unwrap();
+    let migration = &plan.migrations()[0];
+    assert_eq!(migration.backfill_step_indices(), &[0]);
+    assert!(migration.transaction_groups().is_empty());
+    assert!(matches!(
+        migration.steps(),
+        [VerifiedMigrationApplyStep::Backfill { .. }]
+    ));
+
+    let rollback_approval =
+        MigrationApplyApproval::for_rollback(&manifest, SafetyClass::Destructive).unwrap();
+    let rollback = build_verified_migration_rollback_plan(
+        &graph,
+        &BTreeSet::from([manifest.id().clone()]),
+        &BTreeSet::from([manifest.id().clone()]),
+        &context,
+        &lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        &[rollback_approval],
+    )
+    .unwrap();
+    let rollback_manifest = &rollback.rollbacks()[0];
+    assert!(rollback_manifest.steps().is_empty());
+    assert_eq!(rollback_manifest.backfills().len(), 1);
+    assert_eq!(
+        rollback_manifest.operations(),
+        &[VerifiedMigrationRollbackOperation::Backfill(0)]
+    );
+
+    let lease = MigrationLease::new(
+        ExecutionScope::new(context.scope_id().clone()),
+        LeaseHolderId::new("backfill-events").unwrap(),
+        ExecutionFence::new(1).unwrap(),
+    );
+    let (_, persisted_plan) = migration.steps()[0].step().as_backfill().unwrap();
+    let plan_fingerprint = persisted_plan.fingerprint().unwrap();
+    let before = BackfillEventRecord::new_apply(
+        &lease,
+        migration,
+        0,
+        GroupJournalEventKind::BeforeCommit,
+        None,
+    )
+    .unwrap();
+    assert_eq!(before.operation_ordinal(), 0);
+    assert_eq!(before.manifest_step_index(), 0);
+    assert_eq!(before.plan_fingerprint(), &plan_fingerprint);
+    assert_eq!(before.direction(), BackfillExecutionDirection::Forward);
+
+    let counts = BackfillExecutionCounts::new(7, 5, 2, 2).unwrap();
+    let forward_completion = BackfillCompletionEvidence::new(
+        plan_fingerprint.clone(),
+        BackfillExecutionDirection::Forward,
+        counts,
+    );
+    let committed = BackfillEventRecord::new_apply(
+        &lease,
+        migration,
+        0,
+        GroupJournalEventKind::Committed,
+        Some(forward_completion),
+    )
+    .unwrap();
+    assert_eq!(committed.completion().unwrap().counts(), counts);
+
+    let reverse_completion = BackfillCompletionEvidence::new(
+        plan_fingerprint,
+        BackfillExecutionDirection::Reverse,
+        counts,
+    );
+    let reversed = BackfillEventRecord::new_rollback(
+        &lease,
+        rollback_manifest,
+        0,
+        GroupJournalEventKind::Committed,
+        Some(reverse_completion),
+    )
+    .unwrap();
+    assert_eq!(reversed.direction(), BackfillExecutionDirection::Reverse);
+    assert_eq!(reversed.operation_ordinal(), 0);
+    assert_eq!(reversed.manifest_step_index(), 0);
+    assert_eq!(
+        BackfillEventRecord::new_apply(
+            &lease,
+            migration,
+            0,
+            GroupJournalEventKind::FormalOnlyAdvanced,
+            None,
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "migration_execution_backfill_formal_advance"
+    );
+
+    let store = CoordinatorStore::default();
+    let provider = CoordinatorProvider {
+        available: context.available_capabilities().clone(),
+        calls: Mutex::new(Vec::new()),
+        observed: Mutex::new(plan.source_state().unwrap().clone()),
+    };
+    let outcome = block_on(execute_verified_migration_apply_plan(
+        &store,
+        &provider,
+        &LeaseHolderId::new("backfill-executor").unwrap(),
+        &plan,
+    ))
+    .unwrap();
+    let MigrationExecutionOutcome::Applied { backfills } = outcome else {
+        panic!("backfill plan must complete")
+    };
+    assert_eq!(backfills.len(), 1);
+    assert_eq!(backfills[0].migration_id(), migration.manifest().id());
+    assert_eq!(backfills[0].operation_ordinal(), 0);
+    assert_eq!(backfills[0].manifest_step_index(), 0);
+    assert_eq!(
+        backfills[0].evidence().direction(),
+        BackfillExecutionDirection::Forward
+    );
+    assert_eq!(backfills[0].evidence().counts().matched(), 0);
+    assert_eq!(backfills[0].evidence().counts().transaction_groups(), 1);
+    assert_eq!(
+        *provider.calls.lock().unwrap(),
+        [
+            "observe",
+            "observe-backfill-forward",
+            "execute-backfill-forward"
+        ]
+    );
+    let state = store.state.lock().unwrap();
+    assert_eq!(
+        state.backfill_event_audit,
+        [
+            GroupJournalEventKind::BeforeCommit,
+            GroupJournalEventKind::Committed
+        ]
+    );
+    assert_eq!(state.applied.len(), 1);
+    assert!(state.backfill_events.is_empty());
+    drop(state);
+
+    let rollback_outcome = block_on(execute_verified_migration_rollback_plan(
+        &store,
+        &provider,
+        &LeaseHolderId::new("backfill-rollback").unwrap(),
+        &rollback,
+    ))
+    .unwrap();
+    let type_bridge_schema_migration::MigrationRollbackOutcome::RolledBack { backfills } =
+        rollback_outcome
+    else {
+        panic!("reverse backfill plan must complete")
+    };
+    assert_eq!(backfills.len(), 1);
+    assert_eq!(backfills[0].migration_id(), migration.manifest().id());
+    assert_eq!(backfills[0].operation_ordinal(), 0);
+    assert_eq!(backfills[0].manifest_step_index(), 0);
+    assert_eq!(
+        backfills[0].evidence().direction(),
+        BackfillExecutionDirection::Reverse
+    );
+    let state = store.state.lock().unwrap();
+    assert_eq!(state.rolled_back.len(), 1);
+    assert_eq!(
+        state.backfill_event_audit,
+        [
+            GroupJournalEventKind::BeforeCommit,
+            GroupJournalEventKind::Committed,
+            GroupJournalEventKind::BeforeCommit,
+            GroupJournalEventKind::Committed
+        ]
+    );
+    assert!(state.backfill_events.is_empty());
 }
 
 #[test]
@@ -365,7 +642,7 @@ fn coordinator_stale_gate_uses_the_full_applied_set_not_only_graph_heads() {
         &remaining,
     ))
     .expect("execute remaining migration");
-    assert!(matches!(outcome, MigrationExecutionOutcome::Applied));
+    assert!(matches!(outcome, MigrationExecutionOutcome::Applied { .. }));
     let state = store.state.lock().expect("coordinator store");
     assert_eq!(state.applied.len(), 3);
     assert_eq!(state.releases, 1);
@@ -445,7 +722,7 @@ fn zero_group_applied_checkpoint_failure_is_retry_safe_at_manifest_position() {
         &store, &provider, &holder, &plan,
     ))
     .expect("checkpoint retry");
-    assert!(matches!(retry, MigrationExecutionOutcome::Applied));
+    assert!(matches!(retry, MigrationExecutionOutcome::Applied { .. }));
     let state = store.state.lock().expect("coordinator store");
     assert_eq!(state.applied.len(), 1);
     assert!(state.open.is_none());
@@ -508,7 +785,7 @@ fn committed_group_checkpoint_failure_retains_transaction_group_position() {
         &store, &provider, &holder, &plan,
     ))
     .expect("group checkpoint retry");
-    assert!(matches!(retry, MigrationExecutionOutcome::Applied));
+    assert!(matches!(retry, MigrationExecutionOutcome::Applied { .. }));
     let state = store.state.lock().expect("coordinator store");
     assert_eq!(state.applied.len(), 1);
     assert!(state.open.is_none());
@@ -712,7 +989,7 @@ fn assertion_apply_step_retains_validated_plan_bound_to_exact_source_state() {
         &plan,
     ))
     .expect("coordinator execution");
-    assert!(matches!(outcome, MigrationExecutionOutcome::Applied));
+    assert!(matches!(outcome, MigrationExecutionOutcome::Applied { .. }));
     let calls = provider.calls.lock().expect("provider calls").clone();
     assert_eq!(calls.iter().filter(|call| **call == "prepare").count(), 2);
     assert_eq!(calls.iter().filter(|call| **call == "commit").count(), 2);
@@ -852,7 +1129,8 @@ fn new_subtype_migration_lowers_without_assertion_coverage() {
             .iter()
             .flat_map(StatementUnit::statements)
             .any(|statement| statement.query().contains("sub person")),
-        VerifiedMigrationApplyStep::Assertion { .. } => false,
+        VerifiedMigrationApplyStep::Assertion { .. }
+        | VerifiedMigrationApplyStep::Backfill { .. } => false,
     });
     assert!(rendered_sub, "lowered statements must define the sub edge");
 }
@@ -868,6 +1146,36 @@ fn destructive_manifest_requires_an_identity_bound_approval() {
     let lowering =
         SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
     let policy = MigrationSafetyPolicy::default_policy();
+
+    let preview = build_verified_migration_apply_preview(
+        &graph,
+        &BTreeSet::new(),
+        &MigrationApplyTarget::DefaultHead,
+        &context,
+        &lowering,
+    )
+    .expect("provider-free preview inspects gated work without an approval");
+    assert!(!preview.execution_authorized());
+    assert_eq!(preview.migrations().len(), 1);
+    let store = CoordinatorStore::default();
+    let provider = CoordinatorProvider {
+        available: context.available_capabilities().clone(),
+        calls: Mutex::new(Vec::new()),
+        observed: Mutex::new(preview.source_state().unwrap().clone()),
+    };
+    let rejected = block_on(execute_verified_migration_apply_plan(
+        &store,
+        &provider,
+        &LeaseHolderId::new("preview-must-not-execute").unwrap(),
+        &preview,
+    ))
+    .expect_err("preview carries no provider execution authority");
+    assert_eq!(
+        rejected.code().as_str(),
+        "migration_apply_preview_not_executable"
+    );
+    assert!(provider.calls.lock().unwrap().is_empty());
+
     let build = |approvals: &[MigrationApplyApproval]| {
         build_verified_migration_apply_plan(
             &graph,
@@ -913,13 +1221,15 @@ fn destructive_manifest_requires_an_identity_bound_approval() {
     let approval = MigrationApplyApproval::for_manifest(&migration).expect("bound approval");
     assert!(approval.binds(&migration).expect("binding check"));
     let plan = build(std::slice::from_ref(&approval)).expect("approved plan");
+    assert!(plan.execution_authorized());
     let rendered_undefine = plan.migrations()[0].steps().iter().any(|step| match step {
         VerifiedMigrationApplyStep::SchemaDelta { lowering, .. } => lowering
             .units()
             .iter()
             .flat_map(StatementUnit::statements)
             .any(|statement| statement.query().contains("undefine")),
-        VerifiedMigrationApplyStep::Assertion { .. } => false,
+        VerifiedMigrationApplyStep::Assertion { .. }
+        | VerifiedMigrationApplyStep::Backfill { .. } => false,
     });
     assert!(rendered_undefine, "approved destructive work must lower");
 }

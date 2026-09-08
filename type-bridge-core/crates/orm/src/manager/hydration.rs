@@ -1009,7 +1009,15 @@ fn normalize_candidate_players(
                     "contradictory player attribute evidence",
                 ));
             }
-            continue;
+            if !descriptor.role(&player.role_name).is_some_and(|role| {
+                role.ordered
+                    && role.distinct
+                    && role
+                        .cardinality
+                        .is_some_and(|(_, maximum)| maximum.is_none_or(|maximum| maximum > 1))
+            }) {
+                continue;
+            }
         }
         normalized.push(player);
     }
@@ -1079,12 +1087,6 @@ fn finalize_relation_players(
             return Err(relation_hydration_error(
                 &descriptor.type_name,
                 "relation role violates cardinality",
-            ));
-        }
-        if role.ordered && players.len() > 1 {
-            return Err(relation_hydration_error(
-                &descriptor.type_name,
-                "ordered role lacks list-order evidence",
             ));
         }
         if !role.ordered {
@@ -1429,10 +1431,14 @@ mod tests {
         ]);
         let mut ordered_many = ordered.clone();
         ordered_many.roles[0].cardinality = Some((0, None));
-        let error = hydrate_dynamic_relation(&ordered_many, &many).unwrap_err();
-        assert!(
-            matches!(error, OrmError::Hydration { message, .. } if message == "ordered role lacks list-order evidence")
-        );
+        let hydrated = hydrate_dynamic_relation(&ordered_many, &many).unwrap();
+        let employee_iids = hydrated
+            .role_players
+            .iter()
+            .filter(|player| player.role_name == "employee")
+            .map(|player| player.player_iid.as_deref().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(employee_iids, ["0x101", "0x102"]);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use generated::*;
 use type_bridge::__codegen::{
-    CanonicalDouble, Date, DateTime, DateTimeTz, Decimal, Duration, HydratedPlayer,
-    HydratedRow, IntoEncodedScalar, materialize_model_for_test,
+    CanonicalDouble, Date, DateTime, DateTimeTz, Decimal, Duration, HydratedPlayer, HydratedRow,
+    IntoEncodedScalar, materialize_model_for_test,
 };
 
 #[derive(type_bridge::SelectedRow)]
@@ -69,7 +69,9 @@ async fn generated_manager_mutation_parity_compiles(
     let _ = people
         .update_many(vec![(person_iid.clone(), person_input)])
         .await?;
-    people.delete_many(std::slice::from_ref(&person_iid)).await?;
+    people
+        .delete_many(std::slice::from_ref(&person_iid))
+        .await?;
 
     let mut employments = database.relations::<Employment>();
     employments.add_hook(std::sync::Arc::new(GeneratedLifecycleHook));
@@ -121,6 +123,20 @@ fn bounded_reachability_compiles(
     Ok(())
 }
 
+fn projected_function_call_compiles(
+    session: &type_bridge::QuerySession<'_, AppSchema>,
+    person: type_bridge::Binding<AppSchema, Person>,
+    minimum_value: &Score,
+) -> type_bridge::Result<()> {
+    let minimum: IntegerInput = integer_input(session, minimum_value)?;
+    let score: IntegerCall = qualifying_score(session, person, &minimum)?;
+    let predicate = score.ge_field(person.field(PersonType::score));
+    let _ = session.query(person)?.where_(predicate)?;
+    let nested = qualifying_score(session, person, &score)?;
+    let _ = score.ge_call(&nested)?;
+    Ok(())
+}
+
 fn polymorphic_role_binding_modes_compile(
     database: &type_bridge::Database<AppSchema>,
 ) -> type_bridge::Result<()> {
@@ -165,17 +181,66 @@ async fn reusable_read_context_compiles(
     read.close().await
 }
 
+async fn canonical_manager_filters_compile(
+    database: &type_bridge::Database<AppSchema>,
+) -> type_bridge::Result<()> {
+    let seven = FooBar::new(7).unwrap();
+    let forty = Score::new(40).unwrap();
+    let ada = Identifier::new("data-ada").unwrap();
+
+    let base = database.entities::<Person>().where_(
+        PersonType::foo__bar,
+        type_bridge::ProjectedManagerComparison::Gte,
+        &seven,
+    )?;
+    let sibling = base.where_(
+        PersonType::score,
+        type_bridge::ProjectedManagerComparison::Gt,
+        &forty,
+    )?;
+    let _: Vec<Person> = base.all().await?;
+    let _: u64 = sibling.count().await?;
+    let _: bool = sibling.exists().await?;
+    let _: Option<Person> = database
+        .entities::<Person>()
+        .where_(
+            PersonType::identifier,
+            type_bridge::ProjectedManagerComparison::Eq,
+            &ada,
+        )?
+        .first()
+        .await?;
+
+    let read = database.read().await?;
+    let borrowed = read.entities::<Person>().where_(
+        PersonType::foo__bar,
+        type_bridge::ProjectedManagerComparison::Eq,
+        &seven,
+    )?;
+    let _: Vec<Person> = borrowed.all().await?;
+    let _: u64 = borrowed.count().await?;
+    let _: bool = borrowed.exists().await?;
+    let _: Option<Person> = read
+        .entities::<Person>()
+        .where_(
+            PersonType::identifier,
+            type_bridge::ProjectedManagerComparison::Eq,
+            &ada,
+        )?
+        .first()
+        .await?;
+    let _: u64 = read.relations::<Interaction>().filter()?.count().await?;
+    drop(borrowed);
+    read.close().await
+}
+
 struct RemoteTransport;
 
 impl type_bridge::RemoteQueryTransport for RemoteTransport {
     fn capabilities(
         &self,
     ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = type_bridge::Result<Vec<u8>>>
-                + Send
-                + '_
-        >
+        Box<dyn std::future::Future<Output = type_bridge::Result<Vec<u8>>> + Send + '_>,
     > {
         Box::pin(async {
             Err(type_bridge::Error::Other {
@@ -189,11 +254,7 @@ impl type_bridge::RemoteQueryTransport for RemoteTransport {
         &'a self,
         _request: &'a [u8],
     ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = type_bridge::Result<Vec<u8>>>
-                + Send
-                + 'a
-        >
+        Box<dyn std::future::Future<Output = type_bridge::Result<Vec<u8>>> + Send + 'a>,
     > {
         Box::pin(async {
             Err(type_bridge::Error::Other {
@@ -218,8 +279,7 @@ async fn remote_generated_outputs_compile() -> type_bridge::Result<()> {
     let event = session.exact::<Event>()?;
     let tuple = session.query((person, event))?;
     let tuple = tuple.allow_cross_join(person, event)?;
-    let _rows: Vec<(Person, Event)> =
-        tuple.rows(type_bridge::RowsOptions::new(10)).await?;
+    let _rows: Vec<(Person, Event)> = tuple.rows(type_bridge::RowsOptions::new(10)).await?;
     let graph = PersonGraph::select(person, event.collect())?;
     let page: type_bridge::Page<PersonGraph> = session
         .query(graph)?
@@ -245,6 +305,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let nickname = Nickname::new("Ada")?;
     let alias = Aliases::new("engineer")?;
     let score = Score::new(42i64)?;
+    let score_bytes = SCHEMA.encode_attribute(score.clone())?;
+    let decoded_score: Score = SCHEMA.decode_attribute(&score_bytes)?;
+    assert_eq!(decoded_score.value(), &42);
+    assert!(SCHEMA.decode_attribute::<CounterValue>(&score_bytes).is_err());
     let v_double = ValDouble::new(CanonicalDouble::try_new(3.14)?)?;
     let v_decimal = ValDecimal::new(Decimal::try_new("123.45")?)?;
     let v_bool = ValBool::new(true)?;
@@ -272,6 +336,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_eq!(person_create.aliases().len(), 2);
 
+    let person_create_bytes = SCHEMA.encode_create(person_create.clone())?;
+    let decoded_person_create: PersonCreate = SCHEMA.decode_create(&person_create_bytes)?;
+    assert_eq!(decoded_person_create.identifier().value(), "person-1");
+    assert_eq!(decoded_person_create.aliases().len(), 2);
+    assert!(decoded_person_create.nickname().is_some());
+    assert!(SCHEMA
+        .decode_create::<CounterCreate>(&person_create_bytes)
+        .is_err());
+
     let id_scalar = identifier.value().into_encoded_scalar();
     let score_scalar = score.value().into_encoded_scalar();
     let double_scalar = v_double.value().into_encoded_scalar();
@@ -285,42 +358,76 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let person_row = HydratedRow::new(
         Person::TYPE_ID_JSON,
-        "person-iid-1".to_owned(),
+        "0x1".to_owned(),
         vec![
-            (PersonType::identifier.owns_id_json(), vec![id_scalar.clone()]),
+            (
+                PersonType::identifier.owns_id_json(),
+                vec![id_scalar.clone()],
+            ),
             (PersonType::score.owns_id_json(), vec![score_scalar]),
             (PersonType::val_double.owns_id_json(), vec![double_scalar]),
             (PersonType::val_decimal.owns_id_json(), vec![decimal_scalar]),
             (PersonType::val_bool.owns_id_json(), vec![bool_scalar]),
             (PersonType::val_date.owns_id_json(), vec![date_scalar]),
-            (PersonType::val_datetime.owns_id_json(), vec![datetime_scalar]),
-            (PersonType::val_datetime_tz.owns_id_json(), vec![datetimetz_scalar]),
-            (PersonType::val_duration.owns_id_json(), vec![duration_scalar]),
-            (PersonType::val_constrained.owns_id_json(), vec![constrained_scalar]),
+            (
+                PersonType::val_datetime.owns_id_json(),
+                vec![datetime_scalar],
+            ),
+            (
+                PersonType::val_datetime_tz.owns_id_json(),
+                vec![datetimetz_scalar],
+            ),
+            (
+                PersonType::val_duration.owns_id_json(),
+                vec![duration_scalar],
+            ),
+            (
+                PersonType::val_constrained.owns_id_json(),
+                vec![constrained_scalar],
+            ),
         ],
         vec![],
     );
     let person: Person = materialize_model_for_test(&person_row)?;
-    assert_eq!(person.iid(), "person-iid-1");
+    assert_eq!(person.iid(), "0x1");
+    let person_debug = format!("{person:?}");
+    assert!(person_debug.starts_with("Person { iid:"));
+    assert!(!person_debug.contains("__tb_origin"));
+    assert!(!person_debug.contains("ReferenceOrigin"));
+    let person_snapshot_bytes = SCHEMA.encode_snapshot(person.clone())?;
+    let decoded_person: Person = SCHEMA.decode_snapshot(&person_snapshot_bytes)?;
+    assert_eq!(decoded_person.iid(), "0x1");
+    assert_eq!(decoded_person.identifier().value(), "person-1");
+    assert!(SCHEMA
+        .decode_snapshot::<Event>(&person_snapshot_bytes)
+        .is_err());
 
     let person_ref = person.reference();
-    assert_eq!(person_ref.iid(), Some("person-iid-1"));
+    assert_eq!(person_ref.iid(), Some("0x1"));
+    let person_ref_debug = format!("{person_ref:?}");
+    assert!(person_ref_debug.starts_with("PersonRef { iid:"));
+    assert!(!person_ref_debug.contains("__tb_origin"));
+    assert!(!person_ref_debug.contains("ReferenceOrigin"));
 
     let key_ref = PersonRef::from_key(identifier)?;
     assert_eq!(key_ref.iid(), None);
     assert_eq!(key_ref.identifier().unwrap().value(), "person-1");
+    let key_ref_bytes = SCHEMA.encode_reference(key_ref.clone())?;
+    let decoded_key_ref: PersonRef = SCHEMA.decode_reference(&key_ref_bytes)?;
+    assert_eq!(decoded_key_ref.iid(), None);
+    assert_eq!(decoded_key_ref.identifier().unwrap().value(), "person-1");
+    assert!(SCHEMA.decode_reference::<EventRef>(&key_ref_bytes).is_err());
 
-    let person_player_evidence = HydratedPlayer::new(
-        Person::TYPE_ID_JSON,
-        Some("person-iid-1".to_owned()),
-        vec![(PersonType::identifier.owns_id_json(), id_scalar)],
-    );
+    let person_player_evidence = HydratedPlayer::from_complete_row(person_row);
 
     let event_row = HydratedRow::new(
         Event::TYPE_ID_JSON,
         "event-iid-1".to_owned(),
         vec![],
-        vec![(EventType::subject.role_id_json(), vec![person_player_evidence.clone()])],
+        vec![(
+            EventType::subject.role_id_json(),
+            vec![person_player_evidence.clone()],
+        )],
     );
     let event: Event = materialize_model_for_test(&event_row)?;
     assert_eq!(event.iid(), "event-iid-1");
@@ -330,15 +437,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(container.item().len(), 1);
 
     let employment = EmploymentCreate::new(person_ref)?;
-    assert_eq!(employment.employee().identifier().unwrap().value(), "person-1");
+    assert_eq!(
+        employment.employee().identifier().unwrap().value(),
+        "person-1"
+    );
 
     let plain_activity = PlainActivityCreate::new(person.reference())?;
     assert_eq!(
-        plain_activity
-            .participant()
-            .identifier()
-            .unwrap()
-            .value(),
+        plain_activity.participant().identifier().unwrap().value(),
         "person-1"
     );
 
@@ -349,7 +455,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Employment::TYPE_ID_JSON,
         "emp-iid-1".to_owned(),
         vec![],
-        vec![(EmploymentType::employee.role_id_json(), vec![person_player_evidence])],
+        vec![(
+            EmploymentType::employee.role_id_json(),
+            vec![person_player_evidence],
+        )],
     );
     let emp_read: Employment = materialize_model_for_test(&emp_row)?;
     let family = MembershipFamily::Employment(emp_read);
@@ -363,8 +472,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let stats = PlayerStats::try_new(Some("stable".to_owned()), 3);
     assert_eq!(*stats.wins(), 3);
+    let stats_bytes = SCHEMA.encode_struct(stats)?;
+    let decoded_stats: PlayerStats = SCHEMA.decode_struct(&stats_bytes)?;
+    assert_eq!(decoded_stats.nickname().map(String::as_str), Some("stable"));
+    assert_eq!(*decoded_stats.wins(), 3);
+    assert!(SCHEMA
+        .decode_struct::<PlayerStats>(&person_snapshot_bytes)
+        .is_err());
+    let archive_bytes = SCHEMA.encode_archive([
+        score_bytes.as_slice(),
+        person_create_bytes.as_slice(),
+        key_ref_bytes.as_slice(),
+        person_snapshot_bytes.as_slice(),
+        stats_bytes.as_slice(),
+    ])?;
+    let archive_records = SCHEMA.decode_archive(&archive_bytes)?;
+    assert_eq!(
+        archive_records,
+        vec![
+            score_bytes,
+            person_create_bytes,
+            key_ref_bytes,
+            person_snapshot_bytes,
+            stats_bytes,
+        ]
+    );
+    let _: Score = SCHEMA.decode_attribute(&archive_records[0])?;
+    let _: PersonCreate = SCHEMA.decode_create(&archive_records[1])?;
+    let _: PersonRef = SCHEMA.decode_reference(&archive_records[2])?;
+    let _: Person = SCHEMA.decode_snapshot(&archive_records[3])?;
+    let _: PlayerStats = SCHEMA.decode_struct(&archive_records[4])?;
     assert_eq!(PLAYING_FACTS.len(), 12);
     assert!(RUNTIME_PROJECTION_JSON.contains("validated-create-input"));
-    assert!(MODEL_LINK_COMPONENTS.iter().any(|component| component.len() > 1));
+    assert!(
+        MODEL_LINK_COMPONENTS
+            .iter()
+            .any(|component| component.len() > 1)
+    );
     Ok(())
 }

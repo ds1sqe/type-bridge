@@ -1,0 +1,7 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(TypeBridge 1.6.0 EXACT CONFIG)
+
+include("${CMAKE_CURRENT_LIST_DIR}/@TYPE_BRIDGE_C_SYMBOL_PREFIX@Targets.cmake")
+check_required_components(@TYPE_BRIDGE_C_SYMBOL_PREFIX@)

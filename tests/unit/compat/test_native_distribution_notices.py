@@ -10,6 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 PYTHON_NOTICE = ROOT / "type-bridge-core/python/type_bridge_core/THIRD_PARTY_NOTICES.md"
 NODE_NOTICE = ROOT / "type-bridge-core/crates/node/THIRD_PARTY_NOTICES.md"
+CLI_NOTICE = ROOT / "type-bridge-core/crates/cli/THIRD_PARTY_NOTICES.md"
+C_NOTICE = ROOT / "type-bridge-core/crates/c/THIRD_PARTY_NOTICES.md"
 ABOUT_POLICY = ROOT / "type-bridge-core/about.toml"
 
 
@@ -17,6 +19,8 @@ def test_native_distributions_ship_one_byte_identical_consolidated_notice() -> N
     notice = PYTHON_NOTICE.read_bytes()
 
     assert notice == NODE_NOTICE.read_bytes()
+    assert notice == CLI_NOTICE.read_bytes()
+    assert notice == C_NOTICE.read_bytes()
 
     core = tomllib.loads((ROOT / "type-bridge-core/pyproject.toml").read_text(encoding="utf-8"))
     assert core["project"]["license"] == {"text": "MIT"}
@@ -35,7 +39,7 @@ def test_notice_pins_namespaced_sources_and_complete_license_texts() -> None:
     for identity in (
         "type-bridge-typedb-driver-b8` 3.11.5",
         "type-bridge-typedb-protocol-b8` 3.11.0",
-        "official `typedb-driver` 3.12.1",
+        "official `typedb-driver` 3.12.3",
         "official `typedb-protocol` 3.12.0",
         "`ed25519-dalek` | 2.2.0",
         "`curve25519-dalek` | 4.1.3",
@@ -49,7 +53,7 @@ def test_notice_pins_namespaced_sources_and_complete_license_texts() -> None:
         assert upstream_commit in notice
 
     for official_source in (
-        "https://crates.io/crates/typedb-driver/3.12.1",
+        "https://crates.io/crates/typedb-driver/3.12.3",
         "https://crates.io/crates/typedb-protocol/3.12.0",
     ):
         assert official_source in notice

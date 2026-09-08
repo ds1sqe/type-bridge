@@ -143,7 +143,9 @@ impl From<Diagnostic> for SchemaAuthorityError {
             DiagnosticCategory::UnsupportedCapability => {
                 SchemaAuthorityErrorCode::UnsupportedCapability
             }
-            DiagnosticCategory::ResourceLimit => SchemaAuthorityErrorCode::ResourceLimit,
+            DiagnosticCategory::ResourceLimit | DiagnosticCategory::Cancelled => {
+                SchemaAuthorityErrorCode::ResourceLimit
+            }
             DiagnosticCategory::Integrity => SchemaAuthorityErrorCode::IntegrityMismatch,
         };
         Self {

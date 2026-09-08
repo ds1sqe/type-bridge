@@ -4,10 +4,18 @@ use std::collections::BTreeMap;
 use std::error::Error as StdError;
 use std::fmt;
 
-use type_bridge_contract::diagnostic::{
-    Diagnostic, DiagnosticCategory, DiagnosticDetailValue, DiagnosticPathSegment,
+use type_bridge_contract::sdk_diagnostic::{
+    SdkDiagnosticCategory, SdkDiagnosticDetailValue, SdkDiagnosticPathSegment,
+    SdkExecutionDiagnostic, SdkProjectionEvidenceSlotPresence, SdkQueryDiagnosticCategory,
+    SdkQueryDiagnosticPathKind,
 };
-use type_bridge_orm::match_request::{MatchError, MatchErrorCategory};
+use type_bridge_orm::match_request::MatchError;
+use type_bridge_orm::{
+    ProjectedCrudCompatibilityCause, ProjectedCrudCompatibilityFailure,
+    ProjectedCrudCompatibilityStage,
+};
+
+use crate::hooks::{CrudOperation, ModelKind};
 
 /// Stable public classification for TypeBridge client failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -19,6 +27,8 @@ pub enum ErrorCategory {
     Schema,
     /// Generated input or provider evidence failed model validation.
     ModelValidation,
+    /// Generated package or provider evidence failed an integrity contract.
+    Integrity,
     /// A typed query was invalid before provider execution.
     QueryAuthoring,
     /// The provider failed while executing an accepted query.
@@ -31,6 +41,8 @@ pub enum ErrorCategory {
     Capability,
     /// A canonical client, provider, or remote resource ceiling was exceeded.
     ResourceLimit,
+    /// Cooperative cancellation interrupted the operation.
+    Cancelled,
     /// A requested entity or schema element was not found.
     NotFound,
     /// A generated-model lifecycle hook rejected or failed an operation.
@@ -49,12 +61,14 @@ impl ErrorCategory {
             Self::Connection => "connection",
             Self::Schema => "schema",
             Self::ModelValidation => "model_validation",
+            Self::Integrity => "integrity",
             Self::QueryAuthoring => "query_authoring",
             Self::QueryExecution => "query_execution",
             Self::Transaction => "transaction",
             Self::Remote => "remote",
             Self::Capability => "capability",
             Self::ResourceLimit => "resource_limit",
+            Self::Cancelled => "cancelled",
             Self::NotFound => "not_found",
             Self::Lifecycle => "lifecycle",
             Self::Database => "database",
@@ -90,18 +104,96 @@ pub enum ErrorDetail {
     Boolean(bool),
     /// An ordered list of text values.
     TextList(Vec<String>),
+    /// The exact canonical typed-query category.
+    QueryCategory(QueryDiagnosticCategory),
+    /// One bounded canonical query or contract identity.
+    QueryIdentity(String),
+    /// An ordered bounded list of canonical query or contract identities.
+    QueryIdentityList(Vec<String>),
+}
+
+/// Stable public typed-query diagnostic categories.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum QueryDiagnosticCategory {
+    /// The immutable query plan is invalid.
+    InvalidPlan,
+    /// A terminal cardinality contract was not satisfied.
+    Cardinality,
+    /// The provider lacks a required query capability.
+    UnsupportedCapability,
+    /// Request-relevant schema authority changed.
+    StaleSchema,
+    /// A query resource ceiling was crossed.
+    ResourceLimit,
+    /// Cooperative cancellation interrupted execution.
+    Cancelled,
+    /// The provider failed before complete evidence was available.
+    Provider,
+    /// Result evidence did not match the validated invocation.
+    ResultDecode,
+}
+
+/// Stable structural locations within a typed query request or result.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum QueryDiagnosticPathKind {
+    /// The request envelope.
+    Request,
+    /// The graph plan.
+    Plan,
+    /// The selected terminal operation.
+    Operation,
+    /// The predicate tree.
+    Predicate,
+    /// The declared output shape.
+    Output,
+    /// Provider solution or hydration evidence.
+    ProviderEvidence,
+    /// The validated result envelope.
+    Result,
 }
 
 /// One typed segment from a structured engine or remote diagnostic path.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ErrorPathSegment {
+    /// A named public operation argument.
+    Argument(String),
     /// A named field in the rejected contract.
     Field(String),
     /// An indexed member in the rejected contract.
     Index(u64),
     /// A schema or query identifier.
     Identifier(String),
+    /// A structural typed-query request or result location.
+    Query(QueryDiagnosticPathKind),
+    /// A plan-local typed-query binding ordinal.
+    QueryBinding(u16),
+    /// A descriptor-qualified binding-facing query field.
+    QueryField {
+        /// Kind-qualified registry descriptor identity.
+        owner: String,
+        /// Binding-facing field name.
+        name: String,
+    },
+    /// A descriptor-qualified query role.
+    QueryRole {
+        /// Kind-qualified registry descriptor identity.
+        owner: String,
+        /// Binding-facing role name.
+        name: String,
+    },
+    /// A plan-local typed-query role-edge ordinal.
+    QueryRoleEdge(u16),
+    /// A zero-based positional query output slot.
+    QueryOutputSlot(u64),
+    /// A declared generated query output member.
+    QueryOutputName(String),
+    /// An object field retained from an authenticated contract diagnostic.
+    ContractField(String),
+    /// An identity retained from an authenticated contract diagnostic.
+    ContractIdentity(String),
 }
 
 /// Complete typed metadata supplied by one structured engine or remote
@@ -239,6 +331,31 @@ pub enum Error {
 }
 
 impl Error {
+    pub(crate) fn from_contract_diagnostic(
+        error: type_bridge_contract::diagnostic::Diagnostic,
+    ) -> Self {
+        use type_bridge_contract::diagnostic::DiagnosticCategory;
+
+        let category = match error.category() {
+            DiagnosticCategory::InvalidContract => ErrorCategory::Other,
+            DiagnosticCategory::UnsupportedCapability => ErrorCategory::Capability,
+            DiagnosticCategory::ResourceLimit => ErrorCategory::ResourceLimit,
+            DiagnosticCategory::Cancelled => ErrorCategory::Cancelled,
+            DiagnosticCategory::Integrity => ErrorCategory::Integrity,
+        };
+        let code = error.code().as_str().to_owned();
+        let message = error.to_string();
+        Self::classified_with_diagnostic(
+            category,
+            None,
+            code,
+            Vec::new(),
+            None,
+            message,
+            Some(Box::new(error)),
+        )
+    }
+
     #[allow(dead_code)]
     pub(crate) fn model_validation(
         phase: ModelValidationPhase,
@@ -265,6 +382,43 @@ impl Error {
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     ) -> Self {
         Self::classified_with_diagnostic(category, phase, code, path, None, message, source)
+    }
+
+    pub(crate) fn projection_evidence_rejection(
+        presence: SdkProjectionEvidenceSlotPresence,
+    ) -> Self {
+        let error = SdkExecutionDiagnostic::classify_detached_semantic_schema_fingerprint_rejection(
+            presence,
+        );
+        let code = error.code().as_str().to_owned();
+        let message = error.message().as_str().to_owned();
+        let path = error.path().iter().map(flatten_sdk_path).collect();
+        let diagnostic = ErrorDiagnostic {
+            path: error
+                .path()
+                .iter()
+                .map(|segment| match segment {
+                    SdkDiagnosticPathSegment::Argument(value) => {
+                        ErrorPathSegment::Argument(value.as_str().to_owned())
+                    }
+                    other => typed_sdk_path(other),
+                })
+                .collect(),
+            details: error
+                .details()
+                .iter()
+                .map(|(name, value)| (name.as_str().to_owned(), flatten_sdk_detail(value)))
+                .collect(),
+        };
+        Self::classified_with_diagnostic(
+            ErrorCategory::Integrity,
+            None,
+            code,
+            path,
+            Some(diagnostic),
+            message,
+            Some(Box::new(error)),
+        )
     }
 
     fn classified_with_diagnostic(
@@ -308,91 +462,442 @@ impl Error {
     }
 
     pub(crate) fn from_match(error: MatchError, phase: ModelValidationPhase) -> Self {
-        let category = match error.category() {
-            MatchErrorCategory::InvalidPlan => ErrorCategory::QueryAuthoring,
-            MatchErrorCategory::Cardinality | MatchErrorCategory::ResultDecode => {
-                ErrorCategory::ModelValidation
-            }
-            MatchErrorCategory::UnsupportedCapability => ErrorCategory::Capability,
-            MatchErrorCategory::StaleSchema => ErrorCategory::Schema,
-            MatchErrorCategory::ResourceLimit => ErrorCategory::ResourceLimit,
-            MatchErrorCategory::Provider => ErrorCategory::QueryExecution,
-        };
-        let model_phase = (category == ErrorCategory::ModelValidation).then_some(phase);
-        let code = error.code().as_str().to_owned();
-        let path = error
-            .path()
-            .segments()
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        let message = error.message().to_owned();
-        Self::classified(
-            category,
-            model_phase,
-            code,
-            path,
-            message,
-            Some(Box::new(error)),
-        )
+        Self::from_sdk_execution(type_bridge_orm::lower_match_error(&error), phase)
     }
 
-    pub(crate) fn from_remote_diagnostic(error: Diagnostic) -> Self {
-        let category = match error.category() {
-            DiagnosticCategory::UnsupportedCapability => ErrorCategory::Capability,
-            DiagnosticCategory::ResourceLimit => ErrorCategory::ResourceLimit,
-            DiagnosticCategory::InvalidContract | DiagnosticCategory::Integrity => {
-                ErrorCategory::Remote
-            }
-        };
+    pub(crate) fn from_sdk_execution(
+        error: SdkExecutionDiagnostic,
+        model_phase: ModelValidationPhase,
+    ) -> Self {
         let code = error.code().as_str().to_owned();
-        let path = error
-            .path()
-            .segments()
-            .iter()
-            .map(|segment| match segment {
-                DiagnosticPathSegment::Field(value) => value.clone(),
-                DiagnosticPathSegment::Index(value) => format!("[{value}]"),
-                DiagnosticPathSegment::Identifier(value) => value.clone(),
-            })
-            .collect();
-        let diagnostic_path = error
-            .path()
-            .segments()
-            .iter()
-            .map(|segment| match segment {
-                DiagnosticPathSegment::Field(value) => ErrorPathSegment::Field(value.clone()),
-                DiagnosticPathSegment::Index(value) => ErrorPathSegment::Index(*value),
-                DiagnosticPathSegment::Identifier(value) => {
-                    ErrorPathSegment::Identifier(value.clone())
-                }
-            })
-            .collect();
+        let message = error.message().as_str().to_owned();
+        let path = error.path().iter().map(flatten_sdk_path).collect();
+        let diagnostic_path = error.path().iter().map(typed_sdk_path).collect();
         let details = error
             .details()
             .iter()
-            .map(|(key, value)| {
-                let value = match value {
-                    DiagnosticDetailValue::Text(value) => ErrorDetail::Text(value.clone()),
-                    DiagnosticDetailValue::Long(value) => ErrorDetail::Long(*value),
-                    DiagnosticDetailValue::Boolean(value) => ErrorDetail::Boolean(*value),
-                    DiagnosticDetailValue::TextList(value) => ErrorDetail::TextList(value.clone()),
-                };
-                (key.clone(), value)
-            })
+            .map(|(name, value)| (name.as_str().to_owned(), flatten_sdk_detail(value)))
             .collect();
-        let message = error.message().to_owned();
+        let diagnostic = ErrorDiagnostic {
+            path: diagnostic_path,
+            details,
+        };
+        if let Some(query_category) = sdk_query_category(&error) {
+            let (category, phase) = match query_category {
+                SdkQueryDiagnosticCategory::InvalidPlan => (ErrorCategory::QueryAuthoring, None),
+                SdkQueryDiagnosticCategory::Cardinality
+                | SdkQueryDiagnosticCategory::ResultDecode => {
+                    (ErrorCategory::ModelValidation, Some(model_phase))
+                }
+                SdkQueryDiagnosticCategory::UnsupportedCapability => {
+                    (ErrorCategory::Capability, None)
+                }
+                SdkQueryDiagnosticCategory::StaleSchema => (ErrorCategory::Schema, None),
+                SdkQueryDiagnosticCategory::ResourceLimit => (ErrorCategory::ResourceLimit, None),
+                SdkQueryDiagnosticCategory::Cancelled => (ErrorCategory::Cancelled, None),
+                SdkQueryDiagnosticCategory::Provider => (ErrorCategory::QueryExecution, None),
+                _ => (ErrorCategory::Other, None),
+            };
+            return Self::classified_with_diagnostic(
+                category,
+                phase,
+                code,
+                path,
+                Some(diagnostic),
+                message,
+                Some(Box::new(error)),
+            );
+        }
+        match error.category() {
+            SdkDiagnosticCategory::InvalidInput | SdkDiagnosticCategory::Integrity => {
+                Self::ModelValidation {
+                    phase: model_phase,
+                    code,
+                    path,
+                    message,
+                    source: Some(Box::new(error)),
+                }
+            }
+            SdkDiagnosticCategory::Provider => Self::QueryExecution {
+                message,
+                source: Some(Box::new(error)),
+            },
+            SdkDiagnosticCategory::Transaction => Self::Transaction {
+                message,
+                source: Some(Box::new(error)),
+            },
+            SdkDiagnosticCategory::UnsupportedCapability => Self::classified_with_diagnostic(
+                ErrorCategory::Capability,
+                None,
+                code,
+                path,
+                Some(diagnostic),
+                message,
+                Some(Box::new(error)),
+            ),
+            SdkDiagnosticCategory::ResourceLimit => Self::classified_with_diagnostic(
+                ErrorCategory::ResourceLimit,
+                None,
+                code,
+                path,
+                Some(diagnostic),
+                message,
+                Some(Box::new(error)),
+            ),
+            SdkDiagnosticCategory::Cancelled => Self::classified_with_diagnostic(
+                ErrorCategory::Cancelled,
+                None,
+                code,
+                path,
+                Some(diagnostic),
+                message,
+                Some(Box::new(error)),
+            ),
+            SdkDiagnosticCategory::Internal => Self::classified_with_diagnostic(
+                ErrorCategory::Other,
+                None,
+                code,
+                path,
+                Some(diagnostic),
+                message,
+                Some(Box::new(error)),
+            ),
+            _ => Self::Other {
+                message,
+                source: Some(Box::new(error)),
+            },
+        }
+    }
+
+    #[cfg(feature = "typedb")]
+    pub(crate) fn from_direct_connection(error: SdkExecutionDiagnostic) -> Self {
+        let category = match error.category() {
+            SdkDiagnosticCategory::InvalidInput | SdkDiagnosticCategory::Provider => {
+                ErrorCategory::Connection
+            }
+            SdkDiagnosticCategory::Integrity => ErrorCategory::Integrity,
+            SdkDiagnosticCategory::UnsupportedCapability => ErrorCategory::Capability,
+            SdkDiagnosticCategory::ResourceLimit => ErrorCategory::ResourceLimit,
+            SdkDiagnosticCategory::Cancelled => ErrorCategory::Cancelled,
+            SdkDiagnosticCategory::Transaction | SdkDiagnosticCategory::Internal => {
+                ErrorCategory::Other
+            }
+            _ => ErrorCategory::Other,
+        };
+        let code = error.code().as_str().to_owned();
+        let message = error.message().as_str().to_owned();
+        let path = error.path().iter().map(flatten_sdk_path).collect();
+        let diagnostic = ErrorDiagnostic {
+            path: error.path().iter().map(typed_sdk_path).collect(),
+            details: error
+                .details()
+                .iter()
+                .map(|(name, value)| (name.as_str().to_owned(), flatten_sdk_detail(value)))
+                .collect(),
+        };
         Self::classified_with_diagnostic(
             category,
             None,
             code,
             path,
-            Some(ErrorDiagnostic {
-                path: diagnostic_path,
-                details,
-            }),
+            Some(diagnostic),
             message,
             Some(Box::new(error)),
+        )
+    }
+
+    pub(crate) fn from_projected_batch(
+        error: SdkExecutionDiagnostic,
+        model_phase: ModelValidationPhase,
+    ) -> Self {
+        let (category, phase) = match error.category() {
+            SdkDiagnosticCategory::InvalidInput => {
+                (ErrorCategory::ModelValidation, Some(model_phase))
+            }
+            SdkDiagnosticCategory::Integrity => (ErrorCategory::Integrity, Some(model_phase)),
+            SdkDiagnosticCategory::Provider => (ErrorCategory::QueryExecution, None),
+            SdkDiagnosticCategory::Transaction => (ErrorCategory::Transaction, None),
+            SdkDiagnosticCategory::UnsupportedCapability => (ErrorCategory::Capability, None),
+            SdkDiagnosticCategory::ResourceLimit => (ErrorCategory::ResourceLimit, None),
+            SdkDiagnosticCategory::Cancelled => (ErrorCategory::Cancelled, None),
+            SdkDiagnosticCategory::Internal => (ErrorCategory::Other, None),
+            _ => (ErrorCategory::Other, None),
+        };
+        let code = error.code().as_str().to_owned();
+        let message = error.message().as_str().to_owned();
+        let path = error.path().iter().map(flatten_sdk_path).collect();
+        let diagnostic = ErrorDiagnostic {
+            path: error
+                .path()
+                .iter()
+                .map(typed_projected_batch_path)
+                .collect(),
+            details: error
+                .details()
+                .iter()
+                .map(|(name, value)| (name.as_str().to_owned(), flatten_sdk_detail(value)))
+                .collect(),
+        };
+        Self::classified_with_diagnostic(
+            category,
+            phase,
+            code,
+            path,
+            Some(diagnostic),
+            message,
+            Some(Box::new(error)),
+        )
+    }
+
+    pub(crate) fn with_projected_batch_row(self, ordinal: u64) -> Self {
+        let row_path = [
+            ErrorPathSegment::Argument("rows".to_owned()),
+            ErrorPathSegment::Index(ordinal),
+        ];
+        match self {
+            Self::ModelValidation {
+                phase,
+                code,
+                mut path,
+                message,
+                source,
+            } => {
+                let mut typed_path = Vec::with_capacity(path.len().saturating_add(2));
+                typed_path.extend(row_path);
+                for segment in &path {
+                    append_generated_path_segment(&mut typed_path, segment);
+                }
+                path.insert(0, format!("[{ordinal}]"));
+                path.insert(0, "rows".to_owned());
+                Self::classified_with_diagnostic(
+                    ErrorCategory::ModelValidation,
+                    Some(phase),
+                    code,
+                    path,
+                    Some(ErrorDiagnostic {
+                        path: typed_path,
+                        details: BTreeMap::new(),
+                    }),
+                    message,
+                    source,
+                )
+            }
+            Self::Classified {
+                category,
+                phase,
+                code,
+                mut path,
+                diagnostic,
+                message,
+                source,
+            } => {
+                path.insert(0, format!("[{ordinal}]"));
+                path.insert(0, "rows".to_owned());
+                let mut diagnostic = diagnostic.map_or_else(
+                    || ErrorDiagnostic {
+                        path: Vec::new(),
+                        details: BTreeMap::new(),
+                    },
+                    |diagnostic| *diagnostic,
+                );
+                diagnostic.path.splice(0..0, row_path);
+                Self::classified_with_diagnostic(
+                    category,
+                    phase,
+                    code,
+                    path,
+                    Some(diagnostic),
+                    message,
+                    source,
+                )
+            }
+            other => other,
+        }
+    }
+
+    pub(crate) fn from_projected_crud(
+        error: ProjectedCrudCompatibilityFailure,
+        kind: ModelKind,
+        operation: Option<CrudOperation>,
+    ) -> Self {
+        let (diagnostic, stage, cause) = error.into_parts();
+        let code = diagnostic.code().as_str();
+
+        if code == "mutation_rehydration_missing" {
+            let message = match (kind, operation) {
+                (ModelKind::Entity, Some(CrudOperation::Update)) => {
+                    "updated entity was not returned"
+                }
+                (ModelKind::Entity, _) => "written entity was not returned",
+                (ModelKind::Relation, _) => "written relation was not returned",
+            };
+            return Self::model_validation(
+                ModelValidationPhase::Hydration,
+                "missing_post_write_row",
+                vec!["iid".into()],
+                message,
+                None,
+            );
+        }
+        if code == "relation_hydration_ambiguous" {
+            return Self::model_validation(
+                ModelValidationPhase::Hydration,
+                "ambiguous_provider_row",
+                vec!["iid".into()],
+                "provider returned multiple coalesced rows for one exact IID",
+                None,
+            );
+        }
+        if code == "hydrated_type_mismatch" {
+            let message = match kind {
+                ModelKind::Entity => "provider entity row has the wrong exact concrete type",
+                ModelKind::Relation => "provider relation row has the wrong exact concrete type",
+            };
+            return Self::model_validation(
+                ModelValidationPhase::Hydration,
+                "wrong_concrete_type",
+                vec!["type".into()],
+                message,
+                None,
+            );
+        }
+        if code == "hydrated_iid_missing" {
+            let message = match kind {
+                ModelKind::Entity => "provider entity row omitted its IID",
+                ModelKind::Relation => "provider relation row omitted its IID",
+            };
+            return Self::model_validation(
+                ModelValidationPhase::Hydration,
+                "missing_iid",
+                vec!["iid".into()],
+                message,
+                None,
+            );
+        }
+        if code == "hydrated_iid_mismatch" {
+            let message = match kind {
+                ModelKind::Entity => "provider entity row contains a noncanonical IID",
+                ModelKind::Relation => "provider relation row contains a noncanonical IID",
+            };
+            return Self::model_validation(
+                ModelValidationPhase::Hydration,
+                "noncanonical_iid",
+                vec!["iid".into()],
+                message,
+                None,
+            );
+        }
+        if kind == ModelKind::Relation
+            && code == "noncanonical_iid"
+            && diagnostic
+                .path()
+                .iter()
+                .any(|segment| matches!(segment, SdkDiagnosticPathSegment::Role(_)))
+        {
+            return Self::model_validation(
+                ModelValidationPhase::Input,
+                "noncanonical_player_iid",
+                projected_role_path(&diagnostic, "iid"),
+                "relation reference IID must be canonical",
+                None,
+            );
+        }
+        if kind == ModelKind::Relation
+            && diagnostic
+                .path()
+                .iter()
+                .any(|segment| matches!(segment, SdkDiagnosticPathSegment::Role(_)))
+            && matches!(
+                cause.as_ref(),
+                Some(ProjectedCrudCompatibilityCause::Orm(
+                    type_bridge_orm::OrmError::Hydration { .. }
+                ))
+            )
+        {
+            return Self::model_validation(
+                ModelValidationPhase::Hydration,
+                "invalid_player_attributes",
+                projected_role_path(&diagnostic, "attributes"),
+                "provider role player attributes are outside the projected descriptor",
+                cause.and_then(projected_cause_source),
+            );
+        }
+        if kind == ModelKind::Relation
+            && code == "runtime_projection_mismatch"
+            && diagnostic
+                .path()
+                .iter()
+                .any(|segment| matches!(segment, SdkDiagnosticPathSegment::Role(_)))
+        {
+            return Self::model_validation(
+                ModelValidationPhase::Hydration,
+                "invalid_player_attributes",
+                projected_role_path(&diagnostic, "attributes"),
+                "provider role player attributes are outside the projected descriptor",
+                cause.and_then(projected_cause_source),
+            );
+        }
+        if kind == ModelKind::Relation {
+            let mapped = match code {
+                "hydrated_player_iid_missing" => Some((
+                    "missing_player_iid",
+                    "iid",
+                    "provider role player omitted its IID",
+                )),
+                "hydrated_player_iid_invalid" => Some((
+                    "noncanonical_player_iid",
+                    "iid",
+                    "provider role player contains a noncanonical IID",
+                )),
+                "hydrated_player_type_missing" => Some((
+                    "missing_player_type",
+                    "type",
+                    "provider role player omitted its concrete type",
+                )),
+                "hydrated_role_player_not_accepted" => Some((
+                    "player_not_allowed",
+                    "type",
+                    "provider role player type is outside the role",
+                )),
+                "projected_player_type_ambiguous" => Some((
+                    "invalid_installed_projection",
+                    "type",
+                    "projected player authority is ambiguous",
+                )),
+                _ => None,
+            };
+            if let Some((legacy_code, suffix, message)) = mapped {
+                return Self::model_validation(
+                    ModelValidationPhase::Hydration,
+                    legacy_code,
+                    projected_role_path(&diagnostic, suffix),
+                    message,
+                    None,
+                );
+            }
+        }
+
+        if let Some(cause) = cause {
+            return match cause {
+                ProjectedCrudCompatibilityCause::Orm(error) => {
+                    if stage == ProjectedCrudCompatibilityStage::Hydration {
+                        Self::from_orm_hydration(error)
+                    } else {
+                        Self::from_orm(error)
+                    }
+                }
+                ProjectedCrudCompatibilityCause::Commit(error) => {
+                    Self::from_orm(error.into_orm_error())
+                }
+            };
+        }
+        Self::from_sdk_execution(
+            diagnostic,
+            if stage == ProjectedCrudCompatibilityStage::Hydration {
+                ModelValidationPhase::Hydration
+            } else {
+                ModelValidationPhase::Input
+            },
         )
     }
 
@@ -472,6 +977,20 @@ impl Error {
         }
     }
 
+    /// Return the exact common SDK diagnostic category, when this error
+    /// directly retains one.
+    ///
+    /// This is an additive, lossless view for generated manager and projected
+    /// batch diagnostics. [`Self::category`] remains the released Rust
+    /// compatibility classification and may intentionally map SDK
+    /// `invalid_input` to [`ErrorCategory::ModelValidation`].
+    #[must_use]
+    pub fn sdk_category(&self) -> Option<&'static str> {
+        StdError::source(self)
+            .and_then(|source| source.downcast_ref::<SdkExecutionDiagnostic>())
+            .map(|diagnostic| diagnostic.category().as_str())
+    }
+
     /// Return the error message string.
     #[must_use]
     pub fn message(&self) -> &str {
@@ -540,6 +1059,235 @@ impl Error {
     }
 }
 
+fn flatten_sdk_path(segment: &SdkDiagnosticPathSegment) -> String {
+    match segment {
+        SdkDiagnosticPathSegment::Argument(value) => value.as_str().to_owned(),
+        SdkDiagnosticPathSegment::Index(value) => format!("[{value}]"),
+        SdkDiagnosticPathSegment::Type(_) => "type".into(),
+        SdkDiagnosticPathSegment::Field(value) => value.attribute().label().as_str().to_owned(),
+        SdkDiagnosticPathSegment::Role(value) => value.label().as_str().to_owned(),
+        SdkDiagnosticPathSegment::Query(value) => value.as_str().to_owned(),
+        SdkDiagnosticPathSegment::QueryBinding(value) => format!("binding[{value}]"),
+        SdkDiagnosticPathSegment::QueryField { owner, name } => {
+            format!("{}.{}", owner.as_str(), name.as_str())
+        }
+        SdkDiagnosticPathSegment::QueryRole { owner, name } => {
+            format!("{}.{}", owner.as_str(), name.as_str())
+        }
+        SdkDiagnosticPathSegment::QueryRoleEdge(value) => format!("role_edge[{value}]"),
+        SdkDiagnosticPathSegment::QueryOutputSlot(value) => format!("output[{value}]"),
+        SdkDiagnosticPathSegment::QueryOutputName(value)
+        | SdkDiagnosticPathSegment::ContractField(value)
+        | SdkDiagnosticPathSegment::ContractIdentity(value) => value.as_str().to_owned(),
+        _ => "diagnostic".into(),
+    }
+}
+
+fn projected_role_path(diagnostic: &SdkExecutionDiagnostic, suffix: &'static str) -> Vec<String> {
+    let role = diagnostic.path().iter().find_map(|segment| {
+        let SdkDiagnosticPathSegment::Role(role) = segment else {
+            return None;
+        };
+        Some(role.label().as_str())
+    });
+    let index = diagnostic.path().iter().find_map(|segment| {
+        let SdkDiagnosticPathSegment::Index(index) = segment else {
+            return None;
+        };
+        Some(*index)
+    });
+    let head = match (role, index) {
+        (Some(role), Some(index)) => format!("{role}[{index}]"),
+        (Some(role), None) => role.to_owned(),
+        _ => "roles".to_owned(),
+    };
+    vec![head, suffix.to_owned()]
+}
+
+fn projected_cause_source(
+    cause: ProjectedCrudCompatibilityCause,
+) -> Option<Box<dyn StdError + Send + Sync + 'static>> {
+    match cause {
+        ProjectedCrudCompatibilityCause::Orm(error) => Some(Box::new(error)),
+        ProjectedCrudCompatibilityCause::Commit(error) => Some(Box::new(error)),
+    }
+}
+
+fn typed_sdk_path(segment: &SdkDiagnosticPathSegment) -> ErrorPathSegment {
+    match segment {
+        SdkDiagnosticPathSegment::Argument(value) => {
+            ErrorPathSegment::Field(value.as_str().to_owned())
+        }
+        SdkDiagnosticPathSegment::Index(value) => ErrorPathSegment::Index(*value),
+        SdkDiagnosticPathSegment::Type(value) => ErrorPathSegment::Identifier(format!(
+            "{}:{}",
+            match value.kind() {
+                type_bridge_contract::id::TypeKind::Entity => "entity",
+                type_bridge_contract::id::TypeKind::Relation => "relation",
+                type_bridge_contract::id::TypeKind::Attribute => "attribute",
+                type_bridge_contract::id::TypeKind::Struct => "struct",
+            },
+            value.label().as_str()
+        )),
+        SdkDiagnosticPathSegment::Field(value) => ErrorPathSegment::Identifier(format!(
+            "{}:{}",
+            value.owner().label().as_str(),
+            value.attribute().label().as_str()
+        )),
+        SdkDiagnosticPathSegment::Role(value) => ErrorPathSegment::Identifier(format!(
+            "{}:{}",
+            value.declaring_relation().as_str(),
+            value.label().as_str()
+        )),
+        SdkDiagnosticPathSegment::Query(value) => {
+            ErrorPathSegment::Query(acceptance_path_kind(*value))
+        }
+        SdkDiagnosticPathSegment::QueryBinding(value) => ErrorPathSegment::QueryBinding(*value),
+        SdkDiagnosticPathSegment::QueryField { owner, name } => ErrorPathSegment::QueryField {
+            owner: owner.as_str().to_owned(),
+            name: name.as_str().to_owned(),
+        },
+        SdkDiagnosticPathSegment::QueryRole { owner, name } => ErrorPathSegment::QueryRole {
+            owner: owner.as_str().to_owned(),
+            name: name.as_str().to_owned(),
+        },
+        SdkDiagnosticPathSegment::QueryRoleEdge(value) => ErrorPathSegment::QueryRoleEdge(*value),
+        SdkDiagnosticPathSegment::QueryOutputSlot(value) => {
+            ErrorPathSegment::QueryOutputSlot(*value)
+        }
+        SdkDiagnosticPathSegment::QueryOutputName(value) => {
+            ErrorPathSegment::QueryOutputName(value.as_str().to_owned())
+        }
+        SdkDiagnosticPathSegment::ContractField(value) => {
+            ErrorPathSegment::ContractField(value.as_str().to_owned())
+        }
+        SdkDiagnosticPathSegment::ContractIdentity(value) => {
+            ErrorPathSegment::ContractIdentity(value.as_str().to_owned())
+        }
+        _ => ErrorPathSegment::Identifier("diagnostic".into()),
+    }
+}
+
+fn typed_projected_batch_path(segment: &SdkDiagnosticPathSegment) -> ErrorPathSegment {
+    match segment {
+        SdkDiagnosticPathSegment::Argument(value) => {
+            ErrorPathSegment::Argument(value.as_str().to_owned())
+        }
+        other => typed_sdk_path(other),
+    }
+}
+
+fn append_generated_path_segment(path: &mut Vec<ErrorPathSegment>, segment: &str) {
+    let Some(first_index) = segment.find('[') else {
+        path.push(ErrorPathSegment::Field(segment.to_owned()));
+        return;
+    };
+    let mut parsed = Vec::new();
+    if first_index > 0 {
+        parsed.push(ErrorPathSegment::Field(segment[..first_index].to_owned()));
+    }
+    let mut remainder = &segment[first_index..];
+    while remainder.starts_with('[') {
+        let Some(end) = remainder.find(']') else {
+            path.push(ErrorPathSegment::Field(segment.to_owned()));
+            return;
+        };
+        let Ok(index) = remainder[1..end].parse::<u64>() else {
+            path.push(ErrorPathSegment::Field(segment.to_owned()));
+            return;
+        };
+        parsed.push(ErrorPathSegment::Index(index));
+        remainder = &remainder[end + 1..];
+    }
+    if !remainder.is_empty() || parsed.is_empty() {
+        path.push(ErrorPathSegment::Field(segment.to_owned()));
+    } else {
+        path.extend(parsed);
+    }
+}
+
+fn flatten_sdk_detail(value: &SdkDiagnosticDetailValue) -> ErrorDetail {
+    match value {
+        SdkDiagnosticDetailValue::Boolean(value) => ErrorDetail::Boolean(*value),
+        SdkDiagnosticDetailValue::Count(value) | SdkDiagnosticDetailValue::ByteCount(value) => {
+            i64::try_from(*value)
+                .map_or_else(|_| ErrorDetail::Text(value.to_string()), ErrorDetail::Long)
+        }
+        SdkDiagnosticDetailValue::Capability(value) => ErrorDetail::Text(value.as_str().to_owned()),
+        SdkDiagnosticDetailValue::ValueType(value) => ErrorDetail::Text(value.as_str().to_owned()),
+        SdkDiagnosticDetailValue::Type(value) => {
+            ErrorDetail::Text(value.label().as_str().to_owned())
+        }
+        SdkDiagnosticDetailValue::Field(value) => {
+            ErrorDetail::Text(value.attribute().label().as_str().to_owned())
+        }
+        SdkDiagnosticDetailValue::Role(value) => {
+            ErrorDetail::Text(value.label().as_str().to_owned())
+        }
+        SdkDiagnosticDetailValue::Fingerprint(value) => ErrorDetail::Text(value.digest().to_hex()),
+        SdkDiagnosticDetailValue::ProviderOperation(value) => {
+            ErrorDetail::Text(value.as_str().to_owned())
+        }
+        SdkDiagnosticDetailValue::CommitOutcome(value) => {
+            ErrorDetail::Text(value.as_str().to_owned())
+        }
+        SdkDiagnosticDetailValue::Signed(value) => ErrorDetail::Long(*value),
+        SdkDiagnosticDetailValue::QueryCategory(value) => {
+            ErrorDetail::QueryCategory(query_category(*value))
+        }
+        SdkDiagnosticDetailValue::QueryIdentity(value) => {
+            ErrorDetail::QueryIdentity(value.as_str().to_owned())
+        }
+        SdkDiagnosticDetailValue::QueryIdentityList(values) => ErrorDetail::QueryIdentityList(
+            values
+                .iter()
+                .map(|value| value.as_str().to_owned())
+                .collect(),
+        ),
+        _ => ErrorDetail::Text("diagnostic".into()),
+    }
+}
+
+fn sdk_query_category(error: &SdkExecutionDiagnostic) -> Option<SdkQueryDiagnosticCategory> {
+    error.details().iter().find_map(|(name, value)| {
+        (name.as_str() == "query_category").then(|| {
+            let SdkDiagnosticDetailValue::QueryCategory(category) = value else {
+                return None;
+            };
+            Some(*category)
+        })?
+    })
+}
+
+const fn query_category(value: SdkQueryDiagnosticCategory) -> QueryDiagnosticCategory {
+    match value {
+        SdkQueryDiagnosticCategory::InvalidPlan => QueryDiagnosticCategory::InvalidPlan,
+        SdkQueryDiagnosticCategory::Cardinality => QueryDiagnosticCategory::Cardinality,
+        SdkQueryDiagnosticCategory::UnsupportedCapability => {
+            QueryDiagnosticCategory::UnsupportedCapability
+        }
+        SdkQueryDiagnosticCategory::StaleSchema => QueryDiagnosticCategory::StaleSchema,
+        SdkQueryDiagnosticCategory::ResourceLimit => QueryDiagnosticCategory::ResourceLimit,
+        SdkQueryDiagnosticCategory::Cancelled => QueryDiagnosticCategory::Cancelled,
+        SdkQueryDiagnosticCategory::Provider => QueryDiagnosticCategory::Provider,
+        SdkQueryDiagnosticCategory::ResultDecode => QueryDiagnosticCategory::ResultDecode,
+        _ => QueryDiagnosticCategory::ResultDecode,
+    }
+}
+
+const fn acceptance_path_kind(value: SdkQueryDiagnosticPathKind) -> QueryDiagnosticPathKind {
+    match value {
+        SdkQueryDiagnosticPathKind::Request => QueryDiagnosticPathKind::Request,
+        SdkQueryDiagnosticPathKind::Plan => QueryDiagnosticPathKind::Plan,
+        SdkQueryDiagnosticPathKind::Operation => QueryDiagnosticPathKind::Operation,
+        SdkQueryDiagnosticPathKind::Predicate => QueryDiagnosticPathKind::Predicate,
+        SdkQueryDiagnosticPathKind::Output => QueryDiagnosticPathKind::Output,
+        SdkQueryDiagnosticPathKind::ProviderEvidence => QueryDiagnosticPathKind::ProviderEvidence,
+        SdkQueryDiagnosticPathKind::Result => QueryDiagnosticPathKind::Result,
+        _ => QueryDiagnosticPathKind::Result,
+    }
+}
+
 /// Convenience Result type for the TypeBridge client.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -553,6 +1301,7 @@ mod tests {
             (ErrorCategory::Connection, "connection"),
             (ErrorCategory::Schema, "schema"),
             (ErrorCategory::ModelValidation, "model_validation"),
+            (ErrorCategory::Integrity, "integrity"),
             (ErrorCategory::QueryAuthoring, "query_authoring"),
             (ErrorCategory::QueryExecution, "query_execution"),
             (ErrorCategory::Transaction, "transaction"),

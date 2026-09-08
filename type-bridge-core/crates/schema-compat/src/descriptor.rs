@@ -8,9 +8,10 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, Diagnosti
 use type_bridge_contract::id::{AttributeId, Label, RoleId, TypeId, TypeKind};
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CanonicalValueRange,
-    CanonicalValueSet, DeclaredSchema, DocText, DocumentId, OwnsFact, OwnsFactId, RegexPattern,
-    RelatesFactId, SchemaAnnotationValue, SchemaDiagnostic, SchemaDiagnostics, SchemaFact,
-    SourceSpan, SubFact, SubFactId, TypeFact, ValueFact, ValueFactId,
+    CanonicalValueSet, CollectionMode, DeclaredSchema, DocText, DocumentId, OwnsFact, OwnsFactId,
+    RegexPattern, RelatesFact, RelatesFactId, SchemaAnnotationValue, SchemaDiagnostic,
+    SchemaDiagnostics, SchemaFact, SourceSpan, SubFact, SubFactId, TypeFact, ValueFact,
+    ValueFactId,
 };
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, Cardinality, ValueTypeTag};
 use type_bridge_core_lib::_schema::TypeSchema;
@@ -20,6 +21,9 @@ use crate::released_syntax::ReleasedSyntax;
 
 /// Exact discriminator for the first generated direct-descriptor format.
 pub const GENERATED_DECLARED_DESCRIPTOR_V1: &str = "typebridge.generated-descriptors/v1";
+
+/// Exact discriminator for generated descriptors that carry ordered collections.
+pub const GENERATED_DECLARED_DESCRIPTOR_V2: &str = "typebridge.generated-descriptors/v2";
 
 /// Generated package path containing the canonical direct declaration snapshot.
 pub const GENERATED_DECLARED_DESCRIPTOR_PATH: &str = "declared-schema.json";
@@ -164,6 +168,116 @@ struct PlaysDescriptor {
     source: DescriptorSource,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DescriptorCollectionMode {
+    #[default]
+    Unordered,
+    OrderedList,
+}
+
+impl DescriptorCollectionMode {
+    const fn is_unordered(&self) -> bool {
+        matches!(self, Self::Unordered)
+    }
+}
+
+impl From<CollectionMode> for DescriptorCollectionMode {
+    fn from(value: CollectionMode) -> Self {
+        match value {
+            CollectionMode::Unordered => Self::Unordered,
+            CollectionMode::OrderedList => Self::OrderedList,
+        }
+    }
+}
+
+impl From<DescriptorCollectionMode> for CollectionMode {
+    fn from(value: DescriptorCollectionMode) -> Self {
+        match value {
+            DescriptorCollectionMode::Unordered => Self::Unordered,
+            DescriptorCollectionMode::OrderedList => Self::OrderedList,
+        }
+    }
+}
+
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ObjectDescriptorV2 {
+    label: String,
+    #[serde(default)]
+    parent: Option<String>,
+    #[serde(default)]
+    is_abstract: bool,
+    #[serde(default)]
+    doc: Option<String>,
+    #[serde(default)]
+    meta: BTreeMap<String, String>,
+    #[serde(default)]
+    owns: Vec<OwnsDescriptorV2>,
+    source: DescriptorSource,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RelationDescriptorV2 {
+    #[serde(flatten)]
+    object: ObjectDescriptorV2,
+    #[serde(default)]
+    relates: Vec<RelatesDescriptorV2>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OwnsDescriptorV2 {
+    attribute: String,
+    #[serde(
+        default,
+        skip_serializing_if = "DescriptorCollectionMode::is_unordered"
+    )]
+    collection_mode: DescriptorCollectionMode,
+    #[serde(default, skip_serializing_if = "is_false")]
+    distinct: bool,
+    #[serde(default)]
+    key: bool,
+    #[serde(default)]
+    unique: bool,
+    #[serde(default)]
+    card: Option<Cardinality>,
+    #[serde(default)]
+    doc: Option<String>,
+    #[serde(default)]
+    meta: BTreeMap<String, String>,
+    source: DescriptorSource,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RelatesDescriptorV2 {
+    role: String,
+    #[serde(default)]
+    specializes: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "DescriptorCollectionMode::is_unordered"
+    )]
+    collection_mode: DescriptorCollectionMode,
+    #[serde(default, skip_serializing_if = "is_false")]
+    distinct: bool,
+    #[serde(default)]
+    is_abstract: bool,
+    #[serde(default)]
+    card: Option<Cardinality>,
+    #[serde(default)]
+    doc: Option<String>,
+    #[serde(default)]
+    meta: BTreeMap<String, String>,
+    source: DescriptorSource,
+}
+
 /// Closed, direct-only descriptor snapshot emitted by generated bindings.
 ///
 /// Existing CRUD descriptors are not this type: they flatten inherited owns
@@ -187,15 +301,60 @@ pub struct GeneratedDeclaredDescriptorSetV1 {
     plays: Vec<PlaysDescriptor>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct GeneratedDeclaredDescriptorSetV2 {
+    format: String,
+    snapshot_kind: SnapshotKind,
+    closed_world: bool,
+    #[serde(default)]
+    unsupported_constructs: Vec<String>,
+    #[serde(default)]
+    attributes: Vec<AttributeDescriptor>,
+    #[serde(default)]
+    entities: Vec<ObjectDescriptorV2>,
+    #[serde(default)]
+    relations: Vec<RelationDescriptorV2>,
+    #[serde(default)]
+    plays: Vec<PlaysDescriptor>,
+}
+
 /// Decode canonical generated-descriptor JSON and adapt direct declarations
 /// through the source-language-neutral [`FactAssembler`].
 pub fn generated_descriptors_to_declared(
     document: DocumentId,
     canonical_json: &[u8],
 ) -> Result<DeclaredSchema, SchemaDiagnostics> {
-    let descriptors = from_canonical_json::<GeneratedDeclaredDescriptorSetV1>(canonical_json)
+    let value = from_canonical_json::<serde_json::Value>(canonical_json)
         .map_err(|diagnostic| one(diagnostic, None))?;
-    descriptors.into_declared(document, canonical_json.len())
+    match value.get("format").and_then(serde_json::Value::as_str) {
+        Some(GENERATED_DECLARED_DESCRIPTOR_V1) => {
+            let descriptors =
+                from_canonical_json::<GeneratedDeclaredDescriptorSetV1>(canonical_json)
+                    .map_err(|diagnostic| one(diagnostic, None))?;
+            descriptors.into_declared(document, canonical_json.len())
+        }
+        Some(GENERATED_DECLARED_DESCRIPTOR_V2) => {
+            let descriptors =
+                from_canonical_json::<GeneratedDeclaredDescriptorSetV2>(canonical_json)
+                    .map_err(|diagnostic| one(diagnostic, None))?;
+            let rebuilt =
+                to_canonical_json(&descriptors).map_err(|diagnostic| one(diagnostic, None))?;
+            if rebuilt != canonical_json {
+                return Err(error(
+                    "non_canonical_generated_descriptor",
+                    "generated descriptor input is not the canonical encoding of its format",
+                    None,
+                ));
+            }
+            descriptors.into_declared(document, canonical_json.len())
+        }
+        _ => Err(error(
+            "unsupported_generated_descriptor_format",
+            "generated descriptor input uses an unsupported format",
+            None,
+        )),
+    }
 }
 
 /// Project TypeQL direct facts into the closed generated-descriptor format.
@@ -224,24 +383,43 @@ pub fn typeql_to_generated_descriptors(
     // generator input carries opaque dummy function bodies the strict
     // grammar rejects; strip them with the released parser's own extents.
     let source = type_bridge_core_lib::_parser::strip_function_definitions(source);
-    // List capabilities and released-only annotations sit outside the
-    // overlap grammar: pin the plain capability, record each construct,
-    // and mark the snapshot open-world instead of failing the whole
-    // generation.
-    let (source, mut unsupported) = strip_unportable_constructs(&source);
+    // Preserve ordered capabilities and `@distinct` in the successor
+    // descriptor. Only released constructs outside the canonical fact graph
+    // remain open-world evidence.
+    let (source, mut unsupported) = strip_released_only_constructs(&source);
     let declared =
         released_descriptors_to_declared(document, &source, evidence_source, &mut unsupported)?;
-    let mut descriptors = GeneratedDeclaredDescriptorSetV1::from_declared(&declared)?;
-    if !unsupported.is_empty() {
-        unsupported.sort_by_key(|(start, _)| *start);
-        descriptors.closed_world = false;
-        descriptors.unsupported_constructs = unsupported
-            .into_iter()
-            .map(|(_, spelling)| spelling)
-            .collect();
+    unsupported.sort_by_key(|(start, _)| *start);
+    let unsupported = unsupported
+        .into_iter()
+        .map(|(_, spelling)| spelling)
+        .collect::<Vec<_>>();
+    let bytes = if declared_requires_descriptor_v2(&declared) {
+        let mut descriptors = GeneratedDeclaredDescriptorSetV2::from_declared(&declared)?;
+        if !unsupported.is_empty() {
+            descriptors.closed_world = false;
+            descriptors.unsupported_constructs = unsupported;
+        }
+        to_canonical_json(&descriptors)
+    } else {
+        let mut descriptors = GeneratedDeclaredDescriptorSetV1::from_declared(&declared)?;
+        if !unsupported.is_empty() {
+            descriptors.closed_world = false;
+            descriptors.unsupported_constructs = unsupported;
+        }
+        to_canonical_json(&descriptors)
     }
-    let bytes = to_canonical_json(&descriptors).map_err(|diagnostic| one(diagnostic, None))?;
+    .map_err(|diagnostic| one(diagnostic, None))?;
     Ok(String::from_utf8(bytes).expect("canonical JSON is valid UTF-8"))
+}
+
+fn declared_requires_descriptor_v2(declared: &DeclaredSchema) -> bool {
+    declared.facts().any(|fact| match fact {
+        SchemaFact::Owns(fact) => !fact.collection_mode().is_unordered(),
+        SchemaFact::Relates(fact) => !fact.collection_mode().is_unordered(),
+        SchemaFact::Annotation(fact) => fact.id().kind() == &AnnotationKindId::Distinct,
+        _ => false,
+    })
 }
 
 /// Adapt released descriptors without pretending that an open-world V1
@@ -403,7 +581,7 @@ fn released_unresolved_ranges(
     source: &str,
 ) -> Result<crate::ReleasedReferenceProjection, SchemaDiagnostics> {
     let source = type_bridge_core_lib::_parser::strip_function_definitions(source);
-    let (source, _) = strip_unportable_constructs(&source);
+    let (source, _) = strip_released_only_constructs(&source);
     // The strict TypeQL AST used by the index accepts a narrower comment
     // vocabulary than the frozen generator. Comment blanking is byte-length
     // preserving, so indexed capability offsets still address the original
@@ -552,12 +730,11 @@ fn is_released_annotation_projection_failure(annotation: &str, code: &str) -> bo
     }
 }
 
-/// Project released generator TypeQL through the same compatibility
-/// normalization used by descriptor generation.
+/// Project released generator TypeQL through compatibility normalization.
 ///
-/// The caller remains responsible for retaining the raw source as authority:
-/// list markers and released-only annotations are deliberately absent from
-/// this portable declared-fact projection.
+/// Ordered list markers and `@distinct` are canonical facts. Only constructs
+/// that remain released-only are absent from this declared projection; callers
+/// retain the raw source as authority for those extensions.
 pub fn released_typeql_to_declared_projection(
     document: DocumentId,
     source: &str,
@@ -569,10 +746,10 @@ pub fn released_typeql_to_declared_projection(
 /// Project released TypeQL without discarding any schema-semantic construct.
 ///
 /// This preserves the released parser's multi-`define`, alias, comment, and
-/// re-opened-label compatibility, but deliberately refuses list capabilities,
-/// released-only annotations, and opaque function/struct definitions that the
-/// portable fact graph cannot represent. Authority boundaries that require an
-/// exact schema contract must use this projection instead of
+/// re-opened-label compatibility, including ordered capabilities and
+/// `@distinct`, but deliberately refuses released-only annotations and opaque
+/// function/struct definitions that the canonical fact graph cannot represent.
+/// Authority boundaries that require an exact schema contract must use this projection instead of
 /// [`released_typeql_to_declared_projection`].
 pub fn released_typeql_to_declared_lossless_projection(
     document: DocumentId,
@@ -649,7 +826,7 @@ pub(crate) fn released_typeql_to_declared_presence_projection_with_references(
     document: DocumentId,
     source: &str,
 ) -> Result<(crate::function_references::TypeqlDeclaredSchema, Vec<usize>), SchemaDiagnostics> {
-    let (source, stripped) = strip_unportable_constructs(source);
+    let (source, stripped) = strip_released_only_constructs(source);
     released_typeql_to_declared_stripped_projection_with_references(
         document,
         &source,
@@ -753,19 +930,10 @@ fn blank_released_comments(source: &str) -> String {
     blank_source_extents(source, &comments)
 }
 
-/// Blank `ident[]` list markers, the released-only `@distinct`, `@cascade`,
-/// and `@subkey(...)` annotations, and the frozen parser's boundless
-/// `@range(..)` spelling outside comments and string literals, recording
-/// every construct.
-///
-/// `@distinct` is only legal on list capabilities, all of which strip
-/// here, so any occurrence belongs to a stripped list. `@cascade` and
-/// `@subkey` are released ownership annotations with no portable V2
-/// identity; stripping them here keeps the legacy generator working
-/// while the open-world marker records the incompleteness. Redaction is
-/// length-preserving (spans become spaces) so descriptor offsets keep
-/// indexing the original document.
-fn strip_unportable_constructs(source: &str) -> (String, Vec<(usize, String)>) {
+fn strip_released_only_constructs(source: &str) -> (String, Vec<(usize, String)>) {
+    // `@cascade`, `@subkey`, and the released boundless `@range(..)` spelling
+    // still have no canonical fact identity. Ordered markers and `@distinct`
+    // do, so they remain visible to every descriptor and authority parser.
     use type_bridge_core_lib::_parser::{
         SourceRegionKind, blank_source_extents, scan_source_regions,
     };
@@ -780,25 +948,14 @@ fn strip_unportable_constructs(source: &str) -> (String, Vec<(usize, String)>) {
         let mut index = range.start;
         while index < range.end {
             let byte = bytes[index];
-            if byte == b'['
-                && index + 1 < range.end
-                && bytes[index + 1] == b']'
-                && index > range.start
-                && ident_byte(bytes[index - 1])
-            {
-                let mut start = index;
-                while start > range.start && ident_byte(bytes[start - 1]) {
-                    start -= 1;
-                }
-                stripped.push((start, format!("{}[]", &source[start..index])));
-                extents.push(index..index + 2);
-                index += 2;
-                continue;
-            }
             if byte == b'@'
                 && let Some((construct, length)) =
                     match_unportable_annotation(source, index, &ident_byte)
             {
+                if construct == "@distinct" {
+                    index += 1;
+                    continue;
+                }
                 stripped.push((index, construct));
                 extents.push(index..index + length);
                 index += length;
@@ -1144,6 +1301,13 @@ pub fn attach_declared_descriptors(
 
 impl GeneratedDeclaredDescriptorSetV1 {
     fn from_declared(declared: &DeclaredSchema) -> Result<Self, SchemaDiagnostics> {
+        Self::from_declared_with_g01_policy(declared, false)
+    }
+
+    fn from_declared_with_g01_policy(
+        declared: &DeclaredSchema,
+        allow_g01: bool,
+    ) -> Result<Self, SchemaDiagnostics> {
         let mut descriptors = Self {
             format: GENERATED_DECLARED_DESCRIPTOR_V1.to_string(),
             snapshot_kind: SnapshotKind::Declared,
@@ -1228,6 +1392,14 @@ impl GeneratedDeclaredDescriptorSetV1 {
                         .value_type = Some(fact.value_type());
                 }
                 SchemaFact::Owns(fact) => {
+                    if !allow_g01 && !fact.collection_mode().is_unordered() {
+                        return Err(unsupported_fact(
+                            declared,
+                            &SchemaFact::Owns(fact.clone()),
+                            "unsupported_generated_descriptor_collection_mode",
+                            "generated descriptor v1 cannot encode ordered ownerships",
+                        ));
+                    }
                     let id = fact.id();
                     let source = direct_source(declared, &SchemaFact::Owns(fact.clone()))?;
                     object_mut(&mut descriptors, id.owner())
@@ -1243,6 +1415,14 @@ impl GeneratedDeclaredDescriptorSetV1 {
                         });
                 }
                 SchemaFact::Relates(fact) => {
+                    if !allow_g01 && !fact.collection_mode().is_unordered() {
+                        return Err(unsupported_fact(
+                            declared,
+                            &SchemaFact::Relates(fact.clone()),
+                            "unsupported_generated_descriptor_collection_mode",
+                            "generated descriptor v1 cannot encode ordered related roles",
+                        ));
+                    }
                     let id = fact.id();
                     let source = direct_source(declared, &SchemaFact::Relates(fact.clone()))?;
                     relation_mut(&mut descriptors, id.relation().label().as_str())
@@ -1281,6 +1461,9 @@ impl GeneratedDeclaredDescriptorSetV1 {
 
         for fact in declared.facts() {
             if let SchemaFact::Annotation(annotation) = fact {
+                if allow_g01 && annotation.id().kind() == &AnnotationKindId::Distinct {
+                    continue;
+                }
                 apply_annotation(&mut descriptors, declared, annotation)?;
             }
         }
@@ -1386,6 +1569,352 @@ impl GeneratedDeclaredDescriptorSetV1 {
         }
 
         assembler.finish()
+    }
+}
+
+impl GeneratedDeclaredDescriptorSetV2 {
+    fn from_declared(declared: &DeclaredSchema) -> Result<Self, SchemaDiagnostics> {
+        let base = GeneratedDeclaredDescriptorSetV1::from_declared_with_g01_policy(declared, true)?;
+        let mut descriptors = Self::from_v1(base);
+
+        for fact in declared.facts() {
+            match fact {
+                SchemaFact::Owns(fact) => {
+                    let descriptor = object_v2_mut(&mut descriptors, fact.id().owner())
+                        .owns
+                        .iter_mut()
+                        .find(|descriptor| {
+                            descriptor.attribute == fact.id().attribute().label().as_str()
+                        })
+                        .expect("declared ownership has a matching v2 descriptor");
+                    descriptor.collection_mode = fact.collection_mode().into();
+                }
+                SchemaFact::Relates(fact) => {
+                    let descriptor =
+                        relation_v2_mut(&mut descriptors, fact.id().relation().label().as_str())
+                            .relates
+                            .iter_mut()
+                            .find(|descriptor| descriptor.role == fact.id().role().label().as_str())
+                            .expect("declared related role has a matching v2 descriptor");
+                    descriptor.collection_mode = fact.collection_mode().into();
+                }
+                SchemaFact::Annotation(annotation)
+                    if annotation.id().kind() == &AnnotationKindId::Distinct =>
+                {
+                    match annotation.id().subject() {
+                        AnnotationSubjectId::Owns(id) => {
+                            object_v2_mut(&mut descriptors, id.owner())
+                                .owns
+                                .iter_mut()
+                                .find(|descriptor| {
+                                    descriptor.attribute == id.attribute().label().as_str()
+                                })
+                                .expect("declared distinct owns has a matching v2 descriptor")
+                                .distinct = true;
+                        }
+                        AnnotationSubjectId::Relates(id) => {
+                            relation_v2_mut(&mut descriptors, id.relation().label().as_str())
+                                .relates
+                                .iter_mut()
+                                .find(|descriptor| descriptor.role == id.role().label().as_str())
+                                .expect("declared distinct relates has a matching v2 descriptor")
+                                .distinct = true;
+                        }
+                        _ => unreachable!("validated distinct annotations target owns or relates"),
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(descriptors)
+    }
+
+    fn into_declared(
+        self,
+        document: DocumentId,
+        source_len: usize,
+    ) -> Result<DeclaredSchema, SchemaDiagnostics> {
+        if self.format != GENERATED_DECLARED_DESCRIPTOR_V2 {
+            return Err(error(
+                "unsupported_generated_descriptor_format",
+                "generated descriptor input uses an unsupported format",
+                None,
+            ));
+        }
+
+        let mut owns_semantics = BTreeMap::<(String, String), (CollectionMode, bool)>::new();
+        for object in self
+            .entities
+            .iter()
+            .chain(self.relations.iter().map(|relation| &relation.object))
+        {
+            for owns in &object.owns {
+                owns_semantics.insert(
+                    (object.label.clone(), owns.attribute.clone()),
+                    (owns.collection_mode.into(), owns.distinct),
+                );
+            }
+        }
+        let mut relates_semantics = BTreeMap::<(String, String), (CollectionMode, bool)>::new();
+        for relation in &self.relations {
+            for relates in &relation.relates {
+                relates_semantics.insert(
+                    (relation.object.label.clone(), relates.role.clone()),
+                    (relates.collection_mode.into(), relates.distinct),
+                );
+            }
+        }
+        if !owns_semantics
+            .values()
+            .chain(relates_semantics.values())
+            .any(|(mode, distinct)| !mode.is_unordered() || *distinct)
+        {
+            return Err(error(
+                "non_canonical_generated_descriptor",
+                "generated descriptor v2 is reserved for ordered collection semantics",
+                None,
+            ));
+        }
+
+        let base = self.into_v1().into_declared(document, source_len)?;
+        let mut assembler = FactAssembler::new(FormatVersion::V1);
+        for fact in base.facts() {
+            let source = base
+                .source(&fact.id())
+                .cloned()
+                .expect("decoded generated descriptor facts retain direct sources");
+            match fact {
+                SchemaFact::Owns(fact) => {
+                    let (mode, distinct) = owns_semantics
+                        .get(&(
+                            fact.id().owner().label().as_str().to_string(),
+                            fact.id().attribute().label().as_str().to_string(),
+                        ))
+                        .copied()
+                        .unwrap_or((CollectionMode::Unordered, false));
+                    let owns = OwnsFact::new_with_collection_mode(fact.id().clone(), mode);
+                    assembler.insert_fact(SchemaFact::Owns(owns), source.clone())?;
+                    if distinct {
+                        insert_presence(
+                            &mut assembler,
+                            AnnotationSubjectId::Owns(fact.id().clone()),
+                            AnnotationKindId::Distinct,
+                            &source,
+                        )?;
+                    }
+                }
+                SchemaFact::Relates(fact) => {
+                    let (mode, distinct) = relates_semantics
+                        .get(&(
+                            fact.id().relation().label().as_str().to_string(),
+                            fact.id().role().label().as_str().to_string(),
+                        ))
+                        .copied()
+                        .unwrap_or((CollectionMode::Unordered, false));
+                    let relates = RelatesFact::new_with_collection_mode(
+                        fact.id().clone(),
+                        fact.specializes().cloned(),
+                        mode,
+                    )
+                    .map_err(|diagnostic| contract(diagnostic, &source))?;
+                    assembler.insert_fact(SchemaFact::Relates(relates), source.clone())?;
+                    if distinct {
+                        insert_presence(
+                            &mut assembler,
+                            AnnotationSubjectId::Relates(fact.id().clone()),
+                            AnnotationKindId::Distinct,
+                            &source,
+                        )?;
+                    }
+                }
+                _ => assembler.insert_fact(fact.clone(), source)?,
+            }
+        }
+        assembler.finish()
+    }
+
+    fn from_v1(value: GeneratedDeclaredDescriptorSetV1) -> Self {
+        Self {
+            format: GENERATED_DECLARED_DESCRIPTOR_V2.to_string(),
+            snapshot_kind: value.snapshot_kind,
+            closed_world: value.closed_world,
+            unsupported_constructs: value.unsupported_constructs,
+            attributes: value.attributes,
+            entities: value
+                .entities
+                .into_iter()
+                .map(ObjectDescriptorV2::from_v1)
+                .collect(),
+            relations: value
+                .relations
+                .into_iter()
+                .map(RelationDescriptorV2::from_v1)
+                .collect(),
+            plays: value.plays,
+        }
+    }
+
+    fn into_v1(self) -> GeneratedDeclaredDescriptorSetV1 {
+        GeneratedDeclaredDescriptorSetV1 {
+            format: GENERATED_DECLARED_DESCRIPTOR_V1.to_string(),
+            snapshot_kind: self.snapshot_kind,
+            closed_world: self.closed_world,
+            unsupported_constructs: self.unsupported_constructs,
+            attributes: self.attributes,
+            entities: self
+                .entities
+                .into_iter()
+                .map(ObjectDescriptorV2::into_v1)
+                .collect(),
+            relations: self
+                .relations
+                .into_iter()
+                .map(RelationDescriptorV2::into_v1)
+                .collect(),
+            plays: self.plays,
+        }
+    }
+}
+
+impl ObjectDescriptorV2 {
+    fn from_v1(value: ObjectDescriptor) -> Self {
+        Self {
+            label: value.label,
+            parent: value.parent,
+            is_abstract: value.is_abstract,
+            doc: value.doc,
+            meta: value.meta,
+            owns: value
+                .owns
+                .into_iter()
+                .map(OwnsDescriptorV2::from_v1)
+                .collect(),
+            source: value.source,
+        }
+    }
+
+    fn into_v1(self) -> ObjectDescriptor {
+        ObjectDescriptor {
+            label: self.label,
+            parent: self.parent,
+            is_abstract: self.is_abstract,
+            doc: self.doc,
+            meta: self.meta,
+            owns: self
+                .owns
+                .into_iter()
+                .map(OwnsDescriptorV2::into_v1)
+                .collect(),
+            source: self.source,
+        }
+    }
+}
+
+impl RelationDescriptorV2 {
+    fn from_v1(value: RelationDescriptor) -> Self {
+        Self {
+            object: ObjectDescriptorV2::from_v1(value.object),
+            relates: value
+                .relates
+                .into_iter()
+                .map(RelatesDescriptorV2::from_v1)
+                .collect(),
+        }
+    }
+
+    fn into_v1(self) -> RelationDescriptor {
+        RelationDescriptor {
+            object: self.object.into_v1(),
+            relates: self
+                .relates
+                .into_iter()
+                .map(RelatesDescriptorV2::into_v1)
+                .collect(),
+        }
+    }
+}
+
+impl OwnsDescriptorV2 {
+    fn from_v1(value: OwnsDescriptor) -> Self {
+        Self {
+            attribute: value.attribute,
+            collection_mode: DescriptorCollectionMode::Unordered,
+            distinct: false,
+            key: value.key,
+            unique: value.unique,
+            card: value.card,
+            doc: value.doc,
+            meta: value.meta,
+            source: value.source,
+        }
+    }
+
+    fn into_v1(self) -> OwnsDescriptor {
+        OwnsDescriptor {
+            attribute: self.attribute,
+            key: self.key,
+            unique: self.unique,
+            card: self.card,
+            doc: self.doc,
+            meta: self.meta,
+            source: self.source,
+        }
+    }
+}
+
+impl RelatesDescriptorV2 {
+    fn from_v1(value: RelatesDescriptor) -> Self {
+        Self {
+            role: value.role,
+            specializes: value.specializes,
+            collection_mode: DescriptorCollectionMode::Unordered,
+            distinct: false,
+            is_abstract: value.is_abstract,
+            card: value.card,
+            doc: value.doc,
+            meta: value.meta,
+            source: value.source,
+        }
+    }
+
+    fn into_v1(self) -> RelatesDescriptor {
+        RelatesDescriptor {
+            role: self.role,
+            specializes: self.specializes,
+            is_abstract: self.is_abstract,
+            card: self.card,
+            doc: self.doc,
+            meta: self.meta,
+            source: self.source,
+        }
+    }
+}
+
+fn relation_v2_mut<'a>(
+    descriptors: &'a mut GeneratedDeclaredDescriptorSetV2,
+    label: &str,
+) -> &'a mut RelationDescriptorV2 {
+    descriptors
+        .relations
+        .iter_mut()
+        .find(|descriptor| descriptor.object.label == label)
+        .expect("declared relation references have a matching v2 descriptor")
+}
+
+fn object_v2_mut<'a>(
+    descriptors: &'a mut GeneratedDeclaredDescriptorSetV2,
+    id: &TypeId,
+) -> &'a mut ObjectDescriptorV2 {
+    match id.kind() {
+        TypeKind::Entity => descriptors
+            .entities
+            .iter_mut()
+            .find(|descriptor| descriptor.label == id.label().as_str())
+            .expect("declared entity references have a matching v2 descriptor"),
+        TypeKind::Relation => &mut relation_v2_mut(descriptors, id.label().as_str()).object,
+        TypeKind::Attribute | TypeKind::Struct => {
+            unreachable!("only entities and relations own attributes")
+        }
     }
 }
 

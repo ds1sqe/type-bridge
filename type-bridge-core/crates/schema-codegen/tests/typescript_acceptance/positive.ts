@@ -27,8 +27,12 @@ import {
   ValDuration,
   aggregate,
   findEvents,
+  integerInput,
+  qualifyingScore,
   type EventRef,
   type FunctionToken,
+  type IntegerCall,
+  type IntegerInput,
   type Page,
   type Predicate,
   type ProjectedModelManager,
@@ -43,6 +47,8 @@ import {
 import type { RustDatabase } from "@type-bridge/node";
 
 const identifier = Identifier.create("person-1");
+const identifierBytes: Uint8Array = Identifier.encodeAttribute(identifier);
+const decodedIdentifier: Identifier = Identifier.decodeAttribute(identifierBytes);
 const score = Score.create(3n);
 const person: Person = Person.create({
   identifier,
@@ -116,6 +122,11 @@ const functionToken: FunctionToken<
 > = findEvents;
 const querySession = new QuerySession(database);
 const personVar = querySession.exact(Person);
+const minimum: IntegerInput = integerInput(querySession, Score.create(2n));
+const qualifying: IntegerCall = qualifyingScore(querySession, personVar, minimum);
+const qualifyingPredicate: Predicate = qualifying.gteField(personVar.field(Person.score));
+const nestedQualifying: IntegerCall = qualifyingScore(querySession, personVar, qualifying);
+const nestedPredicate: Predicate = qualifying.gteCall(nestedQualifying);
 const eventVar = querySession.var(Event);
 const employmentVar = querySession.var(Employment);
 const partyVar = querySession.subtypes(Party);
@@ -135,7 +146,14 @@ const actorInteractionQuery: Query<Interaction> = querySession
     actorPredicate,
     actorVar.field(Actor.nickname).contains(Nickname.create("actor")),
   );
-const personQuery: Query<Person> = querySession.query(personVar).where(identifierPredicate);
+const personQuery: Query<Person> = querySession
+  .query(personVar)
+  .where(identifierPredicate, qualifyingPredicate, nestedPredicate);
+const clonedPersonQuery: Query<Person> = personQuery.clone();
+const personQueryClosed: boolean = personQuery.isClosed;
+personQuery.close();
+const querySessionClosed: boolean = querySession.isClosed;
+querySession.close();
 const tupleQuery: Query<readonly [Person, Event]> = querySession.query(personVar, eventVar);
 const collectedQuery: Query<readonly Person[]> = querySession.query(
   personVar.collect().distinct(),
@@ -196,7 +214,23 @@ const remoteSession = new RemoteQuerySession(
 );
 const remotePersonVar = remoteSession.var(Person);
 const remotePartyVar = remoteSession.subtypes(Party);
+const remoteMinimum: IntegerInput = integerInput(remoteSession, Score.create(2n));
+const remoteQualifying: IntegerCall = qualifyingScore(
+  remoteSession,
+  remotePersonVar,
+  remoteMinimum,
+);
+const remoteNestedQualifying: IntegerCall = qualifyingScore(
+  remoteSession,
+  remotePersonVar,
+  remoteQualifying,
+);
 const remotePersonQuery: RemoteQuery<Person> = remoteSession.query(remotePersonVar);
+const clonedRemotePersonQuery: RemoteQuery<Person> = remotePersonQuery.clone();
+const remotePersonQueryClosed: boolean = remotePersonQuery.isClosed;
+remotePersonQuery.close();
+const remoteSessionClosed: boolean = remoteSession.isClosed;
+remoteSession.close();
 const remoteNamedQuery: RemoteQuery<Readonly<{ person: Person }>> =
   remoteSession.queryNamed({ person: remotePersonVar });
 const remoteOne: Promise<Person> = remotePersonQuery.one();
@@ -240,6 +274,9 @@ void collectedQuery;
 void namedQuery;
 void sixteenQuery;
 void personOne;
+void clonedPersonQuery;
+void personQueryClosed;
+void querySessionClosed;
 void personFirst;
 void personRows;
 void partyRows;
@@ -249,6 +286,9 @@ void personExists;
 void personAggregate;
 void groupedAggregate;
 void remoteNamedQuery;
+void clonedRemotePersonQuery;
+void remotePersonQueryClosed;
+void remoteSessionClosed;
 void remoteOne;
 void remoteRows;
 void remotePartyRows;

@@ -10,7 +10,7 @@ use type_bridge_workspace::{
     ExtensionRegistryService, ExtensionRequirement, MigrationV2Directory, OutputDirectory,
     SchemaAuthorityOutputPath, SchemaSetPath, SecretReference, SecretReferenceService, SecretSlot,
     TypeBridgeConfig, TypeBridgeConfigBuilder, TypeBridgeConfigServices, WorkspaceConfigErrorCode,
-    WorkspaceRoot, WorkspaceServiceError, WorkspaceSourceService,
+    WorkspaceRoot, WorkspaceServiceError, WorkspaceSourceService, c_symbol_prefix_for_app_label,
 };
 
 struct CanonicalSource {
@@ -175,6 +175,10 @@ fn typed_builder_retains_exact_policy_and_uses_injected_services() {
             BindingTarget::Rust,
             OutputDirectory::new("generated/rust").unwrap(),
         )
+        .output(
+            BindingTarget::C,
+            OutputDirectory::new("generated/c").unwrap(),
+        )
         .schema_authority_output(
             SchemaAuthorityOutputPath::new("generated/schema-authority.json").unwrap(),
         )
@@ -202,7 +206,7 @@ fn typed_builder_retains_exact_policy_and_uses_injected_services() {
         EXCLUSIVE_MANAGED_SCOPE_PROFILE_ID
     );
     assert_eq!(config.semantic_profile().as_str(), "typedb-3.12.1/v1");
-    assert_eq!(config.outputs().len(), 3);
+    assert_eq!(config.outputs().len(), 4);
     assert_eq!(
         config.schema_authority_output().unwrap().as_path(),
         Path::new("generated/schema-authority.json")
@@ -218,6 +222,53 @@ fn typed_builder_retains_exact_policy_and_uses_injected_services() {
         "TYPEDB_CREDENTIAL"
     );
     assert_eq!(config.extensions().len(), 1);
+}
+
+#[test]
+fn c_symbol_prefix_is_reversible_for_short_labels_and_golden_for_long_labels() {
+    for (label, expected) in [("example", "tb_example"), ("a_b-c", "tb_a_ub_hc")] {
+        let label = MigrationAppLabel::new(label).unwrap();
+        assert_eq!(c_symbol_prefix_for_app_label(&label).as_str(), expected);
+    }
+
+    let boundary = MigrationAppLabel::new("a".repeat(60)).unwrap();
+    assert_eq!(
+        c_symbol_prefix_for_app_label(&boundary).as_str(),
+        format!("tb_{}", "a".repeat(60))
+    );
+
+    let long = MigrationAppLabel::new("a".repeat(61)).unwrap();
+    assert_eq!(
+        c_symbol_prefix_for_app_label(&long).as_str(),
+        "tbh_sha256_exvojpzyv26zog66ebguv6i654zsyd7yr2jmicxxizzmtxefwpca"
+    );
+}
+
+#[test]
+fn c_symbol_prefix_namespaces_and_collision_domains_are_disjoint() {
+    let underscore = c_symbol_prefix_for_app_label(&MigrationAppLabel::new("a_b").unwrap());
+    let hyphen = c_symbol_prefix_for_app_label(&MigrationAppLabel::new("a-b").unwrap());
+    assert_ne!(underscore, hyphen);
+    assert_eq!(underscore.as_str(), "tb_a_ub");
+    assert_eq!(hyphen.as_str(), "tb_a_hb");
+
+    let first = c_symbol_prefix_for_app_label(
+        &MigrationAppLabel::new(format!("{}a", "z".repeat(254))).unwrap(),
+    );
+    let second = c_symbol_prefix_for_app_label(
+        &MigrationAppLabel::new(format!("{}b", "z".repeat(254))).unwrap(),
+    );
+    assert_ne!(first, second);
+    for shortened in [first, second] {
+        assert_eq!(shortened.as_str().len(), 63);
+        assert!(shortened.as_str().starts_with("tbh_sha256_"));
+    }
+
+    let longest_short =
+        c_symbol_prefix_for_app_label(&MigrationAppLabel::new("a".repeat(60)).unwrap());
+    assert_eq!(longest_short.as_str().len(), 63);
+    assert!(longest_short.as_str().starts_with("tb_a"));
+    assert!(!longest_short.as_str().starts_with("tbh_sha256_"));
 }
 
 #[test]

@@ -11,7 +11,6 @@ import pytest
 from type_bridge_core import (
     MatchRequestError,
     QueryV2Authority,
-    QueryV2Error,
     query_v2_prepare_remote_model_page,
     query_v2_prepare_remote_model_rows,
     query_v2_remote_model_context,
@@ -215,9 +214,9 @@ def test_public_direct_and_remote_order_iterables_stop_at_first_excess_term() ->
         "structural_limit_exceeded",
         [{"kind": "operation"}],
         {
-            "actual": {"kind": "unsigned", "value": 65},
-            "limit": {"kind": "text", "value": "order_terms"},
-            "maximum": {"kind": "unsigned", "value": 64},
+            "actual": {"kind": "count", "value": 65},
+            "limit": {"kind": "query_identity", "value": "order_terms"},
+            "maximum": {"kind": "count", "value": 64},
         },
     )
     assert direct_orders.consumed == 65
@@ -555,8 +554,11 @@ def test_public_remote_session_emits_exact_v2_contract_for_every_terminal() -> N
         )
         for invoke, expected_result, expected_model_kind in operations:
             before = len(requests)
-            with pytest.raises(QueryV2Error) as raised:
+            with pytest.raises(MatchRequestError) as raised:
                 await invoke()
+            assert raised.value.category == "invalid_plan"
+            assert raised.value.sdk_category == "invalid_input"
+            assert raised.value.query_category == "invalid_plan"
             assert raised.value.code == "query_remote_reply_malformed"
             assert len(requests) == before + 1
             raw = requests[-1]
@@ -570,8 +572,10 @@ def test_public_remote_session_emits_exact_v2_contract_for_every_terminal() -> N
                 assert model["cardinality"] == expected_model_kind
             else:
                 assert model["kind"] == expected_model_kind
-            assert request["limits"] == {
-                "deadline_ms": 5_000,
+            assert 0 < request["limits"]["deadline_ms"] <= 5_000
+            assert {
+                key: value for key, value in request["limits"].items() if key != "deadline_ms"
+            } == {
                 "max_attribute_values": 14,
                 "max_bytes": 1 << 20,
                 "max_collection_members": 12,
@@ -640,24 +644,29 @@ def test_public_remote_session_preserves_authenticated_structured_failure() -> N
     )
     person = session.var(RemoteSmokePerson)
 
-    with pytest.raises(QueryV2Error) as raised:
+    with pytest.raises(MatchRequestError) as raised:
         asyncio.run(session.query(person).one())
 
     error = raised.value
-    assert isinstance(error, QueryV2Error)
-    assert error.category == "invalid_contract"
+    assert isinstance(error, MatchRequestError)
+    assert error.category == "invalid_plan"
+    assert error.sdk_category == "invalid_input"
+    assert error.query_category == "invalid_plan"
     assert error.code == "remote_application_failure"
-    assert error.message == "the remote application rejected this query"
+    assert error.message == "The typed query plan does not satisfy the generated query contract"
     assert error.path == [
-        {"kind": "field", "value": "plan"},
+        {"kind": "contract_field", "value": "plan"},
         {"kind": "index", "value": 0},
-        {"kind": "identifier", "value": "smoke-person"},
+        {"kind": "contract_identity", "value": "smoke-person"},
     ]
     assert error.details == {
-        "attempt": {"kind": "long", "value": "7"},
-        "expected": {"kind": "text_list", "value": ["person", "employee"]},
+        "attempt": {"kind": "signed", "value": 7},
+        "expected": {
+            "kind": "query_identity_list",
+            "value": ["person", "employee"],
+        },
         "retryable": {"kind": "boolean", "value": False},
-        "subject": {"kind": "text", "value": "smoke-person"},
+        "subject": {"kind": "query_identity", "value": "smoke-person"},
     }
     assert exchanges == 1
 
@@ -680,14 +689,22 @@ def test_public_remote_session_rejects_missing_capability_before_exchange() -> N
         RemoteQueryLimits(1, 1 << 20, 1, 1, 1, 1),
     )
     person = session.var(RemoteSmokePerson)
-    with pytest.raises(QueryV2Error) as raised:
+    with pytest.raises(MatchRequestError) as raised:
         asyncio.run(session.query(person).one())
     assert raised.value.category == "unsupported_capability"
+    assert raised.value.sdk_category == "unsupported_capability"
+    assert raised.value.query_category == "unsupported_capability"
     assert raised.value.code == "unsupported_required_capability"
+    assert raised.value.details == {
+        "missing": {
+            "kind": "query_identity_list",
+            "value": ["query.output.hydrated"],
+        }
+    }
     assert exchanges == 0
 
 
-def test_native_remote_pending_claims_before_response_type_or_replay_inspection() -> None:
+def test_native_remote_pending_validates_response_type_before_semantic_claim() -> None:
     context = query_v2_remote_model_context(
         _model_authority(),
         _model_advertisement(),
@@ -714,13 +731,23 @@ def test_native_remote_pending_claims_before_response_type_or_replay_inspection(
     with pytest.raises(TypeError, match="response.*bytes or bytearray"):
         invoke_untyped(pending.decode_reply, object())
 
-    class HostileReplay:
+    class HostileResponse:
         def __getattribute__(self, name: str) -> object:
-            raise AssertionError(f"replayed response inspected {name}")
+            raise AssertionError(f"hostile response inspected {name}")
 
-    with pytest.raises(QueryV2Error) as replayed:
-        invoke_untyped(pending.decode_reply, HostileReplay())
-    assert replayed.value.category == "integrity"
+    with pytest.raises(TypeError, match="response.*bytes or bytearray"):
+        invoke_untyped(pending.decode_reply, HostileResponse())
+
+    with pytest.raises(MatchRequestError) as malformed:
+        pending.decode_reply(b"{}")
+    assert malformed.value.category == "invalid_plan"
+    assert malformed.value.code == "query_remote_reply_malformed"
+
+    with pytest.raises(MatchRequestError) as replayed:
+        pending.decode_reply(b"{}")
+    assert replayed.value.sdk_category == "integrity"
+    assert replayed.value.query_category == "result_decode"
+    assert replayed.value.category == "result_decode"
     assert replayed.value.code == "query_remote_v2_reply_replayed"
 
 
@@ -768,9 +795,9 @@ def test_native_remote_order_sequences_are_bounded_at_the_raw_ffi_boundary() -> 
         assert raised.value.code == "structural_limit_exceeded"
         assert raised.value.path == [{"kind": "operation"}]
         assert raised.value.details == {
-            "actual": {"kind": "unsigned", "value": 65},
-            "limit": {"kind": "text", "value": "order_terms"},
-            "maximum": {"kind": "unsigned", "value": 64},
+            "actual": {"kind": "count", "value": 65},
+            "limit": {"kind": "query_identity", "value": "order_terms"},
+            "maximum": {"kind": "count", "value": 64},
         }
 
 
@@ -794,7 +821,7 @@ def test_public_remote_session_rejects_invalid_limits_before_exchange(
         1,
         1,
     )
-    with pytest.raises(QueryV2Error) as raised:
+    with pytest.raises(MatchRequestError) as raised:
         invoke_untyped(
             RemoteQuerySession,
             _model_authority(),
@@ -802,5 +829,8 @@ def test_public_remote_session_rejects_invalid_limits_before_exchange(
             exchange,
             limits,
         )
+    assert raised.value.category == "invalid_plan"
+    assert raised.value.sdk_category == "invalid_input"
+    assert raised.value.query_category == "invalid_plan"
     assert raised.value.code == "query_remote_limit_invalid"
     assert exchanges == 0

@@ -232,11 +232,12 @@ local; one terminal performs one exchange and materializes through the same
 package projection as direct execution.
 
 Supported remote terminals are `one`, `first`, bounded `rows`, `page_by`,
-`count_by`, and `exists_by`, including exact/subtype hydration, predicates,
-roles, reachability, explicit cross joins, and selected shapes.
+`count_by`, `exists_by`, and typed `aggregate`/`group_by`, including exact/subtype
+hydration, predicates, roles, reachability, explicit cross joins, selected
+shapes, all reducers, and binding/field/tuple-field grouping. Reduction replies
+echo the exact root, grouping, and reducer contract and are authenticated before
+materialization through the same projection as direct execution.
 
-Remote reducers/grouping are currently native-only operations and fail with the
-stable `query_remote_v2_native_only_operation` diagnostic before any exchange.
 Remote mutations are not advertised by generated sessions.
 
 ## Safety contract

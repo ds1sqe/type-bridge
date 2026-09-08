@@ -438,7 +438,7 @@ fn rebuild(
 }
 
 #[test]
-fn emits_exact_deterministic_eleven_file_compound_package() {
+fn emits_exact_deterministic_compound_package_with_migration_resource() {
     let emitter = PythonEmitter::new();
     let authority = support::authority(COMPOUND_AUTHORITY_SOURCE);
     let projection = compound_projection(
@@ -462,11 +462,17 @@ fn emits_exact_deterministic_eleven_file_compound_package() {
             "_runtime.pyi",
             "_schema.py",
             "py.typed",
+            "typebridge/migration-history.json",
         ]
     );
     let source = std::str::from_utf8(first.get("_models.py").unwrap()).unwrap();
     let stub = std::str::from_utf8(first.get("_models.pyi").unwrap()).unwrap();
     let schema = std::str::from_utf8(first.get("_schema.py").unwrap()).unwrap();
+    let init = std::str::from_utf8(first.get("__init__.py").unwrap()).unwrap();
+    let init_stub = std::str::from_utf8(first.get("__init__.pyi").unwrap()).unwrap();
+    assert!(init.contains("def open_migration_catalog() -> MigrationCatalog:"));
+    assert!(init.contains("typebridge/migration-history.json"));
+    assert!(init_stub.contains("def open_migration_catalog() -> MigrationCatalog: ..."));
     assert!(
         source.find("class Employment(Membership):").unwrap()
             < source
@@ -474,10 +480,21 @@ fn emits_exact_deterministic_eleven_file_compound_package() {
                 .unwrap()
     );
     assert!(source.contains("class PlayerStats(_StructValue):"));
-    assert!(source.contains(
-        "find_employment: FunctionRef[[Person], Iterator[EmploymentRef]] = FunctionRef("
-    ));
+    assert!(
+        source
+            .contains(r#"    __struct_id__ = "{\"kind\":\"struct\",\"label\":\"player-stats\"}""#)
+    );
+    let find_employment = source
+        .lines()
+        .find(|line| line.starts_with("find_employment = "))
+        .expect("function token assignment is emitted");
+    assert!(find_employment.contains("\"find-employment\""));
     assert!(source.contains("_install_runtime_projection("));
+    assert!(
+        source
+            .contains("from ._authority import SCHEMA_AUTHORITY_BYTES as _SCHEMA_AUTHORITY_BYTES")
+    );
+    assert!(source.contains("    _SCHEMA_AUTHORITY_BYTES,\n    ["));
     assert!(source.contains("_initialize_attribute(self, value,"));
     assert!(stub.contains(
         "employee: _RoleDescriptor[Employment, Person, _BoundVar[Person] | _SubtypeBoundVar[Person], PersonRef, Person]"

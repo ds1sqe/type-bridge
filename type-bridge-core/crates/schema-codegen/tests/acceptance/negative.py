@@ -9,11 +9,15 @@ from generated_v2 import (
     Event,
     EventRef,
     FooBar,
+    FunctionCall,
     Identifier,
     Membership,
     Person,
     PersonRef,
+    ProjectedManagerComparison,
+    ProjectedModelManager,
     Robot,
+    RobotId,
     RoleToken,
     Score,
     SubtypeBoundVar,
@@ -26,6 +30,7 @@ from generated_v2 import (
     ValDouble,
     ValDuration,
     aggregate,
+    qualifying_score,
 )
 
 from type_bridge.session import Database
@@ -76,6 +81,27 @@ Employment(
 )
 person(7)  # E: wrong_scalar:reportArgumentType
 
+person_manager = Person.manager(Database(address="localhost:1729", database="generated-manager"))
+person_manager.where(
+    Robot.robot_id,  # E: wrong_manager_field_owner:reportArgumentType
+    ProjectedManagerComparison.EQ,
+    RobotId(7),
+)
+person_manager.where(
+    Person.score,  # E: wrong_manager_field_value:reportArgumentType
+    ProjectedManagerComparison.EQ,
+    Identifier("wrong"),
+)
+
+
+def requires_mutating_manager(value: ProjectedModelManager[Person]) -> None:
+    del value
+
+
+requires_mutating_manager(
+    person_manager.where()  # E: canonical_filter_has_no_mutations:reportArgumentType
+)
+
 query_session = Person.query(Database(address="localhost:1729", database="generated-query"))
 person_var = query_session.exact(Person)
 employment_var = query_session.exact(Employment)
@@ -116,6 +142,16 @@ query_session.query(  # E: too_many_query_slots:reportCallIssue
     person_var,
 )
 aggregate.mean(person_var.field(Person.identifier))  # E: non_numeric_aggregate:reportArgumentType
+
+
+def wrong_function_call_domain(call: FunctionCall[bool]) -> None:
+    qualifying_score(
+        query_session,
+        person_var,
+        call,  # E: wrong_function_call_domain:reportArgumentType
+    )
+
+
 query_session.query(person_var).aggregate(  # E: empty_aggregate:reportCallIssue
     person_var,
 )

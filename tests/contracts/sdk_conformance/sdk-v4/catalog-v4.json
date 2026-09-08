@@ -1,0 +1,128 @@
+{
+  "format": "typebridge.sdk-catalog/v4",
+  "authority_state": "finalized",
+  "fixture": {
+    "id": "sdk-v4",
+    "version": 4,
+    "semantic_profile": "typedb-3.12.1/v1",
+    "live_server_version": "3.12.3",
+    "journey_path": "tests/contracts/sdk_conformance/sdk-v4/journey-v4.json"
+  },
+  "report_schema_path": "tests/contracts/sdk_conformance/sdk-v4/report-schema-v4.json",
+  "observation_schema_path": "tests/contracts/sdk_conformance/sdk-v4/observation-schema-v4.json",
+  "report_bindings": ["python", "node", "rust", "c"],
+  "manifest_transition_cases": [
+    "sdk.runtime.database-administration",
+    "sdk.migration.rollback",
+    "sdk.migration.backfill",
+    "sdk.migration.runtime-facade"
+  ],
+  "evidence_only_gap_cases": [
+    "sdk.runtime.cancellation",
+    "sdk.runtime.timeout-resource-limits",
+    "sdk.diagnostic.all-workflows",
+    "sdk.runtime.explicit-close"
+  ],
+  "report_producers": {
+    "python": {
+      "id": "python.generated-administration-migration-v4-live",
+      "test_id": "python.generated_administration_migration_v4_live"
+    },
+    "node": {
+      "id": "node.generated-administration-migration-v4-live",
+      "test_id": "node.generated_administration_migration_v4_live"
+    },
+    "rust": {
+      "id": "type-bridge-rust.generated-administration-migration-v4-live",
+      "test_id": "rust_projection_live::generated_administration_migration_v4_live"
+    },
+    "c": {
+      "id": "type-bridge-c.generated-administration-migration-v4-live",
+      "test_id": "c_projection_live::generated_administration_migration_v4_live"
+    }
+  },
+  "selected_proofs": [
+    {
+      "case_id": "sdk.runtime.database-administration",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "bound_database_administration"
+    },
+    {
+      "case_id": "sdk.migration.rollback",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "rollback_reapply_recovery"
+    },
+    {
+      "case_id": "sdk.migration.backfill",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "binding_neutral_backfill"
+    },
+    {
+      "case_id": "sdk.migration.runtime-facade",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "migration_runtime_facade"
+    },
+    {
+      "case_id": "sdk.runtime.cancellation",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "administration_migration_cancellation"
+    },
+    {
+      "case_id": "sdk.runtime.timeout-resource-limits",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "administration_migration_resource_limits"
+    },
+    {
+      "case_id": "sdk.diagnostic.all-workflows",
+      "proof_kind": "diagnostic",
+      "observation_ref": "administration_migration_structured_diagnostic"
+    },
+    {
+      "case_id": "sdk.runtime.explicit-close",
+      "proof_kind": "lifecycle",
+      "observation_ref": "administration_migration_resource_lifecycle"
+    }
+  ],
+  "cases": [
+    {
+      "id": "sdk.runtime.database-administration",
+      "capability_id": "runtime.database-administration",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "sdk.migration.rollback",
+      "capability_id": "migration.reverse-cli",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "sdk.migration.backfill",
+      "capability_id": "migration.binding-neutral-backfill",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "sdk.migration.runtime-facade",
+      "capability_id": "migration.sdk-runtime-facade",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "sdk.runtime.cancellation",
+      "capability_id": "runtime.cancellation",
+      "disposition": "retained_gap_evidence"
+    },
+    {
+      "id": "sdk.runtime.timeout-resource-limits",
+      "capability_id": "runtime.timeout-and-resource-limits",
+      "disposition": "retained_gap_evidence"
+    },
+    {
+      "id": "sdk.diagnostic.all-workflows",
+      "capability_id": "diagnostic.all-workflows-structured",
+      "disposition": "retained_gap_evidence"
+    },
+    {
+      "id": "sdk.runtime.explicit-close",
+      "capability_id": "runtime.explicit-close",
+      "disposition": "retained_gap_evidence"
+    }
+  ]
+}

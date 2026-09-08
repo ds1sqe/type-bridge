@@ -71,7 +71,9 @@ export interface NativeAuthoredQueryPlan {
   readonly requiredCapabilities: string[];
   readonly authorityIdentity: NativeQueryV2AuthorityIdentity;
   rows(rows: (NativeQueryV2Scalar | null)[][]): NativeAuthoredQueryInvocation;
-  documents(rows: (NativeQueryV2Scalar | null)[][]): NativeAuthoredQueryInvocation;
+  documents(
+    rows: (NativeQueryV2Scalar | null)[][],
+  ): NativeAuthoredQueryInvocation;
   count(rows: (NativeQueryV2Scalar | null)[][]): NativeAuthoredQueryInvocation;
   exists(rows: (NativeQueryV2Scalar | null)[][]): NativeAuthoredQueryInvocation;
 }
@@ -83,7 +85,9 @@ export interface NativeQueryPlanBuilder {
     valueType: string,
     optional: boolean,
   ): NativeQueryV2InputHandle;
-  bindingOperand(binding: NativeQueryV2BindingHandle): NativeQueryV2OperandHandle;
+  bindingOperand(
+    binding: NativeQueryV2BindingHandle,
+  ): NativeQueryV2OperandHandle;
   literalOperand(valueType: string, value: unknown): NativeQueryV2OperandHandle;
   inputOperand(input: NativeQueryV2InputHandle): NativeQueryV2OperandHandle;
   isa(
@@ -169,11 +173,15 @@ export interface NativeQueryPlanBuilder {
     attributeLabel: string,
   ): NativeQueryV2DocumentFieldHandle;
   finalizeRows(columns: NativeQueryV2BindingHandle[]): NativeAuthoredQueryPlan;
-  finalizeDocuments(fields: NativeQueryV2DocumentFieldHandle[]): NativeAuthoredQueryPlan;
+  finalizeDocuments(
+    fields: NativeQueryV2DocumentFieldHandle[],
+  ): NativeAuthoredQueryPlan;
 }
 
 export interface NativeQueryV2BuilderRuntime {
-  NodeQueryPlanBuilder: new (authority: NativeQueryV2Authority) => NativeQueryPlanBuilder;
+  NodeQueryPlanBuilder: new (
+    authority: NativeQueryV2Authority,
+  ) => NativeQueryPlanBuilder;
   NodeAuthoredQueryPlan: NativeOpaqueClass<NativeAuthoredQueryPlan>;
   NodeAuthoredQueryInvocation: NativeOpaqueClass<NativeAuthoredQueryInvocation>;
   NodeQueryV2AuthorityIdentity: NativeOpaqueClass<NativeQueryV2AuthorityIdentity>;
@@ -197,27 +205,78 @@ export function registerQueryV2AuthorityHandle(
   queryV2AuthorityHandles.set(authority, native);
 }
 
-export function queryV2AuthorityHandle(authority: object): NativeQueryV2Authority | undefined {
+export function queryV2AuthorityHandle(
+  authority: object,
+): NativeQueryV2Authority | undefined {
   return queryV2AuthorityHandles.get(authority);
 }
 
 /** Stable V2 contract diagnostic categories. */
 export type QueryV2ErrorCategory =
   | "invalid_contract"
+  | "invalid_input"
+  | "invalid_plan"
+  | "cardinality"
   | "unsupported_capability"
+  | "stale_schema"
   | "resource_limit"
-  | "integrity";
+  | "integrity"
+  | "cancelled"
+  | "provider"
+  | "result_decode"
+  | "transaction"
+  | "internal";
 
 /** One typed location inside a rejected V2 contract. */
 export type QueryV2ErrorPathSegment =
-  | Readonly<{ kind: "field" | "identifier"; value: string }>
-  | Readonly<{ kind: "index"; value: number }>;
+  | Readonly<{
+      kind:
+        | "request"
+        | "plan"
+        | "operation"
+        | "predicate"
+        | "output"
+        | "provider_evidence"
+        | "result"
+        | "unknown";
+    }>
+  | Readonly<{
+      kind:
+        | "argument"
+        | "identifier"
+        | "type"
+        | "contract_field"
+        | "contract_identity";
+      value: string | Readonly<Record<string, unknown>>;
+    }>
+  | Readonly<{
+      kind: "field" | "role";
+      value: string | Readonly<Record<string, unknown>>;
+    }>
+  | Readonly<{
+      kind: "index" | "binding" | "role_edge" | "output_slot";
+      value: number;
+    }>
+  | Readonly<{ kind: "output_name"; value: string }>;
 
 /** One deterministic structured V2 diagnostic detail. */
 export type QueryV2ErrorDetail =
-  | Readonly<{ kind: "text" | "long"; value: string }>
+  | Readonly<{
+      kind:
+        | "text"
+        | "long"
+        | "signed"
+        | "unsigned"
+        | "count"
+        | "byte_count"
+        | "query_identity";
+      value: string;
+    }>
   | Readonly<{ kind: "boolean"; value: boolean }>
-  | Readonly<{ kind: "text_list"; value: readonly string[] }>;
+  | Readonly<{
+      kind: "text_list" | "query_identity_list";
+      value: readonly string[];
+    }>;
 
 /** Structured diagnostic preserved from the Rust V2 semantic engine. */
 export class QueryV2Error extends Error {
@@ -229,12 +288,24 @@ export class QueryV2Error extends Error {
     readonly diagnosticMessage: string,
     readonly path: readonly QueryV2ErrorPathSegment[],
     readonly details: Readonly<Record<string, QueryV2ErrorDetail>>,
+    readonly sdkCategory: QueryV2ErrorCategory = category,
+    readonly queryCategory: QueryV2ErrorCategory | null = category,
   ) {
     super(`${code}: ${diagnosticMessage}`);
   }
 }
 
 interface NativeQueryV2ErrorPayload {
+  readonly category: QueryV2ErrorCategory;
+  readonly sdkCategory: QueryV2ErrorCategory;
+  readonly queryCategory: QueryV2ErrorCategory | null;
+  readonly code: string;
+  readonly message: string;
+  readonly path: readonly QueryV2ErrorPathSegment[];
+  readonly details: Readonly<Record<string, QueryV2ErrorDetail>>;
+}
+
+interface LegacyNativeQueryV2ErrorPayload {
   readonly category: QueryV2ErrorCategory;
   readonly code: string;
   readonly message: string;
@@ -251,27 +322,79 @@ function hasExactKeys(
   expected: readonly string[],
 ): boolean {
   const keys = Object.keys(value);
-  return keys.length === expected.length && expected.every((key) => keys.includes(key));
-}
-
-function isQueryV2ErrorCategory(value: unknown): value is QueryV2ErrorCategory {
   return (
-    value === "invalid_contract" ||
-    value === "unsupported_capability" ||
-    value === "resource_limit" ||
-    value === "integrity"
+    keys.length === expected.length &&
+    expected.every((key) => keys.includes(key))
   );
 }
 
-function isQueryV2ErrorPathSegment(value: unknown): value is QueryV2ErrorPathSegment {
-  if (!isRecord(value) || !hasExactKeys(value, ["kind", "value"])) {
+function isQueryV2ErrorCategory(value: unknown): value is QueryV2ErrorCategory {
+  return [
+    "invalid_contract",
+    "invalid_input",
+    "invalid_plan",
+    "cardinality",
+    "unsupported_capability",
+    "stale_schema",
+    "resource_limit",
+    "integrity",
+    "cancelled",
+    "provider",
+    "result_decode",
+    "transaction",
+    "internal",
+  ].includes(value as string);
+}
+
+function isAdmissibleNativeQueryV2ErrorCategory(
+  value: unknown,
+): value is QueryV2ErrorCategory {
+  // Native internal failures are deliberately not projected as stable public
+  // diagnostics: their text is not part of the redacted query contract.
+  return isQueryV2ErrorCategory(value) && value !== "internal";
+}
+
+function isQueryV2ErrorPathSegment(
+  value: unknown,
+): value is QueryV2ErrorPathSegment {
+  if (!isRecord(value) || typeof value.kind !== "string") {
     return false;
   }
-  if (value.kind === "field" || value.kind === "identifier") {
+  if (
+    [
+      "request",
+      "plan",
+      "operation",
+      "predicate",
+      "output",
+      "provider_evidence",
+      "result",
+      "unknown",
+    ].includes(value.kind)
+  ) {
+    return hasExactKeys(value, ["kind"]);
+  }
+  if (!hasExactKeys(value, ["kind", "value"])) {
+    return false;
+  }
+  if (
+    [
+      "argument",
+      "identifier",
+      "type",
+      "field",
+      "role",
+      "contract_field",
+      "contract_identity",
+    ].includes(value.kind)
+  ) {
+    return typeof value.value === "string" || isRecord(value.value);
+  }
+  if (value.kind === "output_name") {
     return typeof value.value === "string";
   }
   return (
-    value.kind === "index" &&
+    ["index", "binding", "role_edge", "output_slot"].includes(value.kind) &&
     typeof value.value === "number" &&
     Number.isSafeInteger(value.value) &&
     value.value >= 0
@@ -295,23 +418,66 @@ function isQueryV2ErrorDetail(value: unknown): value is QueryV2ErrorDetail {
   }
   switch (value.kind) {
     case "text":
+    case "query_identity":
       return typeof value.value === "string";
     case "long":
+    case "signed":
       return typeof value.value === "string" && isCanonicalI64(value.value);
+    case "unsigned":
+    case "count":
+    case "byte_count":
+      return (
+        typeof value.value === "string" &&
+        /^(?:0|[1-9][0-9]*)$/.test(value.value)
+      );
     case "boolean":
       return typeof value.value === "boolean";
     case "text_list":
-      return Array.isArray(value.value) && value.value.every((item) => typeof item === "string");
+    case "query_identity_list":
+      return (
+        Array.isArray(value.value) &&
+        value.value.every((item) => typeof item === "string")
+      );
     default:
       return false;
   }
 }
 
-function isNativeQueryV2ErrorPayload(value: unknown): value is NativeQueryV2ErrorPayload {
+function isNativeQueryV2ErrorPayload(
+  value: unknown,
+): value is NativeQueryV2ErrorPayload {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      "category",
+      "sdkCategory",
+      "queryCategory",
+      "code",
+      "message",
+      "path",
+      "details",
+    ]) &&
+    isAdmissibleNativeQueryV2ErrorCategory(value.category) &&
+    isAdmissibleNativeQueryV2ErrorCategory(value.sdkCategory) &&
+    (value.queryCategory === null ||
+      isQueryV2ErrorCategory(value.queryCategory)) &&
+    typeof value.code === "string" &&
+    /^[a-z][a-z0-9_]{0,127}$/.test(value.code) &&
+    typeof value.message === "string" &&
+    Array.isArray(value.path) &&
+    value.path.every(isQueryV2ErrorPathSegment) &&
+    isRecord(value.details) &&
+    Object.values(value.details).every(isQueryV2ErrorDetail)
+  );
+}
+
+function isLegacyNativeQueryV2ErrorPayload(
+  value: unknown,
+): value is LegacyNativeQueryV2ErrorPayload {
   return (
     isRecord(value) &&
     hasExactKeys(value, ["category", "code", "message", "path", "details"]) &&
-    isQueryV2ErrorCategory(value.category) &&
+    isAdmissibleNativeQueryV2ErrorCategory(value.category) &&
     typeof value.code === "string" &&
     /^[a-z][a-z0-9_]{0,127}$/.test(value.code) &&
     typeof value.message === "string" &&
@@ -335,6 +501,20 @@ function structuredQueryV2Error(error: unknown): unknown {
         payload.message,
         payload.path,
         payload.details,
+        payload.sdkCategory,
+        payload.queryCategory,
+      );
+    }
+    if (isLegacyNativeQueryV2ErrorPayload(payload)) {
+      // Retain source compatibility for the released low-level V2 N-API,
+      // whose contract diagnostics predate the additive SDK/query category
+      // split. New generated match facades always emit the complete form.
+      return new QueryV2Error(
+        payload.category,
+        payload.code,
+        payload.message,
+        payload.path,
+        payload.details,
       );
     }
   } catch {
@@ -351,7 +531,9 @@ export function queryV2NativeCall<Result>(operation: () => Result): Result {
   }
 }
 
-export async function queryV2NativePromise<Result>(promise: Promise<Result>): Promise<Result> {
+export async function queryV2NativePromise<Result>(
+  promise: Promise<Result>,
+): Promise<Result> {
   try {
     return await promise;
   } catch (error) {

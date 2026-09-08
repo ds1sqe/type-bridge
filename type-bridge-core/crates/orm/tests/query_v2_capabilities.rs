@@ -230,6 +230,7 @@ fn limits_v2() -> RemoteLimitsV2 {
         max_graph_nodes: 1 << 16,
         max_attribute_values: 1 << 16,
         max_role_players: 1 << 16,
+        max_statements: 3,
     }
 }
 

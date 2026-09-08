@@ -8,7 +8,7 @@ import threading
 import warnings
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 import type_bridge.typedb_driver as typedb_driver
 import type_bridge.version as version
@@ -637,45 +637,61 @@ class Database:
 
     def create_database(self) -> None:
         """Create the database if it doesn't exist."""
+        self.create_database_outcome()
+
+    def create_database_outcome(self) -> Literal["created", "already_exists"]:
+        """Create the bound database and return a race-normalized outcome."""
         if self._driver is not None:
-            if not self.driver.databases.contains(self.database_name):
-                logger.debug(f"Creating database: {self.database_name}")
-                self.driver.databases.create(self.database_name)
-                logger.info(f"Database created: {self.database_name}")
-            else:
+            if self.driver.databases.contains(self.database_name):
                 logger.debug(f"Database already exists: {self.database_name}")
-            return
+                return "already_exists"
+            logger.debug(f"Creating database: {self.database_name}")
+            try:
+                self.driver.databases.create(self.database_name)
+            except Exception:
+                if self.driver.databases.contains(self.database_name):
+                    return "already_exists"
+                raise
+            logger.info(f"Database created: {self.database_name}")
+            return "created"
 
         from type_bridge._rust_runtime import rust_database_for
 
-        rust_db = rust_database_for(self)
-        if not rust_db.database_exists():
-            logger.debug(f"Creating database: {self.database_name}")
-            rust_db.create_database()
-            logger.info(f"Database created: {self.database_name}")
-        else:
-            logger.debug(f"Database already exists: {self.database_name}")
+        outcome = cast(
+            Literal["created", "already_exists"],
+            rust_database_for(self).create_database_outcome(),
+        )
+        logger.debug(f"Database create outcome for '{self.database_name}': {outcome}")
+        return outcome
 
     def delete_database(self) -> None:
         """Delete the database."""
+        self.delete_database_outcome()
+
+    def delete_database_outcome(self) -> Literal["deleted", "already_absent"]:
+        """Delete the bound database and return a race-normalized outcome."""
         if self._driver is not None:
-            if self.driver.databases.contains(self.database_name):
-                logger.debug(f"Deleting database: {self.database_name}")
-                self.driver.databases.get(self.database_name).delete()
-                logger.info(f"Database deleted: {self.database_name}")
-            else:
+            if not self.driver.databases.contains(self.database_name):
                 logger.debug(f"Database does not exist, skipping delete: {self.database_name}")
-            return
+                return "already_absent"
+            logger.debug(f"Deleting database: {self.database_name}")
+            try:
+                self.driver.databases.get(self.database_name).delete()
+            except Exception:
+                if not self.driver.databases.contains(self.database_name):
+                    return "deleted"
+                raise
+            logger.info(f"Database deleted: {self.database_name}")
+            return "deleted"
 
         from type_bridge._rust_runtime import rust_database_for
 
-        rust_db = rust_database_for(self)
-        if rust_db.database_exists():
-            logger.debug(f"Deleting database: {self.database_name}")
-            rust_db.delete_database()
-            logger.info(f"Database deleted: {self.database_name}")
-        else:
-            logger.debug(f"Database does not exist, skipping delete: {self.database_name}")
+        outcome = cast(
+            Literal["deleted", "already_absent"],
+            rust_database_for(self).delete_database_outcome(),
+        )
+        logger.debug(f"Database delete outcome for '{self.database_name}': {outcome}")
+        return outcome
 
     def database_exists(self) -> bool:
         """Check if database exists."""
@@ -687,6 +703,54 @@ class Database:
             exists = rust_database_for(self).database_exists()
         logger.debug(f"Database exists check for '{self.database_name}': {exists}")
         return exists
+
+    def inspect_database_pair(
+        self,
+    ) -> Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan"]:
+        """Inspect the managed database and its package-owned journal as one pair."""
+        from type_bridge._rust_runtime import rust_database_for
+
+        return cast(
+            Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan"],
+            rust_database_for(self).inspect_database_pair(),
+        )
+
+    def inspect_database_pair_controlled(
+        self,
+        *,
+        timeout_milliseconds: int | None = None,
+        cancellation: Any | None = None,
+    ) -> Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan"]:
+        """Inspect the managed database pair under explicit execution controls."""
+        from type_bridge._rust_runtime import rust_database_for
+
+        return cast(
+            Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan"],
+            rust_database_for(self).inspect_database_pair_controlled(
+                timeout_milliseconds=timeout_milliseconds,
+                cancellation=cancellation,
+            ),
+        )
+
+    def plan_database_delete(self) -> Any:
+        """Create a single-use, pair-aware managed database deletion plan."""
+        from type_bridge._rust_runtime import rust_database_for
+
+        return rust_database_for(self).plan_database_delete()
+
+    def plan_database_delete_controlled(
+        self,
+        *,
+        timeout_milliseconds: int | None = None,
+        cancellation: Any | None = None,
+    ) -> Any:
+        """Create a managed deletion plan under explicit execution controls."""
+        from type_bridge._rust_runtime import rust_database_for
+
+        return rust_database_for(self).plan_database_delete_controlled(
+            timeout_milliseconds=timeout_milliseconds,
+            cancellation=cancellation,
+        )
 
     @overload
     def transaction(self, transaction_type: Enum) -> TransactionContext: ...
@@ -747,7 +811,7 @@ class Database:
     def detected_server_version(self) -> str | None:
         """The server version detected by the connect-time version gate.
 
-        Returns the version string (e.g. ``"3.12.1"``) when known. ``None``
+        Returns the version string (e.g. ``"3.12.3"``) when known. ``None``
         means the negotiated connection path produced no authoritative server
         identity; supply ``server_version=`` at construction when strict
         identity validation is required.

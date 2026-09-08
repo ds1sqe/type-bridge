@@ -6,8 +6,13 @@
 
 use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
+use crate::match_runtime::py_sdk_diagnostic;
+use crate::migration_catalog_runtime::PyMigrationCancellation;
 use crate::version::VersionError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
@@ -66,6 +71,61 @@ where
             });
         }
         drive_provider_future(runtime, future)
+    })
+}
+
+fn python_administration_control(
+    timeout_milliseconds: Option<u64>,
+    cancellation: Option<&PyMigrationCancellation>,
+) -> PyResult<type_bridge_schema_migration::MigrationExecutionControl> {
+    let deadline = timeout_milliseconds
+        .map(|milliseconds| {
+            Instant::now()
+                .checked_add(Duration::from_millis(milliseconds))
+                .ok_or_else(|| py_value_error("timeout exceeds the monotonic clock range"))
+        })
+        .transpose()?;
+    Ok(
+        type_bridge_schema_migration::MigrationExecutionControl::new(
+            cancellation
+                .map(PyMigrationCancellation::inner)
+                .unwrap_or_default(),
+            deadline,
+            Default::default(),
+        ),
+    )
+}
+
+/// Drive one successor-batch future while a dedicated worker owns the GIL.
+///
+/// The callback and its root future are both created on the scoped worker.
+/// The worker acquires the GIL before the callback runs and does not release it
+/// until the callback, root future, and every interior unwind guard have been
+/// destroyed. The inert `T` crosses the worker-release/join interval and is
+/// observed only after the caller reacquires the GIL; consequently `T` must not
+/// require Python access or Python-visible drop side effects while unbound.
+/// This narrow helper is reserved for the Python-V2 many-operation adapter,
+/// whose provider path is native-only and whose Python facade publication must
+/// be linearized with the terminal owned commit.
+pub(crate) fn provider_block_on_with_gil<T, F>(
+    py: Python<'_>,
+    runtime: &ProviderRuntimeOwner,
+    operation: F,
+) -> T
+where
+    T: Send,
+    F: for<'py> FnOnce(Python<'py>) -> Pin<Box<dyn Future<Output = T> + 'py>> + Send,
+{
+    py.detach(move || {
+        std::thread::scope(|scope| {
+            match scope
+                .spawn(move || Python::attach(|py| drive_provider_future(runtime, operation(py))))
+                .join()
+            {
+                Ok(output) => output,
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        })
     })
 }
 
@@ -487,9 +547,22 @@ fn compare_expr(
 pub struct PyRustDatabase {
     db: Arc<type_bridge_orm::Database>,
     runtime: Arc<ProviderRuntimeOwner>,
+    managed_scope_id: Option<type_bridge_contract::managed_scope::ManagedScopeId>,
 }
 
 impl PyRustDatabase {
+    pub(crate) fn from_handles(
+        db: Arc<type_bridge_orm::Database>,
+        runtime: Arc<ProviderRuntimeOwner>,
+        managed_scope_id: Option<type_bridge_contract::managed_scope::ManagedScopeId>,
+    ) -> Self {
+        Self {
+            db,
+            runtime,
+            managed_scope_id,
+        }
+    }
+
     /// Return shared `Arc` clones of the database and runtime-owner handles.
     ///
     /// Exposes the capability to drive work on this database's connection and
@@ -498,6 +571,21 @@ impl PyRustDatabase {
     /// path shares one connection and one runtime.
     pub(crate) fn handles(&self) -> (Arc<type_bridge_orm::Database>, Arc<ProviderRuntimeOwner>) {
         (Arc::clone(&self.db), Arc::clone(&self.runtime))
+    }
+
+    fn pair_administrator(
+        &self,
+    ) -> PyResult<type_bridge_schema_migration_typedb::ManagedDatabasePairAdministrator> {
+        let scope = self.managed_scope_id.clone().ok_or_else(|| {
+            py_value_error(
+                "managed database administration requires verified generated schema authority",
+            )
+        })?;
+        type_bridge_schema_migration_typedb::ManagedDatabasePairAdministrator::from_managed_database(
+            Arc::clone(&self.db),
+            scope,
+        )
+        .map_err(py_administration_error)
     }
 }
 
@@ -526,6 +614,94 @@ fn exact_optional_tls(value: Option<Bound<'_, PyAny>>) -> PyResult<Option<bool>>
                 .extract::<bool>()
         })
         .transpose()
+}
+
+/// Python-owned, single-use managed database deletion admission.
+#[pyclass]
+pub struct PyManagedDatabaseDeletionPlan {
+    inner: Option<type_bridge_schema_migration_typedb::ManagedDatabasePairDeletionPlan>,
+    runtime: Arc<ProviderRuntimeOwner>,
+}
+
+#[pymethods]
+impl PyManagedDatabaseDeletionPlan {
+    /// Return the exact pair state admitted by this plan.
+    fn inspected_state(&self) -> PyResult<&'static str> {
+        self.inner
+            .as_ref()
+            .map(|plan| python_pair_state(plan.inspected_state()))
+            .ok_or_else(|| py_value_error("database deletion plan is closed"))
+    }
+
+    /// Revalidate and execute journal-first deletion once.
+    fn execute(&mut self, py: Python<'_>) -> PyResult<&'static str> {
+        let plan = self
+            .inner
+            .take()
+            .ok_or_else(|| py_value_error("database deletion plan is closed"))?;
+        provider_block_on(py, self.runtime.as_ref(), plan.execute())
+            .map(python_delete_outcome)
+            .map_err(py_administration_error)
+    }
+
+    #[pyo3(signature = (*, timeout_milliseconds = None, cancellation = None))]
+    fn execute_controlled(
+        &mut self,
+        py: Python<'_>,
+        timeout_milliseconds: Option<u64>,
+        cancellation: Option<&PyMigrationCancellation>,
+    ) -> PyResult<&'static str> {
+        let control = python_administration_control(timeout_milliseconds, cancellation)?;
+        let plan = self
+            .inner
+            .take()
+            .ok_or_else(|| py_value_error("database deletion plan is closed"))?;
+        provider_block_on(py, self.runtime.as_ref(), plan.execute_controlled(&control))
+            .map(python_delete_outcome)
+            .map_err(py_administration_error)
+    }
+
+    /// Close this plan idempotently without executing it.
+    fn close(&mut self) {
+        self.inner = None;
+    }
+}
+
+fn python_pair_state(
+    state: type_bridge_schema_migration_typedb::ManagedDatabasePairState,
+) -> &'static str {
+    match state {
+        type_bridge_schema_migration_typedb::ManagedDatabasePairState::Absent => "absent",
+        type_bridge_schema_migration_typedb::ManagedDatabasePairState::StandaloneManaged => {
+            "standalone_managed"
+        }
+        type_bridge_schema_migration_typedb::ManagedDatabasePairState::OwnedPair => "owned_pair",
+        type_bridge_schema_migration_typedb::ManagedDatabasePairState::OwnedJournalOrphan => {
+            "owned_journal_orphan"
+        }
+    }
+}
+
+fn python_delete_outcome(
+    outcome: type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome,
+) -> &'static str {
+    match outcome {
+        type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome::AlreadyAbsent => {
+            "already_absent"
+        }
+        type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome::DeletedStandaloneManaged => "deleted_standalone_managed",
+        type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome::DeletedOwnedPair => {
+            "deleted_owned_pair"
+        }
+        type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome::DeletedOwnedJournalOrphan => "deleted_owned_journal_orphan",
+    }
+}
+
+fn py_administration_error(error: type_bridge_contract::diagnostic::Diagnostic) -> PyErr {
+    py_runtime_error(format!(
+        "database administration failed [{}]",
+        error.code().as_str()
+    ))
 }
 
 #[pymethods]
@@ -583,6 +759,7 @@ impl PyRustDatabase {
         Ok(Self {
             db: Arc::new(db),
             runtime,
+            managed_scope_id: None,
         })
     }
 
@@ -662,16 +839,171 @@ impl PyRustDatabase {
             .map_err(py_orm_error)
     }
 
+    #[pyo3(signature = (*, timeout_milliseconds = None, cancellation = None))]
+    fn database_exists_controlled(
+        &self,
+        py: Python<'_>,
+        timeout_milliseconds: Option<u64>,
+        cancellation: Option<&PyMigrationCancellation>,
+    ) -> PyResult<bool> {
+        let control = python_administration_control(timeout_milliseconds, cancellation)?;
+        if self.managed_scope_id.is_some() {
+            return provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                self.pair_administrator()?
+                    .database_exists_controlled(&control),
+            )
+            .map_err(py_administration_error);
+        }
+        control.check().map_err(py_administration_error)?;
+        self.database_exists(py)
+    }
+
     /// Create the configured database if it does not already exist.
     fn create_database(&self, py: Python<'_>) -> PyResult<()> {
-        provider_block_on(py, self.runtime.as_ref(), self.db.create_database())
+        self.create_database_outcome(py).map(|_| ())
+    }
+
+    #[pyo3(signature = (*, timeout_milliseconds = None, cancellation = None))]
+    fn create_database_controlled(
+        &self,
+        py: Python<'_>,
+        timeout_milliseconds: Option<u64>,
+        cancellation: Option<&PyMigrationCancellation>,
+    ) -> PyResult<()> {
+        self.create_database_outcome_controlled(py, timeout_milliseconds, cancellation)
+            .map(|_| ())
+    }
+
+    /// Create the configured database and return a normalized outcome token.
+    fn create_database_outcome(&self, py: Python<'_>) -> PyResult<&'static str> {
+        if self.managed_scope_id.is_some() {
+            return provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                self.pair_administrator()?.create_database_outcome(),
+            )
+            .map(|outcome| match outcome {
+                type_bridge_schema_migration_typedb::ManagedDatabasePairCreateOutcome::Created => {
+                    "created"
+                }
+                type_bridge_schema_migration_typedb::ManagedDatabasePairCreateOutcome::AlreadyExists => "already_exists",
+            })
+            .map_err(py_administration_error);
+        }
+        provider_block_on(py, self.runtime.as_ref(), self.db.create_database_outcome())
+            .map(|outcome| match outcome {
+                type_bridge_orm::session::DatabaseCreateOutcome::Created => "created",
+                type_bridge_orm::session::DatabaseCreateOutcome::AlreadyExists => "already_exists",
+            })
             .map_err(py_orm_error)
+    }
+
+    #[pyo3(signature = (*, timeout_milliseconds = None, cancellation = None))]
+    fn create_database_outcome_controlled(
+        &self,
+        py: Python<'_>,
+        timeout_milliseconds: Option<u64>,
+        cancellation: Option<&PyMigrationCancellation>,
+    ) -> PyResult<&'static str> {
+        let control = python_administration_control(timeout_milliseconds, cancellation)?;
+        if self.managed_scope_id.is_some() {
+            return provider_block_on(py, self.runtime.as_ref(), self.pair_administrator()?.create_database_outcome_controlled(&control)).map(|outcome| match outcome {
+                type_bridge_schema_migration_typedb::ManagedDatabasePairCreateOutcome::Created => "created",
+                type_bridge_schema_migration_typedb::ManagedDatabasePairCreateOutcome::AlreadyExists => "already_exists",
+            }).map_err(py_administration_error);
+        }
+        control.check().map_err(py_administration_error)?;
+        self.create_database_outcome(py)
     }
 
     /// Delete the configured database if it exists.
     fn delete_database(&self, py: Python<'_>) -> PyResult<()> {
+        if self.managed_scope_id.is_some() {
+            return Err(py_value_error(
+                "managed database deletion requires plan_database_delete() and explicit plan execution",
+            ));
+        }
         provider_block_on(py, self.runtime.as_ref(), self.db.delete_database())
             .map_err(py_orm_error)
+    }
+
+    /// Delete the configured database and return a normalized outcome token.
+    fn delete_database_outcome(&self, py: Python<'_>) -> PyResult<&'static str> {
+        if self.managed_scope_id.is_some() {
+            return Err(py_value_error(
+                "managed database deletion requires plan_database_delete() and explicit plan execution",
+            ));
+        }
+        provider_block_on(py, self.runtime.as_ref(), self.db.delete_database_outcome())
+            .map(|outcome| match outcome {
+                type_bridge_orm::session::DatabaseDeleteOutcome::Deleted => "deleted",
+                type_bridge_orm::session::DatabaseDeleteOutcome::AlreadyAbsent => "already_absent",
+            })
+            .map_err(py_orm_error)
+    }
+
+    /// Inspect the exact managed database and reserved journal pair.
+    fn inspect_database_pair(&self, py: Python<'_>) -> PyResult<&'static str> {
+        provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            self.pair_administrator()?.inspect(),
+        )
+        .map(python_pair_state)
+        .map_err(py_administration_error)
+    }
+
+    #[pyo3(signature = (*, timeout_milliseconds = None, cancellation = None))]
+    fn inspect_database_pair_controlled(
+        &self,
+        py: Python<'_>,
+        timeout_milliseconds: Option<u64>,
+        cancellation: Option<&PyMigrationCancellation>,
+    ) -> PyResult<&'static str> {
+        let control = python_administration_control(timeout_milliseconds, cancellation)?;
+        provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            self.pair_administrator()?.inspect_controlled(&control),
+        )
+        .map(python_pair_state)
+        .map_err(py_administration_error)
+    }
+
+    /// Inspect and retain an explicit pair-aware destructive deletion plan.
+    fn plan_database_delete(&self, py: Python<'_>) -> PyResult<PyManagedDatabaseDeletionPlan> {
+        let inner = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            self.pair_administrator()?.plan_delete(),
+        )
+        .map_err(py_administration_error)?;
+        Ok(PyManagedDatabaseDeletionPlan {
+            inner: Some(inner),
+            runtime: Arc::clone(&self.runtime),
+        })
+    }
+
+    #[pyo3(signature = (*, timeout_milliseconds = None, cancellation = None))]
+    fn plan_database_delete_controlled(
+        &self,
+        py: Python<'_>,
+        timeout_milliseconds: Option<u64>,
+        cancellation: Option<&PyMigrationCancellation>,
+    ) -> PyResult<PyManagedDatabaseDeletionPlan> {
+        let control = python_administration_control(timeout_milliseconds, cancellation)?;
+        let inner = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            self.pair_administrator()?.plan_delete_controlled(&control),
+        )
+        .map_err(py_administration_error)?;
+        Ok(PyManagedDatabaseDeletionPlan {
+            inner: Some(inner),
+            runtime: Arc::clone(&self.runtime),
+        })
     }
 
     /// Export the live TypeDB schema as TypeQL text.
@@ -706,6 +1038,7 @@ impl PyRustDatabase {
         Ok(PyRustTransactionContext {
             context,
             runtime: Arc::clone(&self.runtime),
+            successor_batch_invoked: Arc::new(AtomicBool::new(false)),
         })
     }
 }
@@ -715,11 +1048,28 @@ impl PyRustDatabase {
 pub struct PyRustTransactionContext {
     context: TransactionContext,
     runtime: Arc<ProviderRuntimeOwner>,
+    successor_batch_invoked: Arc<AtomicBool>,
 }
 
 impl PyRustTransactionContext {
     pub(crate) fn handles(&self) -> (TransactionContext, Arc<ProviderRuntimeOwner>) {
         (self.context.clone(), Arc::clone(&self.runtime))
+    }
+
+    pub(crate) fn successor_batch_marker(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.successor_batch_invoked)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_parts_for_test(
+        context: TransactionContext,
+        runtime: Arc<ProviderRuntimeOwner>,
+    ) -> Self {
+        Self {
+            context,
+            runtime,
+            successor_batch_invoked: Arc::new(AtomicBool::new(false)),
+        }
     }
 }
 
@@ -758,7 +1108,13 @@ impl PyRustTransactionContext {
 
     /// Commit this Rust transaction.
     fn commit(&self, py: Python<'_>) -> PyResult<()> {
-        provider_block_on(py, self.runtime.as_ref(), self.context.commit()).map_err(py_orm_error)
+        if self.successor_batch_invoked.load(Ordering::Acquire) {
+            provider_block_on(py, self.runtime.as_ref(), self.context.commit_sdk())
+                .map_err(py_sdk_diagnostic)
+        } else {
+            provider_block_on(py, self.runtime.as_ref(), self.context.commit())
+                .map_err(py_orm_error)
+        }
     }
 
     /// Roll back this Rust transaction.
@@ -1947,6 +2303,7 @@ fn py_runtime_error(message: impl Into<String>) -> PyErr {
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDescriptorRegistry>()?;
     m.add_class::<PyRustDatabase>()?;
+    m.add_class::<PyManagedDatabaseDeletionPlan>()?;
     m.add_class::<PyRustTransactionContext>()?;
     m.add_class::<PyDynamicValue>()?;
     m.add_class::<PyDynamicSortDir>()?;
@@ -2015,6 +2372,37 @@ mod provider_wait_tests {
     fn provider_block_on_survives_a_nested_multi_thread_runtime() {
         let outer = Runtime::new().expect("multi-thread host runtime should start");
         assert_provider_wait_survives_nested_runtime(outer);
+    }
+
+    fn assert_exclusive_gil_provider_wait_survives_nested_runtime(outer: Runtime) {
+        Python::initialize();
+        let output = outer.block_on(async {
+            let provider = ProviderRuntimeOwner::new().expect("provider runtime should start");
+            Python::attach(|py| {
+                provider_block_on_with_gil(py, &provider, |worker_py| {
+                    Box::pin(async move {
+                        let none = worker_py.None();
+                        assert!(none.bind(worker_py).is_none());
+                        43_u8
+                    })
+                })
+            })
+        });
+        assert_eq!(output, 43);
+    }
+
+    #[test]
+    fn exclusive_gil_provider_wait_survives_a_nested_current_thread_runtime() {
+        let outer = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("current-thread host runtime should start");
+        assert_exclusive_gil_provider_wait_survives_nested_runtime(outer);
+    }
+
+    #[test]
+    fn exclusive_gil_provider_wait_survives_a_nested_multi_thread_runtime() {
+        let outer = Runtime::new().expect("multi-thread host runtime should start");
+        assert_exclusive_gil_provider_wait_survives_nested_runtime(outer);
     }
 
     #[test]
@@ -2135,6 +2523,110 @@ mod tls_mode_tests {
                     .is_err()
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod administration_tests {
+    use std::collections::BTreeSet;
+    use std::sync::{Arc, Mutex};
+
+    use pyo3::Python;
+    use type_bridge_orm::error::OrmError;
+    use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, TransactionOps, TxType};
+    use type_bridge_orm::{Database, ProviderRuntimeOwner};
+
+    use super::PyRustDatabase;
+    use crate::migration_catalog_runtime::PyMigrationCancellation;
+
+    struct AdministrationBackend {
+        databases: Arc<Mutex<BTreeSet<String>>>,
+    }
+
+    impl DriverBackend for AdministrationBackend {
+        fn open_transaction(
+            &self,
+            _database: &str,
+            _tx_type: TxType,
+        ) -> BoxFuture<'_, std::result::Result<Box<dyn TransactionOps>, OrmError>> {
+            Box::pin(async { Err(OrmError::Connection("unexpected transaction".into())) })
+        }
+
+        fn is_open(&self) -> bool {
+            true
+        }
+
+        fn database_exists(
+            &self,
+            database: &str,
+        ) -> BoxFuture<'_, std::result::Result<bool, OrmError>> {
+            let exists = self.databases.lock().unwrap().contains(database);
+            Box::pin(async move { Ok(exists) })
+        }
+
+        fn create_database(
+            &self,
+            database: &str,
+        ) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
+            self.databases.lock().unwrap().insert(database.to_owned());
+            Box::pin(async { Ok(()) })
+        }
+
+        fn delete_database(
+            &self,
+            database: &str,
+        ) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
+            self.databases.lock().unwrap().remove(database);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn schema_text(
+            &self,
+            _database: &str,
+        ) -> BoxFuture<'_, std::result::Result<String, OrmError>> {
+            Box::pin(async { Ok(String::new()) })
+        }
+    }
+
+    #[test]
+    fn python_generated_administration_is_pair_aware_and_plan_owned() {
+        Python::initialize();
+        let databases = Arc::new(Mutex::new(BTreeSet::new()));
+        let database = PyRustDatabase {
+            db: Arc::new(Database::with_backend(
+                Box::new(AdministrationBackend {
+                    databases: Arc::clone(&databases),
+                }),
+                "app",
+            )),
+            runtime: Arc::new(ProviderRuntimeOwner::new().unwrap()),
+            managed_scope_id: Some(
+                type_bridge_contract::managed_scope::ManagedScopeId::new("generated-scope")
+                    .unwrap(),
+            ),
+        };
+
+        let mut plan = Python::attach(|py| {
+            assert_eq!(database.create_database_outcome(py).unwrap(), "created");
+            let cancellation = PyMigrationCancellation::new();
+            cancellation.inner().cancel();
+            assert!(
+                database
+                    .database_exists_controlled(py, None, Some(&cancellation))
+                    .is_err()
+            );
+            assert_eq!(
+                database.inspect_database_pair(py).unwrap(),
+                "standalone_managed"
+            );
+            assert!(database.delete_database(py).is_err());
+            database.plan_database_delete(py).unwrap()
+        });
+        drop(database);
+        Python::attach(|py| {
+            assert_eq!(plan.execute(py).unwrap(), "deleted_standalone_managed");
+        });
+        assert!(databases.lock().unwrap().is_empty());
     }
 }
 

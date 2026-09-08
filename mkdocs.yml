@@ -132,6 +132,7 @@ nav:
     - development/index.md
     - Development Setup: development/setup.md
     - Testing: development/testing.md
+    - C Release Procedure: development/c-release.md
     - Architecture:
       - Internals: development/internals.md
       - Rust Backend: development/rust-backend.md

@@ -18,16 +18,19 @@ use type_bridge_contract::schema::{DeclaredSchema, DocumentId};
 use type_bridge_schema::SafetyClass;
 use type_bridge_schema_compat::{ADOPTED_GENESIS_FILE_NAME, parse_adopted_genesis};
 use type_bridge_schema_migration::{
-    GeneratedMigration, MigrationDirectory, MigrationGenerationOutcome, MigrationGenerationRequest,
-    MigrationHistoryGraph, MigrationPreviewError,
+    BackfillMigrationGenerationRequest, GeneratedMigration, MigrationDirectory,
+    MigrationGenerationOutcome, MigrationGenerationRequest, MigrationHistoryGraph,
+    MigrationPreviewError, VerifiedMigrationHistoryBundle,
     canonical_history_declared_legacy_bridge_count_in, discover_verified_migration_chain_in,
-    generate_next_migration, render_migration_preview, require_adoption_authority_pair,
+    encode_verified_migration_history_bundle, generate_backfill_migration, generate_next_migration,
+    render_migration_preview, require_adoption_authority_pair,
     require_adoption_authority_pair_state, try_acquire_migration_authoring_lock,
-    write_generated_migration_under_lock,
+    validate_portable_direct_child, write_generated_migration_under_lock,
 };
 
 use crate::{
-    TypeBridgeWorkspace, TypeBridgeWorkspaceError, WorkspaceConfigError, WorkspaceConfigErrorCode,
+    MAX_BACKFILL_INTENT_BYTES, TypeBridgeWorkspace, TypeBridgeWorkspaceError, WorkspaceConfigError,
+    WorkspaceConfigErrorCode, parse_backfill_intent,
 };
 
 fn migration_directory_escape() -> TypeBridgeWorkspaceError {
@@ -161,6 +164,29 @@ impl TypeBridgeWorkspace {
             .map(|(graph, _)| graph)
     }
 
+    /// Capture one deterministic, source-free bundle of the committed history.
+    pub fn migration_history_bundle(
+        &self,
+    ) -> Result<VerifiedMigrationHistoryBundle, TypeBridgeWorkspaceError> {
+        let directory = self.open_migration_directory()?;
+        self.migration_history_bundle_in(&directory)
+    }
+
+    /// Capture a history bundle through one retained confined directory authority.
+    pub fn migration_history_bundle_in(
+        &self,
+        directory: &MigrationDirectoryAuthority,
+    ) -> Result<VerifiedMigrationHistoryBundle, TypeBridgeWorkspaceError> {
+        let graph = self.discover_migrations_in(directory)?;
+        Ok(VerifiedMigrationHistoryBundle::from_graph(&graph)?)
+    }
+
+    /// Capture the exact canonical history-bundle bytes used by generated packages.
+    pub fn migration_history_bundle_bytes(&self) -> Result<Vec<u8>, TypeBridgeWorkspaceError> {
+        let bundle = self.migration_history_bundle()?;
+        Ok(encode_verified_migration_history_bundle(&bundle)?)
+    }
+
     fn discover_migrations_with_genesis_in(
         &self,
         directory: &MigrationDirectoryAuthority,
@@ -210,6 +236,66 @@ impl TypeBridgeWorkspace {
             context: self.delta_context(),
         };
         Ok(generate_next_migration(&graph, &request)?)
+    }
+
+    /// Author and atomically publish one closed backfill intent.
+    ///
+    /// The intent must name a regular direct child of the retained migration
+    /// directory. History discovery, intent parsing, generation, and
+    /// publication are serialized by the directory authoring lock so a plan
+    /// can never be published against a stale head.
+    pub fn author_backfill_migration_in(
+        &self,
+        directory: &MigrationDirectoryAuthority,
+        base_name: &str,
+        intent_name: &Path,
+    ) -> Result<GeneratedMigration, TypeBridgeWorkspaceError> {
+        self.require_migration_directory(directory)?;
+        validate_portable_direct_child(intent_name.as_os_str()).map_err(|_| {
+            backfill_intent_read_error(
+                type_bridge_contract::diagnostic::DiagnosticCategory::InvalidContract,
+                "workspace_backfill_intent_path_not_confined",
+                "backfill intent must be a portable direct-child filename",
+            )
+        })?;
+        let authoring_lock = try_acquire_migration_authoring_lock(directory.directory())?;
+        let (graph, genesis) = self.discover_migrations_with_genesis_in(directory)?;
+        let historical_schema = match graph.default_head()? {
+            Some(head) => graph
+                .manifest(head)
+                .expect("the verified default head is present")
+                .target_schema(),
+            None => &genesis,
+        };
+        let bytes = read_backfill_intent_bounded(directory.directory(), intent_name)?;
+        let document = DocumentId::new(intent_name.to_str().ok_or_else(|| {
+            backfill_intent_read_error(
+                type_bridge_contract::diagnostic::DiagnosticCategory::InvalidContract,
+                "workspace_backfill_intent_non_utf8_name",
+                "backfill intent filename must be UTF-8",
+            )
+        })?)?;
+        let plan =
+            parse_backfill_intent(document, &bytes, historical_schema, self.delta_context())?;
+        let generated = generate_backfill_migration(
+            &graph,
+            &BackfillMigrationGenerationRequest {
+                app_label: self.config().app_label().as_str(),
+                base_name,
+                genesis_source: &genesis,
+                desired: self.declared_schema(),
+                plan: &plan,
+                context: self.delta_context(),
+            },
+        )?;
+        let preview = format!(
+            "-- binding-neutral backfill migration: {}/{}\n-- reviewed source intent: {}\n",
+            generated.manifest().id().app_label().as_str(),
+            generated.manifest().id().name().as_str(),
+            intent_name.display(),
+        );
+        write_generated_migration_under_lock(&authoring_lock, &generated, &preview)?;
+        Ok(generated)
     }
 
     /// Persist one generated manifest and its review-only TypeQL preview.
@@ -387,6 +473,56 @@ fn read_adopted_genesis_bounded(
             "adopted-genesis artifact is not valid UTF-8",
         )
     })
+}
+
+fn read_backfill_intent_bounded(
+    directory: &MigrationDirectory,
+    name: &Path,
+) -> Result<Vec<u8>, TypeBridgeWorkspaceError> {
+    let file = directory
+        .open_regular_readonly(name.as_os_str())
+        .map_err(|_| {
+            backfill_intent_read_error(
+                type_bridge_contract::diagnostic::DiagnosticCategory::Integrity,
+                "workspace_backfill_intent_unreadable",
+                "backfill intent cannot be read as a regular direct-child file",
+            )
+        })?;
+    let mut bytes = Vec::new();
+    file.take(
+        u64::try_from(MAX_BACKFILL_INTENT_BYTES)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1),
+    )
+    .read_to_end(&mut bytes)
+    .map_err(|_| {
+        backfill_intent_read_error(
+            type_bridge_contract::diagnostic::DiagnosticCategory::Integrity,
+            "workspace_backfill_intent_unreadable",
+            "backfill intent cannot be read",
+        )
+    })?;
+    if bytes.len() > MAX_BACKFILL_INTENT_BYTES {
+        return Err(backfill_intent_read_error(
+            type_bridge_contract::diagnostic::DiagnosticCategory::ResourceLimit,
+            "workspace_backfill_intent_byte_limit",
+            "backfill intent exceeds the common source-byte ceiling",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn backfill_intent_read_error(
+    category: type_bridge_contract::diagnostic::DiagnosticCategory,
+    code: &'static str,
+    message: &'static str,
+) -> TypeBridgeWorkspaceError {
+    TypeBridgeWorkspaceError::Contract(Diagnostic::new(
+        category,
+        type_bridge_contract::diagnostic::DiagnosticCode::new(code)
+            .expect("static backfill-intent diagnostic code"),
+        message,
+    ))
 }
 
 fn generated_migration_stale() -> TypeBridgeWorkspaceError {

@@ -46,6 +46,15 @@ pub use runner::{
     MigrationDirectoryRollbackOutcome, TypeDbMigrationRunner,
 };
 pub use store::{
+    ManagedDatabasePairAdministrator, ManagedDatabasePairCreateOutcome,
+    ManagedDatabasePairDeleteOutcome, ManagedDatabasePairDeletionPlan, ManagedDatabasePairState,
     TypeDbMigrationStore, VerifiedMigrationCatalog, derived_journal_database_name,
     require_active_managed_fence,
+};
+mod backfill;
+mod catalog_executor;
+pub use catalog_executor::{
+    execute_catalog_apply_plan, execute_catalog_apply_plan_controlled,
+    execute_catalog_rollback_plan, execute_catalog_rollback_plan_controlled,
+    load_catalog_applied_migrations, verify_catalog_state,
 };

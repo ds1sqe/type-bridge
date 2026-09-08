@@ -26,9 +26,13 @@ pub mod managed_scope;
 pub mod migration;
 /// Canonical typed migration assertion syntax and fingerprints.
 pub mod migration_assertion;
+/// Closed binding-neutral migration backfill plans and fingerprints.
+pub mod migration_backfill;
 pub use migration_assertion::migration_assertion_capability_vocabulary;
 pub use query_plan::{query_given_rows_capability, query_plan_capability_vocabulary};
 mod migration_assertion_wire;
+/// Target-independent canonical generated-model records and ordered archives.
+pub mod projected_record;
 /// Binding-target configuration and reproducible projection fingerprints.
 pub mod projection;
 /// Fail-closed canonical wire decoding for runtime projections.
@@ -52,6 +56,8 @@ mod schema_delta_wire;
 /// Domain-safe schema fingerprint wrappers.
 pub mod schema_fingerprint;
 pub mod schema_lowering;
+/// Versioned in-memory diagnostics for binding-neutral SDK execution.
+pub mod sdk_diagnostic;
 /// Versioned server-semantic defaults shared by resolution and fingerprints.
 pub mod semantic_profile;
 /// Canonical temporal component values.

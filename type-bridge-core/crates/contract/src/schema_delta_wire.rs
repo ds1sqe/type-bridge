@@ -13,9 +13,9 @@ use crate::id::{AttributeId, FunctionId, Label, RoleId, StructId, TypeId, TypeKi
 use crate::managed_scope::{ManagedScopeBinding, ManagedScopeId, ManagedScopeProfileId};
 use crate::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CanonicalValueRange,
-    CanonicalValueSet, DeclaredIdentityFingerprint, DocText, FunctionBody, FunctionFact,
-    FunctionParameter, FunctionReturnElement, FunctionReturnMode, FunctionSignature, OwnsFact,
-    OwnsFactId, PlaysFact, PlaysFactId, RegexPattern, RelatesFact, RelatesFactId,
+    CanonicalValueSet, CollectionMode, DeclaredIdentityFingerprint, DocText, FunctionBody,
+    FunctionFact, FunctionParameter, FunctionReturnElement, FunctionReturnMode, FunctionSignature,
+    OwnsFact, OwnsFactId, PlaysFact, PlaysFactId, RegexPattern, RelatesFact, RelatesFactId,
     SchemaAnnotationValue, SchemaFact, SchemaFactId, StructFact, StructField, SubFact, SubFactId,
     TypeFact, TypeReference, ValueFact, ValueFactId,
 };
@@ -226,10 +226,14 @@ impl SchemaFactWire {
             Self::Value(wire) => {
                 SchemaFact::Value(ValueFact::new(ValueFactId::new(wire.id), wire.value_type))
             }
-            Self::Owns(wire) => SchemaFact::Owns(OwnsFact::new(wire.id.rebuild()?)),
-            Self::Relates(wire) => SchemaFact::Relates(RelatesFact::new(
+            Self::Owns(wire) => SchemaFact::Owns(OwnsFact::new_with_collection_mode(
+                wire.id.rebuild()?,
+                wire.collection_mode.into(),
+            )),
+            Self::Relates(wire) => SchemaFact::Relates(RelatesFact::new_with_collection_mode(
                 wire.id.rebuild()?,
                 wire.specializes.map(RoleIdWire::rebuild).transpose()?,
+                wire.collection_mode.into(),
             )?),
             Self::Plays(wire) => SchemaFact::Plays(PlaysFact::new(wire.id.rebuild()?)),
             Self::Annotation(wire) => SchemaFact::Annotation(AnnotationFact::new(
@@ -275,6 +279,8 @@ pub(crate) struct ValueFactWire {
 #[serde(deny_unknown_fields)]
 pub(crate) struct OwnsFactWire {
     id: OwnsFactIdWire,
+    #[serde(default, skip_serializing_if = "CollectionModeWire::is_unordered")]
+    collection_mode: CollectionModeWire,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -282,6 +288,31 @@ pub(crate) struct OwnsFactWire {
 pub(crate) struct RelatesFactWire {
     id: RelatesFactIdWire,
     specializes: Option<RoleIdWire>,
+    #[serde(default, skip_serializing_if = "CollectionModeWire::is_unordered")]
+    collection_mode: CollectionModeWire,
+}
+
+#[derive(Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CollectionModeWire {
+    #[default]
+    Unordered,
+    OrderedList,
+}
+
+impl CollectionModeWire {
+    const fn is_unordered(&self) -> bool {
+        matches!(self, Self::Unordered)
+    }
+}
+
+impl From<CollectionModeWire> for CollectionMode {
+    fn from(value: CollectionModeWire) -> Self {
+        match value {
+            CollectionModeWire::Unordered => Self::Unordered,
+            CollectionModeWire::OrderedList => Self::OrderedList,
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -436,6 +467,7 @@ enum AnnotationKindWire {
     Independent,
     Key,
     Unique,
+    Distinct,
     Card,
     Regex,
     Range,
@@ -451,6 +483,7 @@ impl AnnotationKindWire {
             Self::Independent => AnnotationKindId::Independent,
             Self::Key => AnnotationKindId::Key,
             Self::Unique => AnnotationKindId::Unique,
+            Self::Distinct => AnnotationKindId::Distinct,
             Self::Card => AnnotationKindId::Card,
             Self::Regex => AnnotationKindId::Regex,
             Self::Range => AnnotationKindId::Range,

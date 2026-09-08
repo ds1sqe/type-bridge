@@ -14,7 +14,7 @@ use type_bridge_schema_compat::{ADOPTED_GENESIS_FILE_NAME, parse_adopted_genesis
 use type_bridge_schema_migration::{
     LegacyAppliedSetDigest, LegacyMigrationChecksum, LegacyMigrationReference,
     MigrationGenerationOutcome, SafetyClass, SafetyPolicyDecision, build_legacy_frontier_bridge,
-    encode_verified_manifest, typedb_3_12_1_profile,
+    decode_verified_migration_history_bundle, encode_verified_manifest, typedb_3_12_1_profile,
 };
 use type_bridge_workspace::{
     ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, MigrationV2Directory,
@@ -97,6 +97,7 @@ fn capabilities() -> CapabilitySet {
         capabilities.insert(capability);
     }
     for capability in [
+        "migration.backfill.copy-attribute",
         "migration.conditional-resolution",
         "schema.annotations",
         "schema.doc-meta",
@@ -265,6 +266,47 @@ fn workspace_makes_writes_and_plans_migrations_offline() {
         plan.iter()
             .all(|entry| { entry.safety() == SafetyClass::Additive && entry.reversible() })
     );
+}
+
+#[test]
+fn workspace_authors_backfill_intent_under_one_directory_lock() {
+    let directory = TempDirectory::new();
+    directory.schema(
+        "format: typebridge.schema/v2\nattributes:\n  display-name: { value: string }\n  legacy-name: { value: string }\n  person-id: { value: string }\nentities:\n  person:\n    owns:\n      display-name: {}\n      legacy-name: {}\n      person-id: { key: true }\n",
+    );
+    let secrets = AcceptSecrets(AtomicUsize::new(0));
+    let extensions = AcceptExtensions(AtomicUsize::new(0));
+    let available = capabilities();
+    let workspace = load_workspace(&directory, &secrets, &extensions, &available);
+    let MigrationGenerationOutcome::Generated(initial) = workspace.migration_make("init").unwrap()
+    else {
+        panic!("initial schema migration is generated");
+    };
+    workspace.write_generated_migration(&initial).unwrap();
+    directory.write(
+        "migrations/v2/copy-name.backfill.yaml",
+        "format: typebridge.migration-backfill-intent/v1\ncopy-attribute:\n  owner-kind: entity\n  owner: person\n  source: legacy-name\n  destination: display-name\n  partition-key: person-id\n  batch-rows: 128\n  reverse: remove-equal-copied-destination\n",
+    );
+    let authority = workspace.open_migration_directory().unwrap();
+    let generated = workspace
+        .author_backfill_migration_in(
+            &authority,
+            "copy-name",
+            PathBuf::from("copy-name.backfill.yaml").as_path(),
+        )
+        .unwrap();
+
+    assert_eq!(generated.manifest().id().name().as_str(), "0002_copy-name");
+    assert!(
+        directory
+            .0
+            .join("migrations/v2/0002_copy-name.tbmigration.json")
+            .is_file()
+    );
+    let preview =
+        fs::read_to_string(directory.0.join("migrations/v2/0002_copy-name.typeql")).unwrap();
+    assert!(preview.contains("binding-neutral backfill migration"));
+    assert!(preview.contains("copy-name.backfill.yaml"));
 }
 
 #[test]
@@ -666,4 +708,35 @@ fn adopted_genesis_read_is_bounded_before_parsing() {
             .as_str(),
         "workspace_adopted_genesis_oversized",
     );
+}
+
+#[test]
+fn workspace_captures_replayable_deterministic_history_bundle() {
+    let directory = TempDirectory::new();
+    directory.schema("format: typebridge.schema/v2\nentities: {person: {}}\n");
+    let secrets = AcceptSecrets(AtomicUsize::new(0));
+    let extensions = AcceptExtensions(AtomicUsize::new(0));
+    let available = capabilities();
+    let workspace = load_workspace(&directory, &secrets, &extensions, &available);
+    let MigrationGenerationOutcome::Generated(generated) = workspace
+        .migration_make("initial")
+        .expect("initial migration generates")
+    else {
+        panic!("empty history has work to generate");
+    };
+    workspace
+        .write_generated_migration(&generated)
+        .expect("migration publishes");
+
+    let first = workspace
+        .migration_history_bundle_bytes()
+        .expect("history bundle captures");
+    let second = workspace
+        .migration_history_bundle_bytes()
+        .expect("history bundle reproduces");
+    assert_eq!(first, second);
+    let decoded = decode_verified_migration_history_bundle(&first, workspace.delta_context())
+        .expect("captured history replays without workspace files");
+    assert_eq!(decoded.entries().len(), 1);
+    assert_eq!(decoded.heads(), &[generated.manifest().id().clone()]);
 }

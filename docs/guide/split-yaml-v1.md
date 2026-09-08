@@ -202,6 +202,13 @@ functions:
         return { $player };
 ```
 
+`returns` contains exactly one closed shape: `scalar: <type>`,
+`tuple: [<type>, ...]`, or `stream: [<type>, ...]`. Tuple returns require at
+least two elements and stream returns require at least one. Generated immutable
+query facades initially invoke only non-optional scalar functions; tuple and
+stream signatures remain authoritative generated tokens for APIs whose result
+contract supports those shapes.
+
 Provider execution remains capability-gated. Recognizing a schema construct
 does not claim that every configured provider can execute it.
 

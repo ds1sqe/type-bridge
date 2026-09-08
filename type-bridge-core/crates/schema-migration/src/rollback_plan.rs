@@ -9,7 +9,9 @@
 use std::collections::BTreeSet;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
-use type_bridge_contract::migration::{MigrationId, MigrationManifestDigest, MigrationStepId};
+use type_bridge_contract::migration::{
+    MigrationId, MigrationManifestDigest, MigrationStep, MigrationStepId,
+};
 use type_bridge_contract::schema::{DeclaredSchema, ManagedSchemaState, SchemaDelta};
 use type_bridge_schema::{ManagedDeltaContext, SafetyClass, SafetyDerivationProfile, apply_delta};
 
@@ -31,6 +33,28 @@ pub struct VerifiedMigrationRollbackStep {
     lowering: SchemaLoweringPlan,
 }
 
+/// One verified reverse execution entry in exact reverse-manifest order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VerifiedMigrationRollbackOperation {
+    /// Index into the lowered schema rollback steps.
+    SchemaDelta(usize),
+    /// Index into the closed backfill rollback steps.
+    Backfill(usize),
+}
+
+/// One checked closed reverse backfill program.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedMigrationRollbackBackfillStep {
+    forward_step: MigrationStep,
+}
+
+impl VerifiedMigrationRollbackBackfillStep {
+    /// Return the exact trusted forward step carrying the checked reverse program.
+    pub const fn forward_step(&self) -> &MigrationStep {
+        &self.forward_step
+    }
+}
+
 impl VerifiedMigrationRollbackStep {
     /// Return the identity of the forward step this program reverses.
     pub const fn forward_step_id(&self) -> &MigrationStepId {
@@ -50,6 +74,8 @@ pub struct VerifiedMigrationRollbackManifest {
     manifest: VerifiedSchemaMigrationManifest,
     rollback_safety: SafetyClass,
     steps: Vec<VerifiedMigrationRollbackStep>,
+    backfills: Vec<VerifiedMigrationRollbackBackfillStep>,
+    operations: Vec<VerifiedMigrationRollbackOperation>,
 }
 
 impl VerifiedMigrationRollbackManifest {
@@ -71,6 +97,16 @@ impl VerifiedMigrationRollbackManifest {
     /// Return lowered reverse programs in execution order (last step first).
     pub fn steps(&self) -> &[VerifiedMigrationRollbackStep] {
         &self.steps
+    }
+
+    /// Return checked closed reverse backfill programs.
+    pub fn backfills(&self) -> &[VerifiedMigrationRollbackBackfillStep] {
+        &self.backfills
+    }
+
+    /// Return the complete reverse order across schema and data operations.
+    pub fn operations(&self) -> &[VerifiedMigrationRollbackOperation] {
+        &self.operations
     }
 
     /// Return the verified reverse delta one rollback step executes.
@@ -105,6 +141,7 @@ pub struct VerifiedMigrationRollbackPlan {
     source_state: ManagedSchemaState,
     target_schema: DeclaredSchema,
     target_state: ManagedSchemaState,
+    execution_authorized: bool,
 }
 
 impl VerifiedMigrationRollbackPlan {
@@ -131,6 +168,11 @@ impl VerifiedMigrationRollbackPlan {
     /// Return the exact managed state the rollback restores.
     pub const fn target_state(&self) -> &ManagedSchemaState {
         &self.target_state
+    }
+
+    /// Return whether policy and exact approvals authorize provider execution.
+    pub const fn execution_authorized(&self) -> bool {
+        self.execution_authorized
     }
 
     /// Return the complete canonically ordered applied basis this plan assumed.
@@ -163,6 +205,49 @@ pub fn build_verified_migration_rollback_plan(
     lowering_binding: &SchemaLoweringBinding,
     policy: &MigrationSafetyPolicy,
     approvals: &[MigrationApplyApproval],
+) -> Result<VerifiedMigrationRollbackPlan, MigrationApplyPlanError> {
+    build_verified_migration_rollback_plan_inner(
+        graph,
+        applied,
+        removals,
+        delta_context,
+        lowering_binding,
+        policy,
+        approvals,
+        true,
+    )
+}
+
+/// Build a deterministic provider-free preview without granting execution authority.
+pub fn build_verified_migration_rollback_preview(
+    graph: &MigrationHistoryGraph,
+    applied: &BTreeSet<MigrationId>,
+    removals: &BTreeSet<MigrationId>,
+    delta_context: &ManagedDeltaContext,
+    lowering_binding: &SchemaLoweringBinding,
+) -> Result<VerifiedMigrationRollbackPlan, MigrationApplyPlanError> {
+    build_verified_migration_rollback_plan_inner(
+        graph,
+        applied,
+        removals,
+        delta_context,
+        lowering_binding,
+        &MigrationSafetyPolicy::default_policy(),
+        &[],
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_verified_migration_rollback_plan_inner(
+    graph: &MigrationHistoryGraph,
+    applied: &BTreeSet<MigrationId>,
+    removals: &BTreeSet<MigrationId>,
+    delta_context: &ManagedDeltaContext,
+    lowering_binding: &SchemaLoweringBinding,
+    policy: &MigrationSafetyPolicy,
+    approvals: &[MigrationApplyApproval],
+    execution_authorized: bool,
 ) -> Result<VerifiedMigrationRollbackPlan, MigrationApplyPlanError> {
     if lowering_binding.available_capabilities() != delta_context.available_capabilities() {
         return Err(contract_failure(
@@ -253,8 +338,40 @@ pub fn build_verified_migration_rollback_plan(
 
         let mut rollback_safety = SafetyClass::FormalOnly;
         let mut steps = Vec::new();
+        let mut backfills = Vec::new();
+        let mut operations = Vec::new();
         let mut boundary_index = boundaries.len() - 1;
         for step in manifest.steps().iter().rev() {
+            if let Some((contract, plan)) = step.as_backfill() {
+                if contract.reverse().is_none() || plan.reverse().is_none() {
+                    return Err(contract_failure(
+                        DiagnosticCategory::InvalidContract,
+                        "migration_rollback_irreversible_backfill",
+                        "backfill step carries no verified reverse program",
+                    )
+                    .into());
+                }
+                let boundary_state = type_bridge_schema::managed_schema_state(
+                    &boundaries[boundary_index],
+                    delta_context,
+                )?;
+                if plan.managed_semantics() != boundary_state.managed_semantic_schema() {
+                    return Err(contract_failure(
+                        DiagnosticCategory::Integrity,
+                        "migration_rollback_backfill_schema_mismatch",
+                        "backfill reverse is not bound to the current historical schema",
+                    )
+                    .into());
+                }
+                operations.push(VerifiedMigrationRollbackOperation::Backfill(
+                    backfills.len(),
+                ));
+                backfills.push(VerifiedMigrationRollbackBackfillStep {
+                    forward_step: step.clone(),
+                });
+                rollback_safety = rollback_safety.max(SafetyClass::Destructive);
+                continue;
+            }
             let Some(schema_step) = step.as_schema_delta() else {
                 // Assertions guard forward execution; the reverse program has
                 // no data precondition by manifest-verification guarantee.
@@ -296,35 +413,42 @@ pub fn build_verified_migration_rollback_plan(
                 target_catalog,
                 coverage.discharged_operation_indices().to_vec(),
             ));
+            operations.push(VerifiedMigrationRollbackOperation::SchemaDelta(
+                steps.len() - 1,
+            ));
         }
 
-        let approved = match policy.decision(rollback_safety) {
-            SafetyPolicyDecision::Allow => false,
-            SafetyPolicyDecision::Reject => {
-                return Err(contract_failure(
-                    DiagnosticCategory::InvalidContract,
-                    "migration_rollback_safety_policy_rejected",
-                    "explicit policy rejects the reverse program classification",
-                )
-                .into());
-            }
-            SafetyPolicyDecision::RequireApproval => {
-                let mut bound = false;
-                for approval in approvals {
-                    if approval.binds_rollback(manifest, rollback_safety)? {
-                        bound = true;
-                        break;
-                    }
-                }
-                if !bound {
+        let approved = if !execution_authorized {
+            true
+        } else {
+            match policy.decision(rollback_safety) {
+                SafetyPolicyDecision::Allow => false,
+                SafetyPolicyDecision::Reject => {
                     return Err(contract_failure(
                         DiagnosticCategory::InvalidContract,
-                        "migration_rollback_approval_required",
-                        "reverse program requires an approval bound to this exact rollback",
+                        "migration_rollback_safety_policy_rejected",
+                        "explicit policy rejects the reverse program classification",
                     )
                     .into());
                 }
-                true
+                SafetyPolicyDecision::RequireApproval => {
+                    let mut bound = false;
+                    for approval in approvals {
+                        if approval.binds_rollback(manifest, rollback_safety)? {
+                            bound = true;
+                            break;
+                        }
+                    }
+                    if !bound {
+                        return Err(contract_failure(
+                            DiagnosticCategory::InvalidContract,
+                            "migration_rollback_approval_required",
+                            "reverse program requires an approval bound to this exact rollback",
+                        )
+                        .into());
+                    }
+                    true
+                }
             }
         };
 
@@ -352,6 +476,8 @@ pub fn build_verified_migration_rollback_plan(
             manifest: manifest.clone(),
             rollback_safety,
             steps: lowered_steps,
+            backfills,
+            operations,
         });
         current_schema = manifest.source_schema().clone();
         current_state = manifest.source_state().clone();
@@ -368,5 +494,6 @@ pub fn build_verified_migration_rollback_plan(
         source_state,
         target_schema: current_schema,
         target_state: current_state,
+        execution_authorized,
     })
 }

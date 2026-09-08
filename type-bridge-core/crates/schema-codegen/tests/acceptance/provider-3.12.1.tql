@@ -90,6 +90,13 @@ struct player-stats:
     nickname value string?,
     wins value integer;
 
+fun qualifying-score($person: person, $minimum: integer) -> integer:
+match
+  $person has score $score-attribute;
+  let $score = $score-attribute;
+  $score >= $minimum;
+return first $score;
+
 fun find-events($event: event) -> { event }:
 match
   $event isa event;

@@ -11,7 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 STAGE = Path(__file__).resolve().parent
-SOURCE = STAGE / "generated_v2"
+SOURCE = STAGE / "generated_ordered"
 FOREIGN = STAGE / "generated_variant"
 MAX_SCHEMA_AUTHORITY_BYTES = 16 * 1024 * 1024
 PREFIX = "SCHEMA_AUTHORITY_BYTES: _Final[bytes] = "
@@ -66,7 +66,16 @@ def mutated(change: Callable[[dict[str, object]], None], *, resign_after: bool) 
     return canonical(value).decode()
 
 
-def reject(name: str, authority: str, expected: str) -> None:
+EXPECTED_DIAGNOSTIC = {
+    "category": "integrity",
+    "sdk_category": "integrity",
+    "code": "projection_evidence_mismatch",
+    "message": "Generated projection evidence does not match the verified schema package",
+    "path": [{"kind": "argument", "value": "projection_evidence"}],
+}
+
+
+def reject(name: str, authority: str) -> None:
     package_name = f"generated_rejected_{name}"
     package = STAGE / package_name
     shutil.rmtree(package, ignore_errors=True)
@@ -76,38 +85,79 @@ def reject(name: str, authority: str, expected: str) -> None:
         "from typing import Final as _Final\n\n"
         f"{PREFIX}{authority!r}{SUFFIX}\n"
     )
+    probe = (
+        "import importlib, json\n"
+        "try:\n"
+        f"    importlib.import_module({package_name!r})\n"
+        "except BaseException as error:\n"
+        "    print(json.dumps({\n"
+        "        'category': error.category,\n"
+        "        'sdk_category': error.sdk_category,\n"
+        "        'code': error.code,\n"
+        "        'message': error.message,\n"
+        "        'path': error.path,\n"
+        "    }, sort_keys=True))\n"
+        "else:\n"
+        "    raise AssertionError('hostile ordered package import succeeded')\n"
+    )
     completed = subprocess.run(
-        [sys.executable, "-c", f"import {package_name}"],
+        [sys.executable, "-c", probe],
         cwd=STAGE,
         capture_output=True,
         text=True,
         check=False,
     )
-    output = completed.stdout + completed.stderr
-    if completed.returncode == 0 or expected not in output:
+    try:
+        diagnostic = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        diagnostic = None
+    if completed.returncode != 0 or diagnostic != EXPECTED_DIAGNOSTIC:
         raise AssertionError(
-            f"{name} authority returned {completed.returncode}, expected {expected!r}\n{output}"
+            f"{name} authority returned {completed.returncode}, "
+            f"expected {EXPECTED_DIAGNOSTIC!r}, received {diagnostic!r}\n"
+            f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
         )
 
 
-reject("malformed", "{", "malformed_canonical_json")
-reject(
-    "foreign",
-    envelope(FOREIGN),
-    "generated_schema_authority_semantic_mismatch",
+ordered_models = (SOURCE / "_models.py").read_text()
+native_install = ordered_models.index("\n_install_runtime_projection(\n")
+if "from ._query import " in ordered_models[:native_install]:
+    raise AssertionError("ordered models imported query authority before native admission")
+query_aliases = ordered_models.find("\nfrom ._query import ", native_install)
+if query_aliases != -1 and query_aliases <= native_install:
+    raise AssertionError("ordered model query aliases were not deferred past native admission")
+
+ordered_init = (SOURCE / "__init__.py").read_text()
+if ordered_init.index("from ._models import ") >= ordered_init.index("from ._query import "):
+    raise AssertionError("ordered package init did not trigger model admission before query")
+if (SOURCE / "_query.py").read_bytes() != (STAGE / "generated_v2" / "_query.py").read_bytes():
+    raise AssertionError("ordered package changed the fixed Python query resource")
+
+completed = subprocess.run(
+    [sys.executable, "-c", "import generated_ordered"],
+    cwd=STAGE,
+    capture_output=True,
+    text=True,
+    check=False,
 )
+if completed.returncode != 0:
+    raise AssertionError(
+        "exact ordered generated package import failed\n"
+        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    )
+
+reject("malformed", "{")
+reject("foreign", envelope(FOREIGN))
 reject(
     "stale",
     mutated(
         lambda value: value["content"]["declared_identity"].__setitem__("digest", "0" * 64),
         resign_after=False,
     ),
-    "generated_schema_authority_integrity_mismatch",
 )
 reject(
     "missing_fingerprint",
     mutated(lambda value: value.pop("authority_fingerprint"), resign_after=False),
-    "invalid_canonical_value",
 )
 reject(
     "managed_state",
@@ -117,7 +167,6 @@ reject(
         ),
         resign_after=True,
     ),
-    "generated_schema_authority_integrity_mismatch",
 )
 reject(
     "capability",
@@ -128,7 +177,6 @@ reject(
         ),
         resign_after=True,
     ),
-    "unsupported_required_capability",
 )
 reject(
     "version",
@@ -138,12 +186,10 @@ reject(
         ),
         resign_after=True,
     ),
-    "generated_schema_authority_unsupported_version",
 )
 reject(
     "oversize",
     " " * (MAX_SCHEMA_AUTHORITY_BYTES + 1),
-    "canonical_json_too_large",
 )
 
 print("generated Python authority rejection acceptance passed")

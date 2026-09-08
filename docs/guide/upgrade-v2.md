@@ -15,7 +15,7 @@ and your application have passed the generated-package gates below.
 
 1. Upgrade application-query targets to TypeDB 3.11 or 3.12. A target on which
    TypeBridge will apply, verify, or adopt V2 migrations must be exactly
-   TypeDB 3.12.1, the migration and conformance baseline.
+   TypeDB 3.12.3, the migration and conformance baseline.
 2. Express the desired schema as a `typebridge.yaml` workspace plus
    `typebridge.schema-set/v1` and `typebridge.schema/v2` documents.
 3. Generate clean Python, TypeScript/Node, and/or Rust packages.
@@ -155,7 +155,7 @@ retry over plaintext.
 - No application imports `type_bridge.models`, handwritten Node descriptors,
   or Rust ORM derive/schema-authoring APIs.
 - Generated application operations pass on TypeDB 3.11 and/or 3.12; connected
-  migration apply/verify/adopt pass on exactly 3.12.1 and reject other versions
+  migration apply/verify/adopt pass on exactly 3.12.3 and reject other versions
   before database mutation.
 - Archived migration adoption and a subsequent canonical V2 migration replay
   from empty.

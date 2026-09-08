@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-server"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2024"
 description = "Query-intercepting proxy server for TypeDB with validation and audit logging"
 license.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 authors.workspace = true
 publish = ["crates-io"]
 readme = "README.md"
-documentation = "https://docs.rs/type-bridge-server/2.1.0"
+documentation = "https://docs.rs/type-bridge-server/2.2.0"
 rust-version = "1.88"
 
 [lib]
@@ -49,13 +49,13 @@ v2-query = [
 ]
 
 [dependencies]
-type-bridge-core-lib = { path = "../core", version = "2.1.0" }
-type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "2.1.0", default-features = false, optional = true }
-type-bridge-contract = { path = "../contract", version = "2.1.0", optional = true }
-type-bridge-query = { path = "../query", version = "2.1.0", optional = true }
-type-bridge-orm = { path = "../orm", version = "2.1.0", default-features = false, optional = true }
-type-bridge-schema = { path = "../schema", version = "2.1.0", optional = true }
-type-bridge-schema-compat = { path = "../schema-compat", version = "2.1.0", optional = true }
+type-bridge-core-lib = { path = "../core", version = "2.2.0" }
+type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "2.2.0", default-features = false, optional = true }
+type-bridge-contract = { path = "../contract", version = "2.2.0", optional = true }
+type-bridge-query = { path = "../query", version = "2.2.0", optional = true }
+type-bridge-orm = { path = "../orm", version = "2.2.0", default-features = false, optional = true }
+type-bridge-schema = { path = "../schema", version = "2.2.0", optional = true }
+type-bridge-schema-compat = { path = "../schema-compat", version = "2.2.0", optional = true }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

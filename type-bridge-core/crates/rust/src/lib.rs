@@ -10,12 +10,17 @@ extern crate self as type_bridge;
 
 pub mod __codegen;
 pub mod aggregate;
+mod canonical_codec;
 #[allow(dead_code)]
 mod entity_codec;
 mod entity_manager;
 pub mod error;
 pub mod hooks;
+pub mod migration;
 pub mod model;
+mod projected_batch;
+mod projected_codec;
+mod projected_filter;
 mod query;
 #[allow(dead_code)]
 mod relation_codec;
@@ -26,27 +31,56 @@ pub mod session;
 mod transaction;
 pub mod value;
 
+pub use canonical_codec::{CanonicalCodecLimits, CanonicalCodecOptions};
 pub use entity_manager::{EntityManager, EntitySubtypeManager};
 pub use error::{
     Error, ErrorCategory, ErrorDetail, ErrorDiagnostic, ErrorPathSegment, ModelValidationPhase,
-    Result,
+    QueryDiagnosticCategory, QueryDiagnosticPathKind, Result,
 };
 pub use hooks::{
     CrudOperation, HookContext, HookError, HookFuture, LifecycleHook, ModelKind, PreHookResult,
 };
+pub use migration::{
+    MigrationApprovalBuilder, MigrationApprovalSet, MigrationCatalog, MigrationHistoryEntry,
+    MigrationPlan, MigrationPreview, MigrationPreviewEntry,
+};
+pub use projected_filter::{
+    ProjectedEntityFilter, ProjectedRelationFilter, ReadEntityManager, ReadRelationManager,
+};
 pub use query::{
-    Binding, BoundField, BoundRole, Collected, Exact, FieldGroupedQuery, GroupedQuery,
-    NamedSelection, Order, OrderedOperand, Page, PageOptions, Predicate, Query, QueryOperand,
-    QuerySession, RowsOptions, Selectable, SelectedRowSpec, SelectedShape, SelectedSlot,
-    SelectionMode, SingularSelectedShape, Subtypes,
+    Binding, BoundField, BoundRole, Collected, Exact, FieldGroupedQuery, FunctionArgument,
+    FunctionCall, FunctionInput, FunctionScalarArgument, GroupedQuery, NamedSelection, Order,
+    OrderedOperand, Page, PageOptions, Predicate, Query, QueryOperand, QuerySession, RowsOptions,
+    Selectable, SelectedRowSpec, SelectedShape, SelectedSlot, SelectionMode, SingularSelectedShape,
+    Subtypes,
 };
 pub use relation_manager::{RelationManager, RelationSubtypeManager};
 pub use remote::{
     RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits, RemoteQueryTransport,
 };
 pub use schema::{Schema, SchemaPackage, Unbound};
-pub use session::{ConnectionOptions, Database};
+pub use session::{ConnectionOptions, Database, DatabaseCreateOutcome, DatabaseDeleteOutcome};
+#[cfg(feature = "typedb")]
+pub use session::{
+    ManagedDatabaseDeleteOutcome, ManagedDatabaseDeletionPlan, ManagedDatabasePairState,
+};
 pub use transaction::{
     ReadTransaction, TransactionEntityManager, TransactionRelationManager, WriteTransaction,
 };
+pub use type_bridge_orm::{
+    AnswerCancellation, MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
+    MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS, MAX_QUERY_STATEMENTS,
+    MAX_QUERY_TIMEOUT_MILLISECONDS, ProjectedManagerComparison, QueryExecutionDeadline,
+    QueryExecutionResourceLimits,
+};
+#[cfg(feature = "typedb")]
+pub use type_bridge_orm::{DirectConnectionPolicy, DirectTls};
 pub use type_bridge_orm_derive::SelectedRow;
+#[cfg(feature = "typedb")]
+pub use type_bridge_schema_migration::{
+    MAX_MIGRATION_BACKFILL_OBSERVATIONS, MAX_MIGRATION_EXECUTION_GROUPS,
+    MigrationBackfillObservation, MigrationCancellation, MigrationDriftFinding,
+    MigrationExecutionControl, MigrationExecutionDirection, MigrationExecutionReport,
+    MigrationExecutionReportPosition, MigrationExecutionResourceLimits, MigrationExecutionStatus,
+    MigrationVerifyReport,
+};

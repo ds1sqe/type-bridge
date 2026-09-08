@@ -49,13 +49,20 @@ pub enum VerifiedMigrationApplyStep {
         /// The exact lowering derived from the replayed source and target catalogs.
         lowering: Box<SchemaLoweringPlan>,
     },
+    /// A closed data backfill bound to the exact replayed intermediate schema.
+    Backfill {
+        /// The constructor-validated binding-neutral migration step.
+        step: MigrationStep,
+    },
 }
 
 impl VerifiedMigrationApplyStep {
     /// Return the exact binding-neutral manifest step.
     pub const fn step(&self) -> &MigrationStep {
         match self {
-            Self::Assertion { step, .. } | Self::SchemaDelta { step, .. } => step,
+            Self::Assertion { step, .. }
+            | Self::SchemaDelta { step, .. }
+            | Self::Backfill { step } => step,
         }
     }
 
@@ -63,14 +70,14 @@ impl VerifiedMigrationApplyStep {
     pub fn validated_assertion(&self) -> Option<&ValidatedMigrationAssertionPlan> {
         match self {
             Self::Assertion { validated, .. } => Some(validated),
-            Self::SchemaDelta { .. } => None,
+            Self::SchemaDelta { .. } | Self::Backfill { .. } => None,
         }
     }
 
     /// Return provider lowering only for a schema-delta step.
     pub fn lowering(&self) -> Option<&SchemaLoweringPlan> {
         match self {
-            Self::Assertion { .. } => None,
+            Self::Assertion { .. } | Self::Backfill { .. } => None,
             Self::SchemaDelta { lowering, .. } => Some(lowering),
         }
     }
@@ -119,6 +126,17 @@ pub fn partition_transaction_groups(
     let mut first_step_index = 0;
     for (step_index, step) in steps.iter().enumerate() {
         if matches!(step, VerifiedMigrationApplyStep::Assertion { .. }) {
+            continue;
+        }
+        if matches!(step, VerifiedMigrationApplyStep::Backfill { .. }) {
+            if first_step_index != step_index {
+                return Err(contract_failure(
+                    DiagnosticCategory::InvalidContract,
+                    "migration_apply_assertion_before_backfill",
+                    "assertion evidence cannot precede a backfill group",
+                ));
+            }
+            first_step_index = step_index + 1;
             continue;
         }
         let schema_step = step.step().as_schema_delta().ok_or_else(|| {
@@ -186,6 +204,7 @@ pub struct VerifiedMigrationApplyManifest {
     manifest: VerifiedSchemaMigrationManifest,
     steps: Vec<VerifiedMigrationApplyStep>,
     transaction_groups: Vec<VerifiedMigrationTransactionGroup>,
+    backfill_step_indices: Vec<usize>,
 }
 
 impl VerifiedMigrationApplyManifest {
@@ -208,6 +227,11 @@ impl VerifiedMigrationApplyManifest {
     pub fn transaction_groups(&self) -> &[VerifiedMigrationTransactionGroup] {
         &self.transaction_groups
     }
+
+    /// Return exact manifest positions of independently executable backfill groups.
+    pub fn backfill_step_indices(&self) -> &[usize] {
+        &self.backfill_step_indices
+    }
 }
 
 /// An opaque, deterministic, pre-I/O migration apply plan.
@@ -222,6 +246,7 @@ pub struct VerifiedMigrationApplyPlan {
     target_frontier: Vec<MigrationId>,
     target_schema: Option<DeclaredSchema>,
     target_state: Option<ManagedSchemaState>,
+    execution_authorized: bool,
 }
 
 impl VerifiedMigrationApplyPlan {
@@ -268,6 +293,11 @@ impl VerifiedMigrationApplyPlan {
     /// Return the exact managed state after the last planned migration, if any.
     pub const fn target_state(&self) -> Option<&ManagedSchemaState> {
         self.target_state.as_ref()
+    }
+
+    /// Report whether policy and exact approvals grant provider execution.
+    pub const fn execution_authorized(&self) -> bool {
+        self.execution_authorized
     }
 }
 
@@ -329,6 +359,49 @@ pub fn build_verified_migration_apply_plan(
     policy: &MigrationSafetyPolicy,
     approvals: &[MigrationApplyApproval],
 ) -> Result<VerifiedMigrationApplyPlan, MigrationApplyPlanError> {
+    build_verified_migration_apply_plan_inner(
+        graph,
+        applied,
+        target,
+        delta_context,
+        lowering_binding,
+        policy,
+        approvals,
+        true,
+    )
+}
+
+/// Build a deterministic provider-free forward preview without execution authority.
+pub fn build_verified_migration_apply_preview(
+    graph: &MigrationHistoryGraph,
+    applied: &BTreeSet<MigrationId>,
+    target: &MigrationApplyTarget,
+    delta_context: &ManagedDeltaContext,
+    lowering_binding: &SchemaLoweringBinding,
+) -> Result<VerifiedMigrationApplyPlan, MigrationApplyPlanError> {
+    build_verified_migration_apply_plan_inner(
+        graph,
+        applied,
+        target,
+        delta_context,
+        lowering_binding,
+        &MigrationSafetyPolicy::default_policy(),
+        &[],
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_verified_migration_apply_plan_inner(
+    graph: &MigrationHistoryGraph,
+    applied: &BTreeSet<MigrationId>,
+    target: &MigrationApplyTarget,
+    delta_context: &ManagedDeltaContext,
+    lowering_binding: &SchemaLoweringBinding,
+    policy: &MigrationSafetyPolicy,
+    approvals: &[MigrationApplyApproval],
+    execution_authorized: bool,
+) -> Result<VerifiedMigrationApplyPlan, MigrationApplyPlanError> {
     if lowering_binding.available_capabilities() != delta_context.available_capabilities() {
         return Err(contract_failure(
             DiagnosticCategory::InvalidContract,
@@ -367,33 +440,37 @@ pub fn build_verified_migration_apply_plan(
             )
             .into());
         }
-        let approved = match policy.decision(manifest.safety()) {
-            SafetyPolicyDecision::Allow => false,
-            SafetyPolicyDecision::Reject => {
-                return Err(contract_failure(
-                    DiagnosticCategory::InvalidContract,
-                    "migration_apply_safety_policy_rejected",
-                    "explicit apply policy rejects a manifest safety classification",
-                )
-                .into());
-            }
-            SafetyPolicyDecision::RequireApproval => {
-                let mut bound = false;
-                for approval in approvals {
-                    if approval.binds(manifest)? {
-                        bound = true;
-                        break;
-                    }
-                }
-                if !bound {
+        let approved = if !execution_authorized {
+            true
+        } else {
+            match policy.decision(manifest.safety()) {
+                SafetyPolicyDecision::Allow => false,
+                SafetyPolicyDecision::Reject => {
                     return Err(contract_failure(
                         DiagnosticCategory::InvalidContract,
-                        "migration_apply_approval_required",
-                        "manifest safety requires an approval bound to this exact transition",
+                        "migration_apply_safety_policy_rejected",
+                        "explicit apply policy rejects a manifest safety classification",
                     )
                     .into());
                 }
-                true
+                SafetyPolicyDecision::RequireApproval => {
+                    let mut bound = false;
+                    for approval in approvals {
+                        if approval.binds(manifest)? {
+                            bound = true;
+                            break;
+                        }
+                    }
+                    if !bound {
+                        return Err(contract_failure(
+                            DiagnosticCategory::InvalidContract,
+                            "migration_apply_approval_required",
+                            "manifest safety requires an approval bound to this exact transition",
+                        )
+                        .into());
+                    }
+                    true
+                }
             }
         };
         manifest
@@ -443,6 +520,18 @@ pub fn build_verified_migration_apply_plan(
             step.validate()?;
             step.required_capabilities()
                 .ensure_supported_by(lowering_binding.available_capabilities())?;
+            if step.as_backfill().is_some() {
+                if !pending_assertions.is_empty() {
+                    return Err(contract_failure(
+                        DiagnosticCategory::InvalidContract,
+                        "migration_apply_assertion_before_backfill",
+                        "assertion evidence cannot precede a backfill group",
+                    )
+                    .into());
+                }
+                verified_steps.push(VerifiedMigrationApplyStep::Backfill { step: step.clone() });
+                continue;
+            }
             let Some(schema_step) = step.as_schema_delta() else {
                 pending_assertions.push(step);
                 continue;
@@ -497,11 +586,19 @@ pub fn build_verified_migration_apply_plan(
             .into());
         }
         let transaction_groups = partition_transaction_groups(&verified_steps)?;
+        let backfill_step_indices = verified_steps
+            .iter()
+            .enumerate()
+            .filter_map(|(index, step)| {
+                matches!(step, VerifiedMigrationApplyStep::Backfill { .. }).then_some(index)
+            })
+            .collect();
         migrations.push(VerifiedMigrationApplyManifest {
             digest: verified_manifest_digest(manifest)?,
             manifest: manifest.clone(),
             steps: verified_steps,
             transaction_groups,
+            backfill_step_indices,
         });
         current_schema = Some(manifest.target_schema().clone());
         current_state = Some(manifest.target_state().clone());
@@ -530,6 +627,7 @@ pub fn build_verified_migration_apply_plan(
         target_frontier,
         target_schema: current_schema,
         target_state: current_state,
+        execution_authorized,
     })
 }
 

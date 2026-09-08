@@ -204,10 +204,176 @@ export interface NativeRustDatabase {
   close(): void;
   databaseName(): string;
   databaseExists(): boolean;
+  databaseExistsControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): boolean;
   createDatabase(): void;
+  createDatabaseControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): void;
+  createDatabaseOutcome(): DatabaseCreateOutcome;
+  createDatabaseOutcomeControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): DatabaseCreateOutcome;
   deleteDatabase(): void;
+  deleteDatabaseOutcome(): DatabaseDeleteOutcome;
+  inspectDatabasePair(): ManagedDatabasePairState;
+  inspectDatabasePairControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): ManagedDatabasePairState;
+  planDatabaseDelete(): NativeManagedDatabaseDeletionPlan;
+  planDatabaseDeleteControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): NativeManagedDatabaseDeletionPlan;
   resetDatabase(): void;
   transaction(transactionType?: TransactionType): NativeRustTransactionContext;
+}
+
+export interface NativeManagedDatabaseDeletionPlan {
+  inspectedState(): ManagedDatabasePairState;
+  execute(): ManagedDatabaseDeleteOutcome;
+  executeControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): ManagedDatabaseDeleteOutcome;
+  close(): void;
+}
+
+export interface AdministrationExecutionOptions {
+  timeoutMilliseconds?: number;
+  cancellation?: MigrationCancellation;
+}
+
+export type DatabaseCreateOutcome = "created" | "already_exists";
+export type DatabaseDeleteOutcome = "deleted" | "already_absent";
+export type ManagedDatabasePairState =
+  | "absent"
+  | "standalone_managed"
+  | "owned_pair"
+  | "owned_journal_orphan";
+export type ManagedDatabaseDeleteOutcome =
+  | "already_absent"
+  | "deleted_standalone_managed"
+  | "deleted_owned_pair"
+  | "deleted_owned_journal_orphan";
+
+export interface MigrationIdentity {
+  readonly appLabel: string;
+  readonly name: string;
+}
+
+export interface MigrationHistoryEntry {
+  readonly id: MigrationIdentity;
+  readonly parents: MigrationIdentity[];
+  readonly manifestDigest: string;
+  readonly stepCount: number;
+  readonly safety: string;
+  readonly reversible: boolean;
+}
+
+export interface MigrationPreviewEntry {
+  readonly id: MigrationIdentity;
+  readonly safety: string;
+  readonly stepCount: number;
+  readonly transactionGroupCount: number;
+  readonly backfillCount: number;
+  readonly reversible: boolean;
+}
+
+export interface MigrationVerificationFinding {
+  readonly kind:
+    | "applied_ledger"
+    | "live_semantics"
+    | "desired_divergence"
+    | "pending_migrations"
+    | "capabilities";
+  readonly pending: MigrationIdentity[];
+  readonly diagnosticCode?: string | null;
+}
+
+export interface MigrationVerificationReport {
+  readonly clean: boolean;
+  readonly findings: MigrationVerificationFinding[];
+  readonly appliedFrontier: MigrationIdentity[];
+}
+
+interface NativeMigrationApprovalBuilder {
+  approve(index: number): void;
+  finish(): NativeMigrationApprovalSet;
+}
+
+interface NativeMigrationApprovalSet {
+  readonly length: number;
+}
+
+interface NativeMigrationPlan {
+  readonly executionAuthorized: boolean;
+  execute(database: NativeRustDatabase, holder: string): MigrationExecutionReport;
+  executeControlled(
+    database: NativeRustDatabase,
+    holder: string,
+    timeoutMilliseconds?: number | null,
+    resources?: NativeMigrationExecutionResources | null,
+    cancellation?: NativeMigrationCancellation | null,
+  ): MigrationExecutionReport;
+}
+
+interface NativeMigrationCancellation {
+  readonly cancelled: boolean;
+  cancel(): void;
+}
+
+interface NativeMigrationExecutionResources {
+  readonly transactionGroups: number;
+  readonly backfillObservations: number;
+}
+
+interface NativeMigrationPreview {
+  readonly direction: "apply" | "rollback";
+  readonly executionAuthorized: boolean;
+  migrationCount(): number;
+  migration(index: number): MigrationPreviewEntry | null;
+  approvalBuilder(): NativeMigrationApprovalBuilder;
+  authorize(approvals: NativeMigrationApprovalSet): NativeMigrationPlan;
+}
+
+interface NativeMigrationCatalog {
+  readonly length: number;
+  fingerprintJson(): string;
+  isEmpty(): boolean;
+  heads(): MigrationIdentity[];
+  entry(index: number): MigrationHistoryEntry | null;
+  verify(database: NativeRustDatabase): MigrationVerificationReport;
+  appliedMigrations(database: NativeRustDatabase): MigrationIdentity[];
+  previewApply(
+    applied: MigrationIdentity[],
+    targets?: MigrationIdentity[] | null,
+  ): NativeMigrationPreview;
+  previewRollback(
+    applied: MigrationIdentity[],
+    removals: MigrationIdentity[],
+  ): NativeMigrationPreview;
+}
+
+export type MigrationExecutionStatus =
+  | "applied"
+  | "rolled_back"
+  | "retry_safe"
+  | "requires_explicit_recovery";
+
+export interface MigrationExecutionReport {
+  readonly direction: "apply" | "rollback";
+  readonly status: MigrationExecutionStatus;
+  readonly migrationId?: MigrationIdentity | null;
+  readonly positionKind?:
+    | "transaction_group"
+    | "backfill_step"
+    | "manifest_checkpoint"
+    | "rollback_step"
+    | null;
+  readonly positionOrdinal?: number | null;
+  readonly diagnosticCategory?: string | null;
+  readonly diagnosticCode?: string | null;
+  readonly backfills: readonly MigrationBackfillObservation[];
+}
+
+export interface MigrationBackfillObservation {
+  readonly migrationId: MigrationIdentity;
+  readonly operationOrdinal: number;
+  readonly manifestStepIndex: number;
+  readonly planFingerprint: string;
+  readonly direction: "forward" | "reverse";
+  readonly matched: number;
+  readonly changed: number;
+  readonly skipped: number;
+  readonly transactionGroups: number;
 }
 
 export interface NativeRustTransactionContext {
@@ -265,6 +431,15 @@ interface NativeQueryV2Runtime {
 }
 
 export interface NativeRuntime {
+  NodeMigrationCancellation: new () => NativeMigrationCancellation;
+  NodeMigrationExecutionResources: new (
+    transactionGroups: number,
+    backfillObservations: number,
+  ) => NativeMigrationExecutionResources;
+  openMigrationCatalog(
+    schemaAuthority: Uint8Array,
+    historyBundle: Uint8Array,
+  ): NativeMigrationCatalog;
   ensureRustDatabase(
     address: string,
     database: string,
@@ -303,6 +478,218 @@ export interface RustDatabaseConnectOptions {
 }
 
 export interface EnsureDatabaseOptions extends RustDatabaseConnectOptions {}
+
+export class MigrationApprovalSet {
+  readonly #native: NativeMigrationApprovalSet;
+
+  /** @internal */
+  constructor(native: NativeMigrationApprovalSet) {
+    this.#native = native;
+  }
+
+  get length(): number {
+    return this.#native.length;
+  }
+
+  /** @internal */
+  nativeHandle(): NativeMigrationApprovalSet {
+    return this.#native;
+  }
+}
+
+export class MigrationApprovalBuilder {
+  readonly #native: NativeMigrationApprovalBuilder;
+
+  /** @internal */
+  constructor(native: NativeMigrationApprovalBuilder) {
+    this.#native = native;
+  }
+
+  approve(index: number): void {
+    this.#native.approve(index);
+  }
+
+  finish(): MigrationApprovalSet {
+    return new MigrationApprovalSet(this.#native.finish());
+  }
+}
+
+export class MigrationPlan {
+  readonly #native: NativeMigrationPlan;
+
+  /** @internal */
+  constructor(native: NativeMigrationPlan) {
+    this.#native = native;
+  }
+
+  get executionAuthorized(): boolean {
+    return this.#native.executionAuthorized;
+  }
+
+  execute(database: RustDatabase, holder: string): MigrationExecutionReport {
+    return this.#native.execute(preparedV2DatabaseHandle(database), holder);
+  }
+
+  executeControlled(
+    database: RustDatabase,
+    holder: string,
+    options: {
+      timeoutMilliseconds?: number;
+      resources?: MigrationExecutionResources;
+      cancellation?: MigrationCancellation;
+    } = {},
+  ): MigrationExecutionReport {
+    return this.#native.executeControlled(
+      preparedV2DatabaseHandle(database),
+      holder,
+      options.timeoutMilliseconds,
+      options.resources?.nativeHandle(),
+      options.cancellation?.nativeHandle(),
+    );
+  }
+}
+
+export class MigrationCancellation {
+  readonly #native: NativeMigrationCancellation;
+
+  constructor() {
+    const Native = loadNative().NodeMigrationCancellation as new () => NativeMigrationCancellation;
+    this.#native = new Native();
+  }
+
+  cancel(): void {
+    this.#native.cancel();
+  }
+
+  get cancelled(): boolean {
+    return this.#native.cancelled;
+  }
+
+  /** @internal */
+  nativeHandle(): NativeMigrationCancellation {
+    return this.#native;
+  }
+}
+
+export class MigrationExecutionResources {
+  readonly #native: NativeMigrationExecutionResources;
+
+  constructor(transactionGroups: number, backfillObservations: number) {
+    const Native = loadNative().NodeMigrationExecutionResources as new (
+      transactionGroups: number,
+      backfillObservations: number,
+    ) => NativeMigrationExecutionResources;
+    this.#native = new Native(transactionGroups, backfillObservations);
+  }
+
+  get transactionGroups(): number {
+    return this.#native.transactionGroups;
+  }
+
+  get backfillObservations(): number {
+    return this.#native.backfillObservations;
+  }
+
+  /** @internal */
+  nativeHandle(): NativeMigrationExecutionResources {
+    return this.#native;
+  }
+}
+
+export class MigrationPreview {
+  readonly #native: NativeMigrationPreview;
+
+  /** @internal */
+  constructor(native: NativeMigrationPreview) {
+    this.#native = native;
+  }
+
+  get direction(): "apply" | "rollback" {
+    return this.#native.direction;
+  }
+
+  get executionAuthorized(): boolean {
+    return this.#native.executionAuthorized;
+  }
+
+  migrationCount(): number {
+    return this.#native.migrationCount();
+  }
+
+  migration(index: number): MigrationPreviewEntry | null {
+    return this.#native.migration(index);
+  }
+
+  approvalBuilder(): MigrationApprovalBuilder {
+    return new MigrationApprovalBuilder(this.#native.approvalBuilder());
+  }
+
+  authorize(approvals: MigrationApprovalSet): MigrationPlan {
+    return new MigrationPlan(this.#native.authorize(approvals.nativeHandle()));
+  }
+}
+
+export class MigrationCatalog {
+  readonly #native: NativeMigrationCatalog;
+
+  /** @internal */
+  constructor(native: NativeMigrationCatalog) {
+    this.#native = native;
+  }
+
+  get length(): number {
+    return this.#native.length;
+  }
+
+  fingerprintJson(): string {
+    return this.#native.fingerprintJson();
+  }
+
+  isEmpty(): boolean {
+    return this.#native.isEmpty();
+  }
+
+  heads(): MigrationIdentity[] {
+    return this.#native.heads();
+  }
+
+  entry(index: number): MigrationHistoryEntry | null {
+    return this.#native.entry(index);
+  }
+
+  verify(database: RustDatabase): MigrationVerificationReport {
+    return this.#native.verify(preparedV2DatabaseHandle(database));
+  }
+
+  appliedMigrations(database: RustDatabase): MigrationIdentity[] {
+    return this.#native.appliedMigrations(preparedV2DatabaseHandle(database));
+  }
+
+  previewApply(
+    applied: MigrationIdentity[],
+    targets?: MigrationIdentity[],
+  ): MigrationPreview {
+    return new MigrationPreview(
+      this.#native.previewApply(applied, targets ?? null),
+    );
+  }
+
+  previewRollback(
+    applied: MigrationIdentity[],
+    removals: MigrationIdentity[],
+  ): MigrationPreview {
+    return new MigrationPreview(this.#native.previewRollback(applied, removals));
+  }
+}
+
+export function openMigrationCatalog(
+  schemaAuthority: Uint8Array,
+  historyBundle: Uint8Array,
+): MigrationCatalog {
+  return new MigrationCatalog(
+    loadNative().openMigrationCatalog(schemaAuthority, historyBundle),
+  );
+}
 
 export function ensureDatabase(
   address: string,
@@ -488,12 +875,48 @@ export class RustDatabase {
     return this.#native.databaseExists();
   }
 
+  databaseExistsControlled(options: AdministrationExecutionOptions = {}): boolean {
+    return this.#native.databaseExistsControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
+  }
+
   createDatabase(): void {
     this.#native.createDatabase();
   }
 
+  createDatabaseControlled(options: AdministrationExecutionOptions = {}): void {
+    this.#native.createDatabaseControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
+  }
+
+  createDatabaseOutcome(): DatabaseCreateOutcome {
+    return this.#native.createDatabaseOutcome();
+  }
+
+  createDatabaseOutcomeControlled(options: AdministrationExecutionOptions = {}): DatabaseCreateOutcome {
+    return this.#native.createDatabaseOutcomeControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
+  }
+
   deleteDatabase(): void {
     this.#native.deleteDatabase();
+  }
+
+  deleteDatabaseOutcome(): DatabaseDeleteOutcome {
+    return this.#native.deleteDatabaseOutcome();
+  }
+
+  inspectDatabasePair(): ManagedDatabasePairState {
+    return this.#native.inspectDatabasePair();
+  }
+
+  inspectDatabasePairControlled(options: AdministrationExecutionOptions = {}): ManagedDatabasePairState {
+    return this.#native.inspectDatabasePairControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
+  }
+
+  planDatabaseDelete(): ManagedDatabaseDeletionPlan {
+    return new ManagedDatabaseDeletionPlan(this.#native.planDatabaseDelete());
+  }
+
+  planDatabaseDeleteControlled(options: AdministrationExecutionOptions = {}): ManagedDatabaseDeletionPlan {
+    return new ManagedDatabaseDeletionPlan(this.#native.planDatabaseDeleteControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle()));
   }
 
   resetDatabase(): void {
@@ -507,6 +930,41 @@ export class RustDatabase {
       this.#native.transaction(transactionType),
     );
   }
+}
+
+export class ManagedDatabaseDeletionPlan {
+  readonly #native: NativeManagedDatabaseDeletionPlan;
+
+  /** @internal */
+  constructor(native: NativeManagedDatabaseDeletionPlan) {
+    this.#native = native;
+  }
+
+  inspectedState(): ManagedDatabasePairState {
+    return this.#native.inspectedState();
+  }
+
+  execute(): ManagedDatabaseDeleteOutcome {
+    return this.#native.execute();
+  }
+
+  executeControlled(options: AdministrationExecutionOptions = {}): ManagedDatabaseDeleteOutcome {
+    return this.#native.executeControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
+  }
+
+  close(): void {
+    this.#native.close();
+  }
+}
+
+/** @internal Wrap a generated-package-owned native database handle. */
+export function createRustDatabaseFromNative(
+  native: NativeRustDatabase,
+): RustDatabase {
+  const Constructor = RustDatabase as unknown as new (
+    native: NativeRustDatabase,
+  ) => RustDatabase;
+  return new Constructor(native);
 }
 
 const TRANSACTION_CONSTRUCTOR = Symbol("RustTransactionContext");

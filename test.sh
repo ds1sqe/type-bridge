@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Full source-tree test suite — Rust + Python + Node, unit + integration.
+# Full source-tree test suite — Rust + Python + Node + the internal C
+# foundation, unit + integration.
 #
 # Reproduces the CI unit/integration tiers locally. Exact wheel and npm release
 # artifact acceptance remains workflow-only; this script does not build or
@@ -66,7 +67,8 @@ usage() {
     cat <<'EOF'
 Usage: ./test.sh [--no-integration] [--proxy] [--tls] [--no-isolated] [-- <pytest args>]
 
-  --no-integration  Run only the offline tiers (Rust, Python unit, Node unit/dts).
+  --no-integration  Run only the offline tiers (Rust, Python unit, Node unit/dts,
+                    and the internal C foundation).
   --proxy           Additionally run the proxy integration suite (-m proxy).
   --tls             Additionally run dedicated TLS transport tests. In isolated
                     mode this starts a test-only TLS endpoint in front of TypeDB.
@@ -99,6 +101,28 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+for runner_owned_sdk_variable in \
+    TYPE_BRIDGE_SDK_REPORT \
+    TYPE_BRIDGE_SDK_REPORT_V2 \
+    TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT \
+    TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS \
+    TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE \
+    TYPE_BRIDGE_SDK_V2_VALIDATED_OBSERVATIONS \
+    TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON \
+    TYPE_BRIDGE_PROJECTED_LIVE_REPORT \
+    TYPE_BRIDGE_PROJECTED_LIVE_DATABASE \
+    TYPE_BRIDGE_PROJECTED_PYTHON_PACKAGE_ROOT \
+    TYPE_BRIDGE_PROJECTED_NODE_PACKAGE_ROOT \
+    TYPE_BRIDGE_PROJECTED_REPOSITORY_ROOT \
+    ACCEPTANCE_TARGET_DIR; do
+    if [[ ${!runner_owned_sdk_variable+x} == x ]]; then
+        printf "${RED}%s is runner-owned; unset it before invoking test.sh.${RESET}\n" \
+            "$runner_owned_sdk_variable" >&2
+        exit 2
+    fi
+done
+unset runner_owned_sdk_variable
 
 NODE_DIR=type-bridge-core/crates/node
 # TYPEDB_PORT and TYPEDB_HTTP_PORT are intentionally NOT defaulted here.
@@ -138,11 +162,98 @@ run_step() {
     fi
 }
 
+validate_canonical_json_files() {
+    local validator_python="$1"
+    shift
+    "$validator_python" -c '
+import json
+import sys
+from pathlib import Path
+
+for raw_path in sys.argv[1:]:
+    path = Path(raw_path)
+    raw = path.read_bytes()
+    if not raw:
+        raise SystemExit(f"empty JSON evidence: {path}")
+    value = json.loads(raw)
+    canonical = (
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode()
+    if raw != canonical:
+        raise SystemExit(f"noncanonical JSON evidence: {path}")
+' "$@"
+}
+
+write_sdk_summary() {
+    local summary="$1"
+    local validator_python="$2"
+    local staged
+    shift 2
+    if [[ "$summary" != /* || -e "$summary" ]]; then
+        printf "${RED}Sdk summary must be an absent absolute path: %s${RESET}\n" \
+            "$summary" >&2
+        return 1
+    fi
+    staged="$(mktemp "${summary}.tmp.XXXXXX")" || return 1
+    if ! "$@" > "$staged"; then
+        unlink -- "$staged"
+        return 1
+    fi
+    if ! validate_canonical_json_files "$validator_python" "$staged"; then
+        unlink -- "$staged"
+        return 1
+    fi
+    if ! ln -- "$staged" "$summary"; then
+        unlink -- "$staged"
+        return 1
+    fi
+    unlink -- "$staged"
+}
+
+log_sdk_evidence_sha256() {
+    local validator_python="$1"
+    local v2_summary="$2"
+    shift 2
+    validate_canonical_json_files "$validator_python" "$@"
+    "$validator_python" -c '
+import json
+import sys
+from pathlib import Path
+
+summary = json.loads(Path(sys.argv[1]).read_bytes())
+pending = summary.get("pending_manifest_promotions")
+if not isinstance(pending, list):
+    raise SystemExit("sdk-v2 summary has no pending_manifest_promotions list")
+print(
+    "sdk-v2 pending_manifest_promotions="
+    + json.dumps(pending, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+)
+' "$v2_summary"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum -- "$@"
+    else
+        shasum -a 256 -- "$@"
+    fi
+}
+
 # ── TypeDB container lifecycle (isolated integration only) ───────────────────
 # One shared TypeDB serves the Rust, Python, and Node integration tiers — the CI shape,
 # reproduced locally. The proxy tier (--proxy) owns its own stack via proxy_lifecycle.py.
 compose=""
 typedb_started=0
+sdk_report_dir=""
+preserve_sdk_evidence="${TYPE_BRIDGE_PRESERVE_SDK_EVIDENCE:-0}"
+if [[ "$preserve_sdk_evidence" != 0 && "$preserve_sdk_evidence" != 1 ]]; then
+    printf "${RED}TYPE_BRIDGE_PRESERVE_SDK_EVIDENCE must be 0 or 1.${RESET}\n" >&2
+    exit 2
+fi
 
 detect_compose() {
     if [[ -n "${CONTAINER_TOOL:-}" ]]; then
@@ -162,14 +273,14 @@ start_typedb() {
     detect_compose
     local proj
     local services=(typedb)
-    local typedb_image="${TYPEDB_IMAGE:-typedb/typedb:3.12.1}"
+    local typedb_image="${TYPEDB_IMAGE:-typedb/typedb:3.12.3}"
     proj="$(compose_project)"
     if [[ "$tls" == 1 ]]; then
         services+=(typedb-tls)
         # Workspace migration execution is pinned to the shipped semantic
         # profile's exact server, while the ordinary lane retains its prior
         # image. An explicit caller override remains authoritative.
-        typedb_image="${TYPEDB_IMAGE:-typedb/typedb:3.12.1}"
+        typedb_image="${TYPEDB_IMAGE:-typedb/typedb:3.12.3}"
     fi
 
     printf "${BOLD}━━━ TypeDB (isolated, project %s) ━━━${RESET}\n\n" "$proj"
@@ -206,8 +317,8 @@ start_typedb() {
         TYPEDB_HTTP_PORT="$(_discover_port typedb 8000)"
     fi
 
-    if [[ -z "$TYPEDB_PORT" ]]; then
-        printf "${RED}Could not discover TypeDB host port after up -d${RESET}\n" >&2
+    if [[ -z "$TYPEDB_PORT" || -z "$TYPEDB_HTTP_PORT" ]]; then
+        printf "${RED}Could not discover TypeDB gRPC and HTTP host ports after up -d${RESET}\n" >&2
         exit 1
     fi
 
@@ -215,17 +326,29 @@ start_typedb() {
 
     local typedb_ready=0
     for _ in {1..45}; do
-        if timeout 2 bash -c "</dev/tcp/127.0.0.1/${TYPEDB_PORT}" 2>/dev/null; then
+        if timeout 2 bash -c "</dev/tcp/127.0.0.1/${TYPEDB_PORT}" 2>/dev/null \
+            && timeout 3 python3 -c '
+import sys
+import urllib.request
+
+with urllib.request.urlopen(
+    f"http://127.0.0.1:{sys.argv[1]}/v1/version",
+    timeout=2,
+) as response:
+    if not response.read(1):
+        raise SystemExit(1)
+' "$TYPEDB_HTTP_PORT" >/dev/null 2>&1; then
             typedb_ready=1
             break
         fi
         sleep 2
     done
     if [[ "$typedb_ready" != 1 ]]; then
-        printf "${RED}TypeDB did not open port ${TYPEDB_PORT} in time${RESET}\n" >&2
+        printf "${RED}TypeDB gRPC and HTTP endpoints did not become ready in time${RESET}\n" >&2
         exit 1
     fi
-    printf "${GREEN}TypeDB ready on ${TYPEDB_PORT}${RESET}\n\n"
+    printf "${GREEN}TypeDB ready on gRPC %s and HTTP %s${RESET}\n\n" \
+        "$TYPEDB_PORT" "$TYPEDB_HTTP_PORT"
 
     if [[ "$tls" == 1 ]]; then
         TYPEDB_TLS_PORT="${CALLER_TYPEDB_TLS_PORT:-$(_discover_port typedb-tls 1729)}"
@@ -299,6 +422,32 @@ run_step "generated Rust projection acceptance on MSRV 1.88" \
     -p type-bridge-schema-codegen --test rust_acceptance \
     generated_rust_crate_compiles_rejects_invalid_types_and_runs -- --exact
 
+printf "${BOLD}━━━ C foundation (offline, internal) ━━━${RESET}\n\n"
+run_step "generated C package and strict installed-compiler checks" \
+    cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+    -p type-bridge-schema-codegen --test c_emitter
+run_step "generated C entity and relation CRUD strict C17 consumer" \
+    cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+    -p type-bridge-schema-codegen --test c_projection_live \
+    exact_live_consumer_is_strict_c17_against_the_shared_generated_schema -- --exact
+run_step "C runtime, transaction, and cancellation ABI" \
+    cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+    -p type-bridge-c --lib --test execution_abi
+run_step "C typed-query, diagnostic, function, and remote ABI" \
+    cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+    -p type-bridge-c \
+    --test query_abi \
+    --test query_diagnostic_abi \
+    --test query_function_abi \
+    --test query_remote_abi
+run_step "build the C ABI shared library" \
+    cargo build --locked --manifest-path type-bridge-core/Cargo.toml \
+    -p type-bridge-c --lib
+run_step "C schema-package ABI and standalone consumer" \
+    env TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
+    cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+    -p type-bridge-c --test schema_package_abi
+
 printf "${BOLD}━━━ Python (unit) ━━━${RESET}\n\n"
 run_step "pytest tests/unit/" \
     uv run pytest tests/unit/ --tb=short -q
@@ -306,6 +455,11 @@ run_step "pytest tests/unit/" \
 printf "${BOLD}━━━ Node (build + offline) ━━━${RESET}\n\n"
 run_step "npm ci"            bash -c "cd '$NODE_DIR' && npm ci"
 run_step "npm run build"     bash -c "cd '$NODE_DIR' && npm run build"
+run_step "ordered four-binding generated package compiler smoke" \
+    cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+    -p type-bridge-schema-codegen --test ordered_collections \
+    ordered_generated_packages_pass_all_four_language_compilers \
+    -- --exact --ignored
 run_step "npm run scope:probe" bash -c "cd '$NODE_DIR' && npm run scope:probe"
 run_step "npm run test:unit" bash -c "cd '$NODE_DIR' && npm run test:unit"
 run_step "npm run test:dts"  bash -c "cd '$NODE_DIR' && npm run test:dts"
@@ -321,12 +475,120 @@ if [[ "$integration" == 1 ]]; then
     TYPEDB_HTTP_PORT="${TYPEDB_HTTP_PORT:-8000}"
     TYPEDB_ADDRESS="${TYPEDB_ADDRESS:-localhost:${TYPEDB_PORT}}"
 
+    typedb_server_version="$(
+        uv run python -c \
+            'import sys; from type_bridge.typedb_driver import server_version; print(server_version(sys.argv[1], http_port=int(sys.argv[2])))' \
+            "$TYPEDB_ADDRESS" "$TYPEDB_HTTP_PORT"
+    )"
+    printf "${CYAN}Detected TypeDB %s${RESET}\n\n" "$typedb_server_version"
+
+    sdk_rust_env=()
+    sdk_python_env=()
+    sdk_node_env=()
+    sdk_c_env=()
+    # Forwarded pytest arguments may change collection and exclude the sole
+    # Python report producer. Keep targeted Python runs useful instead of
+    # allocating a fan-in that can never become complete; the unfiltered full
+    # suite remains the local conformance gate.
+    if [[ "$typedb_server_version" == "3.12.3" && ${#pytest_args[@]} -eq 0 ]]; then
+        sdk_report_dir="$(
+            mktemp -d "${TMPDIR:-/tmp}/typebridge-sdk.XXXXXXXXXX"
+        )"
+        sdk_report_dir="$(cd "$sdk_report_dir" && pwd -P)"
+        mkdir -p "$sdk_report_dir/v2"
+        sdk_validator_python="$(
+            uv run python -c 'import os, sys; print(os.path.realpath(sys.executable))'
+        )"
+        if [[ "$sdk_validator_python" != /* \
+            || ! -x "$sdk_validator_python" ]]; then
+            printf "${RED}Sdk validator Python must be an absolute executable path: %s${RESET}\n" \
+                "$sdk_validator_python" >&2
+            exit 2
+        fi
+        sdk_python_nonce="$(
+            "$sdk_validator_python" -c 'import secrets; print(secrets.token_hex(32))'
+        )"
+        sdk_node_nonce="$(
+            "$sdk_validator_python" -c 'import secrets; print(secrets.token_hex(32))'
+        )"
+        sdk_rust_nonce="$(
+            "$sdk_validator_python" -c 'import secrets; print(secrets.token_hex(32))'
+        )"
+        sdk_c_nonce="$(
+            "$sdk_validator_python" -c 'import secrets; print(secrets.token_hex(32))'
+        )"
+        declare -A sdk_nonce_set=()
+        for sdk_nonce in \
+            "$sdk_python_nonce" \
+            "$sdk_node_nonce" \
+            "$sdk_rust_nonce" \
+            "$sdk_c_nonce"; do
+            if [[ ! "$sdk_nonce" =~ ^[0-9a-f]{64}$ \
+                || ${sdk_nonce_set[$sdk_nonce]+x} == x ]]; then
+                printf "${RED}Sdk-v2 binding nonces must be distinct lowercase 64-hex values.${RESET}\n" >&2
+                exit 2
+            fi
+            sdk_nonce_set[$sdk_nonce]=1
+        done
+        unset sdk_nonce sdk_nonce_set
+
+        sdk_python_direct_fragment="$sdk_report_dir/v2/python-direct-proof.json"
+        sdk_python_remote_fragment="$sdk_report_dir/v2/python-remote-proof.json"
+        sdk_node_direct_fragment="$sdk_report_dir/v2/node-direct-proof.json"
+        sdk_node_remote_fragment="$sdk_report_dir/v2/node-remote-proof.json"
+        sdk_rust_fragment="$sdk_report_dir/v2/rust-proof.json"
+        sdk_c_fragment="$sdk_report_dir/v2/c-proof.json"
+        sdk_v1_summary="$sdk_report_dir/summary-v1.json"
+        sdk_v2_summary="$sdk_report_dir/summary-v2.json"
+        sdk_rust_env=(
+            "TYPE_BRIDGE_SDK_REPORT=$sdk_report_dir/rust.json"
+            "TYPE_BRIDGE_SDK_REPORT_V2=$sdk_report_dir/v2/rust.json"
+            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$sdk_rust_fragment"
+            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$sdk_rust_nonce"
+            "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE=typedb-3.12.1/v1"
+        )
+        sdk_python_env=(
+            "TYPE_BRIDGE_SDK_REPORT=$sdk_report_dir/python.json"
+            "TYPE_BRIDGE_SDK_REPORT_V2=$sdk_report_dir/v2/python.json"
+            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$sdk_python_direct_fragment:$sdk_python_remote_fragment"
+            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$sdk_python_nonce"
+        )
+        sdk_node_env=(
+            "TYPE_BRIDGE_SDK_REPORT=$sdk_report_dir/node.json"
+            "TYPE_BRIDGE_SDK_REPORT_V2=$sdk_report_dir/v2/node.json"
+            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$sdk_node_direct_fragment:$sdk_node_remote_fragment"
+            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$sdk_node_nonce"
+            "TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON=$sdk_validator_python"
+            "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE=typedb-3.12.1/v1"
+        )
+        sdk_c_env=(
+            "TYPE_BRIDGE_SDK_REPORT_V2=$sdk_report_dir/v2/c.json"
+            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$sdk_c_fragment"
+            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$sdk_c_nonce"
+        )
+        printf "${CYAN}Sdk reports: %s${RESET}\n\n" "$sdk_report_dir"
+    elif [[ "$typedb_server_version" == "3.12.3" ]]; then
+        printf "${CYAN}Sdk report fan-in skipped because forwarded pytest arguments may change collection.${RESET}\n\n"
+    fi
+
+    if [[ "$typedb_server_version" == "3.12.3" ]]; then
+        printf "${BOLD}━━━ Projected exact-live parity (integration) ━━━${RESET}\n\n"
+        run_step "four-binding exact-TypeDB-3.12.3 Projected live fan-in" \
+            env TYPE_BRIDGE_PROJECTED_LIVE_ADDRESS="$TYPEDB_ADDRESS" \
+                TYPE_BRIDGE_PROJECTED_LIVE_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            uv run python scripts/ci/run_projected_live.py
+    else
+        printf "${CYAN}Projected exact-live fan-in requires TypeDB 3.12.3; skipping %s.${RESET}\n\n" \
+            "$typedb_server_version"
+    fi
+
     printf "${BOLD}━━━ Rust (integration) ━━━${RESET}\n\n"
     run_step "cargo test -p type-bridge-orm --features integration-tests --test integration" \
         timeout --foreground 15m \
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
         cargo test --manifest-path type-bridge-core/Cargo.toml \
-        -p type-bridge-orm --features integration-tests --test integration -- --nocapture
+        -p type-bridge-orm --features integration-tests --test integration -- \
+            --nocapture --test-threads=1
 
     printf "${BOLD}━━━ Production V2 server (integration) ━━━${RESET}\n\n"
     run_step "type-bridge-server V1 + V2 live smoke" \
@@ -339,15 +601,62 @@ if [[ "$integration" == 1 ]]; then
             --test v2_query_integration_tests
 
     printf "${BOLD}━━━ Generated Rust projection (integration) ━━━${RESET}\n\n"
+    if [[ -n "$sdk_report_dir" ]]; then
+        run_step "emit Rust sdk-v2 deterministic proof fragment" \
+            env TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT="$sdk_rust_fragment" \
+                TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE="$sdk_rust_nonce" \
+            cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+                -p type-bridge --lib \
+                remote::tests::sdk_v2_rust_deterministic_proof_fragment \
+                -- --exact
+    fi
     run_step "generated Rust application parity" \
         timeout --foreground 10m \
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE="type_bridge_rust_projection_live_${$}" \
             ACCEPTANCE_TARGET_DIR="$ROOT/type-bridge-core/target/tmp_projection_live_target" \
+            "${sdk_rust_env[@]}" \
         bash scripts/ci/run_exact_ignored_rust_test.sh \
             generated_rust_projection_round_trips_exact_live_models \
             --manifest-path type-bridge-core/Cargo.toml \
             -p type-bridge-schema-codegen --test rust_projection_live
+
+    if [[ "$typedb_server_version" == "3.12.3" ]]; then
+        printf "${BOLD}━━━ C runtime transactions (integration) ━━━${RESET}\n\n"
+        run_step "compiled C17 runtime and transaction lifecycle" \
+            timeout --foreground 10m \
+            env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+                TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
+                TYPE_BRIDGE_C_INTG_DATABASE="type_bridge_c_runtime_live_${$}" \
+            bash scripts/ci/run_exact_ignored_rust_test.sh \
+                live_c17_consumer_exercises_exact_3_12_3_transaction_lifecycle \
+                --manifest-path type-bridge-core/Cargo.toml --locked \
+                -p type-bridge-c --test schema_package_abi
+
+        printf "${BOLD}━━━ Generated C entity and relation CRUD (integration) ━━━${RESET}\n\n"
+        if [[ -n "$sdk_report_dir" ]]; then
+            run_step "emit C sdk-v2 deterministic proof fragment" \
+                env TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT="$sdk_c_fragment" \
+                    TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE="$sdk_c_nonce" \
+                cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+                    -p type-bridge-c --lib \
+                    query::tests::sdk_v2_c_deterministic_proof_fragment \
+                    -- --exact
+        fi
+        run_step "compiled generated C17 Person and Membership CRUD lifecycle" \
+            timeout --foreground 10m \
+            env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+                TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE="type_bridge_c_projection_live_${$}" \
+                ACCEPTANCE_TARGET_DIR="$ROOT/type-bridge-core/target/tmp_c_projection_live_target" \
+                "${sdk_c_env[@]}" \
+            bash scripts/ci/run_exact_ignored_rust_test.sh \
+                live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3 \
+                --manifest-path type-bridge-core/Cargo.toml --locked \
+                -p type-bridge-schema-codegen --test c_projection_live
+    else
+        printf "${CYAN}Generated C entity and relation CRUD live smoke is intentionally limited to exact TypeDB 3.12.3; skipping %s.${RESET}\n\n" \
+            "$typedb_server_version"
+    fi
 
     printf "${BOLD}━━━ CLI workspace lifecycle (integration) ━━━${RESET}\n\n"
     for cli_live_test in \
@@ -371,7 +680,7 @@ if [[ "$integration" == 1 ]]; then
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE="type_bridge_local_rollback_${$}" \
         bash scripts/ci/run_exact_ignored_rust_test.sh \
-            runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1 \
+            runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3 \
             --manifest-path type-bridge-core/Cargo.toml --locked \
             -p type-bridge-schema-migration-typedb --test live_runner
     run_step "interrupted-plan fenced recovery lifecycle" \
@@ -379,14 +688,29 @@ if [[ "$integration" == 1 ]]; then
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE="type_bridge_local_recovery_${$}" \
         bash scripts/ci/run_exact_ignored_rust_test.sh \
-            control_schema_and_fenced_lease_round_trip_on_3_12_1 \
+            control_schema_and_fenced_lease_round_trip_on_3_12_3 \
             --manifest-path type-bridge-core/Cargo.toml --locked \
             -p type-bridge-schema-migration-typedb --test live_store
 
     printf "${BOLD}━━━ Python (integration) ━━━${RESET}\n\n"
+    if [[ -n "$sdk_report_dir" ]]; then
+        run_step "emit Python direct-cancellation sdk-v2 proof fragment" \
+            env TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT="$sdk_python_direct_fragment" \
+                TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE="$sdk_python_nonce" \
+            cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+                -p type-bridge-core --lib \
+                match_runtime::tests::python_direct_cancellation_fragment_is_measured_from_owned_execution \
+                -- --exact
+        run_step "emit Python generated-remote sdk-v2 proof fragment" \
+            env TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT="$sdk_python_remote_fragment" \
+                TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE="$sdk_python_nonce" \
+            uv run python \
+                type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
+    fi
     run_step "pytest -m integration" \
         timeout --foreground 20m \
         env USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            "${sdk_python_env[@]}" \
         uv run pytest -m integration --tb=short "${pytest_args[@]}"
 
     printf "${BOLD}━━━ Node (integration) ━━━${RESET}\n\n"
@@ -399,14 +723,64 @@ if [[ "$integration" == 1 ]]; then
         timeout --foreground 15m \
         bash -c "cd '$NODE_DIR' && TYPE_BRIDGE_NODE_NATIVE_PATH='$native' \
             USE_DOCKER=false TYPEDB_ADDRESS='$TYPEDB_ADDRESS' TYPEDB_HTTP_PORT='$TYPEDB_HTTP_PORT' \
+            TYPEDB_VERSION='$typedb_server_version' \
             npm run test:integration"
+    if [[ -n "$sdk_report_dir" ]]; then
+        run_step "emit Node direct-cancellation sdk-v2 proof fragment" \
+            env TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT="$sdk_node_direct_fragment" \
+                TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE="$sdk_node_nonce" \
+            cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
+                -p type-bridge-node --lib \
+                match_runtime::tests::node_direct_cancellation_fragment_is_measured_from_owned_execution \
+                -- --exact
+        run_step "emit Node generated-remote sdk-v2 proof fragment" \
+            env TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT="$sdk_node_remote_fragment" \
+                TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE="$sdk_node_nonce" \
+            node type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/check.mjs
+    fi
     run_step "npm run test:projection-integration" \
         timeout --foreground 15m \
         env TYPE_BRIDGE_NODE_NATIVE_PATH="$native" \
             USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" \
             TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            TYPEDB_VERSION="$typedb_server_version" \
             TYPE_BRIDGE_NODE_INTG_DATABASE="type_bridge_projection_live_${$}" \
+            "${sdk_node_env[@]}" \
         npm --prefix "$NODE_DIR" run test:projection-integration
+
+    if [[ -n "$sdk_report_dir" ]]; then
+        run_step "compare generated SDK v1 reports" \
+            write_sdk_summary \
+                "$sdk_v1_summary" \
+                "$sdk_validator_python" \
+                uv run python scripts/ci/compare_sdk_conformance.py \
+                "$sdk_report_dir/python.json" \
+                "$sdk_report_dir/node.json" \
+                "$sdk_report_dir/rust.json"
+        run_step "compare generated SDK v2 reports" \
+            write_sdk_summary \
+                "$sdk_v2_summary" \
+                "$sdk_validator_python" \
+                "$sdk_validator_python" \
+                scripts/ci/compare_sdk_conformance_v2.py \
+                "$sdk_report_dir/v2/python.json" \
+                "$sdk_report_dir/v2/node.json" \
+                "$sdk_report_dir/v2/rust.json" \
+                "$sdk_report_dir/v2/c.json"
+        run_step "validate and log sdk report and summary SHA-256 evidence" \
+            log_sdk_evidence_sha256 \
+                "$sdk_validator_python" \
+                "$sdk_v2_summary" \
+                "$sdk_report_dir/python.json" \
+                "$sdk_report_dir/node.json" \
+                "$sdk_report_dir/rust.json" \
+                "$sdk_v1_summary" \
+                "$sdk_report_dir/v2/python.json" \
+                "$sdk_report_dir/v2/node.json" \
+                "$sdk_report_dir/v2/rust.json" \
+                "$sdk_report_dir/v2/c.json" \
+                "$sdk_v2_summary"
+    fi
 fi
 
 # ── TLS transport tier (opt-in) ──────────────────────────────────────────────
@@ -435,9 +809,9 @@ run_tls_transport_steps() {
                 SSL_CERT_FILE="$fixture_root_ca" \
                 TYPE_BRIDGE_TLS_LIVE_REQUIRED=1 \
                 TYPE_BRIDGE_TLS_NATIVE_ROOTS=1 \
-                TYPE_BRIDGE_TLS_EXPECTED_SERVER_VERSION=3.12.1 \
+                TYPE_BRIDGE_TLS_EXPECTED_SERVER_VERSION=3.12.3 \
                 TYPE_BRIDGE_TLS_EXPECTED_DRIVER_BAND=9 \
-                TYPE_BRIDGE_TLS_EXPECTED_DRIVER_VERSION=3.12.1 \
+                TYPE_BRIDGE_TLS_EXPECTED_DRIVER_VERSION=3.12.3 \
             cargo test --manifest-path type-bridge-core/Cargo.toml \
                 -p type-bridge-typedb-runtime --test tls_live \
                 -- --nocapture --test-threads=1
@@ -455,8 +829,16 @@ run_tls_transport_steps() {
                 generated_rust_projection_round_trips_exact_live_models \
                 --manifest-path type-bridge-core/Cargo.toml \
                 -p type-bridge-schema-codegen --test rust_projection_live
+
+        run_step "TLS ordered generated Python + Node manager parity" \
+            timeout --foreground 20m \
+            env TYPEDB_TLS_ADDRESS="$tls_address" \
+                TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
+                TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
+                RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-stable}" \
+            uv run python scripts/ci/run_manager_filter_tls.py
     else
-        printf "${CYAN}External TLS runtime proof is custom-root only; native-root and exact-topology assertions require the isolated 3.12.1 lane.${RESET}\n\n"
+        printf "${CYAN}External TLS runtime proof is custom-root only; native-root and exact-topology assertions require the isolated 3.12.3 lane.${RESET}\n\n"
         run_step "TLS runtime HTTP + gRPC lifecycle (external custom-root)" \
             timeout --foreground 10m \
             env TYPEDB_TLS_ADDRESS="$tls_address" \
@@ -566,6 +948,48 @@ if [[ "$proxy" == 1 ]]; then
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
+if [[ -n "$sdk_report_dir" ]]; then
+    if ((fail == 0)) && [[ "$preserve_sdk_evidence" == 0 ]]; then
+        rm -f -- \
+            "$sdk_report_dir/python.json" \
+            "$sdk_report_dir/node.json" \
+            "$sdk_report_dir/rust.json" \
+            "$sdk_report_dir/v2/python.json" \
+            "$sdk_report_dir/v2/node.json" \
+            "$sdk_report_dir/v2/rust.json" \
+            "$sdk_report_dir/v2/c.json" \
+            "$sdk_report_dir/v2/python-direct-proof.json" \
+            "$sdk_report_dir/v2/python-remote-proof.json" \
+            "$sdk_report_dir/v2/node-direct-proof.json" \
+            "$sdk_report_dir/v2/node-remote-proof.json" \
+            "$sdk_report_dir/v2/rust-proof.json" \
+            "$sdk_report_dir/v2/c-proof.json" \
+            "$sdk_report_dir/summary-v1.json" \
+            "$sdk_report_dir/summary-v2.json"
+        if ! rmdir -- "$sdk_report_dir/v2"; then
+            printf "${RED}Could not remove accepted sdk-v2 report directory: %s${RESET}\n\n" \
+                "$sdk_report_dir/v2" >&2
+            fail=$((fail + 1))
+            failures+=("remove accepted sdk-v2 report directory")
+        fi
+        if rmdir -- "$sdk_report_dir"; then
+            printf "${GREEN}Removed accepted sdk reports: %s${RESET}\n\n" \
+                "$sdk_report_dir"
+        else
+            printf "${RED}Could not remove accepted sdk report directory: %s${RESET}\n\n" \
+                "$sdk_report_dir" >&2
+            fail=$((fail + 1))
+            failures+=("remove accepted sdk report directory")
+        fi
+    elif ((fail > 0)); then
+        printf "${CYAN}Preserved sdk reports for diagnosis: %s${RESET}\n\n" \
+            "$sdk_report_dir"
+    else
+        printf "${CYAN}Preserved accepted sdk evidence by request: %s${RESET}\n\n" \
+            "$sdk_report_dir"
+    fi
+fi
+
 printf "${BOLD}━━━ Summary ━━━${RESET}\n"
 printf "${GREEN}  ✓ %d passed${RESET}\n" "$pass"
 if ((fail > 0)); then

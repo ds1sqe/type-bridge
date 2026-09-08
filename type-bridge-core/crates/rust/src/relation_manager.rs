@@ -6,14 +6,24 @@ use std::sync::Arc;
 use type_bridge_contract::id::is_canonical_thing_iid;
 use type_bridge_orm::_manager::DynamicRelationManager;
 use type_bridge_orm::session::backend::TxType;
-use type_bridge_orm::{DynamicAttributeMap, DynamicRelationRow, DynamicRolePlayerInput};
+use type_bridge_orm::{
+    DynamicAttributeMap, DynamicRelationRow, DynamicRolePlayerInput, ProjectedBatchOperation,
+    ProjectedBatchRow, ProjectedCrudExecutor, ProjectedManagerComparison,
+};
 
 use crate::__codegen::{
-    CompleteModel, EncodedCreate, HydrationCapability, IntoEncodedCreate, RelationModel,
-    SubtypeRootModel,
+    CompleteModel, EncodedCreate, FieldToken, HydrationCapability, IntoEncodedCreate, Model,
+    QueryValued, RelationModel, SubtypeRootModel,
 };
 use crate::error::{Error, ModelValidationPhase};
 use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, ModelKind};
+use crate::projected_batch::{
+    checked_batch_ordinal, create_rows, delete_rows, encode_batch_create, execute_owned_delete,
+    execute_owned_things, prepare_batch, project_encoded_batch_create, reserved_binding_vec,
+    uses_successor_batch_runtime, validate_binding_row_count,
+};
+use crate::projected_codec::{materialize_projected, project_create};
+use crate::projected_filter::ProjectedRelationFilter;
 use crate::relation_codec::{
     hydrate_relation, lower_relation_create, resolve_discovered_relation,
     resolve_relation_authority,
@@ -125,11 +135,35 @@ impl<S: Schema, M: RelationModel<Schema = S>> RelationManager<'_, S, M> {
     }
 }
 
-impl<S, M> RelationManager<'_, S, M>
+impl<'db, S, M> RelationManager<'db, S, M>
 where
     S: Schema,
     M: RelationModel<Schema = S> + CompleteModel,
 {
+    /// Start one empty immutable canonical filter for this exact relation model.
+    pub fn filter(&self) -> Result<ProjectedRelationFilter<'db, S, M>> {
+        ProjectedRelationFilter::for_database(self.db)
+    }
+
+    /// Start a canonical filter with one exact generated field comparison.
+    pub fn where_<V>(
+        &self,
+        field: FieldToken<M, V>,
+        operator: ProjectedManagerComparison,
+        value: &V,
+    ) -> Result<ProjectedRelationFilter<'db, S, M>>
+    where
+        V: Model<Schema = S> + QueryValued,
+    {
+        self.filter()?.where_(field, operator, value)
+    }
+
+    fn successor_batches_enabled(&self) -> bool {
+        self.db
+            .installed_schema()
+            .is_some_and(|installed| uses_successor_batch_runtime(installed))
+    }
+
     /// Register one generated-model lifecycle hook on this manager.
     /// Pre-hooks run in registration order and post-hooks in reverse order.
     pub fn add_hook(&mut self, hook: Arc<dyn LifecycleHook>) -> &mut Self {
@@ -148,7 +182,9 @@ where
     /// database/transaction/close, or model hydration errors.
     pub async fn insert(&self, input: M::Create) -> Result<M> {
         if !self.hooks.has_hooks() {
-            return self.write(input, false).await;
+            return self
+                .projected_write(input, CrudOperation::Insert, None)
+                .await;
         }
         let encoded = Self::encode_hook_input(&input)?;
         let state = self
@@ -161,7 +197,9 @@ where
                 Some(&encoded),
             )
             .await?;
-        let output = self.write(input, false).await?;
+        let output = self
+            .projected_write(input, CrudOperation::Insert, None)
+            .await?;
         self.hooks
             .run_post(
                 M::TYPE_ID_JSON,
@@ -180,7 +218,7 @@ where
     /// exact IID and keys. It returns a complete freshly hydrated model.
     pub async fn put(&self, input: M::Create) -> Result<M> {
         if !self.hooks.has_hooks() {
-            return self.write(input, true).await;
+            return self.projected_write(input, CrudOperation::Put, None).await;
         }
         let encoded = Self::encode_hook_input(&input)?;
         let state = self
@@ -193,7 +231,9 @@ where
                 Some(&encoded),
             )
             .await?;
-        let output = self.write(input, true).await?;
+        let output = self
+            .projected_write(input, CrudOperation::Put, None)
+            .await?;
         self.hooks
             .run_post(
                 M::TYPE_ID_JSON,
@@ -209,11 +249,24 @@ where
     /// Inserts each item and returns complete freshly hydrated models in input order, or one
     /// error for the whole call with no partial result vector.
     pub async fn insert_many(&self, inputs: Vec<M::Create>) -> Result<Vec<M>> {
-        if inputs.is_empty() {
+        let successor = self.successor_batches_enabled();
+        if successor {
+            validate_binding_row_count(inputs.len())?;
+        }
+        if inputs.is_empty() && !successor {
             return Ok(Vec::new());
         }
         if !self.hooks.has_hooks() {
             return self.write_many(inputs, false).await;
+        }
+        if successor {
+            return self
+                .successor_write_many_with_hooks(
+                    inputs,
+                    CrudOperation::Insert,
+                    ProjectedBatchOperation::Insert,
+                )
+                .await;
         }
         let encoded = inputs
             .iter()
@@ -253,11 +306,24 @@ where
     /// complete freshly hydrated models in input order, or one error for the whole call with
     /// no partial vector.
     pub async fn put_many(&self, inputs: Vec<M::Create>) -> Result<Vec<M>> {
-        if inputs.is_empty() {
+        let successor = self.successor_batches_enabled();
+        if successor {
+            validate_binding_row_count(inputs.len())?;
+        }
+        if inputs.is_empty() && !successor {
             return Ok(Vec::new());
         }
         if !self.hooks.has_hooks() {
             return self.write_many(inputs, true).await;
+        }
+        if successor {
+            return self
+                .successor_write_many_with_hooks(
+                    inputs,
+                    CrudOperation::Put,
+                    ProjectedBatchOperation::Put,
+                )
+                .await;
         }
         let encoded = inputs
             .iter()
@@ -300,7 +366,9 @@ where
             return Err(invalid_iid());
         }
         if !self.hooks.has_hooks() {
-            return self.update_write(iid, input).await;
+            return self
+                .projected_write(input, CrudOperation::Update, Some(iid))
+                .await;
         }
         let encoded = Self::encode_hook_input(&input)?;
         let state = self
@@ -313,7 +381,9 @@ where
                 Some(&encoded),
             )
             .await?;
-        let output = self.update_write(iid, input).await?;
+        let output = self
+            .projected_write(input, CrudOperation::Update, Some(iid))
+            .await?;
         self.hooks
             .run_post(
                 M::TYPE_ID_JSON,
@@ -327,71 +397,6 @@ where
         Ok(output)
     }
 
-    async fn update_write(&self, iid: &str, input: M::Create) -> Result<M> {
-        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (id, descriptor) = resolve_relation_authority(
-            M::TYPE_ID_JSON,
-            installed,
-            ModelValidationPhase::Input,
-            true,
-        )?;
-        let prepared = lower_relation_create(input, &id, installed)?;
-        let tx = self
-            .db
-            .inner_orm()
-            .transaction_context(TxType::Write)
-            .await
-            .map_err(Error::from_orm)?;
-        let manager = DynamicRelationManager::with_canonical_transaction(
-            tx.clone(),
-            Arc::new(descriptor.clone()),
-        );
-        if let Err(error) = manager
-            .update_exact(iid, &prepared.attributes, &prepared.role_players)
-            .await
-        {
-            let _ = tx.rollback().await;
-            return Err(Error::from_orm(error));
-        }
-        let rows = match manager.get_by_iid_exact(iid).await {
-            Ok(rows) => rows,
-            Err(error) => {
-                let _ = tx.rollback().await;
-                return Err(Error::from_orm(error));
-            }
-        };
-        let row = match one_coalesced_row(rows) {
-            Ok(Some(row)) => row,
-            Ok(None) => {
-                let _ = tx.rollback().await;
-                return Err(missing_post_write_row());
-            }
-            Err(error) => {
-                let _ = tx.rollback().await;
-                return Err(error);
-            }
-        };
-        let hydrated = match hydrate_relation(row, &id, installed) {
-            Ok(value) => value,
-            Err(error) => {
-                let _ = tx.rollback().await;
-                return Err(error);
-            }
-        };
-        let value = match M::materialize(&hydrated, &HydrationCapability::new()) {
-            Ok(value) => value,
-            Err(error) => {
-                let mapped = crate::entity_codec::map_validation_error(
-                    error,
-                    ModelValidationPhase::Hydration,
-                );
-                let _ = tx.rollback().await;
-                return Err(mapped);
-            }
-        };
-        tx.commit().await.map_err(Error::from_orm)?;
-        Ok(value)
-    }
     /// Deletes only the exact relation at canonical `iid`; subtype instances are not
     /// targeted.
     pub async fn delete(&self, iid: &str) -> Result<()> {
@@ -399,7 +404,7 @@ where
             return Err(invalid_iid());
         }
         if !self.hooks.has_hooks() {
-            return self.delete_write(iid).await;
+            return self.projected_delete(iid).await;
         }
         let state = self
             .hooks
@@ -411,7 +416,7 @@ where
                 None,
             )
             .await?;
-        self.delete_write(iid).await?;
+        self.projected_delete(iid).await?;
         self.hooks
             .run_post(
                 M::TYPE_ID_JSON,
@@ -425,36 +430,15 @@ where
         Ok(())
     }
 
-    async fn delete_write(&self, iid: &str) -> Result<()> {
-        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (_id, descriptor) = resolve_relation_authority(
-            M::TYPE_ID_JSON,
-            installed,
-            ModelValidationPhase::Input,
-            true,
-        )?;
-        let tx = self
-            .db
-            .inner_orm()
-            .transaction_context(TxType::Write)
-            .await
-            .map_err(Error::from_orm)?;
-        let manager = DynamicRelationManager::with_canonical_transaction(
-            tx.clone(),
-            Arc::new(descriptor.clone()),
-        );
-        if let Err(error) = manager.delete_by_iid_exact(iid).await {
-            let _ = tx.rollback().await;
-            return Err(Error::from_orm(error));
-        }
-        tx.commit().await.map_err(Error::from_orm)
-    }
-
     /// Atomically replaces each exact relation identified by its canonical IID and returns
     /// complete freshly hydrated models in input order. Every input and pre-hook completes
     /// before database work begins; any write or hydration failure rolls back the whole batch.
     pub async fn update_many(&self, inputs: Vec<(String, M::Create)>) -> Result<Vec<M>> {
-        if inputs.is_empty() {
+        let successor = self.successor_batches_enabled();
+        if successor {
+            validate_binding_row_count(inputs.len())?;
+        }
+        if inputs.is_empty() && !successor {
             return Ok(Vec::new());
         }
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
@@ -464,6 +448,57 @@ where
             ModelValidationPhase::Input,
             true,
         )?;
+        if uses_successor_batch_runtime(installed) {
+            if !self.hooks.has_hooks() {
+                let rows = crate::projected_batch::update_rows(installed, &id, inputs)?;
+                let batch = prepare_batch(installed, id, ProjectedBatchOperation::Update, rows)?;
+                return execute_owned_things(self.db.inner_orm(), installed, &batch).await;
+            }
+            let mut hook_inputs = reserved_binding_vec(inputs.len())?;
+            let mut rows = reserved_binding_vec(inputs.len())?;
+            for (ordinal, (iid, input)) in inputs.into_iter().enumerate() {
+                let encoded = encode_batch_create(input, ordinal)?;
+                rows.push(ProjectedBatchRow::Update {
+                    iid: iid.clone(),
+                    replacement: project_encoded_batch_create(&encoded, &id, installed, ordinal)?,
+                });
+                hook_inputs.push((iid, encoded));
+            }
+            let batch = prepare_batch(installed, id, ProjectedBatchOperation::Update, rows)?;
+
+            let mut states = reserved_binding_vec(hook_inputs.len())?;
+            for (ordinal, (iid, encoded)) in hook_inputs.iter().enumerate() {
+                states.push(
+                    self.hooks
+                        .run_pre(
+                            M::TYPE_ID_JSON,
+                            ModelKind::Relation,
+                            CrudOperation::Update,
+                            Some(iid),
+                            Some(encoded),
+                        )
+                        .await
+                        .map_err(|error| {
+                            error.with_projected_batch_row(checked_batch_ordinal(ordinal))
+                        })?,
+                );
+            }
+
+            let outputs = execute_owned_things::<M>(self.db.inner_orm(), installed, &batch).await?;
+            for (((_, encoded), output), state) in hook_inputs.iter().zip(&outputs).zip(states) {
+                self.hooks
+                    .run_post(
+                        M::TYPE_ID_JSON,
+                        ModelKind::Relation,
+                        CrudOperation::Update,
+                        Some(output.iid()),
+                        Some(encoded),
+                        state,
+                    )
+                    .await;
+            }
+            return Ok(outputs);
+        }
         let mut prepared = Vec::with_capacity(inputs.len());
         for (iid, input) in inputs {
             if !is_canonical_thing_iid(&iid) {
@@ -540,24 +575,44 @@ where
     /// pre-hooks are accepted before database work begins; any write failure rolls back the
     /// whole batch, and post-hook failures do not change the committed result.
     pub async fn delete_many(&self, iids: &[String]) -> Result<()> {
-        if iids.is_empty() {
+        let successor = self.successor_batches_enabled();
+        if successor {
+            validate_binding_row_count(iids.len())?;
+        }
+        if iids.is_empty() && !successor {
             return Ok(());
         }
-        if iids.iter().any(|iid| !is_canonical_thing_iid(iid)) {
+        if !successor && iids.iter().any(|iid| !is_canonical_thing_iid(iid)) {
             return Err(invalid_iid());
         }
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (_id, descriptor) = resolve_relation_authority(
+        let (id, descriptor) = resolve_relation_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             true,
         )?;
 
-        let mut states = Vec::new();
+        let batch = if successor {
+            Some(prepare_batch(
+                installed,
+                id.clone(),
+                ProjectedBatchOperation::Delete,
+                delete_rows(iids)?,
+            )?)
+        } else {
+            None
+        };
+        let mut states = if successor && self.hooks.has_hooks() {
+            reserved_binding_vec(iids.len())?
+        } else {
+            Vec::new()
+        };
         if self.hooks.has_hooks() {
-            states.reserve(iids.len());
-            for iid in iids {
+            if !successor {
+                states.reserve(iids.len());
+            }
+            for (ordinal, iid) in iids.iter().enumerate() {
                 states.push(
                     self.hooks
                         .run_pre(
@@ -567,26 +622,44 @@ where
                             Some(iid),
                             None,
                         )
-                        .await?,
+                        .await
+                        .map_err(|error| {
+                            if successor {
+                                error.with_projected_batch_row(checked_batch_ordinal(ordinal))
+                            } else {
+                                error
+                            }
+                        })?,
                 );
             }
         }
 
-        let tx = self
-            .db
-            .inner_orm()
-            .transaction_context(TxType::Write)
-            .await
-            .map_err(Error::from_orm)?;
-        let manager =
-            DynamicRelationManager::with_canonical_transaction(tx.clone(), Arc::new(descriptor));
-        for iid in iids {
-            if let Err(error) = manager.delete_by_iid_exact(iid).await {
-                let _ = tx.rollback().await;
-                return Err(Error::from_orm(error));
+        if uses_successor_batch_runtime(installed) {
+            execute_owned_delete(
+                self.db.inner_orm(),
+                installed,
+                batch.as_ref().expect("successor batch was prepared"),
+            )
+            .await?;
+        } else {
+            let tx = self
+                .db
+                .inner_orm()
+                .transaction_context(TxType::Write)
+                .await
+                .map_err(Error::from_orm)?;
+            let manager = DynamicRelationManager::with_canonical_transaction(
+                tx.clone(),
+                Arc::new(descriptor),
+            );
+            for iid in iids {
+                if let Err(error) = manager.delete_by_iid_exact(iid).await {
+                    let _ = tx.rollback().await;
+                    return Err(Error::from_orm(error));
+                }
             }
+            tx.commit().await.map_err(Error::from_orm)?;
         }
-        tx.commit().await.map_err(Error::from_orm)?;
 
         if self.hooks.has_hooks() {
             for (iid, state) in iids.iter().zip(states) {
@@ -605,53 +678,160 @@ where
         Ok(())
     }
 
-    async fn write(&self, input: M::Create, put: bool) -> Result<M> {
+    async fn projected_write(
+        &self,
+        input: M::Create,
+        operation: CrudOperation,
+        iid: Option<&str>,
+    ) -> Result<M> {
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (id, descriptor) = resolve_relation_authority(
+        let (id, _descriptor) = resolve_relation_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             true,
         )?;
-        let prepared = lower_relation_create(input, &id, installed)?;
+        let create = project_create(input, &id, installed)?;
+        let executor = ProjectedCrudExecutor::new(installed);
+        executor
+            .preflight_relation_create_for_database_with_compatibility(self.db.inner_orm(), &create)
+            .map_err(|error| {
+                Error::from_projected_crud(error, ModelKind::Relation, Some(operation))
+            })?;
         let tx = self
             .db
             .inner_orm()
             .transaction_context(TxType::Write)
             .await
             .map_err(Error::from_orm)?;
-        let manager = DynamicRelationManager::with_canonical_transaction(
-            tx.clone(),
-            Arc::new(descriptor.clone()),
-        );
-        let iid = if put {
-            manager
-                .put_exact(&prepared.attributes, &prepared.role_players)
-                .await
-        } else {
-            manager
-                .insert(&prepared.attributes, &prepared.role_players)
-                .await
+        let projected = match operation {
+            CrudOperation::Insert => {
+                executor
+                    .insert_relation_in_transaction_with_compatibility(&tx, &create)
+                    .await
+            }
+            CrudOperation::Put => {
+                executor
+                    .put_relation_in_transaction_with_compatibility(&tx, &create)
+                    .await
+            }
+            CrudOperation::Update => {
+                executor
+                    .update_relation_in_transaction_with_compatibility(
+                        &tx,
+                        iid.expect("projected relation update requires a checked IID"),
+                        &create,
+                    )
+                    .await
+            }
+            CrudOperation::Delete => unreachable!("delete has no generated create payload"),
         };
-        let iid = match iid {
-            Ok(iid) => iid,
+        let projected = match projected {
+            Ok(value) => value,
             Err(error) => {
+                let mapped =
+                    Error::from_projected_crud(error, ModelKind::Relation, Some(operation));
                 let _ = tx.rollback().await;
-                return Err(Error::from_orm(error));
+                return Err(mapped);
             }
         };
-        let value = match self
-            .hydrate_in_transaction(&manager, &iid, &id, installed)
-            .await
-        {
+        let value = match materialize_projected(projected, installed) {
             Ok(value) => value,
             Err(error) => {
                 let _ = tx.rollback().await;
                 return Err(error);
             }
         };
-        tx.commit().await.map_err(Error::from_orm)?;
+        tx.commit_classified()
+            .await
+            .map_err(|error| Error::from_orm(error.into_orm_error()))?;
         Ok(value)
+    }
+
+    async fn projected_delete(&self, iid: &str) -> Result<()> {
+        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let (id, _descriptor) = resolve_relation_authority(
+            M::TYPE_ID_JSON,
+            installed,
+            ModelValidationPhase::Input,
+            true,
+        )?;
+        let tx = self
+            .db
+            .inner_orm()
+            .transaction_context(TxType::Write)
+            .await
+            .map_err(Error::from_orm)?;
+        let result = ProjectedCrudExecutor::new(installed)
+            .delete_relation_by_iid_in_transaction_with_compatibility(&tx, &id, iid)
+            .await;
+        if let Err(error) = result {
+            let mapped =
+                Error::from_projected_crud(error, ModelKind::Relation, Some(CrudOperation::Delete));
+            let _ = tx.rollback().await;
+            return Err(mapped);
+        }
+        tx.commit_classified()
+            .await
+            .map_err(|error| Error::from_orm(error.into_orm_error()))
+    }
+
+    async fn successor_write_many_with_hooks(
+        &self,
+        inputs: Vec<M::Create>,
+        crud_operation: CrudOperation,
+        batch_operation: ProjectedBatchOperation,
+    ) -> Result<Vec<M>> {
+        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let (id, _descriptor) = resolve_relation_authority(
+            M::TYPE_ID_JSON,
+            installed,
+            ModelValidationPhase::Input,
+            true,
+        )?;
+        let mut encoded = reserved_binding_vec(inputs.len())?;
+        let mut rows = reserved_binding_vec(inputs.len())?;
+        for (ordinal, input) in inputs.into_iter().enumerate() {
+            let input = encode_batch_create(input, ordinal)?;
+            rows.push(ProjectedBatchRow::Create(project_encoded_batch_create(
+                &input, &id, installed, ordinal,
+            )?));
+            encoded.push(input);
+        }
+        let batch = prepare_batch(installed, id, batch_operation, rows)?;
+
+        let mut states = reserved_binding_vec(encoded.len())?;
+        for (ordinal, input) in encoded.iter().enumerate() {
+            states.push(
+                self.hooks
+                    .run_pre(
+                        M::TYPE_ID_JSON,
+                        ModelKind::Relation,
+                        crud_operation,
+                        None,
+                        Some(input),
+                    )
+                    .await
+                    .map_err(|error| {
+                        error.with_projected_batch_row(checked_batch_ordinal(ordinal))
+                    })?,
+            );
+        }
+
+        let outputs = execute_owned_things::<M>(self.db.inner_orm(), installed, &batch).await?;
+        for ((input, output), state) in encoded.iter().zip(&outputs).zip(states) {
+            self.hooks
+                .run_post(
+                    M::TYPE_ID_JSON,
+                    ModelKind::Relation,
+                    crud_operation,
+                    Some(output.iid()),
+                    Some(input),
+                    state,
+                )
+                .await;
+        }
+        Ok(outputs)
     }
 
     async fn write_many(&self, inputs: Vec<M::Create>, put: bool) -> Result<Vec<M>> {
@@ -662,6 +842,16 @@ where
             ModelValidationPhase::Input,
             true,
         )?;
+        if uses_successor_batch_runtime(installed) {
+            let rows = create_rows(installed, &id, inputs)?;
+            let operation = if put {
+                ProjectedBatchOperation::Put
+            } else {
+                ProjectedBatchOperation::Insert
+            };
+            let batch = prepare_batch(installed, id, operation, rows)?;
+            return execute_owned_things(self.db.inner_orm(), installed, &batch).await;
+        }
         let mut lowered: Vec<(DynamicAttributeMap, Vec<DynamicRolePlayerInput>)> =
             Vec::with_capacity(inputs.len());
         for input in inputs {
@@ -727,16 +917,16 @@ where
     /// Counts only exact relations, excluding subtypes.
     pub async fn count(&self) -> Result<u64> {
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (_id, descriptor) = resolve_relation_authority(
+        let (id, _descriptor) = resolve_relation_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             true,
         )?;
-        DynamicRelationManager::new_canonical(self.db.inner_orm(), Arc::new(descriptor.clone()))
-            .count_exact()
+        ProjectedCrudExecutor::new(installed)
+            .count_relations_with_compatibility(self.db.inner_orm(), &id)
             .await
-            .map_err(Error::from_orm)
+            .map_err(|error| Error::from_projected_crud(error, ModelKind::Relation, None))
     }
 
     /// Reads one exact coalesced relation by canonical IID; invalid IIDs are rejected before
@@ -746,33 +936,18 @@ where
             return Err(invalid_iid());
         }
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (id, descriptor) = resolve_relation_authority(
+        let (id, _descriptor) = resolve_relation_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             true,
         )?;
-        let rows = DynamicRelationManager::new_canonical(
-            self.db.inner_orm(),
-            Arc::new(descriptor.clone()),
-        )
-        .get_by_iid_exact(iid)
-        .await
-        .map_err(Error::from_orm)?;
-        match one_coalesced_row(rows)? {
-            None => Ok(None),
-            Some(row) => {
-                let hydrated = hydrate_relation(row, &id, installed)?;
-                let value =
-                    M::materialize(&hydrated, &HydrationCapability::new()).map_err(|error| {
-                        crate::entity_codec::map_validation_error(
-                            error,
-                            ModelValidationPhase::Hydration,
-                        )
-                    })?;
-                Ok(Some(value))
-            }
-        }
+        ProjectedCrudExecutor::new(installed)
+            .get_relation_by_iid_with_compatibility(self.db.inner_orm(), &id, iid)
+            .await
+            .map_err(|error| Error::from_projected_crud(error, ModelKind::Relation, None))?
+            .map(|projected| materialize_projected(projected, installed))
+            .transpose()
     }
 
     /// Reads all exact coalesced relations in application result order, excluding subtypes;

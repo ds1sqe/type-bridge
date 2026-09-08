@@ -91,3 +91,20 @@ test("contract adapter rejects noncanonical and numeric-long inputs", () => {
     /invalid_canonical_value/,
   );
 });
+
+test("projection recording adapter exposes real databases and exact counters", () => {
+  const native = loadNative();
+  const authority = native.__newProjectionRecordingAuthority();
+  const fixture = new native.__ProjectionRecordingFixture("[]", authority);
+  const database = fixture.takeDatabase();
+
+  assert.equal(database.databaseName(), "projection-recording");
+  assert.deepEqual(JSON.parse(fixture.countersJson()), {
+    opens: [],
+    queries: [],
+    commits: 0,
+    rollbacks: 0,
+    closes: 0,
+  });
+  assert.throws(() => fixture.takeDatabase());
+});

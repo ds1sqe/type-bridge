@@ -21,6 +21,8 @@ from generated_v2 import (
     FunctionRef,
     HookCancelled,
     Identifier,
+    IntegerCall,
+    IntegerInput,
     Interaction,
     Membership,
     Nickname,
@@ -30,6 +32,8 @@ from generated_v2 import (
     PlainActivity,
     PlayerStats,
     Predicate,
+    ProjectedManagerComparison,
+    ProjectedModelFilter,
     ProjectedModelManager,
     ProjectedModelNotFoundError,
     Query,
@@ -50,6 +54,8 @@ from generated_v2 import (
     ValDuration,
     aggregate,
     find_events,
+    integer_input,
+    qualifying_score,
 )
 
 from type_bridge.query import Query as RawQuery
@@ -151,6 +157,25 @@ def generated_owner_lookup_types(database: Database) -> None:
 
 
 filtered_person_manager = person_manager.filter(score__gte=Score(3))
+canonical_person_filter = person_manager.where().where(
+    Person.foo__bar,
+    ProjectedManagerComparison.GTE,
+    FooBar(7),
+)
+canonical_person_filter = canonical_person_filter.where(
+    Person.identifier,
+    ProjectedManagerComparison.EQ,
+    Identifier("person-1"),
+)
+assert_type(canonical_person_filter, ProjectedModelFilter[Person])
+assert_type(
+    person_manager.where(Person.score, ProjectedManagerComparison.EQ, Score(3)),
+    ProjectedModelFilter[Person],
+)
+assert_type(canonical_person_filter.all(), list[Person])
+assert_type(canonical_person_filter.first(), Person | None)
+assert_type(canonical_person_filter.count(), int)
+assert_type(canonical_person_filter.exists(), bool)
 assert_type(person_manager.filter(score__in=[Score(3), Score(4)]), ProjectedModelManager[Person])
 assert_type(person_manager.filter(aliases__isnull=True), ProjectedModelManager[Person])
 assert_type(person_manager.filter(iid__in=["0x1", "0x2"]), ProjectedModelManager[Person])
@@ -195,6 +220,13 @@ assert_type(person_var, BoundVar[Person])
 assert_type(party_var, SubtypeBoundVar[Party])
 assert_type(query_session.query(party_var).rows(limit=10), list[Party])
 score_field = person_var.field(Person.score)
+minimum_score = integer_input(query_session, Score(18))
+assert_type(minimum_score, IntegerInput)
+qualifying_call = qualifying_score(query_session, person_var, minimum_score)
+assert_type(qualifying_call, IntegerCall)
+qualifying_predicate = qualifying_call.gte_field(score_field)
+nested_call = qualifying_score(query_session, person_var, qualifying_call)
+nested_predicate = qualifying_call.gte_call(nested_call)
 bool_field = person_var.field(Person.val_bool)
 adult = score_field.gte(Score(18))
 assert_type(adult, Predicate)
@@ -202,8 +234,17 @@ assert_type(score_field.is_present(), Predicate)
 assert_type(score_field.is_missing(), Predicate)
 assert_type(person_var.iid("0x1"), Predicate)
 assert_type(person_var.iid_in(("0x1", "0x2")), Predicate)
-people_query = query_session.query(person_var).where(adult)
+people_query = query_session.query(person_var).where(
+    adult,
+    qualifying_predicate,
+    nested_predicate,
+)
 assert_type(people_query, Query[Person])
+assert_type(people_query.is_closed, bool)
+assert_type(people_query.clone(), Query[Person])
+assert_type(people_query.close(), None)
+assert_type(query_session.is_closed, bool)
+assert_type(query_session.close(), None)
 assert_type(people_query.one(), Person)
 assert_type(people_query.first(), Person | None)
 assert_type(people_query.rows(limit=10), list[Person])
@@ -327,12 +368,26 @@ assert_type(membership_session.query(membership_var).one(), Membership)
 
 
 async def check_remote(session: RemoteQuerySession) -> None:
+    assert_type(session.is_closed, bool)
+    assert_type(session.close(), None)
     remote_person = session.exact(Person)
     remote_party = session.subtypes(Party)
     remote_employment = session.exact(Employment)
+    remote_minimum_score = integer_input(session, Score(18))
+    assert_type(remote_minimum_score, IntegerInput)
+    remote_qualifying_call = qualifying_score(session, remote_person, remote_minimum_score)
+    assert_type(remote_qualifying_call, IntegerCall)
+    remote_nested_call = qualifying_score(session, remote_person, remote_qualifying_call)
+    assert_type(remote_nested_call, IntegerCall)
     remote_employee = remote_employment.role(Employment.employee).connects(remote_person)
-    remote = session.query(remote_person, remote_employment).where(remote_employee)
+    remote = session.query(remote_person, remote_employment).where(
+        remote_employee,
+        remote_qualifying_call.gte_call(remote_nested_call),
+    )
     assert_type(remote, RemoteQuery[Person, Employment])
+    assert_type(remote.is_closed, bool)
+    assert_type(remote.clone(), RemoteQuery[Person, Employment])
+    assert_type(remote.close(), None)
     assert_type(await remote.one(), tuple[Person, Employment])
     assert_type(await remote.first(), tuple[Person, Employment] | None)
     assert_type(await remote.rows(limit=10), list[tuple[Person, Employment]])

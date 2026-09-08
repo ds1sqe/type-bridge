@@ -45,7 +45,7 @@ validator.LEGACY_VENDOR_DESCRIPTIONS[SYNTHETIC_PROTOCOL_NAME] = (
 def validate(**overrides: object) -> dict[str, Any]:
     """Run the gate against repository authorities by default."""
     arguments: dict[str, object] = {
-        "tag": "v2.1.0",
+        "tag": "v2.2.0",
         "artifact_contract": validator.ARTIFACT_CONTRACT_CARGO_INCLUSIVE,
         "release_channel": validator.RELEASE_CHANNEL_STABLE,
         "workspace_manifest": ROOT / "type-bridge-core/Cargo.toml",
@@ -164,15 +164,15 @@ def test_repository_cargo_inclusive_stable_identity_is_complete() -> None:
     assert report["artifact_contract"] == "cargo-inclusive"
     assert report["crates_io_mutation"] is True
     assert report["release_channel"] == "stable"
-    assert report["tag"] == "v2.1.0"
-    assert report["version"] == "2.1.0"
-    assert report["python_version"] == "2.1.0"
-    assert report["python_core_requirement"] == "type-bridge-core==2.1.0"
-    assert report["python_package_version"] == "2.1.0"
-    assert report["node_package_lock_version"] == "2.1.0"
-    assert report["server_oci_stable_aliases"] == ["2.1", "2", "latest"]
+    assert report["tag"] == "v2.2.0"
+    assert report["version"] == "2.2.0"
+    assert report["python_version"] == "2.2.0"
+    assert report["python_core_requirement"] == "type-bridge-core==2.2.0"
+    assert report["python_package_version"] == "2.2.0"
+    assert report["node_package_lock_version"] == "2.2.0"
+    assert report["server_oci_stable_aliases"] == ["2.2", "2", "latest"]
     assert report["server_oci_recovery_aliases"] == ["2.0", "2", "latest"]
-    assert report["server_oci_stable_signing_identity"].endswith("release.yml@refs/tags/v2.1.0")
+    assert report["server_oci_stable_signing_identity"].endswith("release.yml@refs/tags/v2.2.0")
     assert report["server_oci_recovery_signing_identity"].endswith("release.yml@refs/heads/master")
     assert set(report["cargo_licenses"].values()) == {
         "MIT",
@@ -181,12 +181,12 @@ def test_repository_cargo_inclusive_stable_identity_is_complete() -> None:
     }
     assert "typedb_runtime_band7_driver_pin" not in report
     assert report["typedb_runtime_driver_pin"] == "3.11.5"
-    assert report["typedb_runtime_band9_driver_pin"] == "3.12.1"
+    assert report["typedb_runtime_band9_driver_pin"] == "3.12.3"
     assert report["typedb_runtime_band9_components"] == {
         "typedb-driver": {
-            "checksum": "b7daa941ffe0f6e6cb17e2e831e13b338a9db23551414f877c7fb64ce05f9f46",
+            "checksum": "76c285253f1b328ea1773acf5a68d64fc3917b1c20066186a2c6a578e3dc3922",
             "source": "registry+https://github.com/rust-lang/crates.io-index",
-            "version": "3.12.1",
+            "version": "3.12.3",
         },
         "typedb-protocol": {
             "checksum": "01f6b7eb813a853349ff22f385c120c61d04d4648318c92072e7e04dd81cdc3f",
@@ -229,6 +229,7 @@ def test_repository_cargo_graph_is_complete_and_ordered() -> None:
     assert "type-bridge-typedb-driver-b8" not in validator.EXPECTED_NEW_CRATES
     assert not set(validator.PREEXISTING_CRATES) & set(validator.EXPECTED_NEW_CRATES)
     assert report["unpublished_crates"] == [
+        "type-bridge-c",
         "type-bridge-core",
         "type-bridge-node",
     ]
@@ -253,6 +254,7 @@ def test_repository_cargo_graph_is_complete_and_ordered() -> None:
     )
     assert set(cargo_packages) == {
         "type-bridge",
+        "type-bridge-c",
         "type-bridge-cli",
         "type-bridge-contract",
         "type-bridge-core",
@@ -299,13 +301,14 @@ def test_v2_crate_manifest_is_first_party_and_crates_io_publishable(
     )["package"]
 
     assert manifest["name"] == package_name
-    assert manifest["version"] == "2.1.0"
+    assert manifest["version"] == "2.2.0"
     assert manifest["publish"] == ["crates-io"]
 
 
 @pytest.mark.parametrize(
     ("directory", "package_name"),
     [
+        ("c", "type-bridge-c"),
         ("python", "type-bridge-core"),
         ("node", "type-bridge-node"),
     ],
@@ -319,7 +322,7 @@ def test_binding_crate_manifest_remains_first_party_and_unpublished(
     )["package"]
 
     assert manifest["name"] == package_name
-    assert manifest["version"] == "2.1.0"
+    assert manifest["version"] == "2.2.0"
     assert manifest["publish"] is False
 
 
@@ -419,7 +422,7 @@ def test_release_workflow_requires_ordered_native_artifact_gates(
     ("old", "new"),
     [
         (
-            "inputs.release_channel == 'recovery' && '2.0' || '2.1' }}",
+            "inputs.release_channel == 'recovery' && '2.0' || '2.2' }}",
             "inputs.release_channel == 'recovery' && '2.0' || '2.0' }}",
         ),
         (
@@ -427,7 +430,7 @@ def test_release_workflow_requires_ordered_native_artifact_gates(
             "for alias in 2.0 2 latest; do",
         ),
         (
-            "release.yml@refs/tags/v2[.]1[.]0$'",
+            "release.yml@refs/tags/v2[.]2[.]0$'",
             "release.yml@refs/tags/v2[.]0[.]0$'",
         ),
         (
@@ -716,9 +719,9 @@ def test_historical_band9_dependency_must_be_absent_from_cargo_lock(tmp_path: Pa
 @pytest.mark.parametrize(
     "tag",
     (
-        "v2.1.0-pre0",
-        "v2.1.0-pre.0",
-        "v2.1.0rc0",
+        "v2.2.0-pre0",
+        "v2.2.0-pre.0",
+        "v2.2.0rc0",
     ),
 )
 def test_candidate_channel_rejects_prerelease_tags(tag: str) -> None:
@@ -736,13 +739,13 @@ def test_candidate_channel_rejects_prerelease_tags(tag: str) -> None:
 
 
 def test_release_channel_identity_mapping_is_exact() -> None:
-    assert validator.release_identity_versions("v2.1.0", "candidate") == (
-        "2.1.0",
-        "2.1.0",
+    assert validator.release_identity_versions("v2.2.0", "candidate") == (
+        "2.2.0",
+        "2.2.0",
     )
-    assert validator.release_identity_versions("v2.1.0", "stable") == (
-        "2.1.0",
-        "2.1.0",
+    assert validator.release_identity_versions("v2.2.0", "stable") == (
+        "2.2.0",
+        "2.2.0",
     )
 
 
@@ -754,11 +757,11 @@ def test_release_artifact_contract_must_be_known() -> None:
 @pytest.mark.parametrize(
     "replacement",
     (
-        "type-bridge-core>=2.1.0",
+        "type-bridge-core>=2.2.0",
         "type-bridge-core==2.0.2; python_version >= '3.12'",
-        "Type-Bridge-Core==2.1.0",
-        "type_bridge_core==2.1.0",
-        "type.bridge.core==2.1.0",
+        "Type-Bridge-Core==2.2.0",
+        "type_bridge_core==2.2.0",
+        "type.bridge.core==2.2.0",
     ),
 )
 def test_root_python_core_requirement_must_be_canonical_exact_and_unmarked(
@@ -767,9 +770,9 @@ def test_root_python_core_requirement_must_be_canonical_exact_and_unmarked(
 ) -> None:
     manifest, package_init = copy_root_python_authorities(tmp_path)
     source = manifest.read_text(encoding="utf-8")
-    assert "type-bridge-core==2.1.0" in source
+    assert "type-bridge-core==2.2.0" in source
     manifest.write_text(
-        source.replace("type-bridge-core==2.1.0", replacement, 1),
+        source.replace("type-bridge-core==2.2.0", replacement, 1),
         encoding="utf-8",
     )
 
@@ -784,9 +787,9 @@ def test_root_python_core_requirement_cannot_be_duplicated_under_an_alias(
     source = manifest.read_text(encoding="utf-8")
     manifest.write_text(
         source.replace(
-            '"type-bridge-core==2.1.0",',
-            '"type-bridge-core==2.1.0",\n'
-            "    \"TYPE_BRIDGE_CORE==2.1.0; python_version >= '3.12'\",",
+            '"type-bridge-core==2.2.0",',
+            '"type-bridge-core==2.2.0",\n'
+            "    \"TYPE_BRIDGE_CORE==2.2.0; python_version >= '3.12'\",",
             1,
         ),
         encoding="utf-8",
@@ -800,7 +803,7 @@ def test_import_visible_python_version_must_match_manifest_and_tag(tmp_path: Pat
     manifest, package_init = copy_root_python_authorities(tmp_path)
     package_init.write_text(
         package_init.read_text(encoding="utf-8").replace(
-            '__version__ = "2.1.0"',
+            '__version__ = "2.2.0"',
             '__version__ = "2.0.2"',
             1,
         ),
@@ -823,10 +826,10 @@ def test_node_package_lock_versions_must_match_package_and_tag(
         (ROOT / "type-bridge-core/crates/node/package-lock.json").read_text(encoding="utf-8")
     )
     if location == "root":
-        payload["version"] = "2.1.0-rc.1"
+        payload["version"] = "2.2.0-rc.1"
         expected = "package-lock root identity"
     else:
-        payload["packages"][""]["version"] = "2.1.0-rc.1"
+        payload["packages"][""]["version"] = "2.2.0-rc.1"
         expected = r"package-lock packages\[''\] identity"
     package_lock.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -843,9 +846,9 @@ def test_node_package_and_lock_cannot_drift_together_from_tag(tmp_path: Path) ->
     lock_payload = json.loads(
         (ROOT / "type-bridge-core/crates/node/package-lock.json").read_text(encoding="utf-8")
     )
-    package_payload["version"] = "2.1.0-rc.1"
-    lock_payload["version"] = "2.1.0-rc.1"
-    lock_payload["packages"][""]["version"] = "2.1.0-rc.1"
+    package_payload["version"] = "2.2.0-rc.1"
+    lock_payload["version"] = "2.2.0-rc.1"
+    lock_payload["packages"][""]["version"] = "2.2.0-rc.1"
     package.write_text(json.dumps(package_payload), encoding="utf-8")
     package_lock.write_text(json.dumps(lock_payload), encoding="utf-8")
 
@@ -858,7 +861,7 @@ def test_first_party_cargo_version_drift_hard_fails(tmp_path: Path) -> None:
     manifest = workspace.parent / "crates/orm/Cargo.toml"
     manifest.write_text(
         manifest.read_text().replace(
-            'version = "2.1.0"',
+            'version = "2.2.0"',
             'version = "2.0.2"',
             1,
         )
@@ -873,7 +876,7 @@ def test_unpublished_binding_crate_version_drift_hard_fails(tmp_path: Path) -> N
     manifest = workspace.parent / "crates/python/Cargo.toml"
     manifest.write_text(
         manifest.read_text().replace(
-            'version = "2.1.0"',
+            'version = "2.2.0"',
             'version = "2.0.2"',
             1,
         )
@@ -1049,7 +1052,7 @@ def test_unexpected_workspace_vendor_member_hard_fails(tmp_path: Path) -> None:
     unexpected = workspace.parent / "vendor/unexpected"
     unexpected.mkdir()
     (unexpected / "Cargo.toml").write_text(
-        '[package]\nname = "unexpected-vendor"\nversion = "2.1.0-rc.0"\nlicense = "MIT"\n'
+        '[package]\nname = "unexpected-vendor"\nversion = "2.2.0-rc.0"\nlicense = "MIT"\n'
     )
     workspace.write_text(
         workspace.read_text().replace(
@@ -1274,7 +1277,7 @@ def test_band9_driver_requirement_must_exactly_match_runtime_constant(
     manifest = workspace.parent / "crates/typedb-runtime/Cargo.toml"
     manifest.write_text(
         manifest.read_text().replace(
-            'typedb-driver = { version = "=3.12.1", optional = true }',
+            'typedb-driver = { version = "=3.12.3", optional = true }',
             'typedb-driver = { version = "3", optional = true }',
             1,
         )
@@ -1292,15 +1295,15 @@ def test_band9_runtime_constant_drift_hard_fails(tmp_path: Path) -> None:
     source = workspace.parent / "crates/typedb-runtime/src/lib.rs"
     source.write_text(
         source.read_text().replace(
-            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.1";',
-            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.2";',
+            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.3";',
+            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.4";',
             1,
         )
     )
 
     with pytest.raises(
         validator.ValidationError,
-        match="actual='=3.12.1', expected='=3.12.2'",
+        match="actual='=3.12.3', expected='=3.12.4'",
     ):
         validate(workspace_manifest=workspace)
 
@@ -1323,29 +1326,29 @@ def test_band9_pin_refresh_cannot_leave_native_provenance_stale(tmp_path: Path) 
     manifest = workspace.parent / "crates/typedb-runtime/Cargo.toml"
     manifest.write_text(
         manifest.read_text().replace(
-            'typedb-driver = { version = "=3.12.1", optional = true }',
-            'typedb-driver = { version = "=3.12.2", optional = true }',
+            'typedb-driver = { version = "=3.12.3", optional = true }',
+            'typedb-driver = { version = "=3.12.4", optional = true }',
             1,
         )
     )
     runtime_source = workspace.parent / "crates/typedb-runtime/src/lib.rs"
     runtime_source.write_text(
         runtime_source.read_text().replace(
-            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.1";',
-            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.2";',
+            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.3";',
+            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.4";',
             1,
         )
     )
     replace_lock_package_text(
         workspace,
         "typedb-driver",
-        'version = "3.12.1"',
-        'version = "3.12.2"',
+        'version = "3.12.3"',
+        'version = "3.12.4"',
     )
     replace_lock_package_text(
         workspace,
         "typedb-driver",
-        "b7daa941ffe0f6e6cb17e2e831e13b338a9db23551414f877c7fb64ce05f9f46",
+        "76c285253f1b328ea1773acf5a68d64fc3917b1c20066186a2c6a578e3dc3922",
         "1" * 64,
     )
 
@@ -1371,7 +1374,7 @@ def test_band9_lockfile_checksum_must_match_packaged_notices(tmp_path: Path) -> 
     replace_lock_package_text(
         workspace,
         "typedb-driver",
-        "b7daa941ffe0f6e6cb17e2e831e13b338a9db23551414f877c7fb64ce05f9f46",
+        "76c285253f1b328ea1773acf5a68d64fc3917b1c20066186a2c6a578e3dc3922",
         "0" * 64,
     )
 
@@ -1397,8 +1400,8 @@ def test_band9_notice_source_must_name_exact_official_crates_io_package(
     workspace = copy_workspace_manifests(tmp_path)
     replace_both_native_notices(
         workspace,
-        "TypeDB official crates.io package [3.12.1](https://crates.io/crates/typedb-driver/3.12.1)",
-        "TypeDB tag [3.12.1]"
+        "TypeDB official crates.io package [3.12.3](https://crates.io/crates/typedb-driver/3.12.3)",
+        "TypeDB tag [3.12.3]"
         "(https://github.com/typedb/typedb-driver/tree/0000000000000000000000000000000000000000)",
     )
 
@@ -1647,7 +1650,7 @@ def test_vendor_provenance_band9_versions_must_match_lockfile(tmp_path: Path) ->
     readme = workspace.parent / "vendor/README.md"
     readme.write_text(
         readme.read_text().replace(
-            "official `typedb-driver` 3.12.1 and `typedb-protocol` 3.12.0",
+            "official `typedb-driver` 3.12.3 and `typedb-protocol` 3.12.0",
             "official `typedb-driver` 3.12.9 and `typedb-protocol` 3.12.0",
             1,
         )
@@ -1662,7 +1665,7 @@ def test_vendor_provenance_current_driver_prose_tracks_resolved_pin(tmp_path: Pa
     readme = workspace.parent / "vendor/README.md"
     readme.write_text(
         readme.read_text().replace(
-            "currently that is 3.12.1, exercised",
+            "currently that is 3.12.3, exercised",
             "currently that is 3.12.9, exercised",
             1,
         )
@@ -1719,7 +1722,7 @@ def test_public_crate_path_dependency_requires_a_release_version(tmp_path: Path)
     manifest = workspace.parent / "crates/orm/Cargo.toml"
     manifest.write_text(
         manifest.read_text().replace(
-            'type-bridge-contract = { path = "../contract", version = "2.1.0" }',
+            'type-bridge-contract = { path = "../contract", version = "2.2.0" }',
             'type-bridge-contract = { path = "../contract" }',
             1,
         )
@@ -1740,8 +1743,8 @@ def test_public_crate_cannot_depend_on_an_unpublished_workspace_crate(
     manifest = workspace.parent / "crates/migration/Cargo.toml"
     manifest.write_text(
         manifest.read_text().replace(
-            'type-bridge-schema-compat = { path = "../schema-compat", version = "2.1.0" }',
-            'type-bridge-schema-compat = { package = "type-bridge-core", path = "../python", version = "2.1.0" }',
+            'type-bridge-schema-compat = { path = "../schema-compat", version = "2.2.0" }',
+            'type-bridge-schema-compat = { package = "type-bridge-core", path = "../python", version = "2.2.0" }',
             1,
         )
     )

@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-contract"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2024"
 description = "Versioned binding-neutral contract primitives for type-bridge"
 license.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 authors.workspace = true
 publish = ["crates-io"]
 readme = "README.md"
-documentation = "https://docs.rs/type-bridge-contract/2.1.0"
+documentation = "https://docs.rs/type-bridge-contract/2.2.0"
 rust-version = "1.88"
 
 [lib]

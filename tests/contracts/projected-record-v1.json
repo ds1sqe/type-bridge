@@ -1,0 +1,105 @@
+{
+  "format": "typebridge.projected-record-contract/v1",
+  "record": {
+    "format": "typebridge.projected-record/v1",
+    "canonicalization": "typebridge.projected-record/v1",
+    "fingerprint_domain": "typebridge.projected-record",
+    "envelope_fields": [
+      "format",
+      "semantic_profile",
+      "declared_schema_identity",
+      "record",
+      "fingerprint"
+    ],
+    "record_kinds": [
+      "attribute_value",
+      "struct_value",
+      "entity_create",
+      "relation_create",
+      "entity_snapshot",
+      "relation_snapshot",
+      "reference"
+    ],
+    "content_fields": {
+      "attribute_value": ["kind", "type", "value"],
+      "struct_value": ["kind", "type", "members"],
+      "entity_create": ["kind", "type", "fields"],
+      "relation_create": ["kind", "type", "fields", "roles"],
+      "entity_snapshot": ["kind", "type", "iid", "fields"],
+      "relation_snapshot": ["kind", "type", "iid", "fields", "roles"],
+      "reference": ["kind", "type", "iid", "keys"]
+    },
+    "member_state": ["absent", "present"],
+    "collection_modes": ["ordered", "unordered"],
+    "canonical_order": {
+      "struct_members": "declared struct-field order",
+      "fields": "canonical OwnsFactId order",
+      "roles": "canonical RoleId order",
+      "unordered_values": "CanonicalValue representation order",
+      "unordered_references": "projected-reference identity order"
+    }
+  },
+  "archive": {
+    "format": "typebridge.projected-archive/v1",
+    "canonicalization": "typebridge.projected-archive/v1",
+    "fingerprint_domain": "typebridge.projected-archive",
+    "mode": "ordered",
+    "envelope_fields": [
+      "format",
+      "semantic_profile",
+      "declared_schema_identity",
+      "records",
+      "fingerprint"
+    ],
+    "record_representation": "complete typebridge.projected-record/v1 envelope",
+    "partial_publication": false
+  },
+  "schema_fence": {
+    "semantic_profile_required": true,
+    "declared_schema_identity_domain": "typebridge.schema.declared-identity",
+    "target_projection_fingerprint_in_wire": false,
+    "installed_projection_required_for_decode": true,
+    "unknown_or_foreign_identity": "reject-before-materialization"
+  },
+  "snapshot": {
+    "decoded_state": "detached",
+    "database_origin_in_wire": false,
+    "transaction_identity_in_wire": false,
+    "remote_transport_identity_in_wire": false,
+    "mutation_authority_after_decode": false
+  },
+  "limits": {
+    "record_input_bytes": 16777216,
+    "record_output_bytes": 16777216,
+    "archive_input_bytes": 33554432,
+    "archive_output_bytes": 33554432,
+    "depth": 64,
+    "records": 4096,
+    "members_per_record": 65536,
+    "values_per_member": 65536,
+    "references_per_role": 65536,
+    "string_bytes": 1048576,
+    "decoded_object_weight": 65536
+  },
+  "decode": {
+    "requires_unique_object_keys": true,
+    "requires_exact_canonical_bytes": true,
+    "requires_exact_field_set_and_order": true,
+    "requires_complete_archive_validation": true,
+    "unknown_format": "reject",
+    "unknown_member": "reject",
+    "wrong_record_kind": "reject",
+    "numeric_coercion": false,
+    "best_effort_decode": false
+  },
+  "excluded_payloads": [
+    "database-origin",
+    "query-plan",
+    "migration-plan",
+    "schema-authority",
+    "raw-typeql",
+    "target-projection-fingerprint",
+    "target-language-symbol",
+    "callback"
+  ]
+}

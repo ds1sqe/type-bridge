@@ -13,6 +13,10 @@ use type_bridge_contract::migration::{
     MigrationAppLabel, MigrationId, MigrationName, MigrationStepId, SchemaDeltaStep,
 };
 use type_bridge_contract::migration_assertion::migration_assertion_capability_vocabulary;
+use type_bridge_contract::migration_backfill::{
+    AttributeBackfillPlan, BackfillPartition, BackfillReverseProgram,
+    COPY_ATTRIBUTE_BACKFILL_CAPABILITY,
+};
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CanonicalValueRange,
     CanonicalValueSet, DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, RegexPattern,
@@ -25,10 +29,11 @@ use type_bridge_schema::{
 };
 use type_bridge_schema_migration::MigrationApplyTarget;
 use type_bridge_schema_migration::{
-    MigrationDirectory, MigrationGenerationOutcome, MigrationGenerationRequest,
-    MigrationHistoryGraph, MigrationSafetyPolicy, SchemaLoweringBinding, SchemaMigrationDraft,
-    VerifiedSchemaMigrationManifest, build_verified_manifest, build_verified_migration_apply_plan,
-    decode_verified_manifest, discover_verified_migration_chain, generate_next_migration,
+    BackfillMigrationGenerationRequest, MigrationDirectory, MigrationGenerationOutcome,
+    MigrationGenerationRequest, MigrationHistoryGraph, MigrationSafetyPolicy,
+    SchemaLoweringBinding, SchemaMigrationDraft, VerifiedSchemaMigrationManifest,
+    build_verified_manifest, build_verified_migration_apply_plan, decode_verified_manifest,
+    discover_verified_migration_chain, generate_backfill_migration, generate_next_migration,
     render_migration_preview, try_acquire_migration_authoring_lock, typedb_3_12_1_profile,
     write_generated_migration_under_lock,
 };
@@ -226,6 +231,44 @@ fn single_key_schema(with_key: bool) -> DeclaredSchema {
     declared_facts(facts)
 }
 
+fn backfill_schema() -> DeclaredSchema {
+    let person = entity_id("person");
+    let person_id = AttributeId::new("person-id").unwrap();
+    let legacy_name = AttributeId::new("legacy-name").unwrap();
+    let display_name = AttributeId::new("display-name").unwrap();
+    let key_owns = OwnsFactId::new(person.clone(), person_id.clone()).unwrap();
+    let mut facts = vec![
+        SchemaFact::Type(TypeFact::new(person).unwrap()),
+        SchemaFact::Annotation(
+            AnnotationFact::new(
+                AnnotationFactId::new(
+                    AnnotationSubjectId::Owns(key_owns.clone()),
+                    AnnotationKindId::Key,
+                ),
+                SchemaAnnotationValue::Presence,
+            )
+            .unwrap(),
+        ),
+    ];
+    for attribute in [person_id, legacy_name, display_name] {
+        facts.push(SchemaFact::Type(
+            TypeFact::new(TypeId::new(TypeKind::Attribute, attribute.label().as_str()).unwrap())
+                .unwrap(),
+        ));
+        facts.push(SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(attribute.clone()),
+            ValueTypeTag::String,
+        )));
+        let owns = if attribute.label().as_str() == "person-id" {
+            key_owns.clone()
+        } else {
+            OwnsFactId::new(entity_id("person"), attribute).unwrap()
+        };
+        facts.push(SchemaFact::Owns(OwnsFact::new(owns)));
+    }
+    declared_facts(facts)
+}
+
 fn declared_facts(facts: Vec<SchemaFact>) -> DeclaredSchema {
     let sourced = facts
         .into_iter()
@@ -276,6 +319,16 @@ fn context() -> ManagedDeltaContext {
         ManagedScopeId::new("example-schema").expect("fixture scope"),
         SemanticProfileId::new("typedb-3.12.1/v1").expect("fixture profile"),
         generation_capabilities(),
+    )
+}
+
+fn backfill_context() -> ManagedDeltaContext {
+    let mut capabilities = generation_capabilities();
+    capabilities.insert(CapabilityId::new(COPY_ATTRIBUTE_BACKFILL_CAPABILITY).unwrap());
+    ManagedDeltaContext::new(
+        ManagedScopeId::new("example-schema").unwrap(),
+        SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+        capabilities,
     )
 }
 
@@ -351,6 +404,60 @@ impl Drop for TempDirectory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+#[test]
+fn closed_backfill_generation_binds_the_exact_head_and_rejects_schema_drift() {
+    let source = backfill_schema();
+    let context = backfill_context();
+    let semantics = type_bridge_schema::managed_schema_state(&source, &context)
+        .unwrap()
+        .managed_semantic_schema()
+        .clone();
+    let plan = AttributeBackfillPlan::new(
+        entity_id("person"),
+        AttributeId::new("legacy-name").unwrap(),
+        AttributeId::new("display-name").unwrap(),
+        BackfillPartition::new(128, AttributeId::new("person-id").unwrap()).unwrap(),
+        semantics,
+        Some(BackfillReverseProgram::RemoveEqualCopiedDestination),
+    )
+    .unwrap();
+    let graph = empty_graph();
+    let request = BackfillMigrationGenerationRequest {
+        app_label: APP_LABEL,
+        base_name: "copy_name",
+        genesis_source: &source,
+        desired: &source,
+        plan: &plan,
+        context: &context,
+    };
+
+    let generated = generate_backfill_migration(&graph, &request).unwrap();
+    assert_eq!(generated.manifest().id(), &migration_id("0001_copy_name"));
+    assert_eq!(generated.manifest().source_schema(), &source);
+    assert_eq!(generated.manifest().target_schema(), &source);
+    assert_eq!(generated.manifest().safety(), SafetyClass::BackfillRequired);
+    assert!(generated.manifest().reversible());
+    assert!(generated.manifest().steps()[0].as_backfill().is_some());
+    assert_eq!(
+        &decode_verified_manifest(generated.canonical_bytes(), (&source, &context)).unwrap(),
+        generated.manifest()
+    );
+
+    let drifted = declared(&["company"]);
+    let error = generate_backfill_migration(
+        &graph,
+        &BackfillMigrationGenerationRequest {
+            desired: &drifted,
+            ..request
+        },
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.code().as_str(),
+        "migration_backfill_generation_schema_drift"
+    );
 }
 
 #[test]
@@ -715,6 +822,49 @@ fn destructive_generation_is_honest_and_previews_without_approval() {
     // operator can inspect exactly what an approval would execute.
     let preview = render_migration_preview(next.manifest(), &context).expect("preview renders");
     assert!(preview.contains("undefine"), "preview: {preview}");
+}
+
+#[test]
+fn attribute_type_removal_uses_the_provider_cascade_for_its_value_declaration() {
+    let genesis = declared_facts(Vec::new());
+    let person = entity_id("person");
+    let legacy_name = AttributeId::new("legacy-name").expect("fixture attribute");
+    let source = declared_facts(vec![
+        SchemaFact::Type(TypeFact::new(person.clone()).expect("person type")),
+        SchemaFact::Type(
+            TypeFact::new(
+                TypeId::new(TypeKind::Attribute, legacy_name.label().as_str())
+                    .expect("attribute type"),
+            )
+            .expect("attribute type fact"),
+        ),
+        SchemaFact::Value(ValueFact::new(
+            ValueFactId::new(legacy_name.clone()),
+            ValueTypeTag::String,
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(person, legacy_name).expect("ownership"),
+        )),
+    ]);
+    let desired = declared(&["person"]);
+    let context = context();
+    let committed = committed_manifest("0001_source", Vec::new(), &genesis, &source, &context);
+    let graph = MigrationHistoryGraph::from_verified(vec![committed]).expect("graph");
+    let next = generated(
+        &graph,
+        &request("drop_legacy_name", &genesis, &desired, &context),
+    );
+
+    let preview = render_migration_preview(next.manifest(), &context).expect("preview renders");
+    assert!(
+        preview.contains("owns legacy-name from person;"),
+        "{preview}"
+    );
+    assert!(preview.contains("undefine\nlegacy-name;"), "{preview}");
+    assert!(
+        !preview.contains("value string from legacy-name;"),
+        "{preview}"
+    );
 }
 
 #[test]

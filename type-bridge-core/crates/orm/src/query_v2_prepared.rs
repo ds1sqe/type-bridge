@@ -9,7 +9,7 @@
 
 use std::fmt;
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -35,11 +35,13 @@ use type_bridge_contract::query_remote_v2::{
 use type_bridge_contract::schema::{DeclaredSchema, DocumentId, decode_declared_schema};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::CanonicalValue;
+use type_bridge_core_lib::version::semantic_profile_id;
 use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan};
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema};
 use type_bridge_schema_compat::{LiveQueryControlPresence, rebuild_live_query_authority};
 
 use crate::Transaction;
+use crate::query_execution_limits::QueryExecutionDeadline;
 use crate::query_v2::{QueryV2ExecutionError, failure};
 use crate::query_v2_builder::QueryAuthorityIdentity;
 use crate::query_v2_remote::{
@@ -48,7 +50,7 @@ use crate::query_v2_remote::{
     remote_outcome,
 };
 use crate::session::backend::{
-    MAX_QUERY_V2_SCHEMA_FENCE_DURATION, QueryResult, QueryV2AnswerLimits,
+    AnswerCancellation, MAX_QUERY_V2_SCHEMA_FENCE_DURATION, QueryResult, QueryV2AnswerLimits,
 };
 use crate::session::database::{Database, DatabaseExecutionIdentity};
 
@@ -88,6 +90,7 @@ static LIVE_AUTHORITY_REBUILD_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> = Laz
 /// The owned permit is moved into the blocking task, so deadline cancellation
 /// cannot detach an unbounded number of CPU- and memory-heavy parses.
 #[doc(hidden)]
+#[allow(clippy::result_unit_err)]
 pub async fn acquire_live_authority_rebuild_permit() -> Result<tokio::sync::OwnedSemaphorePermit, ()>
 {
     Arc::clone(&LIVE_AUTHORITY_REBUILD_SLOTS)
@@ -461,9 +464,12 @@ pub async fn execute_prepared_local(
     let cancellation = limits.answer.cancellation.clone();
     let (plan, validated) = authority.validate(plan_bytes)?;
     let invocation = parse_invocation(&plan, invocation_json)?;
-    if invocation
+    if (invocation
         .transport_capabilities()
         .contains(&type_bridge_contract::query_given_rows_capability())
+        || plan
+            .required_capabilities()
+            .contains(&type_bridge_contract::query_given_rows_capability()))
         && !database.supports_given_stage()
     {
         return Err(failure(
@@ -692,7 +698,14 @@ fn verify_database_identity(
             "the executor cannot prove the exact TypeDB semantic profile",
         )
     })?;
-    let observed_profile = SemanticProfileId::new(format!("typedb-{server_version}/v1"))?;
+    let observed_profile =
+        SemanticProfileId::new(semantic_profile_id(&server_version).ok_or_else(|| {
+            failure(
+                DiagnosticCategory::Integrity,
+                "query_prepared_semantic_profile_unsupported",
+                "the executor TypeDB version has no supported semantic profile",
+            )
+        })?)?;
     if &observed_profile != authority.delta_context.semantic_profile() {
         return Err(failure(
             DiagnosticCategory::Integrity,
@@ -725,7 +738,7 @@ fn schema_fence_timeout(deadline: Option<std::time::Instant>) -> Result<Duration
 
 fn cancelled() -> Diagnostic {
     failure(
-        DiagnosticCategory::ResourceLimit,
+        DiagnosticCategory::Cancelled,
         "provider_cancelled",
         "provider answer processing was cancelled",
     )
@@ -1144,7 +1157,7 @@ pub struct PendingRemoteQueryV2 {
 
 struct PendingRemoteQueryStateV2 {
     advertisement_fingerprint: RemoteCapabilitiesFingerprint,
-    consumed: AtomicBool,
+    lifecycle: AtomicU8,
     limits: RemoteReplyDecodeLimitsV2,
     request: Vec<u8>,
     request_envelope: RemoteQueryRequestV2,
@@ -1154,19 +1167,35 @@ struct PendingRemoteQueryStateV2 {
     validated: ValidatedQuery,
 }
 
+const REMOTE_QUERY_PENDING: u8 = 0;
+const REMOTE_QUERY_CLAIMED: u8 = 1;
+const REMOTE_QUERY_CLOSED: u8 = 2;
+
 /// One non-clone capability reserving the sole V2 reply accepted for a request.
 pub struct ClaimedRemoteReplyV2 {
     state: Arc<PendingRemoteQueryStateV2>,
+    closed: AtomicBool,
 }
 
 impl fmt::Debug for PendingRemoteQueryStateV2 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("PendingRemoteQueryStateV2")
-            .field("consumed", &self.consumed.load(Ordering::Acquire))
+            .field("lifecycle", &self.state_name())
             .field("request_len", &self.request.len())
             .field("sensitive_request_state", &"<redacted>")
             .finish_non_exhaustive()
+    }
+}
+
+impl PendingRemoteQueryStateV2 {
+    fn state_name(&self) -> &'static str {
+        match self.lifecycle.load(Ordering::Acquire) {
+            REMOTE_QUERY_PENDING => "pending",
+            REMOTE_QUERY_CLAIMED => "claimed",
+            REMOTE_QUERY_CLOSED => "closed",
+            _ => "invalid",
+        }
     }
 }
 
@@ -1195,21 +1224,74 @@ impl PendingRemoteQueryV2 {
         &self.state.request
     }
 
+    /// Close this pending request before its reply slot is claimed.
+    ///
+    /// Closing is idempotent. A request whose reply slot was already claimed
+    /// remains claimed, so later claim attempts retain replay semantics.
+    pub fn close(&self) {
+        let _ = self.state.lifecycle.compare_exchange(
+            REMOTE_QUERY_PENDING,
+            REMOTE_QUERY_CLOSED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    /// Whether this pending request was explicitly closed before claim.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.state.lifecycle.load(Ordering::Acquire) == REMOTE_QUERY_CLOSED
+    }
+
     /// Atomically reserve the only reply slot before response bytes are copied.
     pub fn claim_reply(&self) -> Result<ClaimedRemoteReplyV2, Diagnostic> {
+        self.claim_reply_with_cancellation(&AnswerCancellation::default())
+    }
+
+    /// Atomically reserve the only reply slot, then check the invocation's
+    /// shared cancellation owner and absolute deadline.
+    ///
+    /// Reservation deliberately precedes semantic budget checks: once a
+    /// caller presents a structurally valid response to this seam, every
+    /// semantic claim outcome consumes the one-shot request.
+    #[doc(hidden)]
+    pub fn claim_reply_with_cancellation(
+        &self,
+        cancellation: &AnswerCancellation,
+    ) -> Result<ClaimedRemoteReplyV2, Diagnostic> {
         self.state
-            .consumed
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| {
-                failure(
+            .lifecycle
+            .compare_exchange(
+                REMOTE_QUERY_PENDING,
+                REMOTE_QUERY_CLAIMED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(|state| match state {
+                REMOTE_QUERY_CLOSED => failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_resource_closed",
+                    "the pending remote query resource is closed",
+                ),
+                REMOTE_QUERY_CLAIMED => failure(
                     DiagnosticCategory::Integrity,
                     "query_remote_v2_reply_replayed",
                     "pending V2 remote request already consumed a reply",
-                )
+                ),
+                _ => failure(
+                    DiagnosticCategory::Integrity,
+                    "query_remote_v2_claim_state_invalid",
+                    "pending V2 remote request claim state is invalid",
+                ),
             })?;
+        check_remote_execution_budget(
+            QueryExecutionDeadline::from_instant(self.state.reply_deadline),
+            cancellation,
+        )?;
         ensure_remote_reply_live_v2(self.state.reply_deadline)?;
         Ok(ClaimedRemoteReplyV2 {
             state: Arc::clone(&self.state),
+            closed: AtomicBool::new(false),
         })
     }
 
@@ -1220,6 +1302,17 @@ impl PendingRemoteQueryV2 {
 }
 
 impl ClaimedRemoteReplyV2 {
+    /// Explicitly release this claimed reply capability before decode.
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+    }
+
+    /// Whether this claimed reply capability was explicitly closed.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
     /// Maximum bounded immutable response snapshot needed by the decoder.
     #[must_use]
     pub fn response_snapshot_limit(&self) -> usize {
@@ -1249,6 +1342,13 @@ impl ClaimedRemoteReplyV2 {
         self,
         response_bytes: &[u8],
     ) -> Result<type_bridge_contract::query_remote_v2::RemoteOutcomeV2, Diagnostic> {
+        if self.is_closed() {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_resource_closed",
+                "the claimed remote reply resource is closed",
+            ));
+        }
         ensure_remote_reply_live_v2(self.state.reply_deadline)?;
         let outcome = decode_remote_outcome_v2(
             response_bytes,
@@ -1272,30 +1372,61 @@ pub fn prepare_remote_query_v2(
     advertisement_bytes: &[u8],
     limits: RemoteLimitsV2,
 ) -> Result<PendingRemoteQueryV2, Diagnostic> {
+    let deadline = QueryExecutionDeadline::from_timeout_milliseconds(
+        limits.deadline_ms.unwrap_or(DEFAULT_REMOTE_DEADLINE_MS),
+    );
+    let cancellation = AnswerCancellation::default();
+    prepare_remote_query_v2_with_budget(
+        authority,
+        plan_bytes,
+        invocation_json,
+        advertisement_bytes,
+        limits,
+        deadline,
+        &cancellation,
+    )
+}
+
+/// Prepare one additive V2 invocation using a deadline captured at the caller's
+/// terminal entry and the cancellation owner shared with exchange and decode.
+#[doc(hidden)]
+pub fn prepare_remote_query_v2_with_budget(
+    authority: &QueryAuthority,
+    plan_bytes: &[u8],
+    invocation_json: &str,
+    advertisement_bytes: &[u8],
+    limits: RemoteLimitsV2,
+    deadline: QueryExecutionDeadline,
+    cancellation: &AnswerCancellation,
+) -> Result<PendingRemoteQueryV2, Diagnostic> {
+    check_remote_execution_budget(deadline, cancellation)?;
     let (plan, validated) = authority.validate(plan_bytes)?;
+    check_remote_execution_budget(deadline, cancellation)?;
     let invocation = parse_invocation(&plan, invocation_json)?;
-    prepare_validated_remote_query_v2(
+    check_remote_execution_budget(deadline, cancellation)?;
+    prepare_validated_remote_query_v2_with_budget(
         authority,
         validated,
         invocation,
         advertisement_bytes,
         limits,
+        deadline,
+        cancellation,
     )
 }
 
-/// Prepare one already schema-validated V2 invocation.
-///
-/// This crate-private seam exists for the production V1 model-query adapter.
-/// It retains the same authority, capability, nonce, clock, limit, and
-/// one-shot decoder boundary as [`prepare_remote_query_v2`] without encoding
-/// and reparsing the adapted plan.
-pub(crate) fn prepare_validated_remote_query_v2(
+/// Prepare one already schema-validated V2 invocation without encoding and
+/// reparsing the adapted plan.
+pub(crate) fn prepare_validated_remote_query_v2_with_budget(
     authority: &QueryAuthority,
     validated: ValidatedQuery,
     invocation: QueryInvocation,
     advertisement_bytes: &[u8],
-    limits: RemoteLimitsV2,
+    mut limits: RemoteLimitsV2,
+    deadline: QueryExecutionDeadline,
+    cancellation: &AnswerCancellation,
 ) -> Result<PendingRemoteQueryV2, Diagnostic> {
+    check_remote_execution_budget(deadline, cancellation)?;
     if matches!(
         &authority.control_policy,
         QueryAuthorityControlPolicy::QueryOnly(_)
@@ -1313,10 +1444,12 @@ pub(crate) fn prepare_validated_remote_query_v2(
             "validated V2 query does not belong to the supplied schema authority",
         ));
     }
+    check_remote_execution_budget(deadline, cancellation)?;
     let advertisement = RemoteCapabilities::decode(advertisement_bytes)?;
+    check_remote_execution_budget(deadline, cancellation)?;
     check_advertised_capabilities_v2(&validated, &invocation, &advertisement)?;
+    check_remote_execution_budget(deadline, cancellation)?;
     let nonce = uuid::Uuid::new_v4().simple().to_string();
-    let monotonic_prepared = Instant::now();
     let prepared_at_unix_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| {
@@ -1335,16 +1468,22 @@ pub(crate) fn prepare_validated_remote_query_v2(
                 "system clock exceeds the supported V2 timestamp range",
             )
         })?;
-    let lifetime = limits.deadline_ms.unwrap_or(DEFAULT_REMOTE_DEADLINE_MS);
-    let reply_deadline = monotonic_prepared
+    check_remote_execution_budget(deadline, cancellation)?;
+    let requested_lifetime = limits.deadline_ms.unwrap_or(DEFAULT_REMOTE_DEADLINE_MS);
+    let lifetime = requested_lifetime.min(deadline.remaining_milliseconds());
+    if lifetime == 0 {
+        return Err(failure(
+            DiagnosticCategory::ResourceLimit,
+            "transaction_deadline_exceeded",
+            "remote query execution deadline expired",
+        ));
+    }
+    limits.deadline_ms = Some(lifetime);
+    let reply_deadline = Instant::now()
         .checked_add(Duration::from_millis(lifetime))
-        .ok_or_else(|| {
-            failure(
-                DiagnosticCategory::ResourceLimit,
-                "query_remote_v2_deadline_limit",
-                "V2 remote deadline exceeds the maximum supported duration",
-            )
-        })?;
+        .map_or(deadline.instant(), |requested| {
+            requested.min(deadline.instant())
+        });
     let request = encode_remote_request_v2_at(
         &validated,
         &invocation,
@@ -1353,6 +1492,7 @@ pub(crate) fn prepare_validated_remote_query_v2(
         &nonce,
         prepared_at_unix_ms,
     )?;
+    check_remote_execution_budget(deadline, cancellation)?;
     let request_envelope = RemoteQueryRequestV2::decode(&request)?;
     let request_fingerprint = RemoteRequestFingerprintV2::compute(&request)?;
     let advertisement_fingerprint = advertisement.fingerprint()?;
@@ -1360,7 +1500,7 @@ pub(crate) fn prepare_validated_remote_query_v2(
     Ok(PendingRemoteQueryV2 {
         state: Arc::new(PendingRemoteQueryStateV2 {
             advertisement_fingerprint,
-            consumed: AtomicBool::new(false),
+            lifecycle: AtomicU8::new(REMOTE_QUERY_PENDING),
             limits: RemoteReplyDecodeLimitsV2 {
                 max_bytes: limits.max_bytes,
                 max_items: limits.max_items,
@@ -1377,6 +1517,27 @@ pub(crate) fn prepare_validated_remote_query_v2(
             validated,
         }),
     })
+}
+
+fn check_remote_execution_budget(
+    deadline: QueryExecutionDeadline,
+    cancellation: &AnswerCancellation,
+) -> Result<(), Diagnostic> {
+    if cancellation.is_cancelled() {
+        return Err(failure(
+            DiagnosticCategory::Cancelled,
+            "provider_cancelled",
+            "remote query execution was cancelled",
+        ));
+    }
+    if deadline.is_expired() {
+        return Err(failure(
+            DiagnosticCategory::ResourceLimit,
+            "transaction_deadline_exceeded",
+            "remote query execution deadline expired",
+        ));
+    }
+    Ok(())
 }
 
 fn ensure_remote_reply_live(deadline: Instant) -> Result<(), Diagnostic> {
@@ -2582,7 +2743,7 @@ mod tests {
             Box::new(UnsupportedFenceBackend {
                 metrics: Arc::clone(&metrics),
                 schema: "define entity person;".to_owned(),
-                server_version: type_bridge_core_lib::version::Version::new(3, 12, 0),
+                server_version: type_bridge_core_lib::version::Version::new(3, 11, 5),
             }),
             "prepared-profile-mismatch",
         );
@@ -2595,7 +2756,7 @@ mod tests {
             QueryV2AnswerLimits::default(),
         )
         .await
-        .expect_err("3.12.0 authority must not execute against a 3.12.1 provider");
+        .expect_err("a 3.12 authority must not execute against a 3.11 provider");
 
         assert_eq!(
             diagnostic.code().as_str(),

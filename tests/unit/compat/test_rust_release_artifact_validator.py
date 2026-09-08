@@ -1,4 +1,4 @@
-"""Hostile coverage for exact packaged Rust release candidates."""
+"""Hostile coverage for exact packaged Rust release artifacts."""
 
 from __future__ import annotations
 

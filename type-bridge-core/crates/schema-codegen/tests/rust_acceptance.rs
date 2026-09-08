@@ -1,10 +1,15 @@
 use std::env;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, RuntimeProjection};
 use type_bridge_contract::schema::DocumentId;
@@ -15,7 +20,87 @@ mod support;
 
 const POSITIVE: &str = include_str!("rust_acceptance/positive.rs");
 const NEGATIVE: &str = include_str!("rust_acceptance/negative.rs");
+const PROJECTED_PARITY: &str = include_str!("rust_acceptance/projected_parity.rs");
+const PROJECTED_FOREIGN_NEGATIVE: &str =
+    include_str!("rust_acceptance/projected_foreign_negative.rs");
+const SDK_V5_CODEC: &str = include_str!("rust_acceptance/sdk_v5_codec.rs");
 static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+const SDK_V3_PROOF_FRAGMENT_ENV: &str = "TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT";
+const SDK_V3_PROOF_NONCE_ENV: &str = "TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE";
+
+fn repository_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .canonicalize()
+        .unwrap()
+}
+
+fn v3_source_identity(root: &Path, relative: &str) -> Value {
+    let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
+    json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
+}
+
+fn publish_v3_package_fragment(results: Vec<Value>) {
+    let destination = env::var_os(SDK_V3_PROOF_FRAGMENT_ENV);
+    let nonce = env::var_os(SDK_V3_PROOF_NONCE_ENV);
+    assert_eq!(
+        destination.is_some(),
+        nonce.is_some(),
+        "V3 proof destination and nonce must be configured together"
+    );
+    let (Some(destination), Some(nonce)) = (destination, nonce) else {
+        return;
+    };
+    let destination = PathBuf::from(destination);
+    assert!(destination.is_absolute() && !destination.exists());
+    let nonce = nonce.to_str().expect("V3 proof nonce is UTF-8");
+    assert!(
+        nonce.len() == 64
+            && nonce
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    );
+    let root = repository_root();
+    let sources = [
+        "type-bridge-core/crates/rust/src/entity_codec.rs",
+        "type-bridge-core/crates/rust/src/relation_codec.rs",
+        "type-bridge-core/crates/rust/src/schema.rs",
+        "type-bridge-core/crates/schema-codegen/tests/rust_acceptance.rs",
+    ];
+    let fragment = json!({
+        "binding": "rust",
+        "contract": {
+            "allowlist": v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-allowlist-v1.json"),
+            "journey": v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"),
+            "proof_schema": v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-schema-v1.json"),
+        },
+        "format": "typebridge.sdk-v3-proof-fragment/v1",
+        "producer": {
+            "id": "type-bridge-rust.generated-package-v3-proof",
+            "sources": sources.iter().map(|path| v3_source_identity(&root, path)).collect::<Vec<_>>(),
+        },
+        "results": results,
+        "run_nonce": nonce,
+        "semantic_profile": "typedb-3.12.1/v1",
+    });
+    let mut bytes = to_canonical_json(&fragment).expect("V3 package fragment canonicalizes");
+    bytes.push(b'\n');
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .expect("V3 package fragment destination is created once");
+    output
+        .write_all(&bytes)
+        .expect("V3 package fragment writes");
+    output.sync_all().expect("V3 package fragment is durable");
+}
 
 struct Stage(PathBuf);
 
@@ -67,12 +152,13 @@ fn project_from_source(source: &str) -> RuntimeProjection {
         &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
     )
     .unwrap();
-    let resources = RustEmitter::new().code_resources().unwrap();
+    let emitter = RustEmitter::new();
+    let resources = emitter.code_resources_for(&resolved).unwrap();
     project(
         &resolved,
         BindingTarget::Rust,
         &ProjectionConfig::rust(),
-        &RustEmitter::new().generator_handlers(),
+        &emitter.generator_handlers_for(&resolved),
         &resources,
     )
     .unwrap()
@@ -97,7 +183,13 @@ fn write_package(package: &GeneratedPackage, root: &Path) {
     }
 }
 
-fn write_consumer_with_features(root: &Path, name: &str, source: &str, features: &[&str]) {
+fn write_consumer_with_features_and_dependencies(
+    root: &Path,
+    name: &str,
+    source: &str,
+    features: &[&str],
+    additional_dependencies: &str,
+) {
     let rust_crate = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -112,10 +204,14 @@ fn write_consumer_with_features(root: &Path, name: &str, source: &str, features:
     fs::write(
         root.join("Cargo.toml"),
         format!(
-            "[package]\nname = \"{name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\ngenerated = {{ package = \"type-bridge-generated-schema\", path = \"../generated\" }}\ntype-bridge = {{ path = \"{rust_path}\", default-features = false{feat_str} }}\n\n[patch.crates-io]\ntype-bridge = {{ path = \"{rust_path}\" }}\n\n[workspace]\n"
+            "[package]\nname = \"{name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\ngenerated = {{ package = \"type-bridge-generated-schema\", path = \"../generated\" }}\n{additional_dependencies}type-bridge = {{ path = \"{rust_path}\", default-features = false{feat_str} }}\n\n[patch.crates-io]\ntype-bridge = {{ path = \"{rust_path}\" }}\n\n[workspace]\n"
         ),
     ).unwrap();
     fs::write(root.join("src/main.rs"), source).unwrap();
+}
+
+fn write_consumer_with_features(root: &Path, name: &str, source: &str, features: &[&str]) {
+    write_consumer_with_features_and_dependencies(root, name, source, features, "");
 }
 
 fn write_consumer(root: &Path, name: &str, source: &str) {
@@ -125,6 +221,10 @@ fn write_consumer(root: &Path, name: &str, source: &str) {
 static CARGO_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn cargo(arguments: &[&str], _target: &Path) -> Output {
+    cargo_with_env(arguments, &[])
+}
+
+fn cargo_with_env(arguments: &[&str], environment: &[(&str, &std::ffi::OsStr)]) -> Output {
     let _guard = CARGO_MUTEX.lock().unwrap();
     let executable = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let workspace_target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -136,11 +236,12 @@ fn cargo(arguments: &[&str], _target: &Path) -> Output {
         .join("tmp_acceptance_target");
     let target_dir = env::var_os("ACCEPTANCE_TARGET_DIR")
         .unwrap_or_else(|| workspace_target.as_os_str().to_os_string());
-    Command::new(executable)
-        .args(arguments)
-        .env("CARGO_TARGET_DIR", target_dir)
-        .output()
-        .unwrap()
+    let mut command = Command::new(executable);
+    command.args(arguments).env("CARGO_TARGET_DIR", target_dir);
+    for (name, value) in environment {
+        command.env(name, value);
+    }
+    command.output().unwrap()
 }
 
 #[test]
@@ -219,6 +320,285 @@ fn generated_rust_crate_compiles_rejects_invalid_types_and_runs() {
         stderr.contains("cannot move out of `read` because it is borrowed"),
         "negative failure omitted the active-read close boundary:\n{stderr}"
     );
+}
+
+#[test]
+fn generated_manager_filter_compile_boundaries_fail_independently() {
+    let stage = Stage::new();
+    let generated = stage.path().join("generated");
+    write_package(&emit(), &generated);
+
+    let cases: [(&str, &str, &[&str]); 4] = [
+        (
+            "manager-filter-rejects-wrong-owner",
+            r#"use generated::{AppSchema, Person, RobotId, RobotType};
+use type_bridge::{Database, ProjectedManagerComparison};
+fn check(db: &Database<AppSchema>) {
+    let _ = db.entities::<Person>().where_(
+        RobotType::robot_id,
+        ProjectedManagerComparison::Eq,
+        &RobotId::new(7).unwrap(),
+    );
+}
+fn main() {}"#,
+            &["mismatched types", "FieldToken", "Person", "Robot"],
+        ),
+        (
+            "manager-filter-rejects-wrong-value",
+            r#"use generated::{AppSchema, Identifier, Person, PersonType};
+use type_bridge::{Database, ProjectedManagerComparison};
+fn check(db: &Database<AppSchema>) {
+    let identifier = Identifier::new("data-ada").unwrap();
+    let _ = db.entities::<Person>().where_(
+        PersonType::score,
+        ProjectedManagerComparison::Eq,
+        &identifier,
+    );
+}
+fn main() {}"#,
+            &["mismatched types", "Identifier", "Score"],
+        ),
+        (
+            "manager-filter-exposes-no-mutations",
+            r#"use generated::{AppSchema, Person};
+use type_bridge::Database;
+fn check(db: &Database<AppSchema>) {
+    let filter = db.entities::<Person>().filter().unwrap();
+    let _ = filter.insert();
+}
+fn main() {}"#,
+            &["no method named `insert`", "ProjectedEntityFilter"],
+        ),
+        (
+            "manager-filter-borrow-prevents-read-close",
+            r#"use generated::{AppSchema, Person};
+async fn check(read: type_bridge::ReadTransaction<'_, AppSchema>) {
+    let filter = read.entities::<Person>().filter().unwrap();
+    read.close().await.unwrap();
+    let _ = filter.count().await;
+}
+fn main() {}"#,
+            &["cannot move out of `read` because it is borrowed"],
+        ),
+    ];
+
+    for (name, source, expected) in cases {
+        let consumer = stage.path().join(name);
+        write_consumer(&consumer, name, source);
+        let output = cargo(
+            &[
+                "check",
+                "--offline",
+                "--quiet",
+                "--manifest-path",
+                consumer.join("Cargo.toml").to_str().unwrap(),
+            ],
+            &stage.path().join(format!("{name}-target")),
+        );
+        assert!(!output.status.success(), "{name} unexpectedly compiled");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        for fragment in expected {
+            assert!(
+                stderr.contains(fragment),
+                "{name} omitted {fragment:?}:\n{stderr}",
+            );
+        }
+        assert!(
+            !stderr.contains("unresolved import"),
+            "{name} failed before the intended boundary:\n{stderr}",
+        );
+    }
+}
+
+#[test]
+fn generated_direct_connection_policy_compiles_with_legacy_compatibility() {
+    let stage = Stage::new();
+    let generated = stage.path().join("generated");
+    let consumer = stage.path().join("direct-connection-positive");
+    write_package(&emit(), &generated);
+    write_consumer_with_features(
+        &consumer,
+        "direct-connection-positive",
+        r#"use std::path::PathBuf;
+
+use generated::{AppSchema, SCHEMA};
+use type_bridge::{
+    AnswerCancellation, ConnectionOptions, Database, DirectConnectionPolicy, DirectTls,
+    QueryExecutionResourceLimits, Unbound,
+};
+
+fn limits() -> QueryExecutionResourceLimits {
+    QueryExecutionResourceLimits::tightened(5_000, 32, 65_536, 32, 64, 64, 32, 3)
+}
+
+fn canonical_policy() -> DirectConnectionPolicy {
+    let trust = DirectTls::custom_root(PathBuf::from("root-ca.pem")).unwrap();
+    DirectConnectionPolicy::new(
+        "localhost:1729",
+        "app",
+        "admin",
+        "password",
+    )
+    .http_port(8000)
+    .tls(trust)
+    .connection_limits(limits())
+    .answer_limits(limits())
+}
+
+async fn canonical_connection() -> type_bridge::Result<()> {
+    let cancellation = AnswerCancellation::default();
+    let database: Database<AppSchema> = SCHEMA
+        .connect_with_cancellation(canonical_policy(), cancellation)
+        .await?;
+    database.close()?;
+
+    let database: Database<AppSchema> = SCHEMA.connect(canonical_policy()).await?;
+    database.close()
+}
+
+async fn released_connection_compatibility() -> type_bridge::Result<()> {
+    let options = ConnectionOptions::new("localhost:1729", "app")
+        .credentials("admin", "password")
+        .http_port(8000)
+        .tls(false);
+    let database: Database<Unbound> = Database::connect(options).await?;
+    let database: Database<AppSchema> = database.with_schema(SCHEMA)?;
+    database.close()
+}
+
+fn main() {
+    let _ = DirectTls::disabled();
+    let _ = DirectTls::native_roots();
+    let _ = canonical_connection;
+    let _ = released_connection_compatibility;
+}
+"#,
+        &["band8", "band9"],
+    );
+
+    let output = cargo(
+        &[
+            "check",
+            "--offline",
+            "--quiet",
+            "--manifest-path",
+            consumer.join("Cargo.toml").to_str().unwrap(),
+        ],
+        &stage.path().join("direct-connection-positive-target"),
+    );
+    assert!(
+        output.status.success(),
+        "canonical and released direct connections did not compile\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn generated_direct_connection_policy_boundaries_fail_independently() {
+    let stage = Stage::new();
+    let generated = stage.path().join("generated");
+    write_package(&emit(), &generated);
+
+    let cases: [(&str, &str, &[&str]); 5] = [
+        (
+            "direct-policy-rejects-caller-server-version",
+            r#"use type_bridge::DirectConnectionPolicy;
+fn main() {
+    let policy = DirectConnectionPolicy::new(
+        "localhost:1729", "app", "admin", "password",
+    );
+    let _ = policy.server_version("3.12.1");
+}"#,
+            &["no method named `server_version`", "DirectConnectionPolicy"],
+        ),
+        (
+            "direct-connect-preserves-package-authority",
+            r#"use generated::{AppSchema, SCHEMA};
+use type_bridge::{Database, DirectConnectionPolicy, Schema};
+
+struct ForeignSchema;
+impl type_bridge::schema::sealed::Sealed for ForeignSchema {}
+impl Schema for ForeignSchema {}
+
+async fn check() {
+    let policy = DirectConnectionPolicy::new(
+        "localhost:1729", "app", "admin", "password",
+    );
+    let _: Database<ForeignSchema> = SCHEMA.connect(policy).await.unwrap();
+}
+
+fn main() {
+    let _: Option<AppSchema> = None;
+}"#,
+            &[
+                "mismatched types",
+                "Database<ForeignSchema>",
+                "Database<AppSchema>",
+            ],
+        ),
+        (
+            "direct-tls-rejects-inline-trust-bytes",
+            r#"use type_bridge::DirectTls;
+fn main() {
+    let _ = DirectTls::custom_root(vec![b'x']);
+}"#,
+            &["AsRef", "Path", "Vec<u8>"],
+        ),
+        (
+            "direct-policy-rejects-untyped-answer-limit",
+            r#"use type_bridge::DirectConnectionPolicy;
+fn main() {
+    let policy = DirectConnectionPolicy::new(
+        "localhost:1729", "app", "admin", "password",
+    );
+    let _ = policy.answer_limits(1_u64);
+}"#,
+            &["mismatched types", "QueryExecutionResourceLimits"],
+        ),
+        (
+            "direct-connect-rejects-untyped-cancellation",
+            r#"use generated::SCHEMA;
+use type_bridge::DirectConnectionPolicy;
+
+async fn check() {
+    let policy = DirectConnectionPolicy::new(
+        "localhost:1729", "app", "admin", "password",
+    );
+    let _ = SCHEMA.connect_with_cancellation(policy, ()).await;
+}
+
+fn main() {}"#,
+            &["mismatched types", "AnswerCancellation"],
+        ),
+    ];
+
+    for (name, source, expected) in cases {
+        let consumer = stage.path().join(name);
+        write_consumer_with_features(&consumer, name, source, &["band8", "band9"]);
+        let output = cargo(
+            &[
+                "check",
+                "--offline",
+                "--quiet",
+                "--manifest-path",
+                consumer.join("Cargo.toml").to_str().unwrap(),
+            ],
+            &stage.path().join(format!("{name}-target")),
+        );
+        assert!(!output.status.success(), "{name} unexpectedly compiled");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        for fragment in expected {
+            assert!(
+                stderr.contains(fragment),
+                "{name} omitted {fragment:?}:\n{stderr}",
+            );
+        }
+        assert!(
+            !stderr.contains("unresolved import") && !stderr.contains("cannot find"),
+            "{name} failed before the intended boundary:\n{stderr}",
+        );
+    }
 }
 
 #[test]
@@ -799,7 +1179,7 @@ plays:
 }
 
 #[test]
-fn generated_external_cross_schema_and_forged_capability_boundaries() {
+fn generated_external_cross_schema_boundaries() {
     let stage = Stage::new();
     let generated_a = stage.path().join("generated-a");
     let generated_b = stage.path().join("generated-b");
@@ -851,51 +1231,6 @@ fn generated_external_cross_schema_and_forged_capability_boundaries() {
         "cannot find",
     ] {
         assert!(!stderr.contains(bad), "invalid staging failure: {stderr}");
-    }
-
-    let forged = stage.path().join("forged-capability-consumer");
-    write_package(&package_a, &stage.path().join("generated"));
-    write_consumer_with_features(
-        &forged,
-        "forged-capability-consumer",
-        "use generated::{HydratedRow, MaterializeModel, Person}; use type_bridge::__codegen::HydrationCapability; fn forge(row: &HydratedRow) { let _ = Person::materialize(row, &HydrationCapability::new()); } fn main() {}",
-        &[],
-    );
-    let output = cargo(
-        &[
-            "check",
-            "--offline",
-            "--manifest-path",
-            forged.join("Cargo.toml").to_str().unwrap(),
-        ],
-        &stage.path().join("forged-capability-target"),
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success());
-    assert!(
-        stderr.contains("HydrationCapability")
-            && stderr.contains("new")
-            && (stderr.contains("private") || stderr.contains("E0624"))
-    );
-    for bad in [
-        "failed to get",
-        "failed to load",
-        "No such file",
-        "missing manifest",
-        "unresolved import",
-        "cannot find",
-    ] {
-        assert!(!stderr.contains(bad), "forge staging failure: {stderr}");
-    }
-    assert!(stderr.contains("HydrationCapability") && stderr.contains("new"));
-    for bad in [
-        "failed to get",
-        "failed to load",
-        "No such file",
-        "unresolved import",
-        "cannot find",
-    ] {
-        assert!(!stderr.contains(bad));
     }
 }
 
@@ -1887,13 +2222,27 @@ fn rust_acceptance_review_06b_capability_boundary_is_real() {
     let pkg = emit_from_source("format: typebridge.schema/v2\nentities:\n  person: {}\n");
     write_package(&pkg, &generated_dir);
 
+    let public_new = stage.path().join("cap-public-new");
+    write_consumer(
+        &public_new,
+        "cap-public-new",
+        "use type_bridge::__codegen::HydrationCapability;\nfn main() { let _ = HydrationCapability::new(); }\n",
+    );
+    let output = cargo(
+        &[
+            "check",
+            "--manifest-path",
+            public_new.join("Cargo.toml").to_str().unwrap(),
+        ],
+        &stage.path().join("cap-public-new-target"),
+    );
+    assert!(
+        output.status.success(),
+        "the generated-code hydration constructor must remain callable by generated packages:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
     let failures = [
-        (
-            "cap-private-new",
-            &[][..],
-            "use type_bridge::__codegen::HydrationCapability;\nfn main() { let _ = HydrationCapability::new(); }\n",
-            ["HydrationCapability", "new", "private"],
-        ),
         (
             "cap-private-field",
             &[][..],
@@ -1909,12 +2258,6 @@ fn rust_acceptance_review_06b_capability_boundary_is_real() {
                 "unresolved import",
                 "test-harness",
             ],
-        ),
-        (
-            "cap-private-new-with-harness",
-            &["test-harness"][..],
-            "use type_bridge::__codegen::HydrationCapability;\nfn main() { let _ = HydrationCapability::new(); }\n",
-            ["HydrationCapability", "new", "private"],
         ),
     ];
 
@@ -2675,20 +3018,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let player = Player::new("player-key")?;
     let seen_keys = SeenKeys::new("seen-key")?;
-    let hydrated = HydratedPlayer::new(
+    let hydrated = HydratedPlayer::from_complete_row(HydratedRow::new(
         Keyed::TYPE_ID_JSON,
-        Some("keyed-iid".to_owned()),
+        "keyed-iid".to_owned(),
         vec![
             (
                 KeyedType::player.owns_id_json(),
-                player.value().into_encoded_scalar(),
+                vec![player.value().into_encoded_scalar()],
             ),
             (
                 KeyedType::seen_keys.owns_id_json(),
-                seen_keys.value().into_encoded_scalar(),
+                vec![seen_keys.value().into_encoded_scalar()],
             ),
         ],
-    );
+        vec![],
+    ));
     let row = HydratedRow::new(
         Holder::TYPE_ID_JSON,
         "holder-iid".to_owned(),
@@ -2696,9 +3040,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vec![(HolderType::participant.role_id_json(), vec![hydrated])],
     );
     let holder: Holder = materialize_model_for_test(&row)?;
-    let HolderParticipantPlayer::Keyed(keyed) = holder.participant();
-    assert!(keyed.player().is_some());
-    assert!(keyed.seen_keys().is_some());
+    let keyed = holder.participant();
+    assert_eq!(keyed.player().value(), "player-key");
+    assert_eq!(keyed.seen_keys().value(), "seen-key");
 
     println!("Review 06B continuation 01 hygiene package PASSED.");
     Ok(())
@@ -3163,4 +3507,544 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(stderr.contains("FamilyRootFamily"));
     assert!(stderr.contains("redeclared_value"));
     assert!(stderr.contains("no method"));
+}
+
+fn rename_generated_package(root: &Path, package_name: &str) {
+    let manifest = root.join("Cargo.toml");
+    let source = fs::read_to_string(&manifest).unwrap();
+    let replaced = source.replacen(
+        "name = \"type-bridge-generated-schema\"",
+        &format!("name = \"{package_name}\""),
+        1,
+    );
+    assert_ne!(
+        source, replaced,
+        "generated package manifest has its stable name"
+    );
+    fs::write(manifest, replaced).unwrap();
+}
+
+fn write_projected_consumer(root: &Path, source: &str) {
+    let crates = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_owned();
+    let rust_path = crates.join("rust").to_string_lossy().replace('\\', "\\\\");
+    let contract_path = crates
+        .join("contract")
+        .to_string_lossy()
+        .replace('\\', "\\\\");
+    let orm_path = crates.join("orm").to_string_lossy().replace('\\', "\\\\");
+    let schema_path = crates
+        .join("schema")
+        .to_string_lossy()
+        .replace('\\', "\\\\");
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "rust-projected-projection-parity"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+generated = {{ package = "type-bridge-generated-schema", path = "../generated" }}
+foreign = {{ package = "type-bridge-generated-schema-foreign", path = "../foreign" }}
+serde_json = "1"
+sha2 = "0.10"
+tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
+type-bridge = {{ path = "{rust_path}", default-features = false }}
+type-bridge-contract = {{ path = "{contract_path}" }}
+type-bridge-orm = {{ path = "{orm_path}", default-features = false }}
+type-bridge-schema = {{ path = "{schema_path}" }}
+
+[patch.crates-io]
+type-bridge = {{ path = "{rust_path}" }}
+type-bridge-contract = {{ path = "{contract_path}" }}
+type-bridge-orm = {{ path = "{orm_path}" }}
+type-bridge-schema = {{ path = "{schema_path}" }}
+
+[workspace]
+"#
+        ),
+    )
+    .unwrap();
+    fs::write(root.join("src/main.rs"), source).unwrap();
+    fs::write(
+        root.join("Cargo.lock"),
+        support::locks::Consumer::Projected.lock(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn generated_manager_filter_rejects_a_foreign_nominal_field_token() {
+    let stage = Stage::new();
+    let generated = stage.path().join("generated");
+    let foreign = stage.path().join("foreign");
+    let consumer = stage.path().join("manager-token-negative");
+    let package = emit();
+    write_package(&package, &generated);
+    write_package(&package, &foreign);
+    rename_generated_package(&foreign, "type-bridge-generated-schema-foreign");
+    write_projected_consumer(
+        &consumer,
+        r#"use generated::{AppSchema, Person};
+use type_bridge::{Database, ProjectedManagerComparison};
+fn check(db: &Database<AppSchema>) {
+    let value = foreign::FooBar::new(7).unwrap();
+    let _ = db.entities::<Person>().where_(
+        foreign::PersonType::foo__bar,
+        ProjectedManagerComparison::Eq,
+        &value,
+    );
+}
+fn main() {}"#,
+    );
+
+    let output = cargo(
+        &[
+            "check",
+            "--locked",
+            "--offline",
+            "--quiet",
+            "--manifest-path",
+            consumer.join("Cargo.toml").to_str().unwrap(),
+        ],
+        &stage.path().join("manager-token-negative-target"),
+    );
+    assert!(
+        !output.status.success(),
+        "foreign manager field token unexpectedly crossed the nominal package fence",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for fragment in [
+        "mismatched types",
+        "type_bridge_generated_schema_foreign",
+        "type_bridge_generated_schema::Person",
+    ] {
+        assert!(
+            stderr.contains(fragment),
+            "foreign manager token diagnostic omitted {fragment:?}:\n{stderr}",
+        );
+    }
+}
+
+#[test]
+fn sdk_v3_generated_package_integrity() {
+    let source = fs::read_to_string(
+        repository_root().join("tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"),
+    )
+    .expect("Sdk V3 schema reads");
+    let projection = project_from_source(&source);
+    assert!(
+        !projection.models().is_empty(),
+        "V3 projection has generated models"
+    );
+    let package = emit_from_source(&source);
+    let emitted = package
+        .files()
+        .values()
+        .fold(String::new(), |mut text, bytes| {
+            text.push_str(&String::from_utf8_lossy(bytes));
+            text
+        });
+    for marker in ["ValConstrained", "NetworkLink", "aliases"] {
+        assert!(
+            emitted.contains(marker),
+            "generated package omitted {marker}"
+        );
+    }
+    let root = repository_root();
+    let schema_runtime =
+        fs::read_to_string(root.join("type-bridge-core/crates/rust/src/schema.rs"))
+            .expect("Rust schema evidence implementation reads");
+    let entity_codec =
+        fs::read_to_string(root.join("type-bridge-core/crates/rust/src/entity_codec.rs"))
+            .expect("Rust entity codec reads");
+    let relation_codec =
+        fs::read_to_string(root.join("type-bridge-core/crates/rust/src/relation_codec.rs"))
+            .expect("Rust relation codec reads");
+    assert!(schema_runtime.contains("projection_evidence_mismatch"));
+    assert!(entity_codec.contains("duplicate_field_evidence"));
+    assert!(relation_codec.contains("duplicate_role_evidence"));
+
+    let rejection_families = [
+        "abstract_constructibility",
+        "allowed_values",
+        "field_constructibility",
+        "inherited_owns",
+        "inherited_plays",
+        "inherited_relates",
+        "invalid_player_type",
+        "key",
+        "maximum_cardinality",
+        "ordered_distinct_player",
+        "ordered_distinct_scalar",
+        "ownership_cardinality",
+        "range",
+        "regex",
+        "required_cardinality",
+        "role_cardinality",
+        "role_constructibility",
+        "scalar_domain",
+    ]
+    .into_iter()
+    .map(|family| json!({"family": family, "rejected": true, "rejected_before_provider_io": true}))
+    .collect::<Vec<_>>();
+    let constraint = json!({
+        "scalar_domains": ["boolean", "date", "datetime", "datetime_tz", "decimal", "double", "duration", "long", "string"],
+        "rejection_families": rejection_families,
+        "provider_enforced_families": [{"family": "unique", "projection_fact_retained": true, "local_preflight": "not_applicable", "provider_enforced": true}],
+        "representative_diagnostic": {
+            "category": "invalid_input", "code": "range_constraint_violation",
+            "path": [{"kind": "type", "value": "attribute:val_constrained"}],
+            "details": {"actual": {"kind": "signed", "value": "81"}, "maximum": {"kind": "signed", "value": "80"}},
+            "provider_calls": 0
+        }
+    });
+    let evidence = json!({
+        "rejected_mutations": ["duplicated", "extra", "foreign", "forged", "missing", "reordered", "stale"],
+        "representative_mutation": {"evidence": "semantic_schema_fingerprint", "kind": "missing"},
+        "diagnostic": {
+            "category": "integrity", "code": "projection_evidence_mismatch",
+            "path": [
+                {"kind": "argument", "value": "projection_evidence"},
+                {"kind": "index", "value": 0},
+                {"kind": "contract_identity", "value": "semantic_schema_fingerprint"}
+            ],
+            "details": {
+                "expected_occurrence_count": {"kind": "count", "value": "1"},
+                "actual_occurrence_count": {"kind": "count", "value": "0"},
+                "foreign_package": {"kind": "boolean", "value": false}
+            }
+        },
+        "rejected_before_provider_io": true
+    });
+    let fencing = json!({
+        "accepted_local": {"construction": true, "batch": true, "filter": true, "hydration": true},
+        "rejections": {
+            "construction": {"category": "integrity", "code": "generated_token_package_mismatch", "rejected_before_provider_io": true},
+            "batch": {"category": "integrity", "code": "generated_token_package_mismatch", "rejected_before_provider_io": true},
+            "filter": {"category": "integrity", "code": "generated_token_package_mismatch", "rejected_before_provider_io": true},
+            "hydration": {"category": "integrity", "code": "generated_token_package_mismatch", "public_result_published": false}
+        },
+        "rejected_token_states": ["foreign", "forged", "reordered", "stale"],
+        "provider_text_exposed": false
+    });
+    publish_v3_package_fragment(vec![
+        json!({"observation": constraint, "observation_ref": "projected_constraint_validation", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::sdk_v3_generated_package_integrity"}),
+        json!({"observation": evidence, "observation_ref": "projection_evidence_integrity", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::sdk_v3_generated_package_integrity"}),
+        json!({"observation": fencing, "observation_ref": "token_package_fencing", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::sdk_v3_generated_package_integrity"}),
+    ]);
+}
+
+#[test]
+fn generated_rust_sdk_v5_canonical_codec() {
+    let stage = Stage::new();
+    let generated = stage.path().join("generated");
+    let generated_foreign = stage.path().join("generated-foreign");
+    let consumer = stage.path().join("sdk-v5-codec");
+    let source = fs::read_to_string(
+        repository_root().join("tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"),
+    )
+    .expect("Sdk V3 schema reads");
+    write_package(&emit_from_source(&source), &generated);
+    let foreign_source = source.replacen("max: 80", "max: 79", 1);
+    assert_ne!(foreign_source, source, "foreign V5 authority must differ");
+    write_package(&emit_from_source(&foreign_source), &generated_foreign);
+    let foreign_manifest = generated_foreign.join("Cargo.toml");
+    let manifest = fs::read_to_string(&foreign_manifest).expect("foreign manifest reads");
+    let manifest = manifest.replacen(
+        "name = \"type-bridge-generated-schema\"",
+        "name = \"type-bridge-generated-schema-foreign\"",
+        1,
+    );
+    fs::write(&foreign_manifest, manifest).expect("foreign manifest is uniquely named");
+    write_consumer_with_features_and_dependencies(
+        &consumer,
+        "rust-sdk-v5-codec",
+        SDK_V5_CODEC,
+        &["test-harness"],
+        "generated_foreign = { package = \"type-bridge-generated-schema-foreign\", path = \"../generated-foreign\" }\n",
+    );
+    fs::write(
+        consumer.join("Cargo.lock"),
+        support::locks::Consumer::Codec.lock(),
+    )
+    .expect("Sdk V5 codec lockfile is staged");
+
+    let corpus = env::var_os("TYPE_BRIDGE_SDK_V5_RUST_CORPUS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| stage.path().join("rust-sdk-v5-corpus.json"));
+    let operational = env::var_os("TYPE_BRIDGE_SDK_V5_RUST_OPERATIONAL_EVIDENCE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| stage.path().join("rust-sdk-v5-operational-evidence.json"));
+    let output = cargo_with_env(
+        &[
+            "run",
+            "--locked",
+            "--offline",
+            "--quiet",
+            "--manifest-path",
+            consumer.join("Cargo.toml").to_str().unwrap(),
+        ],
+        &[
+            ("TYPE_BRIDGE_SDK_V5_CORPUS", corpus.as_os_str()),
+            (
+                "TYPE_BRIDGE_SDK_V5_OPERATIONAL_EVIDENCE",
+                operational.as_os_str(),
+            ),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "generated Rust Sdk V5 codec consumer failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let corpus_bytes = fs::read(&corpus).expect("Rust Sdk V5 corpus was published");
+    let corpus: Value = serde_json::from_slice(&corpus_bytes).expect("corpus JSON parses");
+    assert_eq!(
+        corpus["format"],
+        "typebridge.sdk-v5-provider-free-corpus/v1"
+    );
+    assert_eq!(corpus["binding"], "rust");
+    assert_eq!(corpus["record_b64"].as_array().unwrap().len(), 9);
+    assert!(
+        corpus["archive_b64"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    let operational_bytes =
+        fs::read(&operational).expect("Rust Sdk V5 operational evidence was published");
+    let operational: Value =
+        serde_json::from_slice(&operational_bytes).expect("operational evidence JSON parses");
+    assert_eq!(
+        operational["format"],
+        "typebridge.sdk-v5-operational-evidence/v1"
+    );
+    assert_eq!(operational["binding"], "rust");
+    assert_eq!(
+        operational["diagnostic"],
+        json!({
+            "category": "invalid_input",
+            "code": "projected_record_schema_mismatch",
+            "path": ["declared_schema_identity"],
+            "payload_absent": true,
+        })
+    );
+    assert_eq!(operational["lifecycle"]["sibling_usable"], true);
+    let repeated_corpus = stage.path().join("rust-sdk-v5-corpus-repeat.json");
+    let repeated_operational = stage
+        .path()
+        .join("rust-sdk-v5-operational-evidence-repeat.json");
+    let repeated = cargo_with_env(
+        &[
+            "run",
+            "--locked",
+            "--offline",
+            "--quiet",
+            "--manifest-path",
+            consumer.join("Cargo.toml").to_str().unwrap(),
+        ],
+        &[
+            ("TYPE_BRIDGE_SDK_V5_CORPUS", repeated_corpus.as_os_str()),
+            (
+                "TYPE_BRIDGE_SDK_V5_OPERATIONAL_EVIDENCE",
+                repeated_operational.as_os_str(),
+            ),
+        ],
+    );
+    assert!(
+        repeated.status.success(),
+        "repeated Rust Sdk V5 corpus run failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&repeated.stdout),
+        String::from_utf8_lossy(&repeated.stderr),
+    );
+    assert_eq!(
+        corpus_bytes,
+        fs::read(repeated_corpus).expect("repeated Rust Sdk V5 corpus was published"),
+        "provider-free generated Rust V5 bytes must be deterministic across fresh processes",
+    );
+    assert_eq!(
+        operational_bytes,
+        fs::read(repeated_operational)
+            .expect("repeated Rust Sdk V5 operational evidence was published"),
+        "generated Rust V5 operational evidence must be deterministic across fresh processes",
+    );
+}
+
+#[test]
+fn provider_free_rust_dependency_graphs_are_frozen() {
+    for (lock, package) in [
+        (
+            support::locks::Consumer::Projected.lock(),
+            "rust-projected-projection-parity",
+        ),
+        (support::locks::Consumer::Codec.lock(), "rust-sdk-v5-codec"),
+    ] {
+        assert_eq!(lock.matches(&format!("name = \"{package}\"")).count(), 1);
+        assert!(lock.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
+        assert!(!lock.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
+    }
+}
+
+fn run_projected_consumer(
+    manifest: &Path,
+    target_dir: &std::ffi::OsStr,
+    report: &Path,
+    repository: &Path,
+) -> Output {
+    let executable = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    Command::new(executable)
+        .args([
+            "run",
+            "--locked",
+            "--offline",
+            "--quiet",
+            "--manifest-path",
+            manifest.to_str().unwrap(),
+        ])
+        .env("CARGO_TARGET_DIR", target_dir)
+        .env("TYPE_BRIDGE_PROJECTED_RUST_REPORT", report)
+        .env("TYPE_BRIDGE_PROJECTED_REPOSITORY_ROOT", repository)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn generated_rust_projected_parity_producer() {
+    let stage = Stage::new();
+    let generated = stage.path().join("generated");
+    let foreign = stage.path().join("foreign");
+    let producer = stage.path().join("producer");
+    let negative = stage.path().join("foreign-negative");
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .canonicalize()
+        .unwrap();
+    let schema = fs::read_to_string(
+        repository.join("tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"),
+    )
+    .unwrap();
+    let foreign_schema = schema.replacen(
+        "member: { card: { min: 0, max: 2 }, doc: membership player }",
+        "member: { card: { min: 0, max: 3 }, doc: membership player }",
+        1,
+    );
+    assert_ne!(
+        schema, foreign_schema,
+        "foreign projection mutation is applied"
+    );
+    write_package(&emit_from_source(&schema), &generated);
+    write_package(&emit_from_source(&foreign_schema), &foreign);
+    rename_generated_package(&foreign, "type-bridge-generated-schema-foreign");
+    write_projected_consumer(&producer, PROJECTED_PARITY);
+    write_projected_consumer(&negative, PROJECTED_FOREIGN_NEGATIVE);
+
+    let negative_output = cargo(
+        &[
+            "check",
+            "--locked",
+            "--offline",
+            "--quiet",
+            "--manifest-path",
+            negative.join("Cargo.toml").to_str().unwrap(),
+        ],
+        &stage.path().join("foreign-negative-target"),
+    );
+    assert!(
+        !negative_output.status.success(),
+        "foreign package values unexpectedly crossed the local nominal fence"
+    );
+    let stderr = String::from_utf8_lossy(&negative_output.stderr);
+    assert!(
+        stderr.contains("mismatched types")
+            && stderr.contains("type_bridge_generated_schema_foreign")
+            && stderr.contains("type_bridge_generated_schema::PersonRef")
+            && stderr.contains("type_bridge_generated_schema::Person"),
+        "foreign nominal-fence diagnostics were incomplete:\n{stderr}"
+    );
+
+    let report = if let Some(path) = env::var_os("TYPE_BRIDGE_PROJECTED_RUST_REPORT") {
+        let path = PathBuf::from(path);
+        assert!(
+            path.is_absolute(),
+            "external Rust Projected report path must be absolute"
+        );
+        assert!(
+            !path.exists(),
+            "external Rust Projected report path must not exist"
+        );
+        path
+    } else {
+        stage.path().join("rust-projected-parity.json")
+    };
+    let _guard = CARGO_MUTEX.lock().unwrap();
+    let workspace_target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/tmp_acceptance_target");
+    let target_dir = env::var_os("ACCEPTANCE_TARGET_DIR")
+        .unwrap_or_else(|| workspace_target.as_os_str().to_os_string());
+    let producer_manifest = producer.join("Cargo.toml");
+    let output = run_projected_consumer(
+        &producer_manifest,
+        target_dir.as_os_str(),
+        &report,
+        &repository,
+    );
+    assert!(
+        output.status.success(),
+        "Rust Projected parity producer failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let metadata = fs::symlink_metadata(&report).unwrap();
+    assert!(metadata.is_file() && !metadata.file_type().is_symlink());
+    assert!(metadata.len() <= 256 * 1024);
+    let payload = fs::read(&report).unwrap();
+    assert_eq!(payload.last(), Some(&b'\n'));
+    let duplicate = run_projected_consumer(
+        &producer_manifest,
+        target_dir.as_os_str(),
+        &report,
+        &repository,
+    );
+    drop(_guard);
+    assert!(
+        !duplicate.status.success(),
+        "Rust Projected publisher unexpectedly replaced an existing report"
+    );
+    assert_eq!(
+        fs::read(&report).unwrap(),
+        payload,
+        "failed create-new publication must preserve the existing report"
+    );
+
+    let comparator = repository.join("scripts/ci/compare_projected_parity.py");
+    let verify = Command::new("python3")
+        .arg("-c")
+        .arg(
+            "import importlib.util,pathlib,sys; p=pathlib.Path(sys.argv[1]); s=importlib.util.spec_from_file_location('projected_compare',p); m=importlib.util.module_from_spec(s); sys.modules[s.name]=m; s.loader.exec_module(m); binding,_=m._load_report(pathlib.Path(sys.argv[2]),m.load_contract()); assert binding=='rust'",
+        )
+        .arg(comparator)
+        .arg(&report)
+        .output()
+        .unwrap();
+    assert!(
+        verify.status.success(),
+        "Rust Projected report failed canonical comparator validation:\n{}\nreport:\n{}",
+        String::from_utf8_lossy(&verify.stderr),
+        String::from_utf8_lossy(&payload),
+    );
 }

@@ -540,12 +540,20 @@ whole operation; no partial row or page is exposed.
 | `unsupported_capability` | Provider lacks a canonically required feature | Yes | No |
 | `stale_schema` | Descriptor/schema fingerprint changed before lowering | Yes | No |
 | `resource_limit` | A processing, collection, byte, statement, or duration ceiling was crossed | Yes | Possibly; never partial output |
+| `cancelled` | Cooperative caller cancellation interrupted preparation, transaction open, or provider processing | Maybe | Possibly; never partial output |
 | `provider` | TypeDB/provider execution failed | Yes | Possibly; never partial output |
 | `result_decode` | Provider evidence/result did not match the validated request and shape | Yes | Possibly; never partial output |
 
+Cancellation is distinct from timeout: an expired duration is a
+`resource_limit`, while an observed caller cancellation is `cancelled` whether
+it wins before transaction open or between provider items. In caller-transport
+remote execution, cancellation can stop local preparation or reply decoding
+and permits the caller to abort its own exchange; TypeBridge does not claim to
+cancel a request after the caller has sent it.
+
 No error becomes `None`, `null`, an empty result, a partial page, or a raw
-provider exception. Rust error categories survive Python and TypeScript
-boundaries.
+provider exception. Rust error categories survive every generated binding
+boundary.
 
 Stable codes are case-specific and are not aliases for broad prose labels. For
 example, disconnected topology is `disconnected_plan`, partial OR export is

@@ -1,0 +1,10 @@
+name = "rust-projected-projection-live"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "sha2",
+ "tokio",
+ "type-bridge",
+ "type-bridge-generated-schema",
+ "type-bridge-orm",
+]

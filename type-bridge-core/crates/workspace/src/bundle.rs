@@ -17,11 +17,11 @@ use type_bridge_contract::limits::{
 };
 use type_bridge_contract::managed_scope::{ManagedScopeBinding, SemanticProfileBinding};
 use type_bridge_contract::projection::{
-    BindingTarget, ProjectionConfig, ProjectionHandler, RuntimeProjection,
+    BindingTarget, CodeResourceDigest, ProjectionConfig, ProjectionHandler, RuntimeProjection,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
 use type_bridge_contract::schema::{
-    DeclaredSchema, ManagedSchemaState, SchemaDiagnostics, decode_declared_schema,
+    CollectionMode, DeclaredSchema, ManagedSchemaState, SchemaDiagnostics, decode_declared_schema,
     encode_declared_schema,
 };
 use type_bridge_schema::{
@@ -66,7 +66,7 @@ pub enum SchemaBundleErrorCode {
     ExtensionUnavailable,
     /// Projection bytes or their detached evidence failed independent verification.
     ProjectionMismatch,
-    /// Projection resource evidence appeared before this bundle slice supports it.
+    /// Projection handler or resource evidence does not support the resolved schema features.
     UnsupportedProjectionEvidence,
 }
 
@@ -179,18 +179,38 @@ impl From<DeltaError> for SchemaBundleError {
     }
 }
 
-/// Exact target policy and handler evidence allowed for one compiled projection.
+/// Exact target policy plus handler and resource evidence for one compiled projection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BundleProjectionContext {
     config: ProjectionConfig,
     handlers: Vec<ProjectionHandler>,
+    code_resources: Vec<CodeResourceDigest>,
 }
 
 impl BundleProjectionContext {
-    /// Validate one target's projection configuration and deterministic handler evidence.
+    /// Validate one target's legacy unordered projection context.
+    ///
+    /// This compatibility constructor retains the pre-resource bundle shape. Use
+    /// [`Self::new_with_evidence`] for a complete emitter evidence ledger.
     pub fn new(
         config: ProjectionConfig,
+        handlers: Vec<ProjectionHandler>,
+    ) -> Result<Self, SchemaBundleError> {
+        let context = Self::new_with_evidence(config, handlers, Vec::new())?;
+        if context.uses_successor_handler() {
+            return Err(SchemaBundleError::new(
+                SchemaBundleErrorCode::ContextMismatch,
+                "legacy projection context requires the exact legacy target handler",
+            ));
+        }
+        Ok(context)
+    }
+
+    /// Validate one target's exact handler and fixed-resource evidence ledger.
+    pub fn new_with_evidence(
+        config: ProjectionConfig,
         mut handlers: Vec<ProjectionHandler>,
+        mut code_resources: Vec<CodeResourceDigest>,
     ) -> Result<Self, SchemaBundleError> {
         handlers.sort_by(|left, right| {
             left.id()
@@ -203,18 +223,56 @@ impl BundleProjectionContext {
                 "projection context contains duplicate handler identities",
             ));
         }
-        let required = match config.target() {
-            BindingTarget::Python => ProjectionHandler::python_v1(),
-            BindingTarget::TypeScript => ProjectionHandler::typescript_v1(),
-            BindingTarget::Rust => ProjectionHandler::rust_v1(),
-        };
-        if handlers.len() != 1 || handlers.first() != Some(&required) {
+        code_resources.sort_by(|left, right| left.id().cmp(right.id()));
+        if code_resources
+            .windows(2)
+            .any(|pair| pair[0].id() == pair[1].id())
+        {
             return Err(SchemaBundleError::new(
                 SchemaBundleErrorCode::ContextMismatch,
-                "projection context handler evidence differs from the exact shipped target set",
+                "projection context contains duplicate code-resource identities",
             ));
         }
-        Ok(Self { config, handlers })
+
+        let legacy = required_projection_handler(config.target(), false)?;
+        let successor = required_projection_handler(config.target(), true)?;
+        let uses_successor = handlers.first() == Some(&successor);
+        if handlers.len() != 1
+            || handlers
+                .first()
+                .is_none_or(|handler| handler != &legacy && handler != &successor)
+        {
+            return Err(SchemaBundleError::new(
+                SchemaBundleErrorCode::ContextMismatch,
+                "projection context handler evidence differs from the exact shipped target sets",
+            ));
+        }
+        if uses_successor && code_resources.is_empty() {
+            return Err(SchemaBundleError::new(
+                SchemaBundleErrorCode::ContextMismatch,
+                "ordered successor projection context requires exact code-resource evidence",
+            ));
+        }
+        if !uses_successor && !code_resources.is_empty() {
+            return Err(SchemaBundleError::new(
+                SchemaBundleErrorCode::ContextMismatch,
+                "legacy projection context must retain the empty resource-evidence ledger",
+            ));
+        }
+        if !code_resources.is_empty()
+            && !resource_ids_match_target(config.target(), &code_resources)?
+        {
+            return Err(SchemaBundleError::new(
+                SchemaBundleErrorCode::ContextMismatch,
+                "projection context code-resource identities differ from the exact shipped target set",
+            ));
+        }
+
+        Ok(Self {
+            config,
+            handlers,
+            code_resources,
+        })
     }
 
     /// Return the exact target configuration.
@@ -234,6 +292,79 @@ impl BundleProjectionContext {
     pub fn handlers(&self) -> &[ProjectionHandler] {
         &self.handlers
     }
+
+    /// Return canonical fixed-resource evidence.
+    #[must_use]
+    pub fn code_resources(&self) -> &[CodeResourceDigest] {
+        &self.code_resources
+    }
+
+    fn uses_successor_handler(&self) -> bool {
+        self.handlers.first()
+            == required_projection_handler(self.target(), true)
+                .ok()
+                .as_ref()
+    }
+}
+
+fn required_projection_handler(
+    target: BindingTarget,
+    ordered: bool,
+) -> Result<ProjectionHandler, SchemaBundleError> {
+    match (target, ordered) {
+        (BindingTarget::Python, false) => Ok(ProjectionHandler::python_v1()),
+        (BindingTarget::Python, true) => Ok(ProjectionHandler::python_v2()),
+        (BindingTarget::TypeScript, false) => Ok(ProjectionHandler::typescript_v1()),
+        (BindingTarget::TypeScript, true) => Ok(ProjectionHandler::typescript_v2()),
+        (BindingTarget::Rust, false) => Ok(ProjectionHandler::rust_v1()),
+        (BindingTarget::Rust, true) => Ok(ProjectionHandler::rust_v2()),
+        (BindingTarget::C, false) => Ok(ProjectionHandler::c_v2()),
+        (BindingTarget::C, true) => Ok(ProjectionHandler::c_v3()),
+        _ => Err(SchemaBundleError::new(
+            SchemaBundleErrorCode::ProjectionTargetMismatch,
+            "projection context contains an unsupported binding target",
+        )),
+    }
+}
+
+fn resource_ids_match_target(
+    target: BindingTarget,
+    resources: &[CodeResourceDigest],
+) -> Result<bool, SchemaBundleError> {
+    let required: &[&str] = match target {
+        BindingTarget::Python => &[
+            "typebridge.generator.python.py-typed",
+            "typebridge.generator.python.query-source",
+            "typebridge.generator.python.query-stub",
+            "typebridge.generator.python.runtime-source",
+            "typebridge.generator.python.runtime-stub",
+        ],
+        BindingTarget::TypeScript => &[
+            "typebridge.generator.typescript.package-json",
+            "typebridge.generator.typescript.runtime-source",
+            "typebridge.generator.typescript.tsconfig-json",
+        ],
+        BindingTarget::Rust => &[
+            "typebridge.generator.rust.cargo-toml",
+            "typebridge.generator.rust.runtime-source",
+        ],
+        BindingTarget::C => &[
+            "typebridge.generator.c.cmake-package-config-template",
+            "typebridge.generator.c.cmake-template",
+            "typebridge.generator.c.pkg-config-template",
+        ],
+        _ => {
+            return Err(SchemaBundleError::new(
+                SchemaBundleErrorCode::ProjectionTargetMismatch,
+                "projection context contains an unsupported binding target",
+            ));
+        }
+    };
+    Ok(resources.len() == required.len()
+        && resources
+            .iter()
+            .zip(required)
+            .all(|(actual, expected)| actual.id().as_str() == *expected))
 }
 
 /// Explicit capability, extension, scope, profile, and projection trust context.
@@ -324,6 +455,7 @@ enum BindingTargetWire {
     #[serde(rename = "typescript")]
     TypeScript,
     Rust,
+    C,
 }
 
 impl BindingTargetWire {
@@ -332,16 +464,24 @@ impl BindingTargetWire {
             Self::Python => BindingTarget::Python,
             Self::TypeScript => BindingTarget::TypeScript,
             Self::Rust => BindingTarget::Rust,
+            Self::C => BindingTarget::C,
         }
     }
 }
 
-impl From<BindingTarget> for BindingTargetWire {
-    fn from(value: BindingTarget) -> Self {
+impl TryFrom<BindingTarget> for BindingTargetWire {
+    type Error = SchemaBundleError;
+
+    fn try_from(value: BindingTarget) -> Result<Self, Self::Error> {
         match value {
-            BindingTarget::Python => Self::Python,
-            BindingTarget::TypeScript => Self::TypeScript,
-            BindingTarget::Rust => Self::Rust,
+            BindingTarget::Python => Ok(Self::Python),
+            BindingTarget::TypeScript => Ok(Self::TypeScript),
+            BindingTarget::Rust => Ok(Self::Rust),
+            BindingTarget::C => Ok(Self::C),
+            _ => Err(SchemaBundleError::new(
+                SchemaBundleErrorCode::ProjectionTargetMismatch,
+                "bundle encoder does not support this binding target",
+            )),
         }
     }
 }
@@ -373,6 +513,8 @@ struct ProjectionEntryWire {
     canonical_projection: Value,
     config: Value,
     handler_evidence: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    resource_evidence: Vec<Value>,
     target: BindingTargetWire,
 }
 
@@ -719,6 +861,15 @@ fn verify_workspace_context(
             "configured output targets and bundle projection contexts differ",
         ));
     }
+    if let Some(c_context) = context.projections.get(&BindingTarget::C) {
+        let expected = crate::c_symbol_prefix_for_app_label(workspace.config().app_label());
+        if c_context.config().c_symbol_prefix() != Some(&expected) {
+            return Err(SchemaBundleError::new(
+                SchemaBundleErrorCode::ContextMismatch,
+                "C projection symbol prefix differs from the workspace app-label policy",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -729,6 +880,7 @@ fn content_from_workspace(
     let declared_bytes = encode_declared_schema(workspace.declared_schema())?;
     let declared_schema = from_canonical_json_with_limits(&declared_bytes, SCHEMA_BUNDLE_LIMITS)?;
     let semantic_profile = SemanticProfileBinding::resolve(context.semantic_profile.clone())?;
+    validate_projection_evidence_for_schema(workspace.resolved_schema(), context)?;
     let mut projections = Vec::with_capacity(context.projections.len());
     for (&target, projection_context) in &context.projections {
         let projection = project(
@@ -736,7 +888,7 @@ fn content_from_workspace(
             target,
             projection_context.config(),
             projection_context.handlers(),
-            &[],
+            projection_context.code_resources(),
         )?;
         projections.push(ProjectionEntryWire {
             binding_fingerprint: canonical_value(
@@ -745,7 +897,8 @@ fn content_from_workspace(
             canonical_projection: canonical_value(&projection)?,
             config: canonical_value(projection_context.config())?,
             handler_evidence: canonical_values(projection_context.handlers())?,
-            target: target.into(),
+            resource_evidence: canonical_values(projection_context.code_resources())?,
+            target: BindingTargetWire::try_from(target)?,
         });
     }
     Ok(SchemaBundleContentWire {
@@ -784,6 +937,7 @@ fn verify_projections(
     resolved: &ResolvedSchema,
     context: &BundleVerificationContext,
 ) -> Result<BTreeMap<BindingTarget, RuntimeProjection>, SchemaBundleError> {
+    validate_projection_evidence_for_schema(resolved, context)?;
     let expected_semantic = to_canonical_json_with_limits(
         resolved.semantic_fingerprint().as_fingerprint(),
         SCHEMA_BUNDLE_LIMITS,
@@ -807,10 +961,11 @@ fn verify_projections(
         })?;
         if entry.config != canonical_value(expected.config())?
             || entry.handler_evidence != canonical_values(expected.handlers())?
+            || entry.resource_evidence != canonical_values(expected.code_resources())?
         {
             return Err(SchemaBundleError::new(
                 SchemaBundleErrorCode::ContextMismatch,
-                "projection configuration or handler evidence differs from context",
+                "projection configuration, handler, or resource evidence differs from context",
             ));
         }
         let projection_bytes =
@@ -826,16 +981,12 @@ fn verify_projections(
         if decoded.target() != target
             || decoded.config() != expected.config()
             || decoded.generator_handlers() != expected.handlers()
-            || !decoded.code_resources().is_empty()
+            || decoded.code_resources() != expected.code_resources()
             || entry.binding_fingerprint
                 != canonical_value(decoded.projection_fingerprint().as_fingerprint())?
         {
             return Err(SchemaBundleError::new(
-                if decoded.code_resources().is_empty() {
-                    SchemaBundleErrorCode::ProjectionMismatch
-                } else {
-                    SchemaBundleErrorCode::UnsupportedProjectionEvidence
-                },
+                SchemaBundleErrorCode::ProjectionMismatch,
                 "decoded projection evidence differs from the closed bundle contract",
             ));
         }
@@ -844,7 +995,7 @@ fn verify_projections(
             target,
             expected.config(),
             expected.handlers(),
-            &[],
+            expected.code_resources(),
         )?;
         let recomputed_bytes = to_canonical_json_with_limits(&recomputed, SCHEMA_BUNDLE_LIMITS)?;
         if projection_bytes != recomputed_bytes || decoded != recomputed {
@@ -864,6 +1015,33 @@ fn verify_projections(
         ));
     }
     Ok(projections)
+}
+
+fn validate_projection_evidence_for_schema(
+    resolved: &ResolvedSchema,
+    context: &BundleVerificationContext,
+) -> Result<(), SchemaBundleError> {
+    let ordered = resolved.types().values().any(|resolved_type| {
+        resolved_type
+            .owns()
+            .values()
+            .any(|owns| owns.collection_mode() == CollectionMode::OrderedList)
+            || resolved_type
+                .relates()
+                .values()
+                .any(|relates| relates.collection_mode() == CollectionMode::OrderedList)
+    });
+    if context
+        .projections
+        .values()
+        .any(|projection| projection.uses_successor_handler() != ordered)
+    {
+        return Err(SchemaBundleError::new(
+            SchemaBundleErrorCode::UnsupportedProjectionEvidence,
+            "projection evidence does not match the resolved schema collection mode",
+        ));
+    }
+    Ok(())
 }
 
 fn rebuild_extensions(

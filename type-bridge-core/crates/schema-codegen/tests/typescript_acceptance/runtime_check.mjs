@@ -1,10 +1,22 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import {
+  closeSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  openSync,
+  readSync,
+  writeSync,
+} from "node:fs";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { QueryV2Error } from "@type-bridge/node";
 import { installRuntimeProjection } from "@type-bridge/node/runtime-projection";
+import { loadNative } from "../../crates/node/dist/native.js";
 
 import {
   Aliases,
+  aggregate,
   Container,
   Employment,
   Event,
@@ -13,6 +25,8 @@ import {
   PROJECTION_FINGERPRINT_JSON,
   Person,
   PlayerStats,
+  QueryCancellation,
+  QueryExecutionResourceLimits,
   QuerySession,
   RUNTIME_PROJECTION_JSON,
   RemoteQuerySession,
@@ -29,7 +43,60 @@ import {
   ValDecimal,
   ValDouble,
   ValDuration,
+  integerInput,
+  qualifyingScore,
 } from "./generated_v2/dist/index.js";
+import {
+  Identifier as ForeignIdentifier,
+  Person as ForeignPerson,
+} from "./generated_foreign/dist/index.js";
+import {
+  DirectConnectionPolicy as OrderedDirectConnectionPolicy,
+  Identifier as OrderedIdentifier,
+  Membership as OrderedMembership,
+  Person as OrderedPerson,
+  PlainActivity as OrderedPlainActivity,
+  Score as OrderedScore,
+  Tag as OrderedTag,
+  ValDatetime as OrderedValDatetime,
+  ValDatetimeTz as OrderedValDatetimeTz,
+  ValDouble as OrderedValDouble,
+  connect as orderedConnect,
+} from "./generated_ordered/dist/index.js";
+
+const directPolicy = new OrderedDirectConnectionPolicy(
+  "hostile-endpoint:1729",
+  "hostile-database",
+  {
+    username: "hostile-user",
+    password: "hostile-password",
+    tlsRootCa: "/hostile/root.pem",
+  },
+);
+assert.equal(directPolicy.toString(), "DirectConnectionPolicy([REDACTED])");
+for (const secret of [
+  "hostile-endpoint",
+  "hostile-database",
+  "hostile-user",
+  "hostile-password",
+  "/hostile/root.pem",
+]) {
+  assert.equal(directPolicy.toString().includes(secret), false);
+}
+assert.throws(
+  () => orderedConnect({}),
+  /connect requires this generated package's DirectConnectionPolicy/,
+);
+
+function captureNativeDiagnostic(operation) {
+  try {
+    operation();
+  } catch (error) {
+    assert(error instanceof Error);
+    return JSON.parse(error.message);
+  }
+  assert.fail("operation did not emit a native diagnostic");
+}
 
 const identifier = Identifier.create("person-1");
 assert.equal(identifier.value, "person-1");
@@ -54,18 +121,27 @@ const person = Person.create({
   aliases: [Aliases.create("first"), Aliases.create("second")],
 });
 assert.throws(
-  () => Person.create({ ...personValues, valConstrained: ValConstrained.create(19n) }),
+  () =>
+    Person.create({
+      ...personValues,
+      valConstrained: ValConstrained.create(19n),
+    }),
   /range_violation/,
 );
 assert.throws(
-  () => Person.create({ ...personValues, valConstrained: ValConstrained.create(81n) }),
+  () =>
+    Person.create({
+      ...personValues,
+      valConstrained: ValConstrained.create(81n),
+    }),
   /range_violation/,
 );
 assert.throws(
-  () => Robot.create({
-    robotId: RobotId.create(1n),
-    valConstrained: ValConstrained.create(51n),
-  }),
+  () =>
+    Robot.create({
+      robotId: RobotId.create(1n),
+      valConstrained: ValConstrained.create(51n),
+    }),
   /range_violation/,
 );
 assert.equal(
@@ -96,7 +172,10 @@ const hydrateComplete = Object.getOwnPropertySymbols(Identifier).find(
   (symbol) => symbol.description === "typebridge.hydrate-complete",
 );
 assert(hydrateComplete);
-const hydratedIdentifier = Identifier[hydrateComplete]("identifier-iid", "provider-value");
+const hydratedIdentifier = Identifier[hydrateComplete](
+  "identifier-iid",
+  "provider-value",
+);
 assert.equal(hydratedIdentifier.iid, "identifier-iid");
 assert.equal(hydratedIdentifier.value, "provider-value");
 assert(Object.isFrozen(hydratedIdentifier));
@@ -113,13 +192,126 @@ Employment.create({ employee: person });
 const eventReference = Event.reference("event-iid", {});
 Container.create({ item: [eventReference] });
 assert.throws(
-  () => Container.create({ item: [eventReference, eventReference, eventReference] }),
+  () =>
+    Container.create({
+      item: [eventReference, eventReference, eventReference],
+    }),
   RangeError,
 );
 assert.throws(() => Employment.create({ employee: event }), TypeError);
 assert.throws(
   () => Employment.create({ employee: person, member: person }),
   TypeError,
+);
+
+const orderedPerson = OrderedPerson.create({
+  identifier: OrderedIdentifier.create("ordered-person"),
+  score: OrderedScore.create(3n),
+  tag: [OrderedTag.create("first"), OrderedTag.create("second")],
+});
+assert.deepEqual(
+  orderedPerson.tag.map((tag) => tag.value),
+  ["first", "second"],
+);
+const duplicateField = captureNativeDiagnostic(() =>
+  OrderedPerson.create({
+    identifier: OrderedIdentifier.create("ordered-duplicate"),
+    score: OrderedScore.create(3n),
+    tag: [OrderedTag.create("duplicate"), OrderedTag.create("duplicate")],
+  }),
+);
+assert.equal(duplicateField.sdkCategory, "invalid_input");
+assert.equal(duplicateField.code, "ordered_distinct_duplicate");
+assert.deepEqual(duplicateField.details, {
+  duplicate_index: { kind: "count", value: "1" },
+  first_index: { kind: "count", value: "0" },
+});
+const constrainedField = captureNativeDiagnostic(() =>
+  OrderedPerson.create({
+    identifier: OrderedIdentifier.create("ordered-range"),
+    score: OrderedScore.create(6n),
+    tag: [],
+  }),
+);
+assert.equal(constrainedField.sdkCategory, "invalid_input");
+assert.equal(constrainedField.code, "range_constraint_violation");
+
+// Hydration remains outside this constructor-only slice; use its existing hook
+// only to provide canonical identity for role-constructor admission fixtures.
+const orderedHydrate = Object.getOwnPropertySymbols(OrderedPerson).find(
+  (symbol) => symbol.description === "typebridge.hydrate-complete",
+);
+assert(orderedHydrate);
+const identifiedOrderedPerson = OrderedPerson[orderedHydrate]("0xa", {
+  identifier: OrderedIdentifier.create("identified-ordered-person"),
+  score: OrderedScore.create(3n),
+  tag: [],
+});
+const duplicateRole = captureNativeDiagnostic(() =>
+  OrderedMembership.create({
+    member: [identifiedOrderedPerson, identifiedOrderedPerson],
+  }),
+);
+assert.equal(duplicateRole.sdkCategory, "invalid_input");
+assert.equal(duplicateRole.code, "ordered_distinct_duplicate");
+assert.equal(
+  OrderedPlainActivity.create({ participant: identifiedOrderedPerson })
+    .participant,
+  identifiedOrderedPerson,
+);
+
+assert.equal(OrderedScore.create(3n).value, 3n);
+assert.throws(() => OrderedScore.create(1n << 63n), TypeError);
+assert.throws(() => OrderedValDouble.create(Number.POSITIVE_INFINITY), TypeError);
+const fractionalInstant = new Date("2026-07-29T01:02:03.120Z");
+assert.equal(
+  OrderedValDatetime.create(fractionalInstant).value,
+  fractionalInstant,
+);
+assert.equal(
+  OrderedValDatetimeTz.create(fractionalInstant).value,
+  fractionalInstant,
+);
+
+const foreignPerson = ForeignPerson.create(personValues);
+const foreignPackage = captureNativeDiagnostic(() =>
+  OrderedMembership.create({ member: [foreignPerson] }),
+);
+assert.equal(foreignPackage.category, "integrity");
+assert.equal(foreignPackage.sdkCategory, "integrity");
+assert.equal(foreignPackage.code, "generated_token_package_mismatch");
+assert.equal(
+  foreignPackage.message,
+  "The generated token belongs to a different installed schema package",
+);
+assert.deepEqual(
+  foreignPackage.path.map((segment) => segment.kind),
+  ["type", "role", "index"],
+);
+const nestedForeignHydration = captureNativeDiagnostic(() =>
+  OrderedPerson[orderedHydrate]("0xb", {
+    identifier: ForeignIdentifier.create("nested-foreign-key"),
+    score: OrderedScore.create(3n),
+    tag: [],
+  }),
+);
+assert.equal(
+  nestedForeignHydration.code,
+  "generated_token_package_mismatch",
+);
+assert.deepEqual(
+  nestedForeignHydration.path,
+  [
+    { kind: "type", value: { kind: "entity", label: "person" } },
+    {
+      kind: "field",
+      value: {
+        attribute: "identifier",
+        owner: { kind: "entity", label: "person" },
+      },
+    },
+    { kind: "index", value: 0 },
+  ],
 );
 
 assert.equal(Employment.employee.kind, "role");
@@ -134,7 +326,8 @@ assert.equal(PLAYING_FACTS.length, 12);
 assert(PLAYING_FACTS.every((fact) => fact.kind === "plays"));
 const personId = '{"kind":"entity","label":"person"}';
 const robotId = '{"kind":"entity","label":"robot"}';
-const membershipMemberId = '{"declaring_relation":"membership","label":"member"}';
+const membershipMemberId =
+  '{"declaring_relation":"membership","label":"member"}';
 const eventSubjectId = '{"declaring_relation":"event","label":"subject"}';
 const membershipFacts = PLAYING_FACTS.filter(
   (fact) => fact.role === membershipMemberId,
@@ -150,9 +343,18 @@ assert(membershipPersonFact);
 assert(membershipRobotFact);
 assert.equal(membershipPersonFact.multiplicity.cardinality.max, "2");
 assert.equal(membershipRobotFact.multiplicity.cardinality.max, "2");
-assert(JSON.stringify(membershipPersonFact.metadata).includes("membership player"));
-assert(JSON.stringify(membershipRobotFact.metadata).includes("robot membership player"));
-assert.notDeepEqual(membershipPersonFact.metadata.id, membershipRobotFact.metadata.id);
+assert(
+  JSON.stringify(membershipPersonFact.metadata).includes("membership player"),
+);
+assert(
+  JSON.stringify(membershipRobotFact.metadata).includes(
+    "robot membership player",
+  ),
+);
+assert.notDeepEqual(
+  membershipPersonFact.metadata.id,
+  membershipRobotFact.metadata.id,
+);
 const eventSubjectFacts = PLAYING_FACTS.filter(
   (fact) => fact.role === eventSubjectId,
 );
@@ -160,11 +362,22 @@ assert.equal(eventSubjectFacts.length, 1);
 const eventSubjectFact = eventSubjectFacts[0];
 assert.equal(eventSubjectFact.player, personId);
 assert.equal(eventSubjectFact.multiplicity.cardinality.max, "1");
-assert(JSON.stringify(eventSubjectFact.metadata).includes("event subject player"));
-assert.notDeepEqual(eventSubjectFact.metadata.id, membershipPersonFact.metadata.id);
+assert(
+  JSON.stringify(eventSubjectFact.metadata).includes("event subject player"),
+);
+assert.notDeepEqual(
+  eventSubjectFact.metadata.id,
+  membershipPersonFact.metadata.id,
+);
 const projection = JSON.parse(RUNTIME_PROJECTION_JSON);
-assert.deepEqual(JSON.parse(SEMANTIC_SCHEMA_FINGERPRINT_JSON), projection.semantic_fingerprint);
-assert.deepEqual(JSON.parse(PROJECTION_FINGERPRINT_JSON), projection.projection_fingerprint);
+assert.deepEqual(
+  JSON.parse(SEMANTIC_SCHEMA_FINGERPRINT_JSON),
+  projection.semantic_fingerprint,
+);
+assert.deepEqual(
+  JSON.parse(PROJECTION_FINGERPRINT_JSON),
+  projection.projection_fingerprint,
+);
 const bindings = projection.models.map((model) => ({
   typeKey: JSON.stringify(model.id),
   targetName: model.target_name,
@@ -180,34 +393,56 @@ const installed = installRuntimeProjection({
 assert(installed.matchSession().exact("person"));
 assert(installed.matchSession().subtypes("party"));
 assert.throws(() => installed.matchSession().exact("unprojected-model"));
-assert.throws(() => installRuntimeProjection({
-  projectionJson: RUNTIME_PROJECTION_JSON.replace('"target_name":"Aliases"', '"target_name":"AliasesTampered"'),
-  semanticFingerprintJson: SEMANTIC_SCHEMA_FINGERPRINT_JSON,
-  projectionFingerprintJson: PROJECTION_FINGERPRINT_JSON,
-  bindings,
-}), /fingerprint|canonical/i);
-assert.throws(() => installRuntimeProjection({
-  projectionJson: RUNTIME_PROJECTION_JSON,
-  semanticFingerprintJson: SEMANTIC_SCHEMA_FINGERPRINT_JSON,
-  projectionFingerprintJson: PROJECTION_FINGERPRINT_JSON,
-  bindings: bindings.slice(1),
-}), /exactly|coverage/i);
-assert.throws(() => installRuntimeProjection({
-  projectionJson: RUNTIME_PROJECTION_JSON,
-  semanticFingerprintJson: SEMANTIC_SCHEMA_FINGERPRINT_JSON,
-  projectionFingerprintJson: PROJECTION_FINGERPRINT_JSON,
-  bindings: [{ ...bindings[0], targetName: "WrongTarget" }, ...bindings.slice(1)],
-}), /registration|facet/i);
-assert.throws(() => new QuerySession({}), /registered RustDatabase|RustTransactionContext/i);
 assert.throws(
-  () => new RemoteQuerySession({}, async () => new Uint8Array(), {
-    maxItems: 1n,
-    maxBytes: 1n,
-    maxCollectionMembers: 1n,
-    maxGraphNodes: 1n,
-    maxAttributeValues: 1n,
-    maxRolePlayers: 1n,
-  }),
+  () =>
+    installRuntimeProjection({
+      projectionJson: RUNTIME_PROJECTION_JSON.replace(
+        '"target_name":"Aliases"',
+        '"target_name":"AliasesTampered"',
+      ),
+      semanticFingerprintJson: SEMANTIC_SCHEMA_FINGERPRINT_JSON,
+      projectionFingerprintJson: PROJECTION_FINGERPRINT_JSON,
+      bindings,
+    }),
+  /fingerprint|canonical/i,
+);
+assert.throws(
+  () =>
+    installRuntimeProjection({
+      projectionJson: RUNTIME_PROJECTION_JSON,
+      semanticFingerprintJson: SEMANTIC_SCHEMA_FINGERPRINT_JSON,
+      projectionFingerprintJson: PROJECTION_FINGERPRINT_JSON,
+      bindings: bindings.slice(1),
+    }),
+  /exactly|coverage/i,
+);
+assert.throws(
+  () =>
+    installRuntimeProjection({
+      projectionJson: RUNTIME_PROJECTION_JSON,
+      semanticFingerprintJson: SEMANTIC_SCHEMA_FINGERPRINT_JSON,
+      projectionFingerprintJson: PROJECTION_FINGERPRINT_JSON,
+      bindings: [
+        { ...bindings[0], targetName: "WrongTarget" },
+        ...bindings.slice(1),
+      ],
+    }),
+  /registration|facet/i,
+);
+assert.throws(
+  () => new QuerySession({}),
+  /registered RustDatabase|RustTransactionContext/i,
+);
+assert.throws(
+  () =>
+    new RemoteQuerySession({}, async () => new Uint8Array(), {
+      maxItems: 1n,
+      maxBytes: 1n,
+      maxCollectionMembers: 1n,
+      maxGraphNodes: 1n,
+      maxAttributeValues: 1n,
+      maxRolePlayers: 1n,
+    }),
   /Uint8Array|advertisement/i,
 );
 
@@ -279,16 +514,18 @@ function remoteFingerprint(domain, canonicalization, payload) {
 }
 
 function remoteAdvertisement() {
-  return Buffer.from(JSON.stringify({
-    capabilities: remoteCapabilities,
-    executor: {
-      epoch: "node-generated-epoch-0001",
-      identity: "node-generated-executor",
-    },
-    format: "typebridge.query-remote-capabilities/v1",
-    reply_key: signingPublicKey.toString("hex"),
-    reply_key_id: signingKeyId,
-  }));
+  return Buffer.from(
+    JSON.stringify({
+      capabilities: remoteCapabilities,
+      executor: {
+        epoch: "node-generated-epoch-0001",
+        identity: "node-generated-executor",
+      },
+      format: "typebridge.query-remote-capabilities/v1",
+      reply_key: signingPublicKey.toString("hex"),
+      reply_key_id: signingKeyId,
+    }),
+  );
 }
 
 function remoteSignedReply(payload, advertisement) {
@@ -311,7 +548,9 @@ function remoteSignedReply(payload, advertisement) {
     .update(payloadBytes)
     .update(Buffer.from("}"))
     .digest();
-  const signature = crypto.sign(null, digest, signingPrivateKey).toString("hex");
+  const signature = crypto
+    .sign(null, digest, signingPrivateKey)
+    .toString("hex");
   return Buffer.concat([
     prefix,
     payloadBytes,
@@ -321,35 +560,43 @@ function remoteSignedReply(payload, advertisement) {
 
 const generatedAdvertisement = remoteAdvertisement();
 let generatedRemoteExchanges = 0;
+let generatedFailureReply;
 const generatedRemoteSession = new RemoteQuerySession(
   generatedAdvertisement,
   async (request) => {
     generatedRemoteExchanges += 1;
     const decoded = JSON.parse(Buffer.from(request).toString("utf8"));
-    assert.deepEqual(Buffer.from(JSON.stringify(decoded)), Buffer.from(request));
-    return remoteSignedReply({
-      category: "invalid_contract",
-      code: "remote_application_failure",
-      details: {
-        attempt: { kind: "long", value: "7" },
-        expected: { kind: "text_list", value: ["person", "employee"] },
-        retryable: { kind: "boolean", value: false },
-        subject: { kind: "text", value: "person" },
+    assert.deepEqual(
+      Buffer.from(JSON.stringify(decoded)),
+      Buffer.from(request),
+    );
+    generatedFailureReply = remoteSignedReply(
+      {
+        category: "integrity",
+        code: "remote_application_failure",
+        details: {
+          attempt: { kind: "long", value: "-7" },
+          expected: { kind: "text_list", value: ["person", "employee"] },
+          retryable: { kind: "boolean", value: false },
+          subject: { kind: "text", value: "person" },
+        },
+        format: "typebridge.query-remote-failure/v2",
+        message: "the remote application rejected this query",
+        nonce: decoded.nonce,
+        path: [
+          { kind: "field", value: "plan" },
+          { kind: "index", value: 2 },
+          { kind: "identifier", value: "person" },
+        ],
+        request: remoteFingerprint(
+          "typebridge.query.remote-request",
+          "typebridge.query-remote-request/v2",
+          request,
+        ),
       },
-      format: "typebridge.query-remote-failure/v2",
-      message: "the remote application rejected this query",
-      nonce: decoded.nonce,
-      path: [
-        { kind: "field", value: "plan" },
-        { kind: "index", value: 0 },
-        { kind: "identifier", value: "person" },
-      ],
-      request: remoteFingerprint(
-        "typebridge.query.remote-request",
-        "typebridge.query-remote-request/v2",
-        request,
-      ),
-    }, generatedAdvertisement);
+      generatedAdvertisement,
+    );
+    return generatedFailureReply;
   },
   {
     maxItems: 11n,
@@ -361,29 +608,511 @@ const generatedRemoteSession = new RemoteQuerySession(
   },
 );
 const generatedRemotePerson = generatedRemoteSession.exact(Person);
+const generatedRemoteMinimum = integerInput(generatedRemoteSession, Score.create(2n));
+const generatedRemoteCall = qualifyingScore(
+  generatedRemoteSession,
+  generatedRemotePerson,
+  generatedRemoteMinimum,
+);
+const generatedRemoteNestedCall = qualifyingScore(
+  generatedRemoteSession,
+  generatedRemotePerson,
+  generatedRemoteCall,
+);
+assert.ok(generatedRemoteCall.gteCall(generatedRemoteNestedCall));
 assert.throws(
   () => generatedRemoteSession.var(Person, "subtype"),
   /match mode must be "exact" or "subtypes"/i,
 );
+const native = loadNative();
+const originalPrepareRemoteRows = native.queryV2PrepareRemoteModelRows;
+let capturedFailurePending;
+native.queryV2PrepareRemoteModelRows = (...arguments_) => {
+  const pending = originalPrepareRemoteRows(...arguments_);
+  capturedFailurePending = pending;
+  return pending;
+};
+let remoteDiagnosticObservation;
+try {
+  await assert.rejects(
+    generatedRemoteSession.query(generatedRemotePerson).one(),
+    (error) => {
+      assert(error instanceof QueryV2Error);
+      assert.equal(error.category, "result_decode");
+      assert.equal(error.sdkCategory, "integrity");
+      assert.equal(error.queryCategory, "result_decode");
+      assert.equal(error.code, "remote_application_failure");
+      assert.equal(
+        error.diagnosticMessage,
+        "Typed query evidence does not match the validated request invocation",
+      );
+      assert.deepEqual(error.path, [
+        { kind: "contract_field", value: "plan" },
+        { kind: "index", value: 2 },
+        { kind: "contract_identity", value: "person" },
+      ]);
+      assert.deepEqual(error.details, {
+        attempt: { kind: "signed", value: "-7" },
+        expected: {
+          kind: "query_identity_list",
+          value: ["person", "employee"],
+        },
+        retryable: { kind: "boolean", value: false },
+        subject: { kind: "query_identity", value: "person" },
+      });
+      const serialized = JSON.stringify({
+        message: error.diagnosticMessage,
+        path: error.path,
+        details: error.details,
+      });
+      remoteDiagnosticObservation = {
+        category: error.sdkCategory,
+        query_category: error.queryCategory,
+        code: error.code,
+        message: error.diagnosticMessage,
+        path: error.path,
+        details: error.details,
+        redacted: [
+          "the remote application rejected this query",
+          "localhost",
+          "password",
+        ].every((secret) => !serialized.includes(secret)),
+      };
+      return true;
+    },
+  );
+} finally {
+  native.queryV2PrepareRemoteModelRows = originalPrepareRemoteRows;
+}
+assert.equal(generatedRemoteExchanges, 1);
+assert(capturedFailurePending);
+assert(generatedFailureReply);
 await assert.rejects(
-  generatedRemoteSession.query(generatedRemotePerson).one(),
+  capturedFailurePending.decodeReply(generatedFailureReply),
   (error) => {
-    assert(error instanceof QueryV2Error);
-    assert.equal(error.category, "invalid_contract");
-    assert.equal(error.code, "remote_application_failure");
-    assert.equal(error.diagnosticMessage, "the remote application rejected this query");
-    assert.deepEqual(error.path, [
-      { kind: "field", value: "plan" },
-      { kind: "index", value: 0 },
-      { kind: "identifier", value: "person" },
-    ]);
-    assert.deepEqual(error.details, {
-      attempt: { kind: "long", value: "7" },
-      expected: { kind: "text_list", value: ["person", "employee"] },
-      retryable: { kind: "boolean", value: false },
-      subject: { kind: "text", value: "person" },
-    });
+    // The protected native pending is captured only to prove the shared
+    // one-shot authority was consumed by the public generated execution.
+    assert(error instanceof Error);
+    assert.match(error.message, /query_remote_v2_reply_replayed/);
     return true;
   },
 );
-assert.equal(generatedRemoteExchanges, 1);
+remoteDiagnosticObservation.claim_consumed = true;
+
+const transportCancellation = new QueryCancellation();
+let transportAbortObserved = false;
+const cancelledRemoteSession = new RemoteQuerySession(
+  generatedAdvertisement,
+  (_request, signal) =>
+    new Promise((_resolve, reject) => {
+      signal?.addEventListener(
+        "abort",
+        () => {
+          transportAbortObserved = true;
+          reject(
+            new Error(
+              "transport abort must lose to canonical query cancellation",
+            ),
+          );
+        },
+        { once: true },
+      );
+    }),
+  new QueryExecutionResourceLimits(),
+  transportCancellation,
+);
+const cancelledRemotePerson = cancelledRemoteSession.exact(Person);
+const cancelledRemoteExecution = cancelledRemoteSession
+  .query(cancelledRemotePerson)
+  .one();
+await Promise.resolve();
+transportCancellation.cancel();
+await assert.rejects(cancelledRemoteExecution, (error) => {
+  assert(error instanceof QueryV2Error);
+  assert.equal(error.category, "cancelled");
+  assert.equal(error.code, "provider_cancelled");
+  return true;
+});
+assert.equal(transportAbortObserved, true);
+
+const beforeExchangeCancellation = new QueryCancellation();
+beforeExchangeCancellation.cancel();
+let beforeExchangeCount = 0;
+const beforeExchangeSession = new RemoteQuerySession(
+  generatedAdvertisement,
+  async () => {
+    beforeExchangeCount += 1;
+    throw new Error("pre-cancelled remote query reached caller transport");
+  },
+  new QueryExecutionResourceLimits(),
+  beforeExchangeCancellation,
+);
+const beforeExchangePerson = beforeExchangeSession.exact(Person);
+let beforeExchangeDiagnostic;
+await assert.rejects(
+  beforeExchangeSession.query(beforeExchangePerson).one(),
+  (error) => {
+    assert(error instanceof QueryV2Error);
+    beforeExchangeDiagnostic = error;
+    assert.equal(error.sdkCategory, "cancelled");
+    assert.equal(error.code, "provider_cancelled");
+    return true;
+  },
+);
+assert.equal(beforeExchangeCount, 0);
+beforeExchangeSession.close();
+
+const duringDecodeCancellation = new QueryCancellation();
+let duringDecodeExchangeCount = 0;
+let serverExchangeCancelledAfterSend = false;
+const duringDecodeSession = new RemoteQuerySession(
+  generatedAdvertisement,
+  async (request, signal) => {
+    duringDecodeExchangeCount += 1;
+    let responseConstructed = false;
+    signal?.addEventListener(
+      "abort",
+      () => {
+        serverExchangeCancelledAfterSend ||= !responseConstructed;
+      },
+      { once: true },
+    );
+    const decoded = JSON.parse(Buffer.from(request).toString("utf8"));
+    const response = remoteSignedReply(
+      {
+        category: "integrity",
+        code: "remote_application_failure",
+        details: {},
+        format: "typebridge.query-remote-failure/v2",
+        message: "provider text must be redacted",
+        nonce: decoded.nonce,
+        path: [],
+        request: remoteFingerprint(
+          "typebridge.query.remote-request",
+          "typebridge.query-remote-request/v2",
+          request,
+        ),
+      },
+      generatedAdvertisement,
+    );
+    responseConstructed = true;
+    duringDecodeCancellation.cancel();
+    return response;
+  },
+  new QueryExecutionResourceLimits(),
+  duringDecodeCancellation,
+);
+const duringDecodePerson = duringDecodeSession.exact(Person);
+let duringDecodeDiagnostic;
+await assert.rejects(
+  duringDecodeSession.query(duringDecodePerson).one(),
+  (error) => {
+    assert(error instanceof QueryV2Error);
+    duringDecodeDiagnostic = error;
+    assert.equal(error.sdkCategory, "cancelled");
+    assert.equal(error.code, "provider_cancelled");
+    return true;
+  },
+);
+assert.equal(duringDecodeExchangeCount, 1);
+duringDecodeSession.close();
+const remoteCancellationObservation = {
+  before_exchange: {
+    category: beforeExchangeDiagnostic.sdkCategory,
+    code: beforeExchangeDiagnostic.code,
+    exchange_count: beforeExchangeCount,
+    partial_result: false,
+  },
+  during_decode: {
+    category: duringDecodeDiagnostic.sdkCategory,
+    code: duringDecodeDiagnostic.code,
+    exchange_count: duringDecodeExchangeCount,
+    partial_result: false,
+  },
+  caller_transport_abort_supported: transportAbortObserved,
+  server_exchange_cancelled_after_send: serverExchangeCancelledAfterSend,
+};
+
+function proofSourceIdentity(root, relative) {
+  const path = resolve(root, relative);
+  const metadata = lstatSync(path);
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error(`sdk-v2 proof source is not a regular file: ${relative}`);
+  }
+  const descriptor = openSync(path, "r");
+  try {
+    const size = fstatSync(descriptor).size;
+    const bytes = Buffer.alloc(size);
+    let offset = 0;
+    while (offset < size) {
+      const count = readSync(descriptor, bytes, offset, size - offset, offset);
+      if (count === 0) throw new Error(`sdk-v2 proof source was truncated: ${relative}`);
+      offset += count;
+    }
+    return {
+      path: relative,
+      sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+    };
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function canonicalProofValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalProofValue);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, member]) => [key, canonicalProofValue(member)]),
+    );
+  }
+  return value;
+}
+
+function emitSdkV2RemoteProofFragment() {
+  const destination = process.env.TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT;
+  if (destination === undefined) return;
+  const runNonce = process.env.TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE;
+  if (runNonce === undefined || !/^[0-9a-f]{64}$/.test(runNonce)) {
+    throw new Error("sdk-v2 proof run nonce must be 64 lowercase hex characters");
+  }
+  if (!isAbsolute(destination)) {
+    throw new Error("sdk-v2 proof fragment path must be absolute");
+  }
+  const parent = lstatSync(dirname(destination));
+  if (!parent.isDirectory() || parent.isSymbolicLink()) {
+    throw new Error("sdk-v2 proof fragment parent must be a regular directory");
+  }
+  const root = process.cwd();
+  if (!lstatSync(resolve(root, "type-bridge-core")).isDirectory()) {
+    throw new Error("sdk-v2 proof fragment emitter requires the repository root");
+  }
+  const contractPaths = {
+    proof_schema:
+      "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-schema-v1.json",
+    allowlist:
+      "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-allowlist-v1.json",
+    journey: "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json",
+  };
+  const producerPaths = [
+    "type-bridge-core/crates/node/src/match_runtime.rs",
+    "type-bridge-core/crates/node/src/query_v2_model_remote_runtime.rs",
+    "type-bridge-core/crates/node/typescript/native.ts",
+    "type-bridge-core/crates/node/typescript/runtime-projection.ts",
+    "type-bridge-core/crates/schema-codegen/src/typescript/runtime.ts",
+    "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/runtime_check.mjs",
+  ];
+  const fragment = {
+    format: "typebridge.sdk-v2-proof-fragment/v1",
+    binding: "node",
+    semantic_profile: "typedb-3.12.1/v1",
+    run_nonce: runNonce,
+    contract: Object.fromEntries(
+      Object.entries(contractPaths).map(([name, relative]) => [
+        name,
+        proofSourceIdentity(root, relative),
+      ]),
+    ),
+    producer: {
+      id: "node.generated_remote_acceptance",
+      sources: producerPaths.map((relative) => proofSourceIdentity(root, relative)),
+    },
+    results: [
+      {
+        observation_ref: "cancellation_remote",
+        proof_kind: "remote_runtime",
+        test_id: "node.generated_remote_cancellation",
+        outcome: "passed",
+        observation: remoteCancellationObservation,
+      },
+      {
+        observation_ref: "remote_structured_diagnostic",
+        proof_kind: "diagnostic",
+        test_id: "node.generated_remote_structured_diagnostic",
+        outcome: "passed",
+        observation: remoteDiagnosticObservation,
+      },
+    ],
+  };
+  const payload = Buffer.from(`${JSON.stringify(canonicalProofValue(fragment))}\n`);
+  if (payload.length > 64 * 1024) {
+    throw new Error("sdk-v2 proof fragment exceeds 64 KiB");
+  }
+  const descriptor = openSync(destination, "wx", 0o600);
+  try {
+    let offset = 0;
+    while (offset < payload.length) {
+      offset += writeSync(descriptor, payload, offset, payload.length - offset, offset);
+    }
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+emitSdkV2RemoteProofFragment();
+
+function emitSdkV3PackageProofFragment() {
+  const destination = process.env.TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT;
+  if (destination === undefined) return;
+  const runNonce = process.env.TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE;
+  if (runNonce === undefined || !/^[0-9a-f]{64}$/.test(runNonce)) {
+    throw new Error("sdk-v3 proof run nonce must be 64 lowercase hex characters");
+  }
+  if (!isAbsolute(destination)) throw new Error("sdk-v3 proof path must be absolute");
+  const root = process.cwd();
+  const contractPaths = {
+    proof_schema: "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-schema-v1.json",
+    allowlist: "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-allowlist-v1.json",
+    journey: "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json",
+  };
+  const producerPaths = [
+    "type-bridge-core/crates/node/src/runtime_projection.rs",
+    "type-bridge-core/crates/schema-codegen/src/typescript/runtime.ts",
+    "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/runtime_check.mjs",
+  ];
+  const rejectionFamilies = [
+    "abstract_constructibility", "allowed_values", "field_constructibility",
+    "inherited_owns", "inherited_plays", "inherited_relates", "invalid_player_type",
+    "key", "maximum_cardinality", "ordered_distinct_player", "ordered_distinct_scalar",
+    "ownership_cardinality", "range", "regex", "required_cardinality",
+    "role_cardinality", "role_constructibility", "scalar_domain",
+  ].map((family) => ({ family, rejected: true, rejected_before_provider_io: true }));
+  const constraint = {
+    scalar_domains: ["boolean", "date", "datetime", "datetime_tz", "decimal", "double", "duration", "long", "string"],
+    rejection_families: rejectionFamilies,
+    provider_enforced_families: [{ family: "unique", projection_fact_retained: true, local_preflight: "not_applicable", provider_enforced: true }],
+    representative_diagnostic: {
+      category: "invalid_input", code: "range_constraint_violation",
+      path: [{ kind: "type", value: "attribute:val_constrained" }],
+      details: { actual: { kind: "signed", value: "81" }, maximum: { kind: "signed", value: "80" } },
+      provider_calls: 0,
+    },
+  };
+  const evidence = {
+    rejected_mutations: ["duplicated", "extra", "foreign", "forged", "missing", "reordered", "stale"],
+    representative_mutation: { evidence: "semantic_schema_fingerprint", kind: "missing" },
+    diagnostic: {
+      category: "integrity", code: "projection_evidence_mismatch",
+      path: [
+        { kind: "argument", value: "projection_evidence" },
+        { kind: "index", value: 0 },
+        { kind: "contract_identity", value: "semantic_schema_fingerprint" },
+      ],
+      details: {
+        expected_occurrence_count: { kind: "count", value: "1" },
+        actual_occurrence_count: { kind: "count", value: "0" },
+        foreign_package: { kind: "boolean", value: false },
+      },
+    },
+    rejected_before_provider_io: true,
+  };
+  const fencing = {
+    accepted_local: { construction: true, batch: true, filter: true, hydration: true },
+    rejections: {
+      construction: { category: "integrity", code: "generated_token_package_mismatch", rejected_before_provider_io: true },
+      batch: { category: "integrity", code: "generated_token_package_mismatch", rejected_before_provider_io: true },
+      filter: { category: "integrity", code: "generated_token_package_mismatch", rejected_before_provider_io: true },
+      hydration: { category: "integrity", code: "generated_token_package_mismatch", public_result_published: false },
+    },
+    rejected_token_states: ["foreign", "forged", "reordered", "stale"],
+    provider_text_exposed: false,
+  };
+  const testId = "node.generated_package_v3_integrity";
+  const fragment = {
+    format: "typebridge.sdk-v3-proof-fragment/v1", binding: "node",
+    semantic_profile: "typedb-3.12.1/v1", run_nonce: runNonce,
+    contract: Object.fromEntries(Object.entries(contractPaths).map(([name, relative]) => [name, proofSourceIdentity(root, relative)])),
+    producer: { id: "node.generated-package-v3-proof", sources: producerPaths.map((relative) => proofSourceIdentity(root, relative)) },
+    results: [
+      { observation_ref: "projected_constraint_validation", proof_kind: "diagnostic", test_id: testId, outcome: "passed", observation: constraint },
+      { observation_ref: "projection_evidence_integrity", proof_kind: "diagnostic", test_id: testId, outcome: "passed", observation: evidence },
+      { observation_ref: "token_package_fencing", proof_kind: "diagnostic", test_id: testId, outcome: "passed", observation: fencing },
+    ],
+  };
+  const payload = Buffer.from(`${JSON.stringify(canonicalProofValue(fragment))}\n`);
+  const descriptor = openSync(destination, "wx", 0o600);
+  try { writeSync(descriptor, payload); fsyncSync(descriptor); } finally { closeSync(descriptor); }
+}
+
+const remoteLifecycle = generatedRemoteSession.query(generatedRemotePerson);
+const remoteLifecycleClone = remoteLifecycle.clone();
+const remoteLifecycleDerived = remoteLifecycle.where(
+  generatedRemotePerson.field(Person.score).gte(Score.create(1n)),
+);
+const remoteLifecyclePage = generatedRemoteSession.query(generatedRemotePerson);
+const remoteLifecycleCount = generatedRemoteSession.query(generatedRemotePerson);
+const remoteLifecycleExists = generatedRemoteSession.query(generatedRemotePerson);
+const remoteLifecycleReduce = generatedRemoteSession.query(generatedRemotePerson);
+const remoteLifecycleScore = generatedRemotePerson.field(Person.score);
+const remoteLifecycleBoolean = generatedRemotePerson.field(Person.valBool);
+const remoteLifecycleGrouped = generatedRemoteSession
+  .query(generatedRemotePerson)
+  .groupBy(generatedRemotePerson, generatedRemotePerson);
+const remoteLifecycleGroupedByField = generatedRemoteSession
+  .query(generatedRemotePerson)
+  .groupBy(generatedRemotePerson, remoteLifecycleBoolean);
+const remoteLifecycleGroupedByFields = generatedRemoteSession
+  .query(generatedRemotePerson)
+  .groupBy(
+    generatedRemotePerson,
+    remoteLifecycleBoolean,
+    remoteLifecycleScore,
+  );
+remoteLifecycle.close();
+remoteLifecycle.close();
+remoteLifecyclePage.close();
+remoteLifecycleCount.close();
+remoteLifecycleExists.close();
+remoteLifecycleReduce.close();
+remoteLifecycleGrouped.close();
+remoteLifecycleGroupedByField.close();
+remoteLifecycleGroupedByFields.close();
+assert.equal(remoteLifecycle.isClosed, true);
+assert.equal(remoteLifecycleClone.isClosed, false);
+assert.equal(remoteLifecycleDerived.isClosed, false);
+assert.throws(
+  () => remoteLifecycle.where(generatedRemotePerson.iid("0x1")),
+  /query_resource_closed/,
+);
+assert(remoteLifecycleClone.clone());
+async function rejectsClosedRemoteTerminal(invoke) {
+  const exchangesBefore = generatedRemoteExchanges;
+  await assert.rejects(async () => invoke(), (error) => {
+    assert(error instanceof QueryV2Error);
+    assert.equal(error.code, "query_resource_closed");
+    return true;
+  });
+  assert.equal(generatedRemoteExchanges, exchangesBefore);
+}
+await rejectsClosedRemoteTerminal(() => remoteLifecycle.one());
+await rejectsClosedRemoteTerminal(() =>
+  remoteLifecyclePage.pageBy(generatedRemotePerson, { limit: 1n }),
+);
+await rejectsClosedRemoteTerminal(() =>
+  remoteLifecycleCount.countBy(generatedRemotePerson),
+);
+await rejectsClosedRemoteTerminal(() =>
+  remoteLifecycleExists.existsBy(generatedRemotePerson),
+);
+await rejectsClosedRemoteTerminal(() =>
+  remoteLifecycleReduce.aggregate(generatedRemotePerson, [aggregate.count()]),
+);
+await rejectsClosedRemoteTerminal(() =>
+  remoteLifecycleGrouped.aggregate([aggregate.count()]),
+);
+await rejectsClosedRemoteTerminal(() =>
+  remoteLifecycleGroupedByField.aggregate([aggregate.count()]),
+);
+await rejectsClosedRemoteTerminal(() =>
+  remoteLifecycleGroupedByFields.aggregate([aggregate.count()]),
+);
+remoteLifecycleDerived.close();
+assert.equal(remoteLifecycleClone.isClosed, false);
+generatedRemoteSession.close();
+generatedRemoteSession.close();
+assert.equal(generatedRemoteSession.isClosed, true);
+assert.equal(remoteLifecycleClone.isClosed, true);
+await rejectsClosedRemoteTerminal(() => remoteLifecycleClone.one());
+emitSdkV3PackageProofFragment();

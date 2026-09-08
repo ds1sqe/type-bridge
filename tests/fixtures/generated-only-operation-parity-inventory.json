@@ -1178,7 +1178,7 @@
               "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py",
               "anchors": [
                 "generated_remote_session = RemoteQuerySession(",
-                "except QueryV2Error as error:",
+                "except MatchRequestError as error:",
                 "assert error.code == \"remote_application_failure\"",
                 "\"kind\": \"text_list\"",
                 "assert generated_remote_exchanges == 1"
@@ -1211,7 +1211,7 @@
                 "generated_remote_query_preserves_complete_authenticated_structured_diagnostic",
                 "RemoteQueryFailureV2::bound(",
                 "error.diagnostic_path()",
-                "crate::ErrorDetail::TextList",
+                "crate::ErrorDetail::QueryIdentityList",
                 "assert_eq!(exchanges.lock().unwrap().len(), 1)"
               ]
             }
@@ -1220,9 +1220,8 @@
       }
     },
     {
-      "id": "remote_reducers_fail_uniformly_before_exchange",
-      "status": "uniform_unsupported",
-      "diagnostic": "query_remote_v2_native_only_operation",
+      "id": "remote_reducers_and_grouping",
+      "status": "accepted_live",
       "support": {
         "python": {
           "surface": "generated_remote_query",
@@ -1231,9 +1230,10 @@
               "mode": "live",
               "path": "tests/integration/schema/test_generated_projection_live.py",
               "anchors": [
-                "requests_before_reduction",
-                "query_remote_v2_native_only_operation",
-                "len(remote_requests) == requests_before_reduction"
+                "remote_aggregate = asyncio.run(",
+                "assert remote_aggregate[:6] == direct_aggregate[:6]",
+                "remote_tuple_field_grouped = asyncio.run(",
+                "len(remote_requests) == requests_before_reduction + 1"
               ]
             }
           ]
@@ -1245,9 +1245,10 @@
               "mode": "live",
               "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
               "anchors": [
-                "requestsBeforeReduction",
-                "query_remote_v2_native_only_operation",
-                "requests.length, requestsBeforeReduction"
+                "const remoteAggregate = await oneRemoteExchange(() =>",
+                "remoteAggregate.slice(0, 6), directAggregate.slice(0, 6)",
+                "const remoteTupleFieldGroupedAggregate = await oneRemoteExchange(() =>",
+                "assert.equal(requests.length, requestsBefore + 1)"
               ]
             }
           ]
@@ -1256,12 +1257,13 @@
           "surface": "generated_remote_query",
           "evidence": [
             {
-              "mode": "offline",
-              "path": "type-bridge-core/crates/rust/src/remote.rs",
+              "mode": "live",
+              "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
               "anchors": [
-                "native-only reductions fail before transport exchange",
-                "query_remote_v2_native_only_operation",
-                "assert_eq!(requests.len(), 4)"
+                "let remote_stats: (",
+                ".expect(\"F4 remote aggregate\")",
+                "let remote_tuple_grouped =",
+                "let remote_binding_grouped ="
               ]
             }
           ]

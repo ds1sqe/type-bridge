@@ -10,9 +10,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use regex::Regex;
 use type_bridge_contract::id::{TypeId, TypeKind};
-use type_bridge_contract::query_plan::{CompatibilityValueV2, ReleasedValueKindV2};
+use type_bridge_contract::query_plan::{
+    CompatibilityValueV2, QueryFieldV2, QueryReductionGroupV2, QueryReductionKindV2,
+    QueryReductionTermV2, ReleasedValueKindV2,
+};
 use type_bridge_contract::query_remote_v2::{
     HydrationGraphV2, HydrationNodeKindV2, HydrationReferenceV2, HydrationSlotV2, RemoteOutcomeV2,
+    RemoteReducedValueV2, RemoteReductionGroupV2, RemoteReductionRowV2,
 };
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
@@ -31,12 +35,13 @@ use super::ids::{BindingId, BoundFieldId, DescriptorId, FieldId, RoleEdgeId, Rol
 use super::limits::MAX_SEMANTIC_ID_BYTES;
 use super::model::{
     ComparisonOp, FetchShape, FetchSlot, MatchBinding, MatchExpr, MatchMode, MatchOperation,
-    MatchOrder, MissingOrder, Reduction, RowCardinality, SortDirection, ThingKind, Window,
+    MatchOrder, MissingOrder, ReduceTerm, Reduction, RowCardinality, SortDirection, ThingKind,
+    Window,
 };
 use super::result::{
     ConceptId, HydratedAttribute, HydratedRole, HydratedRolePlayer, HydratedThing, MatchResult,
     MatchRow, ProviderResultEvidence, ProviderResultPayload, ProviderSolutionEvidence,
-    ReducedValue, SlotValue, ValidatedMatchResult,
+    ReducedValue, ReductionRow, SlotValue, ValidatedMatchResult,
 };
 use super::validation::{StableOrderSpec, ValidatedMatchRequest};
 
@@ -705,6 +710,22 @@ pub(crate) fn validated_match_result_from_v2(
                 value,
             }
         }
+        (
+            operation @ (MatchOperation::ReduceBy { .. }
+            | MatchOperation::ReduceByField { .. }
+            | MatchOperation::ReduceByFields { .. }),
+            RemoteOutcomeV2::ModelReduction {
+                graph,
+                root,
+                group,
+                reducers,
+                rows,
+            },
+        ) => {
+            return released_reduction_result(
+                registry, validated, operation, &graph, root, group, reducers, rows,
+            );
+        }
         _ => {
             return Err(result_error(
                 "result_operation_mismatch",
@@ -718,6 +739,218 @@ pub(crate) fn validated_match_result_from_v2(
         validated.shape_id().clone(),
         result,
     ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn released_reduction_result(
+    registry: &DescriptorRegistry,
+    validated: &ValidatedMatchRequest,
+    operation: &MatchOperation,
+    graph: &HydrationGraphV2,
+    root: type_bridge_contract::migration_assertion::BindingId,
+    group: Option<QueryReductionGroupV2>,
+    reducers: Vec<QueryReductionTermV2>,
+    rows: Vec<RemoteReductionRowV2>,
+) -> Result<ValidatedMatchResult, MatchError> {
+    let actual_root = BindingId::new(root.get());
+    let echoed_reducers = reducers
+        .iter()
+        .map(|term| released_reducer(registry, term))
+        .collect::<Result<Vec<_>, _>>()?;
+    let evidence = match operation {
+        MatchOperation::ReduceBy {
+            root,
+            group: expected_group,
+            reducers,
+        } => {
+            require_root(*root, actual_root, "reduction_root_mismatch")?;
+            let actual_group = match group {
+                None => None,
+                Some(QueryReductionGroupV2::Binding { binding }) => {
+                    Some(BindingId::new(binding.get()))
+                }
+                Some(
+                    QueryReductionGroupV2::Field { .. } | QueryReductionGroupV2::Fields { .. },
+                ) => {
+                    return Err(result_error(
+                        "reduction_group_mismatch",
+                        "remote reduction echoed the wrong group contract kind",
+                    ));
+                }
+            };
+            if actual_group != *expected_group || &echoed_reducers != reducers {
+                return Err(result_error(
+                    "reduction_contract_mismatch",
+                    "remote reduction did not echo the exact validated group and reducer contract",
+                ));
+            }
+            ProviderResultEvidence::reduction(
+                validated.request_token(),
+                validated.shape_id().clone(),
+                *root,
+                *expected_group,
+                released_reduction_rows(registry, graph, rows)?,
+            )
+        }
+        MatchOperation::ReduceByField {
+            root,
+            group: expected_group,
+            reducers,
+        } => {
+            require_root(*root, actual_root, "field_reduction_root_mismatch")?;
+            let Some(QueryReductionGroupV2::Field { field }) = group else {
+                return Err(result_error(
+                    "field_reduction_group_mismatch",
+                    "remote reduction echoed the wrong field group contract kind",
+                ));
+            };
+            let actual_group = released_query_field(registry, &field)?;
+            if &actual_group != expected_group || &echoed_reducers != reducers {
+                return Err(result_error(
+                    "field_reduction_contract_mismatch",
+                    "remote reduction did not echo the exact validated field group and reducer contract",
+                ));
+            }
+            ProviderResultEvidence::field_reduction(
+                validated.request_token(),
+                validated.shape_id().clone(),
+                *root,
+                expected_group.clone(),
+                released_reduction_rows(registry, graph, rows)?,
+            )
+        }
+        MatchOperation::ReduceByFields {
+            root,
+            groups: expected_groups,
+            reducers,
+        } => {
+            require_root(*root, actual_root, "field_tuple_reduction_root_mismatch")?;
+            let Some(QueryReductionGroupV2::Fields { fields }) = group else {
+                return Err(result_error(
+                    "field_tuple_reduction_groups_mismatch",
+                    "remote reduction echoed the wrong tuple-field group contract kind",
+                ));
+            };
+            let actual_groups = fields
+                .iter()
+                .map(|field| released_query_field(registry, field))
+                .collect::<Result<Vec<_>, _>>()?;
+            if &actual_groups != expected_groups || &echoed_reducers != reducers {
+                return Err(result_error(
+                    "field_tuple_reduction_contract_mismatch",
+                    "remote reduction did not echo the exact validated tuple group and reducer contract",
+                ));
+            }
+            ProviderResultEvidence::field_tuple_reduction(
+                validated.request_token(),
+                validated.shape_id().clone(),
+                *root,
+                expected_groups.clone(),
+                released_reduction_rows(registry, graph, rows)?,
+            )
+        }
+        _ => {
+            return Err(result_error(
+                "result_operation_mismatch",
+                "remote reduction does not match a validated reduction operation",
+            ));
+        }
+    };
+    validate_provider_result(registry, validated, evidence)
+}
+
+fn released_reducer(
+    registry: &DescriptorRegistry,
+    term: &QueryReductionTermV2,
+) -> Result<ReduceTerm, MatchError> {
+    let reduction = match term.reduction() {
+        QueryReductionKindV2::Count => Reduction::Count,
+        QueryReductionKindV2::Sum => Reduction::Sum,
+        QueryReductionKindV2::Min => Reduction::Min,
+        QueryReductionKindV2::Max => Reduction::Max,
+        QueryReductionKindV2::Mean => Reduction::Mean,
+        QueryReductionKindV2::Median => Reduction::Median,
+        QueryReductionKindV2::Std => Reduction::Std,
+    };
+    Ok(ReduceTerm {
+        reduction,
+        input: term
+            .input()
+            .map(|field| released_query_field(registry, field))
+            .transpose()?,
+    })
+}
+
+fn released_query_field(
+    registry: &DescriptorRegistry,
+    field: &QueryFieldV2,
+) -> Result<BoundFieldId, MatchError> {
+    let owner = released_descriptor(registry, field.descriptor())?;
+    let field_id = registry
+        .field_id(&owner, field.attribute().label().as_str())
+        .ok_or_else(|| {
+            result_error(
+                "reduction_contract_field_unknown",
+                "remote reduction echoed a field outside the current registry",
+            )
+        })?;
+    Ok(BoundFieldId::new(
+        BindingId::new(field.binding().get()),
+        field_id,
+    ))
+}
+
+fn released_reduction_rows(
+    registry: &DescriptorRegistry,
+    graph: &HydrationGraphV2,
+    rows: Vec<RemoteReductionRowV2>,
+) -> Result<Vec<ReductionRow>, MatchError> {
+    rows.into_iter()
+        .map(|row| {
+            let values = row
+                .values()
+                .iter()
+                .map(released_reduced_value)
+                .collect::<Result<Vec<_>, _>>()?;
+            match row.group() {
+                None => Ok(ReductionRow::new(None, values)),
+                Some(RemoteReductionGroupV2::Thing { value }) => Ok(ReductionRow::new(
+                    Some(released_thing(registry, graph, value)?),
+                    values,
+                )),
+                Some(RemoteReductionGroupV2::Field { value }) => Ok(ReductionRow::new_field(
+                    released_attribute_value(value)?,
+                    values,
+                )),
+                Some(RemoteReductionGroupV2::Fields { values: group }) => {
+                    Ok(ReductionRow::new_fields(
+                        group
+                            .iter()
+                            .map(released_attribute_value)
+                            .collect::<Result<Vec<_>, _>>()?,
+                        values,
+                    ))
+                }
+            }
+        })
+        .collect()
+}
+
+fn released_reduced_value(value: &RemoteReducedValueV2) -> Result<ReducedValue, MatchError> {
+    Ok(match value {
+        RemoteReducedValueV2::Count { value } => ReducedValue::Count(*value),
+        RemoteReducedValueV2::Long { value } => ReducedValue::Long(*value),
+        RemoteReducedValueV2::DoubleBits { value } => {
+            let value = value.map(f64::from_bits);
+            if value.is_some_and(|value| !value.is_finite()) {
+                return Err(result_error(
+                    "reduction_value_nonfinite",
+                    "remote reduction double bits are outside the finite domain",
+                ));
+            }
+            ReducedValue::Double(value)
+        }
+    })
 }
 
 fn released_row(
@@ -916,7 +1149,9 @@ fn released_attributes(
         .collect()
 }
 
-fn released_attribute_value(value: &CompatibilityValueV2) -> Result<AttributeValue, MatchError> {
+pub(crate) fn released_attribute_value(
+    value: &CompatibilityValueV2,
+) -> Result<AttributeValue, MatchError> {
     let value = if let Some(value) = value.canonical_value() {
         match value {
             CanonicalValue::String(value) => AttributeValue::String(value.as_str().to_owned()),
@@ -1424,6 +1659,170 @@ fn validate_solutions<'a>(
         checked.push(CheckedSolution { bindings });
     }
     Ok(checked)
+}
+
+/// Validate complete exact-model hydration returned by the private
+/// generated-manager root executor.
+///
+/// The public `CountBy` request supplies canonical graph and schema authority,
+/// while this seam validates the privately hydrated roots as if each were a
+/// one-binding solution. Repeated predicates on one multivalue field are
+/// evaluated against one shared candidate value, matching the compiler's one
+/// variable per [`BoundFieldId`] semantics instead of independently accepting
+/// different members.
+pub(crate) fn validate_manager_things_with_limits(
+    registry: &DescriptorRegistry,
+    validated: &ValidatedMatchRequest,
+    root: BindingId,
+    things: &[HydratedThing],
+    limits: ResultValidationLimits,
+) -> Result<(), MatchError> {
+    validated.recheck_schema(registry)?;
+    let request = validated.request();
+    let [binding] = request.plan.bindings.as_slice() else {
+        return Err(result_error(
+            "manager_filter_query_shape_invalid",
+            "generated-manager evidence requires exactly one validated binding",
+        )
+        .at(MatchErrorPathSegment::Plan));
+    };
+    if binding.id != root
+        || binding.match_mode != MatchMode::Exact
+        || !matches!(request.operation, MatchOperation::CountBy { root: operation_root } if operation_root == root)
+    {
+        return Err(result_error(
+            "manager_filter_query_shape_invalid",
+            "generated-manager evidence requires one exact CountBy root",
+        )
+        .at(MatchErrorPathSegment::Operation));
+    }
+
+    let mut budget = EvidenceBudget::new(limits);
+    budget.charge_solutions(things.len())?;
+    let mut identities = BTreeSet::new();
+    let mut consistent = BTreeMap::new();
+    let mut grouped = BTreeMap::<BoundFieldId, Vec<(ComparisonOp, &AttributeValue)>>::new();
+    if let Some(predicate) = request.plan.predicate.as_ref()
+        && !collect_manager_field_predicates(predicate, root, &mut grouped)
+    {
+        return Err(result_error(
+            "manager_filter_query_shape_invalid",
+            "generated-manager evidence admits only a conjunction of root field literals",
+        )
+        .at(MatchErrorPathSegment::Predicate));
+    }
+
+    for (index, thing) in things.iter().enumerate() {
+        validate_bound_thing(registry, binding, thing, &mut budget).map_err(|error| {
+            error
+                .at(MatchErrorPathSegment::ProviderEvidence)
+                .at(MatchErrorPathSegment::Index(index))
+                .at(MatchErrorPathSegment::Binding(root))
+        })?;
+        if !identities.insert(thing.concept_id().clone()) {
+            return Err(result_error(
+                "duplicate_manager_root",
+                "generated-manager hydration repeats one exact-model IID",
+            )
+            .at(MatchErrorPathSegment::ProviderEvidence)
+            .at(MatchErrorPathSegment::Index(index))
+            .at(MatchErrorPathSegment::Binding(root)));
+        }
+        budget.charge_result_identity()?;
+        require_global_hydration_consistency(
+            &mut consistent,
+            thing.concept_id(),
+            GlobalHydration::thing(thing),
+        )
+        .map_err(|error| {
+            error
+                .at(MatchErrorPathSegment::ProviderEvidence)
+                .at(MatchErrorPathSegment::Index(index))
+                .at(MatchErrorPathSegment::Binding(root))
+        })?;
+        for role in thing.roles() {
+            for player in role.players() {
+                require_global_hydration_consistency(
+                    &mut consistent,
+                    player.concept_id(),
+                    GlobalHydration::player(player),
+                )
+                .map_err(|error| {
+                    error
+                        .at(MatchErrorPathSegment::ProviderEvidence)
+                        .at(MatchErrorPathSegment::Index(index))
+                        .at(MatchErrorPathSegment::Binding(root))
+                        .at(MatchErrorPathSegment::Role(role.role().clone()))
+                })?;
+            }
+        }
+
+        for (field, predicates) in &grouped {
+            let values = thing
+                .attributes()
+                .iter()
+                .find(|attribute| attribute.field() == &field.field)
+                .map(HydratedAttribute::values)
+                .unwrap_or_default();
+            let witnessed = values.iter().any(|candidate| {
+                predicates.iter().all(|(operator, literal)| {
+                    compare_values(*operator, candidate, literal).unwrap_or(false)
+                })
+            });
+            if !witnessed {
+                return Err(result_error(
+                    "predicate_evidence_mismatch",
+                    "provider hydration does not contain one field member satisfying every authored comparison",
+                )
+                .at(MatchErrorPathSegment::ProviderEvidence)
+                .at(MatchErrorPathSegment::Index(index))
+                .at(MatchErrorPathSegment::Field(field.field.clone())));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_manager_field_predicates<'a>(
+    expression: &'a MatchExpr,
+    root: BindingId,
+    grouped: &mut BTreeMap<BoundFieldId, Vec<(ComparisonOp, &'a AttributeValue)>>,
+) -> bool {
+    match expression {
+        MatchExpr::FieldValue {
+            field,
+            operator,
+            value,
+        } if field.binding == root
+            && matches!(
+                operator,
+                ComparisonOp::Equal
+                    | ComparisonOp::NotEqual
+                    | ComparisonOp::LessThan
+                    | ComparisonOp::LessThanOrEqual
+                    | ComparisonOp::GreaterThan
+                    | ComparisonOp::GreaterThanOrEqual
+            ) =>
+        {
+            grouped
+                .entry(field.clone())
+                .or_default()
+                .push((*operator, value));
+            true
+        }
+        MatchExpr::And { expressions } => expressions
+            .iter()
+            .all(|expression| collect_manager_field_predicates(expression, root, grouped)),
+        MatchExpr::FieldValue { .. }
+        | MatchExpr::FieldComparison { .. }
+        | MatchExpr::ScalarComparison { .. }
+        | MatchExpr::FieldPresence { .. }
+        | MatchExpr::BindingIid { .. }
+        | MatchExpr::RoleEdge { .. }
+        | MatchExpr::Reachable { .. }
+        | MatchExpr::Or { .. }
+        | MatchExpr::Not { .. } => false,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1934,6 +2333,7 @@ fn collect_role_edge_ids(expression: &MatchExpr, edges: &mut BTreeSet<RoleEdgeId
         MatchExpr::Not { expression } => collect_role_edge_ids(expression, edges),
         MatchExpr::FieldValue { .. }
         | MatchExpr::FieldComparison { .. }
+        | MatchExpr::ScalarComparison { .. }
         | MatchExpr::FieldPresence { .. }
         | MatchExpr::BindingIid { .. }
         | MatchExpr::Reachable { .. } => {}
@@ -1950,6 +2350,7 @@ fn find_role_edge(expression: Option<&MatchExpr>, id: RoleEdgeId) -> Option<&Mat
         MatchExpr::Not { expression } => find_role_edge(Some(expression), id),
         MatchExpr::FieldValue { .. }
         | MatchExpr::FieldComparison { .. }
+        | MatchExpr::ScalarComparison { .. }
         | MatchExpr::FieldPresence { .. }
         | MatchExpr::BindingIid { .. }
         | MatchExpr::RoleEdge { .. }
@@ -2043,6 +2444,14 @@ fn evaluate_expression(
                 }
             }
             Ok(false)
+        }
+        MatchExpr::ScalarComparison { .. } => {
+            // Function result bindings are provider-local proof variables and
+            // are intentionally absent from hydrated public evidence. The
+            // validated, provider-executed predicate is therefore trusted at
+            // this post-provider claim boundary just like positive
+            // reachability paths.
+            Ok(true)
         }
         MatchExpr::FieldPresence { field, present } => {
             Ok(field_values(bindings, field).is_empty() != *present)
@@ -2189,7 +2598,7 @@ fn unicode_case_fold_contains(left: &str, right: &str) -> bool {
         .contains(&UniCase::new(right).to_folded_case())
 }
 
-fn value_order(left: &AttributeValue, right: &AttributeValue) -> Option<Ordering> {
+pub(crate) fn value_order(left: &AttributeValue, right: &AttributeValue) -> Option<Ordering> {
     match (left, right) {
         (AttributeValue::String(left), AttributeValue::String(right)) => Some(left.cmp(right)),
         (AttributeValue::Long(left), AttributeValue::Long(right)) => Some(left.cmp(right)),
@@ -2642,9 +3051,7 @@ fn parse_duration(value: &str) -> Option<DurationKey> {
                 )?
             }
             (true, 'S') => {
-                let (whole, fraction) = number
-                    .split_once('.')
-                    .map_or((number.as_str(), ""), |parts| parts);
+                let (whole, fraction) = number.split_once('.').unwrap_or((number.as_str(), ""));
                 if whole.is_empty()
                     || fraction.len() > 9
                     || !fraction.bytes().all(|byte| byte.is_ascii_digit())
@@ -4177,6 +4584,98 @@ mod tests {
                 value: true
             } if *root == BindingId::new(0)
         ));
+    }
+
+    #[test]
+    fn manager_multivalue_conjunction_requires_one_shared_member() {
+        let registry = registry();
+        let root = BindingId::new(0);
+        let notes = BoundFieldId::new(root, field(&registry, "employee", "notes"));
+        let request = |upper: &str| {
+            validate_match_request(
+                &registry,
+                MatchRequest::v1(
+                    MatchPlan {
+                        bindings: vec![binding(
+                            &registry,
+                            0,
+                            "employee",
+                            ThingKind::Entity,
+                            MatchMode::Exact,
+                        )],
+                        predicate: Some(MatchExpr::And {
+                            expressions: vec![
+                                MatchExpr::FieldValue {
+                                    field: notes.clone(),
+                                    operator: ComparisonOp::GreaterThan,
+                                    value: AttributeValue::String("b".into()),
+                                },
+                                MatchExpr::FieldValue {
+                                    field: notes.clone(),
+                                    operator: ComparisonOp::LessThan,
+                                    value: AttributeValue::String(upper.into()),
+                                },
+                            ],
+                        }),
+                        allowed_cross_joins: BTreeSet::new(),
+                    },
+                    MatchOperation::CountBy { root },
+                ),
+            )
+            .unwrap()
+        };
+        let descriptor = registry.descriptor_id("employee").unwrap();
+        let hydrated = HydratedThing::new(
+            ConceptId::new("employee-1"),
+            descriptor.clone(),
+            descriptor,
+            ThingKind::Entity,
+            vec![
+                hydrated_attribute(
+                    &registry,
+                    "employee",
+                    "name",
+                    vec![AttributeValue::String("Ada".into())],
+                ),
+                hydrated_attribute(
+                    &registry,
+                    "employee",
+                    "badge",
+                    vec![AttributeValue::String("badge-1".into())],
+                ),
+                hydrated_attribute(
+                    &registry,
+                    "employee",
+                    "notes",
+                    vec![
+                        AttributeValue::String("a".into()),
+                        AttributeValue::String("c".into()),
+                    ],
+                ),
+            ],
+            vec![],
+        );
+
+        let impossible = request("b");
+        let error = validate_manager_things_with_limits(
+            &registry,
+            &impossible,
+            root,
+            std::slice::from_ref(&hydrated),
+            ResultValidationLimits::DEFAULT,
+        )
+        .unwrap_err();
+        assert_eq!(error_code(&error), "predicate_evidence_mismatch");
+
+        let witnessed = request("d");
+        validate_manager_things_with_limits(
+            &registry,
+            &witnessed,
+            root,
+            &[hydrated],
+            ResultValidationLimits::DEFAULT,
+        )
+        .unwrap();
     }
 
     #[test]

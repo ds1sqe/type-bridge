@@ -440,7 +440,7 @@ class TestCreateDriverOptionsBandNone:
         assert "type-bridge[typedb-driver]" in msg
         assert "typedb-driver~=3.10" not in msg
         if sys.version_info >= (3, 14):
-            assert "driver 3.12.1" in msg
+            assert "driver 3.12.3" in msg
             assert "TypeDB 3.12" in msg
 
     def test_python314_rejects_band8_before_native_option_constructors(
@@ -629,7 +629,7 @@ class TestPythonDriverVersionGate:
         import type_bridge.typedb_driver as tdm
         from type_bridge.session import Database
 
-        monkeypatch.setattr(tdm, "driver_version", lambda: "3.12.1")
+        monkeypatch.setattr(tdm, "driver_version", lambda: "3.12.3")
         monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.11.5")
 
         mock_typedb = MagicMock()
@@ -652,7 +652,7 @@ class TestPythonDriverVersionGate:
         import type_bridge.typedb_driver as tdm
         from type_bridge.session import Database
 
-        monkeypatch.setattr(tdm, "driver_version", lambda: "3.12.1")
+        monkeypatch.setattr(tdm, "driver_version", lambda: "3.12.3")
         monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.11.5")
 
         mock_typedb = MagicMock()
@@ -852,7 +852,7 @@ class TestEmbeddedDriverVersions:
 
     def test_delegates_to_core(self, monkeypatch: pytest.MonkeyPatch):
         """embedded_driver_versions() delegates to type_bridge_core."""
-        fake = {8: "3.11.5", 9: "3.12.1"}
+        fake = {8: "3.11.5", 9: "3.12.3"}
         monkeypatch.setattr(type_bridge_core, "embedded_driver_versions", lambda: fake)
         result = _typedb_driver_mod.embedded_driver_versions()
         assert result == fake

@@ -182,7 +182,7 @@ pub async fn delete_database_prepared_secure(
 
 impl DriverBackend for RealBackend {
     fn match_capabilities(&self) -> CapabilitySet {
-        real_match_capabilities()
+        real_match_capabilities(self.inner.supports_given_rows())
     }
 
     fn open_transaction(
@@ -297,8 +297,8 @@ impl DriverBackend for RealBackend {
     }
 }
 
-fn real_match_capabilities() -> CapabilitySet {
-    CapabilitySet::from_iter([
+fn real_match_capabilities(supports_given_rows: bool) -> CapabilitySet {
+    let mut capabilities = CapabilitySet::from_iter([
         Capability::ResourceBoundedStreaming,
         Capability::ExactEntityTarget,
         Capability::ExactRelationTarget,
@@ -319,7 +319,11 @@ fn real_match_capabilities() -> CapabilitySet {
         Capability::StableCollectionOrder,
         Capability::BoundedReachability,
         Capability::TypedReduction,
-    ])
+    ]);
+    if supports_given_rows {
+        capabilities.insert(Capability::SchemaFunctionCall);
+    }
+    capabilities
 }
 
 struct RealTransaction {
@@ -1012,7 +1016,12 @@ impl From<runtime::RuntimeError> for OrmError {
             runtime::RuntimeError::QueryExecution(message) => Self::QueryExecution(message),
             runtime::RuntimeError::Transaction(message) => Self::Transaction(message),
             runtime::RuntimeError::ResourceLimit { code, message } => {
-                MatchError::new(MatchErrorCategory::ResourceLimit, code, message)
+                let category = if code == "provider_cancelled" {
+                    MatchErrorCategory::Cancelled
+                } else {
+                    MatchErrorCategory::ResourceLimit
+                };
+                MatchError::new(category, code, message)
                     .at(MatchErrorPathSegment::ProviderEvidence)
                     .into()
             }
@@ -1079,9 +1088,12 @@ mod tests {
     #[test]
     fn real_backend_declares_the_exact_typed_match_capability_inventory() {
         assert_eq!(
-            real_match_capabilities(),
+            real_match_capabilities(true),
             CapabilitySet::from_iter(Capability::ALL)
         );
+        let without_given_rows = real_match_capabilities(false);
+        assert!(!without_given_rows.contains(Capability::SchemaFunctionCall));
+        assert_eq!(without_given_rows.len(), Capability::ALL.len() - 1);
     }
 
     #[test]

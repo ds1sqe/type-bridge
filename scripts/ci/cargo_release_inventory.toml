@@ -1,5 +1,5 @@
 schema-version = 1
-release-version = "2.1.0"
+release-version = "2.2.0"
 first-party-msrv = "1.88"
 candidate-toolchain = "1.94.1"
 repository = "https://github.com/ds1sqe/type-bridge"
@@ -182,6 +182,14 @@ role = "primary"
 version-policy = "lockstep"
 publish-order = 19
 docs-target = "lib"
+
+[[packages]]
+name = "type-bridge-c"
+manifest = "crates/c/Cargo.toml"
+classification = "private-binding"
+role = "binding"
+version-policy = "lockstep"
+docs-target = "none"
 
 [[packages]]
 name = "type-bridge-core"

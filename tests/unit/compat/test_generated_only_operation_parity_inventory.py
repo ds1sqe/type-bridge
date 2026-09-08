@@ -34,7 +34,7 @@ REQUIRED_OPERATIONS = {
     "direct_reducers_and_grouping",
     "remote_rows_terminals_and_identical_materialization",
     "authenticated_remote_structured_diagnostics",
-    "remote_reducers_fail_uniformly_before_exchange",
+    "remote_reducers_and_grouping",
     "foreign_package_token_and_projection_evidence_rejection",
     "python_retained_raw_query_builder_generated_models",
     "integer_keys_polymorphic_roles_and_optional_role_survival",

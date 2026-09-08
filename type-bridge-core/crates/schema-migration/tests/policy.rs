@@ -2,7 +2,7 @@ use type_bridge_schema::SafetyClass;
 use type_bridge_schema_migration::{MigrationSafetyPolicy, SafetyPolicyDecision};
 
 #[test]
-fn default_policy_gates_destructive_work_and_rejects_unresolved_classes() {
+fn default_policy_gates_destructive_and_backfill_work_and_rejects_unsupported() {
     let policy = MigrationSafetyPolicy::default_policy();
     assert_eq!(
         policy.decision(SafetyClass::FormalOnly),
@@ -30,7 +30,7 @@ fn default_policy_gates_destructive_work_and_rejects_unresolved_classes() {
     );
     assert_eq!(
         policy.decision(SafetyClass::BackfillRequired),
-        SafetyPolicyDecision::Reject
+        SafetyPolicyDecision::RequireApproval
     );
     assert_eq!(
         policy.decision(SafetyClass::Unsupported),
@@ -39,8 +39,12 @@ fn default_policy_gates_destructive_work_and_rejects_unresolved_classes() {
 }
 
 #[test]
-fn standing_allowance_for_destructive_or_opaque_work_is_invalid() {
-    for class in [SafetyClass::Destructive, SafetyClass::Opaque] {
+fn standing_allowance_for_destructive_opaque_or_backfill_work_is_invalid() {
+    for class in [
+        SafetyClass::Destructive,
+        SafetyClass::Opaque,
+        SafetyClass::BackfillRequired,
+    ] {
         let error = MigrationSafetyPolicy::default_policy()
             .with_decision(class, SafetyPolicyDecision::Allow)
             .expect_err("a permanent force-style allowance is invalid");
@@ -50,16 +54,14 @@ fn standing_allowance_for_destructive_or_opaque_work_is_invalid() {
 
 #[test]
 fn unresolvable_classes_cannot_be_admitted_by_policy() {
-    for class in [SafetyClass::BackfillRequired, SafetyClass::Unsupported] {
-        for decision in [
-            SafetyPolicyDecision::Allow,
-            SafetyPolicyDecision::RequireApproval,
-        ] {
-            let error = MigrationSafetyPolicy::default_policy()
-                .with_decision(class, decision)
-                .expect_err("unverifiable work cannot be admitted");
-            assert_eq!(error.code().as_str(), "migration_policy_unresolvable_class");
-        }
+    for decision in [
+        SafetyPolicyDecision::Allow,
+        SafetyPolicyDecision::RequireApproval,
+    ] {
+        let error = MigrationSafetyPolicy::default_policy()
+            .with_decision(SafetyClass::Unsupported, decision)
+            .expect_err("unsupported work cannot be admitted");
+        assert_eq!(error.code().as_str(), "migration_policy_unresolvable_class");
     }
 }
 

@@ -1,5 +1,5 @@
 # pyright: reportMissingImports=false
-"""Unit tests for the migration file loader sidecar feature (Phase 2, sub-plan 07).
+"""Unit tests for the migration file loader sidecar feature (Phase 2, sub-record/archive).
 
 Covers:
 - Generator writes a JSON sidecar beside the .py

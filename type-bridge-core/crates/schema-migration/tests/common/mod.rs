@@ -1,18 +1,21 @@
 //! Shared coordinator test doubles for apply and rollback execution tests.
 
 use std::future::Future;
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Wake, Waker};
+use std::sync::Mutex;
+use std::task::{Context, Poll, Waker};
 
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::migration_backfill::AttributeBackfillPlan;
 use type_bridge_contract::schema::ManagedSchemaState;
 use type_bridge_query::ValidatedMigrationAssertionPlan;
 use type_bridge_schema_migration::{
-    AppliedRecord, ExecutionFence, ExecutionFuture, ExecutionScope, GroupCommitFuture,
-    GroupEventRecord, GroupJournalEventKind, JournalEntry, JournalSequence, LeaseHolderId,
-    MigrationExecutionJournal, MigrationExecutionProvider, MigrationLease, MigrationLeaseStore,
-    OpenPlanRecord, OpenRollbackPlanRecord, PlanRecord, PreparedMigrationGroup, RollbackPlanRecord,
+    AppliedRecord, BackfillCompletionEvidence, BackfillEventRecord, BackfillExecutionCounts,
+    BackfillExecutionDirection, BackfillExecutionFuture, BackfillRecoveryObservation,
+    ExecutionFence, ExecutionFuture, ExecutionScope, GroupCommitFuture, GroupEventRecord,
+    GroupJournalEventKind, JournalEntry, JournalSequence, LeaseHolderId, MigrationExecutionJournal,
+    MigrationExecutionProvider, MigrationLease, MigrationLeaseStore, OpenPlanRecord,
+    OpenRollbackPlanRecord, PlanRecord, PreparedMigrationGroup, RollbackPlanRecord,
     RollbackStepEventRecord, RolledBackRecord, StatementUnit, active_applied_entries,
 };
 
@@ -22,6 +25,8 @@ pub struct CoordinatorStoreState {
     pub applied: Vec<JournalEntry<AppliedRecord>>,
     pub rolled_back: Vec<JournalEntry<RolledBackRecord>>,
     pub events: Vec<JournalEntry<GroupEventRecord>>,
+    pub backfill_events: Vec<JournalEntry<BackfillEventRecord>>,
+    pub backfill_event_audit: Vec<GroupJournalEventKind>,
     pub event_audit: Vec<GroupJournalEventKind>,
     pub rollback_events: Vec<JournalEntry<RollbackStepEventRecord>>,
     pub rollback_event_audit: Vec<GroupJournalEventKind>,
@@ -126,6 +131,21 @@ impl MigrationExecutionJournal for CoordinatorStore {
         })
     }
 
+    fn record_backfill_event<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        record: BackfillEventRecord,
+    ) -> ExecutionFuture<'a, JournalEntry<BackfillEventRecord>> {
+        Box::pin(async move {
+            let mut state = self.state.lock().expect("coordinator store");
+            Self::checked(&mut state, lease)?;
+            let entry = JournalEntry::from_store(Self::sequence(&mut state)?, record);
+            state.backfill_event_audit.push(entry.record().kind());
+            state.backfill_events.push(entry.clone());
+            Ok(entry)
+        })
+    }
+
     fn record_applied<'a>(
         &'a self,
         lease: &'a MigrationLease,
@@ -151,6 +171,7 @@ impl MigrationExecutionJournal for CoordinatorStore {
             if complete {
                 state.open = None;
                 state.events.clear();
+                state.backfill_events.clear();
             }
             Ok(entry)
         })
@@ -177,9 +198,17 @@ impl MigrationExecutionJournal for CoordinatorStore {
             let Some(open) = state.open.clone() else {
                 return Ok(None);
             };
-            Ok(Some(OpenPlanRecord::from_store(
+            Ok(Some(OpenPlanRecord::from_store_with_backfills(
                 open,
                 state.events.clone(),
+                state
+                    .backfill_events
+                    .iter()
+                    .filter(|event| {
+                        event.record().direction() == BackfillExecutionDirection::Forward
+                    })
+                    .cloned()
+                    .collect(),
             )?))
         })
     }
@@ -255,6 +284,7 @@ impl MigrationExecutionJournal for CoordinatorStore {
             if complete {
                 state.open_rollback = None;
                 state.rollback_events.clear();
+                state.backfill_events.clear();
             }
             Ok(entry)
         })
@@ -281,9 +311,17 @@ impl MigrationExecutionJournal for CoordinatorStore {
             let Some(open) = state.open_rollback.clone() else {
                 return Ok(None);
             };
-            Ok(Some(OpenRollbackPlanRecord::from_store(
+            Ok(Some(OpenRollbackPlanRecord::from_store_with_backfills(
                 open,
                 state.rollback_events.clone(),
+                state
+                    .backfill_events
+                    .iter()
+                    .filter(|event| {
+                        event.record().direction() == BackfillExecutionDirection::Reverse
+                    })
+                    .cloned()
+                    .collect(),
             )?))
         })
     }
@@ -298,6 +336,10 @@ pub struct CoordinatorProvider {
 impl MigrationExecutionProvider for CoordinatorProvider {
     fn available_capabilities(&self) -> &CapabilitySet {
         &self.available
+    }
+
+    fn supports_backfill_execution(&self) -> bool {
+        true
     }
 
     fn observe_managed_state<'a>(
@@ -324,6 +366,79 @@ impl MigrationExecutionProvider for CoordinatorProvider {
                 provider: self,
                 target,
             }) as Box<dyn PreparedMigrationGroup + 'a>)
+        })
+    }
+
+    fn observe_backfill<'a>(
+        &'a self,
+        _lease: &'a MigrationLease,
+        plan: &'a AttributeBackfillPlan,
+        direction: BackfillExecutionDirection,
+    ) -> ExecutionFuture<'a, BackfillRecoveryObservation> {
+        Box::pin(async move {
+            let (observe_call, execute_call) = match direction {
+                BackfillExecutionDirection::Forward => {
+                    ("observe-backfill-forward", "execute-backfill-forward")
+                }
+                BackfillExecutionDirection::Reverse => {
+                    ("observe-backfill-reverse", "execute-backfill-reverse")
+                }
+            };
+            self.calls
+                .lock()
+                .expect("provider calls")
+                .push(observe_call);
+            let complete = self
+                .calls
+                .lock()
+                .expect("provider calls")
+                .contains(&execute_call);
+            Ok(if complete {
+                BackfillRecoveryObservation::Complete(BackfillCompletionEvidence::new(
+                    plan.fingerprint()?,
+                    direction,
+                    BackfillExecutionCounts::new(0, 0, 0, 1)?,
+                ))
+            } else {
+                BackfillRecoveryObservation::Incomplete
+            })
+        })
+    }
+
+    fn execute_backfill<'a>(
+        &'a self,
+        _lease: &'a MigrationLease,
+        plan: &'a AttributeBackfillPlan,
+        direction: BackfillExecutionDirection,
+        control: &'a type_bridge_schema_migration::MigrationExecutionControl,
+    ) -> BackfillExecutionFuture<'a> {
+        Box::pin(async move {
+            control.check().map_err(|diagnostic| {
+                type_bridge_schema_migration::GroupCommitFailure::new(
+                    type_bridge_schema_migration::GroupCommitCertainty::DefinitelyAborted,
+                    diagnostic,
+                )
+            })?;
+            let call = match direction {
+                BackfillExecutionDirection::Forward => "execute-backfill-forward",
+                BackfillExecutionDirection::Reverse => "execute-backfill-reverse",
+            };
+            self.calls.lock().expect("provider calls").push(call);
+            Ok(BackfillCompletionEvidence::new(
+                plan.fingerprint().map_err(|diagnostic| {
+                    type_bridge_schema_migration::GroupCommitFailure::new(
+                        type_bridge_schema_migration::GroupCommitCertainty::DefinitelyAborted,
+                        diagnostic,
+                    )
+                })?,
+                direction,
+                BackfillExecutionCounts::new(0, 0, 0, 1).map_err(|diagnostic| {
+                    type_bridge_schema_migration::GroupCommitFailure::new(
+                        type_bridge_schema_migration::GroupCommitCertainty::DefinitelyAborted,
+                        diagnostic,
+                    )
+                })?,
+            ))
         })
     }
 }
@@ -400,15 +515,8 @@ pub fn test_diagnostic(code: &'static str) -> Diagnostic {
     )
 }
 
-struct NoopWake;
-
-impl Wake for NoopWake {
-    fn wake(self: Arc<Self>) {}
-}
-
 pub fn block_on<F: Future>(future: F) -> F::Output {
-    let waker = Waker::from(Arc::new(NoopWake));
-    let mut context = Context::from_waker(&waker);
+    let mut context = Context::from_waker(Waker::noop());
     let mut future = Box::pin(future);
     loop {
         match future.as_mut().poll(&mut context) {

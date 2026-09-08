@@ -22,8 +22,7 @@ use type_bridge_query::{
 use crate::migration_assertion::{render_comparator, render_literal};
 
 pub(crate) use crate::query_v2_model::{
-    execute_validated_model_query, execute_validated_model_query_borrowed,
-    execute_validated_model_query_with_statement_limit,
+    execute_validated_model_query_borrowed, execute_validated_model_query_with_statement_limit,
 };
 
 /// Exact provider text and typed shape for one lowered invocation.
@@ -87,6 +86,7 @@ fn lower_validated_query_with_execution_limits(
     preflight_invocation_transport(plan, invocation)?;
     if let Some(compatibility) = crate::query_v2_compatibility::lower_validated_compatibility_query(
         validated,
+        invocation,
         invocation.operation(),
     )? {
         if compatibility.typeql().len() > MAX_CANONICAL_BYTES {
@@ -1042,41 +1042,72 @@ pub(crate) fn provider_diagnostic(
     let crate::error::OrmError::Match(error) = error else {
         return failure(DiagnosticCategory::Integrity, generic_code, generic_message);
     };
-    if error.category() != crate::match_request::MatchErrorCategory::ResourceLimit {
-        return failure(DiagnosticCategory::Integrity, generic_code, generic_message);
-    }
-    let (code, message) = match error.code().as_str() {
-        "provider_cancelled" => (
+    let (diagnostic_category, code, message) = match (error.category(), error.code().as_str()) {
+        (crate::match_request::MatchErrorCategory::Cancelled, "provider_cancelled") => (
+            DiagnosticCategory::Cancelled,
             "provider_cancelled",
             "provider answer processing was cancelled",
         ),
-        "transaction_deadline_exceeded" => (
+        (
+            crate::match_request::MatchErrorCategory::ResourceLimit,
+            "transaction_deadline_exceeded",
+        ) => (
+            DiagnosticCategory::ResourceLimit,
             "transaction_deadline_exceeded",
             "provider transaction deadline expired",
         ),
-        "processed_item_limit" => (
+        (crate::match_request::MatchErrorCategory::ResourceLimit, "processed_item_limit") => (
+            DiagnosticCategory::ResourceLimit,
             "processed_item_limit",
             "provider answer exceeded the processed-item ceiling",
         ),
-        "response_byte_limit" => (
+        (crate::match_request::MatchErrorCategory::ResourceLimit, "response_byte_limit") => (
+            DiagnosticCategory::ResourceLimit,
             "response_byte_limit",
             "provider answer exceeded the response-byte ceiling",
         ),
-        "processed_item_counter_overflow" => (
+        (
+            crate::match_request::MatchErrorCategory::ResourceLimit,
+            "processed_item_counter_overflow",
+        ) => (
+            DiagnosticCategory::ResourceLimit,
             "processed_item_counter_overflow",
             "processed provider item counter overflowed",
         ),
-        "answer_byte_counter_overflow" => (
+        (
+            crate::match_request::MatchErrorCategory::ResourceLimit,
+            "answer_byte_counter_overflow",
+        ) => (
+            DiagnosticCategory::ResourceLimit,
             "answer_byte_counter_overflow",
             "provider answer byte counter overflowed",
         ),
-        "query_v2_document_member_limit" => (
+        (
+            crate::match_request::MatchErrorCategory::ResourceLimit,
+            "query_v2_document_member_limit",
+        ) => (
+            DiagnosticCategory::ResourceLimit,
             "query_v2_document_member_limit",
             "document lists exceed the aggregate member ceiling",
         ),
+        (crate::match_request::MatchErrorCategory::ResourceLimit, "collected_concept_limit") => (
+            DiagnosticCategory::ResourceLimit,
+            "collected_concept_limit",
+            "typed reduction cells exceed the collection-member ceiling",
+        ),
+        (crate::match_request::MatchErrorCategory::ResourceLimit, "reduction_group_limit") => (
+            DiagnosticCategory::ResourceLimit,
+            "reduction_group_limit",
+            "typed reduction groups exceed the result-item ceiling",
+        ),
+        (crate::match_request::MatchErrorCategory::ResourceLimit, "reduction_overflow") => (
+            DiagnosticCategory::ResourceLimit,
+            "reduction_overflow",
+            "typed reduction arithmetic exceeded its canonical scalar domain",
+        ),
         _ => return failure(DiagnosticCategory::Integrity, generic_code, generic_message),
     };
-    failure(DiagnosticCategory::ResourceLimit, code, message)
+    failure(diagnostic_category, code, message)
 }
 
 fn query_v2_provider_resource_error(
@@ -2380,14 +2411,31 @@ mod tests {
 
     #[test]
     fn provider_resource_mapping_is_specific_and_other_errors_are_redacted() {
-        for code in [
+        let cancelled: crate::error::OrmError = crate::match_request::MatchError::new(
+            crate::match_request::MatchErrorCategory::Cancelled,
             "provider_cancelled",
+            "provider-private detail",
+        )
+        .into();
+        let diagnostic = provider_diagnostic(
+            &cancelled,
+            "query_remote_provider_failed",
+            "the executor provider call failed",
+        );
+        assert_eq!(diagnostic.category(), DiagnosticCategory::Cancelled);
+        assert_eq!(diagnostic.code().as_str(), "provider_cancelled");
+        assert!(!diagnostic.message().contains("provider-private"));
+
+        for code in [
             "transaction_deadline_exceeded",
             "processed_item_limit",
             "response_byte_limit",
             "processed_item_counter_overflow",
             "answer_byte_counter_overflow",
             "query_v2_document_member_limit",
+            "collected_concept_limit",
+            "reduction_group_limit",
+            "reduction_overflow",
         ] {
             let provider_error: crate::error::OrmError = crate::match_request::MatchError::new(
                 crate::match_request::MatchErrorCategory::ResourceLimit,

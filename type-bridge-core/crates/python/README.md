@@ -43,14 +43,14 @@ pattern = {
 cd type-bridge-core
 
 # Development build (editable)
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin develop
+maturin develop
 
 # Release build
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin build --release
+maturin build --release
 ```
 
-> **Note:** `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1` is required when your
-> local Python version exceeds PyO3's maximum supported version (currently 3.13).
+The patched PyO3 0.29 binding supports CPython 3.12–3.14 directly and retains
+the abi3-py312 wheel baseline and GIL requirement.
 
 ## Usage from Python
 

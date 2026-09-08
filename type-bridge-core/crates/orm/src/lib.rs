@@ -38,13 +38,22 @@ pub mod _relation;
 #[path = "schema/mod.rs"]
 pub mod _schema;
 pub mod error;
+mod execution_diagnostic;
 pub mod expr;
 pub mod filter;
 pub mod hooks;
 pub mod match_request;
 pub mod migration_assertion;
+pub mod projected_batch;
+mod projected_batch_executor;
+pub mod projected_codec;
+pub mod projected_crud;
+mod projected_manager_filter;
+pub mod projected_model;
+mod projected_query;
 pub mod provider_runtime;
 pub mod query;
+mod query_execution_limits;
 pub mod query_v2;
 mod query_v2_adapter;
 #[cfg(test)]
@@ -100,11 +109,6 @@ pub mod integration_test_support {
                 "query_v2_adapter_test_resource_envelope",
                 "the live V2 parity fixture cannot fit the canonical V2 artifact envelope",
             )),
-            MatchRequestAdaptation::NativeOnly => Err(failure(
-                type_bridge_contract::diagnostic::DiagnosticCategory::UnsupportedCapability,
-                "query_v2_adapter_test_native_only",
-                "the live V2 parity fixture has no V2 spelling for this operation",
-            )),
         }
     }
 }
@@ -117,26 +121,78 @@ pub use _dynamic::{
     DynamicRolePlayerInput, DynamicSort,
 };
 pub use error::{ClassifiedCommitError, CommitFailureCertainty, OrmError, Result};
+#[doc(hidden)]
+pub use execution_diagnostic::{
+    lower_classified_commit_error, lower_execution_error, lower_match_error,
+    lower_remote_query_diagnostic, query_resource_closed_diagnostic,
+};
 pub use expr::{Agg, AggResult, Expr, GroupByResult, SortDir};
 pub use filter::Filter;
 pub use hooks::{
     CrudOperation, HookContext, HookError, HookRunner, LifecycleHook, PreHookResult, TypeKind,
 };
 pub use match_request::*;
+#[doc(hidden)]
+pub use projected_batch::{PreparedProjectedBatchInvocation, ProjectedBatchInvocationControl};
+pub use projected_batch::{
+    ProjectedBatch, ProjectedBatchOperation, ProjectedBatchResourceMeasure, ProjectedBatchRow,
+};
+pub use projected_batch_executor::{ProjectedBatchExecutor, ProjectedBatchResult};
+pub use projected_codec::{
+    ProjectedCodecError, ProjectedCodecValue, ProjectedStructValue, materialize_record,
+    record_from_attribute, record_from_create, record_from_reference, record_from_snapshot,
+    record_from_struct,
+};
+pub use projected_crud::ProjectedCrudExecutor;
+#[doc(hidden)]
+pub use projected_crud::{
+    ProjectedCrudCompatibilityCause, ProjectedCrudCompatibilityFailure,
+    ProjectedCrudCompatibilityStage,
+};
+#[doc(hidden)]
+pub use projected_manager_filter::ProjectedManagerFilterInvocationControl;
+pub use projected_manager_filter::{
+    ProjectedManagerComparison, ProjectedManagerFilter, ProjectedManagerFilterExecutor,
+    ProjectedManagerFilterResourceMeasure,
+};
+pub use projected_model::{
+    MAX_PROJECTED_MODEL_BYTES, MAX_PROJECTED_MODEL_MEMBERS, ProjectedAttributeValue,
+    ProjectedCreate, ProjectedCreateBudget, ProjectedReference, ProjectedReferenceOrigin,
+    ProjectedResourceMeasure, ProjectedRolePlayer, ProjectedThing,
+};
+#[doc(hidden)]
+pub use projected_query::{
+    MAX_PROJECTED_QUERY_ATTRIBUTE_VALUES, MAX_PROJECTED_QUERY_BYTES, MAX_PROJECTED_QUERY_CELLS,
+    MAX_PROJECTED_QUERY_ROWS, MAX_PROJECTED_QUERY_THINGS, ProjectedQueryMaterializationLimits,
+    ProjectedQueryOrigin, ProjectedQueryResourceMeasure, ProjectedQueryResult, ProjectedQueryRow,
+    ProjectedQuerySlot, ProjectedQuerySlotValue, ProjectedQueryValue, ProjectedReducedValue,
+    ProjectedReductionGroup, ProjectedReductionRow, materialize_projected_query_result,
+    materialize_projected_query_result_with_budget,
+    materialize_projected_query_result_with_cancellation,
+};
 pub use provider_runtime::ProviderRuntimeOwner;
 pub use query::{EntityQuery, GroupByEntityQuery, GroupByRelationQuery, RelationQuery};
+pub use query_execution_limits::{
+    MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
+    MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS, MAX_QUERY_STATEMENTS,
+    MAX_QUERY_TIMEOUT_MILLISECONDS, QueryExecutionDeadline, QueryExecutionResourceLimits,
+};
 pub use query_v2_model_remote::{
     ClaimedRemoteModelReplyV2, PendingRemoteModelQueryV2, RemoteModelQueryV2Error,
-    prepare_remote_model_query_v2,
+    prepare_remote_model_query_v2, prepare_remote_model_query_v2_with_budget,
 };
 pub use runtime_projection::InstalledRuntimeProjection;
+#[doc(hidden)]
+pub use session::TransactionContextState;
 pub use session::backend::AnswerCancellation;
+#[doc(hidden)]
+pub use session::database::is_identity_safe_provider_address;
 #[cfg(feature = "typedb")]
 pub use session::embedded_driver_versions;
 #[cfg(feature = "typedb")]
 pub use session::{
-    ConnectOptions, PreparedSecureConnectOptions, SecureConnectError, SecureConnectOptions,
-    SecureResult, TlsMode,
+    ConnectOptions, DirectConnectionPolicy, DirectTls, PreparedSecureConnectOptions,
+    SecureConnectError, SecureConnectOptions, SecureResult, TlsMode,
 };
 pub use session::{
     Database, DatabaseConnectionAuthority, GivenRowsSpec, GivenValue, Transaction,
@@ -149,4 +205,10 @@ pub use session::{
     delete_database_prepared_secure, delete_database_secure, ensure_database_exists,
     ensure_database_exists_prepared_secure, ensure_database_exists_secure,
 };
+pub use type_bridge_contract::projection::{
+    GeneratedManagerLookup, resolve_generated_manager_lookup,
+};
+/// Provider version type used by binding-owned recording backends.
+#[doc(hidden)]
+pub use type_bridge_core_lib::version::Version as _ProviderVersion;
 pub use value::AttributeValue;

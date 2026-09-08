@@ -3,13 +3,29 @@
 use core::marker::PhantomData;
 use std::sync::Arc;
 
+use type_bridge_contract::projection::{ProjectionConfig, RuntimeProjection};
 use type_bridge_contract::schema::encode_declared_schema;
+use type_bridge_contract::sdk_diagnostic::{
+    SdkExecutionDiagnostic, SdkProjectionEvidenceSlotPresence,
+};
 use type_bridge_schema::{
     MAX_SCHEMA_AUTHORITY_BYTES, VerifiedSchemaAuthority, decode_schema_authority,
     schema_authority_capability_vocabulary,
 };
+use type_bridge_schema_codegen::RustEmitter;
 
-use crate::error::{Error, Result};
+use crate::__codegen::{
+    CompleteModel, EncodedCreate, GroupedQueryValue, HydratedRow, HydrationCapability,
+    IntoEncodedCreate, IntoEncodedReference, IntoEncodedScalar, IntoEncodedStruct,
+    IntoHydratedSnapshot, MaterializeCreate, MaterializeModel, MaterializeReference,
+    MaterializeStruct, Model, StructValue, ValidationError, ValidationPath,
+};
+use crate::CanonicalCodecOptions;
+use crate::canonical_codec::{
+    CapturedCanonicalCodecControl, input_error as canonical_input_error,
+    output_error as canonical_output_error,
+};
+use crate::error::{Error, ModelValidationPhase, Result};
 
 #[doc(hidden)]
 pub mod sealed {
@@ -26,6 +42,84 @@ pub struct Unbound;
 impl sealed::Sealed for Unbound {}
 impl Schema for Unbound {}
 
+fn canonical_contract_error(error: type_bridge_contract::diagnostic::Diagnostic) -> Error {
+    let code = error.code().as_str().to_owned();
+    Error::model_validation(
+        ModelValidationPhase::Input,
+        code,
+        Vec::new(),
+        "canonical projected-record contract rejected the value",
+        Some(Box::new(error)),
+    )
+}
+
+fn canonical_codec_error(error: type_bridge_orm::ProjectedCodecError) -> Error {
+    if matches!(
+        &error,
+        type_bridge_orm::ProjectedCodecError::Contract(diagnostic)
+            if diagnostic.code().as_str() == "projected_codec_declared_schema_mismatch"
+    ) {
+        return Error::from_sdk_execution(
+            SdkExecutionDiagnostic::projected_record_schema_mismatch(),
+            ModelValidationPhase::Input,
+        );
+    }
+    Error::model_validation(
+        ModelValidationPhase::Input,
+        "canonical_projected_codec_failure",
+        Vec::new(),
+        "installed projection rejected canonical record materialization",
+        Some(Box::new(error)),
+    )
+}
+
+/// Opaque installed projection used by generated successor runtimes.
+#[doc(hidden)]
+pub struct GeneratedProjectionValidator {
+    installed: Arc<type_bridge_orm::InstalledRuntimeProjection>,
+}
+
+impl GeneratedProjectionValidator {
+    /// Validate one generated create encoding through the common projected model authority.
+    pub fn validate_create(&self, encoded: &EncodedCreate) -> Result<(), ValidationError> {
+        crate::projected_codec::validate_encoded_create(encoded, &self.installed)
+            .map_err(generated_validation_error)
+    }
+
+    /// Validate one generated hydration row through the common projected model authority.
+    pub fn validate_hydration(&self, row: &HydratedRow) -> Result<(), ValidationError> {
+        crate::projected_codec::validate_hydrated_row(row, &self.installed)
+            .map_err(generated_validation_error)
+    }
+}
+
+fn generated_validation_error(error: Error) -> ValidationError {
+    let code = error
+        .code()
+        .expect("generated projected validation always returns a classified model error")
+        .to_owned();
+    let path = error
+        .path()
+        .map(generated_validation_path)
+        .unwrap_or_default();
+    ValidationError::new(path, code)
+}
+
+fn generated_validation_path(segments: &[String]) -> String {
+    let mut path = String::new();
+    for segment in segments {
+        if segment.starts_with('[') {
+            path.push_str(segment);
+        } else {
+            if !path.is_empty() {
+                path.push('.');
+            }
+            path.push_str(segment);
+        }
+    }
+    path
+}
+
 /// A generated schema package marker carrying fingerprint evidence branded by `S: Schema`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SchemaPackage<S: Schema> {
@@ -40,6 +134,103 @@ pub struct SchemaPackage<S: Schema> {
 }
 
 impl<S: Schema> SchemaPackage<S> {
+    /// Encode one exact generated attribute value as canonical projected-record bytes.
+    pub fn encode_attribute<T>(&self, value: T) -> Result<Vec<u8>>
+    where
+        T: Model<Schema = S> + IntoEncodedScalar,
+    {
+        self.encode_attribute_controlled(value, &CanonicalCodecOptions::default())
+    }
+
+    /// Encode one generated attribute under cancellation, deadline, and tighten-only limits.
+    pub fn encode_attribute_controlled<T>(
+        &self,
+        value: T,
+        options: &CanonicalCodecOptions,
+    ) -> Result<Vec<u8>>
+    where
+        T: Model<Schema = S> + IntoEncodedScalar,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
+        let installed = self.verify_and_install()?;
+        let projected = crate::projected_codec::project_attribute_inferred(&value, &installed)?;
+        let record = type_bridge_orm::record_from_attribute(&installed, &projected)
+            .map_err(canonical_codec_error)?;
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
+        let bytes = record
+            .encode_with_limits(control.output_limits())
+            .map_err(canonical_output_error)?;
+        control.check()?;
+        Ok(bytes)
+    }
+
+    /// Decode canonical projected-record bytes as one exact generated attribute value.
+    pub fn decode_attribute<T>(&self, bytes: &[u8]) -> Result<T>
+    where
+        T: Model<Schema = S> + GroupedQueryValue,
+    {
+        self.decode_attribute_controlled(bytes, &CanonicalCodecOptions::default())
+    }
+
+    /// Decode one exact generated attribute under cancellation, deadline, and limits.
+    pub fn decode_attribute_controlled<T>(
+        &self,
+        bytes: &[u8],
+        options: &CanonicalCodecOptions,
+    ) -> Result<T>
+    where
+        T: Model<Schema = S> + GroupedQueryValue,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
+        let installed = self.verify_and_install()?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
+            bytes,
+            control.input_limits(),
+        )
+        .map_err(canonical_input_error)?;
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
+        let value = type_bridge_orm::materialize_record(&installed, &record)
+            .map_err(canonical_codec_error)?;
+        let type_bridge_orm::ProjectedCodecValue::Attribute(value) = value else {
+            return Err(Error::model_validation(
+                ModelValidationPhase::Input,
+                "canonical_record_kind_mismatch",
+                Vec::new(),
+                "canonical record is not a generated attribute value",
+                None,
+            ));
+        };
+        let expected = type_bridge_contract::codec::from_canonical_json::<
+            type_bridge_contract::id::TypeId,
+        >(T::TYPE_ID_JSON.as_bytes())
+        .map_err(canonical_contract_error)?;
+        if value.attribute_type() != &expected {
+            return Err(Error::model_validation(
+                ModelValidationPhase::Input,
+                "canonical_attribute_type_mismatch",
+                Vec::new(),
+                "canonical attribute record does not match the requested generated type",
+                None,
+            ));
+        }
+        let scalar = crate::projected_codec::projected_to_decoded_attribute(&value)?;
+        let decoded = T::from_group_scalar(scalar).map_err(|error| {
+            Error::model_validation(
+                ModelValidationPhase::Input,
+                "canonical_attribute_materialization_failed",
+                Vec::new(),
+                "canonical attribute could not materialize as the requested generated type",
+                Some(Box::new(error)),
+            )
+        })?;
+        control.check()?;
+        Ok(decoded)
+    }
+
     /// Construct a type-branded schema package marker from verified JSON evidence (generated-code SPI).
     #[doc(hidden)]
     #[must_use]
@@ -107,10 +298,480 @@ impl<S: Schema> SchemaPackage<S> {
         }
     }
 
-    /// Perform offline fingerprint verification without connecting to a live server.
+    /// Encode one exact generated create payload as canonical projected-record bytes.
+    pub fn encode_create<T>(&self, value: T) -> Result<Vec<u8>>
+    where
+        T: IntoEncodedCreate,
+    {
+        self.encode_create_controlled(value, &CanonicalCodecOptions::default())
+    }
+
+    /// Encode one generated create under cancellation, deadline, and tighten-only limits.
+    pub fn encode_create_controlled<T>(
+        &self,
+        value: T,
+        options: &CanonicalCodecOptions,
+    ) -> Result<Vec<u8>>
+    where
+        T: IntoEncodedCreate,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
+        let installed = self.verify_and_install()?;
+        let projected = crate::projected_codec::project_create_inferred(value, &installed)?;
+        let record = type_bridge_orm::record_from_create(&installed, &projected)
+            .map_err(canonical_codec_error)?;
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
+        let bytes = record
+            .encode_with_limits(control.output_limits())
+            .map_err(canonical_output_error)?;
+        control.check()?;
+        Ok(bytes)
+    }
+
+    /// Decode canonical projected-record bytes as one exact generated create type.
+    pub fn decode_create<T>(&self, bytes: &[u8]) -> Result<T>
+    where
+        T: MaterializeCreate<Schema = S>,
+    {
+        self.decode_create_controlled(bytes, &CanonicalCodecOptions::default())
+    }
+
+    /// Decode one exact generated create under cancellation, deadline, and limits.
+    pub fn decode_create_controlled<T>(
+        &self,
+        bytes: &[u8],
+        options: &CanonicalCodecOptions,
+    ) -> Result<T>
+    where
+        T: MaterializeCreate<Schema = S>,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
+        let installed = self.verify_and_install()?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
+            bytes,
+            control.input_limits(),
+        )
+        .map_err(canonical_input_error)?;
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
+        let value = type_bridge_orm::materialize_record(&installed, &record)
+            .map_err(canonical_codec_error)?;
+        let type_bridge_orm::ProjectedCodecValue::Create(value) = value else {
+            return Err(Error::model_validation(
+                ModelValidationPhase::Input,
+                "canonical_record_kind_mismatch",
+                Vec::new(),
+                "canonical record is not a generated create payload",
+                None,
+            ));
+        };
+        let decoded = crate::projected_codec::projected_to_decoded_create(&value, &installed)?;
+        let decoded =
+            T::materialize_create(&decoded, &ValidationPath::root()).map_err(|error| {
+                Error::model_validation(
+                    ModelValidationPhase::Input,
+                    "canonical_create_materialization_failed",
+                    Vec::new(),
+                    "canonical create could not materialize as the requested generated type",
+                    Some(Box::new(error)),
+                )
+            })?;
+        control.check()?;
+        Ok(decoded)
+    }
+
+    /// Encode one exact generated detached reference as canonical projected-record bytes.
+    pub fn encode_reference<T>(&self, value: T) -> Result<Vec<u8>>
+    where
+        T: IntoEncodedReference,
+    {
+        self.encode_reference_controlled(value, &CanonicalCodecOptions::default())
+    }
+
+    /// Encode one generated reference under cancellation, deadline, and tighten-only limits.
+    pub fn encode_reference_controlled<T>(
+        &self,
+        value: T,
+        options: &CanonicalCodecOptions,
+    ) -> Result<Vec<u8>>
+    where
+        T: IntoEncodedReference,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
+        let installed = self.verify_and_install()?;
+        let projected = crate::projected_codec::project_reference_inferred(value, &installed)?;
+        let record = type_bridge_orm::record_from_reference(&installed, &projected)
+            .map_err(canonical_codec_error)?;
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
+        let bytes = record
+            .encode_with_limits(control.output_limits())
+            .map_err(canonical_output_error)?;
+        control.check()?;
+        Ok(bytes)
+    }
+
+    /// Decode canonical projected-record bytes as one exact generated detached reference.
+    pub fn decode_reference<T>(&self, bytes: &[u8]) -> Result<T>
+    where
+        T: MaterializeReference<Schema = S>,
+    {
+        self.decode_reference_controlled(bytes, &CanonicalCodecOptions::default())
+    }
+
+    /// Decode one exact generated reference under cancellation, deadline, and limits.
+    pub fn decode_reference_controlled<T>(
+        &self,
+        bytes: &[u8],
+        options: &CanonicalCodecOptions,
+    ) -> Result<T>
+    where
+        T: MaterializeReference<Schema = S>,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
+        let installed = self.verify_and_install()?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
+            bytes,
+            control.input_limits(),
+        )
+        .map_err(canonical_input_error)?;
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
+        let value = type_bridge_orm::materialize_record(&installed, &record)
+            .map_err(canonical_codec_error)?;
+        let type_bridge_orm::ProjectedCodecValue::Reference(value) = value else {
+            return Err(Error::model_validation(
+                ModelValidationPhase::Input,
+                "canonical_record_kind_mismatch",
+                Vec::new(),
+                "canonical record is not a generated reference",
+                None,
+            ));
+        };
+        let decoded = crate::projected_codec::projected_to_hydrated_player(&value, &installed)?;
+        let decoded =
+            T::materialize_reference(&decoded, &ValidationPath::root()).map_err(|error| {
+                Error::model_validation(
+                    ModelValidationPhase::Input,
+                    "canonical_reference_materialization_failed",
+                    Vec::new(),
+                    "canonical reference could not materialize as the requested generated type",
+                    Some(Box::new(error)),
+                )
+            })?;
+        control.check()?;
+        Ok(decoded)
+    }
+
+    /// Encode one exact generated hydrated model as a provider-free canonical snapshot.
+    pub fn encode_snapshot<T>(&self, value: T) -> Result<Vec<u8>>
+    where
+        T: IntoHydratedSnapshot + Model<Schema = S>,
+    {
+        self.encode_snapshot_controlled(value, &CanonicalCodecOptions::default())
+    }
+
+    /// Encode one generated snapshot under cancellation, deadline, and tighten-only limits.
+    pub fn encode_snapshot_controlled<T>(
+        &self,
+        value: T,
+        options: &CanonicalCodecOptions,
+    ) -> Result<Vec<u8>>
+    where
+        T: IntoHydratedSnapshot + Model<Schema = S>,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
+        let installed = self.verify_and_install()?;
+        let projected = crate::projected_codec::project_snapshot_inferred(value, &installed)?;
+        let record = type_bridge_orm::record_from_snapshot(&installed, &projected)
+            .map_err(canonical_codec_error)?;
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
+        let bytes = record
+            .encode_with_limits(control.output_limits())
+            .map_err(canonical_output_error)?;
+        control.check()?;
+        Ok(bytes)
+    }
+
+    /// Decode canonical snapshot bytes as one exact detached generated model.
+    pub fn decode_snapshot<T>(&self, bytes: &[u8]) -> Result<T>
+    where
+        T: CompleteModel<Schema = S> + MaterializeModel,
+    {
+        self.decode_snapshot_controlled(bytes, &CanonicalCodecOptions::default())
+    }
+
+    /// Decode one exact detached snapshot under cancellation, deadline, and limits.
+    pub fn decode_snapshot_controlled<T>(
+        &self,
+        bytes: &[u8],
+        options: &CanonicalCodecOptions,
+    ) -> Result<T>
+    where
+        T: CompleteModel<Schema = S> + MaterializeModel,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
+        let installed = self.verify_and_install()?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
+            bytes,
+            control.input_limits(),
+        )
+        .map_err(canonical_input_error)?;
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
+        let value = type_bridge_orm::materialize_record(&installed, &record)
+            .map_err(canonical_codec_error)?;
+        let type_bridge_orm::ProjectedCodecValue::Snapshot(value) = value else {
+            return Err(Error::model_validation(
+                ModelValidationPhase::Hydration,
+                "canonical_record_kind_mismatch",
+                Vec::new(),
+                "canonical record is not a generated hydrated snapshot",
+                None,
+            ));
+        };
+        let mut row = crate::projected_codec::projected_to_hydrated_row(&value, &installed)?;
+        row.mark_detached_snapshot();
+        let decoded = T::materialize(&row, &HydrationCapability::new()).map_err(|error| {
+            crate::entity_codec::map_validation_error(error, ModelValidationPhase::Hydration)
+        })?;
+        control.check()?;
+        Ok(decoded)
+    }
+
+    /// Perform offline fingerprint, authority, and exact emitter-evidence verification
+    /// without connecting to a live server.
     pub fn verify(&self) -> Result<()> {
         let _ = self.verify_and_install_with_authority()?;
         Ok(())
+    }
+
+    /// Verify this generated package and open an already schema-bound direct
+    /// database through the canonical connection policy.
+    ///
+    /// Server compatibility is discovered authoritatively; callers cannot
+    /// supply or override the server version used for admission.
+    #[cfg(feature = "typedb")]
+    pub async fn connect(
+        self,
+        policy: type_bridge_orm::DirectConnectionPolicy,
+    ) -> Result<crate::session::Database<S>> {
+        self.connect_with_cancellation(policy, type_bridge_orm::AnswerCancellation::default())
+            .await
+    }
+
+    /// Verify this generated package and open an already schema-bound direct
+    /// database with one wakeable connection-cancellation owner.
+    #[cfg(feature = "typedb")]
+    pub async fn connect_with_cancellation(
+        self,
+        policy: type_bridge_orm::DirectConnectionPolicy,
+        cancellation: type_bridge_orm::AnswerCancellation,
+    ) -> Result<crate::session::Database<S>> {
+        let (installed, authority) = self.verify_and_install_with_authority()?;
+        let match_registry = crate::session::build_match_registry(&installed)?;
+        let inner =
+            type_bridge_orm::Database::connect_direct(installed.as_ref(), &policy, cancellation)
+                .await
+                .map_err(Error::from_direct_connection)?;
+        Ok(crate::session::Database::from_bound_parts(
+            inner,
+            installed,
+            match_registry,
+            authority.map(|authority| authority.managed_scope().id().clone()),
+        ))
+    }
+
+    /// Install the package's exact projection for generated successor-runtime validation.
+    /// Package verification remains projection-evidence admission; generated-token package
+    /// fencing is provided by the nominal generated Rust types.
+    #[doc(hidden)]
+    pub fn generated_projection_validator(
+        &self,
+    ) -> std::result::Result<GeneratedProjectionValidator, ValidationError> {
+        self.verify_and_install()
+            .map(|installed| GeneratedProjectionValidator { installed })
+            .map_err(|_| {
+                ValidationError::new("projection_evidence", "projection_evidence_mismatch")
+            })
+    }
+
+    /// Encode one exact generated struct as canonical projected-record bytes.
+    pub fn encode_struct<T>(&self, value: T) -> Result<Vec<u8>>
+    where
+        T: IntoEncodedStruct + StructValue<Schema = S>,
+    {
+        self.encode_struct_controlled(value, &CanonicalCodecOptions::default())
+    }
+
+    /// Encode one generated struct under cancellation, deadline, and tighten-only limits.
+    pub fn encode_struct_controlled<T>(
+        &self,
+        value: T,
+        options: &CanonicalCodecOptions,
+    ) -> Result<Vec<u8>>
+    where
+        T: IntoEncodedStruct + StructValue<Schema = S>,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
+        let installed = self.verify_and_install()?;
+        let projected = crate::projected_codec::project_struct_inferred(value, &installed)?;
+        let record = type_bridge_orm::record_from_struct(&installed, &projected)
+            .map_err(canonical_codec_error)?;
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
+        let bytes = record
+            .encode_with_limits(control.output_limits())
+            .map_err(canonical_output_error)?;
+        control.check()?;
+        Ok(bytes)
+    }
+
+    /// Decode canonical projected-record bytes as one exact generated struct.
+    pub fn decode_struct<T>(&self, bytes: &[u8]) -> Result<T>
+    where
+        T: MaterializeStruct + StructValue<Schema = S>,
+    {
+        self.decode_struct_controlled(bytes, &CanonicalCodecOptions::default())
+    }
+
+    /// Decode one exact generated struct under cancellation, deadline, and limits.
+    pub fn decode_struct_controlled<T>(
+        &self,
+        bytes: &[u8],
+        options: &CanonicalCodecOptions,
+    ) -> Result<T>
+    where
+        T: MaterializeStruct + StructValue<Schema = S>,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, false)?;
+        control.check()?;
+        let installed = self.verify_and_install()?;
+        let record = type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
+            bytes,
+            control.input_limits(),
+        )
+        .map_err(canonical_input_error)?;
+        control.check_decoded_weight(record.decoded_weight())?;
+        control.check()?;
+        let value = type_bridge_orm::materialize_record(&installed, &record)
+            .map_err(canonical_codec_error)?;
+        let type_bridge_orm::ProjectedCodecValue::Struct(value) = value else {
+            return Err(Error::model_validation(
+                ModelValidationPhase::Input,
+                "canonical_record_kind_mismatch",
+                Vec::new(),
+                "canonical record is not a generated struct",
+                None,
+            ));
+        };
+        let decoded = crate::projected_codec::projected_to_decoded_struct(&value, &installed)?;
+        let decoded =
+            T::materialize_struct(&decoded, &ValidationPath::root()).map_err(|error| {
+                Error::model_validation(
+                    ModelValidationPhase::Input,
+                    "canonical_struct_materialization_failed",
+                    Vec::new(),
+                    "canonical struct could not materialize as the requested generated type",
+                    Some(Box::new(error)),
+                )
+            })?;
+        control.check()?;
+        Ok(decoded)
+    }
+
+    /// Compose already canonical package records into one deterministic ordered archive.
+    pub fn encode_archive<I, B>(&self, records: I) -> Result<Vec<u8>>
+    where
+        I: IntoIterator<Item = B>,
+        B: AsRef<[u8]>,
+    {
+        self.encode_archive_controlled(records, &CanonicalCodecOptions::default())
+    }
+
+    /// Compose canonical records under cancellation, deadline, and tighten-only limits.
+    pub fn encode_archive_controlled<I, B>(
+        &self,
+        records: I,
+        options: &CanonicalCodecOptions,
+    ) -> Result<Vec<u8>>
+    where
+        I: IntoIterator<Item = B>,
+        B: AsRef<[u8]>,
+    {
+        let control = CapturedCanonicalCodecControl::capture(options, true)?;
+        control.check()?;
+        let installed = self.verify_and_install()?;
+        let mut verified = Vec::new();
+        for bytes in records {
+            control.check_record_count(verified.len().saturating_add(1))?;
+            control.check()?;
+            let record =
+                type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
+                    bytes.as_ref(),
+                    control.input_limits(),
+                )
+                .map_err(canonical_input_error)?;
+            let _ = type_bridge_orm::materialize_record(&installed, &record)
+                .map_err(canonical_codec_error)?;
+            verified.push(record);
+        }
+        let archive = type_bridge_contract::projected_record::ProjectedArchive::try_new(verified)
+            .map_err(canonical_contract_error)?;
+        control.check_decoded_weight(archive.decoded_weight())?;
+        control.check()?;
+        let bytes = archive
+            .encode_with_limits(control.output_limits())
+            .map_err(canonical_output_error)?;
+        control.check()?;
+        Ok(bytes)
+    }
+
+    /// Strictly decode one complete package archive into canonical individual records.
+    pub fn decode_archive(&self, bytes: &[u8]) -> Result<Vec<Vec<u8>>> {
+        self.decode_archive_controlled(bytes, &CanonicalCodecOptions::default())
+    }
+
+    /// Decode one complete archive under cancellation, deadline, and tighten-only limits.
+    pub fn decode_archive_controlled(
+        &self,
+        bytes: &[u8],
+        options: &CanonicalCodecOptions,
+    ) -> Result<Vec<Vec<u8>>> {
+        let control = CapturedCanonicalCodecControl::capture(options, true)?;
+        control.check()?;
+        let installed = self.verify_and_install()?;
+        let archive = type_bridge_contract::projected_record::ProjectedArchive::decode_with_limits(
+            bytes,
+            control.input_limits(),
+        )
+        .map_err(canonical_input_error)?;
+        control.check_record_count(archive.records().len())?;
+        control.check_decoded_weight(archive.decoded_weight())?;
+        let mut records = Vec::with_capacity(archive.records().len());
+        let mut output_bytes = 0_usize;
+        for record in archive.records() {
+            control.check()?;
+            let _ = type_bridge_orm::materialize_record(&installed, record)
+                .map_err(canonical_codec_error)?;
+            let encoded = record
+                .encode_with_limits(control.output_limits())
+                .map_err(canonical_output_error)?;
+            output_bytes = output_bytes.saturating_add(encoded.len());
+            control.check_output_bytes(output_bytes)?;
+            records.push(encoded);
+        }
+        control.check()?;
+        Ok(records)
     }
 
     /// Return the semantic schema fingerprint JSON string (generated-code SPI).
@@ -138,7 +799,8 @@ impl<S: Schema> SchemaPackage<S> {
         self.declared_schema_json
     }
 
-    /// Perform runtime fingerprint verification and derive provider descriptors (crate-internal).
+    /// Verify all package evidence and derive provider descriptors without provider I/O
+    /// (crate-internal).
     pub(crate) fn verify_and_install(
         &self,
     ) -> Result<Arc<type_bridge_orm::InstalledRuntimeProjection>> {
@@ -152,24 +814,59 @@ impl<S: Schema> SchemaPackage<S> {
         Arc<type_bridge_orm::InstalledRuntimeProjection>,
         Option<VerifiedSchemaAuthority>,
     )> {
-        let authority = self.verify_embedded_authority()?;
-        let projection = type_bridge_orm::InstalledRuntimeProjection::from_verified_rust_json(
+        let authority_backed = self.schema_authority_json.is_some();
+        // The detached semantic-fingerprint string is canonical evidence slot
+        // zero. Empty bytes are the generated Rust install boundary's only
+        // representable absence; every nonempty shape remains merely present
+        // until the binding-neutral rejection classifier sees the failure.
+        let semantic_fingerprint_presence = if self.semantic_fingerprint_json.is_empty() {
+            SdkProjectionEvidenceSlotPresence::Absent
+        } else {
+            SdkProjectionEvidenceSlotPresence::Present
+        };
+        let authority = self.verify_embedded_authority().map_err(|error| {
+            classify_admission_error(authority_backed, semantic_fingerprint_presence, error)
+        })?;
+        let mut projection = type_bridge_orm::InstalledRuntimeProjection::from_verified_rust_json(
             self.runtime_projection_json.as_bytes(),
             self.semantic_fingerprint_json.as_bytes(),
             self.projection_fingerprint_json.as_bytes(),
         )
-        .map_err(|err| Error::SchemaVerification {
-            message: err.to_string(),
-            source: Some(Box::new(err)),
+        .map_err(|err| {
+            classify_admission_error(
+                authority_backed,
+                semantic_fingerprint_presence,
+                Error::SchemaVerification {
+                    message: err.to_string(),
+                    source: Some(Box::new(err)),
+                },
+            )
         })?;
+        if let Some(authority) = authority.as_ref() {
+            projection = projection.with_declared_schema_identity(
+                authority
+                    .resolved_schema()
+                    .declared_identity_fingerprint()
+                    .clone(),
+            );
+        }
+        let successor =
+            authority_backed || projection_uses_ordered_collections(projection.projection());
         if authority.as_ref().is_some_and(|authority| {
             authority.resolved_schema().semantic_fingerprint()
                 != projection.projection().semantic_fingerprint()
         }) {
-            return Err(authority_error(
-                "generated schema authority does not match the installed runtime projection",
+            return Err(classify_admission_error(
+                successor,
+                semantic_fingerprint_presence,
+                authority_error(
+                    "generated schema authority does not match the installed runtime projection",
+                ),
             ));
         }
+        verify_rust_projection_evidence(&projection, authority.as_ref()).map_err(|error| {
+            classify_admission_error(successor, semantic_fingerprint_presence, error)
+        })?;
         Ok((Arc::new(projection), authority))
     }
 
@@ -224,10 +921,83 @@ impl<S: Schema> SchemaPackage<S> {
     }
 }
 
+fn verify_rust_projection_evidence(
+    installed: &type_bridge_orm::InstalledRuntimeProjection,
+    authority: Option<&VerifiedSchemaAuthority>,
+) -> Result<()> {
+    let projection = installed.projection();
+    let emitter = RustEmitter::new();
+    if projection.config() != &ProjectionConfig::rust() {
+        return Err(authority_error(
+            "generated Rust schema package does not match the exact shipped projection configuration",
+        ));
+    }
+    if let Some(authority) = authority {
+        return type_bridge_schema_codegen::verify_projection_evidence(authority, projection)
+            .map_err(|error| Error::SchemaVerification {
+                message: "generated Rust schema package does not match compiled schema authority and exact shipped emitter evidence"
+                    .into(),
+                source: Some(Box::new(error)),
+            });
+    }
+
+    if projection_uses_ordered_collections(projection) {
+        return Err(authority_error(
+            "ordered Rust schema packages require compiled schema authority",
+        ));
+    }
+    let resources = emitter
+        .code_resources()
+        .map_err(|error| Error::SchemaVerification {
+            message: "legacy Rust schema package resource evidence cannot be reconstructed".into(),
+            source: Some(Box::new(error)),
+        })?;
+    if projection.generator_handlers() != emitter.generator_handlers()
+        || projection.code_resources() != resources
+    {
+        return Err(authority_error(
+            "legacy Rust schema package does not match the exact shipped handler and resource evidence",
+        ));
+    }
+
+    Ok(())
+}
+
+fn projection_uses_ordered_collections(projection: &RuntimeProjection) -> bool {
+    projection.models().values().any(|model| {
+        model
+            .query_tokens()
+            .fields()
+            .values()
+            .any(|field| !field.multiplicity().collection_mode().is_unordered())
+            || model
+                .query_tokens()
+                .roles()
+                .values()
+                .any(|role| !role.multiplicity().collection_mode().is_unordered())
+    })
+}
+
 fn authority_error(message: &'static str) -> Error {
     Error::SchemaVerification {
         message: message.into(),
         source: None,
+    }
+}
+
+fn projection_evidence_error(presence: SdkProjectionEvidenceSlotPresence) -> Error {
+    Error::projection_evidence_rejection(presence)
+}
+
+fn classify_admission_error(
+    successor: bool,
+    semantic_fingerprint_presence: SdkProjectionEvidenceSlotPresence,
+    error: Error,
+) -> Error {
+    if successor {
+        projection_evidence_error(semantic_fingerprint_presence)
+    } else {
+        error
     }
 }
 
@@ -242,12 +1012,20 @@ mod tests {
     use type_bridge_contract::managed_scope::ManagedScopeId;
     use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
     use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
+    use type_bridge_contract::sdk_diagnostic::{
+        SdkDiagnosticCategory, SdkDiagnosticDetailValue, SdkDiagnosticPathSegment,
+        SdkExecutionDiagnostic,
+    };
     use type_bridge_schema::{
         ManagedDeltaContext, SCHEMA_AUTHORITY_FINGERPRINT_CANONICALIZATION,
         SCHEMA_AUTHORITY_FINGERPRINT_DOMAIN, SchemaDocumentSet, build_schema_authority,
         encode_schema_authority, normalize_documents, project, resolve,
     };
     use type_bridge_schema_codegen::{PythonEmitter, RustEmitter};
+    use type_bridge_schema_migration::{
+        MigrationHistoryGraph, VerifiedMigrationHistoryBundle,
+        encode_verified_migration_history_bundle,
+    };
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct TestSchema;
@@ -259,6 +1037,15 @@ mod tests {
     }
 
     fn generated_package(source: &str, scope: &str) -> SchemaPackage<TestSchema> {
+        package_with_evidence(source, scope, None, None)
+    }
+
+    fn package_with_evidence(
+        source: &str,
+        scope: &str,
+        handlers: Option<Vec<type_bridge_contract::projection::ProjectionHandler>>,
+        resources: Option<Vec<type_bridge_contract::projection::CodeResourceDigest>>,
+    ) -> SchemaPackage<TestSchema> {
         let documents =
             SchemaDocumentSet::parse([(DocumentId::new("authority-test.yaml").unwrap(), source)])
                 .unwrap();
@@ -276,12 +1063,14 @@ mod tests {
         )
         .unwrap();
         let emitter = RustEmitter::new();
+        let handlers = handlers.unwrap_or_else(|| emitter.generator_handlers_for(&resolved));
+        let resources = resources.unwrap_or_else(|| emitter.code_resources_for(&resolved).unwrap());
         let projection = project(
             &resolved,
             BindingTarget::Rust,
             &ProjectionConfig::rust(),
-            &emitter.generator_handlers(),
-            &emitter.code_resources().unwrap(),
+            &handlers,
+            &resources,
         )
         .unwrap();
         SchemaPackage::new_with_authority(
@@ -292,6 +1081,29 @@ mod tests {
             leak(encode_declared_schema(&declared).unwrap()),
             Box::leak(scope.to_owned().into_boxed_str()),
             "typedb-3.12.1/v1",
+        )
+    }
+
+    fn without_authority(package: SchemaPackage<TestSchema>) -> SchemaPackage<TestSchema> {
+        SchemaPackage::new(
+            package.semantic_fingerprint_json,
+            package.projection_fingerprint_json,
+            package.runtime_projection_json,
+        )
+    }
+
+    fn with_runtime_projection(
+        package: SchemaPackage<TestSchema>,
+        runtime_projection_json: &'static str,
+    ) -> SchemaPackage<TestSchema> {
+        SchemaPackage::new_with_authority(
+            package.semantic_fingerprint_json,
+            package.projection_fingerprint_json,
+            runtime_projection_json,
+            package.schema_authority_json.unwrap(),
+            package.declared_schema_json.unwrap(),
+            package.managed_scope_id.unwrap(),
+            package.semantic_profile_id.unwrap(),
         )
     }
 
@@ -310,8 +1122,74 @@ mod tests {
         )
     }
 
+    fn with_semantic_fingerprint(
+        package: SchemaPackage<TestSchema>,
+        semantic_fingerprint_json: &'static str,
+    ) -> SchemaPackage<TestSchema> {
+        SchemaPackage::new_with_authority(
+            semantic_fingerprint_json,
+            package.projection_fingerprint_json,
+            package.runtime_projection_json,
+            package.schema_authority_json.unwrap(),
+            package.declared_schema_json.unwrap(),
+            package.managed_scope_id.unwrap(),
+            package.semantic_profile_id.unwrap(),
+        )
+    }
+
     fn canonical(value: &Value) -> &'static str {
         leak(to_canonical_json(value).unwrap())
+    }
+
+    #[test]
+    fn authority_backed_package_opens_and_fences_generated_migration_catalogs_offline() {
+        let package = generated_package(
+            "format: typebridge.schema/v2\nentities:\n  person: {}\n",
+            "rust-migration-catalog",
+        );
+        let graph = MigrationHistoryGraph::from_verified(std::iter::empty::<
+            type_bridge_schema_migration::VerifiedSchemaMigrationManifest,
+        >())
+        .unwrap();
+        let bundle = VerifiedMigrationHistoryBundle::from_graph(&graph).unwrap();
+        let bytes = encode_verified_migration_history_bundle(&bundle).unwrap();
+        let catalog = package
+            .open_migration_catalog(&bytes)
+            .expect("verified generated bundle opens without provider I/O");
+        assert!(catalog.is_empty());
+        assert_eq!(catalog.fingerprint(), bundle.fingerprint());
+        let preview = catalog
+            .preview_apply(Vec::new(), None)
+            .expect("empty generated catalog previews without provider I/O");
+        assert!(preview.is_apply());
+        assert!(preview.is_empty());
+        assert!(!preview.execution_authorized());
+        let approvals = preview
+            .approval_builder()
+            .finish()
+            .expect("empty exact approval set freezes");
+        assert!(approvals.is_empty());
+        let executable = preview
+            .authorize(&approvals)
+            .expect("fresh plan is authorized from the exact preview owner");
+        assert!(executable.execution_authorized());
+        let foreign_preview = catalog.preview_apply(Vec::new(), None).unwrap();
+        let mismatch = foreign_preview
+            .authorize(&approvals)
+            .expect_err("approval owner mismatch rejects");
+        assert!(
+            mismatch
+                .message()
+                .contains("migration_approval_plan_mismatch")
+        );
+
+        let mut tampered: Value = serde_json::from_slice(&bytes).unwrap();
+        tampered["format"] = Value::String("foreign.history/v1".to_owned());
+        let tampered = to_canonical_json(&tampered).unwrap();
+        let error = package
+            .open_migration_catalog(&tampered)
+            .expect_err("foreign bundle rejects before provider I/O");
+        assert!(matches!(error, Error::SchemaVerification { .. }));
     }
 
     fn resign(value: &mut Value) {
@@ -323,6 +1201,114 @@ mod tests {
             &content,
         );
         value["authority_fingerprint"] = serde_json::to_value(fingerprint).unwrap();
+    }
+
+    fn assert_projection_evidence_mismatch(error: &Error) {
+        assert_eq!(error.category(), crate::ErrorCategory::Integrity);
+        assert_eq!(error.model_validation_phase(), None);
+        assert_eq!(error.code(), Some("projection_evidence_mismatch"));
+        assert_eq!(
+            error.path().expect("evidence mismatch has a stable path"),
+            ["projection_evidence"],
+        );
+        assert_eq!(
+            error.message(),
+            "Generated projection evidence does not match the verified schema package",
+        );
+        assert!(matches!(
+            error
+                .diagnostic_path()
+                .expect("evidence mismatch retains its typed path"),
+            [crate::ErrorPathSegment::Argument(name)] if name == "projection_evidence"
+        ));
+        assert!(
+            error
+                .details()
+                .expect("evidence mismatch retains typed details")
+                .is_empty()
+        );
+
+        let diagnostic = std::error::Error::source(error)
+            .and_then(|source| source.downcast_ref::<SdkExecutionDiagnostic>())
+            .expect("the public Rust error retains the common SDK diagnostic");
+        assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
+        assert!(matches!(
+            diagnostic.path(),
+            [SdkDiagnosticPathSegment::Argument(name)]
+                if name.as_str() == "projection_evidence"
+        ));
+        assert!(diagnostic.details().is_empty());
+    }
+
+    fn assert_missing_semantic_fingerprint(error: &Error) {
+        assert_eq!(error.category(), crate::ErrorCategory::Integrity);
+        assert_eq!(error.model_validation_phase(), None);
+        assert_eq!(error.code(), Some("projection_evidence_mismatch"));
+        assert_eq!(
+            error.path().expect("missing evidence has a stable path"),
+            ["projection_evidence", "[0]", "semantic_schema_fingerprint",],
+        );
+        assert!(matches!(
+            error
+                .diagnostic_path()
+                .expect("missing evidence retains its typed path"),
+            [
+                crate::ErrorPathSegment::Argument(argument),
+                crate::ErrorPathSegment::Index(0),
+                crate::ErrorPathSegment::ContractIdentity(identity),
+            ] if argument == "projection_evidence"
+                && identity == "semantic_schema_fingerprint"
+        ));
+        assert_eq!(
+            error
+                .details()
+                .expect("missing evidence retains typed details"),
+            &std::collections::BTreeMap::from([
+                (
+                    "actual_occurrence_count".to_owned(),
+                    crate::ErrorDetail::Long(0),
+                ),
+                (
+                    "expected_occurrence_count".to_owned(),
+                    crate::ErrorDetail::Long(1),
+                ),
+                (
+                    "foreign_package".to_owned(),
+                    crate::ErrorDetail::Boolean(false),
+                ),
+            ]),
+        );
+
+        let diagnostic = std::error::Error::source(error)
+            .and_then(|source| source.downcast_ref::<SdkExecutionDiagnostic>())
+            .expect("the Rust error retains the exact common SDK diagnostic");
+        assert!(matches!(
+            diagnostic.path(),
+            [
+                SdkDiagnosticPathSegment::Argument(argument),
+                SdkDiagnosticPathSegment::Index(0),
+                SdkDiagnosticPathSegment::ContractIdentity(identity),
+            ] if argument.as_str() == "projection_evidence"
+                && identity.as_str() == "semantic_schema_fingerprint"
+        ));
+        assert_eq!(
+            diagnostic
+                .details()
+                .iter()
+                .map(|(name, value)| (name.as_str(), value))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "actual_occurrence_count",
+                    &SdkDiagnosticDetailValue::Count(0),
+                ),
+                (
+                    "expected_occurrence_count",
+                    &SdkDiagnosticDetailValue::Count(1),
+                ),
+                ("foreign_package", &SdkDiagnosticDetailValue::Boolean(false),),
+            ],
+        );
     }
 
     #[test]
@@ -354,7 +1340,226 @@ mod tests {
         let error = mismatched
             .verify()
             .expect_err("foreign semantic authority must not bind to the projection");
-        assert!(error.to_string().contains("installed runtime projection"));
+        assert_projection_evidence_mismatch(&error);
+    }
+
+    #[test]
+    fn ordered_package_requires_exact_successor_handler_and_compiled_authority() {
+        const ORDERED: &str = "format: typebridge.schema/v2\nattributes:\n  tag: { value: string }\nentities:\n  person:\n    owns:\n      tag:\n        card: 1\n        ordered: true\n        distinct: true\n";
+
+        let valid = generated_package(ORDERED, "rust-ordered-evidence");
+        let installed = valid.verify_and_install().unwrap();
+        assert_eq!(
+            installed.projection().generator_handlers(),
+            [type_bridge_contract::projection::ProjectionHandler::rust_v2()],
+        );
+        let resource_ids = installed
+            .projection()
+            .code_resources()
+            .iter()
+            .map(|resource| resource.id().as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            resource_ids,
+            [
+                "typebridge.generator.rust.cargo-toml",
+                "typebridge.generator.rust.runtime-source",
+            ],
+        );
+        assert_ne!(
+            installed.projection().code_resources(),
+            RustEmitter::new().code_resources().unwrap(),
+            "the ordered package must carry the successor runtime-resource digest",
+        );
+
+        let legacy = package_with_evidence(
+            ORDERED,
+            "rust-ordered-evidence",
+            Some(vec![
+                type_bridge_contract::projection::ProjectionHandler::rust_v1(),
+            ]),
+            Some(RustEmitter::new().code_resources().unwrap()),
+        );
+        let error = legacy
+            .verify()
+            .expect_err("an ordered package cannot claim the legacy Rust ledger");
+        assert_projection_evidence_mismatch(&error);
+
+        let authorityless = without_authority(valid);
+        let error = authorityless
+            .verify()
+            .expect_err("ordered packages require reconstructable schema authority");
+        assert_projection_evidence_mismatch(&error);
+
+        let diagnostic = authorityless
+            .generated_projection_validator()
+            .err()
+            .expect("ordered successor validation must reject the detached package");
+        assert_eq!(diagnostic.code(), "projection_evidence_mismatch");
+        assert_eq!(diagnostic.field(), "projection_evidence");
+    }
+
+    #[test]
+    fn package_rejects_missing_forged_and_foreign_resource_evidence() {
+        const UNORDERED: &str = "format: typebridge.schema/v2\nentities:\n  person: {}\n";
+        const ORDERED: &str = "format: typebridge.schema/v2\nattributes:\n  tag: { value: string }\nentities:\n  person:\n    owns:\n      tag:\n        card: 1\n        ordered: true\n";
+
+        let missing = package_with_evidence(
+            ORDERED,
+            "rust-resource-evidence",
+            Some(vec![
+                type_bridge_contract::projection::ProjectionHandler::rust_v2(),
+            ]),
+            Some(Vec::new()),
+        );
+        let error = missing
+            .verify()
+            .expect_err("ordered resource evidence is mandatory");
+        assert_projection_evidence_mismatch(&error);
+
+        let emitter = RustEmitter::new();
+        let documents =
+            SchemaDocumentSet::parse([(DocumentId::new("forged-resource.yaml").unwrap(), ORDERED)])
+                .unwrap();
+        let declared = normalize_documents(&documents).unwrap();
+        let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+        let resolved = resolve(&declared, &profile).unwrap();
+        let mut forged_resources = emitter.code_resources_for(&resolved).unwrap();
+        let first_id = forged_resources[0].id().as_str().to_owned();
+        forged_resources[0] = type_bridge_contract::projection::CodeResourceDigest::from_bytes(
+            first_id,
+            b"forged Rust emitter resource",
+        )
+        .unwrap();
+        let forged = package_with_evidence(
+            ORDERED,
+            "rust-resource-evidence",
+            Some(emitter.generator_handlers_for(&resolved)),
+            Some(forged_resources),
+        );
+        let error = forged
+            .verify()
+            .expect_err("self-consistent forged resource evidence must reject");
+        assert_projection_evidence_mismatch(&error);
+
+        let foreign_resources = type_bridge_schema_codegen::PythonEmitter::new()
+            .code_resources_for(&resolved)
+            .unwrap();
+        let foreign = package_with_evidence(
+            ORDERED,
+            "rust-resource-evidence",
+            Some(emitter.generator_handlers_for(&resolved)),
+            Some(foreign_resources),
+        );
+        let error = foreign
+            .verify()
+            .expect_err("foreign binding resource evidence must reject");
+        assert_projection_evidence_mismatch(&error);
+
+        let valid_legacy = generated_package(UNORDERED, "rust-resource-evidence");
+        let installed_legacy = valid_legacy.verify_and_install().unwrap();
+        assert_eq!(
+            installed_legacy.projection().generator_handlers(),
+            [type_bridge_contract::projection::ProjectionHandler::rust_v1()],
+        );
+        assert_eq!(
+            installed_legacy.projection().code_resources(),
+            RustEmitter::new().code_resources().unwrap(),
+        );
+        assert!(without_authority(valid_legacy).verify().is_ok());
+    }
+
+    #[test]
+    fn successor_admission_classifies_only_absent_detached_semantic_fingerprint() {
+        let package = generated_package(
+            "format: typebridge.schema/v2\nattributes:\n  tag: { value: string }\nentities:\n  person:\n    owns:\n      tag:\n        card: 1\n        ordered: true\n",
+            "rust-missing-semantic-evidence",
+        );
+        let malformed = with_semantic_fingerprint(package, "{")
+            .verify()
+            .expect_err("nonempty malformed semantic evidence must reject");
+        assert_projection_evidence_mismatch(&malformed);
+
+        let error = with_semantic_fingerprint(package, "")
+            .verify()
+            .expect_err("an absent detached semantic fingerprint must reject");
+        assert_missing_semantic_fingerprint(&error);
+    }
+
+    #[test]
+    fn package_rejects_stale_and_reordered_evidence() {
+        const UNORDERED: &str = "format: typebridge.schema/v2\nentities:\n  person: {}\n";
+        const ORDERED: &str = "format: typebridge.schema/v2\nattributes:\n  tag: { value: string }\nentities:\n  person:\n    owns:\n      tag:\n        card: 1\n        ordered: true\n";
+
+        let emitter = RustEmitter::new();
+        let ordered_documents =
+            SchemaDocumentSet::parse([(DocumentId::new("stale-resource.yaml").unwrap(), ORDERED)])
+                .unwrap();
+        let ordered_declared = normalize_documents(&ordered_documents).unwrap();
+        let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+        let ordered_resolved = resolve(&ordered_declared, &profile).unwrap();
+        let stale_successor = package_with_evidence(
+            UNORDERED,
+            "rust-stale-evidence",
+            Some(emitter.generator_handlers_for(&ordered_resolved)),
+            Some(emitter.code_resources_for(&ordered_resolved).unwrap()),
+        );
+        let error = stale_successor
+            .verify()
+            .expect_err("an unordered package cannot claim successor evidence");
+        assert_projection_evidence_mismatch(&error);
+
+        let ordered = generated_package(ORDERED, "rust-reordered-evidence");
+        let mut runtime: Value = serde_json::from_str(ordered.runtime_projection_json).unwrap();
+        runtime["code_resources"]
+            .as_array_mut()
+            .expect("runtime projection has a resource ledger")
+            .swap(0, 1);
+        let reordered = with_runtime_projection(ordered, canonical(&runtime));
+        let error = reordered
+            .verify()
+            .expect_err("resource ledger wire order is canonical and cannot be changed");
+        assert_projection_evidence_mismatch(&error);
+    }
+
+    #[test]
+    fn authority_backed_admission_normalizes_malformed_extra_and_duplicate_evidence() {
+        const ORDERED: &str = "format: typebridge.schema/v2\nattributes:\n  tag: { value: string }\nentities:\n  person:\n    owns:\n      tag:\n        card: 1\n        ordered: true\n";
+        let package = generated_package(ORDERED, "rust-malformed-evidence");
+
+        let malformed = with_envelope(package, "{")
+            .verify()
+            .expect_err("malformed authority evidence must reject");
+        assert_projection_evidence_mismatch(&malformed);
+
+        let runtime: Value = serde_json::from_str(package.runtime_projection_json).unwrap();
+        let resource = runtime["code_resources"]
+            .as_array()
+            .and_then(|resources| resources.first())
+            .cloned()
+            .expect("successor projection carries resource evidence");
+
+        let mut duplicate_runtime = runtime.clone();
+        duplicate_runtime["code_resources"]
+            .as_array_mut()
+            .unwrap()
+            .push(resource.clone());
+        let duplicate = with_runtime_projection(package, canonical(&duplicate_runtime))
+            .verify()
+            .expect_err("duplicate resource evidence must reject");
+        assert_projection_evidence_mismatch(&duplicate);
+
+        let mut extra_resource = resource;
+        extra_resource["id"] = Value::String("typebridge.generator.rust.zzz-extra".into());
+        let mut extra_runtime = runtime;
+        extra_runtime["code_resources"]
+            .as_array_mut()
+            .unwrap()
+            .push(extra_resource);
+        let extra = with_runtime_projection(package, canonical(&extra_runtime))
+            .verify()
+            .expect_err("extra resource evidence must reject");
+        assert_projection_evidence_mismatch(&extra);
     }
 
     #[test]
@@ -370,15 +1575,17 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("authority_fingerprint");
-        assert!(
-            with_envelope(package, canonical(&missing))
-                .verify()
-                .is_err()
-        );
+        let error = with_envelope(package, canonical(&missing))
+            .verify()
+            .expect_err("missing authority fingerprint must reject");
+        assert_projection_evidence_mismatch(&error);
 
         let mut stale = original;
         stale["authority_fingerprint"]["digest"] = "0".repeat(64).into();
-        assert!(with_envelope(package, canonical(&stale)).verify().is_err());
+        let error = with_envelope(package, canonical(&stale))
+            .verify()
+            .expect_err("stale authority fingerprint must reject");
+        assert_projection_evidence_mismatch(&error);
     }
 
     #[test]
@@ -392,11 +1599,10 @@ mod tests {
         let mut managed = original.clone();
         managed["content"]["managed_state"]["declared_identity"]["digest"] = "0".repeat(64).into();
         resign(&mut managed);
-        assert!(
-            with_envelope(package, canonical(&managed))
-                .verify()
-                .is_err()
-        );
+        let error = with_envelope(package, canonical(&managed))
+            .verify()
+            .expect_err("detached managed-state evidence must reject");
+        assert_projection_evidence_mismatch(&error);
 
         let mut capabilities = original.clone();
         capabilities["content"]["required_capabilities"] =
@@ -405,7 +1611,7 @@ mod tests {
         let error = with_envelope(package, canonical(&capabilities))
             .verify()
             .expect_err("unsupported artifact capability must fail closed");
-        assert!(error.to_string().contains("UnsupportedCapability"));
+        assert_projection_evidence_mismatch(&error);
 
         let mut version = original;
         version["content"]["authority_version"] =
@@ -414,7 +1620,7 @@ mod tests {
         let error = with_envelope(package, canonical(&version))
             .verify()
             .expect_err("unsupported artifact version must fail closed");
-        assert!(error.to_string().contains("UnsupportedVersion"));
+        assert_projection_evidence_mismatch(&error);
     }
 
     #[test]
@@ -427,7 +1633,7 @@ mod tests {
         let error = with_envelope(package, oversized)
             .verify()
             .expect_err("oversize authority must fail before parsing");
-        assert!(error.to_string().contains("byte ceiling"));
+        assert_projection_evidence_mismatch(&error);
 
         let detached: SchemaPackage<TestSchema> = SchemaPackage::new_with_authority(
             package.semantic_fingerprint_json,
@@ -441,7 +1647,7 @@ mod tests {
         let error = detached
             .verify()
             .expect_err("detached scope must not override compiled authority");
-        assert!(error.to_string().contains("extracted query evidence"));
+        assert_projection_evidence_mismatch(&error);
     }
 
     #[test]
@@ -486,6 +1692,9 @@ mod tests {
         match tampered_package.verify() {
             Err(err) => {
                 use std::error::Error as _;
+                assert_eq!(err.category(), crate::ErrorCategory::Schema);
+                assert_eq!(err.code(), None);
+                assert_eq!(err.path(), None);
                 assert!(err.source().is_some());
             }
             Ok(_) => panic!("tampered schema package must fail verification"),
@@ -528,6 +1737,9 @@ mod tests {
         let py_package: SchemaPackage<TestSchema> =
             SchemaPackage::new(semantic_ref, projection_ref, runtime_ref);
         let err = py_package.verify().unwrap_err();
+        assert_eq!(err.category(), crate::ErrorCategory::Schema);
+        assert_eq!(err.code(), None);
+        assert_eq!(err.path(), None);
         assert!(err.to_string().contains("target mismatch") || err.to_string().contains("Rust"));
     }
 }

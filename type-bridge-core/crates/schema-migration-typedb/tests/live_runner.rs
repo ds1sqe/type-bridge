@@ -154,8 +154,8 @@ async fn databases() -> (Arc<Database>, Arc<Database>) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.1 server"]
-async fn legacy_writer_fence_survives_a_live_struct_valued_schema_export_on_3_12_1() {
+#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+async fn legacy_writer_fence_survives_a_live_struct_valued_schema_export_on_3_12_3() {
     let (managed, journal) = databases().await;
     let fingerprint = "0000000000000000000000000000000000000000000000000000000000000000";
     let mut schema = managed
@@ -364,8 +364,8 @@ fn write_manifest(directory: &Path, manifest: &VerifiedSchemaMigrationManifest) 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.1 server"]
-async fn runner_applies_discovered_chain_incrementally_on_3_12_1() {
+#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+async fn runner_applies_discovered_chain_incrementally_on_3_12_3() {
     let (managed, journal) = databases().await;
     let context = context();
     let genesis = declared_facts(Vec::new());
@@ -432,7 +432,7 @@ async fn runner_applies_discovered_chain_incrementally_on_3_12_1() {
         .expect("first directory apply");
     assert!(matches!(
         outcome,
-        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied)
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
     ));
     let export = managed.schema_text().await.expect("post-apply export");
     assert!(export.contains("entity person"), "{export}");
@@ -462,7 +462,7 @@ async fn runner_applies_discovered_chain_incrementally_on_3_12_1() {
         .expect("incremental apply from the live applied basis");
     assert!(matches!(
         outcome,
-        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied)
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
     ));
     let export = managed.schema_text().await.expect("post-increment export");
     assert!(export.contains("company"), "{export}");
@@ -514,8 +514,8 @@ async fn runner_applies_discovered_chain_incrementally_on_3_12_1() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.1 server"]
-async fn runner_rejects_fresh_list_projection_drift_before_target_or_checkpoint_on_3_12_1() {
+#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+async fn runner_rejects_fresh_list_projection_drift_before_target_or_checkpoint_on_3_12_3() {
     let (managed, journal) = databases().await;
     let context = context();
     let genesis = declared_facts(Vec::new());
@@ -565,7 +565,7 @@ async fn runner_rejects_fresh_list_projection_drift_before_target_or_checkpoint_
         .expect("apply scalar source schema");
     assert!(matches!(
         outcome,
-        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied)
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
     ));
 
     let mut drift = managed
@@ -629,7 +629,7 @@ async fn runner_rejects_fresh_list_projection_drift_before_target_or_checkpoint_
         .expect("rejected migration was not checkpointed");
     assert!(matches!(
         outcome,
-        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied)
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
     ));
     let final_export = managed.schema_text().await.expect("final export");
     assert!(final_export.contains("entity company"), "{final_export}");
@@ -645,8 +645,8 @@ async fn runner_rejects_fresh_list_projection_drift_before_target_or_checkpoint_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.1 server"]
-async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1() {
+#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3() {
     let (managed, journal) = databases().await;
     let context = context();
     let genesis = declared_facts(Vec::new());
@@ -694,7 +694,7 @@ async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1() {
         .expect("apply the two-migration chain");
     assert!(matches!(
         outcome,
-        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied)
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
     ));
     let export = managed.schema_text().await.expect("post-apply export");
     assert!(export.contains("entity company"), "{export}");
@@ -726,7 +726,7 @@ async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1() {
         .expect("approved head rollback");
     assert!(matches!(
         outcome,
-        MigrationDirectoryRollbackOutcome::Executed(MigrationRollbackOutcome::RolledBack)
+        MigrationDirectoryRollbackOutcome::Executed(MigrationRollbackOutcome::RolledBack { .. })
     ));
     let export = managed.schema_text().await.expect("post-rollback export");
     assert!(!export.contains("entity company"), "{export}");
@@ -770,7 +770,7 @@ async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1() {
         .expect("re-apply the rolled-back head");
     assert!(matches!(
         outcome,
-        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied)
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
     ));
     let export = managed.schema_text().await.expect("post-reapply export");
     assert!(export.contains("entity company"), "{export}");
@@ -786,8 +786,8 @@ async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.1 server"]
-async fn legacy_writer_allows_reserved_label_collisions_without_frozen_capabilities_on_3_12_1() {
+#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+async fn legacy_writer_allows_reserved_label_collisions_without_frozen_capabilities_on_3_12_3() {
     let (managed, journal) = databases().await;
     let collision_schema = r#"define
 attribute typebridge-internal-v2-control-scope, value string;
@@ -841,8 +841,8 @@ entity typebridge-internal-v2-legacy-cutover;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.1 server"]
-async fn runner_imports_a_completed_legacy_frontier_on_3_12_1() {
+#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+async fn runner_imports_a_completed_legacy_frontier_on_3_12_3() {
     let (managed, journal) = databases().await;
     let context = context();
 
@@ -950,7 +950,7 @@ async fn runner_imports_a_completed_legacy_frontier_on_3_12_1() {
         .expect("import the completed legacy frontier");
     assert!(matches!(
         outcome,
-        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied)
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
     ));
 
     // The cutover pair is durable and exactly fingerprint-bound. Archival
@@ -1081,7 +1081,7 @@ async fn runner_imports_a_completed_legacy_frontier_on_3_12_1() {
         .expect("apply the post-bridge migration");
     assert!(matches!(
         outcome,
-        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied)
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
     ));
     let export = managed.schema_text().await.expect("post-import export");
     assert!(export.contains("entity company"), "{export}");
@@ -1160,8 +1160,8 @@ fun compatibility-writer-probe($candidate: person) -> { person }:
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.1 server"]
-async fn runner_verifies_the_migration_state_triad_on_3_12_1() {
+#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+async fn runner_verifies_the_migration_state_triad_on_3_12_3() {
     let (managed, journal) = databases().await;
     let context = context();
     let genesis = declared_facts(Vec::new());
@@ -1224,7 +1224,7 @@ async fn runner_verifies_the_migration_state_triad_on_3_12_1() {
         .expect("apply the chain");
     assert!(matches!(
         outcome,
-        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied)
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
     ));
 
     // A coherent triad verifies clean.

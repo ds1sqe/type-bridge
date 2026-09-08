@@ -13,10 +13,12 @@ use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::ValueTypeTag;
 
 use super::reserved::{
-    MODEL_RESERVED_NAMES, PUBLIC_RUNTIME_NAMES, PUBLIC_SCHEMA_NAMES, is_typescript_keyword,
+    MODEL_RESERVED_NAMES, ORDERED_PUBLIC_RUNTIME_NAMES, PUBLIC_RUNTIME_NAMES, PUBLIC_SCHEMA_NAMES,
+    is_typescript_keyword,
 };
 use crate::{
-    EmbeddedAuthority, GeneratedPackage, documentation_annotation, invalid, model_documentation,
+    EmbeddedAuthority, GeneratedPackage, MIGRATION_HISTORY_BUNDLE_RESOURCE,
+    documentation_annotation, invalid, model_documentation, projection_uses_ordered_collections,
 };
 
 macro_rules! canonical_text {
@@ -59,6 +61,11 @@ pub(super) fn render(
             "src/models.ts".to_owned(),
             render_models(projection)?.into_bytes(),
         ),
+        (
+            "src/node-fs.d.ts".to_owned(),
+            b"declare module \"node:fs\" {\n  export function readFileSync(path: URL): Uint8Array;\n}\n"
+                .to_vec(),
+        ),
         ("src/runtime.ts".to_owned(), runtime.to_vec()),
         (
             "src/schema.ts".to_owned(),
@@ -69,6 +76,7 @@ pub(super) fn render(
             render_structs(projection)?.into_bytes(),
         ),
         ("tsconfig.json".to_owned(), tsconfig_json.to_vec()),
+        (MIGRATION_HISTORY_BUNDLE_RESOURCE.to_owned(), Vec::new()),
     ])
 }
 
@@ -77,6 +85,11 @@ fn header() -> &'static str {
 }
 
 fn render_index(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
+    let install = if projection_uses_ordered_collections(projection) {
+        "__installOrderedRuntimeProjectionPackage"
+    } else {
+        "__installRuntimeProjectionPackage"
+    };
     let names = projection
         .emission()
         .model_shells()
@@ -90,7 +103,7 @@ fn render_index(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(format!(
-        "{}import {{ SCHEMA_AUTHORITY_JSON }} from \"./authority.js\";\nimport {{ __installRuntimeProjectionPackage }} from \"./runtime.js\";\nimport {{ {} }} from \"./models.js\";\nimport {{ PROJECTION_FINGERPRINT_JSON, RUNTIME_PROJECTION_JSON, SEMANTIC_SCHEMA_FINGERPRINT_JSON }} from \"./schema.js\";\n\n__installRuntimeProjectionPackage(\n  RUNTIME_PROJECTION_JSON,\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  [{}],\n  SCHEMA_AUTHORITY_JSON,\n);\n\nexport * from \"./runtime.js\";\nexport * from \"./models.js\";\nexport * from \"./structs.js\";\nexport * from \"./functions.js\";\nexport * from \"./schema.js\";\n",
+        "{}import {{ readFileSync as _readFileSync }} from \"node:fs\";\nimport {{ MigrationCatalog, openMigrationCatalog as _openMigrationCatalog }} from \"@type-bridge/node\";\nimport {{ SCHEMA_AUTHORITY_JSON }} from \"./authority.js\";\nimport {{ {install} }} from \"./runtime.js\";\nimport {{ {} }} from \"./models.js\";\nimport {{ PROJECTION_FINGERPRINT_JSON, RUNTIME_PROJECTION_JSON, SEMANTIC_SCHEMA_FINGERPRINT_JSON }} from \"./schema.js\";\n\n{install}(\n  RUNTIME_PROJECTION_JSON,\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  [{}],\n  SCHEMA_AUTHORITY_JSON,\n);\n\nexport {{ MigrationCatalog }};\nexport const MIGRATION_HISTORY_RESOURCE = \"typebridge/migration-history.json\" as const;\nexport function openMigrationCatalog(): MigrationCatalog {{\n  const authority = new TextEncoder().encode(SCHEMA_AUTHORITY_JSON);\n  const history = _readFileSync(new URL(`../${{MIGRATION_HISTORY_RESOURCE}}`, import.meta.url));\n  return _openMigrationCatalog(authority, history);\n}}\n\nexport * from \"./runtime.js\";\nexport * from \"./models.js\";\nexport * from \"./structs.js\";\nexport * from \"./functions.js\";\nexport * from \"./schema.js\";\n",
         header(),
         names.join(", "),
         names.join(", "),
@@ -107,8 +120,18 @@ fn render_authority(authority: &EmbeddedAuthority) -> Result<String, Diagnostic>
 
 fn render_models(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
-    output.push_str(
-        "import {\n  defineFieldToken,\n  defineModel,\n  defineRoleToken,\n  type CompleteFacet,\n  type FieldToken,\n  type ModelToken,\n  type ReferenceFacet,\n  type RoleToken,\n} from \"./runtime.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
+    let ordered = projection_uses_ordered_collections(projection);
+    let (define_model, model_token) = if ordered {
+        (
+            "defineOrderedModel as defineModel",
+            "type OrderedModelToken as ModelToken",
+        )
+    } else {
+        ("defineModel", "type ModelToken")
+    };
+    let _ = write!(
+        output,
+        "import {{\n  defineFieldToken,\n  {define_model},\n  defineRoleToken,\n  type CompleteFacet,\n  type FieldToken,\n  {model_token},\n  type ReferenceFacet,\n  type RoleToken,\n}} from \"./runtime.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
     );
 
     for id in projection.emission().model_shells() {
@@ -316,7 +339,7 @@ fn render_model_shell(
     };
     let reference_factory = match model.reference_read().target_name() {
         Some(reference) => format!(
-            "(iid: string, keys: {name}ReferenceInput) => {}",
+            "(iid: string | null, keys: {name}ReferenceInput) => {}",
             reference.as_str()
         ),
         None => "undefined".to_owned(),
@@ -346,7 +369,7 @@ fn render_model_link(
     };
     let reference_factory = match model.reference_read().target_name() {
         Some(reference) => format!(
-            "(iid: string, keys: {name}ReferenceInput) => {}",
+            "(iid: string | null, keys: {name}ReferenceInput) => {}",
             reference.as_str()
         ),
         None => "undefined".to_owned(),
@@ -535,7 +558,8 @@ fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> 
             .get(id)
             .ok_or_else(|| facet_error("emission plan references an absent struct"))?;
         let name = structure.target_name().as_str();
-        let id = identity_literal!(structure.id());
+        let id = TypeId::new(TypeKind::Struct, structure.id().label().as_str())?;
+        let id = identity_literal!(&id);
         let _ = writeln!(
             output,
             "export interface {name} extends StructValue<{id}> {{"
@@ -575,8 +599,9 @@ fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> 
         for field in structure.fields() {
             let _ = writeln!(
                 output,
-                "    {{ name: {}, optional: {} }},",
+                "    {{ name: {}, valueType: {}, optional: {} }},",
                 js_string(field.target_name().as_str())?,
+                canonical_text!(&field.value_type()),
                 field.optional()
             );
         }
@@ -592,8 +617,10 @@ fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> 
 fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
     output.push_str(
-        "import { defineFunctionToken, type FunctionToken } from \"./runtime.js\";\nimport type * as Models from \"./models.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
+        "import { defineFunctionToken, type BoundVar, type FunctionCall, type FunctionInput, type FunctionToken, type QueryMatchMode, QuerySession, RemoteQuerySession } from \"./runtime.js\";\nimport type * as Models from \"./models.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
     );
+    let mut emitted_inputs = BTreeSet::new();
+    let mut emitted_calls = BTreeSet::new();
     for id in projection.emission().functions() {
         let function = projection
             .functions()
@@ -626,17 +653,146 @@ fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic
             )
         };
         let returns = function_return(projection, function.returns())?;
+        let supported_return = match function.returns() {
+            FunctionReturnProjection::Scalar(element) if !element.optional() => {
+                if let ProjectedTypeRef::Scalar(domain) = element.type_ref() {
+                    Some(*domain)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let supported = supported_return.is_some()
+            && function.parameters().iter().all(|parameter| {
+                matches!(
+                    parameter.type_ref(),
+                    ProjectedTypeRef::Model(_) | ProjectedTypeRef::Scalar(_)
+                )
+            });
+        let token_name = if supported {
+            format!("__tb{}Token", upper_first(function.target_name().as_str()))
+        } else {
+            function.target_name().as_str().to_owned()
+        };
         if let Some(documentation) = documentation_annotation(function.annotations()) {
             render_jsdoc(&mut output, documentation);
         }
         let _ = writeln!(
             output,
-            "export const {name}: FunctionToken<{id}, {arguments}, {returns}> = defineFunctionToken({{\n  id: {id},\n  name: {},\n  metadata: {},\n}});\n",
+            "{}const {token_name}: FunctionToken<{id}, {arguments}, {returns}> = defineFunctionToken({{\n  id: {id},\n  name: {},\n  metadata: {},\n}});\n",
+            if supported { "" } else { "export " },
             js_string(name)?,
             canonical_text!(function)
         );
+
+        let Some(return_domain) = supported_return.filter(|_| supported) else {
+            continue;
+        };
+        let call_alias = format!("{}Call", scalar_domain_name(return_domain));
+        if emitted_calls.insert(call_alias.clone()) {
+            let _ = writeln!(
+                output,
+                "export type {call_alias} = FunctionCall<{}>;",
+                scalar_type(return_domain)
+            );
+        }
+        for domain in
+            function
+                .parameters()
+                .iter()
+                .filter_map(|parameter| match parameter.type_ref() {
+                    ProjectedTypeRef::Scalar(domain) => Some(*domain),
+                    _ => None,
+                })
+        {
+            let alias = format!("{}Input", scalar_domain_name(domain));
+            if emitted_inputs.insert(alias.clone()) {
+                let constructor = format!("{}Input", scalar_domain_function_name(domain));
+                let scalar = scalar_type(domain);
+                let _ = writeln!(
+                    output,
+                    "export type {alias} = FunctionInput<{scalar}>;\nexport function {constructor}<Value extends {{ readonly value: {scalar} }}>(session: QuerySession | RemoteQuerySession, value: Value): {alias} {{\n  return session.__functionInput(value);\n}}"
+                );
+            }
+        }
+
+        let mut generics = Vec::new();
+        let mut parameters = vec!["session: QuerySession | RemoteQuerySession".to_owned()];
+        let mut arguments_expr = Vec::new();
+        for (index, parameter) in function.parameters().iter().enumerate() {
+            let parameter_name = parameter.target_name().as_str();
+            match parameter.type_ref() {
+                ProjectedTypeRef::Model(model_use) => {
+                    let model_name = projection
+                        .models()
+                        .get(model_use.id())
+                        .ok_or_else(|| facet_error("function parameter references absent model"))?
+                        .target_name()
+                        .as_str();
+                    generics.push(format!("Model{index} extends Models.{model_name}"));
+                    generics.push(format!("Mode{index} extends QueryMatchMode"));
+                    parameters.push(format!(
+                        "{parameter_name}: BoundVar<Model{index}, Mode{index}>"
+                    ));
+                }
+                ProjectedTypeRef::Scalar(domain) => parameters.push(format!(
+                    "{parameter_name}: {}Input | FunctionCall<{}>",
+                    scalar_domain_name(*domain),
+                    scalar_type(*domain)
+                )),
+                ProjectedTypeRef::Struct(_) => unreachable!("struct parameters were filtered"),
+            }
+            arguments_expr.push(parameter_name.to_owned());
+        }
+        let generic_clause = if generics.is_empty() {
+            String::new()
+        } else {
+            format!("<{}>", generics.join(", "))
+        };
+        let _ = writeln!(
+            output,
+            "export function {name}{generic_clause}({}): {call_alias} {{\n  return session.__callFunction({token_name}, [{}]);\n}}\n",
+            parameters.join(", "),
+            arguments_expr.join(", "),
+        );
     }
     Ok(output)
+}
+
+fn scalar_domain_name(tag: ValueTypeTag) -> &'static str {
+    match tag {
+        ValueTypeTag::String => "String",
+        ValueTypeTag::Long => "Integer",
+        ValueTypeTag::Double => "Double",
+        ValueTypeTag::Boolean => "Boolean",
+        ValueTypeTag::Date => "Date",
+        ValueTypeTag::DateTime => "DateTime",
+        ValueTypeTag::DateTimeTz => "DateTimeTz",
+        ValueTypeTag::Decimal => "Decimal",
+        ValueTypeTag::Duration => "Duration",
+    }
+}
+
+fn scalar_domain_function_name(tag: ValueTypeTag) -> &'static str {
+    match tag {
+        ValueTypeTag::String => "string",
+        ValueTypeTag::Long => "integer",
+        ValueTypeTag::Double => "double",
+        ValueTypeTag::Boolean => "boolean",
+        ValueTypeTag::Date => "date",
+        ValueTypeTag::DateTime => "dateTime",
+        ValueTypeTag::DateTimeTz => "dateTimeTz",
+        ValueTypeTag::Decimal => "decimal",
+        ValueTypeTag::Duration => "duration",
+    }
+}
+
+fn upper_first(value: &str) -> String {
+    let mut characters = value.chars();
+    characters.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(characters).collect()
+    })
 }
 
 fn render_schema(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
@@ -929,6 +1085,11 @@ fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic>
     let mut public = BTreeMap::<String, String>::new();
     for name in PUBLIC_RUNTIME_NAMES.iter().chain(PUBLIC_SCHEMA_NAMES) {
         public.insert((*name).to_owned(), "generated runtime".to_owned());
+    }
+    if projection_uses_ordered_collections(projection) {
+        for name in ORDERED_PUBLIC_RUNTIME_NAMES {
+            public.insert((*name).to_owned(), "generated ordered runtime".to_owned());
+        }
     }
     for id in projection.emission().model_shells() {
         let model = projection

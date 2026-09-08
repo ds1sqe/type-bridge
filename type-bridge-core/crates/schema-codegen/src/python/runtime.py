@@ -5,23 +5,32 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import (
     TYPE_CHECKING,
+    Any,
     Literal,
     Never,
     Protocol,
     Self,
+    TypedDict,
     TypeGuard,
+    Unpack,
     cast,
     overload,
     runtime_checkable,
 )
+from weakref import ReferenceType, ref
 
 from type_bridge._runtime_projection import GeneratedEntityProjection, GeneratedRelationProjection
 
 if TYPE_CHECKING:
-    from type_bridge_core import PyProjectedModelManager, PyRuntimeProjection
+    from type_bridge_core import (
+        PyProjectedManagerFilter,
+        PyProjectedModelManager,
+        PyRuntimeProjection,
+        QueryCancellation,
+    )
 
     from type_bridge.session import Database, TransactionContext
 
@@ -29,6 +38,15 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+class _CanonicalCodecOptions(TypedDict, total=False):
+    cancellation: QueryCancellation | None
+    timeout_milliseconds: int | None
+    max_input_bytes: int | None
+    max_output_bytes: int | None
+    max_depth: int | None
+    max_members: int | None
 
 
 def _is_object_dict(value: object) -> TypeGuard[dict[object, object]]:
@@ -87,7 +105,7 @@ def load_mapping(source: str) -> Mapping[str, object]:
 
 
 class FieldToken:
-    __slots__ = ("owner", "fact")
+    __slots__ = ("owner", "fact", "__weakref__")
 
     def __init__(
         self,
@@ -96,6 +114,32 @@ class FieldToken:
     ) -> None:
         self.owner = owner
         self.fact = fact
+
+
+_issued_field_tokens: dict[int, tuple[ReferenceType[FieldToken], type[ModelBase], str, str]] = {}
+
+
+def _issue_field_token(
+    owner: type[ModelBase],
+    name: str,
+    fact: Mapping[str, object],
+) -> FieldToken:
+    token = FieldToken(owner, fact)
+    token_id = id(token)
+
+    def forget(reference: ReferenceType[FieldToken]) -> None:
+        issued = _issued_field_tokens.get(token_id)
+        if issued is not None and issued[0] is reference:
+            del _issued_field_tokens[token_id]
+
+    token_reference = ref(token, forget)
+    _issued_field_tokens[token_id] = (
+        token_reference,
+        owner,
+        name,
+        _canonical(fact),
+    )
+    return token
 
 
 class RoleToken:
@@ -110,16 +154,40 @@ class RoleToken:
         self.fact = fact
 
 
+_FUNCTION_REF_BRAND = object()
+_function_refs: dict[FunctionRef, tuple[str, Mapping[str, object]]]
+
+
 class FunctionRef:
-    __slots__ = ("id", "signature")
+    __slots__ = ()
 
     def __init__(
         self,
+        brand: object,
         function_id: str,
         signature: Mapping[str, object],
     ) -> None:
-        self.id = function_id
-        self.signature = signature
+        if brand is not _FUNCTION_REF_BRAND:
+            raise TypeError("schema-function tokens can only be created by generated code")
+        _function_refs[self] = (function_id, signature)
+
+
+_function_refs = {}
+CREATE_ABSENT: Any = object()
+
+
+def function_ref_for_projection(
+    function_id: str,
+    signature: Mapping[str, object],
+) -> FunctionRef:
+    return FunctionRef(_FUNCTION_REF_BRAND, function_id, signature)
+
+
+def function_identity_for_query(function: FunctionRef) -> tuple[str, Mapping[str, object]]:
+    identity = _function_refs.get(function)
+    if type(function) is not FunctionRef or identity is None:
+        raise TypeError("schema-function token is not installed by this generated package")
+    return identity
 
 
 class ModelBase:
@@ -156,6 +224,30 @@ class ModelBase:
 
     def runtime_values(self) -> dict[str, object]:
         return self._values
+
+    def encode_create(self, **options: Unpack[_CanonicalCodecOptions]) -> bytes:
+        return self.__runtime_projection__.encode_record_controlled(
+            "create", type(self), self, **options
+        )
+
+    @classmethod
+    def decode_create(cls, data: bytes, **options: Unpack[_CanonicalCodecOptions]) -> Self:
+        return cast(
+            Self,
+            cls.__runtime_projection__.decode_record_controlled("create", cls, data, **options),
+        )
+
+    def encode_snapshot(self, **options: Unpack[_CanonicalCodecOptions]) -> bytes:
+        return self.__runtime_projection__.encode_record_controlled(
+            "snapshot", type(self), self, **options
+        )
+
+    @classmethod
+    def decode_snapshot(cls, data: bytes, **options: Unpack[_CanonicalCodecOptions]) -> Self:
+        return cast(
+            Self,
+            cls.__runtime_projection__.decode_record_controlled("snapshot", cls, data, **options),
+        )
 
     def initialize_runtime_values(
         self,
@@ -228,6 +320,68 @@ class CrudHook[ModelT: ModelBase]:
 
 class ProjectedModelNotFoundError(LookupError):
     """A strict generated-manager mutation could not resolve one input."""
+
+
+class ProjectedManagerComparison(StrEnum):
+    """Closed comparison algebra for canonical generated-manager filters."""
+
+    EQ = "eq"
+    NE = "ne"
+    LT = "lt"
+    LTE = "lte"
+    GT = "gt"
+    GTE = "gte"
+
+
+_MISSING = object()
+
+
+class ProjectedModelFilter[ModelT: ModelBase]:
+    """Persistent exact-model filter with identity-strict ``first``."""
+
+    __slots__ = ("_model", "_native")
+
+    def __init__(
+        self,
+        model: type[ModelT],
+        native: PyProjectedManagerFilter,
+    ) -> None:
+        self._model = model
+        self._native = native
+
+    def where(
+        self,
+        field: FieldToken | object,
+        comparison: ProjectedManagerComparison | object,
+        value: object,
+    ) -> ProjectedModelFilter[ModelT]:
+        if not isinstance(comparison, ProjectedManagerComparison):
+            raise TypeError("canonical manager comparison must use ProjectedManagerComparison")
+        issued = _issued_field_tokens.get(id(field)) if isinstance(field, FieldToken) else None
+        if issued is None or issued[0]() is not field:
+            native = self._native.reject_unissued_field()
+        else:
+            _, owner, name, metadata_json = issued
+            native = self._native.where_field(
+                owner,
+                name,
+                metadata_json,
+                comparison.value,
+                value,
+            )
+        return ProjectedModelFilter(self._model, native)
+
+    def all(self) -> list[ModelT]:
+        return cast(list[ModelT], self._native.all())
+
+    def first(self) -> ModelT | None:
+        return cast(ModelT | None, self._native.first())
+
+    def count(self) -> int:
+        return self._native.count()
+
+    def exists(self) -> bool:
+        return self._native.exists()
 
 
 class ProjectedModelManager[ModelT: ModelBase]:
@@ -309,7 +463,7 @@ class ProjectedModelManager[ModelT: ModelBase]:
         if instance_or_iid is None:
             if not self._filtered:
                 raise TypeError("generated manager delete() without an instance requires filter()")
-            instances = self.all()
+            instances = cast(list[ModelT], self._native.legacy_all())
             self._run_pre_many(CrudEvent.PRE_DELETE, instances)
             self._native.delete_many([cast(str, instance.iid) for instance in instances])
             self._run_post_many(CrudEvent.POST_DELETE, instances)
@@ -348,7 +502,7 @@ class ProjectedModelManager[ModelT: ModelBase]:
     def update_with(self, function: Callable[[ModelT], None]) -> list[ModelT]:
         if not self._filtered:
             raise TypeError("generated manager update_with() requires filter()")
-        instances = self.all()
+        instances = cast(list[ModelT], self._native.legacy_all())
         for instance in instances:
             function(instance)
         return self.update_many(instances)
@@ -360,6 +514,21 @@ class ProjectedModelManager[ModelT: ModelBase]:
             self._hooks,
             filtered=True,
         )
+
+    def where(
+        self,
+        field: FieldToken | object = _MISSING,
+        comparison: ProjectedManagerComparison | object = _MISSING,
+        value: object = _MISSING,
+    ) -> ProjectedModelFilter[ModelT]:
+        canonical = ProjectedModelFilter(self._model, self._native.canonical_filter())
+        if field is _MISSING and comparison is _MISSING and value is _MISSING:
+            return canonical
+        if field is _MISSING or comparison is _MISSING or value is _MISSING:
+            raise TypeError("where() requires either zero arguments or field, comparison, value")
+        if not isinstance(comparison, ProjectedManagerComparison):
+            raise TypeError("canonical manager comparison must use ProjectedManagerComparison")
+        return canonical.where(field, comparison, value)
 
     def all(self) -> list[ModelT]:
         return cast(list[ModelT], self._native.all())
@@ -428,6 +597,18 @@ class AttributeBase(ModelBase):
 
     def runtime_attribute_value(self) -> object:
         return self._attribute_value
+
+    def encode_attribute(self, **options: Unpack[_CanonicalCodecOptions]) -> bytes:
+        return self.__runtime_projection__.encode_record_controlled(
+            "attribute", type(self), self, **options
+        )
+
+    @classmethod
+    def decode_attribute(cls, data: bytes, **options: Unpack[_CanonicalCodecOptions]) -> Self:
+        return cast(
+            Self,
+            cls.__runtime_projection__.decode_record_controlled("attribute", cls, data, **options),
+        )
 
     def initialize_runtime_attribute(self, value: object, scalar: str) -> None:
         if not _matches_scalar(value, scalar):
@@ -650,21 +831,37 @@ class ReferenceBase:
     __projection__: Mapping[str, object]
     __type_id__: str
     __model_form__: str
-    _iid: str
+    _iid: str | None
     _values: dict[str, object]
 
     @property
-    def iid(self) -> str:
+    def iid(self) -> str | None:
         return self._iid
 
     def runtime_values(self) -> dict[str, object]:
         return self._values
 
+    def encode_reference(self, **options: Unpack[_CanonicalCodecOptions]) -> bytes:
+        return _require_package_runtime_projection().encode_record_controlled(
+            "reference", type(self), self, **options
+        )
+
+    @classmethod
+    def decode_reference(cls, data: bytes, **options: Unpack[_CanonicalCodecOptions]) -> Self:
+        return cast(
+            Self,
+            _require_package_runtime_projection().decode_record_controlled(
+                "reference", cls, data, **options
+            ),
+        )
+
     def initialize_runtime_reference(
         self,
-        iid: str,
+        iid: str | None,
         values: Mapping[str, object],
     ) -> None:
+        if iid is not None and not iid:
+            raise TypeError("projected IID must be null or a non-empty string")
         self._iid = iid
         self._values = dict(values)
 
@@ -672,6 +869,19 @@ class ReferenceBase:
 class StructValueBase:
     __slots__ = ()
     __struct_id__: str
+    __runtime_projection__: PyRuntimeProjection
+
+    def encode(self, **options: Unpack[_CanonicalCodecOptions]) -> bytes:
+        return self.__runtime_projection__.encode_record_controlled(
+            "struct", type(self), self, **options
+        )
+
+    @classmethod
+    def decode(cls, data: bytes, **options: Unpack[_CanonicalCodecOptions]) -> Self:
+        return cast(
+            Self,
+            cls.__runtime_projection__.decode_record_controlled("struct", cls, data, **options),
+        )
 
     def __setattr__(self, name: str, value: object) -> None:
         raise AttributeError("projected struct values are immutable")
@@ -720,7 +930,7 @@ class _ProjectedField:
         if instance is None:
             if self.role:
                 return RoleToken(owner, self.fact)
-            return FieldToken(owner, self.fact)
+            return _issue_field_token(owner, self.name, self.fact)
         values = instance.runtime_values()
         if self.name not in values:
             raise AttributeError(self.name)
@@ -954,25 +1164,93 @@ _package_runtime_projection: PyRuntimeProjection | None = None
 _package_models: tuple[type[ModelBase], ...] = ()
 
 
+def _require_package_runtime_projection() -> PyRuntimeProjection:
+    if _package_runtime_projection is None:
+        raise RuntimeError("generated package runtime projection is not installed")
+    return _package_runtime_projection
+
+
+def encode_archive(records: Sequence[bytes]) -> bytes:
+    return _require_package_runtime_projection().encode_archive(records)
+
+
+def decode_archive(data: bytes) -> list[bytes]:
+    return _require_package_runtime_projection().decode_archive(data)
+
+
+def encode_archive_controlled(
+    records: Sequence[bytes],
+    *,
+    cancellation: QueryCancellation | None = None,
+    timeout_milliseconds: int | None = None,
+    max_input_bytes: int | None = None,
+    max_output_bytes: int | None = None,
+    max_depth: int | None = None,
+    max_records: int | None = None,
+    max_members: int | None = None,
+) -> bytes:
+    return _require_package_runtime_projection().encode_archive_controlled(
+        records,
+        cancellation=cancellation,
+        timeout_milliseconds=timeout_milliseconds,
+        max_input_bytes=max_input_bytes,
+        max_output_bytes=max_output_bytes,
+        max_depth=max_depth,
+        max_records=max_records,
+        max_members=max_members,
+    )
+
+
+def decode_archive_controlled(
+    data: bytes,
+    *,
+    cancellation: QueryCancellation | None = None,
+    timeout_milliseconds: int | None = None,
+    max_input_bytes: int | None = None,
+    max_output_bytes: int | None = None,
+    max_depth: int | None = None,
+    max_records: int | None = None,
+    max_members: int | None = None,
+) -> list[bytes]:
+    return _require_package_runtime_projection().decode_archive_controlled(
+        data,
+        cancellation=cancellation,
+        timeout_milliseconds=timeout_milliseconds,
+        max_input_bytes=max_input_bytes,
+        max_output_bytes=max_output_bytes,
+        max_depth=max_depth,
+        max_records=max_records,
+        max_members=max_members,
+    )
+
+
 def install_runtime_projection(
     projection_json: str,
     semantic_fingerprint_json: str,
     projection_fingerprint_json: str,
     models: Sequence[tuple[type[ModelBase], type[ReferenceBase] | None]],
+    schema_authority: bytes,
+    structs: Sequence[type[StructValueBase]] = (),
 ) -> None:
     global _package_models, _package_runtime_projection
     if _package_runtime_projection is not None:
         raise RuntimeError("generated package runtime projection is already installed")
-    from type_bridge._runtime_projection import install_runtime_projection as install_native
+    from type_bridge._runtime_projection import (
+        install_runtime_projection_with_authority as install_native,
+    )
 
     installed = install_native(
         projection_json,
         semantic_fingerprint_json,
         projection_fingerprint_json,
         models,
+        schema_authority,
+        structs=structs,
     )
     for model, _reference in models:
         model.__runtime_projection__ = installed
+    for structure in structs:
+        structure.__runtime_projection__ = installed
     _package_models = tuple(model for model, _reference in models)
     _package_runtime_projection = installed
     from ._query import install_projection

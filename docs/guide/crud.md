@@ -27,6 +27,7 @@ package.
 | `delete(value_or_iid)` | Delete by IID, or resolve a detached Python model by its projected key. |
 | `get_by_iid(iid)` | Return one hydrated model or `None`. |
 | `filter(**lookups)` | Return a new immutable filtered manager. |
+| `where(field, comparison, value)` | Start an immutable exact field-token filter. |
 | `all()` / `first()` | Materialize all or the first match. |
 | `count()` / `exists()` | Execute database-side terminals. |
 
@@ -52,8 +53,10 @@ model's projected key contract.
 
 ## Filters
 
-Generated managers support `eq`, `ne`, `gt`, `gte`, `lt`, and `lte` suffixes.
-No suffix means equality.
+Generated managers retain the compatibility `filter(...)` surface for IID,
+raw-scalar, rich-operator, and filtered-mutation workflows. Its scalar lookup
+suffixes are `eq`, `ne`, `gt`, `gte`, `lt`, and `lte`; no suffix means
+equality.
 
 ```python
 adults = Person.manager(db).filter(age__gte=18)
@@ -82,6 +85,41 @@ names:
 Person.manager(db).filter({ score__gte: Score.create(18n) }).all();
 Person.manager(db).filter({ scoreGte__eq: ScoreGte.create(8n) }).all();
 ```
+
+For an exact generated-field contract, use the distinct immutable `where`
+filter. It accepts an issued field token, one of the closed six comparisons,
+and the field's exact generated attribute value. In TypeScript this surface is
+emitted by ordered successor packages; legacy unordered packages remain
+byte-exact.
+
+```python
+from app_models import ProjectedManagerComparison
+
+root = Person.manager(db).where()
+adult = root.where(Person.age, ProjectedManagerComparison.GTE, Age(18))
+assert root.count() >= adult.count()  # the parent remains reusable
+
+ada = Person.manager(db).where(
+    Person.person_id,
+    ProjectedManagerComparison.EQ,
+    PersonId("ada"),
+).first()
+```
+
+```ts
+const root = Person.manager(db).where();
+const adult = root.where(Person.fields.age, "gte", Age.create(18n));
+const ada = Person.manager(db)
+  .where(Person.fields.personId, "eq", PersonId.create("ada"))
+  .first();
+```
+
+Canonical filters expose only `where`, `all`, `first`, `count`, and `exists`.
+They cannot mutate or accept string/IID/rich-operator escapes. Their `first`
+is identity-strict: every effective reference-key field needs one semantically
+consistent equality predicate. An unkeyed, partial, conflicting, or otherwise
+nonsingular filter fails before provider I/O. Compatibility-manager `first()`
+retains its released arbitrary-first behavior.
 
 ## Relation managers
 
@@ -134,15 +172,21 @@ with db.transaction("write") as transaction:
 The context commits on normal exit and rolls back when an exception escapes.
 A generated manager never commits a caller-owned transaction. Read transactions
 can be shared with `Person.query(transaction)` for multiple terminal calls.
+Canonical manager filters can borrow that same read transaction; each terminal
+leaves it active for sibling filters and typed queries.
 
 ## Language differences
 
 - Generated Python values are mutable; `update(value)` replaces the attached
-  IID.
+  IID. Canonical filters accept only field tokens issued by that generated
+  Python package instance.
 - Generated TypeScript values are immutable; use
-  `update(iid, replacement)`.
+  `update(iid, replacement)`. Canonical filters require the package-local
+  token identity retained by the generated runtime.
 - Generated Rust managers are async and use generated create/model/reference
-  types; write transactions expose transaction-bound managers.
+  types; write transactions expose transaction-bound managers. Rust rejects
+  foreign generated token types statically and revalidates token metadata at
+  runtime.
 
 These are language-boundary differences. Entity/relation CRUD, IID behavior,
 batch atomicity, filtering, terminals, and commit/rollback outcomes are covered

@@ -162,7 +162,7 @@ fn additive_policy() -> MigrationSafetyPolicy {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.1 server"]
+#[ignore = "requires an isolated TypeDB 3.12.3 server"]
 async fn foreign_journal_schema_rejects_without_mutating_either_database() {
     let (managed, journal) = databases().await;
     let mut transaction = journal
@@ -201,7 +201,7 @@ async fn foreign_journal_schema_rejects_without_mutating_either_database() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.1 server"]
+#[ignore = "requires an isolated TypeDB 3.12.3 server"]
 async fn different_provider_authority_rejects_before_mutating_either_database() {
     let (managed, journal) = databases().await;
     let (address, _, username, password, options) = connection();
@@ -241,7 +241,7 @@ async fn different_provider_authority_rejects_before_mutating_either_database() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.1 server"]
+#[ignore = "requires an isolated TypeDB 3.12.3 server"]
 async fn missing_and_wrong_journal_owner_reject_unchanged_before_managed_fence() {
     let (managed, journal) = databases().await;
     let mut transaction = journal
@@ -308,7 +308,7 @@ async fn missing_and_wrong_journal_owner_reject_unchanged_before_managed_fence()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires an isolated TypeDB 3.12.1 server"]
+#[ignore = "requires an isolated TypeDB 3.12.3 server"]
 async fn concurrent_bootstrap_is_singleton_and_read_only_verify_never_bootstraps() {
     let (managed, journal) = databases().await;
     let scope_id = ManagedScopeId::new("concurrent-journal-scope").unwrap();
@@ -384,8 +384,8 @@ async fn concurrent_bootstrap_is_singleton_and_read_only_verify_never_bootstraps
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.1 server"]
-async fn control_schema_and_fenced_lease_round_trip_on_3_12_1() {
+#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+async fn control_schema_and_fenced_lease_round_trip_on_3_12_3() {
     let (managed_database, journal_database) = databases().await;
     let scope_id = ManagedScopeId::new("journal-live-scope").expect("managed scope id");
     let context = context_for_scope(scope_id.clone());

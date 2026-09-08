@@ -1,8 +1,9 @@
 //! `type-bridge` — the V2 workspace command-line interface.
 //!
 //! `schema check`, `schema generate`, `migration make`, and `migration
-//! plan` run without any network I/O. `migration apply`, `migration
-//! verify`, and `migration adopt` connect through one named workspace
+//! plan`, and rollback preview run without any network I/O. `migration apply`,
+//! `migration rollback --execute`, `migration verify`, and `migration adopt`
+//! connect through one named workspace
 //! environment: credentials stay symbolic environment references resolved
 //! only at command time, and application requires the environment's
 //! explicit `migrate: true` opt-in.
@@ -18,7 +19,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 #[cfg(test)]
 use type_bridge_schema::SystemSchemaSourceService;
 use type_bridge_schema_migration::MigrationGenerationOutcome;
@@ -27,13 +28,17 @@ use type_bridge_workspace::{
     ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, SecretReference,
     SecretReferenceService, TypeBridgeConfigSpec, TypeBridgeWorkspace, TypeBridgeWorkspaceServices,
     WorkspaceDirectoryAuthority, WorkspaceEnvironment, WorkspaceRoot, WorkspaceServiceError,
-    WorkspaceTransportPolicy,
+    WorkspaceTransportPolicy, c_symbol_prefix_for_app_label,
 };
+
+mod build_identity {
+    include!(concat!(env!("OUT_DIR"), "/cli_build_identity.rs"));
+}
 
 #[derive(Parser)]
 #[command(
     name = "type-bridge",
-    version,
+    version = build_identity::CLI_VERSION,
     about = "TypeBridge V2 workspace commands"
 )]
 struct Cli {
@@ -79,6 +84,9 @@ enum MigrationCommand {
         /// Descriptive migration name; the ordinal prefix is allocated.
         #[arg(long)]
         name: String,
+        /// Closed backfill-intent YAML inside the configured migration directory.
+        #[arg(long)]
+        backfill_intent: Option<PathBuf>,
     },
     /// Order the committed chain and report each manifest's safety class.
     Plan,
@@ -97,6 +105,24 @@ enum MigrationCommand {
         #[arg(long)]
         environment: String,
     },
+    /// Preview or explicitly execute rollback of named applied migrations.
+    Rollback {
+        /// The manifest environment whose exact database pair is targeted.
+        #[arg(long)]
+        environment: String,
+        /// Remove one exact compound migration identity (app/name); repeat as needed.
+        #[arg(long = "remove", required = true)]
+        removals: Vec<String>,
+        /// Approve one destructive rollback by compound id (app/name).
+        #[arg(long = "approve")]
+        approvals: Vec<String>,
+        /// Execute the previewed rollback; omission is provider-free preview only.
+        #[arg(long)]
+        execute: bool,
+        /// Select stable human or machine-readable output.
+        #[arg(long, value_enum, default_value_t = RollbackOutput::Text)]
+        output: RollbackOutput,
+    },
     /// Adopt a completed archived V1 history as the canonical genesis.
     Adopt {
         /// The manifest environment holding the migrated v1 database.
@@ -109,6 +135,12 @@ enum MigrationCommand {
         #[arg(long, default_value = "0000_archive_frontier")]
         name: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum RollbackOutput {
+    Text,
+    Json,
 }
 
 /// Symbolic secret references stay unresolved during offline commands.
@@ -194,8 +226,24 @@ fn run(cli: &Cli) -> Result<(), String> {
             command: SchemaCommand::ExportDeclared { output },
         } => run_schema_export_declared(&workspace, output),
         Command::Migration { command } => match command {
-            MigrationCommand::Make { name } => {
+            MigrationCommand::Make {
+                name,
+                backfill_intent,
+            } => {
                 let directory = workspace.ensure_migration_directory().map_err(display)?;
+                if let Some(intent) = backfill_intent {
+                    let generated = workspace
+                        .author_backfill_migration_in(&directory, name, intent)
+                        .map_err(display)?;
+                    let path = directory.display_path().join(generated.file_name());
+                    println!(
+                        "wrote {}\n  safety: {:?}\n  preview: {}",
+                        path.display(),
+                        generated.manifest().safety(),
+                        path.with_file_name(generated.preview_file_name()).display(),
+                    );
+                    return Ok(());
+                }
                 match workspace
                     .migration_make_in(&directory, name)
                     .map_err(display)?
@@ -231,6 +279,20 @@ fn run(cli: &Cli) -> Result<(), String> {
             MigrationCommand::Verify { environment } => {
                 run_connected(&workspace, environment, ConnectedAction::Verify)
             }
+            MigrationCommand::Rollback {
+                environment,
+                removals,
+                approvals,
+                execute,
+                output,
+            } => run_migration_rollback(
+                &workspace,
+                environment,
+                removals,
+                approvals,
+                *execute,
+                *output,
+            ),
             MigrationCommand::Adopt {
                 environment,
                 archive_directory,
@@ -264,6 +326,132 @@ fn run(cli: &Cli) -> Result<(), String> {
                 Ok(())
             }
         },
+    }
+}
+
+fn run_migration_rollback(
+    workspace: &TypeBridgeWorkspace,
+    environment: &str,
+    removals: &[String],
+    approvals: &[String],
+    execute: bool,
+    output: RollbackOutput,
+) -> Result<(), String> {
+    if workspace.config().environment(environment).is_none() {
+        return Err(format!(
+            "unknown environment {environment:?}; rollback requires an exact workspace environment binding"
+        ));
+    }
+    let directory = workspace.open_migration_directory().map_err(display)?;
+    let graph = workspace
+        .discover_migrations_in(&directory)
+        .map_err(display)?;
+    let removals = parse_migration_ids(&graph, removals, "rollback removal")?;
+    let _ = bind_rollback_approvals(&graph, approvals)?;
+    let applied = graph
+        .manifests()
+        .map(|(id, _)| id.clone())
+        .collect::<BTreeSet<_>>();
+    let lowering = type_bridge_schema_migration::SchemaLoweringBinding::current(
+        workspace.delta_context().available_capabilities().clone(),
+    )
+    .map_err(display)?;
+    let plan = type_bridge_schema_migration::build_verified_migration_rollback_preview(
+        &graph,
+        &applied,
+        &removals,
+        workspace.delta_context(),
+        &lowering,
+    )
+    .map_err(display)?;
+    render_rollback_preview(environment, &plan, execute, output)?;
+    if !execute {
+        return Ok(());
+    }
+    run_connected(
+        workspace,
+        environment,
+        ConnectedAction::Rollback {
+            removals,
+            approvals: approvals.to_vec(),
+        },
+    )
+}
+
+fn render_rollback_preview(
+    environment: &str,
+    plan: &type_bridge_schema_migration::VerifiedMigrationRollbackPlan,
+    execute: bool,
+    output: RollbackOutput,
+) -> Result<(), String> {
+    let order = plan
+        .rollbacks()
+        .iter()
+        .map(|rollback| {
+            format!(
+                "{}/{}",
+                rollback.manifest().id().app_label().as_str(),
+                rollback.manifest().id().name().as_str()
+            )
+        })
+        .collect::<Vec<_>>();
+    let target = plan
+        .remaining_applied()
+        .iter()
+        .map(|id| format!("{}/{}", id.app_label().as_str(), id.name().as_str()))
+        .collect::<Vec<_>>();
+    let safety = plan
+        .rollbacks()
+        .iter()
+        .map(|rollback| rollback_safety_wire(rollback.rollback_safety()).to_owned())
+        .collect::<Vec<_>>();
+    let plan_identity = plan
+        .rollbacks()
+        .iter()
+        .map(|rollback| rollback.digest().to_hex())
+        .collect::<Vec<_>>()
+        .join(":");
+    let reverse_backfills = plan
+        .rollbacks()
+        .iter()
+        .map(|rollback| rollback.backfills().len())
+        .sum::<usize>();
+    match output {
+        RollbackOutput::Text => println!(
+            "rollback preview\n  environment: {environment}\n  basis: committed-history\n  plan identity: {plan_identity}\n  order: {}\n  target applied: {}\n  safety: {}\n  reverse backfills: {reverse_backfills}\n  execution requested: {execute}",
+            order.join(", "),
+            target.join(", "),
+            safety.join(", "),
+        ),
+        RollbackOutput::Json => {
+            let strings = |values: &[String]| {
+                values
+                    .iter()
+                    .map(|value| format!("\"{value}\""))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            println!(
+                "{{\"basis\":\"committed-history\",\"environment\":\"{environment}\",\"execute\":{execute},\"format\":\"typebridge.migration-rollback-preview/v1\",\"order\":[{}],\"plan_identity\":\"{plan_identity}\",\"reverse_backfills\":{reverse_backfills},\"safety\":[{}],\"target_applied\":[{}]}}",
+                strings(&order),
+                strings(&safety),
+                strings(&target),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn rollback_safety_wire(safety: type_bridge_schema::SafetyClass) -> &'static str {
+    match safety {
+        type_bridge_schema::SafetyClass::FormalOnly => "formal_only",
+        type_bridge_schema::SafetyClass::SchemaMetadata => "schema_metadata",
+        type_bridge_schema::SafetyClass::Additive => "additive",
+        type_bridge_schema::SafetyClass::Conditional => "conditional",
+        type_bridge_schema::SafetyClass::BackfillRequired => "backfill_required",
+        type_bridge_schema::SafetyClass::Destructive => "destructive",
+        type_bridge_schema::SafetyClass::Opaque => "opaque",
+        type_bridge_schema::SafetyClass::Unsupported => "unsupported",
     }
 }
 
@@ -360,10 +548,11 @@ fn sanitize_migration_execution_outcome(
 
     let render_position = |position| match position {
         Position::TransactionGroup(ordinal) => format!("transaction group {ordinal}"),
+        Position::BackfillStep(ordinal) => format!("backfill step {ordinal}"),
         Position::ManifestCheckpoint => "manifest checkpoint".to_owned(),
     };
     match outcome {
-        Outcome::Applied => format!("{context}: applied"),
+        Outcome::Applied { .. } => format!("{context}: applied"),
         Outcome::RetrySafe {
             migration_id,
             position,
@@ -387,6 +576,37 @@ fn sanitize_migration_execution_outcome(
     }
 }
 
+fn sanitize_migration_rollback_outcome(
+    outcome: type_bridge_schema_migration::MigrationRollbackOutcome,
+) -> String {
+    use type_bridge_schema_migration::MigrationRollbackOutcome as Outcome;
+    match outcome {
+        Outcome::RolledBack { .. } => "rollback completed".to_owned(),
+        Outcome::RetrySafe {
+            migration_id,
+            step_ordinal,
+            diagnostic,
+        } => format!(
+            "rollback may be retried at {}/{} step {} [{}]",
+            migration_id.app_label().as_str(),
+            migration_id.name().as_str(),
+            step_ordinal,
+            diagnostic.code().as_str(),
+        ),
+        Outcome::RequiresExplicitRecovery {
+            migration_id,
+            step_ordinal,
+            diagnostic,
+        } => format!(
+            "rollback requires explicit recovery at {}/{} step {} [{}]",
+            migration_id.app_label().as_str(),
+            migration_id.name().as_str(),
+            step_ordinal,
+            diagnostic.code().as_str(),
+        ),
+    }
+}
+
 /// Generate every configured binding projection from the canonical schema.
 ///
 /// The resolved workspace schema is projected per configured target with
@@ -397,9 +617,92 @@ fn sanitize_migration_execution_outcome(
 /// with schema authority last; files not produced by an emitter are never
 /// touched or deleted.
 fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
+    run_schema_generate_with(workspace, |target, resolved, authority| {
+        generate_binding_package(target, resolved, authority, workspace.config().app_label())
+    })
+}
+
+fn generate_binding_package(
+    target: type_bridge_contract::projection::BindingTarget,
+    resolved: &type_bridge_schema::ResolvedSchema,
+    authority: &type_bridge_schema::VerifiedSchemaAuthority,
+    app_label: &type_bridge_contract::migration::MigrationAppLabel,
+) -> Result<type_bridge_schema_codegen::GeneratedPackage, String> {
     use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
-    use type_bridge_schema::{build_schema_authority, encode_schema_authority, project};
-    use type_bridge_schema_codegen::{PythonEmitter, RustEmitter, TypeScriptEmitter};
+    use type_bridge_schema::project;
+    use type_bridge_schema_codegen::{CEmitter, PythonEmitter, RustEmitter, TypeScriptEmitter};
+
+    match target {
+        BindingTarget::Python => {
+            let emitter = PythonEmitter::new();
+            let handlers = emitter.generator_handlers_for(resolved);
+            let resources = emitter.code_resources_for(resolved).map_err(display)?;
+            let projection = project(
+                resolved,
+                BindingTarget::Python,
+                &ProjectionConfig::python(),
+                &handlers,
+                &resources,
+            )
+            .map_err(display)?;
+            emitter.emit(&projection, authority)
+        }
+        BindingTarget::TypeScript => {
+            let emitter = TypeScriptEmitter::new();
+            let handlers = emitter.generator_handlers_for(resolved);
+            let resources = emitter.code_resources_for(resolved).map_err(display)?;
+            let projection = project(
+                resolved,
+                BindingTarget::TypeScript,
+                &ProjectionConfig::typescript(),
+                &handlers,
+                &resources,
+            )
+            .map_err(display)?;
+            emitter.emit(&projection, authority)
+        }
+        BindingTarget::Rust => {
+            let emitter = RustEmitter::new();
+            let handlers = emitter.generator_handlers_for(resolved);
+            let resources = emitter.code_resources_for(resolved).map_err(display)?;
+            let projection = project(
+                resolved,
+                BindingTarget::Rust,
+                &ProjectionConfig::rust(),
+                &handlers,
+                &resources,
+            )
+            .map_err(display)?;
+            emitter.emit(&projection, authority)
+        }
+        BindingTarget::C => {
+            let emitter = CEmitter::new();
+            let handlers = emitter.generator_handlers_for(resolved);
+            let resources = emitter.code_resources_for(resolved).map_err(display)?;
+            let config = ProjectionConfig::c(c_symbol_prefix_for_app_label(app_label));
+            let projection = project(resolved, BindingTarget::C, &config, &handlers, &resources)
+                .map_err(display)?;
+            emitter.emit(&projection, authority)
+        }
+        _ => {
+            return Err(format!(
+                "schema generation does not support binding target {}",
+                target.as_str()
+            ));
+        }
+    }
+    .map_err(display)
+}
+
+fn run_schema_generate_with(
+    workspace: &TypeBridgeWorkspace,
+    mut generate: impl FnMut(
+        type_bridge_contract::projection::BindingTarget,
+        &type_bridge_schema::ResolvedSchema,
+        &type_bridge_schema::VerifiedSchemaAuthority,
+    ) -> Result<type_bridge_schema_codegen::GeneratedPackage, String>,
+) -> Result<(), String> {
+    use type_bridge_schema::{build_schema_authority, encode_schema_authority};
 
     let outputs = workspace.config().outputs();
     let authority_output = workspace.config().schema_authority_output();
@@ -412,6 +715,10 @@ fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
     }
 
     let resolved = workspace.resolved_schema();
+    let migration_directory = workspace.ensure_migration_directory().map_err(display)?;
+    let migration_history = workspace
+        .migration_history_bundle_in(&migration_directory)
+        .map_err(display)?;
     let authority = build_schema_authority(
         workspace.declared_schema(),
         workspace.required_capabilities(),
@@ -425,45 +732,9 @@ fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
     // different semantic attempt.
     let mut packages = Vec::with_capacity(outputs.len());
     for (&target, directory) in outputs {
-        let package = match target {
-            BindingTarget::Python => {
-                let emitter = PythonEmitter::new();
-                let projection = project(
-                    resolved,
-                    BindingTarget::Python,
-                    &ProjectionConfig::python(),
-                    &emitter.generator_handlers(),
-                    &emitter.code_resources().map_err(display)?,
-                )
-                .map_err(display)?;
-                emitter.emit(&projection, &authority)
-            }
-            BindingTarget::TypeScript => {
-                let emitter = TypeScriptEmitter::new();
-                let projection = project(
-                    resolved,
-                    BindingTarget::TypeScript,
-                    &ProjectionConfig::typescript(),
-                    &emitter.generator_handlers(),
-                    &emitter.code_resources().map_err(display)?,
-                )
-                .map_err(display)?;
-                emitter.emit(&projection, &authority)
-            }
-            BindingTarget::Rust => {
-                let emitter = RustEmitter::new();
-                let projection = project(
-                    resolved,
-                    BindingTarget::Rust,
-                    &ProjectionConfig::rust(),
-                    &emitter.generator_handlers(),
-                    &emitter.code_resources().map_err(display)?,
-                )
-                .map_err(display)?;
-                emitter.emit(&projection, &authority)
-            }
-        }
-        .map_err(display)?;
+        let package = generate(target, resolved, &authority)?
+            .with_migration_history_bundle(&migration_history)
+            .map_err(display)?;
         packages.push((target, directory, package));
     }
 
@@ -507,11 +778,7 @@ fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
         println!(
             "generated {} file(s) for {} into {}",
             file_count,
-            match target {
-                BindingTarget::Python => "python",
-                BindingTarget::TypeScript => "typescript",
-                BindingTarget::Rust => "rust",
-            },
+            target.as_str(),
             display_root.display(),
         );
     }
@@ -523,6 +790,241 @@ fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod schema_generation_atomicity_tests {
+    use std::collections::BTreeMap;
+    use std::env;
+    use std::fs::OpenOptions;
+    use std::io::Write as _;
+
+    use super::*;
+    use serde_json::json;
+    use sha2::{Digest as _, Sha256};
+    use type_bridge_contract::codec::to_canonical_json;
+    use type_bridge_contract::projection::BindingTarget;
+
+    const ARTIFACT_OUTPUT_ENV: &str = "TYPE_BRIDGE_SDK_V3_ATOMIC_GENERATION_OUTPUT";
+    const ARTIFACT_SOURCE_PATH: &str = "type-bridge-core/crates/cli/src/lib.rs";
+    const ARTIFACT_FORMAT: &str = "typebridge.sdk-v3-artifact-observation/v1";
+    const MAX_ARTIFACT_BYTES: usize = 64 * 1024;
+
+    fn publish_atomic_generation_observation(observation: serde_json::Value) {
+        let Some(output) = env::var_os(ARTIFACT_OUTPUT_ENV) else {
+            return;
+        };
+        let output = PathBuf::from(output);
+        assert!(
+            output.is_absolute(),
+            "{ARTIFACT_OUTPUT_ENV} must be absolute"
+        );
+        let parent = output
+            .parent()
+            .expect("atomic-generation artifact path has a parent");
+        let parent_metadata =
+            fs::symlink_metadata(parent).expect("atomic-generation artifact parent is inspectable");
+        assert!(
+            parent_metadata.is_dir() && !parent_metadata.file_type().is_symlink(),
+            "atomic-generation artifact parent must be a real directory"
+        );
+        let source = include_bytes!("lib.rs");
+        let artifact = json!({
+            "format": ARTIFACT_FORMAT,
+            "semantic_profile": "typedb-3.12.1/v1",
+            "producer": {
+                "id": "type-bridge-cli.atomic-multibinding-v3-artifact",
+                "source": {
+                    "path": ARTIFACT_SOURCE_PATH,
+                    "sha256": format!("{:x}", Sha256::digest(source)),
+                },
+                "test_id": "schema_generation_atomicity_tests::injected_c_emitter_failure_preserves_all_four_ordered_packages",
+            },
+            "result": {
+                "observation_ref": "atomic_multibinding_generation",
+                "outcome": "passed",
+                "proof_kind": "artifact",
+                "observation": observation,
+            },
+        });
+        let mut bytes =
+            to_canonical_json(&artifact).expect("atomic-generation artifact encodes canonically");
+        bytes.push(b'\n');
+        assert!(
+            bytes.len() <= MAX_ARTIFACT_BYTES,
+            "atomic-generation artifact exceeds {MAX_ARTIFACT_BYTES} bytes"
+        );
+        let mut destination = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output)
+            .expect("atomic-generation artifact destination must be new");
+        if let Err(error) = destination
+            .write_all(&bytes)
+            .and_then(|()| destination.sync_all())
+        {
+            drop(destination);
+            let _ = fs::remove_file(&output);
+            panic!("atomic-generation artifact publication failed: {error}");
+        }
+    }
+
+    fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        let mut files = BTreeMap::new();
+        let mut directories = vec![root.to_path_buf()];
+        while let Some(directory) = directories.pop() {
+            for entry in fs::read_dir(&directory).expect("generated directory reads") {
+                let path = entry.expect("generated entry reads").path();
+                if path.is_dir() {
+                    directories.push(path);
+                } else {
+                    files.insert(
+                        path.strip_prefix(root)
+                            .expect("generated path is beneath its root")
+                            .to_path_buf(),
+                        fs::read(path).expect("generated file reads"),
+                    );
+                }
+            }
+        }
+        files
+    }
+
+    fn write_workspace(root: &Path, source: &str) -> PathBuf {
+        fs::create_dir_all(root.join("schema/fragments")).expect("schema directory creates");
+        fs::create_dir_all(root.join("migrations/v2")).expect("migration directory creates");
+        fs::write(
+            root.join("typebridge.yaml"),
+            "format: typebridge.workspace/v1\n\
+             schema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: ordered-atomic\n\
+             compatibility:\n  semantic-profile: typedb-3.12.1/v1\n\
+             migrations:\n  directory: migrations/v2\n  app-label: ordered_atomic\n\
+             bindings:\n  python:\n    output: generated/python\n  typescript:\n    output: generated/typescript\n  rust:\n    output: generated/rust\n  c:\n    output: generated/c\n\
+             artifacts:\n  schema-authority:\n    output: generated/schema-authority.json\n",
+        )
+        .expect("manifest writes");
+        fs::write(
+            root.join("schema/schema.yaml"),
+            "format: typebridge.schema-set/v1\nsources: [fragments/*.yaml]\n",
+        )
+        .expect("schema set writes");
+        fs::write(root.join("schema/fragments/model.yaml"), source).expect("schema writes");
+        root.join("typebridge.yaml")
+    }
+
+    #[test]
+    fn injected_c_emitter_failure_preserves_all_four_ordered_packages() {
+        let directory = tempfile::tempdir().expect("workspace directory");
+        let root = directory.path();
+        let manifest = write_workspace(
+            root,
+            "format: typebridge.schema/v2\n\
+             attributes:\n  identifier: { value: string }\n  tag: { value: string }\n\
+             entities:\n  person:\n    owns:\n      identifier: { key: true }\n      tag: { card: { min: 0, max: 3 }, ordered: true, distinct: true }\n\
+             relations:\n  group:\n    relates:\n      member: { card: { min: 0, max: 3 }, ordered: true, distinct: true }\n\
+             plays:\n  person:\n    group:\n      member: { card: { min: 0, max: 1 } }\n",
+        );
+        let accepted = load_workspace(&manifest).expect("ordered workspace loads");
+        run_schema_generate(&accepted).expect("ordered packages generate");
+
+        let accepted_trees = ["python", "typescript", "rust", "c"]
+            .map(|target| (target, snapshot(&root.join("generated").join(target))));
+        let expected_history = accepted
+            .migration_history_bundle_bytes()
+            .expect("canonical migration history bundle");
+        for (target, tree) in &accepted_trees {
+            assert_eq!(
+                tree.get(std::path::Path::new(
+                    type_bridge_schema_codegen::MIGRATION_HISTORY_BUNDLE_RESOURCE,
+                )),
+                Some(&expected_history),
+                "{target} package must embed the byte-identical canonical history bundle",
+            );
+        }
+        let accepted_authority =
+            fs::read(root.join("generated/schema-authority.json")).expect("authority reads");
+
+        run_schema_generate(&accepted).expect("identical ordered packages regenerate");
+        for (target, accepted_tree) in &accepted_trees {
+            assert_eq!(
+                &snapshot(&root.join("generated").join(target)),
+                accepted_tree,
+                "{target} destination changed after deterministic regeneration",
+            );
+        }
+        assert_eq!(
+            fs::read(root.join("generated/schema-authority.json")).expect("authority rereads"),
+            accepted_authority,
+            "schema authority changed after deterministic regeneration",
+        );
+
+        fs::write(
+            root.join("schema/fragments/model.yaml"),
+            "format: typebridge.schema/v2\n\
+             attributes:\n  identifier: { value: string }\n  tag: { value: string }\n  title: { value: string }\n\
+             entities:\n  person:\n    owns:\n      identifier: { key: true }\n      tag: { card: { min: 0, max: 4 }, ordered: true, distinct: true }\n      title: { card: 1 }\n\
+             relations:\n  group:\n    relates:\n      member: { card: { min: 0, max: 4 }, ordered: true, distinct: true }\n\
+             plays:\n  person:\n    group:\n      member: { card: { min: 0, max: 1 } }\n",
+        )
+        .expect("changed schema writes");
+        let changed = load_workspace(&manifest).expect("changed ordered workspace loads");
+        let mut attempted = Vec::new();
+        let error = run_schema_generate_with(&changed, |target, resolved, authority| {
+            attempted.push(target);
+            if target == BindingTarget::C {
+                return Err("injected C emitter failure".to_owned());
+            }
+            generate_binding_package(target, resolved, authority, changed.config().app_label())
+        })
+        .expect_err("injected C emitter failure rejects the transaction");
+        assert_eq!(error, "injected C emitter failure");
+        assert_eq!(
+            attempted,
+            vec![
+                BindingTarget::Python,
+                BindingTarget::TypeScript,
+                BindingTarget::Rust,
+                BindingTarget::C,
+            ],
+            "the injected failure did not occur after the three earlier packages prepared",
+        );
+
+        for (target, accepted_tree) in &accepted_trees {
+            assert_eq!(
+                snapshot(&root.join("generated").join(target)),
+                *accepted_tree,
+                "{target} destination changed after the injected C emitter failure",
+            );
+        }
+        assert_eq!(
+            fs::read(root.join("generated/schema-authority.json")).expect("authority rereads"),
+            accepted_authority,
+            "schema authority changed after the injected C emitter failure",
+        );
+
+        publish_atomic_generation_observation(json!({
+            "targets": ["python", "typescript", "rust", "c"],
+            "common_authority_identity": {
+                "schema_source_equal": true,
+                "semantic_profile": "typedb-3.12.1/v1",
+                "semantic_fingerprint_equal": true,
+                "resource_ledger_equal": true,
+            },
+            "package_identities_distinct": true,
+            "generated_sidecars": [],
+            "no_sidecar_runtime_dependency": true,
+            "deterministic_rerun": {
+                "byte_identical": true,
+                "published_targets": accepted_trees.len(),
+            },
+            "injected_failure": {
+                "failed_target": "c",
+                "published_targets": 0,
+                "previous_outputs_unchanged": true,
+                "staging_artifacts_remaining": 0,
+            },
+        }));
+    }
 }
 
 /// Export canonical declared bytes for explicitly low-level V2 tooling.
@@ -596,6 +1098,10 @@ enum ConnectedAction {
         approvals: Vec<String>,
     },
     Verify,
+    Rollback {
+        removals: BTreeSet<type_bridge_contract::migration::MigrationId>,
+        approvals: Vec<String>,
+    },
     Adopt {
         archive_directory: PathBuf,
         name: String,
@@ -673,7 +1179,9 @@ async fn run_connected_async(
     };
     if matches!(
         &action,
-        ConnectedAction::Apply { .. } | ConnectedAction::Adopt { .. }
+        ConnectedAction::Apply { .. }
+            | ConnectedAction::Rollback { .. }
+            | ConnectedAction::Adopt { .. }
     ) && !environment.migrate()
     {
         return Err(format!(
@@ -706,7 +1214,9 @@ async fn run_connected_async(
             archive_directory,
             name,
         )?),
-        ConnectedAction::Apply { .. } | ConnectedAction::Verify => None,
+        ConnectedAction::Apply { .. }
+        | ConnectedAction::Rollback { .. }
+        | ConnectedAction::Verify => None,
     };
 
     // Retain one descriptor-backed authority for the whole connected action.
@@ -740,6 +1250,12 @@ async fn run_connected_async(
                 .ok_or_else(|| "internal apply history was not retained".to_owned())?,
             approvals,
         )?),
+        ConnectedAction::Rollback { approvals, .. } => Some(bind_rollback_approvals(
+            ordinary_graph
+                .as_ref()
+                .ok_or_else(|| "internal rollback history was not retained".to_owned())?,
+            approvals,
+        )?),
         ConnectedAction::Verify | ConnectedAction::Adopt { .. } => None,
     };
 
@@ -765,7 +1281,7 @@ async fn run_connected_async(
         ConnectedAction::Adopt { .. } => {
             Some("`migration adopt` cutover requires the migrated v1 database to already exist")
         }
-        ConnectedAction::Apply { .. } => None,
+        ConnectedAction::Apply { .. } | ConnectedAction::Rollback { .. } => None,
     };
     // A TypeDB connection is server-scoped: binding a database name does not
     // require that database to exist. Negotiate and gate both pair members
@@ -913,7 +1429,7 @@ async fn run_connected_async(
                     Ok(())
                 }
                 type_bridge_schema_migration_typedb::MigrationDirectoryApplyOutcome::Executed(
-                    type_bridge_schema_migration::MigrationExecutionOutcome::Applied,
+                    type_bridge_schema_migration::MigrationExecutionOutcome::Applied { .. },
                 ) => {
                     println!("applied the committed chain");
                     Ok(())
@@ -924,6 +1440,30 @@ async fn run_connected_async(
                     "apply did not complete",
                     outcome,
                 )),
+            }
+        }
+        ConnectedAction::Rollback { removals, .. } => {
+            let approvals = prepared_approvals
+                .as_deref()
+                .ok_or_else(|| "internal rollback approvals were not retained".to_owned())?;
+            match runner
+                .rollback_in(directory, &removals, &holder, approvals)
+                .await
+                .map_err(display)?
+            {
+                type_bridge_schema_migration_typedb::MigrationDirectoryRollbackOutcome::UpToDate => {
+                    println!("requested migrations are already absent from the applied ledger");
+                    Ok(())
+                }
+                type_bridge_schema_migration_typedb::MigrationDirectoryRollbackOutcome::Executed(
+                    type_bridge_schema_migration::MigrationRollbackOutcome::RolledBack { .. },
+                ) => {
+                    println!("rolled back the requested migrations");
+                    Ok(())
+                }
+                type_bridge_schema_migration_typedb::MigrationDirectoryRollbackOutcome::Executed(
+                    outcome,
+                ) => Err(sanitize_migration_rollback_outcome(outcome)),
             }
         }
         ConnectedAction::Verify => {
@@ -972,7 +1512,7 @@ async fn run_connected_async(
                 }
                 Ok(
                     type_bridge_schema_migration_typedb::MigrationDirectoryApplyOutcome::Executed(
-                        type_bridge_schema_migration::MigrationExecutionOutcome::Applied,
+                        type_bridge_schema_migration::MigrationExecutionOutcome::Applied { .. },
                     ),
                 ) => {
                     println!(
@@ -1684,6 +2224,63 @@ fn bind_approvals(
         .collect()
 }
 
+fn parse_migration_ids(
+    graph: &type_bridge_schema_migration::MigrationHistoryGraph,
+    values: &[String],
+    kind: &str,
+) -> Result<BTreeSet<type_bridge_contract::migration::MigrationId>, String> {
+    let mut ids = BTreeSet::new();
+    for compound in values {
+        let (app_label, name) = compound
+            .split_once('/')
+            .ok_or_else(|| format!("{kind} {compound:?} must be app-label/name"))?;
+        let id = type_bridge_contract::migration::MigrationId::from_components(
+            type_bridge_contract::migration::MigrationAppLabel::new(app_label.to_owned())
+                .map_err(display)?,
+            type_bridge_contract::migration::MigrationName::new(name.to_owned())
+                .map_err(display)?,
+        );
+        if graph.manifest(&id).is_none() {
+            return Err(format!(
+                "{kind} target {compound:?} is not in the committed history"
+            ));
+        }
+        if !ids.insert(id) {
+            return Err(format!("{kind} target {compound:?} is duplicated"));
+        }
+    }
+    Ok(ids)
+}
+
+fn bind_rollback_approvals(
+    graph: &type_bridge_schema_migration::MigrationHistoryGraph,
+    approvals: &[String],
+) -> Result<Vec<type_bridge_schema_migration::MigrationApplyApproval>, String> {
+    let ids = parse_migration_ids(graph, approvals, "rollback approval")?;
+    let mut bound = Vec::new();
+    for id in ids {
+        let manifest = graph
+            .manifest(&id)
+            .ok_or_else(|| "internal rollback approval target disappeared".to_owned())?;
+        for safety in [
+            type_bridge_schema::SafetyClass::FormalOnly,
+            type_bridge_schema::SafetyClass::SchemaMetadata,
+            type_bridge_schema::SafetyClass::Additive,
+            type_bridge_schema::SafetyClass::Conditional,
+            type_bridge_schema::SafetyClass::Destructive,
+            type_bridge_schema::SafetyClass::Opaque,
+        ] {
+            bound.push(
+                type_bridge_schema_migration::MigrationApplyApproval::for_rollback(
+                    manifest, safety,
+                )
+                .map_err(display)?,
+            );
+        }
+    }
+    Ok(bound)
+}
+
 #[cfg(test)]
 mod transport_option_tests {
     use super::*;
@@ -1834,6 +2431,81 @@ mod transport_option_tests {
 }
 
 #[cfg(test)]
+mod rollback_cli_contract_tests {
+    use super::*;
+
+    #[test]
+    fn rollback_grammar_requires_environment_and_explicit_removal() {
+        assert!(Cli::try_parse_from(["type-bridge", "migration", "rollback"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "type-bridge",
+                "migration",
+                "rollback",
+                "--environment",
+                "live",
+            ])
+            .is_err()
+        );
+        let cli = Cli::try_parse_from([
+            "type-bridge",
+            "migration",
+            "rollback",
+            "--environment",
+            "live",
+            "--remove",
+            "example/0002_contract",
+            "--remove",
+            "example/0001_expand",
+            "--approve",
+            "example/0002_contract",
+            "--output",
+            "json",
+        ])
+        .expect("explicit preview grammar parses");
+        let Command::Migration {
+            command:
+                MigrationCommand::Rollback {
+                    environment,
+                    removals,
+                    approvals,
+                    execute,
+                    output,
+                },
+        } = cli.command
+        else {
+            panic!("rollback command parsed into another command")
+        };
+        assert_eq!(environment, "live");
+        assert_eq!(removals.len(), 2);
+        assert_eq!(approvals, ["example/0002_contract"]);
+        assert!(!execute, "preview is the non-mutating default");
+        assert_eq!(output, RollbackOutput::Json);
+    }
+
+    #[test]
+    fn rollback_execution_requires_an_explicit_flag() {
+        let cli = Cli::try_parse_from([
+            "type-bridge",
+            "migration",
+            "rollback",
+            "--environment",
+            "live",
+            "--remove",
+            "example/0002_contract",
+            "--execute",
+        ])
+        .expect("explicit execution grammar parses");
+        assert!(matches!(
+            cli.command,
+            Command::Migration {
+                command: MigrationCommand::Rollback { execute: true, .. }
+            }
+        ));
+    }
+}
+
+#[cfg(test)]
 mod migration_command_tests {
     use super::*;
 
@@ -1876,6 +2548,7 @@ mod migration_command_tests {
             command: Command::Migration {
                 command: MigrationCommand::Make {
                     name: "initial".to_owned(),
+                    backfill_intent: None,
                 },
             },
         })
@@ -1887,6 +2560,50 @@ mod migration_command_tests {
                 .is_file()
         );
         assert!(migration_directory.join("0001_initial.typeql").is_file());
+    }
+
+    #[test]
+    fn migration_make_accepts_a_confined_backfill_intent() {
+        let directory = tempfile::tempdir().expect("workspace directory");
+        let manifest = write_workspace_manifest(directory.path(), "typedb-3.11.5/v1");
+        fs::write(
+            directory.path().join("schema/fragments/model.yaml"),
+            "format: typebridge.schema/v2\nattributes:\n  display-name: { value: string }\n  legacy-name: { value: string }\n  person-id: { value: string }\nentities:\n  person:\n    owns:\n      display-name: {}\n      legacy-name: {}\n      person-id: { key: true }\n",
+        )
+        .expect("backfill schema writes");
+        let initial = Cli {
+            manifest: manifest.clone(),
+            command: Command::Migration {
+                command: MigrationCommand::Make {
+                    name: "initial".to_owned(),
+                    backfill_intent: None,
+                },
+            },
+        };
+        run(&initial).expect("initial migration");
+        fs::write(
+            directory.path().join("migrations/v2/copy-name.backfill.yaml"),
+            "format: typebridge.migration-backfill-intent/v1\ncopy-attribute:\n  owner-kind: entity\n  owner: person\n  source: legacy-name\n  destination: display-name\n  partition-key: person-id\n  batch-rows: 128\n  reverse: remove-equal-copied-destination\n",
+        )
+        .expect("backfill intent writes");
+
+        run(&Cli {
+            manifest,
+            command: Command::Migration {
+                command: MigrationCommand::Make {
+                    name: "copy-name".to_owned(),
+                    backfill_intent: Some(PathBuf::from("copy-name.backfill.yaml")),
+                },
+            },
+        })
+        .expect("backfill migration authors");
+
+        assert!(
+            directory
+                .path()
+                .join("migrations/v2/0002_copy-name.tbmigration.json")
+                .is_file()
+        );
     }
 
     #[test]

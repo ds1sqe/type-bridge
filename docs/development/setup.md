@@ -10,7 +10,19 @@ That file is the canonical product and verification boundary.
 - `uv`
 - Rust 1.88 or newer
 - Node 18 or newer; Node 20 is the primary development lane
+- CMake 3.20+ plus C17 and C++17 compilers when working on the internal C
+  foundation; the native-host gate requires GCC and Clang on Linux, Clang on
+  macOS, or MSVC and clang-cl on Windows; Unix C checks also require
+  `pkg-config`
 - Podman or Docker for the default isolated TypeDB suite
+
+`./scripts/check.sh c` validates only the native host on which it runs. Current
+accepted evidence covers that native-host gate; the configured hosted macOS and
+Windows lanes remain unverified and are not platform-support evidence.
+
+When validating on Windows, run the internal C check from a Visual Studio
+developer shell with both MSVC and clang-cl available, together with the MSVC
+linker and binary-inspection tools.
 
 Install the Python, native, and documentation dependencies:
 
@@ -56,6 +68,7 @@ Use the smallest relevant command while iterating:
 uv run pytest tests/unit/compat/test_generated_only_python_root.py
 cargo test -p type-bridge-schema-codegen
 npm run test:unit --prefix type-bridge-core/crates/node
+./scripts/check.sh c
 ```
 
 Before handoff, run the scope-level and full checks described in
@@ -84,11 +97,30 @@ only when intentionally targeting an existing server.
 | `type-bridge-core/crates/python/` | PyO3 generated-runtime boundary |
 | `type-bridge-core/crates/node/` | N-API and public TypeScript runtime boundary |
 | `type-bridge-core/crates/rust/` | Public generated Rust client |
-| `tests/fixtures/generated-only-operation-parity-inventory.json` | Cross-language operation acceptance authority |
+| `type-bridge-core/crates/c/` | Private C projected-value and provider-lifecycle ABI foundation under development |
+| `tests/contracts/sdk_conformance/manifest-v1.json` | Capability, proof-profile, binding-state, and transition authority |
+| `tests/contracts/sdk_conformance/sdk-v*/` | Versioned executable conformance catalogs, journeys, report schemas, and evidence contracts |
+| `tests/fixtures/generated-only-operation-parity-inventory.json` | Retained generated-only cutover evidence and manifest seed, not current acceptance authority |
 
 Do not add target-language schema declarations or a facade-local semantic
 implementation. Split-YAML is the only active authoring authority, and the Rust
 engine owns lowering and validation.
+
+The generated C package and ABI 1.6 currently carry verified flat/chunked
+schema/projection evidence, projected values/models, synchronous runtime,
+exact-3.12.3 policy-aware database/read/write transaction and cancellation
+handles, plus generated nominal exact single-entity and single-relation
+CRUD/count, homogeneous atomic mutation batches, and closed typed role-player
+unions. The internal ABI also carries generated nominal typed-query, reduction,
+schema-function, and caller-owned remote-transport wrappers without duplicating
+Rust-owned query semantics. Ordered C-v3 packages compose those entries into
+generated nominal field-token manager filters for database and borrowed-read
+execution, with no additional native exports. Chunked package resources and a
+streaming create builder bound large generated objects to the C11
+hosted-implementation portability floors. Exact TypeDB 3.12.3 acceptance
+leaves ordered values empty and makes no live list-instance evidence claim. This remains an internal
+development target, not a supported SDK or published artifact; multi-endpoint
+connection policy and a C distribution contract remain future work.
 
 ## Logging and debugging
 
@@ -109,6 +141,9 @@ The generated Python and Node packages install immutable projection evidence at
 import time. When registration fails, compare the generated package version,
 declared-schema fingerprint, and runtime version before investigating data
 operations.
+
+The internal C probe verifies the same identities when it opens a generated
+schema-package descriptor through the Rust-owned ABI.
 
 ## Temporary files
 

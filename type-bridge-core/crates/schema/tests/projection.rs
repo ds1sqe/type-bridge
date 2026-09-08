@@ -1,15 +1,19 @@
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, FunctionId, RoleId, StructId, TypeId, TypeKind};
 use type_bridge_contract::projection::{
-    BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectionConfig, ProjectionHandler,
-    ReferenceConstructionPolicy,
+    BindingTarget, CSymbolPrefix, ProjectedContainer, ProjectedModelForm, ProjectedTokenIdentity,
+    ProjectedTokenKind, ProjectionConfig, ProjectionHandler, ReferenceConstructionPolicy,
+    TYPE_BRIDGE_C_CREATE_FIELD_MAX, TYPE_BRIDGE_C_CREATE_MEMBER_MAX, TYPE_BRIDGE_C_CREATE_ROLE_MAX,
+    TYPE_BRIDGE_PROJECTED_TOKEN_VERSION,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
 use type_bridge_contract::schema::{
-    AnnotationKindId, AnnotationSubjectId, DocumentId, RelatesFactId, SchemaFactId, SubFactId,
+    AnnotationKindId, AnnotationSubjectId, CollectionMode, DocumentId, OwnsFactId, RelatesFactId,
+    SchemaFactId, SubFactId,
 };
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 
@@ -20,6 +24,120 @@ fn projection(source: &str) -> type_bridge_contract::projection::RuntimeProjecti
         ProjectionConfig::python(),
         ProjectionHandler::python_v1(),
     )
+}
+
+#[test]
+fn ordered_max_one_owns_and_relates_project_as_ordered_sequences_in_every_facet() {
+    let runtime = projection(
+        r#"format: typebridge.schema/v2
+attributes:
+  tag: { value: string }
+entities:
+  article:
+    owns:
+      tag: { ordered: true, distinct: true, card: { min: 0, max: 1 } }
+  item: {}
+relations:
+  collection:
+    relates:
+      member: { ordered: true, distinct: true, card: { min: 0, max: 1 } }
+plays:
+  item:
+    collection: [member]
+"#,
+    );
+
+    let article = TypeId::new(TypeKind::Entity, "article").unwrap();
+    let tag = AttributeId::new("tag").unwrap();
+    let field_token = runtime.models()[&article]
+        .query_tokens()
+        .fields()
+        .values()
+        .find(|field| field.id().attribute() == &tag)
+        .unwrap();
+    assert_eq!(
+        field_token.multiplicity().collection_mode(),
+        CollectionMode::OrderedList
+    );
+    assert_eq!(
+        field_token.multiplicity().container(),
+        ProjectedContainer::Sequence
+    );
+    assert!(
+        field_token
+            .annotations()
+            .keys()
+            .any(|annotation| { annotation.kind() == &AnnotationKindId::Distinct })
+    );
+    let model = &runtime.models()[&article];
+    assert_eq!(
+        model.create().fields()[0].multiplicity(),
+        field_token.multiplicity()
+    );
+    assert_eq!(
+        model.complete_read().fields()[0].multiplicity(),
+        field_token.multiplicity()
+    );
+
+    let collection = TypeId::new(TypeKind::Relation, "collection").unwrap();
+    let member = RoleId::new("collection", "member").unwrap();
+    let model = &runtime.models()[&collection];
+    let role_token = &model.query_tokens().roles()[&member];
+    assert_eq!(
+        role_token.multiplicity().collection_mode(),
+        CollectionMode::OrderedList
+    );
+    assert_eq!(
+        role_token.multiplicity().container(),
+        ProjectedContainer::Sequence
+    );
+    assert!(
+        role_token
+            .annotations()
+            .keys()
+            .any(|annotation| { annotation.kind() == &AnnotationKindId::Distinct })
+    );
+    assert_eq!(
+        model.create().roles()[&member].multiplicity(),
+        role_token.multiplicity()
+    );
+    assert_eq!(
+        model.complete_read().roles()[&member].multiplicity(),
+        role_token.multiplicity()
+    );
+}
+
+#[test]
+fn unordered_max_one_projection_retains_scalar_shape_and_omits_mode_bytes() {
+    let runtime = projection(
+        r#"format: typebridge.schema/v2
+attributes:
+  tag: { value: string }
+entities:
+  article: { owns: [tag] }
+relations:
+  collection: { relates: [member] }
+"#,
+    );
+    for multiplicity in runtime.models().values().flat_map(|model| {
+        model
+            .query_tokens()
+            .fields()
+            .values()
+            .map(|token| token.multiplicity())
+            .chain(
+                model
+                    .query_tokens()
+                    .roles()
+                    .values()
+                    .map(|token| token.multiplicity()),
+            )
+    }) {
+        assert_eq!(multiplicity.collection_mode(), CollectionMode::Unordered);
+        assert_eq!(multiplicity.container(), ProjectedContainer::Scalar);
+    }
+    let canonical = String::from_utf8(to_canonical_json(&runtime).unwrap()).unwrap();
+    assert!(!canonical.contains("collection_mode"));
 }
 
 fn projection_for(
@@ -37,6 +155,37 @@ fn projection_for(
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile is valid");
     let resolved = resolve(&declared, &profile).expect("fixture resolves");
     project(&resolved, target, &config, &[handler], &[]).expect("fixture projects")
+}
+
+fn c_projection(
+    source: &str,
+    symbol_prefix: &str,
+) -> type_bridge_contract::projection::RuntimeProjection {
+    c_projection_result(source, symbol_prefix).expect("fixture projects")
+}
+
+fn c_projection_result(
+    source: &str,
+    symbol_prefix: &str,
+) -> Result<
+    type_bridge_contract::projection::RuntimeProjection,
+    type_bridge_contract::schema::SchemaDiagnostics,
+> {
+    let documents = SchemaDocumentSet::parse([(
+        DocumentId::new("schema.yaml").expect("document identifier is valid"),
+        source,
+    )])
+    .expect("fixture YAML parses");
+    let declared = normalize_documents(&documents).expect("fixture normalizes");
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile is valid");
+    let resolved = resolve(&declared, &profile).expect("fixture resolves");
+    project(
+        &resolved,
+        BindingTarget::C,
+        &ProjectionConfig::c(CSymbolPrefix::new(symbol_prefix).expect("C prefix is valid")),
+        &[ProjectionHandler::c_v2()],
+        &[],
+    )
 }
 
 #[test]
@@ -70,6 +219,11 @@ entities:
             BindingTarget::Rust,
             ProjectionConfig::rust(),
             ProjectionHandler::rust_v1(),
+        ),
+        (
+            BindingTarget::C,
+            ProjectionConfig::c(CSymbolPrefix::new("acme").unwrap()),
+            ProjectionHandler::c_v2(),
         ),
     ] {
         let projected = projection_for(source, target, config, handler);
@@ -119,6 +273,514 @@ entities:
                 .unwrap();
         assert_eq!(decoded, projected);
     }
+}
+
+#[test]
+fn c_projection_prefixes_and_names_every_native_surface() {
+    let projected = c_projection(
+        r#"format: typebridge.schema/v2
+attributes:
+  display-name:
+    value: string
+entities:
+  actor:
+    owns:
+      display-name: { key: true }
+relations:
+  container:
+    relates: [item]
+  event: {}
+plays:
+  event:
+    container: [item]
+structs:
+  player-stats:
+    fields:
+      - { name: win-count, type: integer }
+functions:
+  find-events:
+    parameters:
+      - { name: input-event, type: event }
+    returns: { stream: [event] }
+    body: { typeql: "match $event isa event; return { $event };" }
+"#,
+        "acme",
+    );
+
+    let container = TypeId::new(TypeKind::Relation, "container").unwrap();
+    let item = RoleId::new("container", "item").unwrap();
+    let model = &projected.models()[&container];
+    assert_eq!(model.target_name().as_str(), "acme_container");
+    assert_eq!(
+        model.create().target_name().unwrap().as_str(),
+        "acme_container_create"
+    );
+    assert_eq!(
+        model.reference_read().target_name().unwrap().as_str(),
+        "acme_container_ref"
+    );
+    assert_eq!(
+        model.query_tokens().target_name().unwrap().as_str(),
+        "acme_container_type"
+    );
+    assert_eq!(
+        model.query_tokens().roles()[&item].target_name().as_str(),
+        "acme_item"
+    );
+    assert_eq!(
+        model.query_tokens().roles()[&item]
+            .player_union_target_name()
+            .unwrap()
+            .as_str(),
+        "acme_container_item_player"
+    );
+
+    let actor = TypeId::new(TypeKind::Entity, "actor").unwrap();
+    assert_eq!(
+        projected.models()[&actor]
+            .query_tokens()
+            .fields()
+            .values()
+            .next()
+            .unwrap()
+            .target_name()
+            .as_str(),
+        "acme_displayzhname"
+    );
+    assert_eq!(
+        projected
+            .playing_facts()
+            .values()
+            .next()
+            .unwrap()
+            .target_name()
+            .unwrap()
+            .as_str(),
+        "acme_plays_event_relation_container_role_item"
+    );
+    assert_eq!(
+        projected.structs()[&StructId::new("player-stats").unwrap()]
+            .target_name()
+            .as_str(),
+        "acme_playerzhstats"
+    );
+    assert_eq!(
+        projected.structs()[&StructId::new("player-stats").unwrap()].fields()[0]
+            .target_name()
+            .as_str(),
+        "acme_winzhcount"
+    );
+    let function = &projected.functions()[&FunctionId::new("find-events").unwrap()];
+    assert_eq!(function.target_name().as_str(), "acme_findzhevents");
+    assert_eq!(
+        function.parameters()[0].target_name().as_str(),
+        "acme_inputzhevent"
+    );
+
+    let assert_prefixed = |name: &str| {
+        assert!(name.starts_with("acme_"), "{name}");
+        assert!(
+            !name.contains("__"),
+            "C++ reserves identifiers containing a double underscore: {name}",
+        );
+    };
+    for model in projected.models().values() {
+        assert_prefixed(model.target_name().as_str());
+        assert_prefixed(model.query_tokens().target_name().unwrap().as_str());
+        if let Some(name) = model.create().target_name() {
+            assert_prefixed(name.as_str());
+        }
+        if let Some(name) = model.reference_read().target_name() {
+            assert_prefixed(name.as_str());
+        }
+        for field in model.query_tokens().fields().values() {
+            assert_prefixed(field.target_name().as_str());
+        }
+        for role in model.query_tokens().roles().values() {
+            assert_prefixed(role.target_name().as_str());
+            assert_prefixed(role.player_union_target_name().unwrap().as_str());
+        }
+    }
+    for structure in projected.structs().values() {
+        assert_prefixed(structure.target_name().as_str());
+        for field in structure.fields() {
+            assert_prefixed(field.target_name().as_str());
+        }
+    }
+    for function in projected.functions().values() {
+        assert_prefixed(function.target_name().as_str());
+        for parameter in function.parameters() {
+            assert_prefixed(parameter.target_name().as_str());
+        }
+    }
+    for playing in projected.playing_facts().values() {
+        assert_prefixed(playing.target_name().unwrap().as_str());
+    }
+}
+
+#[test]
+fn generated_projection_token_ordinals_round_trip_semantic_identities() {
+    let projected = c_projection(
+        r#"format: typebridge.schema/v2
+attributes:
+  identifier: { value: string }
+entities:
+  person:
+    owns:
+      identifier: { key: true }
+relations:
+  membership:
+    relates: [member]
+plays:
+  person:
+    membership: [member]
+functions:
+  alpha-score:
+    parameters: []
+    returns: { scalar: integer }
+    body: { typeql: "match let $score = 1; return first $score;" }
+  find-people:
+    parameters: []
+    returns: { stream: [person] }
+    body: { typeql: "match $person isa person; return { $person };" }
+"#,
+        "sdk",
+    );
+
+    assert_eq!(TYPE_BRIDGE_PROJECTED_TOKEN_VERSION, 1);
+    assert_eq!(ProjectedTokenKind::Model.as_u32(), 1);
+    assert_eq!(ProjectedTokenKind::Field.as_u32(), 2);
+    assert_eq!(ProjectedTokenKind::Role.as_u32(), 3);
+    assert_eq!(ProjectedTokenKind::Function.as_u32(), 4);
+    assert_eq!(ProjectedTokenKind::Struct.as_u32(), 5);
+    assert_eq!(ProjectedTokenKind::Attribute.as_u32(), 6);
+    for (value, expected) in [
+        (0, None),
+        (1, Some(ProjectedTokenKind::Model)),
+        (2, Some(ProjectedTokenKind::Field)),
+        (3, Some(ProjectedTokenKind::Role)),
+        (4, Some(ProjectedTokenKind::Function)),
+        (5, Some(ProjectedTokenKind::Struct)),
+        (6, Some(ProjectedTokenKind::Attribute)),
+        (7, None),
+    ] {
+        assert_eq!(ProjectedTokenKind::from_u32(value), expected);
+    }
+
+    for kind in [
+        ProjectedTokenKind::Model,
+        ProjectedTokenKind::Field,
+        ProjectedTokenKind::Role,
+        ProjectedTokenKind::Function,
+    ] {
+        let mut ordinal = 0_u32;
+        while let Some(identity) = projected.projected_token_identity(kind, ordinal) {
+            assert_eq!(identity.kind(), kind);
+            assert_eq!(projected.projected_token_ordinal(&identity), Some(ordinal));
+            ordinal += 1;
+        }
+        assert!(ordinal > 0, "fixture must expose a {kind:?} token");
+        assert!(projected.projected_token_identity(kind, ordinal).is_none());
+        assert!(projected.projected_token_identity(kind, u32::MAX).is_none());
+    }
+
+    let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+    let identifier =
+        OwnsFactId::new(person.clone(), AttributeId::new("identifier").unwrap()).unwrap();
+    let field = ProjectedTokenIdentity::Field {
+        owner: person.clone(),
+        field: identifier.clone(),
+    };
+    assert!(projected.projected_token_ordinal(&field).is_some());
+    assert!(
+        projected
+            .projected_token_ordinal(&ProjectedTokenIdentity::Field {
+                owner: TypeId::new(TypeKind::Relation, "membership").unwrap(),
+                field: identifier,
+            })
+            .is_none(),
+        "effective owner branding must participate in token identity",
+    );
+
+    let membership = TypeId::new(TypeKind::Relation, "membership").unwrap();
+    let member = RoleId::new("membership", "member").unwrap();
+    assert!(
+        projected
+            .projected_token_ordinal(&ProjectedTokenIdentity::Role {
+                owner: membership,
+                role: member,
+            })
+            .is_some()
+    );
+
+    let alpha = FunctionId::new("alpha-score").unwrap();
+    let function = FunctionId::new("find-people").unwrap();
+    assert_eq!(
+        projected.projected_token_identity(ProjectedTokenKind::Function, 0),
+        Some(ProjectedTokenIdentity::Function(alpha.clone()))
+    );
+    assert_eq!(
+        projected.projected_token_identity(ProjectedTokenKind::Function, 1),
+        Some(ProjectedTokenIdentity::Function(function.clone()))
+    );
+    assert_eq!(
+        projected.projected_token_ordinal(&ProjectedTokenIdentity::Function(alpha)),
+        Some(0)
+    );
+    assert_eq!(
+        projected.projected_token_ordinal(&ProjectedTokenIdentity::Function(function)),
+        Some(1)
+    );
+}
+
+#[test]
+fn c_v1_projection_escaping_is_injective_and_keyword_safe() {
+    let projected = c_projection(
+        r#"format: typebridge.schema/v2
+entities:
+  foo-bar: {}
+  foo_bar: {}
+  café: {}
+  z: {}
+  zh: {}
+  z-h: {}
+  while: {}
+  __private: {}
+  person: {}
+  person-ref: {}
+  person_ref: {}
+"#,
+        "acme",
+    );
+
+    for (label, expected) in [
+        ("foo-bar", "acme_foozhbar"),
+        ("foo_bar", "acme_foozubar"),
+        ("café", "acme_cafzxc3zxa9"),
+        ("z", "acme_zz"),
+        ("zh", "acme_zzh"),
+        ("z-h", "acme_zzzhh"),
+        ("while", "acme_while"),
+        ("__private", "acme_zuzuprivate"),
+        ("person-ref", "acme_personzhref"),
+        ("person_ref", "acme_personzuref"),
+    ] {
+        let id = TypeId::new(TypeKind::Entity, label).unwrap();
+        assert_eq!(projected.models()[&id].target_name().as_str(), expected);
+    }
+    let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+    assert_eq!(
+        projected.models()[&person]
+            .reference_read()
+            .target_name()
+            .unwrap()
+            .as_str(),
+        "acme_person_ref"
+    );
+}
+
+#[test]
+fn c_v1_projection_shortens_long_names_deterministically() {
+    let first_label = format!("{}a", "z".repeat(254));
+    let second_label = format!("{}b", "z".repeat(254));
+    let source = format!(
+        "format: typebridge.schema/v2\nentities:\n  {first_label}: {{}}\n  {second_label}: {{}}\n"
+    );
+    let first = c_projection(&source, "acme");
+    let second = c_projection(&source, "acme");
+    assert_eq!(
+        to_canonical_json(&first).unwrap(),
+        to_canonical_json(&second).unwrap()
+    );
+
+    let first_name = first.models()[&TypeId::new(TypeKind::Entity, first_label).unwrap()]
+        .target_name()
+        .as_str();
+    let second_name = first.models()[&TypeId::new(TypeKind::Entity, second_label).unwrap()]
+        .target_name()
+        .as_str();
+    assert_eq!(first_name.len(), 255);
+    assert_eq!(second_name.len(), 255);
+    assert!(first_name.starts_with(&format!("acme_{}", "z".repeat(185))));
+    assert!(second_name.starts_with(&format!("acme_{}", "z".repeat(185))));
+    assert!(
+        first_name.ends_with("_8790df4a6c5449b294c77b3743f1b53cd754f2048fd425cca4dbbd579d096eb9"),
+        "{first_name}",
+    );
+    assert!(
+        second_name.ends_with("_fe6e75edaee69358e82e1c8e7ab811ababb3cb3d470588b0008b55b7597fc1eb"),
+        "{second_name}",
+    );
+    assert_ne!(first_name, second_name);
+    for name in [first_name, second_name] {
+        let (_, digest) = name.rsplit_once('_').unwrap();
+        assert_eq!(digest.len(), 64);
+        assert!(
+            digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
+    }
+}
+
+fn c_create_field_limit_source(field_count: usize) -> String {
+    let mut source = String::from("format: typebridge.schema/v2\nattributes:\n");
+    for index in 0..field_count {
+        let _ = writeln!(source, "  field-{index:04}: {{ value: string }}");
+    }
+    source.push_str("entities:\n  record:\n    owns:\n");
+    for index in 0..field_count {
+        let _ = writeln!(source, "      field-{index:04}: {{}}");
+    }
+    source
+}
+
+fn c_create_role_limit_source(role_count: usize) -> String {
+    let mut source = String::from(
+        "format: typebridge.schema/v2\nentities:\n  player: {}\nrelations:\n  record:\n    relates:\n",
+    );
+    for index in 0..role_count {
+        let _ = writeln!(source, "      role-{index:04}: {{}}");
+    }
+    source.push_str("plays:\n  player:\n    record:\n");
+    for index in 0..role_count {
+        let _ = writeln!(source, "      - role-{index:04}");
+    }
+    source
+}
+
+fn c_create_combined_limit_source(field_count: usize, role_count: usize) -> String {
+    let mut source = String::from("format: typebridge.schema/v2\nattributes:\n");
+    for index in 0..field_count {
+        let _ = writeln!(source, "  field-{index:04}: {{ value: string }}");
+    }
+    source.push_str("relations:\n  record:\n    owns:\n");
+    for index in 0..field_count {
+        let _ = writeln!(source, "      field-{index:04}: {{}}");
+    }
+    source.push_str("    relates:\n");
+    for index in 0..role_count {
+        let _ = writeln!(source, "      role-{index:04}: {{}}");
+    }
+    source.push_str("entities:\n  player: {}\nplays:\n  player:\n    record:\n");
+    for index in 0..role_count {
+        let _ = writeln!(source, "      - role-{index:04}");
+    }
+    source
+}
+
+#[test]
+fn c_projection_accepts_1020_create_fields_and_rejects_1021_before_emission() {
+    c_projection(
+        &c_create_field_limit_source(TYPE_BRIDGE_C_CREATE_FIELD_MAX),
+        "acme",
+    );
+    let error = c_projection_result(
+        &c_create_field_limit_source(TYPE_BRIDGE_C_CREATE_FIELD_MAX + 1),
+        "acme",
+    )
+    .expect_err("C projection must reject one create field above its translation ceiling");
+    assert_eq!(
+        error
+            .iter()
+            .next()
+            .expect("one projection diagnostic")
+            .diagnostic()
+            .code()
+            .as_str(),
+        "c_projection_create_field_limit_exceeded"
+    );
+}
+
+#[test]
+fn c_projection_accepts_each_create_role_and_combined_ceiling_then_rejects_one_more() {
+    c_projection(
+        &c_create_role_limit_source(TYPE_BRIDGE_C_CREATE_ROLE_MAX),
+        "acme",
+    );
+    let role_error = c_projection_result(
+        &c_create_role_limit_source(TYPE_BRIDGE_C_CREATE_ROLE_MAX + 1),
+        "acme",
+    )
+    .expect_err("C projection must reject one create role above its translation ceiling");
+    assert_eq!(
+        role_error
+            .iter()
+            .next()
+            .expect("one projection diagnostic")
+            .diagnostic()
+            .code()
+            .as_str(),
+        "c_projection_create_role_limit_exceeded"
+    );
+
+    let fields = TYPE_BRIDGE_C_CREATE_MEMBER_MAX / 2;
+    let roles = TYPE_BRIDGE_C_CREATE_MEMBER_MAX - fields;
+    c_projection(&c_create_combined_limit_source(fields, roles), "acme");
+    let combined_error =
+        c_projection_result(&c_create_combined_limit_source(fields + 1, roles), "acme").expect_err(
+            "C projection must reject one combined member above its translation ceiling",
+        );
+    assert_eq!(
+        combined_error
+            .iter()
+            .next()
+            .expect("one projection diagnostic")
+            .diagnostic()
+            .code()
+            .as_str(),
+        "c_projection_create_member_limit_exceeded"
+    );
+}
+
+#[test]
+fn c_projection_collision_checks_global_and_local_namespaces() {
+    let global_error = c_projection_result(
+        r#"format: typebridge.schema/v2
+entities:
+  shared: {}
+functions:
+  shared:
+    parameters: []
+    returns: { stream: [shared] }
+    body: { typeql: "match $shared isa shared; return { $shared };" }
+"#,
+        "acme",
+    )
+    .expect_err("a model and function cannot share one emitted C ordinary identifier");
+    assert_eq!(
+        global_error
+            .iter()
+            .next()
+            .unwrap()
+            .diagnostic()
+            .code()
+            .as_str(),
+        "projection_name_collision"
+    );
+
+    let local_error = c_projection_result(
+        r#"format: typebridge.schema/v2
+attributes:
+  participant: { value: string }
+relations:
+  membership:
+    owns: [participant]
+    relates: [participant]
+"#,
+        "acme",
+    )
+    .expect_err("a field and role cannot share one emitted C member identifier");
+    assert_eq!(
+        local_error
+            .iter()
+            .next()
+            .unwrap()
+            .diagnostic()
+            .code()
+            .as_str(),
+        "projection_name_collision"
+    );
 }
 
 #[test]

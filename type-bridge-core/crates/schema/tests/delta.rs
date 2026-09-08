@@ -7,13 +7,14 @@ use type_bridge_contract::id::{
     AttributeId, FunctionId, Label, RoleId, StructId, TypeId, TypeKind,
 };
 use type_bridge_contract::schema::{
-    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
-    DocText, DocumentId, FunctionBody, FunctionFact, FunctionParameter, FunctionReturnElement,
-    FunctionReturnMode, FunctionSignature, ManagedFactSelection, ManagedSchemaState,
-    ManagedScopeId, OwnsFact, OwnsFactId, PatchFormatVersion, PlaysFact, PlaysFactId, RegexPattern,
-    RelatesFact, RelatesFactId, SchemaAnnotationValue, SchemaDelta, SchemaDiagnostics, SchemaFact,
-    SchemaFactId, SchemaOperation, SchemaOperationKind, SourceSpan, SourcedSchemaFact, StructFact,
-    StructField, SubFact, SubFactId, TypeFact, TypeReference, ValueFact, ValueFactId,
+    AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CollectionMode,
+    DeclaredSchema, DocText, DocumentId, FunctionBody, FunctionFact, FunctionParameter,
+    FunctionReturnElement, FunctionReturnMode, FunctionSignature, ManagedFactSelection,
+    ManagedSchemaState, ManagedScopeId, OwnsFact, OwnsFactId, PatchFormatVersion, PlaysFact,
+    PlaysFactId, RegexPattern, RelatesFact, RelatesFactId, SchemaAnnotationValue, SchemaDelta,
+    SchemaDiagnostics, SchemaFact, SchemaFactId, SchemaOperation, SchemaOperationKind, SourceSpan,
+    SourcedSchemaFact, StructFact, StructField, SubFact, SubFactId, TypeFact, TypeReference,
+    ValueFact, ValueFactId,
 };
 use type_bridge_contract::value::{Cardinality, ValueTypeTag};
 use type_bridge_schema::{
@@ -880,4 +881,95 @@ fn safety_lattice_matches_the_live_lowering_registry() {
             "{name}"
         );
     }
+}
+
+#[test]
+fn ordered_collection_and_distinct_deltas_are_lossless_but_migration_unsupported() {
+    let owns = owns_id("person", "name");
+    let base_facts = vec![
+        type_fact(TypeKind::Entity, "person"),
+        type_fact(TypeKind::Attribute, "name"),
+        value_fact("name", ValueTypeTag::String),
+    ];
+    let mut unordered_facts = base_facts.clone();
+    unordered_facts.push(SchemaFact::Owns(OwnsFact::new(owns.clone())));
+    let unordered = declared(unordered_facts);
+
+    let ordered_fact = SchemaFact::Owns(OwnsFact::new_with_collection_mode(
+        owns.clone(),
+        CollectionMode::OrderedList,
+    ));
+    let mut ordered_facts = base_facts;
+    ordered_facts.push(ordered_fact.clone());
+    let ordered = declared(ordered_facts.clone());
+    let mode_operations = plan_schema_operations(&unordered, &ordered).expect("mode diff plans");
+    assert_eq!(mode_operations.len(), 1);
+    assert_eq!(mode_operations[0].kind(), SchemaOperationKind::Redefine);
+    assert_eq!(
+        mode_operations[0]
+            .expected_fact()
+            .expect("redefine has source"),
+        &SchemaFact::Owns(OwnsFact::new(owns.clone()))
+    );
+    assert_eq!(
+        mode_operations[0]
+            .replacement_fact()
+            .expect("redefine has target"),
+        &ordered_fact
+    );
+    assert_eq!(
+        classify_schema_operation_safety(&mode_operations[0]),
+        DeltaSafety::Unsupported
+    );
+
+    let relation_type = type_fact(TypeKind::Relation, "collection");
+    let relation_id = relates_id("collection", "member");
+    let unordered_relation = declared(vec![
+        relation_type.clone(),
+        SchemaFact::Relates(
+            RelatesFact::new(relation_id.clone(), None).expect("unordered relates"),
+        ),
+    ]);
+    let ordered_relation_fact = SchemaFact::Relates(
+        RelatesFact::new_with_collection_mode(relation_id, None, CollectionMode::OrderedList)
+            .expect("ordered relates"),
+    );
+    let ordered_relation = declared(vec![relation_type, ordered_relation_fact]);
+    let relation_mode = plan_schema_operations(&unordered_relation, &ordered_relation)
+        .expect("relates mode diff plans");
+    assert_eq!(relation_mode.len(), 1);
+    assert_eq!(relation_mode[0].kind(), SchemaOperationKind::Redefine);
+    assert_eq!(
+        classify_schema_operation_safety(&relation_mode[0]),
+        DeltaSafety::Unsupported
+    );
+
+    let distinct = SchemaFact::Annotation(
+        AnnotationFact::new(
+            AnnotationFactId::new(AnnotationSubjectId::Owns(owns), AnnotationKindId::Distinct),
+            SchemaAnnotationValue::Presence,
+        )
+        .expect("distinct annotation"),
+    );
+    let mut distinct_facts = ordered_facts;
+    distinct_facts.push(distinct.clone());
+    let ordered_distinct = declared(distinct_facts);
+    let define = plan_schema_operations(&ordered, &ordered_distinct).expect("distinct add plans");
+    assert_eq!(define.len(), 1);
+    assert_eq!(define[0].kind(), SchemaOperationKind::Define);
+    assert_eq!(define[0].defined_facts(), Some(&[distinct.clone()][..]));
+    assert_eq!(
+        classify_schema_operation_safety(&define[0]),
+        DeltaSafety::Unsupported
+    );
+
+    let undefine =
+        plan_schema_operations(&ordered_distinct, &ordered).expect("distinct removal plans");
+    assert_eq!(undefine.len(), 1);
+    assert_eq!(undefine[0].kind(), SchemaOperationKind::Undefine);
+    assert_eq!(undefine[0].undefined_fact(), Some(&distinct));
+    assert_eq!(
+        classify_schema_operation_safety(&undefine[0]),
+        DeltaSafety::Unsupported
+    );
 }

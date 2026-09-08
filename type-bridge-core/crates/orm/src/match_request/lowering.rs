@@ -3,16 +3,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use type_bridge_core_lib::ast::{
-    TypedCollectionOrder, TypedComparisonOperator, TypedFetchRows, TypedFieldBinding, TypedLiteral,
-    TypedMatchOrder, TypedMatchPredicate, TypedMatchTarget, TypedMissingOrder, TypedPageRematch,
-    TypedRootScan, TypedSortDirection, TypedThingKind,
+    TypedCollectionOrder, TypedComparisonOperator, TypedFetchRows, TypedFieldBinding,
+    TypedFunctionArgument, TypedFunctionCall, TypedLiteral, TypedMatchOrder, TypedMatchPredicate,
+    TypedMatchTarget, TypedMissingOrder, TypedPageRematch, TypedRootScan, TypedScalarOperand,
+    TypedSortDirection, TypedThingKind,
 };
 
 use super::error::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
 use super::ids::{BindingId, BoundFieldId, DescriptorId, FieldId};
 use super::model::{
-    ComparisonOp, FetchShape, FetchSlot, MatchExpr, MatchMode, MatchOperation, MissingOrder,
-    ReduceTerm, RowCardinality, SortDirection, ThingKind,
+    ComparisonOp, FetchShape, FetchSlot, MatchExpr, MatchFunctionArgument, MatchFunctionCall,
+    MatchMode, MatchOperation, MatchScalarOperand, MissingOrder, ReduceTerm, RowCardinality,
+    SortDirection, ThingKind,
 };
 use super::validation::{StableOrderSpec, ValidatedMatchRequest};
 use crate::_descriptor::TypeDescriptorRef;
@@ -532,6 +534,21 @@ fn lower_predicate(
             operator: lower_operator(*operator),
             right: field_id(fields, right)?,
         }),
+        MatchExpr::ScalarComparison {
+            left,
+            operator,
+            right,
+        } => {
+            let mut calls = Vec::new();
+            let left = lower_scalar_operand(left, fields, &mut calls)?;
+            let right = lower_scalar_operand(right, fields, &mut calls)?;
+            Ok(TypedMatchPredicate::FunctionComparison {
+                calls,
+                left,
+                operator: lower_operator(*operator),
+                right,
+            })
+        }
         MatchExpr::FieldPresence { field, present } => Ok(TypedMatchPredicate::FieldPresence {
             field: field_id(fields, field)?,
             present: *present,
@@ -592,6 +609,59 @@ fn lower_predicate(
     }
 }
 
+fn lower_scalar_operand(
+    operand: &MatchScalarOperand,
+    fields: &BTreeMap<BoundFieldId, u16>,
+    calls: &mut Vec<TypedFunctionCall>,
+) -> Result<TypedScalarOperand, MatchError> {
+    Ok(match operand {
+        MatchScalarOperand::Field { field } => TypedScalarOperand::Field {
+            field: field_id(fields, field)?,
+        },
+        MatchScalarOperand::Value { value } => TypedScalarOperand::Value {
+            value: value.clone(),
+        },
+        MatchScalarOperand::Function { call } => TypedScalarOperand::CallResult {
+            call: lower_function_call(call, calls)?,
+        },
+    })
+}
+
+fn lower_function_call(
+    call: &MatchFunctionCall,
+    calls: &mut Vec<TypedFunctionCall>,
+) -> Result<u16, MatchError> {
+    let arguments = call
+        .arguments
+        .iter()
+        .map(|argument| {
+            Ok(match argument {
+                MatchFunctionArgument::Binding { binding } => TypedFunctionArgument::Binding {
+                    binding: binding.get(),
+                },
+                MatchFunctionArgument::Value { value } => TypedFunctionArgument::Value {
+                    value: value.clone(),
+                },
+                MatchFunctionArgument::Call { call } => TypedFunctionArgument::CallResult {
+                    call: lower_function_call(call, calls)?,
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, MatchError>>()?;
+    let result = u16::try_from(calls.len()).map_err(|_| {
+        unsupported(
+            "function_call_ordinal_overflow",
+            "function call count exceeds the typed compiler ordinal range",
+        )
+    })?;
+    calls.push(TypedFunctionCall {
+        result,
+        function: call.function.label().as_str().to_owned(),
+        arguments,
+    });
+    Ok(result)
+}
+
 fn field_id(fields: &BTreeMap<BoundFieldId, u16>, field: &BoundFieldId) -> Result<u16, MatchError> {
     fields.get(field).copied().ok_or_else(|| {
         unsupported(
@@ -640,6 +710,10 @@ fn collect_fields(predicate: &MatchExpr, fields: &mut BTreeSet<BoundFieldId>) {
             fields.insert(left.clone());
             fields.insert(right.clone());
         }
+        MatchExpr::ScalarComparison { left, right, .. } => {
+            collect_scalar_fields(left, fields);
+            collect_scalar_fields(right, fields);
+        }
         MatchExpr::FieldPresence { field, .. } => {
             fields.insert(field.clone());
         }
@@ -651,6 +725,12 @@ fn collect_fields(predicate: &MatchExpr, fields: &mut BTreeSet<BoundFieldId>) {
         MatchExpr::Not { expression } => collect_fields(expression, fields),
         MatchExpr::BindingIid { .. } | MatchExpr::RoleEdge { .. } | MatchExpr::Reachable { .. } => {
         }
+    }
+}
+
+fn collect_scalar_fields(operand: &MatchScalarOperand, fields: &mut BTreeSet<BoundFieldId>) {
+    if let MatchScalarOperand::Field { field } = operand {
+        fields.insert(field.clone());
     }
 }
 

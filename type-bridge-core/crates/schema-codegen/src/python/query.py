@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from dataclasses import fields, is_dataclass
@@ -13,6 +14,9 @@ from type_bridge_core import (
     DynamicValue,
     MatchBindingHandle,
     MatchFieldHandle,
+    MatchFunctionArgumentHandle,
+    MatchFunctionCallHandle,
+    MatchFunctionValueHandle,
     MatchOrderHandle,
     MatchPredicateHandle,
     MatchQueryHandle,
@@ -21,6 +25,8 @@ from type_bridge_core import (
     MatchSessionHandle,
     PendingRemoteModelQuery,
     PyRuntimeProjection,
+    QueryCancellation,
+    QueryExecutionResourceLimits,
     RemoteModelQueryContext,
     ValidatedMatchResultHandle,
     ValidatedMatchRowHandle,
@@ -33,6 +39,7 @@ from type_bridge_core import (
     query_v2_prepare_remote_model_reduce_by_fields,
     query_v2_prepare_remote_model_rows,
     query_v2_remote_model_context,
+    query_v2_remote_model_context_with_resources,
 )
 from type_bridge_core import (
     QueryV2Authority as _QueryV2Authority,
@@ -46,10 +53,12 @@ from ._runtime import (
     AttributeBase,
     EntityBase,
     FieldToken,
+    FunctionRef,
     ModelBase,
     RelationBase,
     RoleToken,
     attribute_model_for_query_label,
+    function_identity_for_query,
 )
 from ._schema import SEMANTIC_SCHEMA_FINGERPRINT_JSON
 
@@ -141,6 +150,137 @@ class Predicate(_Frozen):
 
     def projection_identity(self) -> PyRuntimeProjection:
         return self.__projection
+
+
+class FunctionInput[DomainT](_Frozen):
+    """One exact session/projection-branded scalar schema-function input."""
+
+    __slots__ = ("__handle", "__projection")
+    __handle: MatchFunctionValueHandle
+    __projection: PyRuntimeProjection
+
+    def __init__(
+        self,
+        handle: MatchFunctionValueHandle,
+        projection: PyRuntimeProjection,
+    ) -> None:
+        object.__setattr__(self, "_FunctionInput__handle", handle)
+        object.__setattr__(self, "_FunctionInput__projection", projection)
+
+    def native_argument(self) -> MatchFunctionArgumentHandle:
+        return self.__handle.function_argument()
+
+    def native_handle(self) -> MatchFunctionValueHandle:
+        return self.__handle
+
+    def projection_identity(self) -> PyRuntimeProjection:
+        return self.__projection
+
+
+class FunctionCall[DomainT](_Frozen):
+    """One immutable scalar schema-function call."""
+
+    __slots__ = ("__handle", "__projection")
+    __handle: MatchFunctionCallHandle
+    __projection: PyRuntimeProjection
+
+    def __init__(
+        self,
+        handle: MatchFunctionCallHandle,
+        projection: PyRuntimeProjection,
+    ) -> None:
+        object.__setattr__(self, "_FunctionCall__handle", handle)
+        object.__setattr__(self, "_FunctionCall__projection", projection)
+
+    def eq_field(self, field: BoundField) -> Predicate:
+        return self.__compare_field("equal", field)
+
+    def neq_field(self, field: BoundField) -> Predicate:
+        return self.__compare_field("not_equal", field)
+
+    def lt_field(self, field: BoundField) -> Predicate:
+        return self.__compare_field("less_than", field)
+
+    def lte_field(self, field: BoundField) -> Predicate:
+        return self.__compare_field("less_than_or_equal", field)
+
+    def gt_field(self, field: BoundField) -> Predicate:
+        return self.__compare_field("greater_than", field)
+
+    def gte_field(self, field: BoundField) -> Predicate:
+        return self.__compare_field("greater_than_or_equal", field)
+
+    def eq_value(self, value: FunctionInput[DomainT]) -> Predicate:
+        return self.__compare_value("equal", value)
+
+    def neq_value(self, value: FunctionInput[DomainT]) -> Predicate:
+        return self.__compare_value("not_equal", value)
+
+    def lt_value(self, value: FunctionInput[DomainT]) -> Predicate:
+        return self.__compare_value("less_than", value)
+
+    def lte_value(self, value: FunctionInput[DomainT]) -> Predicate:
+        return self.__compare_value("less_than_or_equal", value)
+
+    def gt_value(self, value: FunctionInput[DomainT]) -> Predicate:
+        return self.__compare_value("greater_than", value)
+
+    def gte_value(self, value: FunctionInput[DomainT]) -> Predicate:
+        return self.__compare_value("greater_than_or_equal", value)
+
+    def eq_call(self, other: FunctionCall[DomainT]) -> Predicate:
+        return self.__compare_call("equal", other)
+
+    def neq_call(self, other: FunctionCall[DomainT]) -> Predicate:
+        return self.__compare_call("not_equal", other)
+
+    def lt_call(self, other: FunctionCall[DomainT]) -> Predicate:
+        return self.__compare_call("less_than", other)
+
+    def lte_call(self, other: FunctionCall[DomainT]) -> Predicate:
+        return self.__compare_call("less_than_or_equal", other)
+
+    def gt_call(self, other: FunctionCall[DomainT]) -> Predicate:
+        return self.__compare_call("greater_than", other)
+
+    def gte_call(self, other: FunctionCall[DomainT]) -> Predicate:
+        return self.__compare_call("greater_than_or_equal", other)
+
+    def native_argument(self) -> MatchFunctionArgumentHandle:
+        return self.__handle.function_argument()
+
+    def native_handle(self) -> MatchFunctionCallHandle:
+        return self.__handle
+
+    def projection_identity(self) -> PyRuntimeProjection:
+        return self.__projection
+
+    def __compare_field(self, operator: str, field: object) -> Predicate:
+        if not isinstance(field, BoundField):
+            raise TypeError("schema-function field comparison requires a BoundField")
+        _require_projection(field.projection_identity(), self.__projection, "function field")
+        return Predicate(
+            self.__handle.compare_field(operator, field.native_handle()),
+            self.__projection,
+        )
+
+    def __compare_value(self, operator: str, value: FunctionInput[DomainT]) -> Predicate:
+        if type(value) is not FunctionInput:
+            raise TypeError("schema-function value comparison requires a FunctionInput")
+        _require_projection(value.projection_identity(), self.__projection, "function value")
+        return Predicate(
+            self.__handle.compare_value(operator, value.native_handle()),
+            self.__projection,
+        )
+
+    def __compare_call(self, operator: str, other: FunctionCall[DomainT]) -> Predicate:
+        if type(other) is not FunctionCall:
+            raise TypeError("schema-function call comparison requires a FunctionCall")
+        _require_projection(other.projection_identity(), self.__projection, "function call")
+        return Predicate(
+            self.__handle.compare_call(operator, other.native_handle()),
+            self.__projection,
+        )
 
 
 class QueryOrder(_Frozen):
@@ -265,20 +405,38 @@ class BoundField(_Frozen):
     def eq(self, value: AttributeBase | BoundField) -> Predicate:
         return self.__compare("equal", value)
 
+    def eq_field(self, field: BoundField) -> Predicate:
+        return self.__compare_field("equal", field)
+
     def neq(self, value: AttributeBase | BoundField) -> Predicate:
         return self.__compare("not_equal", value)
+
+    def neq_field(self, field: BoundField) -> Predicate:
+        return self.__compare_field("not_equal", field)
 
     def lt(self, value: AttributeBase | BoundField) -> Predicate:
         return self.__compare("less_than", value)
 
+    def lt_field(self, field: BoundField) -> Predicate:
+        return self.__compare_field("less_than", field)
+
     def lte(self, value: AttributeBase | BoundField) -> Predicate:
         return self.__compare("less_than_or_equal", value)
+
+    def lte_field(self, field: BoundField) -> Predicate:
+        return self.__compare_field("less_than_or_equal", field)
 
     def gt(self, value: AttributeBase | BoundField) -> Predicate:
         return self.__compare("greater_than", value)
 
+    def gt_field(self, field: BoundField) -> Predicate:
+        return self.__compare_field("greater_than", field)
+
     def gte(self, value: AttributeBase | BoundField) -> Predicate:
         return self.__compare("greater_than_or_equal", value)
+
+    def gte_field(self, field: BoundField) -> Predicate:
+        return self.__compare_field("greater_than_or_equal", field)
 
     def contains(self, value: AttributeBase) -> Predicate:
         return self.__compare("contains", value)
@@ -306,16 +464,24 @@ class BoundField(_Frozen):
 
     def __compare(self, operator: str, value: AttributeBase | BoundField) -> Predicate:
         if isinstance(value, BoundField):
-            _require_projection(value.projection_identity(), self.__projection, "bound field")
             if value.attribute_label() != self.__attribute_label:
-                raise TypeError("generated field comparisons require the same attribute type")
-            handle = self.__handle.compare_field(operator, value.native_handle())
+                raise TypeError(
+                    "cross-attribute field comparisons require the explicit *_field method"
+                )
+            return self.__compare_field(operator, value)
         else:
             _require_projection(_exact_projection(type(value)), self.__projection, "attribute")
             if _model_label(type(value)) != self.__attribute_label:
                 raise TypeError("generated field comparison requires its exact attribute wrapper")
             handle = self.__handle.compare_value(operator, _dynamic_value(value))
         return Predicate(handle, self.__projection)
+
+    def __compare_field(self, operator: str, field: BoundField) -> Predicate:
+        _require_projection(field.projection_identity(), self.__projection, "bound field")
+        return Predicate(
+            self.__handle.compare_field(operator, field.native_handle()),
+            self.__projection,
+        )
 
     def attribute_label(self) -> str:
         return self.__attribute_label
@@ -605,6 +771,18 @@ class Query(_Frozen):
         object.__setattr__(self, "_Query__names", names)
         object.__setattr__(self, "_Query__declaration", declaration)
 
+    def close(self) -> None:
+        """Close only this query; persistent ancestors and descendants stay usable."""
+        self.__handle.close()
+
+    @property
+    def is_closed(self) -> bool:
+        return self.__handle.is_closed
+
+    def clone(self) -> Query:
+        """Return an independently closable value-equivalent query."""
+        return self.__clone(self.__handle.fork())
+
     def match(self, *bindings: object) -> Query:
         if not bindings:
             raise TypeError("Query.match requires at least one generated binding")
@@ -711,7 +889,7 @@ class Query(_Frozen):
     def group_by(self, root: BoundVar, *groups: BoundVar | BoundField) -> GroupedQuery:
         self.__require_root(root, "aggregate root")
         return GroupedQuery(
-            self,
+            self.clone(),
             root,
             _require_aggregate_groups(groups, self.__projection, "aggregate group"),
         )
@@ -1004,6 +1182,13 @@ class GroupedQuery(_Frozen):
         object.__setattr__(self, "_GroupedQuery__root", root)
         object.__setattr__(self, "_GroupedQuery__group", group)
 
+    def close(self) -> None:
+        self.__query.close()
+
+    @property
+    def is_closed(self) -> bool:
+        return self.__query.is_closed
+
     def match(self, *bindings: BoundVar) -> GroupedQuery:
         return GroupedQuery(self.__query.match(*bindings), self.__root, self.__group)
 
@@ -1042,19 +1227,59 @@ class QuerySession(_Frozen):
         self,
         projection: PyRuntimeProjection,
         connection: Database | TransactionContext,
+        *,
+        resources: QueryExecutionResourceLimits | None = None,
+        cancellation: QueryCancellation | None = None,
     ) -> None:
         if not _is_connection(connection):
             raise TypeError("generated QuerySession requires a Database or TransactionContext")
+        use_legacy_defaults = resources is None and cancellation is None
+        effective_resources = QueryExecutionResourceLimits() if resources is None else resources
+        effective_cancellation = QueryCancellation() if cancellation is None else cancellation
+        if type(effective_resources) is not QueryExecutionResourceLimits:
+            raise TypeError("generated query resources must be QueryExecutionResourceLimits")
+        if type(effective_cancellation) is not QueryCancellation:
+            raise TypeError("generated query cancellation must be QueryCancellation")
         object.__setattr__(self, "_QuerySession__projection", projection)
         object.__setattr__(self, "_QuerySession__connection", connection)
-        object.__setattr__(self, "_QuerySession__handle", projection.match_session())
+        handle = (
+            projection.match_session()
+            if use_legacy_defaults
+            else projection.match_session_with_resources(
+                effective_resources, effective_cancellation
+            )
+        )
+        object.__setattr__(self, "_QuerySession__handle", handle)
+
+    def close(self) -> None:
+        """Close this authoring session and invalidate its descendant terminals."""
+        self.__handle.close()
+
+    @property
+    def is_closed(self) -> bool:
+        return self.__handle.is_closed
 
     @classmethod
-    def remote_factory(cls, projection: PyRuntimeProjection) -> QuerySession:
+    def remote_factory(
+        cls,
+        projection: PyRuntimeProjection,
+        resources: QueryExecutionResourceLimits | None = None,
+        cancellation: QueryCancellation | None = None,
+    ) -> QuerySession:
         session = cls.__new__(cls)
         object.__setattr__(session, "_QuerySession__projection", projection)
         object.__setattr__(session, "_QuerySession__connection", None)
-        object.__setattr__(session, "_QuerySession__handle", projection.match_session())
+        use_legacy_defaults = resources is None and cancellation is None
+        effective_resources = QueryExecutionResourceLimits() if resources is None else resources
+        effective_cancellation = QueryCancellation() if cancellation is None else cancellation
+        handle = (
+            projection.match_session()
+            if use_legacy_defaults
+            else (
+                projection.match_session_with_resources(effective_resources, effective_cancellation)
+            )
+        )
+        object.__setattr__(session, "_QuerySession__handle", handle)
         return session
 
     def var(self, model: type[ModelBase], *, subtypes: bool = False) -> BoundVar:
@@ -1067,6 +1292,48 @@ class QuerySession(_Frozen):
 
     def subtypes(self, model: type[ModelBase]) -> BoundVar:
         return self.var(model, subtypes=True)
+
+    def _function_input[DomainT](
+        self, value: object, domain: type[DomainT]
+    ) -> FunctionInput[DomainT]:
+        if not isinstance(value, AttributeBase):
+            raise TypeError("schema-function inputs require projected attribute values")
+        del domain
+        _require_projection(_exact_projection(type(value)), self.__projection, "function input")
+        return FunctionInput(
+            self.__handle.function_value(type(value).__type_id__, _dynamic_value(value)),
+            self.__projection,
+        )
+
+    def _call_function[DomainT](
+        self,
+        function: FunctionRef[..., object],
+        arguments: tuple[object, ...],
+        domain: type[DomainT],
+    ) -> FunctionCall[DomainT]:
+        del domain
+        function_id, _signature = function_identity_for_query(function)
+        native_arguments: list[MatchFunctionArgumentHandle] = []
+        for argument in arguments:
+            if isinstance(argument, BoundVar):
+                _require_projection(
+                    argument.projection_identity(), self.__projection, "function binding"
+                )
+                native_arguments.append(argument.native_handle().function_argument())
+            elif type(argument) is FunctionInput:
+                _require_projection(
+                    argument.projection_identity(), self.__projection, "function input"
+                )
+                native_arguments.append(argument.native_argument())
+            elif type(argument) is FunctionCall:
+                _require_projection(
+                    argument.projection_identity(), self.__projection, "function call"
+                )
+                native_arguments.append(argument.native_argument())
+            else:
+                raise TypeError("invalid generated schema-function argument")
+        handle = self.__handle.function_by_id(function_id).call(native_arguments)
+        return FunctionCall(handle, self.__projection)
 
     def reachable(
         self,
@@ -1261,7 +1528,8 @@ class RemoteQueryLimits(_Frozen):
 
 
 class RemoteQuery(_Frozen):
-    __slots__ = ("__context", "__exchange", "__query")
+    __slots__ = ("__cancellation", "__context", "__exchange", "__query")
+    __cancellation: QueryCancellation
     __context: RemoteModelQueryContext
     __exchange: Callable[[bytes], Awaitable[bytes]]
     __query: Query
@@ -1271,22 +1539,50 @@ class RemoteQuery(_Frozen):
         query: Query,
         context: RemoteModelQueryContext,
         exchange: Callable[[bytes], Awaitable[bytes]],
+        cancellation: QueryCancellation,
     ) -> None:
         object.__setattr__(self, "_RemoteQuery__query", query)
         object.__setattr__(self, "_RemoteQuery__context", context)
         object.__setattr__(self, "_RemoteQuery__exchange", exchange)
+        object.__setattr__(self, "_RemoteQuery__cancellation", cancellation)
+
+    def close(self) -> None:
+        self.__query.close()
+
+    @property
+    def is_closed(self) -> bool:
+        return self.__query.is_closed
+
+    def clone(self) -> RemoteQuery:
+        return RemoteQuery(
+            self.__query.clone(),
+            self.__context,
+            self.__exchange,
+            self.__cancellation,
+        )
 
     def match(self, *bindings: BoundVar) -> RemoteQuery:
-        return RemoteQuery(self.__query.match(*bindings), self.__context, self.__exchange)
+        return RemoteQuery(
+            self.__query.match(*bindings),
+            self.__context,
+            self.__exchange,
+            self.__cancellation,
+        )
 
     def where(self, *predicates: Predicate) -> RemoteQuery:
-        return RemoteQuery(self.__query.where(*predicates), self.__context, self.__exchange)
+        return RemoteQuery(
+            self.__query.where(*predicates),
+            self.__context,
+            self.__exchange,
+            self.__cancellation,
+        )
 
     def allow_cross_join(self, left: BoundVar, right: BoundVar) -> RemoteQuery:
         return RemoteQuery(
             self.__query.allow_cross_join(left, right),
             self.__context,
             self.__exchange,
+            self.__cancellation,
         )
 
     async def one(self) -> object:
@@ -1394,7 +1690,7 @@ class RemoteQuery(_Frozen):
     def group_by(self, root: BoundVar, *groups: BoundVar | BoundField) -> RemoteGroupedQuery:
         self.__require_root(root, "remote aggregate root")
         return RemoteGroupedQuery(
-            self,
+            self.clone(),
             root,
             _require_aggregate_groups(
                 groups,
@@ -1478,7 +1774,26 @@ class RemoteQuery(_Frozen):
         self,
         pending: PendingRemoteModelQuery,
     ) -> ValidatedMatchResultHandle:
-        response = await self.__exchange(pending.request_bytes())
+        request = pending.request_bytes()
+        if self.__cancellation.is_cancelled:
+            # Claim through the neutral one-shot authority after cancellation
+            # so the canonical diagnostic wins and this request is consumed.
+            return pending.decode_reply(b"")
+
+        exchange_task = asyncio.ensure_future(self.__exchange(request))
+        cancellation_task = asyncio.create_task(_wait_for_query_cancellation(self.__cancellation))
+        await asyncio.wait(
+            (exchange_task, cancellation_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if self.__cancellation.is_cancelled:
+            exchange_task.cancel()
+            exchange_task.add_done_callback(_consume_remote_exchange_task)
+            return pending.decode_reply(b"")
+
+        cancellation_task.cancel()
+        cancellation_task.add_done_callback(_consume_remote_exchange_task)
+        response = await exchange_task
         if type(response) is not bytes:
             raise TypeError("generated remote query exchange must return exact bytes")
         return pending.decode_reply(response)
@@ -1499,6 +1814,13 @@ class RemoteGroupedQuery(_Frozen):
         object.__setattr__(self, "_RemoteGroupedQuery__query", query)
         object.__setattr__(self, "_RemoteGroupedQuery__root", root)
         object.__setattr__(self, "_RemoteGroupedQuery__group", group)
+
+    def close(self) -> None:
+        self.__query.close()
+
+    @property
+    def is_closed(self) -> bool:
+        return self.__query.is_closed
 
     def match(self, *bindings: BoundVar) -> RemoteGroupedQuery:
         return RemoteGroupedQuery(self.__query.match(*bindings), self.__root, self.__group)
@@ -1529,7 +1851,8 @@ class RemoteGroupedQuery(_Frozen):
 
 
 class RemoteQuerySession(_Frozen):
-    __slots__ = ("__context", "__direct", "__exchange")
+    __slots__ = ("__cancellation", "__context", "__direct", "__exchange")
+    __cancellation: QueryCancellation
     __context: RemoteModelQueryContext
     __direct: QuerySession
     __exchange: Callable[[bytes], Awaitable[bytes]]
@@ -1539,31 +1862,81 @@ class RemoteQuerySession(_Frozen):
         advertisement: object,
         exchange: object,
         limits: object,
+        *,
+        cancellation: QueryCancellation | None = None,
     ) -> None:
         if type(advertisement) is not bytes:
             raise TypeError("generated remote advertisement must be exact bytes")
         if not _is_exchange(exchange):
             raise TypeError("generated remote exchange must be callable")
-        if type(limits) is not RemoteQueryLimits:
-            raise TypeError("generated remote limits must be RemoteQueryLimits")
-        context = query_v2_remote_model_context(
-            _installed_query_authority(),
-            advertisement,
-            limits.max_items,
-            limits.max_bytes,
-            limits.max_collection_members,
-            limits.max_graph_nodes,
-            limits.max_attribute_values,
-            limits.max_role_players,
-            limits.deadline_ms,
+        legacy_limits = (
+            limits
+            if isinstance(limits, RemoteQueryLimits) and type(limits) is RemoteQueryLimits
+            else None
         )
+        use_legacy_defaults = legacy_limits is not None and cancellation is None
+        if cancellation is None:
+            cancellation = QueryCancellation()
+        if type(cancellation) is not QueryCancellation:
+            raise TypeError("generated query cancellation must be QueryCancellation")
+        if legacy_limits is not None:
+            resources = QueryExecutionResourceLimits(
+                timeout_milliseconds=(
+                    30_000 if legacy_limits.deadline_ms is None else legacy_limits.deadline_ms
+                ),
+                items=legacy_limits.max_items,
+                bytes=legacy_limits.max_bytes,
+                graph_nodes=legacy_limits.max_graph_nodes,
+                attribute_values=legacy_limits.max_attribute_values,
+                collection_members=legacy_limits.max_collection_members,
+                role_players=legacy_limits.max_role_players,
+            )
+        elif (
+            isinstance(limits, QueryExecutionResourceLimits)
+            and type(limits) is QueryExecutionResourceLimits
+        ):
+            resources = limits
+        else:
+            raise TypeError(
+                "generated remote limits must be RemoteQueryLimits or QueryExecutionResourceLimits"
+            )
+        if use_legacy_defaults:
+            if legacy_limits is None:
+                raise RuntimeError("legacy remote limit state is inconsistent")
+            context = query_v2_remote_model_context(
+                _installed_query_authority(),
+                advertisement,
+                legacy_limits.max_items,
+                legacy_limits.max_bytes,
+                legacy_limits.max_collection_members,
+                legacy_limits.max_graph_nodes,
+                legacy_limits.max_attribute_values,
+                legacy_limits.max_role_players,
+                legacy_limits.deadline_ms,
+            )
+        else:
+            context = query_v2_remote_model_context_with_resources(
+                _installed_query_authority(), advertisement, resources, cancellation
+            )
         object.__setattr__(self, "_RemoteQuerySession__context", context)
         object.__setattr__(self, "_RemoteQuerySession__exchange", exchange)
+        object.__setattr__(self, "_RemoteQuerySession__cancellation", cancellation)
         object.__setattr__(
             self,
             "_RemoteQuerySession__direct",
-            QuerySession.remote_factory(_installed_projection()),
+            QuerySession.remote_factory(
+                _installed_projection(),
+                None if use_legacy_defaults else resources,
+                None if use_legacy_defaults else cancellation,
+            ),
         )
+
+    def close(self) -> None:
+        self.__direct.close()
+
+    @property
+    def is_closed(self) -> bool:
+        return self.__direct.is_closed
 
     def var(self, model: type[ModelBase], *, subtypes: bool = False) -> BoundVar:
         return self.__direct.var(model, subtypes=subtypes)
@@ -1573,6 +1946,23 @@ class RemoteQuerySession(_Frozen):
 
     def subtypes(self, model: type[ModelBase]) -> BoundVar:
         return self.__direct.subtypes(model)
+
+    def _function_input[DomainT](
+        self, value: object, domain: type[DomainT]
+    ) -> FunctionInput[DomainT]:
+        return self.__direct._function_input(  # pyright: ignore[reportPrivateUsage]
+            value, domain
+        )
+
+    def _call_function[DomainT](
+        self,
+        function: FunctionRef[..., object],
+        arguments: tuple[object, ...],
+        domain: type[DomainT],
+    ) -> FunctionCall[DomainT]:
+        return self.__direct._call_function(  # pyright: ignore[reportPrivateUsage]
+            function, arguments, domain
+        )
 
     def reachable(
         self,
@@ -1600,6 +1990,7 @@ class RemoteQuerySession(_Frozen):
             self.__direct.query(*selections),
             self.__context,
             self.__exchange,
+            self.__cancellation,
         )
 
     def query_as(
@@ -1612,6 +2003,7 @@ class RemoteQuerySession(_Frozen):
             self.__direct.query_as(declaration, **selections),
             self.__context,
             self.__exchange,
+            self.__cancellation,
         )
 
 
@@ -1764,6 +2156,19 @@ def _is_exchange(
     return callable(value)
 
 
+async def _wait_for_query_cancellation(cancellation: QueryCancellation) -> None:
+    """Yield cooperatively until the shared native cancellation is observed."""
+    while not cancellation.is_cancelled:
+        await asyncio.sleep(0)
+
+
+def _consume_remote_exchange_task[ResultT](task: asyncio.Future[ResultT]) -> None:
+    """Observe a losing task so cancellation never leaks an event-loop warning."""
+    if task.cancelled():
+        return
+    task.exception()
+
+
 def _type_id_label(value: object) -> str:
     if not _is_object_dict(value):
         raise TypeError("generated model identity must be an object")
@@ -1841,9 +2246,13 @@ __all__ = [
     "BoundRole",
     "BoundVar",
     "Collected",
+    "FunctionCall",
+    "FunctionInput",
     "Predicate",
     "Query",
     "QueryOrder",
+    "QueryCancellation",
+    "QueryExecutionResourceLimits",
     "QuerySession",
     "GroupedQuery",
     "Page",

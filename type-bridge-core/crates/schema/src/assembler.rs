@@ -5,8 +5,9 @@ use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::id::{Label, RoleId, TypeId, TypeKind};
 use type_bridge_contract::schema::{
-    DeclaredSchema, PlaysFact, PlaysFactId, RelatesFact, RelatesFactId, SchemaDiagnostic,
-    SchemaDiagnostics, SchemaFact, SchemaFactId, SourceSpan, SourcedSchemaFact, StructFact,
+    CollectionMode, DeclaredSchema, PlaysFact, PlaysFactId, RelatesFact, RelatesFactId,
+    SchemaDiagnostic, SchemaDiagnostics, SchemaFact, SchemaFactId, SourceSpan, SourcedSchemaFact,
+    StructFact,
 };
 
 use crate::diagnostic::{diagnostic, diagnostic_with_related};
@@ -14,6 +15,7 @@ use crate::diagnostic::{diagnostic, diagnostic_with_related};
 struct PendingRelates {
     id: RelatesFactId,
     specializes: Option<(Label, SourceSpan)>,
+    collection_mode: CollectionMode,
     source: SourceSpan,
 }
 
@@ -187,6 +189,17 @@ impl FactAssembler {
         specializes: Option<(Label, SourceSpan)>,
         source: SourceSpan,
     ) -> Result<(), SchemaDiagnostics> {
+        self.insert_relates_with_collection_mode(id, specializes, CollectionMode::Unordered, source)
+    }
+
+    /// Queue a related-role declaration with explicit collection semantics.
+    pub fn insert_relates_with_collection_mode(
+        &mut self,
+        id: RelatesFactId,
+        specializes: Option<(Label, SourceSpan)>,
+        collection_mode: CollectionMode,
+        source: SourceSpan,
+    ) -> Result<(), SchemaDiagnostics> {
         if let Some(previous) = self.pending_relates_sources.get(&id) {
             return Err(diagnostic_with_related(
                 DiagnosticCategory::InvalidContract,
@@ -212,6 +225,7 @@ impl FactAssembler {
         self.pending_relates.push(PendingRelates {
             id,
             specializes,
+            collection_mode,
             source,
         });
         Ok(())
@@ -255,8 +269,12 @@ impl FactAssembler {
                     )
                 })
                 .transpose()?;
-            let fact = RelatesFact::new(declaration.id.clone(), specializes)
-                .map_err(|error| contract(error, declaration.source.clone()))?;
+            let fact = RelatesFact::new_with_collection_mode(
+                declaration.id.clone(),
+                specializes,
+                declaration.collection_mode,
+            )
+            .map_err(|error| contract(error, declaration.source.clone()))?;
             self.insert_fact(SchemaFact::Relates(fact), declaration.source.clone())?;
         }
         Ok(())

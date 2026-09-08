@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -22,6 +23,7 @@ def command(
     *,
     expected: int = 0,
     cwd: Path = ROOT,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     completed = subprocess.run(
         arguments,
@@ -29,6 +31,7 @@ def command(
         text=True,
         capture_output=True,
         check=False,
+        env=env,
     )
     if completed.returncode != expected:
         raise AssertionError(
@@ -90,6 +93,7 @@ def main() -> None:
         HERE / "negative.py",
         HERE / "runtime_check.py",
         HERE / "fingerprint_check.py",
+        HERE / "projected_parity_check.py",
         DOCUMENTED_EXAMPLES,
     ]
     for fixture in fixtures:
@@ -113,6 +117,7 @@ def main() -> None:
         "runtime_check.py",
         "fingerprint_check.py",
         "authority_rejection_check.py",
+        "projected_parity_check.py",
         "pyrightconfig.json",
     ):
         shutil.copy2(HERE / fixture, STAGE / fixture)
@@ -136,6 +141,26 @@ def main() -> None:
             str(STAGE / "generated_v2"),
         ]
     )
+    shutil.copytree(STAGE / "generated_v2", STAGE / "generated_identical")
+    command(
+        [
+            "cargo",
+            "run",
+            "--quiet",
+            "--manifest-path",
+            str(CORE / "Cargo.toml"),
+            "--package",
+            "type-bridge-schema-codegen",
+            "--example",
+            "emit_python_acceptance",
+            "--",
+            str(HERE / "schema-ordered.yaml"),
+            str(STAGE / "generated_ordered"),
+        ]
+    )
+    ordered = pyright(STAGE / "generated_ordered", expected_exit=0)
+    if ordered["summary"]["errorCount"] != 0:
+        raise AssertionError(f"ordered generated package Pyright failed: {ordered}")
 
     variant_source = (
         (HERE / "schema.yaml")
@@ -163,6 +188,86 @@ def main() -> None:
             "--",
             str(variant_schema),
             str(STAGE / "generated_variant"),
+        ]
+    )
+
+    projected_schema = ROOT / "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"
+    command(
+        [
+            "cargo",
+            "run",
+            "--quiet",
+            "--manifest-path",
+            str(CORE / "Cargo.toml"),
+            "--package",
+            "type-bridge-schema-codegen",
+            "--example",
+            "emit_python_acceptance",
+            "--",
+            str(projected_schema),
+            str(STAGE / "generated_projected"),
+        ]
+    )
+    projected_source = projected_schema.read_text()
+    projected_foreign_source = projected_source.replace(
+        "member: { card: { min: 0, max: 2 }, doc: membership player }",
+        "member: { card: { min: 0, max: 3 }, doc: membership player }",
+    )
+    if projected_foreign_source == projected_source:
+        raise AssertionError("Projected foreign package variant did not modify one playing fact")
+    projected_foreign_schema = STAGE / "projected-foreign-schema.yaml"
+    projected_foreign_schema.write_text(projected_foreign_source)
+    command(
+        [
+            "cargo",
+            "run",
+            "--quiet",
+            "--manifest-path",
+            str(CORE / "Cargo.toml"),
+            "--package",
+            "type-bridge-schema-codegen",
+            "--example",
+            "emit_python_acceptance",
+            "--",
+            str(projected_foreign_schema),
+            str(STAGE / "generated_projected_foreign"),
+        ]
+    )
+    external_projected_report = os.environ.get("TYPE_BRIDGE_PROJECTED_PARITY_REPORT")
+    projected_report = (
+        Path(external_projected_report)
+        if external_projected_report is not None
+        else STAGE / "projected-python-report.json"
+    )
+    if external_projected_report is not None:
+        if not projected_report.is_absolute() or projected_report.exists():
+            raise AssertionError("external Projected parity report must be absent and absolute")
+    projected_environment = os.environ.copy()
+    projected_environment.update(
+        {
+            "TYPE_BRIDGE_PROJECTED_PARITY_REPORT": str(projected_report.resolve()),
+            "TYPE_BRIDGE_PROJECTED_PYTHON_PACKAGE_ROOT": str(STAGE.resolve()),
+            "TYPE_BRIDGE_PROJECTED_REPOSITORY_ROOT": str(ROOT.resolve()),
+        }
+    )
+    command(
+        [sys.executable, str(STAGE / "projected_parity_check.py")],
+        env=projected_environment,
+    )
+    command(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import importlib.util, pathlib, sys; "
+                "path = pathlib.Path(sys.argv[1]); "
+                "spec = importlib.util.spec_from_file_location('projected_comparator', path); "
+                "module = importlib.util.module_from_spec(spec); "
+                "sys.modules[spec.name] = module; spec.loader.exec_module(module); "
+                "module._load_report(pathlib.Path(sys.argv[2]), module.load_contract())"
+            ),
+            str(ROOT / "scripts/ci/compare_projected_parity.py"),
+            str(projected_report),
         ]
     )
     command([sys.executable, str(STAGE / "fingerprint_check.py")])

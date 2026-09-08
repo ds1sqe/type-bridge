@@ -52,10 +52,12 @@ fn emits_exact_deterministic_es_module_package() {
             "src/functions.ts",
             "src/index.ts",
             "src/models.ts",
+            "src/node-fs.d.ts",
             "src/runtime.ts",
             "src/schema.ts",
             "src/structs.ts",
             "tsconfig.json",
+            "typebridge/migration-history.json",
         ])
     );
     let models = String::from_utf8(first.get("src/models.ts").unwrap().to_vec()).unwrap();
@@ -73,7 +75,10 @@ fn emits_exact_deterministic_es_module_package() {
     assert!(runtime.contains("ProjectedModelManager"));
     let index = String::from_utf8(first.get("src/index.ts").unwrap().to_vec()).unwrap();
     assert!(index.contains("__installRuntimeProjectionPackage"));
+    assert!(index.contains("export function openMigrationCatalog(): MigrationCatalog"));
+    assert!(index.contains("../${MIGRATION_HISTORY_RESOURCE}"));
     assert!(index.contains("RUNTIME_PROJECTION_JSON"));
+    assert!(runtime.contains("schemaAuthorityJson,"));
     assert!(!index.contains("export * from \"./authority.js\""));
     let authority_source =
         String::from_utf8(first.get("src/authority.ts").unwrap().to_vec()).unwrap();
@@ -90,12 +95,40 @@ fn emits_exact_deterministic_es_module_package() {
     );
     let package_json = String::from_utf8(first.get("package.json").unwrap().to_vec()).unwrap();
     assert!(package_json.contains("\"type\": \"module\""));
-    assert!(package_json.contains("\"@type-bridge/node\": \"^2.1.0\""));
+    assert!(package_json.contains("\"@type-bridge/node\": \"^2.2.0\""));
     assert!(
         String::from_utf8(first.get("tsconfig.json").unwrap().to_vec())
             .unwrap()
             .contains("\"module\": \"NodeNext\"")
     );
+}
+
+#[test]
+fn emits_canonical_struct_type_identity() {
+    let source = include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml");
+    let emitter = TypeScriptEmitter::new();
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("typescript-struct.yaml").unwrap(), source)])
+            .unwrap();
+    let declared = normalize_documents(&documents).unwrap();
+    let resolved = resolve(
+        &declared,
+        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+    )
+    .unwrap();
+    let resources = emitter.code_resources_for(&resolved).unwrap();
+    let projection = project(
+        &resolved,
+        BindingTarget::TypeScript,
+        &ProjectionConfig::typescript(),
+        &emitter.generator_handlers_for(&resolved),
+        &resources,
+    )
+    .unwrap();
+    let authority = support::authority(source);
+    let package = emitter.emit(&projection, &authority).unwrap();
+    let structs = String::from_utf8(package.get("src/structs.ts").unwrap().to_vec()).unwrap();
+    assert!(structs.contains(r#"id: "{\"kind\":\"struct\",\"label\":\"player-stats\"}""#));
 }
 
 #[test]

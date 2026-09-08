@@ -16,12 +16,18 @@ through:
 Keep those distribution identities distinct while preserving their shared
 contracts.
 
+The generated C package and `type-bridge-c` crate are a separate internal
+foundation under development. They are neither a supported SDK nor a release
+distribution until #110 completes the application contract.
+
 ## Requirements
 
 - Python 3.12–3.14; `.python-version` pins the local default to 3.13
 - [uv](https://docs.astral.sh/uv/) for Python and workspace dependencies
 - Rust 1.88+ for the public SDK and Rust workspace
 - Node 18+ for the Node package; the primary development matrix uses Node 20
+- CMake 3.20+ plus C17 and C++17 compilers when changing the internal C
+  schema-package foundation; Unix checks also require `pkg-config`
 - TypeDB 3.x for integration tests
 - Podman or Docker for the default isolated live suite
 
@@ -43,6 +49,7 @@ compatibility override is required. The module retains its GIL requirement.
 | `type-bridge-core/crates/` | Rust contracts, engines, ORM, bindings, CLI, and server |
 | `type-bridge-core/crates/node/` | N-API boundary and TypeScript package |
 | `type-bridge-core/crates/rust/` | Public generated-model Rust client |
+| `type-bridge-core/crates/c/` | Private C projected-value and provider-lifecycle ABI foundation |
 | `docs/` | MkDocs source, guides, maintainer contracts, and site assets |
 | `examples/` | Split-YAML workspace and generated-package application examples |
 | `tests/` | Python unit, integration, compatibility, contract, and parity tests |
@@ -56,6 +63,16 @@ duplicated directory snapshot here.
 - Rust is the only semantic engine for V2 behavior.
 - Python and Node bindings marshal typed values and expose language-native
   facades; they do not reimplement schema, query, migration, or ORM rules.
+- The generated C package and native C ABI are an internal foundation under
+  development. ABI 1.6 is the single supported build target, with one header
+  and exact runtime dependencies. Rust owns schema admission, projected
+  values, transactions, CRUD, queries, migration, canonical serialization,
+  diagnostics, resource limits, and cancellation. Generated nominal models
+  enforce package and role boundaries. Ordered schema packages expose typed
+  manager filters; live TypeDB 3.12.3 checks keep ordered attributes and role
+  lists empty because the provider does not accept those instances. C becomes
+  a public SDK only after its release artifacts pass the complete acceptance
+  checks.
 - Generated files are projections of canonical schema authority and must not be
   edited by hand.
 - Separately retained V1 query surfaces stay available unless an exact future
@@ -97,13 +114,14 @@ uv run pytest
 # Full source-tree suite; starts and removes an isolated TypeDB by default
 ./test.sh
 
-# Offline-only Rust + Python + Node tiers
+# Offline-only Rust + Python + Node + internal C-foundation tiers
 ./test.sh --no-integration
 
 # Scope-level CI mirrors
 ./scripts/check.sh rust
 ./scripts/check.sh python
 ./scripts/check.sh node
+./scripts/check.sh c
 ./scripts/check.sh all
 
 # Python quality checks
@@ -146,6 +164,14 @@ package or container; it does not require changing local credential scopes.
 
 Python facade builds also run a network-disabled metadata check in the exact
 digest-verified publisher image before entering cross-registry publication.
+
+The separately selected C 2.2.0 path uses `c-release.yml`: read-only verification
+consumes successful same-source master CI artifacts and runs complete V1–V6
+and FULL-C acceptance. Protected promotion consumes that exact verification
+run, signs the unchanged bytes and adds only absent or identical assets to
+the ordinary GitHub draft. See the [C release procedure](docs/development/c-release.md)
+for the selected Ubuntu 24.04 shared-runtime matrix, provenance, partial-upload
+recovery and independent public acceptance required before claiming support.
 
 ## Documentation system
 

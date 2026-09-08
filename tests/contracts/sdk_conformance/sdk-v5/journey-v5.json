@@ -1,0 +1,100 @@
+{
+  "format": "typebridge.sdk-journey/v5",
+  "fixture_id": "sdk-v5",
+  "semantic_profile": "typedb-3.12.1/v1",
+  "record_contract": "typebridge.projected-record/v1",
+  "archive_contract": "typebridge.projected-archive/v1",
+  "records": [
+    {
+      "id": "integer-key",
+      "kind": "attribute_value",
+      "type": {"kind": "attribute", "label": "robot_id"},
+      "semantic_value": {"kind": "long", "value": "9007199254740993"}
+    },
+    {
+      "id": "player-stats",
+      "kind": "struct_value",
+      "type": {"kind": "struct", "label": "player-stats"},
+      "member_order": ["nickname", "wins"]
+    },
+    {
+      "id": "person-create",
+      "kind": "entity_create",
+      "type": {"kind": "entity", "label": "person"},
+      "requires_absent_vs_empty": true
+    },
+    {
+      "id": "person-snapshot",
+      "kind": "entity_snapshot",
+      "type": {"kind": "entity", "label": "person"},
+      "requires_canonical_iid": true,
+      "decoded_state": "detached"
+    },
+    {
+      "id": "membership-create",
+      "kind": "relation_create",
+      "type": {"kind": "relation", "label": "membership"},
+      "requires_polymorphic_role": true
+    },
+    {
+      "id": "interaction-create",
+      "kind": "relation_create",
+      "type": {"kind": "relation", "label": "interaction"},
+      "requires_optional_polymorphic_role": true
+    },
+    {
+      "id": "container-create",
+      "kind": "relation_create",
+      "type": {"kind": "relation", "label": "container"},
+      "requires_relation_as_player": true
+    },
+    {
+      "id": "employment-snapshot",
+      "kind": "relation_snapshot",
+      "type": {"kind": "relation", "label": "employment"},
+      "requires_inherited_roles": true,
+      "decoded_state": "detached"
+    },
+    {
+      "id": "player-reference",
+      "kind": "reference",
+      "type": {"kind": "relation", "label": "event"},
+      "requires_iid_or_exact_key": true,
+      "decoded_state": "detached"
+    }
+  ],
+  "archive": {
+    "mode": "ordered",
+    "record_ids": [
+      "integer-key",
+      "player-stats",
+      "person-create",
+      "person-snapshot",
+      "membership-create",
+      "interaction-create",
+      "container-create",
+      "employment-snapshot",
+      "player-reference"
+    ],
+    "whole_archive_rejection": true
+  },
+  "required_equalities": [
+    "python-node-rust-c-record-bytes",
+    "python-node-rust-c-archive-bytes",
+    "direct-remote-entity-snapshot-bytes",
+    "direct-remote-relation-snapshot-bytes"
+  ],
+  "hostile_mutations": [
+    "foreign-declared-schema",
+    "wrong-semantic-profile",
+    "wrong-record-kind",
+    "wrong-concrete-type",
+    "duplicate-object-key",
+    "reordered-object-key",
+    "unknown-member",
+    "noncanonical-long",
+    "noncanonical-double-bits",
+    "oversize-archive",
+    "invalid-final-record"
+  ]
+}

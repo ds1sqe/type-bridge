@@ -10,7 +10,10 @@ use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::session::backend::TxType;
 use type_bridge_orm::session::context::TransactionContext;
-use type_bridge_orm::{DynamicAttributeMap, DynamicRolePlayerInput, InstalledRuntimeProjection};
+use type_bridge_orm::{
+    AnswerCancellation, DynamicAttributeMap, DynamicRolePlayerInput, InstalledRuntimeProjection,
+    ProjectedBatchOperation, ProjectedCrudExecutor, QueryExecutionResourceLimits,
+};
 
 use crate::__codegen::{CompleteModel, EntityModel, HydrationCapability, RelationModel};
 use crate::entity_codec::{
@@ -18,8 +21,14 @@ use crate::entity_codec::{
 };
 use crate::entity_manager::rehydrate_written_entity;
 use crate::error::{Error, ModelValidationPhase};
+use crate::hooks::{CrudOperation, ModelKind};
+use crate::projected_batch::{
+    create_rows, delete_rows, execute_borrowed_delete, execute_borrowed_things, prepare_batch,
+    update_rows, uses_successor_batch_runtime, validate_binding_row_count,
+};
+use crate::projected_codec::{materialize_projected, project_create};
 use crate::relation_codec::{hydrate_relation, lower_relation_create, resolve_relation_authority};
-use crate::relation_manager::{one_coalesced_row, rehydrate_written_relation};
+use crate::relation_manager::rehydrate_written_relation;
 use crate::schema::Schema;
 use crate::{Database, Result};
 
@@ -84,10 +93,48 @@ impl<'db, S: Schema> ReadTransaction<'db, S> {
         })
     }
 
+    /// Create a read-only exact entity manager borrowing this transaction.
+    /// Every derived filter terminal reuses the retained read context.
+    pub fn entities<M>(&self) -> crate::projected_filter::ReadEntityManager<'_, S, M>
+    where
+        M: crate::__codegen::EntityModel<Schema = S> + crate::__codegen::CompleteModel,
+    {
+        crate::projected_filter::ReadEntityManager::new(&self.installed, &self.tx)
+    }
+
+    /// Create a read-only exact relation manager borrowing this transaction.
+    /// Every derived filter terminal reuses the retained read context.
+    pub fn relations<M>(&self) -> crate::projected_filter::ReadRelationManager<'_, S, M>
+    where
+        M: crate::__codegen::RelationModel<Schema = S> + crate::__codegen::CompleteModel,
+    {
+        crate::projected_filter::ReadRelationManager::new(&self.installed, &self.tx)
+    }
+
     /// Start one owner-branded query session borrowing this read context.
     #[must_use]
     pub fn query(&self) -> crate::query::QuerySession<'_, S> {
-        crate::query::QuerySession::borrowed(&self.installed, Arc::clone(&self.registry), &self.tx)
+        self.query_with_resources(
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+        )
+    }
+
+    /// Start one borrowed query session with one common tighten-only resource
+    /// policy and caller-owned cooperative cancellation signal.
+    #[must_use]
+    pub fn query_with_resources(
+        &self,
+        resources: QueryExecutionResourceLimits,
+        cancellation: AnswerCancellation,
+    ) -> crate::query::QuerySession<'_, S> {
+        crate::query::QuerySession::borrowed(
+            &self.installed,
+            Arc::clone(&self.registry),
+            &self.tx,
+            self.db.operation_limits(resources),
+            cancellation,
+        )
     }
 
     /// Close this read transaction without committing.
@@ -104,6 +151,9 @@ impl<'db, S: Schema> ReadTransaction<'db, S> {
 /// retained, and a second terminal operation is unrepresentable. Operations
 /// never auto-commit: an operation error leaves terminal control with the
 /// caller, and dropping an open wrapper releases the context without commit.
+/// Under the successor runtime, a batch failure before mutation dispatch
+/// leaves the transaction active, while a failure after dispatch makes it
+/// rollback-only and [`Self::commit`] returns `transaction_rollback_only`.
 pub struct WriteTransaction<'db, S: Schema> {
     tx: TransactionContext,
     db: &'db Database<S>,
@@ -153,7 +203,14 @@ impl<'db, S: Schema> WriteTransaction<'db, S> {
 
     /// Commit every operation performed in this transaction, consuming it.
     pub async fn commit(self) -> Result<()> {
-        self.tx.commit().await.map_err(Error::from_orm)
+        if uses_successor_batch_runtime(self.installed()?) {
+            self.tx
+                .commit_sdk()
+                .await
+                .map_err(|error| Error::from_projected_batch(error, ModelValidationPhase::Input))
+        } else {
+            self.tx.commit().await.map_err(Error::from_orm)
+        }
     }
 
     /// Roll back every operation performed in this transaction, consuming it.
@@ -214,43 +271,70 @@ where
     /// Inserts one exact entity in the open transaction and returns its
     /// complete freshly hydrated model without committing.
     pub async fn insert(&self, input: M::Create) -> Result<M> {
-        let (id, installed, manager) = self.exact()?;
-        let attributes = lower_entity_create(input, &id, installed)?;
-        let iid = manager.insert(&attributes).await.map_err(Error::from_orm)?;
-        rehydrate_written_entity(&manager, &iid, &id, installed).await
+        let (id, installed, _manager) = self.exact()?;
+        let create = project_create(input, &id, installed)?;
+        let projected = ProjectedCrudExecutor::new(installed)
+            .insert_entity_in_transaction_with_compatibility(&self.transaction.tx, &create)
+            .await
+            .map_err(|error| {
+                Error::from_projected_crud(error, ModelKind::Entity, Some(CrudOperation::Insert))
+            })?;
+        materialize_projected(projected, installed)
     }
 
     /// Applies the exact key-or-insert put rule in the open transaction,
     /// including complete replacement of non-key ownership for an existing
     /// exact row, without committing.
     pub async fn put(&self, input: M::Create) -> Result<M> {
-        let (id, installed, manager) = self.exact()?;
-        let attributes = lower_entity_create(input, &id, installed)?;
-        let iid = manager
-            .put_exact(&attributes)
+        let (id, installed, _manager) = self.exact()?;
+        let create = project_create(input, &id, installed)?;
+        let projected = ProjectedCrudExecutor::new(installed)
+            .put_entity_in_transaction_with_compatibility(&self.transaction.tx, &create)
             .await
-            .map_err(Error::from_orm)?;
-        rehydrate_written_entity(&manager, &iid, &id, installed).await
+            .map_err(|error| {
+                Error::from_projected_crud(error, ModelKind::Entity, Some(CrudOperation::Put))
+            })?;
+        materialize_projected(projected, installed)
     }
 
     /// Inserts each item in input order in the open transaction, returning
     /// complete freshly hydrated models or one error, without committing.
+    /// A successor-runtime failure after mutation dispatch makes the
+    /// transaction rollback-only; a pre-dispatch failure leaves it active.
     pub async fn insert_many(&self, inputs: Vec<M::Create>) -> Result<Vec<M>> {
+        if uses_successor_batch_runtime(self.transaction.installed()?) {
+            validate_binding_row_count(inputs.len())?;
+        }
         self.write_many(inputs, false).await
     }
 
     /// Applies the per-item put rule in input order in the open transaction,
     /// returning complete freshly hydrated models or one error, without
-    /// committing.
+    /// committing. A successor-runtime failure after mutation dispatch makes
+    /// the transaction rollback-only; a pre-dispatch failure leaves it active.
     pub async fn put_many(&self, inputs: Vec<M::Create>) -> Result<Vec<M>> {
+        if uses_successor_batch_runtime(self.transaction.installed()?) {
+            validate_binding_row_count(inputs.len())?;
+        }
         self.write_many(inputs, true).await
     }
 
     async fn write_many(&self, inputs: Vec<M::Create>, put: bool) -> Result<Vec<M>> {
-        if inputs.is_empty() {
+        let successor = uses_successor_batch_runtime(self.transaction.installed()?);
+        if inputs.is_empty() && !successor {
             return Ok(Vec::new());
         }
         let (id, installed, manager) = self.exact()?;
+        if successor {
+            let rows = create_rows(installed, &id, inputs)?;
+            let operation = if put {
+                ProjectedBatchOperation::Put
+            } else {
+                ProjectedBatchOperation::Insert
+            };
+            let batch = prepare_batch(installed, id, operation, rows)?;
+            return execute_borrowed_things(&self.transaction.tx, installed, &batch).await;
+        }
         let mut lowered = Vec::with_capacity(inputs.len());
         for input in inputs {
             lowered.push(lower_entity_create(input, &id, installed)?);
@@ -283,13 +367,15 @@ where
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
-        let (id, installed, manager) = self.exact()?;
-        let attributes = lower_entity_create(input, &id, installed)?;
-        manager
-            .update_exact(iid, &attributes)
+        let (id, installed, _manager) = self.exact()?;
+        let create = project_create(input, &id, installed)?;
+        let projected = ProjectedCrudExecutor::new(installed)
+            .update_entity_in_transaction_with_compatibility(&self.transaction.tx, iid, &create)
             .await
-            .map_err(Error::from_orm)?;
-        rehydrate_written_entity(&manager, iid, &id, installed).await
+            .map_err(|error| {
+                Error::from_projected_crud(error, ModelKind::Entity, Some(CrudOperation::Update))
+            })?;
+        materialize_projected(projected, installed)
     }
 
     /// Deletes only the exact model at canonical `iid` in the open
@@ -298,11 +384,84 @@ where
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
-        let (_id, _installed, manager) = self.exact()?;
-        manager
-            .delete_by_iid_exact(iid)
+        let (id, installed, _manager) = self.exact()?;
+        ProjectedCrudExecutor::new(installed)
+            .delete_entity_by_iid_in_transaction_with_compatibility(&self.transaction.tx, &id, iid)
             .await
-            .map_err(Error::from_orm)
+            .map_err(|error| {
+                Error::from_projected_crud(error, ModelKind::Entity, Some(CrudOperation::Delete))
+            })
+    }
+
+    /// Replaces each exact entity identified by its canonical IID in input
+    /// order without committing. Successor-runtime failures after mutation
+    /// dispatch make the transaction rollback-only.
+    pub async fn update_many(&self, inputs: Vec<(String, M::Create)>) -> Result<Vec<M>> {
+        let successor = uses_successor_batch_runtime(self.transaction.installed()?);
+        if successor {
+            validate_binding_row_count(inputs.len())?;
+        }
+        if inputs.is_empty() && !successor {
+            return Ok(Vec::new());
+        }
+        if successor {
+            let (id, installed, _manager) = self.exact()?;
+            let rows = update_rows(installed, &id, inputs)?;
+            let batch = prepare_batch(installed, id, ProjectedBatchOperation::Update, rows)?;
+            return execute_borrowed_things(&self.transaction.tx, installed, &batch).await;
+        }
+        if inputs.iter().any(|(iid, _)| !is_canonical_thing_iid(iid)) {
+            return Err(invalid_iid());
+        }
+        let (id, installed, manager) = self.exact()?;
+
+        let mut prepared = Vec::with_capacity(inputs.len());
+        for (iid, input) in inputs {
+            prepared.push((iid, lower_entity_create(input, &id, installed)?));
+        }
+        let mut output = Vec::with_capacity(prepared.len());
+        for (iid, attributes) in prepared {
+            manager
+                .update_exact(&iid, &attributes)
+                .await
+                .map_err(Error::from_orm)?;
+            output.push(rehydrate_written_entity(&manager, &iid, &id, installed).await?);
+        }
+        Ok(output)
+    }
+
+    /// Deletes every exact entity at the supplied canonical IIDs without
+    /// committing. Successor-runtime failures after mutation dispatch make
+    /// the transaction rollback-only.
+    pub async fn delete_many(&self, iids: &[String]) -> Result<()> {
+        let successor = uses_successor_batch_runtime(self.transaction.installed()?);
+        if successor {
+            validate_binding_row_count(iids.len())?;
+        }
+        if iids.is_empty() && !successor {
+            return Ok(());
+        }
+        if successor {
+            let (id, installed, _manager) = self.exact()?;
+            let batch = prepare_batch(
+                installed,
+                id,
+                ProjectedBatchOperation::Delete,
+                delete_rows(iids)?,
+            )?;
+            return execute_borrowed_delete(&self.transaction.tx, installed, &batch).await;
+        }
+        if iids.iter().any(|iid| !is_canonical_thing_iid(iid)) {
+            return Err(invalid_iid());
+        }
+        let (_id, _installed, manager) = self.exact()?;
+        for iid in iids {
+            manager
+                .delete_by_iid_exact(iid)
+                .await
+                .map_err(Error::from_orm)?;
+        }
+        Ok(())
     }
 
     /// Reads one exact model by canonical IID through the open transaction,
@@ -311,20 +470,13 @@ where
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
-        let (id, installed, manager) = self.exact()?;
-        match manager
-            .get_by_iid_exact(iid)
+        let (id, installed, _manager) = self.exact()?;
+        ProjectedCrudExecutor::new(installed)
+            .get_entity_by_iid_in_transaction_with_compatibility(&self.transaction.tx, &id, iid)
             .await
-            .map_err(Error::from_orm)?
-        {
-            None => Ok(None),
-            Some(row) => {
-                let hydrated = hydrate_entity(row, &id, installed)?;
-                M::materialize(&hydrated, &HydrationCapability::new())
-                    .map(Some)
-                    .map_err(|error| map_validation_error(error, ModelValidationPhase::Hydration))
-            }
-        }
+            .map_err(|error| Error::from_projected_crud(error, ModelKind::Entity, None))?
+            .map(|projected| materialize_projected(projected, installed))
+            .transpose()
     }
 
     /// Reads all exact models through the open transaction, observing this
@@ -343,8 +495,11 @@ where
 
     /// Counts only exact models through the open transaction.
     pub async fn count(&self) -> Result<u64> {
-        let (_id, _installed, manager) = self.exact()?;
-        manager.count_exact().await.map_err(Error::from_orm)
+        let (id, installed, _manager) = self.exact()?;
+        ProjectedCrudExecutor::new(installed)
+            .count_entities_in_transaction_with_compatibility(&self.transaction.tx, &id)
+            .await
+            .map_err(|error| Error::from_projected_crud(error, ModelKind::Entity, None))
     }
 }
 
@@ -394,46 +549,70 @@ where
     /// open transaction and returns its complete freshly hydrated model
     /// without committing.
     pub async fn insert(&self, input: M::Create) -> Result<M> {
-        let (id, installed, manager) = self.exact()?;
-        let prepared = lower_relation_create(input, &id, installed)?;
-        let iid = manager
-            .insert(&prepared.attributes, &prepared.role_players)
+        let (id, installed, _manager) = self.exact()?;
+        let create = project_create(input, &id, installed)?;
+        let projected = ProjectedCrudExecutor::new(installed)
+            .insert_relation_in_transaction_with_compatibility(&self.transaction.tx, &create)
             .await
-            .map_err(Error::from_orm)?;
-        rehydrate_written_relation(&manager, &iid, &id, installed).await
+            .map_err(|error| {
+                Error::from_projected_crud(error, ModelKind::Relation, Some(CrudOperation::Insert))
+            })?;
+        materialize_projected(projected, installed)
     }
 
     /// Applies the exact key-or-insert put rule in the open transaction,
     /// including complete replacement of non-key ownership and active role
     /// players for an existing exact row, without committing.
     pub async fn put(&self, input: M::Create) -> Result<M> {
-        let (id, installed, manager) = self.exact()?;
-        let prepared = lower_relation_create(input, &id, installed)?;
-        let iid = manager
-            .put_exact(&prepared.attributes, &prepared.role_players)
+        let (id, installed, _manager) = self.exact()?;
+        let create = project_create(input, &id, installed)?;
+        let projected = ProjectedCrudExecutor::new(installed)
+            .put_relation_in_transaction_with_compatibility(&self.transaction.tx, &create)
             .await
-            .map_err(Error::from_orm)?;
-        rehydrate_written_relation(&manager, &iid, &id, installed).await
+            .map_err(|error| {
+                Error::from_projected_crud(error, ModelKind::Relation, Some(CrudOperation::Put))
+            })?;
+        materialize_projected(projected, installed)
     }
 
     /// Inserts each item in input order in the open transaction, returning
     /// complete freshly hydrated models or one error, without committing.
+    /// A successor-runtime failure after mutation dispatch makes the
+    /// transaction rollback-only; a pre-dispatch failure leaves it active.
     pub async fn insert_many(&self, inputs: Vec<M::Create>) -> Result<Vec<M>> {
+        if uses_successor_batch_runtime(self.transaction.installed()?) {
+            validate_binding_row_count(inputs.len())?;
+        }
         self.write_many(inputs, false).await
     }
 
     /// Applies the per-item put rule in input order in the open transaction,
     /// returning complete freshly hydrated models or one error, without
-    /// committing.
+    /// committing. A successor-runtime failure after mutation dispatch makes
+    /// the transaction rollback-only; a pre-dispatch failure leaves it active.
     pub async fn put_many(&self, inputs: Vec<M::Create>) -> Result<Vec<M>> {
+        if uses_successor_batch_runtime(self.transaction.installed()?) {
+            validate_binding_row_count(inputs.len())?;
+        }
         self.write_many(inputs, true).await
     }
 
     async fn write_many(&self, inputs: Vec<M::Create>, put: bool) -> Result<Vec<M>> {
-        if inputs.is_empty() {
+        let successor = uses_successor_batch_runtime(self.transaction.installed()?);
+        if inputs.is_empty() && !successor {
             return Ok(Vec::new());
         }
         let (id, installed, manager) = self.exact()?;
+        if successor {
+            let rows = create_rows(installed, &id, inputs)?;
+            let operation = if put {
+                ProjectedBatchOperation::Put
+            } else {
+                ProjectedBatchOperation::Insert
+            };
+            let batch = prepare_batch(installed, id, operation, rows)?;
+            return execute_borrowed_things(&self.transaction.tx, installed, &batch).await;
+        }
         let mut lowered: Vec<(DynamicAttributeMap, Vec<DynamicRolePlayerInput>)> =
             Vec::with_capacity(inputs.len());
         for input in inputs {
@@ -469,13 +648,15 @@ where
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
-        let (id, installed, manager) = self.exact()?;
-        let prepared = lower_relation_create(input, &id, installed)?;
-        manager
-            .update_exact(iid, &prepared.attributes, &prepared.role_players)
+        let (id, installed, _manager) = self.exact()?;
+        let create = project_create(input, &id, installed)?;
+        let projected = ProjectedCrudExecutor::new(installed)
+            .update_relation_in_transaction_with_compatibility(&self.transaction.tx, iid, &create)
             .await
-            .map_err(Error::from_orm)?;
-        rehydrate_written_relation(&manager, iid, &id, installed).await
+            .map_err(|error| {
+                Error::from_projected_crud(error, ModelKind::Relation, Some(CrudOperation::Update))
+            })?;
+        materialize_projected(projected, installed)
     }
 
     /// Deletes only the exact relation at canonical `iid` in the open
@@ -484,11 +665,88 @@ where
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
-        let (_id, _installed, manager) = self.exact()?;
-        manager
-            .delete_by_iid_exact(iid)
+        let (id, installed, _manager) = self.exact()?;
+        ProjectedCrudExecutor::new(installed)
+            .delete_relation_by_iid_in_transaction_with_compatibility(
+                &self.transaction.tx,
+                &id,
+                iid,
+            )
             .await
-            .map_err(Error::from_orm)
+            .map_err(|error| {
+                Error::from_projected_crud(error, ModelKind::Relation, Some(CrudOperation::Delete))
+            })
+    }
+
+    /// Replaces each exact relation identified by its canonical IID in input
+    /// order without committing. Successor-runtime failures after mutation
+    /// dispatch make the transaction rollback-only.
+    pub async fn update_many(&self, inputs: Vec<(String, M::Create)>) -> Result<Vec<M>> {
+        let successor = uses_successor_batch_runtime(self.transaction.installed()?);
+        if successor {
+            validate_binding_row_count(inputs.len())?;
+        }
+        if inputs.is_empty() && !successor {
+            return Ok(Vec::new());
+        }
+        if successor {
+            let (id, installed, _manager) = self.exact()?;
+            let rows = update_rows(installed, &id, inputs)?;
+            let batch = prepare_batch(installed, id, ProjectedBatchOperation::Update, rows)?;
+            return execute_borrowed_things(&self.transaction.tx, installed, &batch).await;
+        }
+        if inputs.iter().any(|(iid, _)| !is_canonical_thing_iid(iid)) {
+            return Err(invalid_iid());
+        }
+        let (id, installed, manager) = self.exact()?;
+
+        let mut prepared = Vec::with_capacity(inputs.len());
+        for (iid, input) in inputs {
+            prepared.push((iid, lower_relation_create(input, &id, installed)?));
+        }
+        let mut output = Vec::with_capacity(prepared.len());
+        for (iid, replacement) in prepared {
+            manager
+                .update_exact(&iid, &replacement.attributes, &replacement.role_players)
+                .await
+                .map_err(Error::from_orm)?;
+            output.push(rehydrate_written_relation(&manager, &iid, &id, installed).await?);
+        }
+        Ok(output)
+    }
+
+    /// Deletes every exact relation at the supplied canonical IIDs without
+    /// committing. Successor-runtime failures after mutation dispatch make
+    /// the transaction rollback-only.
+    pub async fn delete_many(&self, iids: &[String]) -> Result<()> {
+        let successor = uses_successor_batch_runtime(self.transaction.installed()?);
+        if successor {
+            validate_binding_row_count(iids.len())?;
+        }
+        if iids.is_empty() && !successor {
+            return Ok(());
+        }
+        if successor {
+            let (id, installed, _manager) = self.exact()?;
+            let batch = prepare_batch(
+                installed,
+                id,
+                ProjectedBatchOperation::Delete,
+                delete_rows(iids)?,
+            )?;
+            return execute_borrowed_delete(&self.transaction.tx, installed, &batch).await;
+        }
+        if iids.iter().any(|iid| !is_canonical_thing_iid(iid)) {
+            return Err(invalid_iid());
+        }
+        let (_id, _installed, manager) = self.exact()?;
+        for iid in iids {
+            manager
+                .delete_by_iid_exact(iid)
+                .await
+                .map_err(Error::from_orm)?;
+        }
+        Ok(())
     }
 
     /// Reads one exact coalesced relation by canonical IID through the open
@@ -497,20 +755,13 @@ where
         if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
-        let (id, installed, manager) = self.exact()?;
-        let rows = manager
-            .get_by_iid_exact(iid)
+        let (id, installed, _manager) = self.exact()?;
+        ProjectedCrudExecutor::new(installed)
+            .get_relation_by_iid_in_transaction_with_compatibility(&self.transaction.tx, &id, iid)
             .await
-            .map_err(Error::from_orm)?;
-        match one_coalesced_row(rows)? {
-            None => Ok(None),
-            Some(row) => {
-                let hydrated = hydrate_relation(row, &id, installed)?;
-                M::materialize(&hydrated, &HydrationCapability::new())
-                    .map(Some)
-                    .map_err(|error| map_validation_error(error, ModelValidationPhase::Hydration))
-            }
-        }
+            .map_err(|error| Error::from_projected_crud(error, ModelKind::Relation, None))?
+            .map(|projected| materialize_projected(projected, installed))
+            .transpose()
     }
 
     /// Reads all exact coalesced relations through the open transaction,
@@ -529,7 +780,10 @@ where
 
     /// Counts only exact relations through the open transaction.
     pub async fn count(&self) -> Result<u64> {
-        let (_id, _installed, manager) = self.exact()?;
-        manager.count_exact().await.map_err(Error::from_orm)
+        let (id, installed, _manager) = self.exact()?;
+        ProjectedCrudExecutor::new(installed)
+            .count_relations_in_transaction_with_compatibility(&self.transaction.tx, &id)
+            .await
+            .map_err(|error| Error::from_projected_crud(error, ModelKind::Relation, None))
     }
 }

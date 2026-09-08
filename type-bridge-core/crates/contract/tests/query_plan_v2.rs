@@ -1,20 +1,21 @@
 use serde_json::{Value, json};
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
+use type_bridge_contract::id::{AttributeId, FunctionId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::limits::{MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES};
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
 use type_bridge_contract::query_plan::{
     CompatibilityValueV2, HydrationBindingV2, HydrationDescriptorV2, HydrationFieldV2,
-    HydrationPlayerV2, HydrationProjectionV2, HydrationRoleV2, ModelQueryV2,
-    QUERY_PLAN_CANONICALIZATION_V1, QUERY_PLAN_CANONICALIZATION_V2, QUERY_PLAN_FORMAT_V1,
-    QUERY_PLAN_FORMAT_V2, QueryBindingPairV2, QueryComparatorV2, QueryFieldV2, QueryMissingOrderV2,
-    QueryModelOutputSlotV2, QueryModelOutputV2, QueryNamedOutputSlotV2, QueryOrderDirectionV2,
-    QueryOrderTermV2, QueryOutput, QueryPattern, QueryPatternV2, QueryPlan,
-    QueryPlanV2Compatibility, QueryRowCardinalityV2, QueryStableOrderV2, QueryWindowV2, ReadStage,
-    decode_query_plan, query_plan_v2_capability_vocabulary,
+    HydrationPlayerV2, HydrationProjectionV2, HydrationRoleV2, InputColumn, InputColumnId,
+    ModelQueryV2, QUERY_PLAN_CANONICALIZATION_V1, QUERY_PLAN_CANONICALIZATION_V2,
+    QUERY_PLAN_FORMAT_V1, QUERY_PLAN_FORMAT_V2, QueryBindingPairV2, QueryComparatorV2,
+    QueryFieldV2, QueryMissingOrderV2, QueryModelOutputSlotV2, QueryModelOutputV2,
+    QueryNamedOutputSlotV2, QueryOrderDirectionV2, QueryOrderTermV2, QueryOutput, QueryPattern,
+    QueryPatternV2, QueryPlan, QueryPlanV2Compatibility, QueryReductionKindV2,
+    QueryReductionTermV2, QueryRowCardinalityV2, QueryStableOrderV2, QueryWindowV2, ReadStage,
+    decode_query_plan, query_given_rows_capability, query_plan_v2_capability_vocabulary,
 };
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use type_bridge_contract::temporal::{CanonicalDateTime, CanonicalDuration};
@@ -262,6 +263,116 @@ fn rich_plan() -> QueryPlan {
         managed,
     )
     .expect("rich V2 plan")
+}
+
+#[test]
+fn model_schema_function_comparison_inputs_require_native_given_rows() {
+    let (mut bindings, mut pipeline, output, managed) = base_parts();
+    bindings.push(binding(3, "function_score"));
+    let ReadStage::Match { patterns } = &mut pipeline[0] else {
+        unreachable!("base pipeline starts with match")
+    };
+    patterns.extend([
+        QueryPattern::FunctionCall {
+            arguments: vec![type_bridge_contract::query_plan::QueryOperand::Binding {
+                binding: binding_id(0),
+            }],
+            assigned: binding_id(3),
+            function: FunctionId::new("person-score").expect("function ID"),
+        },
+        QueryPattern::Value {
+            comparator: ValueComparator::GreaterOrEqual,
+            left: type_bridge_contract::query_plan::QueryOperand::Binding {
+                binding: binding_id(3),
+            },
+            right: type_bridge_contract::query_plan::QueryOperand::Input {
+                column: InputColumnId::new(0),
+            },
+        },
+    ]);
+    let plan = QueryPlan::new_v2_with_functions(
+        bindings,
+        Vec::new(),
+        vec![InputColumn::new(
+            InputColumnId::new(0),
+            QueryVariable::new("minimum").expect("input variable"),
+            ValueTypeTag::Long,
+            false,
+        )],
+        pipeline,
+        output,
+        QueryPlanV2Compatibility::new(
+            None,
+            Vec::new(),
+            Some(ModelQueryV2::DistinctExists {
+                hydration: hydration(),
+                root: binding_id(0),
+            }),
+        ),
+        managed,
+    )
+    .expect("model function comparison plan");
+
+    assert!(
+        plan.required_capabilities()
+            .contains(&query_given_rows_capability()),
+        "an input used by the comparison still requires given transport even when the function itself has only a model argument"
+    );
+}
+
+#[test]
+fn model_only_schema_function_calls_still_require_request_level_given_support() {
+    let (mut bindings, mut pipeline, output, managed) = base_parts();
+    bindings.extend([binding(3, "function_score"), binding(4, "score_attribute")]);
+    let ReadStage::Match { patterns } = &mut pipeline[0] else {
+        unreachable!("base pipeline starts with match")
+    };
+    patterns.extend([
+        QueryPattern::Has {
+            attribute: binding_id(4),
+            attribute_id: AttributeId::new("score").expect("attribute"),
+            owner: binding_id(0),
+        },
+        QueryPattern::FunctionCall {
+            arguments: vec![type_bridge_contract::query_plan::QueryOperand::Binding {
+                binding: binding_id(0),
+            }],
+            assigned: binding_id(3),
+            function: FunctionId::new("person-score").expect("function ID"),
+        },
+        QueryPattern::Value {
+            comparator: ValueComparator::Equal,
+            left: type_bridge_contract::query_plan::QueryOperand::Binding {
+                binding: binding_id(3),
+            },
+            right: type_bridge_contract::query_plan::QueryOperand::Binding {
+                binding: binding_id(4),
+            },
+        },
+    ]);
+    let plan = QueryPlan::new_v2_with_functions(
+        bindings,
+        Vec::new(),
+        Vec::new(),
+        pipeline,
+        output,
+        QueryPlanV2Compatibility::new(
+            None,
+            Vec::new(),
+            Some(ModelQueryV2::DistinctExists {
+                hydration: hydration(),
+                root: binding_id(0),
+            }),
+        ),
+        managed,
+    )
+    .expect("model-only function comparison plan");
+
+    assert!(
+        plan.required_capabilities()
+            .contains(&query_given_rows_capability()),
+        "the initial schema-function capability remains given-bound at request level"
+    );
 }
 
 fn compatibility_value_plan(
@@ -1175,6 +1286,39 @@ fn stable_order_terms_are_provable_from_their_public_response_slots() {
         .code()
         .as_str(),
         "query_plan_v2_missing_selected_identity",
+    );
+}
+
+#[test]
+fn model_reduction_count_rejects_a_field_input_during_plan_validation() {
+    let (bindings, pipeline, output, managed) = base_parts();
+    let result = QueryPlan::new_v2_with_functions(
+        bindings,
+        Vec::new(),
+        Vec::new(),
+        pipeline,
+        output,
+        QueryPlanV2Compatibility::new(
+            None,
+            Vec::new(),
+            Some(ModelQueryV2::Reduction {
+                hydration: hydration(),
+                root: binding_id(0),
+                group: None,
+                reducers: vec![QueryReductionTermV2::new(
+                    QueryReductionKindV2::Count,
+                    Some(person_name(0)),
+                )],
+            }),
+        ),
+        managed,
+    );
+    assert_eq!(
+        result
+            .expect_err("count input must be rejected before execution")
+            .code()
+            .as_str(),
+        "query_plan_v2_reducer_input"
     );
 }
 
@@ -2127,6 +2271,7 @@ fn v2_capability_vocabulary_is_closed_and_deterministic() {
             "query.execution.same-snapshot-hydration",
             "query.function.local",
             "query.input.columns",
+            "query.input.given-rows",
             "query.operation.distinct-count",
             "query.operation.distinct-exists",
             "query.operation.exactly-one",

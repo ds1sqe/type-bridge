@@ -5,17 +5,21 @@
 //! the injection-safe compiler. It never accepts raw labels, variables, or
 //! TypeQL fragments from a host language.
 
+use std::collections::BTreeMap;
+
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
+use type_bridge_contract::migration_assertion::{BindingId, ValueComparator};
 use type_bridge_contract::query_plan::{
-    CompatibilityValueV2, ModelQueryV2, QueryComparatorV2, QueryFieldV2, QueryMissingOrderV2,
-    QueryModelOutputSlotV2, QueryOperation, QueryOrderDirectionV2, QueryPattern, QueryPatternV2,
-    QueryPlan, QueryStableOrderV2, ReadStage,
+    CompatibilityValueV2, ModelQueryV2, QueryComparatorV2, QueryFieldV2, QueryInvocation,
+    QueryMissingOrderV2, QueryModelOutputSlotV2, QueryOperand, QueryOperation,
+    QueryOrderDirectionV2, QueryPattern, QueryPatternV2, QueryPlan, QueryStableOrderV2, ReadStage,
 };
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use type_bridge_core_lib::ast::{
-    TypedCollectionOrder, TypedComparisonOperator, TypedFetchRows, TypedFieldBinding, TypedLiteral,
-    TypedMatchOrder, TypedMatchPredicate, TypedMatchTarget, TypedMissingOrder, TypedPageRematch,
-    TypedRootScan, TypedSortDirection, TypedThingKind,
+    TypedCollectionOrder, TypedComparisonOperator, TypedFetchRows, TypedFieldBinding,
+    TypedFunctionArgument, TypedFunctionCall, TypedLiteral, TypedMatchOrder, TypedMatchPredicate,
+    TypedMatchTarget, TypedMissingOrder, TypedPageRematch, TypedRootScan, TypedScalarOperand,
+    TypedSortDirection, TypedThingKind,
 };
 use type_bridge_core_lib::compiler::QueryCompiler;
 use type_bridge_query::ValidatedQuery;
@@ -23,6 +27,9 @@ use type_bridge_query::ValidatedQuery;
 use crate::query_v2::failure;
 
 /// Closed operation-specific provider plan for one compatibility model.
+// These short-lived plans retain their typed ASTs by value so lowering and
+// execution share one closed ownership boundary without per-stage boxing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum CompatibilityProviderPlan {
     /// Selected solution scan, with an optional distinct-public-tuple proof.
@@ -40,6 +47,11 @@ pub(crate) enum CompatibilityProviderPlan {
     DistinctCount { scan: TypedRootScan },
     /// One-row distinct-root existence probe.
     DistinctExists { scan: TypedRootScan },
+    /// Complete distinct-root scan and optional full solution re-match for reduction.
+    Reduction {
+        scan: TypedRootScan,
+        rematch: Option<TypedPageRematch>,
+    },
 }
 
 /// Closed operation-specific provider statement for one compatibility plan.
@@ -66,6 +78,7 @@ impl LoweredCompatibilityQuery {
 /// Lower a validated adapter plan, returning `None` for native V2 plans.
 pub(crate) fn lower_validated_compatibility_query(
     validated: &ValidatedQuery,
+    invocation: &QueryInvocation,
     operation: QueryOperation,
 ) -> Result<Option<LoweredCompatibilityQuery>, Diagnostic> {
     let plan = validated.plan();
@@ -83,7 +96,7 @@ pub(crate) fn lower_validated_compatibility_query(
         collect_pattern_fields(predicate, &mut fields);
     }
     collect_model_order_fields(model, &mut fields);
-    let typed_fields = fields
+    let mut typed_fields = fields
         .iter()
         .enumerate()
         .map(|(index, field)| {
@@ -100,10 +113,12 @@ pub(crate) fn lower_validated_compatibility_query(
         })
         .collect::<Result<Vec<_>, Diagnostic>>()?;
     let mut next_edge = 0_u16;
-    let predicate = compatibility
+    let compatibility_predicate = compatibility
         .predicate()
         .map(|predicate| lower_pattern(predicate, &fields, &mut next_edge))
         .transpose()?;
+    let native_predicates = lower_native_function_predicates(plan, invocation, &mut typed_fields)?;
+    let predicate = combine_predicates(compatibility_predicate, native_predicates);
     let provider_plan = match model {
         ModelQueryV2::Rows {
             cardinality,
@@ -229,17 +244,70 @@ pub(crate) fn lower_validated_compatibility_query(
                 limit: Some(1),
             },
         },
+        ModelQueryV2::Reduction {
+            root,
+            group,
+            reducers,
+            ..
+        } => {
+            let needs_rematch =
+                group.is_some() || reducers.iter().any(|term| term.input().is_some());
+            let scan = TypedRootScan {
+                targets: targets.clone(),
+                fields: typed_fields.clone(),
+                predicate: predicate.clone(),
+                root: root.get(),
+                order: Vec::new(),
+                offset: None,
+                limit: None,
+            };
+            CompatibilityProviderPlan::Reduction {
+                scan,
+                rematch: needs_rematch.then(|| TypedPageRematch {
+                    targets,
+                    fields: typed_fields,
+                    predicate,
+                    root: root.get(),
+                    root_concept_ids: Vec::new(),
+                    collection_orders: Vec::new(),
+                }),
+            }
+        }
     };
     let compiler = QueryCompiler::new();
+    let uses_functions = provider_plan_uses_functions(&provider_plan);
     let typeql = match &provider_plan {
+        CompatibilityProviderPlan::Rows { statement, .. } if uses_functions => {
+            compiler
+                .prepare_typed_fetch_rows(statement)
+                .map_err(compiler_error)?
+                .typeql
+        }
         CompatibilityProviderPlan::Rows { statement, .. } => compiler
             .compile_typed_fetch_rows(statement)
             .map_err(compiler_error)?,
+        CompatibilityProviderPlan::Page { selection, .. } if uses_functions => {
+            compiler
+                .prepare_typed_root_scan(selection)
+                .map_err(compiler_error)?
+                .typeql
+        }
         CompatibilityProviderPlan::Page { selection, .. } => compiler
             .compile_typed_root_scan(selection)
             .map_err(compiler_error)?,
         CompatibilityProviderPlan::DistinctCount { scan }
-        | CompatibilityProviderPlan::DistinctExists { scan } => compiler
+        | CompatibilityProviderPlan::DistinctExists { scan }
+        | CompatibilityProviderPlan::Reduction { scan, .. }
+            if uses_functions =>
+        {
+            compiler
+                .prepare_typed_root_scan(scan)
+                .map_err(compiler_error)?
+                .typeql
+        }
+        CompatibilityProviderPlan::DistinctCount { scan }
+        | CompatibilityProviderPlan::DistinctExists { scan }
+        | CompatibilityProviderPlan::Reduction { scan, .. } => compiler
             .compile_typed_root_scan(scan)
             .map_err(compiler_error)?,
     };
@@ -250,9 +318,40 @@ pub(crate) fn lower_validated_compatibility_query(
     }))
 }
 
+fn provider_plan_uses_functions(plan: &CompatibilityProviderPlan) -> bool {
+    let predicate = match plan {
+        CompatibilityProviderPlan::Rows { statement, .. } => statement.predicate.as_ref(),
+        CompatibilityProviderPlan::Page { selection, .. }
+        | CompatibilityProviderPlan::DistinctCount { scan: selection }
+        | CompatibilityProviderPlan::DistinctExists { scan: selection }
+        | CompatibilityProviderPlan::Reduction {
+            scan: selection, ..
+        } => selection.predicate.as_ref(),
+    };
+    predicate.is_some_and(typed_predicate_uses_functions)
+}
+
+fn typed_predicate_uses_functions(predicate: &TypedMatchPredicate) -> bool {
+    match predicate {
+        TypedMatchPredicate::FunctionComparison { .. } => true,
+        TypedMatchPredicate::And { expressions } | TypedMatchPredicate::Or { expressions } => {
+            expressions.iter().any(typed_predicate_uses_functions)
+        }
+        TypedMatchPredicate::Not { expression } => typed_predicate_uses_functions(expression),
+        TypedMatchPredicate::FieldValue { .. }
+        | TypedMatchPredicate::FieldComparison { .. }
+        | TypedMatchPredicate::FieldPresence { .. }
+        | TypedMatchPredicate::BindingIid { .. }
+        | TypedMatchPredicate::RoleEdge { .. }
+        | TypedMatchPredicate::Reachable { .. } => false,
+    }
+}
+
 fn validate_operation(model: &ModelQueryV2, operation: QueryOperation) -> Result<(), Diagnostic> {
     let expected = match model {
-        ModelQueryV2::Rows { .. } | ModelQueryV2::Page { .. } => QueryOperation::Rows,
+        ModelQueryV2::Rows { .. } | ModelQueryV2::Page { .. } | ModelQueryV2::Reduction { .. } => {
+            QueryOperation::Rows
+        }
         ModelQueryV2::DistinctCount { .. } => QueryOperation::Count,
         ModelQueryV2::DistinctExists { .. } => QueryOperation::Exists,
     };
@@ -276,36 +375,283 @@ fn compatibility_targets(plan: &QueryPlan) -> Result<Vec<TypedMatchTarget>, Diag
     };
     patterns
         .iter()
-        .map(|pattern| {
+        .filter_map(|pattern| {
             let QueryPattern::Isa {
                 binding,
                 include_subtypes,
                 type_id,
             } = pattern
             else {
-                return Err(integrity(
-                    "query_v2_compatibility_target_skeleton",
-                    "validated compatibility plan contains a non-target native pattern",
-                ));
+                return None;
             };
-            Ok(TypedMatchTarget {
+            Some(Ok(TypedMatchTarget {
                 binding: binding.get(),
                 kind: match type_id.kind() {
                     type_bridge_contract::id::TypeKind::Entity => TypedThingKind::Entity,
                     type_bridge_contract::id::TypeKind::Relation => TypedThingKind::Relation,
                     type_bridge_contract::id::TypeKind::Attribute
                     | type_bridge_contract::id::TypeKind::Struct => {
-                        return Err(integrity(
+                        return Some(Err(integrity(
                             "query_v2_compatibility_target_kind",
                             "validated compatibility target is not a thing type",
-                        ));
+                        )));
                     }
                 },
                 type_name: type_id.label().as_str().to_owned(),
                 exact: !include_subtypes,
-            })
+            }))
         })
         .collect()
+}
+
+fn lower_native_function_predicates(
+    plan: &QueryPlan,
+    invocation: &QueryInvocation,
+    typed_fields: &mut Vec<TypedFieldBinding>,
+) -> Result<Vec<TypedMatchPredicate>, Diagnostic> {
+    let Some(ReadStage::Match { patterns }) = plan.pipeline().first() else {
+        return Err(integrity(
+            "query_v2_compatibility_function_skeleton",
+            "validated compatibility plan lacks its native root conjunction",
+        ));
+    };
+    if !patterns
+        .iter()
+        .any(|pattern| matches!(pattern, QueryPattern::FunctionCall { .. }))
+    {
+        return Ok(Vec::new());
+    }
+    let values = if plan.inputs().is_empty() {
+        if !invocation.inputs().is_empty() {
+            return Err(integrity(
+                "query_v2_compatibility_function_inputs",
+                "input-free schema functions require an empty invocation row set",
+            ));
+        }
+        Vec::new()
+    } else {
+        let [row] = invocation.inputs() else {
+            return Err(integrity(
+                "query_v2_compatibility_function_inputs",
+                "schema-function compatibility execution requires exactly one invocation row",
+            ));
+        };
+        if row.values().len() != plan.inputs().len() {
+            return Err(integrity(
+                "query_v2_compatibility_function_inputs",
+                "schema-function invocation row does not match its input declarations",
+            ));
+        }
+        row.values()
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                value.clone().ok_or_else(|| {
+                    integrity(
+                        "query_v2_compatibility_function_inputs",
+                        "schema-function projected inputs cannot be absent",
+                    )
+                    .with_detail("input", i64::try_from(index).unwrap_or(i64::MAX))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let mut attribute_fields = BTreeMap::<BindingId, u16>::new();
+    let mut call_results = BTreeMap::<BindingId, u16>::new();
+    let mut calls = Vec::<TypedFunctionCall>::new();
+    let mut predicates = Vec::new();
+    for pattern in patterns {
+        match pattern {
+            QueryPattern::Has {
+                attribute,
+                attribute_id,
+                owner,
+            } => {
+                let field = u16::try_from(typed_fields.len()).map_err(|_| {
+                    integrity(
+                        "query_v2_compatibility_field_limit",
+                        "native function field ordinal exceeds the typed compiler range",
+                    )
+                })?;
+                typed_fields.push(TypedFieldBinding {
+                    id: field,
+                    owner: owner.get(),
+                    field_name: attribute_id.label().as_str().to_owned(),
+                });
+                if attribute_fields.insert(*attribute, field).is_some() {
+                    return Err(integrity(
+                        "query_v2_compatibility_function_binding",
+                        "native function field binding was assigned more than once",
+                    ));
+                }
+            }
+            QueryPattern::FunctionCall {
+                arguments,
+                assigned,
+                function,
+            } => {
+                let result = u16::try_from(calls.len()).map_err(|_| {
+                    integrity(
+                        "query_v2_compatibility_function_limit",
+                        "native schema-function call ordinal exceeds the typed compiler range",
+                    )
+                })?;
+                let arguments = arguments
+                    .iter()
+                    .map(|argument| {
+                        lower_native_function_argument(argument, &call_results, &values)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                calls.push(TypedFunctionCall {
+                    result,
+                    function: function.label().as_str().to_owned(),
+                    arguments,
+                });
+                if call_results.insert(*assigned, result).is_some() {
+                    return Err(integrity(
+                        "query_v2_compatibility_function_binding",
+                        "native schema-function result binding was assigned more than once",
+                    ));
+                }
+            }
+            QueryPattern::Value {
+                comparator,
+                left,
+                right,
+            } if !calls.is_empty() => {
+                predicates.push(TypedMatchPredicate::FunctionComparison {
+                    calls: std::mem::take(&mut calls),
+                    left: lower_native_scalar_operand(
+                        left,
+                        &attribute_fields,
+                        &call_results,
+                        &values,
+                    )?,
+                    operator: lower_native_comparator(*comparator),
+                    right: lower_native_scalar_operand(
+                        right,
+                        &attribute_fields,
+                        &call_results,
+                        &values,
+                    )?,
+                });
+                call_results.clear();
+            }
+            QueryPattern::Isa { .. } => {}
+            QueryPattern::Value { .. }
+            | QueryPattern::Links { .. }
+            | QueryPattern::Or { .. }
+            | QueryPattern::Not { .. }
+            | QueryPattern::Try { .. }
+            | QueryPattern::Reachable { .. } => {
+                return Err(integrity(
+                    "query_v2_compatibility_function_skeleton",
+                    "validated compatibility function suffix is not canonical",
+                ));
+            }
+        }
+    }
+    if !calls.is_empty() {
+        return Err(integrity(
+            "query_v2_compatibility_function_skeleton",
+            "native schema-function calls lack their scalar comparison",
+        ));
+    }
+    Ok(predicates)
+}
+
+fn lower_native_function_argument(
+    operand: &QueryOperand,
+    call_results: &BTreeMap<BindingId, u16>,
+    values: &[CanonicalValue],
+) -> Result<TypedFunctionArgument, Diagnostic> {
+    match operand {
+        QueryOperand::Binding { binding } => Ok(call_results.get(binding).map_or(
+            TypedFunctionArgument::Binding {
+                binding: binding.get(),
+            },
+            |call| TypedFunctionArgument::CallResult { call: *call },
+        )),
+        QueryOperand::Input { column } => Ok(TypedFunctionArgument::Value {
+            value: values
+                .get(usize::from(column.get()))
+                .cloned()
+                .ok_or_else(|| {
+                    integrity(
+                        "query_v2_compatibility_function_inputs",
+                        "native function argument references no invocation input",
+                    )
+                })?,
+        }),
+        QueryOperand::Literal { .. } => Err(integrity(
+            "query_v2_compatibility_function_literal",
+            "adapter-authored schema functions never contain inline literals",
+        )),
+    }
+}
+
+fn lower_native_scalar_operand(
+    operand: &QueryOperand,
+    attribute_fields: &BTreeMap<BindingId, u16>,
+    call_results: &BTreeMap<BindingId, u16>,
+    values: &[CanonicalValue],
+) -> Result<TypedScalarOperand, Diagnostic> {
+    match operand {
+        QueryOperand::Binding { binding } => {
+            if let Some(field) = attribute_fields.get(binding) {
+                Ok(TypedScalarOperand::Field { field: *field })
+            } else if let Some(call) = call_results.get(binding) {
+                Ok(TypedScalarOperand::CallResult { call: *call })
+            } else {
+                Err(integrity(
+                    "query_v2_compatibility_function_operand",
+                    "native scalar comparison references neither a field nor a function result",
+                ))
+            }
+        }
+        QueryOperand::Input { column } => Ok(TypedScalarOperand::Value {
+            value: values
+                .get(usize::from(column.get()))
+                .cloned()
+                .ok_or_else(|| {
+                    integrity(
+                        "query_v2_compatibility_function_inputs",
+                        "native scalar operand references no invocation input",
+                    )
+                })?,
+        }),
+        QueryOperand::Literal { .. } => Err(integrity(
+            "query_v2_compatibility_function_literal",
+            "adapter-authored schema functions never contain inline literals",
+        )),
+    }
+}
+
+fn combine_predicates(
+    compatibility: Option<TypedMatchPredicate>,
+    mut native: Vec<TypedMatchPredicate>,
+) -> Option<TypedMatchPredicate> {
+    if let Some(compatibility) = compatibility {
+        native.insert(0, compatibility);
+    }
+    match native.len() {
+        0 => None,
+        1 => native.pop(),
+        _ => Some(TypedMatchPredicate::And {
+            expressions: native,
+        }),
+    }
+}
+
+const fn lower_native_comparator(comparator: ValueComparator) -> TypedComparisonOperator {
+    match comparator {
+        ValueComparator::Equal => TypedComparisonOperator::Equal,
+        ValueComparator::NotEqual => TypedComparisonOperator::NotEqual,
+        ValueComparator::Less => TypedComparisonOperator::LessThan,
+        ValueComparator::LessOrEqual => TypedComparisonOperator::LessThanOrEqual,
+        ValueComparator::Greater => TypedComparisonOperator::GreaterThan,
+        ValueComparator::GreaterOrEqual => TypedComparisonOperator::GreaterThanOrEqual,
+    }
 }
 
 fn collect_pattern_fields<'plan>(
@@ -360,6 +706,31 @@ fn collect_model_order_fields<'plan>(
             }
         }
         ModelQueryV2::DistinctCount { .. } | ModelQueryV2::DistinctExists { .. } => {}
+        ModelQueryV2::Reduction {
+            group, reducers, ..
+        } => {
+            match group {
+                Some(type_bridge_contract::query_plan::QueryReductionGroupV2::Field { field }) => {
+                    insert_field(fields, field);
+                }
+                Some(type_bridge_contract::query_plan::QueryReductionGroupV2::Fields {
+                    fields: group_fields,
+                }) => {
+                    for field in group_fields {
+                        insert_field(fields, field);
+                    }
+                }
+                None
+                | Some(type_bridge_contract::query_plan::QueryReductionGroupV2::Binding {
+                    ..
+                }) => {}
+            }
+            for term in reducers {
+                if let Some(field) = term.input() {
+                    insert_field(fields, field);
+                }
+            }
+        }
     }
 }
 

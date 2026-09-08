@@ -694,6 +694,10 @@ fn parse_relates_statement(input: &mut &str) -> PResult<RoleSpec> {
     if opt(literal("as")).parse_next(input)?.is_some() {
         ws_comments_required(input)?;
         let parent_role = identifier(input)?;
+        let parent_ordered = opt(literal("[]")).parse_next(input)?.is_some();
+        if parent_ordered != ordered {
+            return Err(ContextError::new());
+        }
         role.overrides = Some(parent_role.to_string());
     }
 
@@ -1743,6 +1747,22 @@ mod tests {
         assert_eq!(rel.roles[0].overrides.as_deref(), Some("contributor"));
     }
 
+    #[test]
+    fn test_parse_relation_role_override_rejects_mismatched_listness() {
+        assert!(
+            parse_typeql(
+                "define\nrelation authoring sub contribution, relates author[] as contributor;",
+            )
+            .is_err()
+        );
+        assert!(
+            parse_typeql(
+                "define\nrelation authoring sub contribution, relates author as contributor[];",
+            )
+            .is_err()
+        );
+    }
+
     // Bare `relates member @distinct` (no `[]`) must be rejected: TypeDB servers
     // refuse this form with "Invalid ordering ''" (SVL21) on every known version.
     // Validation runs inside `from_typeql` (which calls `validate()` after parsing).
@@ -1788,11 +1808,11 @@ mod tests {
         assert!(!role.distinct, "plain role should not be distinct");
     }
 
-    // Ordered role with `as <parent>` override.
+    // Ordered role with `as <parent>[]` override.
     #[test]
     fn test_parse_relation_role_ordered_with_override() {
         let schema = parse_typeql(
-            "define\nrelation authoring sub contribution, relates author[] as contributor;",
+            "define\nrelation authoring sub contribution, relates author[] as contributor[];",
         )
         .unwrap();
         let role = &schema.relations.get("authoring").unwrap().roles[0];

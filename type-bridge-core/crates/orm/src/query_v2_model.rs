@@ -22,12 +22,14 @@ use type_bridge_contract::query_plan::{
     CompatibilityValueV2, HydrationBindingV2, HydrationDescriptorV2, HydrationFieldV2,
     HydrationProjectionV2, HydrationRoleV2, ModelQueryV2, QueryComparatorV2, QueryFieldV2,
     QueryInvocation, QueryModelOutputSlotV2, QueryModelOutputV2, QueryPatternV2,
-    QueryRowCardinalityV2, QueryStableOrderV2,
+    QueryReductionGroupV2, QueryReductionKindV2, QueryReductionTermV2, QueryRowCardinalityV2,
+    QueryStableOrderV2,
 };
 use type_bridge_contract::query_remote_v2::{
     HydratedRowV2, HydrationAttributeEvidenceV2, HydrationGraphV2, HydrationNodeIdV2,
     HydrationNodeKindV2, HydrationNodeV2, HydrationReferenceV2, HydrationRoleEvidenceV2,
-    HydrationSlotV2, RemoteOutcomeV2, RemoteReplyDecodeLimitsV2, RemoteResultKindV2,
+    HydrationSlotV2, RemoteOutcomeV2, RemoteReducedValueV2, RemoteReductionGroupV2,
+    RemoteReductionRowV2, RemoteReplyDecodeLimitsV2, RemoteResultKindV2,
     validate_remote_outcome_v2,
 };
 use type_bridge_contract::value::ValueTypeTag;
@@ -38,6 +40,18 @@ use type_bridge_core_lib::ast::{
 use type_bridge_query::ValidatedQuery;
 use unicase::UniCase;
 
+use crate::match_request::lowering::{
+    LoweredReduceGroup, LoweredReduceInput, LoweredReduceTerm, ReduceDomain,
+};
+use crate::match_request::reducer::reduce_rows;
+use crate::match_request::result::{
+    BoundConceptEvidence, ConceptId, HydratedAttribute, HydratedThing, ProviderSolutionEvidence,
+    ReducedValue, ReductionRow,
+};
+use crate::match_request::result_validation::released_attribute_value;
+use crate::match_request::{
+    BindingId as MatchBindingId, BoundFieldId, DescriptorId, FieldId, Reduction, ThingKind,
+};
 use crate::query_v2::{QueryV2ExecutionError, failure, preflight_invocation_transport};
 use crate::query_v2_adapter::adapt_value;
 use crate::query_v2_compatibility::{
@@ -53,7 +67,6 @@ use crate::value::AttributeValue;
 
 type ExecResult<T> = Result<T, QueryV2ExecutionError>;
 type HydrationBatchPlan = (Vec<TypedHydrateThings>, BTreeSet<(u16, String)>);
-const MAX_MODEL_STATEMENTS: u8 = 3;
 const MAX_MODEL_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 const TUPLE_PROOF_ROWS: u64 = 2;
 const TUPLE_PROOF_ROW_ENVELOPE_BYTES: u64 = 64;
@@ -167,24 +180,6 @@ impl ModelExecutionTarget<'_> {
 
 /// Execute one adapter-authored model plan inside the caller's existing
 /// schema-fenced transaction.
-pub(crate) async fn execute_validated_model_query(
-    transaction: &mut Transaction,
-    validated: &ValidatedQuery,
-    invocation: &QueryInvocation,
-    limits: QueryV2AnswerLimits,
-    reply_limits: RemoteReplyDecodeLimitsV2,
-) -> ExecResult<RemoteOutcomeV2> {
-    execute_validated_model_query_in_target(
-        ModelExecutionTarget::Owned(transaction),
-        validated,
-        invocation,
-        limits,
-        reply_limits,
-        MAX_MODEL_STATEMENTS,
-    )
-    .await
-}
-
 pub(crate) async fn execute_validated_model_query_with_statement_limit(
     transaction: &mut Transaction,
     validated: &ValidatedQuery,
@@ -243,14 +238,15 @@ async fn execute_validated_model_query_in_target(
                 "model execution requires an adapter-authored compatibility terminal",
             )
         })?;
-    let lowered = lower_validated_compatibility_query(validated, invocation.operation())
-        .map_err(QueryV2ExecutionError::Validation)?
-        .ok_or_else(|| {
-            validation_error(
-                "query_v2_model_provider_plan_missing",
-                "validated model execution lacks its sole typed provider plan",
-            )
-        })?;
+    let lowered =
+        lower_validated_compatibility_query(validated, invocation, invocation.operation())
+            .map_err(QueryV2ExecutionError::Validation)?
+            .ok_or_else(|| {
+                validation_error(
+                    "query_v2_model_provider_plan_missing",
+                    "validated model execution lacks its sole typed provider plan",
+                )
+            })?;
     let provider_plan = lowered.provider_plan().clone();
     let mut budget = ExecutionBudget::new(limits, reply_limits, max_statements);
     let (outcome, expected) = match (model, provider_plan) {
@@ -336,6 +332,30 @@ async fn execute_validated_model_query_in_target(
                 value: execute_exists(&mut transaction, *root, scan, &mut budget).await?,
             },
             RemoteResultKindV2::DistinctExists,
+        ),
+        (
+            ModelQueryV2::Reduction {
+                hydration,
+                root,
+                group,
+                reducers,
+            },
+            CompatibilityProviderPlan::Reduction { scan, rematch },
+        ) => (
+            execute_reduction(
+                &mut transaction,
+                validated,
+                hydration,
+                *root,
+                group.as_ref(),
+                reducers,
+                scan,
+                rematch,
+                &mut budget,
+                reply_limits,
+            )
+            .await?,
+            RemoteResultKindV2::ModelReduction,
         ),
         _ => {
             return Err(validation_error(
@@ -442,7 +462,7 @@ impl ExecutionBudget {
 
     fn check_before_await(&self) -> ExecResult<()> {
         if self.cancellation.is_cancelled() {
-            return Err(resource_error(
+            return Err(cancelled_error(
                 "provider_cancelled",
                 "provider answer processing was cancelled",
             ));
@@ -472,7 +492,7 @@ impl ExecutionBudget {
             tokio::select! {
                 biased;
                 result = &mut future => result.map_err(QueryV2ExecutionError::Provider),
-                () = &mut cancellation => Err(resource_error(
+                () = &mut cancellation => Err(cancelled_error(
                     "provider_cancelled",
                     "provider answer processing was cancelled",
                 )),
@@ -485,7 +505,7 @@ impl ExecutionBudget {
             tokio::select! {
                 biased;
                 result = &mut future => result.map_err(QueryV2ExecutionError::Provider),
-                () = &mut cancellation => Err(resource_error(
+                () = &mut cancellation => Err(cancelled_error(
                     "provider_cancelled",
                     "provider answer processing was cancelled",
                 )),
@@ -2758,6 +2778,339 @@ async fn execute_page(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn execute_reduction(
+    transaction: &mut ModelExecutionTarget<'_>,
+    validated: &ValidatedQuery,
+    hydration: &HydrationProjectionV2,
+    root: BindingId,
+    group: Option<&QueryReductionGroupV2>,
+    reducers: &[QueryReductionTermV2],
+    scan: TypedRootScan,
+    mut rematch: Option<TypedPageRematch>,
+    budget: &mut ExecutionBudget,
+    reply_limits: RemoteReplyDecodeLimitsV2,
+) -> ExecResult<RemoteOutcomeV2> {
+    let scan_limit = budget.remaining_items();
+    let (roots, stats) = execute_root_scan(transaction, root, scan, budget, scan_limit).await?;
+    if stats.processed_items >= scan_limit {
+        return Err(resource_error(
+            "query_v2_model_solution_limit",
+            "provider solution ceiling was reached before reduction completeness was proven",
+        ));
+    }
+    let authority = HydrationAuthority::new(hydration)?;
+    let mut graph = GraphBuilder::new(reply_limits);
+    let solutions = if let Some(rematch) = rematch.as_mut() {
+        if roots.is_empty() {
+            Vec::new()
+        } else {
+            if budget.remaining_items() == 0 {
+                return Err(resource_error(
+                    "query_v2_model_solution_limit",
+                    "reduction root scan exhausted the provider-item budget before re-match",
+                ));
+            }
+            rematch.root_concept_ids.clone_from(&roots);
+            let rematch_limit = budget.remaining_items();
+            let mut consumer = PageRematchConsumer::new(&authority, &mut graph, root, &roots);
+            budget.begin_statement()?;
+            let limits = budget.limits(rematch_limit);
+            let mut draining = ModelDrainingConsumer::new(&mut consumer, &limits);
+            let stats = budget
+                .await_provider(transaction.rematch_page_typed_bounded(
+                    rematch,
+                    limits,
+                    &mut draining,
+                ))
+                .await;
+            let stats = draining.complete(stats)?;
+            budget.charge(stats)?;
+            require_exhausted(stats)?;
+            if stats.processed_items >= rematch_limit {
+                return Err(resource_error(
+                    "query_v2_model_solution_limit",
+                    "provider solution ceiling was reached before reduction re-match completeness was proven",
+                ));
+            }
+            consumer.finish()?
+        }
+    } else {
+        Vec::new()
+    };
+    for solution in &solutions {
+        validate_solution_predicate(validated, solution, &graph)?;
+    }
+    charge_solution_semantics(&solutions, &graph, reply_limits)?;
+
+    let reduction_fields = reduction_fields(group, reducers);
+    let evidence = solutions
+        .iter()
+        .map(|solution| {
+            provider_reduction_solution(solution, &graph, &authority, &reduction_fields)
+        })
+        .collect::<ExecResult<Vec<_>>>()?;
+    let (lowered_group, lowered_terms) = lower_reduction_contract(group, reducers)?;
+    let match_root = MatchBindingId::new(root.get());
+    let rows = reduce_rows(
+        match_root,
+        lowered_group.as_ref(),
+        &lowered_terms,
+        &roots,
+        &evidence,
+        usize::try_from(reply_limits.max_items).unwrap_or(usize::MAX),
+        usize::try_from(budget.remaining_collection_members).unwrap_or(usize::MAX),
+    )
+    .map_err(QueryV2ExecutionError::Provider)?;
+    if u64::try_from(rows.len()).unwrap_or(u64::MAX) > reply_limits.max_items {
+        return Err(resource_error(
+            "query_v2_model_item_limit",
+            "typed reduction row count exceeds the caller's result-item budget",
+        ));
+    }
+    for row in &rows {
+        let group_cells = row.field_groups().map_or_else(
+            || usize::from(row.has_group_evidence()),
+            <[AttributeValue]>::len,
+        );
+        budget.charge_collection(group_cells.saturating_add(row.values().len()))?;
+    }
+
+    let group_roots = rows
+        .iter()
+        .filter_map(ReductionRow::group)
+        .map(|thing| thing.concept_id().as_str().to_owned())
+        .collect::<BTreeSet<_>>();
+    let finished = graph.finish(&group_roots)?;
+    let rows = rows
+        .iter()
+        .map(|row| encode_reduction_row(row, group, &authority, &finished))
+        .collect::<ExecResult<Vec<_>>>()?;
+    Ok(RemoteOutcomeV2::ModelReduction {
+        graph: finished.graph,
+        root,
+        group: group.cloned(),
+        reducers: reducers.to_vec(),
+        rows,
+    })
+}
+
+fn reduction_fields<'field>(
+    group: Option<&'field QueryReductionGroupV2>,
+    reducers: &'field [QueryReductionTermV2],
+) -> Vec<&'field QueryFieldV2> {
+    let mut fields = Vec::new();
+    match group {
+        Some(QueryReductionGroupV2::Field { field }) => fields.push(field),
+        Some(QueryReductionGroupV2::Fields { fields: grouped }) => {
+            for field in grouped {
+                if !fields.contains(&field) {
+                    fields.push(field);
+                }
+            }
+        }
+        None | Some(QueryReductionGroupV2::Binding { .. }) => {}
+    }
+    for term in reducers {
+        if let Some(field) = term.input()
+            && !fields.contains(&field)
+        {
+            fields.push(field);
+        }
+    }
+    fields
+}
+
+fn provider_reduction_solution(
+    solution: &Solution,
+    graph: &GraphBuilder,
+    authority: &HydrationAuthority<'_>,
+    fields: &[&QueryFieldV2],
+) -> ExecResult<ProviderSolutionEvidence> {
+    let bindings = solution
+        .bindings
+        .iter()
+        .map(|(binding, iid)| {
+            let node = graph.node(iid)?;
+            let declared = authority.binding(*binding)?.declared_descriptor();
+            let attributes = fields
+                .iter()
+                .filter(|field| field.binding().get() == *binding)
+                .filter_map(|field| {
+                    node.attributes
+                        .iter()
+                        .find(|(attribute, _)| attribute == field.attribute())
+                        .map(|(_, values)| (*field, values))
+                })
+                .map(|(field, values)| {
+                    let values = values
+                        .iter()
+                        .map(released_attribute_value)
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|error| QueryV2ExecutionError::Provider(error.into()))?;
+                    Ok(HydratedAttribute::new(reduction_field_id(field), values))
+                })
+                .collect::<ExecResult<Vec<_>>>()?;
+            let thing = HydratedThing::new(
+                ConceptId::new(iid.clone()),
+                descriptor_id(declared)?,
+                descriptor_id(&node.concrete)?,
+                match node.kind {
+                    HydrationNodeKindV2::Entity => ThingKind::Entity,
+                    HydrationNodeKindV2::Relation => ThingKind::Relation,
+                },
+                attributes,
+                Vec::new(),
+            );
+            Ok(BoundConceptEvidence::new(
+                MatchBindingId::new(*binding),
+                thing,
+            ))
+        })
+        .collect::<ExecResult<Vec<_>>>()?;
+    Ok(ProviderSolutionEvidence::new(bindings, Vec::new()))
+}
+
+fn descriptor_id(value: &TypeId) -> ExecResult<DescriptorId> {
+    let prefix = match value.kind() {
+        TypeKind::Entity => "entity",
+        TypeKind::Relation => "relation",
+        TypeKind::Attribute | TypeKind::Struct => {
+            return Err(validation_error(
+                "query_v2_model_reduction_descriptor",
+                "typed reduction references a non-thing descriptor",
+            ));
+        }
+    };
+    Ok(DescriptorId::new(format!("{prefix}:{}", value.label())))
+}
+
+fn reduction_field_id(field: &QueryFieldV2) -> FieldId {
+    let prefix = match field.descriptor().kind() {
+        TypeKind::Entity => "entity",
+        TypeKind::Relation => "relation",
+        TypeKind::Attribute | TypeKind::Struct => "invalid",
+    };
+    FieldId::new(
+        DescriptorId::new(format!("{prefix}:{}", field.descriptor().label())),
+        field.attribute().label().as_str(),
+    )
+}
+
+fn lower_reduction_contract(
+    group: Option<&QueryReductionGroupV2>,
+    reducers: &[QueryReductionTermV2],
+) -> ExecResult<(Option<LoweredReduceGroup>, Vec<LoweredReduceTerm>)> {
+    let group = group
+        .map(|group| {
+            Ok(match group {
+                QueryReductionGroupV2::Binding { binding } => {
+                    LoweredReduceGroup::Binding(MatchBindingId::new(binding.get()))
+                }
+                QueryReductionGroupV2::Field { field } => {
+                    LoweredReduceGroup::Field(BoundFieldId::new(
+                        MatchBindingId::new(field.binding().get()),
+                        reduction_field_id(field),
+                    ))
+                }
+                QueryReductionGroupV2::Fields { fields } => LoweredReduceGroup::Fields(
+                    fields
+                        .iter()
+                        .map(|field| {
+                            BoundFieldId::new(
+                                MatchBindingId::new(field.binding().get()),
+                                reduction_field_id(field),
+                            )
+                        })
+                        .collect(),
+                ),
+            })
+        })
+        .transpose()?;
+    let terms = reducers
+        .iter()
+        .map(|term| {
+            let reduction = match term.reduction() {
+                QueryReductionKindV2::Count => Reduction::Count,
+                QueryReductionKindV2::Sum => Reduction::Sum,
+                QueryReductionKindV2::Min => Reduction::Min,
+                QueryReductionKindV2::Max => Reduction::Max,
+                QueryReductionKindV2::Mean => Reduction::Mean,
+                QueryReductionKindV2::Median => Reduction::Median,
+                QueryReductionKindV2::Std => Reduction::Std,
+            };
+            let input = term.input().map(|field| LoweredReduceInput {
+                binding: MatchBindingId::new(field.binding().get()),
+                field: reduction_field_id(field),
+                domain: match field.value_type() {
+                    ValueTypeTag::Long => ReduceDomain::Long,
+                    ValueTypeTag::Double => ReduceDomain::Double,
+                    _ => unreachable!("validated reduction inputs are numeric"),
+                },
+            });
+            LoweredReduceTerm { reduction, input }
+        })
+        .collect();
+    Ok((group, terms))
+}
+
+fn encode_reduction_row(
+    row: &ReductionRow,
+    group: Option<&QueryReductionGroupV2>,
+    authority: &HydrationAuthority<'_>,
+    graph: &FinishedGraph,
+) -> ExecResult<RemoteReductionRowV2> {
+    let group_value = match group {
+        None => None,
+        Some(QueryReductionGroupV2::Binding { binding }) => {
+            let thing = row.group().ok_or_else(|| {
+                evidence_error(
+                    "query_v2_model_reduction_group",
+                    "canonical thing-grouped reduction row lost its group evidence",
+                )
+            })?;
+            let declared = authority.binding(binding.get())?.declared_descriptor();
+            Some(RemoteReductionGroupV2::thing(
+                graph.reference(declared, thing.concept_id().as_str())?,
+            ))
+        }
+        Some(QueryReductionGroupV2::Field { .. }) => Some(RemoteReductionGroupV2::field(
+            adapt_value(row.field_group().ok_or_else(|| {
+                evidence_error(
+                    "query_v2_model_reduction_group",
+                    "canonical field-grouped reduction row lost its scalar group evidence",
+                )
+            })?)
+            .map_err(QueryV2ExecutionError::Validation)?,
+        )),
+        Some(QueryReductionGroupV2::Fields { .. }) => Some(RemoteReductionGroupV2::fields(
+            row.field_groups()
+                .ok_or_else(|| {
+                    evidence_error(
+                        "query_v2_model_reduction_group",
+                        "canonical tuple-grouped reduction row lost its group evidence",
+                    )
+                })?
+                .iter()
+                .map(adapt_value)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(QueryV2ExecutionError::Validation)?,
+        )),
+    };
+    let values = row
+        .values()
+        .iter()
+        .map(|value| match value {
+            ReducedValue::Count(value) => RemoteReducedValueV2::Count { value: *value },
+            ReducedValue::Long(value) => RemoteReducedValueV2::Long { value: *value },
+            ReducedValue::Double(value) => RemoteReducedValueV2::DoubleBits {
+                value: value.map(f64::to_bits),
+            },
+        })
+        .collect();
+    Ok(RemoteReductionRowV2::new(group_value, values))
+}
+
 fn try_sort_iids(
     values: &mut [String],
     order: &QueryStableOrderV2,
@@ -3304,6 +3657,10 @@ fn compare_optional_field_values(
 
 fn resource_error(code: &'static str, message: &'static str) -> QueryV2ExecutionError {
     QueryV2ExecutionError::Validation(failure(DiagnosticCategory::ResourceLimit, code, message))
+}
+
+fn cancelled_error(code: &'static str, message: &'static str) -> QueryV2ExecutionError {
+    QueryV2ExecutionError::Validation(failure(DiagnosticCategory::Cancelled, code, message))
 }
 
 fn evidence_failure(code: &'static str, message: &'static str) -> Diagnostic {

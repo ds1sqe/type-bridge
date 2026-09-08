@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://type-bridge.dev/contracts/sdk-conformance/sdk-producer-evidence-v5.schema.json",
+  "title": "TypeBridge Sdk V5 composed producer evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["archive_b64", "binding", "cleanup", "detached_mutation_code", "direct_remote_equal", "foreign_schema_code", "format", "producer", "record_b64", "round_trip", "run_nonce", "serialization_cancellation", "serialization_resource_lifecycle", "serialization_resource_limits", "serialization_structured_diagnostic", "test_id"],
+  "properties": {
+    "archive_b64": {"type": "string", "minLength": 1, "maxLength": 44739244, "pattern": "^[A-Za-z0-9+/]*={0,2}$"},
+    "binding": {"enum": ["python", "node", "rust", "c"]},
+    "cleanup": {
+      "type": "object", "additionalProperties": false,
+      "required": ["managed_database_absent", "partial_output_absent", "temporary_evidence_absent"],
+      "properties": {
+        "managed_database_absent": {"const": true},
+        "partial_output_absent": {"const": true},
+        "temporary_evidence_absent": {"const": true}
+      }
+    },
+    "detached_mutation_code": {"const": "projected_snapshot_detached"},
+    "direct_remote_equal": {"const": true},
+    "foreign_schema_code": {"const": "projected_record_schema_mismatch"},
+    "format": {"const": "typebridge.sdk-v5-producer-evidence/v1"},
+    "producer": {"type": "string", "minLength": 1},
+    "record_b64": {
+      "type": "array", "minItems": 9, "maxItems": 9,
+      "items": {"type": "string", "minLength": 1, "maxLength": 1398104, "pattern": "^[A-Za-z0-9+/]*={0,2}$"}
+    },
+    "round_trip": {"const": true},
+    "run_nonce": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "serialization_cancellation": {"$ref": "observation-schema-v5.json#/$defs/cancellation"},
+    "serialization_resource_lifecycle": {"$ref": "observation-schema-v5.json#/$defs/lifecycle"},
+    "serialization_resource_limits": {"$ref": "observation-schema-v5.json#/$defs/resourceLimits"},
+    "serialization_structured_diagnostic": {"$ref": "observation-schema-v5.json#/$defs/diagnostic"},
+    "test_id": {"type": "string", "minLength": 1}
+  }
+}

@@ -1,0 +1,9 @@
+format: typebridge.schema/v2
+attributes:
+  display-name: { value: string }
+  person-id: { value: string }
+entities:
+  person:
+    owns:
+      display-name: {}
+      person-id: { key: true }

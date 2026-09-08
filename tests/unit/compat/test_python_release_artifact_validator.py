@@ -32,7 +32,7 @@ def load_module(name: str, path: Path) -> ModuleType:
 
 
 validator = load_module("validate_python_release_artifacts", VALIDATOR_PATH)
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 SPECS = validator.load_package_specs(ROOT, VERSION)
 CORE_PLATFORMS = {
     "linux-x86_64": "manylinux_2_17_x86_64",
@@ -634,9 +634,9 @@ def test_core_wheel_rejects_elf_newer_than_manylinux_policy(tmp_path: Path) -> N
     "extra_member",
     [
         "hostile/__init__.py",
-        "type_bridge-2.1.0.data/purelib/hostile.py",
-        "type_bridge-2.1.0.data/platlib/hostile.py",
-        "type_bridge-2.1.0.data/scripts/hostile",
+        "type_bridge-2.2.0.data/purelib/hostile.py",
+        "type_bridge-2.2.0.data/platlib/hostile.py",
+        "type_bridge-2.2.0.data/scripts/hostile",
     ],
 )
 def test_root_wheel_rejects_unexpected_install_payload(
@@ -864,6 +864,99 @@ def test_core_sdist_excludes_only_the_closed_nested_test_package(
     )
 
 
+def test_core_sdist_excludes_generated_outputs_without_hiding_ordinary_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core = tmp_path / "type-bridge-core"
+    core.mkdir()
+    for name in ("Cargo.lock", "Cargo.toml", "pyproject.toml", validator.ROOT_LICENSE_FILE):
+        (core / name).write_text("fixture\n", encoding="utf-8")
+
+    source_root = core / "crates/fixture"
+    ordinary_sources = {
+        "src/lib.rs": b"pub fn production() {}\n",
+        "src/distribution.rs": b"pub fn distribution() {}\n",
+        "src/targeting.rs": b"pub fn targeting() {}\n",
+        "src/cache_policy.rs": b"pub fn cache_policy() {}\n",
+    }
+    for name, payload in ordinary_sources.items():
+        path = source_root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+    generated_outputs = {
+        "target/debug/leak.rlib": b"cargo output\n",
+        "node_modules/dependency/LICENSE": b"dependency output\n",
+        "dist/package.js": b"distribution output\n",
+        "src/__pycache__/module.cpython-313.pyc": b"bytecode cache\n",
+        "tests/.pytest_cache/v/cache/nodeids": b"pytest cache\n",
+        "tests/.ruff_cache/state": b"ruff cache\n",
+        "tests/.mypy_cache/state.json": b"mypy cache\n",
+        "tests/.cache/tool/state": b"tool cache\n",
+        ".venv/lib/python/site.py": b"virtual environment\n",
+        "build/package/output": b"build output\n",
+        "htmlcov/index.html": b"coverage output\n",
+        "tmp/generator/output": b"temporary output\n",
+        "wheels/type_bridge.whl": b"wheel output\n",
+        "fixture.egg-info/PKG-INFO": b"packaging output\n",
+        "type_bridge_node.linux-x64-gnu.node": b"compiled extension\n",
+        "src/native.so": b"compiled extension\n",
+    }
+    for name, payload in generated_outputs.items():
+        path = source_root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+    monkeypatch.setattr(validator, "CORE_SDIST_SOURCE_ROOTS", ("crates/fixture",))
+    monkeypatch.setattr(validator, "CORE_SDIST_GENERATED_LICENSES", frozenset())
+
+    authorities = validator.core_sdist_source_authorities(tmp_path)
+
+    for name in ordinary_sources:
+        assert authorities[f"crates/fixture/{name}"] == source_root / name
+    assert not {f"crates/fixture/{name}" for name in generated_outputs} & authorities.keys()
+
+
+@pytest.mark.parametrize(
+    ("classification", "message"),
+    [("symbolic", "symbolic"), ("non-regular", "non-regular")],
+)
+def test_core_sdist_rejects_non_generated_symbolic_and_nonregular_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    classification: str,
+    message: str,
+) -> None:
+    core = tmp_path / "type-bridge-core"
+    core.mkdir()
+    for name in ("Cargo.lock", "Cargo.toml", "pyproject.toml", validator.ROOT_LICENSE_FILE):
+        (core / name).write_text("fixture\n", encoding="utf-8")
+    source = core / "crates/fixture/src/lib.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text("pub fn production() {}\n", encoding="utf-8")
+
+    monkeypatch.setattr(validator, "CORE_SDIST_SOURCE_ROOTS", ("crates/fixture",))
+    monkeypatch.setattr(validator, "CORE_SDIST_GENERATED_LICENSES", frozenset())
+    if classification == "symbolic":
+        original_is_symlink = Path.is_symlink
+        monkeypatch.setattr(
+            Path,
+            "is_symlink",
+            lambda path: path == source or original_is_symlink(path),
+        )
+    else:
+        original_is_file = Path.is_file
+        monkeypatch.setattr(
+            Path,
+            "is_file",
+            lambda path: False if path == source else original_is_file(path),
+        )
+
+    with pytest.raises(validator.ValidationError, match=message):
+        validator.core_sdist_source_authorities(tmp_path)
+
+
 def test_core_sdist_optional_derive_source_is_an_exact_raw_include() -> None:
     assert "crates/orm-derive" in validator.CORE_SDIST_SOURCE_ROOTS
     assert "crates/orm-derive" in validator.CORE_SDIST_EXPLICIT_RAW_SOURCE_ROOTS
@@ -932,10 +1025,16 @@ def test_core_artifacts_require_exact_third_party_notice(tmp_path: Path) -> None
     with pytest.raises(validator.ValidationError, match="notice disagrees"):
         validator.validate_wheel(changed_wheel, SPECS["core"])
 
+
+@pytest.mark.parametrize(
+    "notice",
+    ["python/type_bridge_core/THIRD_PARTY_NOTICES.md", "crates/cli/THIRD_PARTY_NOTICES.md"],
+)
+def test_core_sdist_requires_exact_native_and_cli_notices(tmp_path: Path, notice: str) -> None:
     missing_sdist = write_sdist(
         tmp_path / "missing-sdist",
         SPECS["core"],
-        omit_member=validator.CORE_SDIST_NOTICE,
+        omit_member=notice,
     )
     with pytest.raises(validator.ValidationError, match="source inventory disagrees"):
         validator.validate_sdist(missing_sdist, SPECS["core"])
@@ -943,7 +1042,7 @@ def test_core_artifacts_require_exact_third_party_notice(tmp_path: Path) -> None
     changed_sdist = write_sdist(
         tmp_path / "changed-sdist",
         SPECS["core"],
-        extra_members={validator.CORE_SDIST_NOTICE: b"incomplete notice\n"},
+        extra_members={notice: b"incomplete notice\n"},
     )
     with pytest.raises(validator.ValidationError, match="repository checkout"):
         validator.validate_sdist(changed_sdist, SPECS["core"])
@@ -1058,10 +1157,10 @@ def test_repository_version_must_match_release_tag() -> None:
 @pytest.mark.parametrize(
     "replacement",
     (
-        "type-bridge-core>=2.1.0",
-        "type-bridge-core==2.1.0; python_version >= '3.12'",
-        "TYPE-BRIDGE-CORE==2.1.0",
-        "type_bridge_core==2.1.0",
+        "type-bridge-core>=2.2.0",
+        "type-bridge-core==2.2.0; python_version >= '3.12'",
+        "TYPE-BRIDGE-CORE==2.2.0",
+        "type_bridge_core==2.2.0",
     ),
 )
 def test_artifact_gate_rejects_noncanonical_root_core_requirements(
@@ -1071,7 +1170,7 @@ def test_artifact_gate_rejects_noncanonical_root_core_requirements(
     manifest, _ = copy_root_python_contract(tmp_path)
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            "type-bridge-core==2.1.0",
+            "type-bridge-core==2.2.0",
             replacement,
             1,
         ),
@@ -1088,8 +1187,8 @@ def test_artifact_gate_rejects_duplicate_normalized_root_core_requirements(
     manifest, _ = copy_root_python_contract(tmp_path)
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            '"type-bridge-core==2.1.0",',
-            '"type-bridge-core==2.1.0",\n    "type.bridge.core==2.1.0",',
+            '"type-bridge-core==2.2.0",',
+            '"type-bridge-core==2.2.0",\n    "type.bridge.core==2.2.0",',
             1,
         ),
         encoding="utf-8",
@@ -1103,8 +1202,8 @@ def test_artifact_gate_binds_import_visible_python_version(tmp_path: Path) -> No
     _, package_init = copy_root_python_contract(tmp_path)
     package_init.write_text(
         package_init.read_text(encoding="utf-8").replace(
-            '__version__ = "2.1.0"',
-            '__version__ = "2.1.0rc1"',
+            '__version__ = "2.2.0"',
+            '__version__ = "2.2.0rc1"',
             1,
         ),
         encoding="utf-8",

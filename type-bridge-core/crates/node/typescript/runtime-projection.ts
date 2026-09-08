@@ -1,4 +1,5 @@
 import {
+  createRustDatabaseFromNative,
   QueryV2Authority,
   type NativeRustDatabase,
   type NativeRustTransactionContext,
@@ -6,6 +7,10 @@ import {
   type RustTransactionContext,
 } from "./index.js";
 import { loadNative } from "./native.js";
+import type {
+  NativeQueryCancellation,
+  NativeQueryExecutionResources,
+} from "./native.js";
 import {
   queryV2AuthorityHandle,
   queryV2NativeCall,
@@ -22,6 +27,10 @@ type NativeModule = ReturnType<typeof loadNative>;
 type NativeRuntimeProjection = InstanceType<NativeModule["NodeRuntimeProjection"]>;
 export type RuntimeProjectionMatchSession = ReturnType<NativeRuntimeProjection["matchSession"]>;
 export type RuntimeProjectionMatchBinding = ReturnType<RuntimeProjectionMatchSession["exact"]>;
+export type RuntimeProjectionMatchFunction = ReturnType<RuntimeProjectionMatchSession["functionById"]>;
+export type RuntimeProjectionMatchFunctionValue = ReturnType<RuntimeProjectionMatchSession["functionValueJson"]>;
+export type RuntimeProjectionMatchFunctionArgument = ReturnType<RuntimeProjectionMatchBinding["functionArgument"]>;
+export type RuntimeProjectionMatchFunctionCall = ReturnType<RuntimeProjectionMatchFunction["call"]>;
 export type RuntimeProjectionMatchField = ReturnType<RuntimeProjectionMatchBinding["field"]>;
 export type RuntimeProjectionMatchPredicate = ReturnType<RuntimeProjectionMatchField["compareValueJson"]>;
 export type RuntimeProjectionMatchOrder = ReturnType<RuntimeProjectionMatchField["order"]>;
@@ -38,7 +47,7 @@ export type RuntimeProjectionReduction =
   | "mean"
   | "median"
   | "std";
-type RuntimeProjectionRemoteContext = ReturnType<NativeModule["queryV2RemoteModelContext"]>;
+type RuntimeProjectionRemoteContext = ReturnType<NativeModule["queryV2RemoteModelContextWithResources"]>;
 type RuntimeProjectionRemotePending = ReturnType<NativeModule["queryV2PrepareRemoteModelRows"]>;
 
 export type RuntimeProjectionConnection = RustDatabase | RustTransactionContext;
@@ -51,10 +60,17 @@ export interface RuntimeProjectionBinding {
 }
 
 export interface RuntimeProjectionInstall {
+  readonly schemaAuthorityJson?: string;
   readonly projectionJson: string;
   readonly semanticFingerprintJson: string;
   readonly projectionFingerprintJson: string;
   readonly bindings: readonly RuntimeProjectionBinding[];
+  /**
+   * @internal Generated-package-only authority installed exactly once.
+   * Manual callbacks, global or prototype mutation, and provider re-entry are
+   * unsupported and outside the runtime projection contract.
+   */
+  readonly projectedBatchMaterializer?: NativeProjectedBatchMaterializer;
 }
 
 export interface GeneratedSchemaAuthorityInstall {
@@ -73,9 +89,104 @@ export interface RuntimeProjectionRemoteLimits {
   readonly deadlineMs?: bigint | null;
 }
 
+/** Common tighten-only execution policy shared by direct and remote queries. */
+export interface QueryExecutionResourceLimitOptions {
+  readonly timeoutMilliseconds?: bigint;
+  readonly items?: bigint;
+  readonly bytes?: bigint;
+  readonly graphNodes?: bigint;
+  readonly attributeValues?: bigint;
+  readonly collectionMembers?: bigint;
+  readonly rolePlayers?: bigint;
+  readonly statements?: bigint;
+}
+
+/** Canonical common resource limits, clamped by the Rust semantic engine. */
+export class QueryExecutionResourceLimits {
+  readonly #native: NativeQueryExecutionResources;
+
+  constructor(options: QueryExecutionResourceLimitOptions = {}) {
+    const native = loadNative();
+    this.#native = new native.NodeQueryExecutionResources(
+      options.timeoutMilliseconds ?? 30_000n,
+      options.items ?? 65_536n,
+      options.bytes ?? 33_554_432n,
+      options.graphNodes ?? 65_536n,
+      options.attributeValues ?? 65_536n,
+      options.collectionMembers ?? 65_536n,
+      options.rolePlayers ?? 65_536n,
+      options.statements ?? 3n,
+    );
+    Object.freeze(this);
+  }
+
+  get timeoutMilliseconds(): bigint { return this.#native.timeoutMilliseconds; }
+  get items(): bigint { return this.#native.items; }
+  get bytes(): bigint { return this.#native.bytes; }
+  get graphNodes(): bigint { return this.#native.graphNodes; }
+  get attributeValues(): bigint { return this.#native.attributeValues; }
+  get collectionMembers(): bigint { return this.#native.collectionMembers; }
+  get rolePlayers(): bigint { return this.#native.rolePlayers; }
+  get statements(): bigint { return this.#native.statements; }
+
+  /** @internal Exact native policy owner. */
+  nativeHandle(): NativeQueryExecutionResources { return this.#native; }
+}
+
+/** Caller-owned cooperative cancellation for one or more query sessions. */
+export class QueryCancellation {
+  readonly #native: NativeQueryCancellation;
+  readonly #cancelled: Promise<void>;
+  readonly #listeners = new Set<() => void>();
+  readonly #resolveCancelled: () => void;
+
+  constructor() {
+    this.#native = new (loadNative().NodeQueryCancellation)();
+    let resolveCancelled: (() => void) | undefined;
+    this.#cancelled = new Promise((resolve) => {
+      resolveCancelled = resolve;
+    });
+    this.#resolveCancelled = () => resolveCancelled?.();
+    Object.freeze(this);
+  }
+
+  cancel(): void {
+    const notify = !this.#native.isCancelled;
+    this.#native.cancel();
+    if (!notify) {
+      return;
+    }
+    this.#resolveCancelled();
+    for (const listener of this.#listeners) {
+      listener();
+    }
+    this.#listeners.clear();
+  }
+  get isCancelled(): boolean { return this.#native.isCancelled; }
+
+  /** @internal Exact native cancellation owner. */
+  nativeHandle(): NativeQueryCancellation { return this.#native; }
+
+  /** @internal Resolve when caller-owned cancellation is first requested. */
+  cancelled(): Promise<void> {
+    return this.isCancelled ? Promise.resolve() : this.#cancelled;
+  }
+
+  /** @internal Attach an abort side effect without exposing mutable native state. */
+  onCancelled(listener: () => void): () => void {
+    if (this.isCancelled) {
+      listener();
+      return () => {};
+    }
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+}
+
 /** One caller-owned request/response exchange. No retry is performed. */
 export type RuntimeProjectionRemoteExchange = (
   request: Uint8Array,
+  signal?: AbortSignal,
 ) => Promise<Uint8Array>;
 
 /** Opaque verified remote terminal executor for one generated package. */
@@ -126,14 +237,105 @@ export interface RuntimeProjectionRemote {
   ): Promise<RuntimeProjectionMatchResult>;
 }
 
+declare const nativeProjectedFacadeProof: unique symbol;
+
+/** @internal Opaque non-serializable proof retained only by generated successor facades. */
+export interface NativeProjectedFacadeProof {
+  readonly [nativeProjectedFacadeProof]: never;
+}
+
+/** @internal Private wire plus exact root and role-player proofs. */
+export interface NativeProjectedValueEnvelope {
+  readonly json: string;
+  rootProof(): NativeProjectedFacadeProof;
+  roleProof(roleName: string, playerIndex: number): NativeProjectedFacadeProof;
+}
+
+type NativeProjectedBatchMaterializer = (
+  typeKey: string,
+  ordinal: number,
+  json: string,
+  authority: NativeProjectedBatchAuthority,
+) => object;
+
+declare const nativeProjectedBatchAuthority: unique symbol;
+
+/** @internal One opaque pending/active authority shared by a projected batch. */
+interface NativeProjectedBatchAuthority {
+  readonly [nativeProjectedBatchAuthority]: never;
+}
+
+/** @internal Exact root selector backed by one batch publication authority. */
+interface NativeProjectedBatchRootProof {
+  readonly kind: "root";
+  readonly authority: NativeProjectedBatchAuthority;
+  readonly row: number;
+}
+
+/** @internal Exact role-player selector backed by one batch publication authority. */
+interface NativeProjectedBatchRoleProof {
+  readonly kind: "role";
+  readonly authority: NativeProjectedBatchAuthority;
+  readonly row: number;
+  readonly roleName: string;
+  readonly playerIndex: number;
+}
+
+/** @internal Proof input accepted from a single envelope or a batch selector. */
+type NativeProjectedInputProof =
+  | NativeProjectedFacadeProof
+  | NativeProjectedBatchRootProof
+  | NativeProjectedBatchRoleProof;
+
+interface NativeProjectedCreateBatchRow {
+  readonly instanceJson: string;
+  readonly proofs: readonly (NativeProjectedInputProof | null)[];
+}
+
+interface NativeProjectedUpdateBatchRow extends NativeProjectedCreateBatchRow {
+  readonly iid: string;
+}
+
 export interface NativeProjectedManager {
+  insertProjected(
+    instanceJson: string,
+    proofs: (NativeProjectedInputProof | null)[],
+  ): NativeProjectedValueEnvelope;
   insertJson(instanceJson: string): string;
   insertManyJson(batchJson: string): string;
+  insertManyProjected<Complete>(
+    rowCount: number,
+    rowAt: (ordinal: number) => NativeProjectedCreateBatchRow,
+  ): readonly Complete[];
+  putProjected(
+    instanceJson: string,
+    proofs: (NativeProjectedInputProof | null)[],
+  ): NativeProjectedValueEnvelope;
   putJson(instanceJson: string): string;
   putManyJson(batchJson: string): string;
+  putManyProjected<Complete>(
+    rowCount: number,
+    rowAt: (ordinal: number) => NativeProjectedCreateBatchRow,
+  ): readonly Complete[];
+  updateProjected(
+    iid: string,
+    instanceJson: string,
+    proofs: (NativeProjectedInputProof | null)[],
+  ): NativeProjectedValueEnvelope;
   updateJson(iid: string, instanceJson: string): string;
+  updateManyProjected<Complete>(
+    rowCount: number,
+    rowAt: (ordinal: number) => NativeProjectedUpdateBatchRow,
+  ): readonly Complete[];
   deleteByIid(iid: string): void;
+  deleteManyProjected(
+    rowCount: number,
+    rowAt: (ordinal: number) => string,
+  ): void;
+  managerFilter(): NativeProjectedManagerFilter;
+  filterEntriesJson(filtersJson: string): NativeProjectedManager;
   filterJson(filtersJson: string): NativeProjectedManager;
+  getByIidProjected(iid: string): NativeProjectedValueEnvelope | null;
   getByIidJson(iid: string): string;
   allJson(): string;
   firstJson(): string;
@@ -141,15 +343,124 @@ export interface NativeProjectedManager {
   exists(): boolean;
 }
 
+/** @internal Immutable common field-token filter for ordered generated managers. */
+export interface NativeProjectedManagerFilter {
+  andProjected(
+    fieldOwnerTypeKey: string,
+    fieldAttributeKey: string,
+    comparison: "eq" | "ne" | "lt" | "lte" | "gt" | "gte",
+    valueJson: string,
+  ): NativeProjectedManagerFilter;
+  rejectForeignFieldToken(): never;
+  allProjected(): readonly NativeProjectedValueEnvelope[];
+  firstProjected(): NativeProjectedValueEnvelope | null;
+  count(): bigint;
+  exists(): boolean;
+}
+
+/** @internal Preserve structured SDK diagnostics from generated-manager N-API calls. */
+export function projectedManagerNativeCall<Result>(operation: () => Result): Result {
+  return queryV2NativeCall(operation);
+}
+
 interface NativeProjectionHandle {
+  connectDirect(
+    endpoint: string,
+    database: string,
+    username: string,
+    password: string,
+    httpPort: number,
+    tlsMode: string,
+    tlsRootCa?: string,
+    connectionLimits?: NativeQueryExecutionResources,
+    answerLimits?: NativeQueryExecutionResources,
+    cancellation?: NativeQueryCancellation,
+  ): NativeRustDatabase;
   managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
   managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
   matchSession(): RuntimeProjectionMatchSession;
+  matchSessionWithResources(
+    resources: NativeQueryExecutionResources,
+    cancellation: NativeQueryCancellation,
+  ): RuntimeProjectionMatchSession;
   matchModelType(typeKey: string): string;
   validateAttributeValueJson(typeKey: string, valueJson: string): void;
+  validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;
   validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
+  validateCreateJson(typeKey: string, valueJson: string): void;
+  encodeAttributeJson(typeKey: string, valueJson: string): Uint8Array;
+  decodeAttributeJson(typeKey: string, bytes: Uint8Array): string;
+  encodeCreateJson(typeKey: string, valueJson: string): Uint8Array;
+  decodeCreateJson(typeKey: string, bytes: Uint8Array): string;
+  encodeReferenceJson(typeKey: string, valueJson: string): Uint8Array;
+  decodeReferenceJson(typeKey: string, bytes: Uint8Array): string;
+  encodeSnapshotJson(typeKey: string, valueJson: string): Uint8Array;
+  decodeSnapshotJson(typeKey: string, bytes: Uint8Array): string;
+  detachedSnapshotProof(): NativeProjectedFacadeProof;
+  encodeStructJson(typeKey: string, valueJson: string): Uint8Array;
+  decodeStructJson(typeKey: string, bytes: Uint8Array): string;
+  encodeArchive(records: readonly Uint8Array[]): Uint8Array;
+  decodeArchive(bytes: Uint8Array): Uint8Array[];
+  encodeArchiveControlled(
+    records: readonly Uint8Array[],
+    cancellation?: NativeQueryCancellation,
+    timeoutMilliseconds?: number,
+    maxInputBytes?: number,
+    maxOutputBytes?: number,
+    maxDepth?: number,
+    maxRecords?: number,
+    maxMembers?: number,
+  ): Uint8Array;
+  decodeArchiveControlled(
+    bytes: Uint8Array,
+    cancellation?: NativeQueryCancellation,
+    timeoutMilliseconds?: number,
+    maxInputBytes?: number,
+    maxOutputBytes?: number,
+    maxDepth?: number,
+    maxRecords?: number,
+    maxMembers?: number,
+  ): Uint8Array[];
+  encodeRecordJsonControlled(
+    recordKind: string,
+    typeKey: string,
+    valueJson: string,
+    cancellation?: NativeQueryCancellation,
+    timeoutMilliseconds?: number,
+    maxInputBytes?: number,
+    maxOutputBytes?: number,
+    maxDepth?: number,
+    maxMembers?: number,
+  ): Uint8Array;
+  decodeRecordJsonControlled(
+    recordKind: string,
+    typeKey: string,
+    bytes: Uint8Array,
+    cancellation?: NativeQueryCancellation,
+    timeoutMilliseconds?: number,
+    maxInputBytes?: number,
+    maxOutputBytes?: number,
+    maxDepth?: number,
+    maxMembers?: number,
+  ): string;
+  validateThingJson(typeKey: string, valueJson: string): void;
+  rejectGeneratedTokenPackageMismatch(pathJson: string): void;
   revalidateMatchDiagnostic(diagnostic: string): string;
   materializeMatchThingJson(thing: RuntimeProjectionMatchThing): string;
+  materializeMatchThingProjected(
+    thing: RuntimeProjectionMatchThing,
+  ): NativeProjectedValueEnvelope;
+}
+
+/** Tighten-only controls for canonical record/archive work. */
+export interface CanonicalCodecOptions {
+  readonly cancellation?: QueryCancellation;
+  readonly timeoutMilliseconds?: number;
+  readonly maxInputBytes?: number;
+  readonly maxOutputBytes?: number;
+  readonly maxDepth?: number;
+  readonly maxRecords?: number;
+  readonly maxMembers?: number;
 }
 
 /** A verified native projection scoped to one generated package instance. */
@@ -159,6 +470,33 @@ export class InstalledRuntimeProjection {
   constructor(native: NativeProjectionHandle) {
     this.#native = native;
     Object.freeze(this);
+  }
+
+  /** @internal Open through this installed generated package's authority. */
+  connectDirect(input: {
+    endpoint: string;
+    database: string;
+    username: string;
+    password: string;
+    httpPort: number;
+    tlsMode: "disabled" | "native_roots" | "custom_root";
+    tlsRootCa?: string;
+    connectionLimits?: QueryExecutionResourceLimits;
+    answerLimits?: QueryExecutionResourceLimits;
+    cancellation?: QueryCancellation;
+  }): RustDatabase {
+    return createRustDatabaseFromNative(this.#native.connectDirect(
+      input.endpoint,
+      input.database,
+      input.username,
+      input.password,
+      input.httpPort,
+      input.tlsMode,
+      input.tlsRootCa,
+      input.connectionLimits?.nativeHandle(),
+      input.answerLimits?.nativeHandle(),
+      input.cancellation?.nativeHandle(),
+    ));
   }
 
   /** @internal Bind one generated token without exposing its native handle. */
@@ -178,8 +516,19 @@ export class InstalledRuntimeProjection {
   }
 
   /** @internal Create an opaque query session from verified projection evidence. */
-  matchSession(): RuntimeProjectionMatchSession {
-    return this.#native.matchSession();
+  matchSession(
+    resources?: QueryExecutionResourceLimits,
+    cancellation?: QueryCancellation,
+  ): RuntimeProjectionMatchSession {
+    if (resources === undefined && cancellation === undefined) {
+      return this.#native.matchSession();
+    }
+    resources ??= new QueryExecutionResourceLimits();
+    cancellation ??= new QueryCancellation();
+    return this.#native.matchSessionWithResources(
+      resources.nativeHandle(),
+      cancellation.nativeHandle(),
+    );
   }
 
   /** @internal Resolve one exact generated model token to its provider label. */
@@ -192,9 +541,168 @@ export class InstalledRuntimeProjection {
     this.#native.validateAttributeValueJson(typeKey, valueJson);
   }
 
+  /** @internal Validate one provider-hydrated attribute scalar. */
+  validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void {
+    this.#native.validateHydratedAttributeValueJson(typeKey, valueJson);
+  }
+
   /** @internal Validate one generated owned-field scalar against projected constraints. */
   validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void {
     this.#native.validateFieldValueJson(typeKey, fieldName, valueJson);
+  }
+
+  /** @internal Validate one complete generated create payload. */
+  validateCreateJson(typeKey: string, valueJson: string): void {
+    this.#native.validateCreateJson(typeKey, valueJson);
+  }
+
+  /** @internal Encode one exact generated attribute value to canonical bytes. */
+  encodeAttributeJson(typeKey: string, valueJson: string): Uint8Array {
+    return this.#native.encodeAttributeJson(typeKey, valueJson);
+  }
+
+  /** @internal Decode canonical attribute bytes through exact package authority. */
+  decodeAttributeJson(typeKey: string, bytes: Uint8Array): string {
+    return this.#native.decodeAttributeJson(typeKey, bytes);
+  }
+
+  /** @internal Encode one exact generated create value to canonical bytes. */
+  encodeCreateJson(typeKey: string, valueJson: string): Uint8Array {
+    return this.#native.encodeCreateJson(typeKey, valueJson);
+  }
+
+  /** @internal Decode canonical bytes through this package's exact authority. */
+  decodeCreateJson(typeKey: string, bytes: Uint8Array): string {
+    return this.#native.decodeCreateJson(typeKey, bytes);
+  }
+
+  /** @internal Encode one exact generated detached reference. */
+  encodeReferenceJson(typeKey: string, valueJson: string): Uint8Array {
+    return this.#native.encodeReferenceJson(typeKey, valueJson);
+  }
+
+  /** @internal Decode one exact generated detached reference. */
+  decodeReferenceJson(typeKey: string, bytes: Uint8Array): string {
+    return this.#native.decodeReferenceJson(typeKey, bytes);
+  }
+
+  /** @internal Encode one exact generated detached snapshot. */
+  encodeSnapshotJson(typeKey: string, valueJson: string): Uint8Array {
+    return this.#native.encodeSnapshotJson(typeKey, valueJson);
+  }
+
+  /** @internal Decode one exact generated detached snapshot. */
+  decodeSnapshotJson(typeKey: string, bytes: Uint8Array): string {
+    return this.#native.decodeSnapshotJson(typeKey, bytes);
+  }
+
+  /** @internal Return an opaque mutation fence for one decoded snapshot facade. */
+  detachedSnapshotProof(): NativeProjectedFacadeProof {
+    return this.#native.detachedSnapshotProof();
+  }
+
+  /** @internal Encode one exact generated struct. */
+  encodeStructJson(typeKey: string, valueJson: string): Uint8Array {
+    return this.#native.encodeStructJson(typeKey, valueJson);
+  }
+
+  /** @internal Decode one exact generated struct. */
+  decodeStructJson(typeKey: string, bytes: Uint8Array): string {
+    return this.#native.decodeStructJson(typeKey, bytes);
+  }
+
+  /** @internal Compose verified canonical records into one archive. */
+  encodeArchive(records: readonly Uint8Array[]): Uint8Array {
+    return this.#native.encodeArchive(records);
+  }
+
+  /** @internal Split and verify one canonical archive. */
+  decodeArchive(bytes: Uint8Array): readonly Uint8Array[] {
+    return Object.freeze(this.#native.decodeArchive(bytes));
+  }
+
+  /** @internal Compose records with cancellation, deadline, and resource limits. */
+  encodeArchiveControlled(
+    records: readonly Uint8Array[],
+    options: CanonicalCodecOptions = {},
+  ): Uint8Array {
+    return this.#native.encodeArchiveControlled(
+      records,
+      options.cancellation?.nativeHandle(),
+      options.timeoutMilliseconds,
+      options.maxInputBytes,
+      options.maxOutputBytes,
+      options.maxDepth,
+      options.maxRecords,
+      options.maxMembers,
+    );
+  }
+
+  /** @internal Split records with cancellation, deadline, and resource limits. */
+  decodeArchiveControlled(
+    bytes: Uint8Array,
+    options: CanonicalCodecOptions = {},
+  ): readonly Uint8Array[] {
+    return Object.freeze(this.#native.decodeArchiveControlled(
+      bytes,
+      options.cancellation?.nativeHandle(),
+      options.timeoutMilliseconds,
+      options.maxInputBytes,
+      options.maxOutputBytes,
+      options.maxDepth,
+      options.maxRecords,
+      options.maxMembers,
+    ));
+  }
+
+  /** @internal Encode one exact nominal record under managed controls. */
+  encodeRecordJsonControlled(
+    recordKind: "attribute" | "create" | "reference" | "snapshot" | "struct",
+    typeKey: string,
+    valueJson: string,
+    options: CanonicalCodecOptions = {},
+  ): Uint8Array {
+    return this.#native.encodeRecordJsonControlled(
+      recordKind,
+      typeKey,
+      valueJson,
+      options.cancellation?.nativeHandle(),
+      options.timeoutMilliseconds,
+      options.maxInputBytes,
+      options.maxOutputBytes,
+      options.maxDepth,
+      options.maxMembers,
+    );
+  }
+
+  /** @internal Decode one exact nominal record under managed controls. */
+  decodeRecordJsonControlled(
+    recordKind: "attribute" | "create" | "reference" | "snapshot" | "struct",
+    typeKey: string,
+    bytes: Uint8Array,
+    options: CanonicalCodecOptions = {},
+  ): string {
+    return this.#native.decodeRecordJsonControlled(
+      recordKind,
+      typeKey,
+      bytes,
+      options.cancellation?.nativeHandle(),
+      options.timeoutMilliseconds,
+      options.maxInputBytes,
+      options.maxOutputBytes,
+      options.maxDepth,
+      options.maxMembers,
+    );
+  }
+
+  /** @internal Validate one complete generated provider result. */
+  validateThingJson(typeKey: string, valueJson: string): void {
+    this.#native.validateThingJson(typeKey, valueJson);
+  }
+
+  /** @internal Surface one exact foreign generated-member package boundary. */
+  rejectGeneratedTokenPackageMismatch(pathJson: string): void {
+    this.#native.rejectGeneratedTokenPackageMismatch(pathJson);
   }
 
   /** @internal Reject structural or foreign connection lookalikes. */
@@ -209,6 +717,13 @@ export class InstalledRuntimeProjection {
     return this.#native.materializeMatchThingJson(thing);
   }
 
+  /** @internal Materialize one successor query thing with its exact opaque proof. */
+  materializeMatchThingProjected(
+    thing: RuntimeProjectionMatchThing,
+  ): NativeProjectedValueEnvelope {
+    return this.#native.materializeMatchThingProjected(thing);
+  }
+
   /** @internal Execute one selected-row request through the verified projection. */
   executeRows(
     query: RuntimeProjectionMatchQuery,
@@ -218,20 +733,22 @@ export class InstalledRuntimeProjection {
     limit: bigint,
     cardinality: "exactly_one" | "bounded_many",
   ): RuntimeProjectionMatchResult {
-    this.#native.revalidateMatchDiagnostic(
-      query.fetchRowsDiagnostic(orders, offset, limit, cardinality),
-    );
-    const database = this.#database(connection);
-    if (database !== undefined) {
-      return query.executeFetchRowsOwned(database, orders, offset, limit, cardinality);
-    }
-    return query.executeFetchRowsBorrowed(
-      this.#transaction(connection),
-      orders,
-      offset,
-      limit,
-      cardinality,
-    );
+    return queryV2NativeCall(() => {
+      this.#native.revalidateMatchDiagnostic(
+        query.fetchRowsDiagnostic(orders, offset, limit, cardinality),
+      );
+      const database = this.#database(connection);
+      if (database !== undefined) {
+        return query.executeFetchRowsOwned(database, orders, offset, limit, cardinality);
+      }
+      return query.executeFetchRowsBorrowed(
+        this.#transaction(connection),
+        orders,
+        offset,
+        limit,
+        cardinality,
+      );
+    });
   }
 
   /** @internal Execute one distinct-root page through the verified projection. */
@@ -244,21 +761,23 @@ export class InstalledRuntimeProjection {
     limit: bigint,
     includeTotal: boolean,
   ): RuntimeProjectionMatchResult {
-    this.#native.revalidateMatchDiagnostic(
-      query.pageByDiagnostic(root, orders, offset, limit, includeTotal),
-    );
-    const database = this.#database(connection);
-    if (database !== undefined) {
-      return query.executePageByOwned(database, root, orders, offset, limit, includeTotal);
-    }
-    return query.executePageByBorrowed(
-      this.#transaction(connection),
-      root,
-      orders,
-      offset,
-      limit,
-      includeTotal,
-    );
+    return queryV2NativeCall(() => {
+      this.#native.revalidateMatchDiagnostic(
+        query.pageByDiagnostic(root, orders, offset, limit, includeTotal),
+      );
+      const database = this.#database(connection);
+      if (database !== undefined) {
+        return query.executePageByOwned(database, root, orders, offset, limit, includeTotal);
+      }
+      return query.executePageByBorrowed(
+        this.#transaction(connection),
+        root,
+        orders,
+        offset,
+        limit,
+        includeTotal,
+      );
+    });
   }
 
   /** @internal Execute one distinct-root count through the verified projection. */
@@ -267,12 +786,14 @@ export class InstalledRuntimeProjection {
     connection: RuntimeProjectionConnection,
     root: RuntimeProjectionMatchBinding,
   ): bigint {
-    this.#native.revalidateMatchDiagnostic(query.countByDiagnostic(root));
-    const database = this.#database(connection);
-    const result = database === undefined
-      ? query.executeCountByBorrowed(this.#transaction(connection), root)
-      : query.executeCountByOwned(database, root);
-    return result.countValue(query);
+    return queryV2NativeCall(() => {
+      this.#native.revalidateMatchDiagnostic(query.countByDiagnostic(root));
+      const database = this.#database(connection);
+      const result = database === undefined
+        ? query.executeCountByBorrowed(this.#transaction(connection), root)
+        : query.executeCountByOwned(database, root);
+      return result.countValue(query);
+    });
   }
 
   /** @internal Execute one distinct-root existence request. */
@@ -281,12 +802,14 @@ export class InstalledRuntimeProjection {
     connection: RuntimeProjectionConnection,
     root: RuntimeProjectionMatchBinding,
   ): boolean {
-    this.#native.revalidateMatchDiagnostic(query.existsByDiagnostic(root));
-    const database = this.#database(connection);
-    const result = database === undefined
-      ? query.executeExistsByBorrowed(this.#transaction(connection), root)
-      : query.executeExistsByOwned(database, root);
-    return result.existsValue(query);
+    return queryV2NativeCall(() => {
+      this.#native.revalidateMatchDiagnostic(query.existsByDiagnostic(root));
+      const database = this.#database(connection);
+      const result = database === undefined
+        ? query.executeExistsByBorrowed(this.#transaction(connection), root)
+        : query.executeExistsByOwned(database, root);
+      return result.existsValue(query);
+    });
   }
 
   /** @internal Execute one typed ungrouped or grouped reduction. */
@@ -298,19 +821,21 @@ export class InstalledRuntimeProjection {
     reducers: RuntimeProjectionReduction[],
     inputs: (RuntimeProjectionMatchField | null)[],
   ): RuntimeProjectionMatchResult {
-    this.#native.revalidateMatchDiagnostic(
-      query.reduceByDiagnostic(root, group, reducers, inputs),
-    );
-    const database = this.#database(connection);
-    return database === undefined
-      ? query.executeReduceByBorrowed(
-          this.#transaction(connection),
-          root,
-          group,
-          reducers,
-          inputs,
-        )
-      : query.executeReduceByOwned(database, root, group, reducers, inputs);
+    return queryV2NativeCall(() => {
+      this.#native.revalidateMatchDiagnostic(
+        query.reduceByDiagnostic(root, group, reducers, inputs),
+      );
+      const database = this.#database(connection);
+      return database === undefined
+        ? query.executeReduceByBorrowed(
+            this.#transaction(connection),
+            root,
+            group,
+            reducers,
+            inputs,
+          )
+        : query.executeReduceByOwned(database, root, group, reducers, inputs);
+    });
   }
 
   /** @internal Execute one typed reduction grouped by an owned field value. */
@@ -322,19 +847,21 @@ export class InstalledRuntimeProjection {
     reducers: RuntimeProjectionReduction[],
     inputs: (RuntimeProjectionMatchField | null)[],
   ): RuntimeProjectionMatchResult {
-    this.#native.revalidateMatchDiagnostic(
-      query.reduceByFieldDiagnostic(root, group, reducers, inputs),
-    );
-    const database = this.#database(connection);
-    return database === undefined
-      ? query.executeReduceByFieldBorrowed(
-          this.#transaction(connection),
-          root,
-          group,
-          reducers,
-          inputs,
-        )
-      : query.executeReduceByFieldOwned(database, root, group, reducers, inputs);
+    return queryV2NativeCall(() => {
+      this.#native.revalidateMatchDiagnostic(
+        query.reduceByFieldDiagnostic(root, group, reducers, inputs),
+      );
+      const database = this.#database(connection);
+      return database === undefined
+        ? query.executeReduceByFieldBorrowed(
+            this.#transaction(connection),
+            root,
+            group,
+            reducers,
+            inputs,
+          )
+        : query.executeReduceByFieldOwned(database, root, group, reducers, inputs);
+    });
   }
 
   /** @internal Execute one typed reduction grouped by an owned-field tuple. */
@@ -346,19 +873,21 @@ export class InstalledRuntimeProjection {
     reducers: RuntimeProjectionReduction[],
     inputs: (RuntimeProjectionMatchField | null)[],
   ): RuntimeProjectionMatchResult {
-    this.#native.revalidateMatchDiagnostic(
-      query.reduceByFieldsDiagnostic(root, groups, reducers, inputs),
-    );
-    const database = this.#database(connection);
-    return database === undefined
-      ? query.executeReduceByFieldsBorrowed(
-          this.#transaction(connection),
-          root,
-          groups,
-          reducers,
-          inputs,
-        )
-      : query.executeReduceByFieldsOwned(database, root, groups, reducers, inputs);
+    return queryV2NativeCall(() => {
+      this.#native.revalidateMatchDiagnostic(
+        query.reduceByFieldsDiagnostic(root, groups, reducers, inputs),
+      );
+      const database = this.#database(connection);
+      return database === undefined
+        ? query.executeReduceByFieldsBorrowed(
+            this.#transaction(connection),
+            root,
+            groups,
+            reducers,
+            inputs,
+          )
+        : query.executeReduceByFieldsOwned(database, root, groups, reducers, inputs);
+    });
   }
 
   /** @internal Bind remote authority, executor epoch, budgets, and exchange once. */
@@ -366,7 +895,8 @@ export class InstalledRuntimeProjection {
     authority: QueryV2Authority,
     advertisement: Uint8Array,
     exchange: RuntimeProjectionRemoteExchange,
-    limits: RuntimeProjectionRemoteLimits,
+    limits: RuntimeProjectionRemoteLimits | QueryExecutionResourceLimits,
+    cancellation?: QueryCancellation,
   ): RuntimeProjectionRemote {
     const nativeAuthority = queryV2AuthorityHandle(authority);
     if (nativeAuthority === undefined) {
@@ -381,19 +911,43 @@ export class InstalledRuntimeProjection {
     if (typeof limits !== "object" || limits === null) {
       throw new TypeError("generated remote query limits must be an object");
     }
+    const commonResources = limits instanceof QueryExecutionResourceLimits;
+    const resources = commonResources ? limits : new QueryExecutionResourceLimits({
+          timeoutMilliseconds: limits.deadlineMs ?? 30_000n,
+          items: limits.maxItems,
+          bytes: limits.maxBytes,
+          collectionMembers: limits.maxCollectionMembers,
+          graphNodes: limits.maxGraphNodes,
+          attributeValues: limits.maxAttributeValues,
+          rolePlayers: limits.maxRolePlayers,
+          statements: 3n,
+        });
     const native = loadNative();
-    const context = queryV2NativeCall(() => native.queryV2RemoteModelContext(
-      nativeAuthority,
-      advertisement,
-      limits.maxItems,
-      limits.maxBytes,
-      limits.maxCollectionMembers,
-      limits.maxGraphNodes,
-      limits.maxAttributeValues,
-      limits.maxRolePlayers,
-      limits.deadlineMs,
-    ));
-    return new InstalledRuntimeProjectionRemote(native, context, exchange);
+    const effectiveCancellation = cancellation ?? new QueryCancellation();
+    const context = !commonResources && cancellation === undefined
+      ? queryV2NativeCall(() => native.queryV2RemoteModelContext(
+          nativeAuthority,
+          advertisement,
+          limits.maxItems,
+          limits.maxBytes,
+          limits.maxCollectionMembers,
+          limits.maxGraphNodes,
+          limits.maxAttributeValues,
+          limits.maxRolePlayers,
+          limits.deadlineMs,
+        ))
+      : queryV2NativeCall(() => native.queryV2RemoteModelContextWithResources(
+          nativeAuthority,
+          advertisement,
+          resources.nativeHandle(),
+          effectiveCancellation.nativeHandle(),
+        ));
+    return new InstalledRuntimeProjectionRemote(
+      native,
+      context,
+      exchange,
+      effectiveCancellation,
+    );
   }
 
   #database(connection: RuntimeProjectionConnection): NativeRustDatabase | undefined {
@@ -417,15 +971,18 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
   readonly #native: NativeModule;
   readonly #context: RuntimeProjectionRemoteContext;
   readonly #exchange: RuntimeProjectionRemoteExchange;
+  readonly #cancellation: QueryCancellation;
 
   constructor(
     native: NativeModule,
     context: RuntimeProjectionRemoteContext,
     exchange: RuntimeProjectionRemoteExchange,
+    cancellation: QueryCancellation,
   ) {
     this.#native = native;
     this.#context = context;
     this.#exchange = exchange;
+    this.#cancellation = cancellation;
     Object.freeze(this);
   }
 
@@ -542,11 +1099,37 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
 
   async #execute(pending: RuntimeProjectionRemotePending): Promise<RuntimeProjectionMatchResult> {
     const request = queryV2NativeCall(() => new Uint8Array(pending.requestBytes()));
-    const response = await this.#exchange(request);
-    if (!(response instanceof Uint8Array)) {
-      throw new TypeError("generated remote query exchange must resolve to a Uint8Array");
+    const controller = new AbortController();
+    const detach = this.#cancellation.onCancelled(() => controller.abort());
+    const exchange = Promise.resolve()
+      .then(() => this.#exchange(request, controller.signal))
+      .then(
+        (response) => ({ kind: "response" as const, response }),
+        (error: unknown) => ({ kind: "error" as const, error }),
+      );
+    try {
+      const outcome = await Promise.race([
+        exchange,
+        this.#cancellation.cancelled().then(() => ({ kind: "cancelled" as const })),
+      ]);
+      if (outcome.kind === "cancelled") {
+        // Claim through the neutral one-shot authority after cancellation so
+        // the pending request is consumed and the canonical diagnostic wins.
+        return await queryV2NativePromise(queryV2NativeCall(() =>
+          pending.decodeReply(new Uint8Array())
+        ));
+      }
+      if (outcome.kind === "error") {
+        throw outcome.error;
+      }
+      const response = outcome.response;
+      if (!(response instanceof Uint8Array)) {
+        throw new TypeError("generated remote query exchange must resolve to a Uint8Array");
+      }
+      return queryV2NativePromise(queryV2NativeCall(() => pending.decodeReply(response)));
+    } finally {
+      detach();
     }
-    return queryV2NativePromise(queryV2NativeCall(() => pending.decodeReply(response)));
   }
 }
 
@@ -558,6 +1141,8 @@ export function installRuntimeProjection(input: RuntimeProjectionInstall): Insta
     input.semanticFingerprintJson,
     input.projectionFingerprintJson,
     JSON.stringify(input.bindings),
+    input.schemaAuthorityJson,
+    input.projectedBatchMaterializer,
   ));
 }
 

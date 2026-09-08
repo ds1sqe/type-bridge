@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from type_bridge._rust_runtime import database_from_rust
 from type_bridge.session import (
     Connection,
     ConnectionExecutor,
@@ -43,6 +44,63 @@ class TestDatabaseConfiguration:
         """Driver should be None before connection."""
         db = Database()
         assert db._driver is None
+
+    def test_package_owned_rust_database_is_registered_and_closes_once(self):
+        """The generated facade owns one native handle and close is idempotent."""
+        native = MagicMock()
+        database = database_from_rust("localhost:1729", "generated", native)
+
+        assert database.address == "localhost:1729"
+        assert database.database_name == "generated"
+        assert getattr(database, "_rust_backend_database") is native
+        assert database._transport_committed is True
+
+        database.close()
+        database.close()
+
+        native.close.assert_called_once_with()
+        assert not hasattr(database, "_rust_backend_database")
+        assert database._transport_committed is False
+
+    def test_package_owned_rust_database_exposes_pair_administration(self):
+        """The generated facade preserves native pair-safe administration."""
+        native = MagicMock()
+        native.inspect_database_pair.return_value = "owned_pair"
+        native.inspect_database_pair_controlled.return_value = "standalone_managed"
+        deletion = object()
+        controlled_deletion = object()
+        native.plan_database_delete.return_value = deletion
+        native.plan_database_delete_controlled.return_value = controlled_deletion
+        cancellation = object()
+        database = database_from_rust("localhost:1729", "generated", native)
+
+        assert database.inspect_database_pair() == "owned_pair"
+        assert (
+            database.inspect_database_pair_controlled(
+                timeout_milliseconds=25,
+                cancellation=cancellation,
+            )
+            == "standalone_managed"
+        )
+        assert database.plan_database_delete() is deletion
+        assert (
+            database.plan_database_delete_controlled(
+                timeout_milliseconds=50,
+                cancellation=cancellation,
+            )
+            is controlled_deletion
+        )
+
+        native.inspect_database_pair.assert_called_once_with()
+        native.inspect_database_pair_controlled.assert_called_once_with(
+            timeout_milliseconds=25,
+            cancellation=cancellation,
+        )
+        native.plan_database_delete.assert_called_once_with()
+        native.plan_database_delete_controlled.assert_called_once_with(
+            timeout_milliseconds=50,
+            cancellation=cancellation,
+        )
 
     def test_close_without_connect(self):
         """Close should be safe to call without prior connection."""
@@ -583,3 +641,34 @@ class TestDriverInjection:
 
         assert db.database_exists() is True
         mock_driver.databases.contains.assert_called_with("test_db")
+
+    def test_database_administration_outcomes_are_normalized(self):
+        """Bound create/delete report exact idempotent outcomes."""
+        mock_driver = MagicMock()
+        mock_driver.databases.contains.side_effect = [False, True, True, False]
+        db = Database(database="test_db", driver=mock_driver)
+
+        assert db.create_database_outcome() == "created"
+        assert db.create_database_outcome() == "already_exists"
+        assert db.delete_database_outcome() == "deleted"
+        assert db.delete_database_outcome() == "already_absent"
+        mock_driver.databases.create.assert_called_once_with("test_db")
+        mock_driver.databases.get.assert_called_once_with("test_db")
+
+    def test_database_create_race_rechecks_actual_state(self):
+        """A losing concurrent create is normalized only after an exact recheck."""
+        mock_driver = MagicMock()
+        mock_driver.databases.contains.side_effect = [False, True]
+        mock_driver.databases.create.side_effect = RuntimeError("already exists")
+        db = Database(database="test_db", driver=mock_driver)
+
+        assert db.create_database_outcome() == "already_exists"
+
+    def test_database_delete_race_rechecks_actual_state(self):
+        """A concurrent delete is normalized only after observing absence."""
+        mock_driver = MagicMock()
+        mock_driver.databases.contains.side_effect = [True, False]
+        mock_driver.databases.get.return_value.delete.side_effect = RuntimeError("absent")
+        db = Database(database="test_db", driver=mock_driver)
+
+        assert db.delete_database_outcome() == "deleted"

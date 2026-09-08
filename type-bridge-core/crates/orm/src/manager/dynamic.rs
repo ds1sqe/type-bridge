@@ -2135,12 +2135,6 @@ fn validate_relation_exact_update_input_inner(
                 descriptor.type_name, role.role_name
             )));
         }
-        if role.ordered && count > 1 {
-            return Err(OrmError::QueryExecution(format!(
-                "{}: ordered relation role {} cannot contain multiple players",
-                descriptor.type_name, role.role_name
-            )));
-        }
     }
     for player in players {
         if descriptor
