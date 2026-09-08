@@ -96,6 +96,14 @@ def test_v1_exact_312_producers_stay_three_binding_and_step_scoped() -> None:
 
 def test_v2_exact_producer_bound_fragments_precede_each_live_report() -> None:
     jobs = _jobs()
+    python_remote = next(
+        step
+        for step in jobs["test-integration"]["steps"]
+        if step["name"] == "Emit Python generated-remote sdk-v2 proof fragment"
+    )["run"]
+    assert python_remote.index("uv pip install maturin==1.14.1") < python_remote.index(
+        "uv run python type-bridge-core/crates/schema-codegen/tests/acceptance/check.py"
+    )
     contracts = {
         "python": {
             "job": "test-integration",

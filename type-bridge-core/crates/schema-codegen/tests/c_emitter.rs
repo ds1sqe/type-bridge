@@ -5791,3 +5791,14 @@ fn sdk_v3_generated_package_integrity() {
         json!({"observation": expected["token_package_fencing"], "observation_ref": "token_package_fencing", "outcome": "passed", "proof_kind": "diagnostic", "test_id": test_id}),
     ]);
 }
+
+#[test]
+fn generated_c_live_setup_dependency_graph_is_frozen() {
+    let lock = include_str!("../../../../tests/support/provider/Cargo.lock");
+    assert_eq!(
+        lock.matches("name = \"type-bridge-test-provider\"").count(),
+        1
+    );
+    assert!(lock.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
+    assert!(!lock.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
+}

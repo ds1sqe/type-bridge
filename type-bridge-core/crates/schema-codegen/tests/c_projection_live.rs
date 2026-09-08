@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::OsString;
@@ -27,7 +29,6 @@ const SCHEMA: &str = include_str!("acceptance/schema.yaml");
 const PROVIDER_SCHEMA: &str = include_str!("acceptance/provider-3.12.1.tql");
 const SETUP: &str = include_str!("c_projection_live/setup.rs");
 const SETUP_LOCK: &[u8] = include_bytes!("../../../../tests/support/provider/Cargo.lock");
-const QUERY_SETUP_LOCK: &[u8] = include_bytes!("../../../../tests/support/provider/Cargo.lock");
 const CONSUMER: &str = include_str!("c_projection_live/consumer.c");
 const QUERY_SCHEMA: &str =
     include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml");
@@ -457,7 +458,6 @@ fn runtime_include() -> PathBuf {
         .expect("C runtime include directory exists")
 }
 
-#[cfg(unix)]
 #[test]
 fn exact_live_consumer_is_strict_c17_against_the_shared_generated_schema() {
     let compilers = c_compilers();
@@ -494,7 +494,6 @@ fn exact_live_consumer_is_strict_c17_against_the_shared_generated_schema() {
     }
 }
 
-#[cfg(unix)]
 #[test]
 fn query_successor_consumers_compile_as_strict_c17_and_cpp17() {
     let c_compilers = c_compilers();
@@ -611,7 +610,6 @@ fn query_successor_consumers_compile_as_strict_c17_and_cpp17() {
     }
 }
 
-#[cfg(unix)]
 fn required_live_environment(name: &str) -> String {
     match env::var(name) {
         Ok(value) if !value.is_empty() => value,
@@ -625,7 +623,6 @@ fn required_live_environment(name: &str) -> String {
     }
 }
 
-#[cfg(unix)]
 fn native_library() -> PathBuf {
     let executable = env::current_exe().expect("current test executable path is available");
     let filename = format!(
@@ -647,12 +644,10 @@ fn native_library() -> PathBuf {
         })
 }
 
-#[cfg(unix)]
 fn manifest_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "\\\\")
 }
 
-#[cfg(unix)]
 fn repository_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -662,7 +657,6 @@ fn repository_root() -> PathBuf {
         .to_path_buf()
 }
 
-#[cfg(unix)]
 fn requested_sdk_v2_report() -> Option<PathBuf> {
     let raw = env::var_os("TYPE_BRIDGE_SDK_REPORT_V2")?;
     let raw = raw
@@ -696,7 +690,6 @@ fn requested_sdk_v2_report() -> Option<PathBuf> {
     Some(path)
 }
 
-#[cfg(unix)]
 fn requested_sdk_v5_evidence() -> Option<PathBuf> {
     let raw = env::var_os("TYPE_BRIDGE_SDK_V5_C_EVIDENCE")?;
     let text = raw
@@ -728,7 +721,6 @@ fn requested_sdk_v5_evidence() -> Option<PathBuf> {
     Some(path)
 }
 
-#[cfg(unix)]
 fn validated_sdk_v2_proofs(
     root: &Path,
     report: Option<&Path>,
@@ -755,7 +747,6 @@ fn validated_sdk_v2_proofs(
     }
 }
 
-#[cfg(unix)]
 fn parse_sdk_v2_live_facts(root: &Path, stdout: &str) -> BTreeMap<support::SdkV2ProofLane, Value> {
     let expected = SDK_V2_LIVE_LANES
         .into_iter()
@@ -815,7 +806,6 @@ fn parse_sdk_v2_live_facts(root: &Path, stdout: &str) -> BTreeMap<support::SdkV2
     observations
 }
 
-#[cfg(unix)]
 fn assert_sdk_v2_observations_match_journey(
     root: &Path,
     observations: &BTreeMap<support::SdkV2ProofLane, Value>,
@@ -838,7 +828,6 @@ fn assert_sdk_v2_observations_match_journey(
     }
 }
 
-#[cfg(unix)]
 fn sdk_v2_report_results(
     catalog: &Value,
     observations: &BTreeMap<support::SdkV2ProofLane, Value>,
@@ -939,7 +928,6 @@ fn sdk_v2_report_results(
     rows
 }
 
-#[cfg(unix)]
 fn build_sdk_v2_report(
     root: &Path,
     semantic_fingerprint: Value,
@@ -1002,7 +990,6 @@ fn build_sdk_v2_report(
     })
 }
 
-#[cfg(unix)]
 fn publish_sdk_v2_report(
     path: &Path,
     root: &Path,
@@ -1055,7 +1042,6 @@ fn publish_sdk_v2_report(
     );
 }
 
-#[cfg(unix)]
 fn publish_sdk_v5_evidence(path: &Path, report: &Value) {
     let mut bytes = to_canonical_json(report).expect("C sdk-v5 evidence canonicalizes");
     bytes.push(b'\n');
@@ -1093,7 +1079,6 @@ fn publish_sdk_v5_evidence(path: &Path, report: &Value) {
     drop(guard);
 }
 
-#[cfg(unix)]
 #[test]
 fn sdk_v2_c_fact_fan_in_is_exact_canonical_and_closed() {
     use std::fmt::Write as _;
@@ -1188,7 +1173,6 @@ fn sdk_v2_c_fact_fan_in_is_exact_canonical_and_closed() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 #[ignore = "requires a same-run deterministic C proof fragment"]
 fn emitted_sdk_v2_c_proof_fragment_validates() {
@@ -1207,7 +1191,6 @@ fn emitted_sdk_v2_c_proof_fragment_validates() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 #[ignore = "requires a same-run deterministic C proof fragment"]
 fn sdk_v2_c_catalog_report_builder_preflight_is_exact_and_nonpublishing() {
@@ -1303,7 +1286,6 @@ fn sdk_v2_c_catalog_report_builder_preflight_is_exact_and_nonpublishing() {
     );
 }
 
-#[cfg(unix)]
 fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -1327,7 +1309,6 @@ fn base64(bytes: &[u8]) -> String {
     output
 }
 
-#[cfg(unix)]
 fn free_port() -> u16 {
     TcpListener::bind(("127.0.0.1", 0))
         .expect("loopback port allocation succeeds")
@@ -1336,13 +1317,11 @@ fn free_port() -> u16 {
         .port()
 }
 
-#[cfg(unix)]
 struct RemoteServer {
     child: Child,
     log: PathBuf,
 }
 
-#[cfg(unix)]
 impl RemoteServer {
     fn wait_until_ready(&mut self, port: u16) {
         let deadline = Instant::now() + Duration::from_secs(300);
@@ -1385,7 +1364,6 @@ impl RemoteServer {
     }
 }
 
-#[cfg(unix)]
 impl Drop for RemoteServer {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -1393,7 +1371,6 @@ impl Drop for RemoteServer {
     }
 }
 
-#[cfg(unix)]
 struct IsolatedDatabase {
     cargo: OsString,
     manifest: PathBuf,
@@ -1402,7 +1379,6 @@ struct IsolatedDatabase {
     active: bool,
 }
 
-#[cfg(unix)]
 impl IsolatedDatabase {
     fn run(&self, mode: &str) -> Output {
         const EXECUTABLE_BUSY_RETRIES: u32 = 5;
@@ -1472,7 +1448,6 @@ impl IsolatedDatabase {
     }
 }
 
-#[cfg(unix)]
 impl Drop for IsolatedDatabase {
     fn drop(&mut self) {
         if self.active {
@@ -1481,7 +1456,6 @@ impl Drop for IsolatedDatabase {
     }
 }
 
-#[cfg(unix)]
 #[test]
 fn failed_live_setup_still_runs_idempotent_database_cleanup() {
     use std::os::unix::fs::PermissionsExt;
@@ -1567,7 +1541,6 @@ fn failed_live_setup_still_runs_idempotent_database_cleanup() {
 /// remote query facades against one isolated exact TypeDB 3.12.3 database.
 /// Rust is used only for schema setup, the V2 acceptance server, and guaranteed
 /// process/database cleanup; the C caller performs the sole remote exchange.
-#[cfg(unix)]
 #[test]
 #[ignore = "requires an isolated exact TypeDB 3.12.3 server and C shared library"]
 fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
@@ -1882,7 +1855,6 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
 /// source is compiled and executed as strict C17 and C++17. It deliberately
 /// leaves ordered attributes and ordered role-player lists empty because exact
 /// TypeDB 3.12.3 cannot supply list-instance evidence.
-#[cfg(unix)]
 #[test]
 #[ignore = "requires an isolated exact TypeDB 3.12.3 server and C shared library"]
 fn generated_data_model_runtime_v3_live() {
@@ -2013,7 +1985,7 @@ fn generated_data_model_runtime_v3_live() {
         ),
     )
     .expect("Query database setup manifest is staged");
-    fs::write(setup_root.join("Cargo.lock"), QUERY_SETUP_LOCK)
+    fs::write(setup_root.join("Cargo.lock"), SETUP_LOCK)
         .expect("Query database setup lockfile is staged");
     let environment = vec![
         ("TYPEDB_ADDRESS".to_owned(), address),
@@ -2091,27 +2063,4 @@ fn generated_data_model_runtime_v3_live() {
         }
     }
     publish_sdk_v3_c_live_supplement();
-}
-
-#[test]
-fn generated_c_live_setup_dependency_graphs_are_frozen() {
-    let setup = std::str::from_utf8(SETUP_LOCK).expect("setup lockfile is UTF-8");
-    assert_eq!(
-        setup
-            .matches("name = \"type-bridge-test-provider\"")
-            .count(),
-        1
-    );
-    assert!(setup.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
-    assert!(!setup.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
-
-    let query = std::str::from_utf8(QUERY_SETUP_LOCK).expect("Query lockfile is UTF-8");
-    assert_eq!(
-        query
-            .matches("name = \"type-bridge-test-provider\"")
-            .count(),
-        1
-    );
-    assert!(query.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
-    assert!(!query.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
 }

@@ -116,6 +116,7 @@ def test_tls_matrix_covers_exactly_the_retained_topologies() -> None:
             "lane": "band8-packaging",
             "typedb-server": "typedb/typedb:3.11.5",
             "server-version": "3.11.5",
+            "semantic-profile": "typedb-3.11.5/v1",
             "driver-band": "8",
             "driver-version": "3.11.5",
         },
@@ -123,10 +124,20 @@ def test_tls_matrix_covers_exactly_the_retained_topologies() -> None:
             "lane": "band9-upstream",
             "typedb-server": "typedb/typedb:3.12.3",
             "server-version": "3.12.3",
+            "semantic-profile": "typedb-3.12.1/v1",
             "driver-band": "9",
             "driver-version": "3.12.3",
         },
     ]
+
+    step = next(
+        step
+        for step in _ci_jobs()["tls-transport-matrix"]["steps"]
+        if step["name"] == "Run generated Rust application over TLS"
+    )
+    assert step["env"]["TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE"] == (
+        "${{ matrix.semantic-profile }}"
+    )
 
 
 def test_gate_matrix_keeps_retired_lines_negative_only() -> None:

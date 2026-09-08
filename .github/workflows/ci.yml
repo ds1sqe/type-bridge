@@ -1467,7 +1467,9 @@ jobs:
         env:
           TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT: ${{ steps.prepare-python-sdk-v2.outputs.remote_fragment }}
           TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE: ${{ steps.prepare-python-sdk-v2.outputs.run_nonce }}
-        run: uv run python type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
+        run: |
+          uv pip install maturin==1.14.1
+          uv run python type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
 
       - name: Run integration tests for ${{ matrix.test-group }}
         env:
@@ -1910,11 +1912,13 @@ jobs:
           - lane: band8-packaging
             typedb-server: "typedb/typedb:3.11.5"
             server-version: "3.11.5"
+            semantic-profile: "typedb-3.11.5/v1"
             driver-band: "8"
             driver-version: "3.11.5"
           - lane: band9-upstream
             typedb-server: "typedb/typedb:3.12.3"
             server-version: "3.12.3"
+            semantic-profile: "typedb-3.12.1/v1"
             driver-band: "9"
             driver-version: "3.12.3"
 
@@ -2033,7 +2037,7 @@ jobs:
           SSL_CERT_FILE: ${{ github.workspace }}/tests/fixtures/tls/root-ca.pem
           TYPE_BRIDGE_RUST_PROJECTION_TLS: "1"
           TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE: type_bridge_rust_projection_tls
-          TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: typedb-${{ matrix.server-version }}/v1
+          TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: ${{ matrix.semantic-profile }}
           ACCEPTANCE_TARGET_DIR: ${{ github.workspace }}/type-bridge-core/target/tmp_projection_live_target
         run: |
           export TYPEDB_ADDRESS="$TYPEDB_TLS_ADDRESS"
