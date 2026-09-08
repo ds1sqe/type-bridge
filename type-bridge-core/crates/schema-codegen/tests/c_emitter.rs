@@ -392,6 +392,7 @@ fn emitted_function_definition<'header>(header: &'header str, name: &str) -> &'h
     panic!("generated inline function {name} has an unterminated body")
 }
 
+#[cfg(unix)]
 fn emitted_function_model_token<'header>(header: &'header str, name: &str) -> &'header str {
     const MARKER: &str = "TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN, &";
     let body = emitted_function_definition(header, name);
@@ -2401,7 +2402,29 @@ struct MsvcProviderFreeProbe<'a> {
 
 #[cfg(windows)]
 fn compile_msvc_provider_free_probe(stage: &Path, probe: MsvcProviderFreeProbe<'_>) -> PathBuf {
-    // Both objects use the mock runtime exports defined in the test executable.
+    // MSVC resolves references before discarding unused generated functions.
+    // Real mocks override these aliases; any missing mock that executes fails.
+    let trap_source = stage.join(format!("{}-trap.c", probe.stem));
+    let trap_object = stage.join(format!("{}-trap.obj", probe.stem));
+    let decoration = if cfg!(target_arch = "x86") { "_" } else { "" };
+    let contract: Value =
+        serde_json::from_str(include_str!("../../../../tests/contracts/c-abi.json"))
+            .expect("current ABI inventory parses");
+    let mut trap = String::from(
+        "#include <stdlib.h>\n\
+         __declspec(noreturn) void __cdecl typebridge_unexpected_mock_call(void) { exit(86); }\n",
+    );
+    for symbol in contract["exports"]
+        .as_array()
+        .expect("ABI exports are listed")
+    {
+        let symbol = symbol.as_str().expect("ABI export is a name");
+        trap.push_str(&format!(
+            "#pragma comment(linker, \"/alternatename:{decoration}{symbol}={decoration}typebridge_unexpected_mock_call\")\n"
+        ));
+    }
+    fs::write(&trap_source, trap).expect("unexpected-call trap writes");
+
     let generated_object = stage.join(format!("{}-generated.obj", probe.stem));
     let consumer_object = stage.join(format!("{}-consumer.obj", probe.stem));
     let executable = stage.join(format!("{}.exe", probe.stem));
@@ -2410,62 +2433,55 @@ fn compile_msvc_provider_free_probe(stage: &Path, probe: MsvcProviderFreeProbe<'
     } else {
         probe.consumer_standard
     };
-
-    let output = msvc_tool(
-        stage,
-        probe.compiler,
-        &[
-            "/nologo".to_owned(),
-            "/TC".to_owned(),
-            generated_standard.to_owned(),
-            "/DTYPE_BRIDGE_C_BUILDING".to_owned(),
-            "/W4".to_owned(),
-            "/WX".to_owned(),
-            "/Gy".to_owned(),
-            "/Gw".to_owned(),
-            "/c".to_owned(),
-            format!("/I{}", probe.runtime_include.display()),
-            format!("/I{}", probe.generated_include.display()),
-            probe.generated_source.display().to_string(),
-            format!("/Fo{}", generated_object.display()),
-        ],
-    );
-    assert!(
-        output.status.success(),
-        "{} could not compile the provider-free generated C source under {}:\nstdout:\n{}\nstderr:\n{}",
-        probe.compiler,
-        generated_standard,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-
-    let output = msvc_tool(
-        stage,
-        probe.compiler,
-        &[
-            "/nologo".to_owned(),
-            probe.consumer_language.to_owned(),
-            probe.consumer_standard.to_owned(),
-            "/DTYPE_BRIDGE_C_BUILDING".to_owned(),
-            "/W4".to_owned(),
-            "/WX".to_owned(),
-            "/Gy".to_owned(),
-            "/Gw".to_owned(),
-            "/c".to_owned(),
-            format!("/I{}", probe.runtime_include.display()),
-            format!("/I{}", probe.generated_include.display()),
-            probe.consumer.display().to_string(),
-            format!("/Fo{}", consumer_object.display()),
-        ],
-    );
-    assert!(
-        output.status.success(),
-        "{} could not compile the provider-free consumer under {}:\nstdout:\n{}\nstderr:\n{}",
-        probe.compiler,
-        probe.consumer_standard,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
+    for (source, object, language, standard) in [
+        (
+            probe.generated_source,
+            &generated_object,
+            "/TC",
+            generated_standard,
+        ),
+        (
+            probe.consumer,
+            &consumer_object,
+            probe.consumer_language,
+            probe.consumer_standard,
+        ),
+        (
+            trap_source.as_path(),
+            &trap_object,
+            "/TC",
+            generated_standard,
+        ),
+    ] {
+        let output = msvc_tool(
+            stage,
+            probe.compiler,
+            &[
+                "/nologo".to_owned(),
+                language.to_owned(),
+                standard.to_owned(),
+                "/DTYPE_BRIDGE_C_BUILDING".to_owned(),
+                "/W4".to_owned(),
+                "/WX".to_owned(),
+                "/Gy".to_owned(),
+                "/Gw".to_owned(),
+                "/c".to_owned(),
+                format!("/I{}", probe.runtime_include.display()),
+                format!("/I{}", probe.generated_include.display()),
+                source.display().to_string(),
+                format!("/Fo{}", object.display()),
+            ],
+        );
+        assert!(
+            output.status.success(),
+            "{} could not compile {} under {}:\nstdout:\n{}\nstderr:\n{}",
+            probe.compiler,
+            source.display(),
+            standard,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
 
     let output = msvc_tool(
         stage,
@@ -2474,6 +2490,7 @@ fn compile_msvc_provider_free_probe(stage: &Path, probe: MsvcProviderFreeProbe<'
             "/nologo".to_owned(),
             generated_object.display().to_string(),
             consumer_object.display().to_string(),
+            trap_object.display().to_string(),
             format!("/Fe{}", executable.display()),
             "/link".to_owned(),
             "/OPT:REF".to_owned(),
@@ -2489,6 +2506,44 @@ fn compile_msvc_provider_free_probe(stage: &Path, probe: MsvcProviderFreeProbe<'
         String::from_utf8_lossy(&output.stderr),
     );
     executable
+}
+
+#[test]
+#[cfg(windows)]
+fn windows_provider_free_mocks_reject_unimplemented_runtime_calls() {
+    let stage = TempDirectory::new();
+    let runtime_include = runtime_include();
+    let source = stage.path().join("unimplemented.c");
+    let consumer = stage.path().join("consumer.c");
+    fs::write(
+        &source,
+        "#include <typebridge/type_bridge.h>\n\
+         void generated_call(void) { (void)type_bridge_c_abi_minor(); }\n",
+    )
+    .expect("unimplemented runtime call writes");
+    fs::write(
+        &consumer,
+        "void generated_call(void);\n\
+         int main(void) { generated_call(); return 0; }\n",
+    )
+    .expect("consumer writes");
+    for compiler in required_windows_provider_free_compilers(stage.path()) {
+        let executable = compile_msvc_provider_free_probe(
+            stage.path(),
+            MsvcProviderFreeProbe {
+                compiler,
+                consumer_language: "/TC",
+                consumer_standard: "/std:c17",
+                runtime_include: &runtime_include,
+                generated_include: &runtime_include,
+                generated_source: &source,
+                consumer: &consumer,
+                stem: compiler,
+            },
+        );
+        let status = Command::new(executable).status().expect("trap probe runs");
+        assert_eq!(status.code(), Some(86), "missing runtime mocks must fail");
+    }
 }
 
 fn preprocessor_macro_names(stdout: &[u8]) -> BTreeSet<String> {

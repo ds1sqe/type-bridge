@@ -33,9 +33,11 @@ use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::limits::MAX_CANONICAL_BYTES;
 use type_bridge_contract::managed_scope::ManagedScopeId;
+#[cfg(unix)]
+use type_bridge_contract::projection::ProjectedTokenIdentity;
 use type_bridge_contract::projection::{
-    BindingTarget, CSymbolPrefix, CodeResourceDigest, EmissionPlan, ProjectedTokenIdentity,
-    ProjectionConfig, RuntimeProjection,
+    BindingTarget, CSymbolPrefix, CodeResourceDigest, EmissionPlan, ProjectionConfig,
+    RuntimeProjection,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
 use type_bridge_contract::schema::DocumentId;
@@ -81,6 +83,7 @@ plays:
     membership: [member]
 "#;
 
+#[cfg(unix)]
 const RELATION_SOURCE: &str = r#"format: typebridge.schema/v2
 attributes:
   employee-id: { value: string }
@@ -113,6 +116,7 @@ plays:
     membership: [member]
 "#;
 
+#[cfg(unix)]
 const ORDERED_PROJECTED_SOURCE: &str = r#"format: typebridge.schema/v2
 attributes:
   aliases: { value: string }
@@ -242,6 +246,7 @@ struct EmittedFixture {
 }
 
 #[derive(Debug)]
+#[cfg(unix)]
 struct RelationEmittedFixture {
     package: GeneratedPackage,
     membership_model_ordinal: u32,
@@ -251,6 +256,7 @@ struct RelationEmittedFixture {
 }
 
 #[derive(Debug)]
+#[cfg(unix)]
 struct OrderedProjectedEmittedFixture {
     package: GeneratedPackage,
     foreign_package: GeneratedPackage,
@@ -432,6 +438,7 @@ fn emitted_fixture() -> EmittedFixture {
     }
 }
 
+#[cfg(unix)]
 fn emitted_relation_fixture() -> RelationEmittedFixture {
     let documents = SchemaDocumentSet::parse([(
         DocumentId::new("c-relation-schema-package-abi.yaml")
@@ -502,6 +509,7 @@ fn emitted_relation_fixture() -> RelationEmittedFixture {
     }
 }
 
+#[cfg(unix)]
 fn emitted_ordered_projected_fixture() -> OrderedProjectedEmittedFixture {
     let documents = SchemaDocumentSet::parse([(
         DocumentId::new("c-ordered-projected-schema-package-abi.yaml")
