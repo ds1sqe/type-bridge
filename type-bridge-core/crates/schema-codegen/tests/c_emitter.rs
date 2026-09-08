@@ -2401,6 +2401,7 @@ struct MsvcProviderFreeProbe<'a> {
 
 #[cfg(windows)]
 fn compile_msvc_provider_free_probe(stage: &Path, probe: MsvcProviderFreeProbe<'_>) -> PathBuf {
+    // Both objects use the mock runtime exports defined in the test executable.
     let generated_object = stage.join(format!("{}-generated.obj", probe.stem));
     let consumer_object = stage.join(format!("{}-consumer.obj", probe.stem));
     let executable = stage.join(format!("{}.exe", probe.stem));
@@ -2417,6 +2418,7 @@ fn compile_msvc_provider_free_probe(stage: &Path, probe: MsvcProviderFreeProbe<'
             "/nologo".to_owned(),
             "/TC".to_owned(),
             generated_standard.to_owned(),
+            "/DTYPE_BRIDGE_C_BUILDING".to_owned(),
             "/W4".to_owned(),
             "/WX".to_owned(),
             "/Gy".to_owned(),
@@ -2444,6 +2446,7 @@ fn compile_msvc_provider_free_probe(stage: &Path, probe: MsvcProviderFreeProbe<'
             "/nologo".to_owned(),
             probe.consumer_language.to_owned(),
             probe.consumer_standard.to_owned(),
+            "/DTYPE_BRIDGE_C_BUILDING".to_owned(),
             "/W4".to_owned(),
             "/WX".to_owned(),
             "/Gy".to_owned(),
