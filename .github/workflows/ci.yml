@@ -520,7 +520,7 @@ jobs:
 
       - name: cargo test
         working-directory: type-bridge-core
-        run: cargo test --all-targets
+        run: cargo test --all-targets --no-fail-fast
 
       - name: Check alternate serde_json backends
         working-directory: type-bridge-core

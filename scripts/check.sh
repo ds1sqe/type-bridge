@@ -50,7 +50,7 @@ run_rust() {
         python scripts/ci/validate_cargo_rustdoc.py --toolchain 1.88.0
 
     run_step "cargo test --all-targets" \
-        cargo test --manifest-path type-bridge-core/Cargo.toml --all-targets
+        cargo test --manifest-path type-bridge-core/Cargo.toml --all-targets --no-fail-fast
 
     run_step "contract alternate serde_json backend conformance" \
         cargo test --manifest-path type-bridge-core/Cargo.toml \
