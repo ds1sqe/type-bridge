@@ -200,6 +200,8 @@ attributes:
     assert!(read.contains("EmployeeId(EmployeeId)"));
     assert!(read.contains("pub fn value(&self) -> &String"));
     assert!(read.contains("Self::EmployeeId(__tb_inner) => __tb_inner.value()"));
+    assert!(read.contains("let Self::EmployeeId(__tb_inner) = self; Some(__tb_inner)"));
+    assert!(!read.contains("if let Self::EmployeeId("));
     assert!(!read.contains("impl MaterializeModel for IdentifierFamily"));
     assert!(!read.contains("pub fn iid(&self)"));
     assert!(!declaration.contains("impl ModelFamily for IdentifierFamily"));

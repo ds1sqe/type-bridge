@@ -1387,9 +1387,16 @@ fn render_families(projection: &RuntimeProjection) -> Result<String, Diagnostic>
         for descendant in &descendants {
             let variant_name = descendant.target_name().as_str();
             let fn_name = format!("as_{}", to_snake_case(variant_name));
+            let body = if descendants.len() == 1 {
+                format!("let Self::{variant_name}(__tb_inner) = self; Some(__tb_inner)")
+            } else {
+                format!(
+                    "if let Self::{variant_name}(__tb_inner) = self {{ Some(__tb_inner) }} else {{ None }}"
+                )
+            };
             let _ = writeln!(
                 output,
-                "\n  #[must_use]\n  pub fn {fn_name}(&self) -> Option<&{variant_name}> {{\n    if let Self::{variant_name}(__tb_inner) = self {{ Some(__tb_inner) }} else {{ None }}\n  }}"
+                "\n  #[must_use]\n  pub fn {fn_name}(&self) -> Option<&{variant_name}> {{\n    {body}\n  }}"
             );
         }
 

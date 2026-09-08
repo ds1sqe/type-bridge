@@ -21,7 +21,10 @@ and your application have passed the generated-package gates below.
 5. Adopt any archived root migration history into the canonical V2 chain.
 
 Applications that still require TypeDB 3.8/3.10 or handwritten declaration
-classes must remain on `type-bridge>=2,<2.1` until those prerequisites change.
+classes must remain on `type-bridge>=2,<2.1` or `@type-bridge/node: >=2 <2.1`
+until those prerequisites change. The
+[2.0.2 compatibility notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.0.2)
+contains the exact published removal inventory and generated replacements.
 
 ## Generate the application bindings
 

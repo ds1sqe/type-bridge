@@ -396,7 +396,7 @@ struct AttributePath {
     attribute: usize,
 }
 
-#[pyclass(name = "ValidatedMatchResultHandle", frozen)]
+#[pyclass(name = "ValidatedMatchResultHandle", frozen, from_py_object)]
 #[derive(Clone)]
 pub(crate) struct PyValidatedMatchResultHandle {
     proof: Arc<ValidatedResultProof>,
@@ -522,7 +522,7 @@ impl PyValidatedMatchResultHandle {
         })
     }
 
-    fn reduction_value(&self, py: Python<'_>, row: usize, index: usize) -> PyResult<PyObject> {
+    fn reduction_value(&self, py: Python<'_>, row: usize, index: usize) -> PyResult<Py<PyAny>> {
         let value = match self.proof.reduced_value(row, index)? {
             ReducedValue::Count(value) => pythonize(py, value),
             ReducedValue::Long(value) => pythonize(py, value),
@@ -544,7 +544,7 @@ impl PyValidatedMatchResultHandle {
         })
     }
 
-    fn reduction_group_value(&self, py: Python<'_>, row: usize) -> PyResult<PyObject> {
+    fn reduction_group_value(&self, py: Python<'_>, row: usize) -> PyResult<Py<PyAny>> {
         let value = self
             .proof
             .reduction_row(row)?
@@ -553,7 +553,7 @@ impl PyValidatedMatchResultHandle {
         attribute_value_to_py(py, value)
     }
 
-    fn reduction_group_values(&self, py: Python<'_>, row: usize) -> PyResult<Vec<PyObject>> {
+    fn reduction_group_values(&self, py: Python<'_>, row: usize) -> PyResult<Vec<Py<PyAny>>> {
         self.proof
             .reduction_row(row)?
             .field_groups()
@@ -564,7 +564,7 @@ impl PyValidatedMatchResultHandle {
     }
 }
 
-#[pyclass(name = "ValidatedMatchRowHandle", frozen)]
+#[pyclass(name = "ValidatedMatchRowHandle", frozen, from_py_object)]
 #[derive(Clone)]
 struct PyValidatedMatchRowHandle {
     proof: Arc<ValidatedResultProof>,
@@ -590,7 +590,7 @@ impl PyValidatedMatchRowHandle {
     }
 }
 
-#[pyclass(name = "ValidatedMatchSlotHandle", frozen)]
+#[pyclass(name = "ValidatedMatchSlotHandle", frozen, from_py_object)]
 #[derive(Clone)]
 struct PyValidatedMatchSlotHandle {
     proof: Arc<ValidatedResultProof>,
@@ -628,7 +628,7 @@ impl PyValidatedMatchSlotHandle {
     }
 }
 
-#[pyclass(name = "ValidatedMatchThingHandle", frozen)]
+#[pyclass(name = "ValidatedMatchThingHandle", frozen, from_py_object)]
 #[derive(Clone)]
 pub(crate) struct PyValidatedMatchThingHandle {
     proof: Arc<ValidatedResultProof>,
@@ -707,7 +707,7 @@ impl PyValidatedMatchThingHandle {
     }
 }
 
-#[pyclass(name = "ValidatedMatchAttributeHandle", frozen)]
+#[pyclass(name = "ValidatedMatchAttributeHandle", frozen, from_py_object)]
 #[derive(Clone)]
 struct PyValidatedMatchAttributeHandle {
     proof: Arc<ValidatedResultProof>,
@@ -734,7 +734,7 @@ impl PyValidatedMatchAttributeHandle {
             .value_type_name())
     }
 
-    fn value(&self, py: Python<'_>, index: usize) -> PyResult<PyObject> {
+    fn value(&self, py: Python<'_>, index: usize) -> PyResult<Py<PyAny>> {
         let value = self
             .proof
             .attribute(self.path)?
@@ -745,7 +745,7 @@ impl PyValidatedMatchAttributeHandle {
     }
 }
 
-#[pyclass(name = "ValidatedMatchRoleHandle", frozen)]
+#[pyclass(name = "ValidatedMatchRoleHandle", frozen, from_py_object)]
 #[derive(Clone)]
 struct PyValidatedMatchRoleHandle {
     proof: Arc<ValidatedResultProof>,
@@ -775,7 +775,7 @@ impl PyValidatedMatchRoleHandle {
     }
 }
 
-#[pyclass(name = "ValidatedMatchRolePlayerHandle", frozen)]
+#[pyclass(name = "ValidatedMatchRolePlayerHandle", frozen, from_py_object)]
 #[derive(Clone)]
 struct PyValidatedMatchRolePlayerHandle {
     proof: Arc<ValidatedResultProof>,
@@ -831,7 +831,7 @@ fn kind_name(kind: ThingKind) -> &'static str {
     }
 }
 
-fn attribute_value_to_py(py: Python<'_>, value: &AttributeValue) -> PyResult<PyObject> {
+fn attribute_value_to_py(py: Python<'_>, value: &AttributeValue) -> PyResult<Py<PyAny>> {
     let value = match value {
         AttributeValue::String(value)
         | AttributeValue::Date(value)
@@ -1453,8 +1453,8 @@ mod tests {
         assert_eq!(attribute.value_count().unwrap(), 1);
         assert_eq!(attribute.value_type(0).unwrap(), "string");
 
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             assert_eq!(
                 attribute
                     .value(py, 0)
@@ -1469,8 +1469,8 @@ mod tests {
     #[test]
     fn registered_accessor_types_are_nonconstructible_and_frozen() {
         let handle = executed_handle();
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let module = PyModule::new(py, "validated_result_test").unwrap();
             register(&module).unwrap();
             for name in [
@@ -1525,8 +1525,8 @@ mod tests {
         assert_eq!(handle.reduction_value_kind(0, 1).unwrap(), "long");
         assert_eq!(handle.reduction_value_kind(0, 2).unwrap(), "double");
 
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             assert_eq!(
                 handle
                     .reduction_value(py, 0, 0)
@@ -1569,8 +1569,8 @@ mod tests {
         assert_eq!(handle.reduction_value_count(0).unwrap(), 1);
         assert_eq!(handle.reduction_value_kind(0, 0).unwrap(), "count");
 
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             assert_eq!(
                 handle
                     .reduction_value(py, 0, 0)

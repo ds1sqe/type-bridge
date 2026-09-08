@@ -218,8 +218,8 @@ struct InstalledPackage {
 struct ProjectedScalarHydration {
     date_type: Py<PyType>,
     datetime_type: Py<PyType>,
-    datetime_replace: PyObject,
-    tzinfo_key: PyObject,
+    datetime_replace: Py<PyAny>,
+    tzinfo_key: Py<PyAny>,
     timedelta_type: Py<PyType>,
     timezone_type: Py<PyType>,
     zoneinfo_type: Py<PyType>,
@@ -236,7 +236,7 @@ struct ProjectedNamedZoneSlots {
 }
 
 struct ProjectedHeapAllocator {
-    object_new: PyObject,
+    object_new: Py<PyAny>,
     trusted_deallocator: usize,
     trusted_constructor: usize,
     trusted_free: usize,
@@ -247,7 +247,7 @@ struct ProjectedHeapAllocator {
 }
 
 struct ProjectedNamedZoneAllocator {
-    constructor: PyObject,
+    constructor: Py<PyAny>,
     trusted_constructor: usize,
     base: Py<PyType>,
 }
@@ -295,8 +295,8 @@ impl PreparedFacadeOrigin {
 }
 
 struct ProjectedFacadeSnapshot {
-    iid: PyObject,
-    values: PyObject,
+    iid: Py<PyAny>,
+    values: Py<PyAny>,
 }
 
 impl ProjectedFacadeSnapshot {
@@ -309,13 +309,13 @@ impl ProjectedFacadeSnapshot {
 }
 
 struct PreparedBatchFacade {
-    instance: PyObject,
+    instance: Py<PyAny>,
     origin: PreparedFacadeOrigin,
     snapshot: ProjectedFacadeSnapshot,
 }
 
 struct StagedBatchFacade {
-    instance: PyObject,
+    instance: Py<PyAny>,
     snapshot: ProjectedFacadeSnapshot,
 }
 
@@ -326,7 +326,7 @@ struct PendingFacadeOrigin {
 
 struct StagedBatchHydration {
     projected: Arc<ProjectedThing>,
-    _instance: PyObject,
+    _instance: Py<PyAny>,
     replacement: ProjectedFacadeSnapshot,
 }
 
@@ -337,8 +337,8 @@ struct PendingActivationGuard {
 }
 
 struct BatchHydrationPoolState {
-    objects: Vec<PyObject>,
-    overflow: Option<PyObject>,
+    objects: Vec<Py<PyAny>>,
+    overflow: Option<Py<PyAny>>,
     identities: HashSet<usize>,
     limit: usize,
     reserved: bool,
@@ -491,7 +491,7 @@ struct BatchPublicationGuard<'py> {
     slots: Arc<ProjectedFacadeSlots>,
     facades: Vec<PreparedBatchFacade>,
     _hydrated: Vec<StagedBatchHydration>,
-    output: Option<PyObject>,
+    output: Option<Py<PyAny>>,
     activations: Vec<PendingFacadeActivation>,
     published: usize,
     armed: bool,
@@ -532,12 +532,12 @@ impl Drop for SuccessorBatchGcGuard<'_> {
 }
 
 enum BatchMappedOutput<'py> {
-    Empty(PyObject),
+    Empty(Py<PyAny>),
     Publication(BatchPublicationGuard<'py>),
 }
 
 impl BatchMappedOutput<'_> {
-    fn finish(self) -> PyObject {
+    fn finish(self) -> Py<PyAny> {
         match self {
             Self::Empty(output) => output,
             Self::Publication(guard) => guard.finish(),
@@ -546,7 +546,7 @@ impl BatchMappedOutput<'_> {
 }
 
 impl BatchPublicationGuard<'_> {
-    fn finish(mut self) -> PyObject {
+    fn finish(mut self) -> Py<PyAny> {
         self.package.facade_origins.activate(&self.activations);
         self.armed = false;
         self.output
@@ -570,7 +570,7 @@ impl Drop for BatchPublicationGuard<'_> {
 
 struct ProjectedFacadeSlot {
     name: &'static str,
-    descriptor: PyObject,
+    descriptor: Py<PyAny>,
     owner: Py<PyType>,
     getter: pyo3::ffi::descrgetfunc,
     setter: pyo3::ffi::descrsetfunc,
@@ -654,13 +654,13 @@ impl FacadeProjectionProof {
 struct FacadeOriginRegistry {
     entries: Arc<Mutex<HashMap<usize, FacadeOriginEntry>>>,
     next_pending_token: Arc<AtomicU64>,
-    callback: Arc<PyObject>,
+    callback: Arc<Py<PyAny>>,
 }
 
 fn retained_weakref_target(
     py: Python<'_>,
     reference: &Bound<'_, PyWeakrefReference>,
-) -> Option<PyObject> {
+) -> Option<Py<PyAny>> {
     let mut target = std::ptr::null_mut();
     // SAFETY: the registry stores only exact live weakref.ReferenceType
     // objects. PyWeakref_GetRef is Stable ABI and returns one owned target
@@ -669,7 +669,7 @@ fn retained_weakref_target(
         0 => None,
         1..=std::os::raw::c_int::MAX => {
             // SAFETY: the successful call returned one owned reference.
-            Some(unsafe { PyObject::from_owned_ptr(py, target) })
+            Some(unsafe { Bound::<PyAny>::from_owned_ptr(py, target).unbind() })
         }
         _ => fatal_batch_invariant(pyo3::ffi::c_str!(
             "projected facade registry retained an invalid weak reference"
@@ -687,7 +687,7 @@ impl FacadeOriginRegistry {
                     return Ok(());
                 };
                 let expired = args.get_item(0)?;
-                let expired = expired.downcast::<PyWeakrefReference>()?;
+                let expired = expired.cast::<PyWeakrefReference>()?;
                 if let Some(live) = retained_weakref_target(expired.py(), expired) {
                     // A caller can obtain and invoke the shared callback. A
                     // live weakref is never eligible for registry cleanup.
@@ -1406,7 +1406,7 @@ impl PyRuntimeProjection {
         py: Python<'_>,
         model: Py<PyType>,
         bytes: &Bound<'_, PyBytes>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let expected = self.package.model_id_for_class(py, &model)?;
         if expected.kind() != TypeKind::Attribute {
             return Err(py_type_error(
@@ -1476,7 +1476,7 @@ impl PyRuntimeProjection {
         py: Python<'_>,
         model: Py<PyType>,
         bytes: &Bound<'_, PyBytes>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let expected = self.package.model_id_for_class(py, &model)?;
         let record =
             type_bridge_contract::projected_record::ProjectedRecord::decode(bytes.as_bytes())
@@ -1516,7 +1516,7 @@ impl PyRuntimeProjection {
         py: Python<'_>,
         model: Py<PyType>,
         bytes: &Bound<'_, PyBytes>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let expected = self.package.model_id_for_reference_class(py, &model)?;
         let record =
             type_bridge_contract::projected_record::ProjectedRecord::decode(bytes.as_bytes())
@@ -1550,7 +1550,7 @@ impl PyRuntimeProjection {
             ));
         }
         let values = instance.call_method0("runtime_values")?;
-        let values = values.downcast_exact::<PyDict>()?;
+        let values = values.cast_exact::<PyDict>()?;
         let projected =
             project_hydrated_thing(py, self.package.as_ref(), &id, values, iid.as_deref())?;
         let record = type_bridge_orm::record_from_snapshot(&self.package.projection, &projected)
@@ -1565,7 +1565,7 @@ impl PyRuntimeProjection {
         py: Python<'_>,
         model: Py<PyType>,
         bytes: &Bound<'_, PyBytes>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let expected = self.package.model_id_for_class(py, &model)?;
         let record =
             type_bridge_contract::projected_record::ProjectedRecord::decode(bytes.as_bytes())
@@ -1637,7 +1637,7 @@ impl PyRuntimeProjection {
         py: Python<'_>,
         structure: Py<PyType>,
         bytes: &Bound<'_, PyBytes>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let expected = self.package.struct_id_for_class(py, &structure)?;
         let record =
             type_bridge_contract::projected_record::ProjectedRecord::decode(bytes.as_bytes())
@@ -1744,7 +1744,7 @@ impl PyRuntimeProjection {
         max_output_bytes: Option<usize>,
         max_depth: Option<usize>,
         max_members: Option<usize>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let control = PythonCanonicalControl::capture(
             cancellation,
             timeout_milliseconds,
@@ -1969,7 +1969,7 @@ impl PyRuntimeProjection {
         let mut constraints = Vec::with_capacity(filters.len());
         for (field_name, value) in filters.iter() {
             let field_name: String = field_name
-                .downcast_exact::<PyString>()
+                .cast_exact::<PyString>()
                 .map_err(|_| py_type_error("generated entity filter names must be exact strings"))?
                 .extract()?;
             let field = descriptor
@@ -2071,7 +2071,7 @@ impl PyRuntimeProjection {
             players.reserve(role_players.len());
             for (role_name, player_variable) in role_players.iter() {
                 let role_name: String = role_name
-                    .downcast_exact::<PyString>()
+                    .cast_exact::<PyString>()
                     .map_err(|_| {
                         py_type_error("generated relation role names must be exact strings")
                     })?
@@ -2088,7 +2088,7 @@ impl PyRuntimeProjection {
                         ))
                     })?;
                 let player_variable: String = player_variable
-                    .downcast_exact::<PyString>()
+                    .cast_exact::<PyString>()
                     .map_err(|_| {
                         py_type_error("generated relation player variables must be exact strings")
                     })?
@@ -2150,7 +2150,7 @@ impl PyRuntimeProjection {
         &self,
         py: Python<'_>,
         thing: PyRef<'_, PyValidatedMatchThingHandle>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         hydrate_validated_thing(py, self.package.as_ref(), &thing)
     }
 }
@@ -2248,7 +2248,7 @@ impl PyProjectedManagerFilter {
     }
 
     /// Hydrate every distinct exact-model match.
-    fn all(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn all(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let executor = ProjectedManagerFilterExecutor::new(&self.package.projection);
         let projected = match (&self.database, &self.transaction) {
             (Some(database), None) => provider_block_on(
@@ -2282,7 +2282,7 @@ impl PyProjectedManagerFilter {
     }
 
     /// Return the optional identity-proven match.
-    fn first(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn first(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let executor = ProjectedManagerFilterExecutor::new(&self.package.projection);
         let projected = match (&self.database, &self.transaction) {
             (Some(database), None) => provider_block_on(
@@ -2409,7 +2409,7 @@ impl PyProjectedModelManager {
     }
 
     /// Insert one exact generated model and attach the returned TypeDB IID.
-    fn insert(&self, py: Python<'_>, instance: Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn insert(&self, py: Python<'_>, instance: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         self.ensure_instance(py, &instance)?;
         self.validate_ordered_create(py, &instance)?;
         if self.uses_successor_runtime() {
@@ -2459,7 +2459,7 @@ impl PyProjectedModelManager {
     }
 
     /// Insert exact generated models atomically and attach IIDs in input order.
-    fn insert_many(&self, py: Python<'_>, instances: Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn insert_many(&self, py: Python<'_>, instances: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         if self.uses_successor_runtime() {
             return self.write_many_projected(
                 py,
@@ -2471,7 +2471,7 @@ impl PyProjectedModelManager {
     }
 
     /// Insert or update one exact generated model and attach its TypeDB IID.
-    fn put(&self, py: Python<'_>, instance: Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn put(&self, py: Python<'_>, instance: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         self.ensure_instance(py, &instance)?;
         self.validate_ordered_create(py, &instance)?;
         if self.uses_successor_runtime() {
@@ -2521,7 +2521,7 @@ impl PyProjectedModelManager {
     }
 
     /// Put exact generated models atomically and attach IIDs in input order.
-    fn put_many(&self, py: Python<'_>, instances: Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn put_many(&self, py: Python<'_>, instances: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         if self.uses_successor_runtime() {
             return self.write_many_projected(
                 py,
@@ -2533,7 +2533,7 @@ impl PyProjectedModelManager {
     }
 
     /// Replace one exact generated model already identified by its TypeDB IID.
-    fn update(&self, py: Python<'_>, instance: Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn update(&self, py: Python<'_>, instance: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         self.ensure_instance(py, &instance)?;
         self.validate_ordered_create(py, &instance)?;
         let iid = required_projected_iid(&instance)?;
@@ -2594,7 +2594,7 @@ impl PyProjectedModelManager {
     }
 
     /// Replace exact generated models atomically and rehydrate them in input order.
-    fn update_many(&self, py: Python<'_>, instances: Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn update_many(&self, py: Python<'_>, instances: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         if self.uses_successor_runtime() {
             return self.write_many_projected(
                 py,
@@ -2602,7 +2602,7 @@ impl PyProjectedModelManager {
                 ProjectedBatchOperation::Update,
             );
         }
-        let instances: Vec<PyObject> = instances.extract()?;
+        let instances: Vec<Py<PyAny>> = instances.extract()?;
         if instances.is_empty() {
             return Ok(PyList::empty(py).into_any().unbind());
         }
@@ -2796,7 +2796,7 @@ impl PyProjectedModelManager {
 
     /// Delete one exact generated model by its instance or canonical TypeDB IID.
     fn delete(&self, py: Python<'_>, instance_or_iid: Bound<'_, PyAny>) -> PyResult<()> {
-        let iid = if let Ok(iid) = instance_or_iid.downcast_exact::<PyString>() {
+        let iid = if let Ok(iid) = instance_or_iid.cast_exact::<PyString>() {
             iid.to_str()?.to_owned()
         } else {
             self.ensure_instance(py, &instance_or_iid)?;
@@ -2885,7 +2885,7 @@ impl PyProjectedModelManager {
     }
 
     /// Fetch all exact instances of this projected type using `isa!`.
-    fn all(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn all(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         if let Some(filter) = &self.compatibility_filter {
             return self.compatibility_filter_handle(filter.clone()).all(py);
         }
@@ -2893,7 +2893,7 @@ impl PyProjectedModelManager {
     }
 
     /// Preserve released dynamic-query selection for generated mutations.
-    fn legacy_all(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn legacy_all(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let manager = self.entity_manager(Arc::new(descriptor))?;
@@ -2937,7 +2937,7 @@ impl PyProjectedModelManager {
     }
 
     /// Return the first exact filtered model, or `None` when no model matches.
-    fn first(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn first(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let manager = self.entity_manager(Arc::new(descriptor))?;
@@ -3023,7 +3023,7 @@ impl PyProjectedModelManager {
     }
 
     /// Fetch one exact instance by TypeDB IID using `isa!`.
-    fn get_by_iid(&self, py: Python<'_>, iid: &str) -> PyResult<PyObject> {
+    fn get_by_iid(&self, py: Python<'_>, iid: &str) -> PyResult<Py<PyAny>> {
         // Preserve the released Python manager contract: malformed IIDs are
         // indistinguishable from absent IIDs for this convenience lookup.
         // Query predicates remain strict and reject malformed IIDs before I/O.
@@ -3229,7 +3229,7 @@ impl PyProjectedModelManager {
         prepared: PreparedFacadeOrigin,
         snapshot: ProjectedFacadeSnapshot,
         projected: ProjectedThing,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let py = instance.py();
         let hydrated = hydrate_projected_thing_value(py, self.package.as_ref(), &projected)?;
         replace_projected_instance_atomic(py, &instance, hydrated, &snapshot)?;
@@ -3249,9 +3249,9 @@ impl PyProjectedModelManager {
     fn write_many(
         &self,
         py: Python<'_>,
-        instances: Vec<PyObject>,
+        instances: Vec<Py<PyAny>>,
         put: bool,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         if instances.is_empty() {
             return Ok(PyList::empty(py).into_any().unbind());
         }
@@ -3327,9 +3327,9 @@ impl PyProjectedModelManager {
     fn write_many_projected(
         &self,
         py: Python<'_>,
-        instances: Vec<PyObject>,
+        instances: Vec<Py<PyAny>>,
         operation: ProjectedBatchOperation,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         debug_assert!(matches!(
             operation,
             ProjectedBatchOperation::Insert
@@ -3762,7 +3762,7 @@ fn ensure_batch_instance_at(
     Ok(())
 }
 
-fn bounded_projected_facades(values: &Bound<'_, PyAny>) -> PyResult<Vec<PyObject>> {
+fn bounded_projected_facades(values: &Bound<'_, PyAny>) -> PyResult<Vec<Py<PyAny>>> {
     if !supports_python_iteration(values) {
         return Err(py_sdk_diagnostic(batch_input_shape_diagnostic(
             "batch_rows_not_iterable",
@@ -3799,7 +3799,7 @@ fn bounded_projected_iids(values: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
         ProjectedBatch::validate_binding_row_count(ordinal.saturating_add(1))
             .map_err(py_sdk_diagnostic)?;
         let path = projected_batch_iid_path(ordinal);
-        let value = value.downcast_exact::<PyString>().map_err(|_| {
+        let value = value.cast_exact::<PyString>().map_err(|_| {
             py_sdk_diagnostic(batch_input_shape_diagnostic(
                 "batch_iid_type_mismatch",
                 "Successor delete rows require exact string IIDs",
@@ -4231,7 +4231,7 @@ fn exact_type_mro_attribute(
     py: Python<'_>,
     class: &Bound<'_, PyType>,
     name: &'static str,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     // SAFETY: the live class is GIL-bound. Requiring the exact built-in `type`
     // metaclass makes `__mro__` and each `__dict__` lookup non-overridable.
     if unsafe {
@@ -4247,10 +4247,10 @@ fn exact_type_mro_attribute(
     }
     let mro = py_getattr_cstr(py, class.as_any(), pyo3::ffi::c_str!("__mro__"))?
         .into_bound(py)
-        .downcast_into::<PyTuple>()
+        .cast_into::<PyTuple>()
         .map_err(|_| py_type_error("successor generated class MRO is not an exact tuple"))?;
     for base in mro.iter() {
-        let base = base.downcast_into::<PyType>().map_err(|_| {
+        let base = base.cast_into::<PyType>().map_err(|_| {
             py_type_error("successor generated class MRO contains a non-type entry")
         })?;
         // SAFETY: the live MRO entry is GIL-bound.
@@ -4272,11 +4272,11 @@ fn exact_type_mro_attribute(
         let items = unsafe { pyo3::ffi::PyMapping_Items(dictionary.bind(py).as_ptr()) };
         // SAFETY: a non-null result is one owned list reference.
         let items = unsafe { Bound::<PyAny>::from_owned_ptr_or_err(py, items) }?
-            .downcast_into::<PyList>()
+            .cast_into::<PyList>()
             .map_err(|_| py_type_error("successor generated class dictionary items are invalid"))?;
         let mut found = None;
         for item in items.iter() {
-            let item = item.downcast_into_exact::<PyTuple>().map_err(|_| {
+            let item = item.cast_into_exact::<PyTuple>().map_err(|_| {
                 py_type_error("successor generated class dictionary contains an invalid item")
             })?;
             if item.len() != 2 {
@@ -4285,7 +4285,7 @@ fn exact_type_mro_attribute(
                 ));
             }
             let key = item.get_item(0)?;
-            let key = key.downcast_into_exact::<PyString>().map_err(|_| {
+            let key = key.cast_into_exact::<PyString>().map_err(|_| {
                 py_type_error("successor generated class dictionaries require exact string keys")
             })?;
             if key.to_str()? == name {
@@ -4305,7 +4305,7 @@ fn py_getattr_cstr(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
     name: &std::ffi::CStr,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     // SAFETY: value and the process-lifetime C string are valid under the GIL.
     let result = unsafe { pyo3::ffi::PyObject_GetAttrString(value.as_ptr(), name.as_ptr()) };
     // SAFETY: a non-null result is one owned reference; null preserves PyErr.
@@ -4340,7 +4340,7 @@ impl ProjectedFacadeSlot {
         }
         let owner = py_getattr_cstr(py, &descriptor, pyo3::ffi::c_str!("__objclass__"))?
             .into_bound(py)
-            .downcast_into::<PyType>()
+            .cast_into::<PyType>()
             .map_err(|_| py_type_error("successor model member descriptor owner is not a type"))?;
         // SAFETY: class and owner are live exact PyType objects under the GIL.
         if unsafe {
@@ -4409,7 +4409,7 @@ impl ProjectedFacadeSlot {
         Ok(())
     }
 
-    fn get(&self, py: Python<'_>, instance: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn get(&self, py: Python<'_>, instance: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let value = unsafe {
             (self.getter)(
                 self.descriptor.bind(py).as_ptr(),
@@ -4421,7 +4421,7 @@ impl ProjectedFacadeSlot {
             Err(PyErr::fetch(py))
         } else {
             // SAFETY: a non-null descriptor-get result is one owned reference.
-            Ok(unsafe { PyObject::from_owned_ptr(py, value) })
+            Ok(unsafe { Bound::<PyAny>::from_owned_ptr(py, value).unbind() })
         }
     }
 
@@ -4566,7 +4566,7 @@ impl ProjectedFacadeSlots {
         iid: &Bound<'_, PyAny>,
         attribute_value: Option<&Bound<'_, PyAny>>,
         pool: &BatchHydrationPool,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         if self.attribute_value.is_some() != attribute_value.is_some() {
             return Err(py_runtime_error(
                 "successor generated hydration slot form was inconsistent",
@@ -4627,14 +4627,14 @@ fn exact_type_mro(py: Python<'_>, class: &Bound<'_, PyType>) -> PyResult<Vec<Pro
     }
     let mro = py_getattr_cstr(py, class.as_any(), pyo3::ffi::c_str!("__mro__"))?
         .into_bound(py)
-        .downcast_into_exact::<PyTuple>()
+        .cast_into_exact::<PyTuple>()
         .map_err(|_| py_type_error("successor generated class MRO is not an exact tuple"))?;
     let mut retained = Vec::new();
     retained
         .try_reserve_exact(mro.len())
         .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
     for base in mro.iter() {
-        let base = base.downcast_into::<PyType>().map_err(|_| {
+        let base = base.cast_into::<PyType>().map_err(|_| {
             py_type_error("successor generated class MRO contains a non-type entry")
         })?;
         if unsafe {
@@ -5043,14 +5043,14 @@ fn trusted_python_heap_type_slots(py: Python<'_>) -> PyResult<Arc<ProjectedHeapA
     let type_fn = unsafe {
         Bound::<PyAny>::from_borrowed_ptr(py, std::ptr::addr_of_mut!(pyo3::ffi::PyType_Type).cast())
     }
-    .downcast_into::<PyType>()?;
+    .cast_into::<PyType>()?;
     let object = unsafe {
         Bound::<PyAny>::from_borrowed_ptr(
             py,
             std::ptr::addr_of_mut!(pyo3::ffi::PyBaseObject_Type).cast(),
         )
     }
-    .downcast_into::<PyType>()?;
+    .cast_into::<PyType>()?;
     let object_new = py_getattr_cstr(py, object.as_any(), pyo3::ffi::c_str!("__new__"))?;
     let bases = PyTuple::new(py, [object.as_any()])?;
     let namespace = PyDict::new(py);
@@ -5059,7 +5059,7 @@ fn trusted_python_heap_type_slots(py: Python<'_>) -> PyResult<Arc<ProjectedHeapA
     let probe_name = fallible_python_string(py, "_TypeBridgeGeneratedLayoutProbe")?;
     let probe = type_fn
         .call1((probe_name.bind(py), bases, namespace))?
-        .downcast_into::<PyType>()?;
+        .cast_into::<PyType>()?;
     // SAFETY: the exact probe type is live under the GIL and both IDs are
     // Stable-ABI type slots.
     let deallocator = unsafe {
@@ -5125,7 +5125,7 @@ impl ProjectedScalarHydration {
         value: &CanonicalValue,
         named_zone: Option<&ProjectedNamedZoneSlots>,
         pool: &BatchHydrationPool,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         match value {
             CanonicalValue::String(value) => fallible_python_string(py, value.as_str()),
             CanonicalValue::Long(value) => fallible_python_i64(py, *value),
@@ -5157,7 +5157,7 @@ impl ProjectedScalarHydration {
         }
     }
 
-    fn date_from_canonical(&self, py: Python<'_>, value: CanonicalDate) -> PyResult<PyObject> {
+    fn date_from_canonical(&self, py: Python<'_>, value: CanonicalDate) -> PyResult<Py<PyAny>> {
         let (year, month, day) = value.components();
         let year = fallible_python_i64(py, i64::from(year))?;
         let month = fallible_python_i64(py, i64::from(month))?;
@@ -5176,7 +5176,7 @@ impl ProjectedScalarHydration {
         &self,
         py: Python<'_>,
         value: CanonicalDateTime,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let (year, month, day) = value.date().components();
         let (hour, minute, second, nanosecond) = value.time().components();
         if nanosecond % 1_000 != 0 {
@@ -5214,7 +5214,7 @@ impl ProjectedScalarHydration {
         days: i64,
         seconds: i64,
         micros: i64,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let days = fallible_python_i64(py, days)?;
         let seconds = fallible_python_i64(py, seconds)?;
         let micros = fallible_python_i64(py, micros)?;
@@ -5235,7 +5235,7 @@ impl ProjectedScalarHydration {
         &self,
         py: Python<'_>,
         value: CanonicalDuration,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let (negative, months, days, seconds, nanosecond) = value.components();
         if negative || months != 0 || nanosecond % 1_000 != 0 {
             return Err(py_value_error(
@@ -5256,7 +5256,7 @@ impl ProjectedScalarHydration {
         value: &CanonicalDateTimeTz,
         named_zone: Option<&ProjectedNamedZoneSlots>,
         pool: &BatchHydrationPool,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let resolved = self.datetime_from_canonical(py, value.local())?;
         let offset =
             self.timedelta_from_components(py, 0, i64::from(value.effective_offset_seconds()), 0)?;
@@ -5358,7 +5358,7 @@ impl ProjectedNamedZoneSlots {
         offset: Bound<'_, PyAny>,
         zone: &str,
         pool: &BatchHydrationPool,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let zone = fallible_python_string(py, zone)?;
         // The all-model layout fence ran before provider polling and the GIL
         // has remained held without Python callbacks since then.
@@ -5429,7 +5429,7 @@ fn exact_immutable_stdlib_type(
     module_name: &'static str,
 ) -> PyResult<Py<PyType>> {
     let py = module.py();
-    let class = module.getattr(name)?.downcast_into::<PyType>()?;
+    let class = module.getattr(name)?.cast_into::<PyType>()?;
     // SAFETY: exact type pointer under the GIL; Stable-ABI flag query.
     let flags =
         unsafe { pyo3::ffi::PyType_GetFlags(class.as_ptr().cast::<pyo3::ffi::PyTypeObject>()) };
@@ -5453,7 +5453,7 @@ fn exact_immutable_stdlib_type(
     Ok(class.unbind())
 }
 
-fn fallible_python_string(py: Python<'_>, value: &str) -> PyResult<PyObject> {
+fn fallible_python_string(py: Python<'_>, value: &str) -> PyResult<Py<PyAny>> {
     let length = pyo3::ffi::Py_ssize_t::try_from(value.len())
         .map_err(|_| py_value_error("Python string exceeds Py_ssize_t"))?;
     // SAFETY: UTF-8 bytes remain live for the call; explicit length permits
@@ -5463,7 +5463,7 @@ fn fallible_python_string(py: Python<'_>, value: &str) -> PyResult<PyObject> {
     unsafe { Bound::<PyAny>::from_owned_ptr_or_err(py, value) }.map(Bound::unbind)
 }
 
-fn fallible_python_i64(py: Python<'_>, value: i64) -> PyResult<PyObject> {
+fn fallible_python_i64(py: Python<'_>, value: i64) -> PyResult<Py<PyAny>> {
     // SAFETY: Stable-ABI exact-int constructor under the GIL.
     let value = unsafe { pyo3::ffi::PyLong_FromLongLong(value) };
     // SAFETY: non-null is one owned exact-int reference.
@@ -5475,11 +5475,11 @@ fn fallible_python_dict(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     let value = unsafe { pyo3::ffi::PyDict_New() };
     // SAFETY: non-null is one owned exact-dict reference.
     unsafe { Bound::<PyAny>::from_owned_ptr_or_err(py, value) }?
-        .downcast_into_exact::<PyDict>()
+        .cast_into_exact::<PyDict>()
         .map_err(Into::into)
 }
 
-fn fallible_python_empty_list(py: Python<'_>) -> PyResult<PyObject> {
+fn fallible_python_empty_list(py: Python<'_>) -> PyResult<Py<PyAny>> {
     // SAFETY: Stable-ABI exact-list constructor under the GIL.
     let value = unsafe { pyo3::ffi::PyList_New(0) };
     // SAFETY: non-null is one owned exact-list reference.
@@ -5519,7 +5519,7 @@ class _TypeBridgeNamedZone(_datetime.tzinfo):
         pyo3::ffi::c_str!("_type_bridge_native"),
     )?
     .getattr("_TypeBridgeNamedZone")?
-    .downcast_into::<PyType>()
+    .cast_into::<PyType>()
     .map(Bound::unbind)
     .map_err(|error| py_runtime_error(error.to_string()))
 }
@@ -5659,7 +5659,7 @@ fn lower_attributes(
     instance: &Bound<'_, PyAny>,
 ) -> PyResult<DynamicAttributeMap> {
     let values = instance.call_method0("runtime_values")?;
-    let values = values.downcast::<PyDict>()?;
+    let values = values.cast::<PyDict>()?;
     let mut attributes = Vec::new();
     for descriptor in descriptors {
         let value = values.get_item(&descriptor.field_name)?;
@@ -5696,7 +5696,7 @@ fn hydrate_projected_create(
     py: Python<'_>,
     package: &InstalledPackage,
     projected: &ProjectedCreate,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     projected
         .validate_for(&package.projection)
         .map_err(py_sdk_diagnostic)?;
@@ -5799,7 +5799,7 @@ fn project_create_at(
 ) -> PyResult<ProjectedCreate> {
     let values = py_getattr_cstr(py, instance, pyo3::ffi::c_str!("runtime_values"))?;
     let values = values.bind(py).call0()?;
-    let values = values.downcast::<PyDict>()?;
+    let values = values.cast::<PyDict>()?;
     project_create_from_values_at(py, package, id, values, operation_path, None)
 }
 
@@ -5816,7 +5816,7 @@ fn project_create_from_snapshot_at(
     let values = snapshot
         .values
         .bind(py)
-        .downcast_exact::<PyDict>()
+        .cast_exact::<PyDict>()
         .map_err(|_| {
             py_sdk_diagnostic(batch_input_shape_diagnostic(
                 "generated_model_values_type_mismatch",
@@ -6089,7 +6089,7 @@ fn project_reference(
         ))
     })?;
     let values = values.bind(py);
-    let values = values.downcast_exact::<PyDict>().map_err(|_| {
+    let values = values.cast_exact::<PyDict>().map_err(|_| {
         py_sdk_diagnostic(batch_input_shape_diagnostic(
             "projected_role_player_values_type_mismatch",
             "Projected role-player runtime values must be an exact dictionary",
@@ -6188,7 +6188,7 @@ fn projected_reference_iid(
     if iid.is_none() {
         return Ok(None);
     }
-    let iid = iid.downcast_exact::<PyString>().map_err(|_| {
+    let iid = iid.cast_exact::<PyString>().map_err(|_| {
         py_sdk_diagnostic(batch_input_shape_diagnostic(
             "reference_iid_type_mismatch",
             "Projected role-player IIDs must be exact strings",
@@ -6361,7 +6361,7 @@ fn project_hydrated_reference(
         .get(&id)
         .ok_or_else(|| py_runtime_error("projection hydrated role-player model is absent"))?;
     let values = value.call_method0("runtime_values")?;
-    let values = values.downcast::<PyDict>()?;
+    let values = values.cast::<PyDict>()?;
     let mut keys = Vec::new();
     for key_id in model.reference_read().key_fields() {
         let token = model
@@ -6427,7 +6427,7 @@ fn project_hydrated_role_player(
         .get(&id)
         .ok_or_else(|| py_runtime_error("projection hydrated role-player model is absent"))?;
     let values = value.call_method0("runtime_values")?;
-    let values = values.downcast_exact::<PyDict>()?;
+    let values = values.cast_exact::<PyDict>()?;
     let mut fields = Vec::with_capacity(model.complete_read().fields().len());
     for field in model.complete_read().fields() {
         let token = model
@@ -6478,7 +6478,7 @@ fn projected_items<'py>(
             Ok(vec![value.clone()])
         }
         Some(value) => value
-            .downcast::<PyTuple>()
+            .cast::<PyTuple>()
             .map_err(|_| py_type_error("projected sequence input is not normalized as a tuple"))
             .map(|values| values.iter().collect()),
     }
@@ -6497,7 +6497,7 @@ fn visit_projected_items<'py>(
             visitor(0, value.clone())
         }
         Some(value) => {
-            let values = value.downcast_exact::<PyTuple>().map_err(|_| {
+            let values = value.cast_exact::<PyTuple>().map_err(|_| {
                 py_sdk_diagnostic(batch_input_shape_diagnostic(
                     "projected_collection_container_mismatch",
                     "Projected sequence input must use the generated exact tuple container",
@@ -6580,7 +6580,7 @@ fn lower_compatibility_filter_kwargs(
     let mut lowered = base.clone();
     for (key, value) in filters {
         let key = key
-            .downcast::<PyString>()
+            .cast::<PyString>()
             .map_err(|_| py_type_error("generated manager filter names must be strings"))?
             .to_str()?;
         if matches!(
@@ -6666,7 +6666,7 @@ fn lower_filter_kwargs(
     let mut lowered = Vec::with_capacity(filters.len());
     for (key, value) in filters {
         let key = key
-            .downcast::<PyString>()
+            .cast::<PyString>()
             .map_err(|_| py_type_error("generated manager filter names must be strings"))?
             .to_str()?;
         if matches!(key, "iid" | "_iid" | "iid__eq" | "_iid__eq") {
@@ -6742,7 +6742,7 @@ fn lower_filter_kwargs(
         }
         if lookup == "isnull" {
             let is_null = value
-                .downcast_exact::<PyBool>()
+                .cast_exact::<PyBool>()
                 .map_err(|_| py_type_error("generated manager isnull lookup requires a bool"))?
                 .extract::<bool>()?;
             lowered.push(DynamicExpr::IsNull {
@@ -6818,7 +6818,7 @@ fn projected_filter_items<'py>(
     value: &Bound<'py, PyAny>,
     lookup: &str,
 ) -> PyResult<Vec<Bound<'py, PyAny>>> {
-    if value.downcast::<PyString>().is_ok() || value.downcast::<PyDict>().is_ok() {
+    if value.cast::<PyString>().is_ok() || value.cast::<PyDict>().is_ok() {
         return Err(py_type_error(format!(
             "generated manager {lookup} lookup requires a non-string iterable"
         )));
@@ -6841,7 +6841,7 @@ fn projected_filter_items<'py>(
 
 fn projected_filter_iid(value: &Bound<'_, PyAny>) -> PyResult<String> {
     let iid = value
-        .downcast::<PyString>()
+        .cast::<PyString>()
         .map_err(|_| py_type_error("generated manager IID lookup requires strings"))?
         .to_str()?
         .to_owned();
@@ -6863,7 +6863,7 @@ fn lower_roles(
     let projection = package.projection.projection();
     let model = &projection.models()[relation_id];
     let values = instance.call_method0("runtime_values")?;
-    let values = values.downcast::<PyDict>()?;
+    let values = values.cast::<PyDict>()?;
     let mut inputs = Vec::new();
     for create in model.create().roles().values() {
         let token = &model.query_tokens().roles()[create.role()];
@@ -6921,7 +6921,7 @@ fn projected_key(
         return Ok(None);
     };
     let values = value.call_method0("runtime_values")?;
-    let values = values.downcast::<PyDict>()?;
+    let values = values.cast::<PyDict>()?;
     let Some(wrapper) = values.get_item(&key.field_name)? else {
         return Ok(None);
     };
@@ -6960,7 +6960,7 @@ fn projected_iid_from_snapshot(
     if iid.is_none() {
         return Ok(String::new());
     }
-    let iid = iid.downcast_exact::<PyString>().map_err(|_| {
+    let iid = iid.cast_exact::<PyString>().map_err(|_| {
         py_sdk_diagnostic(batch_input_shape_diagnostic(
             "batch_iid_type_mismatch",
             "Successor update rows require an exact string IID slot",
@@ -7049,13 +7049,13 @@ fn normalized_items<'py>(
         Some(value) if value.is_none() => {}
         Some(value) if maximum == Some(1) => items.push(value.clone()),
         Some(value) => {
-            if value.downcast::<PyString>().is_ok() {
+            if value.cast::<PyString>().is_ok() {
                 return Err(py_type_error(
                     "projected multi-value input requires a sequence",
                 ));
             }
             let tuple = value
-                .downcast::<PyTuple>()
+                .cast::<PyTuple>()
                 .map_err(|_| py_type_error("projected multi-value input requires a tuple"))?;
             items.extend(tuple.iter());
         }
@@ -7084,7 +7084,7 @@ fn hydrate_projected_thing(
     py: Python<'_>,
     package: &InstalledPackage,
     projected: Arc<ProjectedThing>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let mut pending_origins = pending_projected_origins(projected.as_ref())?;
     let instance = hydrate_projected_thing_value_staged(
         py,
@@ -7111,7 +7111,7 @@ fn hydrate_projected_thing_value(
     py: Python<'_>,
     package: &InstalledPackage,
     projected: &ProjectedThing,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let mut pending_origins = pending_projected_origins(projected)?;
     let instance = hydrate_projected_thing_value_staged(
         py,
@@ -7155,7 +7155,7 @@ fn hydrate_projected_thing_value_staged(
     pending_origins: &mut Vec<PendingFacadeOrigin>,
     callback_free: bool,
     pool: Option<&BatchHydrationPool>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     if !callback_free {
         projected
             .validate_for(package.projection.as_ref())
@@ -7244,7 +7244,7 @@ fn hydrate_projected_player(
     pending_origins: &mut Vec<PendingFacadeOrigin>,
     callback_free: bool,
     pool: Option<&BatchHydrationPool>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     if !callback_free {
         player
             .validate_for(package.projection.as_ref())
@@ -7463,7 +7463,7 @@ fn set_projected_hydrated_values(
     py: Python<'_>,
     values: &Bound<'_, PyDict>,
     name: &str,
-    items: Vec<PyObject>,
+    items: Vec<Py<PyAny>>,
     multiplicity: ProjectedMultiplicity,
 ) -> PyResult<()> {
     let cardinality = multiplicity.cardinality();
@@ -7490,7 +7490,7 @@ fn allocate_projected_complete(
     id: &TypeId,
     values: &Bound<'_, PyDict>,
     iid: &str,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let instance = allocate(py, package.class(id, ProjectedModelForm::Complete)?)?;
     instance.call_method1("initialize_runtime_values", (values,))?;
     instance.call_method1("attach_runtime_iid", (iid,))?;
@@ -7504,7 +7504,7 @@ fn allocate_projected_complete_callback_free(
     values: &Bound<'_, PyDict>,
     iid: &str,
     pool: &BatchHydrationPool,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let slots = package.batch_slots_for(id, ProjectedModelForm::Complete)?;
     let iid = fallible_python_string(py, iid)?;
     slots.allocate_initialized_after_fence(py, values.as_any(), iid.bind(py), None, pool)
@@ -7516,7 +7516,7 @@ fn allocate_projected_reference(
     id: &TypeId,
     values: &Bound<'_, PyDict>,
     iid: &str,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let instance = allocate(py, package.class(id, ProjectedModelForm::Reference)?)?;
     instance.call_method1("initialize_runtime_reference", (iid, values))?;
     Ok(instance.unbind())
@@ -7528,7 +7528,7 @@ fn allocate_projected_detached_reference(
     id: &TypeId,
     values: &Bound<'_, PyDict>,
     iid: Option<&str>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let instance = allocate(py, package.class(id, ProjectedModelForm::Reference)?)?;
     instance.call_method1("initialize_runtime_reference", (iid, values))?;
     Ok(instance.unbind())
@@ -7538,7 +7538,7 @@ fn hydrate_projected_detached_reference(
     py: Python<'_>,
     package: &InstalledPackage,
     projected: &ProjectedReference,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let values = hydrate_projected_fields(
         py,
         package,
@@ -7563,7 +7563,7 @@ fn allocate_projected_reference_callback_free(
     values: &Bound<'_, PyDict>,
     iid: &str,
     pool: &BatchHydrationPool,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let slots = package.batch_slots_for(id, ProjectedModelForm::Reference)?;
     let iid = fallible_python_string(py, iid)?;
     slots.allocate_initialized_after_fence(py, values.as_any(), iid.bind(py), None, pool)
@@ -7586,7 +7586,7 @@ fn hydrate_validated_thing(
     py: Python<'_>,
     package: &InstalledPackage,
     handle: &PyValidatedMatchThingHandle,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     if let Some(projected) = handle.projected()? {
         return hydrate_projected_thing(py, package, projected);
     }
@@ -7625,7 +7625,7 @@ fn hydrate_validated_relation(
     handle: &PyValidatedMatchThingHandle,
     id: &TypeId,
     thing: &HydratedThing,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let descriptor = package
         .projection
         .relation_descriptor(id)
@@ -7676,7 +7676,7 @@ fn hydrate_validated_player(
     handle: &PyValidatedMatchThingHandle,
     allowed: &BTreeSet<type_bridge_contract::projection::ProjectedModelUse>,
     player: &HydratedRolePlayer,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let label = handle.descriptor_type_name(player.concrete_descriptor())?;
     let id = package
         .types_by_label
@@ -7751,7 +7751,7 @@ fn hydrate_entity(
     package: &InstalledPackage,
     id: &TypeId,
     row: &DynamicEntityRow,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     ensure_row_type(id, row.type_name.as_deref())?;
     let descriptor = package
         .projection
@@ -7764,8 +7764,8 @@ fn hydrate_entity(
 fn replace_projected_instance(
     py: Python<'_>,
     instance: Bound<'_, PyAny>,
-    hydrated: PyObject,
-) -> PyResult<PyObject> {
+    hydrated: Py<PyAny>,
+) -> PyResult<Py<PyAny>> {
     let stored = hydrated.bind(py);
     let iid = required_projected_iid(stored)?;
     let values = stored.call_method0("runtime_values")?;
@@ -7784,7 +7784,7 @@ fn snapshot_projected_instance(instance: &Bound<'_, PyAny>) -> PyResult<Projecte
 fn replace_projected_instance_atomic(
     py: Python<'_>,
     instance: &Bound<'_, PyAny>,
-    hydrated: PyObject,
+    hydrated: Py<PyAny>,
     snapshot: &ProjectedFacadeSnapshot,
 ) -> PyResult<()> {
     if let Err(error) = replace_projected_instance(py, instance.clone(), hydrated) {
@@ -7819,7 +7819,7 @@ fn hydrate_relation(
     package: &InstalledPackage,
     id: &TypeId,
     row: &DynamicRelationRow,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     ensure_row_type(id, row.type_name.as_deref())?;
     let descriptor = package
         .projection
@@ -7858,7 +7858,7 @@ fn hydrate_player(
     package: &InstalledPackage,
     allowed: &BTreeSet<type_bridge_contract::projection::ProjectedModelUse>,
     player: &DynamicRolePlayer,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let label = player
         .player_type_name
         .as_deref()
@@ -7942,7 +7942,7 @@ fn hydrate_attribute(
     package: &InstalledPackage,
     descriptor: &OwnedAttributeDescriptor,
     value: &AttributeValue,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     ensure_attribute_type(value, descriptor.value_type)?;
     let id = package.type_by_label(&descriptor.attr_name, TypeKind::Attribute)?;
     if projection_uses_ordered_collections(package.projection.projection()) {
@@ -7964,7 +7964,7 @@ fn hydrate_projected_attribute_callback_free(
     descriptor: &OwnedAttributeDescriptor,
     value: &ProjectedAttributeValue,
     pool: &BatchHydrationPool,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let id = package.type_by_label(&descriptor.attr_name, TypeKind::Attribute)?;
     let projection = package.projection.projection();
     if value.attribute_type() != id
@@ -8004,7 +8004,7 @@ fn set_hydrated_values(
     py: Python<'_>,
     values: &Bound<'_, PyDict>,
     name: &str,
-    items: Vec<PyObject>,
+    items: Vec<Py<PyAny>>,
     cardinality: (u32, Option<u32>),
 ) -> PyResult<()> {
     let (minimum, maximum) = cardinality;
@@ -8032,7 +8032,7 @@ fn hydrate_complete(
     id: &TypeId,
     values: &Bound<'_, PyDict>,
     iid: Option<&str>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     if projection_uses_ordered_collections(package.projection.projection()) {
         project_hydrated_thing(py, package, id, values, iid)?;
     }
@@ -8050,7 +8050,7 @@ fn hydrate_reference(
     id: &TypeId,
     values: &Bound<'_, PyDict>,
     iid: &str,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let instance = allocate(py, package.class(id, ProjectedModelForm::Reference)?)?;
     instance.call_method1("initialize_runtime_reference", (iid, values))?;
     Ok(instance.unbind())
@@ -8077,22 +8077,22 @@ fn attribute_value_from_py(
 ) -> PyResult<AttributeValue> {
     match value_type {
         ValueType::String => value
-            .downcast_exact::<PyString>()
+            .cast_exact::<PyString>()
             .map_err(|_| py_type_error("attribute value requires an exact str"))?
             .extract()
             .map(AttributeValue::String),
         ValueType::Long => value
-            .downcast_exact::<PyInt>()
+            .cast_exact::<PyInt>()
             .map_err(|_| py_type_error("attribute value requires an exact int"))?
             .extract()
             .map(AttributeValue::Long),
         ValueType::Double => value
-            .downcast_exact::<PyFloat>()
+            .cast_exact::<PyFloat>()
             .map_err(|_| py_type_error("attribute value requires an exact float"))?
             .extract()
             .map(AttributeValue::Double),
         ValueType::Boolean => value
-            .downcast_exact::<PyBool>()
+            .cast_exact::<PyBool>()
             .map_err(|_| py_type_error("attribute value requires an exact bool"))?
             .extract()
             .map(AttributeValue::Boolean),
@@ -8133,7 +8133,7 @@ fn canonical_projected_value_from_py_at(
     let wrong = || py_sdk_diagnostic(wrong_scalar_diagnostic(operation_path));
     match value_type {
         ValueType::String => {
-            let text = value.downcast_exact::<PyString>().map_err(|_| wrong())?;
+            let text = value.cast_exact::<PyString>().map_err(|_| wrong())?;
             let retained =
                 copy_projected_text(text, MAX_CANONICAL_STRING_BYTES, |_| true, operation_path)?;
             CanonicalString::new(retained)
@@ -8141,14 +8141,14 @@ fn canonical_projected_value_from_py_at(
                 .map_err(|_| wrong())
         }
         ValueType::Long => value
-            .downcast_exact::<PyInt>()
+            .cast_exact::<PyInt>()
             .map_err(|_| wrong())?
             .extract::<i64>()
             .map(CanonicalValue::Long)
             .map_err(|_| wrong()),
         ValueType::Double => {
             let value = value
-                .downcast_exact::<PyFloat>()
+                .cast_exact::<PyFloat>()
                 .map_err(|_| wrong())?
                 .extract::<f64>()
                 .map_err(|_| wrong())?;
@@ -8157,7 +8157,7 @@ fn canonical_projected_value_from_py_at(
                 .map_err(|_| wrong())
         }
         ValueType::Boolean => value
-            .downcast_exact::<PyBool>()
+            .cast_exact::<PyBool>()
             .map_err(|_| wrong())?
             .extract::<bool>()
             .map(CanonicalValue::Boolean)
@@ -8353,7 +8353,7 @@ fn canonical_projected_datetime_tz(
         let zone = slots.zone.get(py, &timezone).map_err(|_| wrong())?;
         let zone = zone
             .bind(py)
-            .downcast_exact::<PyString>()
+            .cast_exact::<PyString>()
             .map_err(|_| wrong())?;
         Some(copy_projected_text(
             zone,
@@ -8363,10 +8363,7 @@ fn canonical_projected_datetime_tz(
         )?)
     } else if timezone.get_type().is(hydration.zoneinfo_type.bind(py)) {
         let key = py_getattr_cstr(py, &timezone, pyo3::ffi::c_str!("key"))?;
-        let key = key
-            .bind(py)
-            .downcast_exact::<PyString>()
-            .map_err(|_| wrong())?;
+        let key = key.bind(py).cast_exact::<PyString>().map_err(|_| wrong())?;
         Some(copy_projected_text(
             key,
             255,
@@ -8455,7 +8452,7 @@ fn canonical_attribute_value_from_py_at(
 ) -> PyResult<AttributeValue> {
     if value_type == ValueType::String {
         let value = value
-            .downcast_exact::<PyString>()
+            .cast_exact::<PyString>()
             .map_err(|_| py_sdk_diagnostic(wrong_scalar_diagnostic(operation_path)))?;
         let value = value
             .to_str()
@@ -8659,7 +8656,7 @@ fn attribute_value_to_py(
     py: Python<'_>,
     value: &AttributeValue,
     named_zone_marker: Option<&Py<PyType>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     match value {
         AttributeValue::String(value) => pythonize(py, value)
             .map(Bound::unbind)
@@ -8706,7 +8703,7 @@ fn canonical_struct_value_to_py(
     py: Python<'_>,
     value: &CanonicalValue,
     named_zone_marker: Option<&Py<PyType>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let value = match value {
         CanonicalValue::String(value) => AttributeValue::String(value.as_str().to_owned()),
         CanonicalValue::Long(value) => AttributeValue::Long(*value),
@@ -8758,7 +8755,7 @@ fn datetime_tz_to_py(
     py: Python<'_>,
     value: &str,
     named_zone_marker: Option<&Py<PyType>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let Some((evidence, zone)) = value
         .strip_suffix(']')
         .and_then(|value| value.rsplit_once('['))
@@ -8798,7 +8795,7 @@ fn python_timedelta_integral_seconds(value: &Bound<'_, PyAny>) -> PyResult<i32> 
         .ok_or_else(|| py_runtime_error("timezone offset exceeds the supported range"))
 }
 
-fn duration_to_py(py: Python<'_>, value: &str) -> PyResult<PyObject> {
+fn duration_to_py(py: Python<'_>, value: &str) -> PyResult<Py<PyAny>> {
     let (days, seconds, micros) = parse_python_day_time_duration(value).ok_or_else(|| {
         py_value_error(
             "duration hydration requires a nonnegative day-time value at microsecond precision",
@@ -9161,7 +9158,7 @@ mod tests {
 
     #[test]
     fn direct_tls_shape_rejects_before_provider_runtime_creation() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         for (mode, root, message) in [
             ("custom_root", None, "custom_root TLS requires tls_root_ca"),
             (
@@ -9176,7 +9173,7 @@ mod tests {
             ),
         ] {
             let error = direct_tls_from_python(mode, root).expect_err("TLS shape must fail");
-            assert!(Python::with_gil(
+            assert!(Python::attach(
                 |py| error.is_instance_of::<pyo3::exceptions::PyValueError>(py)
             ));
             assert!(error.to_string().contains(message));
@@ -9959,8 +9956,8 @@ plays:
         assert!(parse_python_day_time_duration("P1M").is_none());
         assert!(parse_python_day_time_duration("PT0.000000001S").is_none());
 
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let decimal =
                 attribute_value_to_py(py, &AttributeValue::Decimal("3.50dec".into()), None)
                     .unwrap();
@@ -9997,8 +9994,8 @@ plays:
 
     #[test]
     fn named_zone_hydration_preserves_both_dst_overlap_instants_without_host_tzdb() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_ordered(py);
             let marker = package.named_zone_marker.as_ref();
             for (evidence, expected) in [
@@ -10040,8 +10037,8 @@ plays:
 
     #[test]
     fn unordered_datetime_tz_keeps_offset_only_predecessor_behavior() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let authored = py
                 .import("datetime")
                 .unwrap()
@@ -10157,7 +10154,7 @@ class Reference:
                 let complete = type_fn
                     .call1((model.target_name().as_str(), bases, attrs))
                     .unwrap()
-                    .downcast_into::<PyType>()
+                    .cast_into::<PyType>()
                     .unwrap()
                     .unbind();
                 let reference = model.reference_read().target_name().map(|name| {
@@ -10171,7 +10168,7 @@ class Reference:
                     type_fn
                         .call1((name.as_str(), bases, attrs))
                         .unwrap()
-                        .downcast_into::<PyType>()
+                        .cast_into::<PyType>()
                         .unwrap()
                         .unbind()
                 });
@@ -10224,7 +10221,7 @@ class StructBase:
                 type_fn
                     .call1((structure.target_name().as_str(), bases, attrs))
                     .unwrap()
-                    .downcast_into::<PyType>()
+                    .cast_into::<PyType>()
                     .unwrap()
                     .unbind()
             })
@@ -10345,7 +10342,7 @@ class StructBase:
         identifier: &str,
         tag: &str,
         iid: Option<&str>,
-    ) -> PyObject {
+    ) -> Py<PyAny> {
         let person_id = package.type_by_label("person", TypeKind::Entity).unwrap();
         let identifier_id = package
             .type_by_label("identifier", TypeKind::Attribute)
@@ -10384,9 +10381,9 @@ class StructBase:
         py: Python<'_>,
         package: &InstalledPackage,
         identifier: &str,
-        player: &PyObject,
+        player: &Py<PyAny>,
         iid: Option<&str>,
-    ) -> PyObject {
+    ) -> Py<PyAny> {
         let membership_id = package
             .type_by_label("membership", TypeKind::Relation)
             .unwrap();
@@ -10419,7 +10416,7 @@ class StructBase:
         package: &InstalledPackage,
         identifier: &str,
         iid: Option<&str>,
-    ) -> PyObject {
+    ) -> Py<PyAny> {
         let person_id = package.type_by_label("person", TypeKind::Entity).unwrap();
         let identifier_id = package
             .type_by_label("identifier", TypeKind::Attribute)
@@ -10447,9 +10444,9 @@ class StructBase:
     fn legacy_membership(
         py: Python<'_>,
         package: &InstalledPackage,
-        player: &PyObject,
+        player: &Py<PyAny>,
         iid: Option<&str>,
-    ) -> PyObject {
+    ) -> Py<PyAny> {
         let membership_id = package
             .type_by_label("membership", TypeKind::Relation)
             .unwrap();
@@ -10787,7 +10784,7 @@ class StructBase:
     fn prepared_batch_facades(
         py: Python<'_>,
         package: &InstalledPackage,
-        facades: Vec<PyObject>,
+        facades: Vec<Py<PyAny>>,
     ) -> Vec<PreparedBatchFacade> {
         let person_id = package.type_by_label("person", TypeKind::Entity).unwrap();
         let slots = package.batch_slots(person_id).unwrap();
@@ -10824,9 +10821,9 @@ class StructBase:
         transaction: Option<TransactionContext>,
         successor_batch_marker: Option<Arc<AtomicBool>>,
         runtime: Arc<ProviderRuntimeOwner>,
-        instances: Vec<PyObject>,
+        instances: Vec<Py<PyAny>>,
         probe: BatchMaterializationProbe,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         provider_block_on_with_gil(py, runtime.as_ref(), move |py| {
             Box::pin(async move {
                 let slots = package.batch_slots(&type_id)?;
@@ -10964,7 +10961,7 @@ class StructBase:
                     .bind(py)
                     .call_method0("runtime_values")
                     .unwrap()
-                    .downcast_into::<PyDict>()
+                    .cast_into::<PyDict>()
                     .unwrap();
                 project_hydrated_thing(
                     py,
@@ -11002,8 +10999,8 @@ class StructBase:
 
     #[test]
     fn canonical_manager_filter_fences_tokens_domains_and_persists() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_batch(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -11174,8 +11171,8 @@ class StructBase:
 
     #[test]
     fn write_transaction_manager_preserves_legacy_reads_and_rejects_canonical_filter_pre_io() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_batch(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -11234,7 +11231,7 @@ class StructBase:
             let values = manager
                 .all(py)
                 .expect("released write-transaction manager reads remain on the legacy route");
-            assert_eq!(values.bind(py).downcast::<PyList>().unwrap().len(), 0);
+            assert_eq!(values.bind(py).cast::<PyList>().unwrap().len(), 0);
             {
                 let state = state.lock().unwrap();
                 assert_eq!(state.opens, [TxType::Write]);
@@ -11293,7 +11290,7 @@ class StructBase:
         py: Python<'_>,
         package: &InstalledPackage,
         handle: crate::validated_result_runtime::PyValidatedMatchResultHandle,
-    ) -> PyObject {
+    ) -> Py<PyAny> {
         let handle = Py::new(py, handle).unwrap();
         let row = handle.bind(py).call_method1("row", (0,)).unwrap();
         let slot = row.call_method1("slot", (0,)).unwrap();
@@ -11334,8 +11331,8 @@ class StructBase:
 
     #[test]
     fn install_is_canonical_tamper_evident_and_requires_exact_coverage() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let authority = authority(SCHEMA, "python-native.yaml");
             let projection = python_projection(&authority);
             let projection_json =
@@ -11402,8 +11399,8 @@ class StructBase:
             String::from_utf8(to_canonical_json(projection.projection_fingerprint()).unwrap())
                 .unwrap();
 
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let error =
                 install_projection(py, &projection_json, &semantic, &fingerprint, vec![], None)
                     .err()
@@ -11418,8 +11415,8 @@ class StructBase:
 
     #[test]
     fn whole_create_rejects_a_shape_compatible_foreign_fieldless_instance() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (projection, local_package) = install(py);
             let projection_json =
                 String::from_utf8(to_canonical_json(&projection).unwrap()).unwrap();
@@ -11481,8 +11478,8 @@ class StructBase:
 
     #[test]
     fn canonical_create_codec_round_trips_exact_python_nominal_value() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_ordered(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -11517,7 +11514,7 @@ class StructBase:
                 .bind(py)
                 .call_method0("runtime_values")
                 .unwrap()
-                .downcast_into::<PyDict>()
+                .cast_into::<PyDict>()
                 .unwrap();
             assert!(absent_values.get_item("tag").unwrap().is_none());
 
@@ -11528,7 +11525,7 @@ class StructBase:
                 .bind(py)
                 .call_method0("runtime_values")
                 .unwrap()
-                .downcast_into::<PyDict>()
+                .cast_into::<PyDict>()
                 .unwrap();
             assert_eq!(
                 present_empty_values
@@ -11544,8 +11541,8 @@ class StructBase:
 
     #[test]
     fn canonical_attribute_codec_round_trips_exact_python_nominal_value() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_batch(py);
             let identifier_id = package
                 .type_by_label("identifier", TypeKind::Attribute)
@@ -11660,8 +11657,8 @@ class StructBase:
 
     #[test]
     fn canonical_reference_snapshot_and_archive_round_trip_exact_python_values() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_batch(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -11686,7 +11683,7 @@ class StructBase:
                 .bind(py)
                 .call_method0("runtime_values")
                 .unwrap()
-                .downcast_into::<PyDict>()
+                .cast_into::<PyDict>()
                 .unwrap();
             let reference_values = PyDict::new(py);
             reference_values
@@ -11747,13 +11744,7 @@ class StructBase:
             let decoded = runtime.decode_archive(py, &archive).unwrap();
             let actual = decoded
                 .iter()
-                .map(|value| {
-                    value
-                        .downcast_into::<PyBytes>()
-                        .unwrap()
-                        .as_bytes()
-                        .to_vec()
-                })
+                .map(|value| value.cast_into::<PyBytes>().unwrap().as_bytes().to_vec())
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected);
 
@@ -11854,8 +11845,8 @@ class StructBase:
 
     #[test]
     fn canonical_struct_codec_round_trips_the_exact_python_class() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let authority = authority(STRUCT_SCHEMA, "python-struct-native.yaml");
             let authority_bytes = encode_schema_authority(&authority);
             let projection = python_projection(&authority);
@@ -11915,8 +11906,8 @@ class StructBase:
 
     #[test]
     fn ordered_single_writes_reject_invalid_whole_creates_before_execution_target_resolution() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_ordered(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -11983,8 +11974,8 @@ class StructBase:
     fn ordered_hydration_rejects_duplicate_scalars_and_players_with_integrity_paths() {
         use pythonize::depythonize;
 
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_ordered(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -12087,8 +12078,8 @@ class StructBase:
 
     #[test]
     fn ordered_hydration_preserves_inherited_field_role_and_reference_order() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_ordered(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -12114,12 +12105,12 @@ class StructBase:
             .expect("a valid inherited ordered ownership hydrates");
             let values = person.bind(py).call_method0("runtime_values").unwrap();
             let tags = values
-                .downcast::<PyDict>()
+                .cast::<PyDict>()
                 .unwrap()
                 .get_item("tag")
                 .unwrap()
                 .unwrap();
-            let tags = tags.downcast::<PyTuple>().unwrap();
+            let tags = tags.cast::<PyTuple>().unwrap();
             let hydrated_tags = tags
                 .iter()
                 .map(|tag| {
@@ -12151,12 +12142,12 @@ class StructBase:
             .expect("a valid inherited ordered role hydrates");
             let values = gathering.bind(py).call_method0("runtime_values").unwrap();
             let participants = values
-                .downcast::<PyDict>()
+                .cast::<PyDict>()
                 .unwrap()
                 .get_item("participant")
                 .unwrap()
                 .unwrap();
-            let participants = participants.downcast::<PyTuple>().unwrap();
+            let participants = participants.cast::<PyTuple>().unwrap();
             let hydrated_iids = participants
                 .iter()
                 .map(|participant| {
@@ -12175,8 +12166,8 @@ class StructBase:
     fn ordered_hydration_maps_scalar_constraints_and_iids_to_integrity() {
         use pythonize::depythonize;
 
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_ordered(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -12242,8 +12233,8 @@ class StructBase:
 
     #[test]
     fn unordered_hydration_keeps_duplicate_members_on_the_legacy_path() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install(py);
             assert!(
                 !PyRuntimeProjection {
@@ -12278,19 +12269,19 @@ class StructBase:
             .expect("legacy unordered hydration accepts repeated collection members");
             let values = hydrated.bind(py).call_method0("runtime_values").unwrap();
             let aliases = values
-                .downcast::<PyDict>()
+                .cast::<PyDict>()
                 .unwrap()
                 .get_item("aliases")
                 .unwrap()
                 .unwrap();
-            assert_eq!(aliases.downcast::<PyTuple>().unwrap().len(), 2);
+            assert_eq!(aliases.cast::<PyTuple>().unwrap().len(), 2);
         });
     }
 
     #[test]
     fn canonical_snapshot_role_player_rejects_mutation_before_provider_io() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_ordered(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -12364,8 +12355,8 @@ class StructBase:
 
     #[test]
     fn ordered_match_sessions_enable_successor_projected_companions() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_ordered(py);
             assert!(
                 PyRuntimeProjection { package }
@@ -12378,8 +12369,8 @@ class StructBase:
 
     #[test]
     fn facade_origin_registry_is_exact_identity_weak_and_eagerly_collected() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_ordered(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -12428,8 +12419,8 @@ class StructBase:
 
     #[test]
     fn facade_origin_pending_lookup_activation_abort_and_shared_callback_are_atomic() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_ordered(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -12666,8 +12657,8 @@ class ReenterOnDrop:
 
     #[test]
     fn hydrated_facade_origin_is_absent_from_python_introspection_and_serialization() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_ordered(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -12812,8 +12803,8 @@ def public_state(value):
 
     #[test]
     fn ordered_manager_facades_accept_same_origin_and_fence_foreign_before_io() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_ordered(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -12850,7 +12841,7 @@ def public_state(value):
                 .unwrap()
                 .call_method1("getweakrefs", (person.bind(py),))
                 .unwrap()
-                .downcast_into::<PyList>()
+                .cast_into::<PyList>()
                 .unwrap()
                 .iter()
                 .find(|candidate| {
@@ -12938,8 +12929,8 @@ def public_state(value):
 
     #[test]
     fn ordered_borrowed_facade_keeps_transaction_authority_identity() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_ordered(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -13011,8 +13002,8 @@ def public_state(value):
 
     #[test]
     fn ordered_query_facades_bind_direct_and_borrowed_origins_but_remote_stays_unbound() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_ordered(py);
             let gathering_id = package
                 .type_by_label("gathering", TypeKind::Relation)
@@ -13226,8 +13217,8 @@ def public_state(value):
 
     #[test]
     fn query_hydration_rejects_a_mismatched_raw_and_projected_companion() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_ordered(py);
             let runtime = ProviderRuntimeOwner::new().expect("provider runtime should start");
 
@@ -13302,8 +13293,8 @@ def public_state(value):
 
     #[test]
     fn ordered_manager_and_query_relation_players_fence_foreign_origin_before_io() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_ordered(py);
             let gathering_id = package
                 .type_by_label("gathering", TypeKind::Relation)
@@ -13484,8 +13475,8 @@ def public_state(value):
 
     #[test]
     fn retained_facade_mutation_is_integrity_failure_before_target_io() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_ordered(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -13548,8 +13539,8 @@ def public_state(value):
 
     #[test]
     fn retained_reference_key_mutation_is_not_silently_rebound() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_batch(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -13604,7 +13595,7 @@ def public_state(value):
                 .bind(py)
                 .call_method0("runtime_values")
                 .unwrap()
-                .downcast::<PyDict>()
+                .cast::<PyDict>()
                 .unwrap()
                 .set_item(
                     model.query_tokens().fields()[&key_id]
@@ -13633,8 +13624,8 @@ def public_state(value):
 
     #[test]
     fn ordered_insert_and_put_publish_exact_provider_rehydration() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             for put in [false, true] {
                 let (_, package) = install_ordered(py);
                 let person_id = package
@@ -13706,13 +13697,13 @@ def public_state(value):
                 let values = instance
                     .call_method0("runtime_values")
                     .unwrap()
-                    .downcast_into::<PyDict>()
+                    .cast_into::<PyDict>()
                     .unwrap();
                 let tags = values
                     .get_item("tag")
                     .unwrap()
                     .unwrap()
-                    .downcast_into::<PyTuple>()
+                    .cast_into::<PyTuple>()
                     .unwrap();
                 assert_eq!(tags.len(), 1);
                 assert_eq!(
@@ -13756,8 +13747,8 @@ def public_state(value):
 
     #[test]
     fn ordered_insert_and_put_reject_malformed_provider_iids_without_publication() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             for put in [false, true] {
                 let (_, package) = install_ordered(py);
                 let person_id = package
@@ -13825,8 +13816,8 @@ def public_state(value):
 
     #[test]
     fn ordered_insert_put_and_update_restore_exact_facade_state_after_local_failure() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let helpers = PyModule::from_code(
                 py,
                 ffi::c_str!(
@@ -14005,8 +13996,8 @@ def failing_initialize(target, original):
 
     #[test]
     fn successor_entity_batches_route_all_operations_for_owned_and_borrowed_targets() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             for borrowed in [false, true] {
                 for operation in [
                     ProjectedBatchOperation::Insert,
@@ -14066,7 +14057,7 @@ def failing_initialize(target, original):
                             ProjectedBatchOperation::Delete => unreachable!(),
                         }
                         .unwrap();
-                        let output = output.bind(py).downcast::<PyList>().unwrap();
+                        let output = output.bind(py).cast::<PyList>().unwrap();
                         assert_eq!(output.len(), 2);
                         for (ordinal, pointer) in pointers.iter().enumerate() {
                             assert_eq!(output.get_item(ordinal).unwrap().as_ptr(), *pointer);
@@ -14112,8 +14103,8 @@ def failing_initialize(target, original):
 
     #[test]
     fn successor_relation_batches_route_all_operations_for_owned_and_borrowed_targets() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             for borrowed in [false, true] {
                 for operation in [
                     ProjectedBatchOperation::Insert,
@@ -14186,7 +14177,7 @@ def failing_initialize(target, original):
                             ProjectedBatchOperation::Delete => unreachable!(),
                         }
                         .unwrap();
-                        let output = output.bind(py).downcast::<PyList>().unwrap();
+                        let output = output.bind(py).cast::<PyList>().unwrap();
                         assert_eq!(output.len(), 2);
                         for (ordinal, pointer) in pointers.iter().enumerate() {
                             let value = output.get_item(ordinal).unwrap();
@@ -14229,8 +14220,8 @@ def failing_initialize(target, original):
 
     #[test]
     fn successor_empty_batches_validate_without_mapper_or_provider_work() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_batch(py);
             let unrelated_attribute = package
                 .class(
@@ -14290,7 +14281,7 @@ def failing_initialize(target, original):
                                 ProjectedBatchOperation::Delete => unreachable!(),
                             }
                             .unwrap();
-                            assert_eq!(output.bind(py).downcast::<PyList>().unwrap().len(), 0);
+                            assert_eq!(output.bind(py).cast::<PyList>().unwrap().len(), 0);
                         }
                         if let Some(transaction) = transaction {
                             assert_eq!(
@@ -14325,8 +14316,8 @@ def failing_initialize(target, original):
 
     #[test]
     fn borrowed_successor_nonempty_preflight_failure_keeps_legacy_commit_marker_unset() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             for operation in [
                 ProjectedBatchOperation::Insert,
                 ProjectedBatchOperation::Delete,
@@ -14409,8 +14400,8 @@ def failing_initialize(target, original):
 
     #[test]
     fn predecessor_public_borrowed_nonempty_batches_keep_legacy_routes_and_commit_seam() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             for kind in [TypeKind::Entity, TypeKind::Relation] {
                 for operation in [
                     ProjectedBatchOperation::Insert,
@@ -14529,7 +14520,7 @@ def failing_initialize(target, original):
                             ProjectedBatchOperation::Delete => unreachable!(),
                         }
                         .unwrap();
-                        let output = output.bind(py).downcast::<PyList>().unwrap();
+                        let output = output.bind(py).cast::<PyList>().unwrap();
                         assert_eq!(output.len(), 1);
                         assert_eq!(output.get_item(0).unwrap().as_ptr(), pointer);
                         assert_eq!(
@@ -14594,8 +14585,8 @@ def failing_initialize(target, original):
 
     #[test]
     fn borrowed_successor_batch_marks_clone_shared_public_commit_sdk() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             for fail_commit in [false, true] {
                 let (_, package) = install_batch(py);
                 let (database, state) = BatchRecordingBackend::fixture(
@@ -14640,7 +14631,7 @@ def failing_initialize(target, original):
                 let rows =
                     PyList::new(py, instances.iter().map(|instance| instance.bind(py))).unwrap();
                 let output = filtered.insert_many(py, rows.into_any()).unwrap();
-                assert_eq!(output.bind(py).downcast::<PyList>().unwrap().len(), 2);
+                assert_eq!(output.bind(py).cast::<PyList>().unwrap().len(), 2);
                 assert!(marker.load(Ordering::Acquire));
 
                 let context = Py::new(py, context).unwrap();
@@ -14674,8 +14665,8 @@ def failing_initialize(target, original):
 
     #[test]
     fn borrowed_successor_write_and_delete_publish_marker_before_concurrent_commit() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             for operation in [
                 ProjectedBatchOperation::Insert,
                 ProjectedBatchOperation::Delete,
@@ -14713,7 +14704,7 @@ def failing_initialize(target, original):
                 let commit_thread = std::thread::spawn(move || {
                     commit_gate.wait_until_entered();
                     attempted_tx.send(()).unwrap();
-                    Python::with_gil(|py| {
+                    Python::attach(|py| {
                         commit_context
                             .bind(py)
                             .call_method0("commit")
@@ -14752,14 +14743,14 @@ def failing_initialize(target, original):
                             PyList::new(py, instances.iter().map(|instance| instance.bind(py)))
                                 .unwrap();
                         let output = manager.insert_many(py, rows.into_any()).unwrap();
-                        assert_eq!(output.bind(py).downcast::<PyList>().unwrap().len(), 2);
+                        assert_eq!(output.bind(py).cast::<PyList>().unwrap().len(), 2);
                     }
                     ProjectedBatchOperation::Delete => manager
                         .delete_many(py, PyList::new(py, ["0x20", "0x21"]).unwrap().into_any())
                         .unwrap(),
                     _ => unreachable!(),
                 }
-                let commit = py.allow_threads(move || {
+                let commit = py.detach(move || {
                     release_thread.join().unwrap();
                     commit_thread.join().unwrap()
                 });
@@ -14788,8 +14779,8 @@ def failing_initialize(target, original):
     fn successor_public_iterators_preserve_errors_and_enforce_the_hard_cap() {
         use pythonize::depythonize;
 
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_batch(py);
             let (database, state) = BatchRecordingBackend::fixture(vec![], false);
             let manager = origin_manager(
@@ -14939,8 +14930,8 @@ class BoundaryIterator:
     fn successor_batch_preflight_keeps_common_row_diagnostics_and_precedes_io() {
         use pythonize::depythonize;
 
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_batch(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -15139,13 +15130,13 @@ class BoundaryIterator:
                 .bind(py)
                 .getattr("_values")
                 .unwrap()
-                .downcast_into::<PyDict>()
+                .cast_into::<PyDict>()
                 .unwrap();
             let tags = values
                 .get_item("tag")
                 .unwrap()
                 .unwrap()
-                .downcast_into::<PyTuple>()
+                .cast_into::<PyTuple>()
                 .unwrap();
             let tag = tags.get_item(0).unwrap();
             values
@@ -15216,8 +15207,8 @@ class BoundaryIterator:
     fn owned_successor_provider_and_commit_failures_are_exact_and_terminal() {
         use pythonize::depythonize;
 
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_batch(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -15389,8 +15380,8 @@ class BoundaryIterator:
 
     #[test]
     fn unmarked_python_transaction_commit_keeps_the_legacy_error_surface() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (database, state) = BatchRecordingBackend::fixture(vec![], false);
             let runtime =
                 Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start"));
@@ -15435,8 +15426,8 @@ class BoundaryIterator:
 
     #[test]
     fn projected_batch_mapper_publishes_original_identities_only_after_total_success() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_batch(py);
             let originals = (0..3)
                 .map(|ordinal| {
@@ -15472,7 +15463,7 @@ class BoundaryIterator:
             .unwrap_or_else(|diagnostic| panic!("materialization failed: {diagnostic:?}"))
             .finish();
             assert!(take_binding_materialization_error(&binding_error).is_none());
-            let output = output.bind(py).downcast::<PyList>().unwrap();
+            let output = output.bind(py).cast::<PyList>().unwrap();
             assert_eq!(output.len(), 3);
             for (ordinal, pointer) in pointers.into_iter().enumerate() {
                 let value = output.get_item(ordinal).unwrap();
@@ -15484,13 +15475,13 @@ class BoundaryIterator:
                 let values = value
                     .call_method0("runtime_values")
                     .unwrap()
-                    .downcast_into::<PyDict>()
+                    .cast_into::<PyDict>()
                     .unwrap();
                 let tag = values
                     .get_item("tag")
                     .unwrap()
                     .unwrap()
-                    .downcast_into::<PyTuple>()
+                    .cast_into::<PyTuple>()
                     .unwrap()
                     .get_item(0)
                     .unwrap();
@@ -15512,8 +15503,8 @@ class BoundaryIterator:
 
     #[test]
     fn projected_batch_mapper_restores_every_prefix_and_publishes_no_proof_on_failure() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             for failing_ordinal in 0..3 {
                 let (_, package) = install_batch(py);
                 let originals = (0..3)
@@ -15660,8 +15651,8 @@ class BoundaryIterator:
 
     #[test]
     fn python_materialization_first_middle_last_preserves_error_and_transaction_atomicity() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             for borrowed in [false, true] {
                 for failing_ordinal in 0..3 {
                     let (_, package) = install_batch(py);
@@ -15800,8 +15791,8 @@ entities:
         ordered: true
 "#;
 
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install_batch(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -15833,7 +15824,7 @@ entities:
                 .bind(py)
                 .call_method0("runtime_values")
                 .unwrap()
-                .downcast_into::<PyDict>()
+                .cast_into::<PyDict>()
                 .unwrap();
             let membership = project_hydrated_thing(
                 py,
@@ -15947,8 +15938,8 @@ entities:
 
     #[test]
     fn successor_batch_gc_guard_restores_state_and_defers_cyclic_finalizers() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let initially_enabled = unsafe { pyo3::ffi::PyGC_IsEnabled() } != 0;
             unsafe {
                 pyo3::ffi::PyGC_Enable();
@@ -16020,8 +16011,8 @@ class CyclicFinalizer:
 
     #[test]
     fn python_mapper_panic_restores_facades_gc_and_marks_borrowed_public_commit() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let initially_enabled = unsafe { pyo3::ffi::PyGC_IsEnabled() } != 0;
             unsafe {
                 pyo3::ffi::PyGC_Enable();
@@ -16289,8 +16280,8 @@ class CyclicFinalizer:
         );
         let foreign = encode_schema_authority(&foreign);
 
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             install_projection(
                 py,
                 &exact_json,
@@ -16495,8 +16486,8 @@ class CyclicFinalizer:
             String::from_utf8(to_canonical_json(foreign_target.projection_fingerprint()).unwrap())
                 .unwrap();
 
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let malformed = install_projection(py, "{", &semantic, &fingerprint, vec![], None)
                 .err()
                 .expect("malformed legacy projection must fail");
@@ -16545,8 +16536,8 @@ class CyclicFinalizer:
 
     #[test]
     fn native_lowering_and_hydration_preserve_wrappers_iids_and_relation_references() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let (_, package) = install(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
@@ -16612,7 +16603,7 @@ class CyclicFinalizer:
             let wrapped = hydrated
                 .call_method0("runtime_values")
                 .unwrap()
-                .downcast::<PyDict>()
+                .cast::<PyDict>()
                 .unwrap()
                 .get_item("identifier")
                 .unwrap()
@@ -16653,7 +16644,7 @@ class CyclicFinalizer:
             .unwrap();
             let membership_values = membership.bind(py).call_method0("runtime_values").unwrap();
             let member = membership_values
-                .downcast::<PyDict>()
+                .cast::<PyDict>()
                 .unwrap()
                 .get_item("member")
                 .unwrap()
@@ -16664,7 +16655,7 @@ class CyclicFinalizer:
                 "0x-person"
             );
             let member_values = member.call_method0("runtime_values").unwrap();
-            let member_values = member_values.downcast::<PyDict>().unwrap();
+            let member_values = member_values.cast::<PyDict>().unwrap();
             let member_identifier = member_values.get_item("identifier").unwrap().unwrap();
             assert_eq!(
                 member_identifier.get_type().as_ptr(),
@@ -16679,7 +16670,7 @@ class CyclicFinalizer:
                 "person-1"
             );
             let member_aliases = member_values.get_item("aliases").unwrap().unwrap();
-            let member_aliases = member_aliases.downcast::<PyTuple>().unwrap();
+            let member_aliases = member_aliases.cast::<PyTuple>().unwrap();
             assert_eq!(member_aliases.len(), 2);
             for alias in member_aliases.iter() {
                 assert_eq!(alias.get_type().as_ptr(), aliases_class.as_ptr());
@@ -16708,12 +16699,12 @@ class CyclicFinalizer:
             .unwrap();
             let values = relation.bind(py).call_method0("runtime_values").unwrap();
             let item = values
-                .downcast::<PyDict>()
+                .cast::<PyDict>()
                 .unwrap()
                 .get_item("item")
                 .unwrap()
                 .unwrap();
-            let item = item.downcast::<PyTuple>().unwrap().get_item(0).unwrap();
+            let item = item.cast::<PyTuple>().unwrap().get_item(0).unwrap();
             assert_eq!(
                 item.getattr("__model_form__")
                     .unwrap()

@@ -692,6 +692,53 @@ fn generated_subtype_association_compiles_as_ordinary_dependency() {
 }
 
 #[test]
+fn single_variant_families_compile_without_irrefutable_patterns() {
+    let stage = Stage::new();
+    let generated = stage.path().join("generated");
+    let consumer = stage.path().join("consumer");
+    let source = include_str!("acceptance/schema.yaml")
+        .replacen(
+            "attributes:\n",
+            "attributes:\n  single-identifier:\n    abstract: true\n    value: string\n  single-id: { sub: single-identifier }\n",
+            1,
+        )
+        .replacen(
+            "entities:\n",
+            "entities:\n  single-actor:\n    abstract: true\n  single-person: { sub: single-actor }\n",
+            1,
+        );
+    let package = emit_from_source(&source);
+    write_package(&package, &generated);
+    let library = generated.join("src/lib.rs");
+    let source = fs::read_to_string(&library).unwrap();
+    fs::write(
+        &library,
+        format!("#![deny(irrefutable_let_patterns)]\n{source}"),
+    )
+    .unwrap();
+    write_consumer_with_features(
+        &consumer,
+        "single-variant-family-consumer",
+        "fn main() { let _ = generated::SingleActorFamily::as_single_person; let _ = generated::SingleIdentifierFamily::as_single_id; }\n",
+        &[],
+    );
+    let output = cargo(
+        &[
+            "check",
+            "--offline",
+            "--manifest-path",
+            consumer.join("Cargo.toml").to_str().unwrap(),
+        ],
+        &stage.path().join("consumer-target"),
+    );
+    assert!(
+        output.status.success(),
+        "single-variant pattern-lint consumer failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn abstract_attribute_family_compiles_and_runs_as_a_value_enum() {
     let stage = Stage::new();
     let generated = stage.path().join("generated");

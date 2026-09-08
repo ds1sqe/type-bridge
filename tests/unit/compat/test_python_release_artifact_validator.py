@@ -1025,10 +1025,16 @@ def test_core_artifacts_require_exact_third_party_notice(tmp_path: Path) -> None
     with pytest.raises(validator.ValidationError, match="notice disagrees"):
         validator.validate_wheel(changed_wheel, SPECS["core"])
 
+
+@pytest.mark.parametrize(
+    "notice",
+    ["python/type_bridge_core/THIRD_PARTY_NOTICES.md", "crates/cli/THIRD_PARTY_NOTICES.md"],
+)
+def test_core_sdist_requires_exact_native_and_cli_notices(tmp_path: Path, notice: str) -> None:
     missing_sdist = write_sdist(
         tmp_path / "missing-sdist",
         SPECS["core"],
-        omit_member=validator.CORE_SDIST_NOTICE,
+        omit_member=notice,
     )
     with pytest.raises(validator.ValidationError, match="source inventory disagrees"):
         validator.validate_sdist(missing_sdist, SPECS["core"])
@@ -1036,7 +1042,7 @@ def test_core_artifacts_require_exact_third_party_notice(tmp_path: Path) -> None
     changed_sdist = write_sdist(
         tmp_path / "changed-sdist",
         SPECS["core"],
-        extra_members={validator.CORE_SDIST_NOTICE: b"incomplete notice\n"},
+        extra_members={notice: b"incomplete notice\n"},
     )
     with pytest.raises(validator.ValidationError, match="repository checkout"):
         validator.validate_sdist(changed_sdist, SPECS["core"])

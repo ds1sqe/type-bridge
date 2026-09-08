@@ -31,7 +31,7 @@ fn parse_attr_tuples(
 ) -> PyResult<HashMap<String, (serde_json::Value, String)>> {
     let mut map = HashMap::new();
     for item in attrs.iter() {
-        let tuple: Bound<'_, PyTuple> = item.downcast_into().map_err(|_| {
+        let tuple: Bound<'_, PyTuple> = item.cast_into().map_err(|_| {
             pyo3::exceptions::PyTypeError::new_err(
                 "Each attribute must be a (name, value, value_type) tuple",
             )
@@ -157,7 +157,7 @@ impl CrudQueryBuilder {
 
         if let Some(filter_list) = filters {
             for (i, item) in filter_list.iter().enumerate() {
-                let tuple: Bound<'_, PyTuple> = item.downcast_into().map_err(|_| {
+                let tuple: Bound<'_, PyTuple> = item.cast_into().map_err(|_| {
                     pyo3::exceptions::PyTypeError::new_err(
                         "Each filter must be a (attr_name, operator, value, value_type) tuple",
                     )
@@ -331,7 +331,7 @@ impl CrudQueryBuilder {
         let mut ast_role_players: Vec<RolePlayer> = Vec::new();
 
         for (i, item) in role_players.iter().enumerate() {
-            let tuple: Bound<'_, PyTuple> = item.downcast_into().map_err(|_| {
+            let tuple: Bound<'_, PyTuple> = item.cast_into().map_err(|_| {
                 pyo3::exceptions::PyTypeError::new_err(
                     "Each role player must be a (role, entity_type, key_attr, key_value, key_value_type) tuple",
                 )

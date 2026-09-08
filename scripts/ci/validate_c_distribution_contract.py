@@ -193,8 +193,7 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
     catalog = _load(V6_CATALOG)
     _require(catalog.get("authority_state") == "frozen", "V6 authority is not frozen")
     _require(
-        catalog.get("broad_case_ledger_path")
-        == "tests/contracts/c-broad-case-ledger-v1.json",
+        catalog.get("broad_case_ledger_path") == "tests/contracts/c-broad-case-ledger-v1.json",
         "V6 broad-case ledger path drifted",
     )
     _require(
@@ -238,8 +237,7 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
             f"{code} final broad profile drifted",
         )
     _require(
-        capabilities["G12"]["binding_profile"]
-        == "standalone_distribution_offline_future_planned",
+        capabilities["G12"]["binding_profile"] == "standalone_distribution_offline_future_planned",
         "G12 final distribution profile drifted",
     )
     return contract

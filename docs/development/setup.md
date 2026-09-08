@@ -27,12 +27,13 @@ linker and binary-inspection tools.
 Install the Python, native, and documentation dependencies:
 
 ```bash
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv sync --extra dev --extra docs
+uv sync --extra dev --extra docs
 ```
 
-The PyO3 variable is needed only when compiling the current native crate on
-CPython 3.14, but is harmless on 3.12–3.13. Published abi3 wheels do not need
-it.
+The patched PyO3 0.29 binding supports the declared CPython 3.12–3.14 matrix
+directly, preserving abi3-py312 and the GIL-required module contract. No
+forward-compatibility override is required. Rust scope checks also require
+cargo-audit 0.22.2 and run the shared fresh-database dependency gate.
 
 The Python facade and native core are one release unit and use the same exact
 version. The optional Python `typedb-driver` dependency exists for direct-driver

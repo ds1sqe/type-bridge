@@ -13,6 +13,13 @@ source-to-successor map at
 `tests/fixtures/handwritten-operation-removal-map.json` accounts for the
 handwritten tests that were replaced.
 
+The complete, fully qualified removal/replacement inventory was published in
+the [2.0.2 compatibility notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.0.2)
+before 2.1. That notice expands the earlier schedule; it does not retroactively
+change what 2.0.0 or 2.0.1 announced. Applications needing the retired APIs
+should retain `type-bridge>=2,<2.1` or `@type-bridge/node: >=2 <2.1` while
+moving to generated packages.
+
 ## Removed in 2.1
 
 ### Handwritten schema and model authoring

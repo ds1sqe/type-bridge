@@ -1,27 +1,18 @@
-"""Tests for schema-aware query validation (issue #105).
+"""Retained archival schema-aware query validation (issue #105).
 
-These tests validate that queries are checked against a TypeSchema,
+These tests validate queries against the private archived schema seam,
 catching semantic errors like unknown attribute ownership, invalid roles,
-and value type mismatches.
+and value type mismatches. They are not generated V2 authoring evidence.
 """
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import pytest
-
-HAS_RUST_CORE = False
-QueryCompiler: Any = None
-TypeSchema: Any = None
-try:
-    from type_bridge_core import QueryCompiler, TypeSchema
-
-    HAS_RUST_CORE = True
-except ImportError:
-    pass
-
-pytestmark = pytest.mark.skipif(not HAS_RUST_CORE, reason="Rust core not available")
+import type_bridge_core
+from type_bridge_core import QueryCompiler, _ArchivedTypeSchema
 
 BOOKSTORE_SCHEMA = """
 define
@@ -40,7 +31,7 @@ entity book, plays authorship:written-work;
 
 @pytest.fixture
 def schema() -> Any:
-    return TypeSchema.from_typeql(BOOKSTORE_SCHEMA)
+    return _ArchivedTypeSchema.from_typeql(BOOKSTORE_SCHEMA)
 
 
 @pytest.fixture
@@ -49,7 +40,10 @@ def compiler() -> Any:
 
 
 class TestSchemaAwareValidation:
-    """Tests using TypeSchema.validate_query (convenience method)."""
+    """Tests using the private archived schema's retained query validator."""
+
+    def test_public_schema_authoring_is_not_restored(self) -> None:
+        assert not hasattr(type_bridge_core, "TypeSchema")
 
     def test_valid_query_passes(self, schema: Any, compiler: Any) -> None:
         clauses = compiler.parse('match $p isa person, has name "Alice";')
@@ -164,14 +158,16 @@ class TestPythonWrapper:
 class TestFallbackBehavior:
     """Test fallback when Rust core is not available."""
 
-    def test_fallback_returns_valid(self) -> None:
-        """Simulate fallback by calling with None schema (non-strict)."""
+    def test_fallback_returns_valid(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Exercise the retained non-strict fallback with a missing extension."""
         from type_bridge.validation import validate_query_against_schema
 
-        # When Rust core IS available, passing None schema would fail.
-        # This test verifies the function signature accepts the call.
-        # The actual fallback is hard to test when Rust IS available,
-        # so we just verify the function exists and returns the right shape.
-        if not HAS_RUST_CORE:
-            result = validate_query_against_schema([], None)
-            assert result["is_valid"] is True
+        monkeypatch.setitem(sys.modules, "type_bridge_core", None)
+        assert validate_query_against_schema([], None) == {"is_valid": True, "errors": []}
+
+    def test_strict_fallback_rejects_missing_core(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from type_bridge.validation import validate_query_against_schema
+
+        monkeypatch.setitem(sys.modules, "type_bridge_core", None)
+        with pytest.raises(ImportError, match="requires the type-bridge-core Rust extension"):
+            validate_query_against_schema([], None, strict=True)

@@ -41,7 +41,7 @@ pyo3::create_exception!(
     "Structured canonical match-request validation or lineage failure."
 );
 
-#[pyclass(name = "MatchSessionHandle", frozen)]
+#[pyclass(name = "MatchSessionHandle", frozen, from_py_object)]
 #[derive(Clone)]
 pub(crate) struct PyMatchSessionHandle {
     inner: SessionHandle,
@@ -51,49 +51,49 @@ pub(crate) struct PyMatchSessionHandle {
     closed: Arc<AtomicBool>,
 }
 
-#[pyclass(name = "MatchBindingHandle", frozen)]
+#[pyclass(name = "MatchBindingHandle", frozen, from_py_object)]
 #[derive(Clone)]
 pub(crate) struct PyMatchBindingHandle {
     inner: BindingHandle,
 }
 
-#[pyclass(name = "MatchFieldHandle", frozen)]
+#[pyclass(name = "MatchFieldHandle", frozen, from_py_object)]
 #[derive(Clone)]
 pub(crate) struct PyMatchFieldHandle {
     inner: FieldHandle,
 }
 
-#[pyclass(name = "MatchRoleHandle", frozen)]
+#[pyclass(name = "MatchRoleHandle", frozen, from_py_object)]
 #[derive(Clone)]
 struct PyMatchRoleHandle {
     inner: RoleHandle,
 }
 
-#[pyclass(name = "MatchPredicateHandle", frozen)]
+#[pyclass(name = "MatchPredicateHandle", frozen, from_py_object)]
 #[derive(Clone)]
 struct PyMatchPredicateHandle {
     inner: PredicateHandle,
 }
 
-#[pyclass(name = "MatchOrderHandle", frozen)]
+#[pyclass(name = "MatchOrderHandle", frozen, from_py_object)]
 #[derive(Clone)]
 pub(crate) struct PyMatchOrderHandle {
     inner: OrderHandle,
 }
 
-#[pyclass(name = "MatchSelectionHandle", frozen)]
+#[pyclass(name = "MatchSelectionHandle", frozen, from_py_object)]
 #[derive(Clone)]
 struct PyMatchSelectionHandle {
     inner: SelectionHandle,
 }
 
-#[pyclass(name = "MatchShapeHandle", frozen)]
+#[pyclass(name = "MatchShapeHandle", frozen, from_py_object)]
 #[derive(Clone)]
 struct PyMatchShapeHandle {
     inner: ShapeHandle,
 }
 
-#[pyclass(name = "MatchQueryHandle", frozen)]
+#[pyclass(name = "MatchQueryHandle", frozen, from_py_object)]
 pub(crate) struct PyMatchQueryHandle {
     inner: QueryHandle,
     installed: Option<Arc<InstalledRuntimeProjection>>,
@@ -157,7 +157,7 @@ impl PyQueryInvocationBudget {
 }
 
 /// Canonical cross-binding generated-query execution budgets.
-#[pyclass(name = "QueryExecutionResourceLimits", frozen)]
+#[pyclass(name = "QueryExecutionResourceLimits", frozen, from_py_object)]
 #[derive(Clone, Copy)]
 pub(crate) struct PyQueryExecutionResourceLimits {
     inner: QueryExecutionResourceLimits,
@@ -273,7 +273,7 @@ impl PyQueryExecutionResourceLimits {
 }
 
 /// Caller-owned cooperative cancellation shared by every query stage.
-#[pyclass(name = "QueryCancellation", frozen)]
+#[pyclass(name = "QueryCancellation", frozen, from_py_object)]
 #[derive(Clone)]
 pub(crate) struct PyQueryCancellation {
     inner: AnswerCancellation,
@@ -313,7 +313,7 @@ fn python_optional_resource_limit(
         return Ok(default);
     };
     let value = value
-        .downcast_exact::<PyInt>()
+        .cast_exact::<PyInt>()
         .map_err(|_| PyTypeError::new_err(format!("{name} must be an exact non-negative int")))?
         .extract::<i128>()
         .map_err(|_| PyValueError::new_err(format!("{name} must be a non-negative integer")))?;
@@ -627,7 +627,7 @@ impl PyMatchSessionHandle {
 
 fn python_reachability_depth(value: &Bound<'_, PyAny>, name: &str) -> PyResult<u8> {
     let value = value
-        .downcast_exact::<PyInt>()
+        .cast_exact::<PyInt>()
         .map_err(|_| PyTypeError::new_err(format!("{name} must be an exact Python int")))?
         .extract::<i128>()
         .map_err(|_| {
@@ -1666,7 +1666,7 @@ pub(crate) fn py_match_error(error: MatchError) -> PyErr {
 }
 
 pub(crate) fn py_sdk_diagnostic(diagnostic: SdkExecutionDiagnostic) -> PyErr {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let query_category = diagnostic
             .details()
             .values()
@@ -2010,9 +2010,9 @@ mod tests {
     }
 
     fn marshalled_category_code(error: OrmError) -> (String, String) {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         let error = py_match_orm_error(error);
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let value = error.value(py);
             (
                 value
@@ -2134,7 +2134,7 @@ mod tests {
 
     #[test]
     fn query_and_session_close_preserve_persistent_handle_independence() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         let session = PyMatchSessionHandle::from_registry(registry());
         let person = session.inner.exact("person").unwrap();
         let shape = session.inner.positional([person.one()]).unwrap();
@@ -2204,9 +2204,9 @@ mod tests {
         use pythonize::depythonize;
 
         let error = UnvalidatedMatchRequest::from_canonical_bytes(b"{}").unwrap_err();
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         let error = py_match_error(error);
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let value = error.value(py);
             assert!(value.is_instance_of::<MatchRequestError>());
             assert_eq!(
@@ -2268,14 +2268,14 @@ mod tests {
             .block_on(database.execute_match(&registry, &validated))
             .unwrap_err();
 
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         for (error, category, code) in [
             (cancelled, "cancelled", "provider_cancelled"),
             (timed_out, "resource_limit", "transaction_deadline_exceeded"),
             (provider, "provider", "provider_transaction_open_failed"),
         ] {
             let error = py_match_orm_error(error);
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let value = error.value(py);
                 assert!(value.is_instance_of::<MatchRequestError>());
                 assert_eq!(
@@ -2420,8 +2420,8 @@ mod tests {
 
     #[test]
     fn registered_python_handles_expose_no_state_attributes() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let module = PyModule::new(py, "type_bridge_core").unwrap();
             register(&module).unwrap();
             for name in [
@@ -2456,8 +2456,8 @@ mod tests {
 
     #[test]
     fn public_resource_limits_clamp_plus_one_and_preserve_zero() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let module = PyModule::new(py, "type_bridge_core").unwrap();
             register(&module).unwrap();
             let globals = pyo3::types::PyDict::new(py);

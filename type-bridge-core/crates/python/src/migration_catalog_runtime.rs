@@ -76,7 +76,7 @@ impl PyMigrationExecutionResources {
 }
 
 /// One canonical compound migration identity.
-#[pyclass(name = "MigrationIdentity", frozen)]
+#[pyclass(name = "MigrationIdentity", frozen, from_py_object)]
 #[derive(Clone)]
 pub struct PyMigrationIdentity {
     app_label: String,
@@ -102,7 +102,7 @@ impl PyMigrationIdentity {
 }
 
 /// Bounded immutable snapshot of one replay-verified history entry.
-#[pyclass(name = "MigrationHistoryEntry", frozen)]
+#[pyclass(name = "MigrationHistoryEntry", frozen, from_py_object)]
 #[derive(Clone)]
 pub struct PyMigrationHistoryEntry {
     id: PyMigrationIdentity,
@@ -415,7 +415,7 @@ pub struct PyMigrationExecutionReport {
     backfills: Vec<PyMigrationBackfillObservation>,
 }
 
-#[pyclass(name = "MigrationBackfillObservation", frozen)]
+#[pyclass(name = "MigrationBackfillObservation", frozen, from_py_object)]
 #[derive(Clone)]
 pub struct PyMigrationBackfillObservation {
     migration_id: PyMigrationIdentity,
@@ -600,7 +600,7 @@ pub struct PyMigrationPreviewEntry {
     reversible: bool,
 }
 
-#[pyclass(name = "MigrationVerificationFinding", frozen)]
+#[pyclass(name = "MigrationVerificationFinding", frozen, from_py_object)]
 #[derive(Clone)]
 pub struct PyMigrationVerificationFinding {
     kind: String,

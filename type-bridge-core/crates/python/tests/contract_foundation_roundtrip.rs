@@ -51,8 +51,8 @@ fn probe() -> FoundationProbe {
 
 #[test]
 fn foundation_bytes_round_trip_through_an_in_memory_python_module() {
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| -> PyResult<()> {
+    Python::initialize();
+    Python::attach(|py| -> PyResult<()> {
         let expected = include_bytes!("../../contract/tests/fixtures/foundation-probe-v1.json");
         let expected = expected.strip_suffix(b"\n").unwrap_or(expected);
         let original = probe();

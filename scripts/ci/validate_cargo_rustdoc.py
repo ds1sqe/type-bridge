@@ -298,7 +298,6 @@ def documentation_environment() -> dict[str, str]:
     environment = os.environ.copy()
     environment.pop("CARGO_ENCODED_RUSTDOCFLAGS", None)
     environment.pop("RUSTDOCFLAGS", None)
-    environment.setdefault("PYO3_USE_ABI3_FORWARD_COMPATIBILITY", "1")
     return environment
 
 

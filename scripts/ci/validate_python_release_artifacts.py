@@ -59,6 +59,7 @@ CORE_WHEEL_BUCKETS = frozenset(
 )
 CORE_WHEEL_NOTICE = "type_bridge_core/THIRD_PARTY_NOTICES.md"
 CORE_SDIST_NOTICE = "python/type_bridge_core/THIRD_PARTY_NOTICES.md"
+CORE_SDIST_CRATE_NOTICES = frozenset({"crates/cli/THIRD_PARTY_NOTICES.md"})
 MIT_LICENSE = "MIT"
 ROOT_LICENSE_FILE = "LICENSE"
 RETIRED_PROVIDER_COMPONENT = re.compile(r"(?:^|-)typedb-(?:driver|protocol)-(?:b7|b9)(?:-|$)")
@@ -1280,6 +1281,7 @@ def validate_sdist(path: Path, spec: PackageSpec) -> dict[str, Any]:
             else {
                 ROOT_LICENSE_FILE,
                 CORE_SDIST_NOTICE,
+                *CORE_SDIST_CRATE_NOTICES,
                 *CORE_SDIST_GENERATED_LICENSES,
                 *CORE_SDIST_VENDOR_LICENSES,
             }

@@ -925,7 +925,6 @@ def build_candidate_bundle(
     output_parent = output.absolute().parent
     output_parent.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
-    environment["PYO3_USE_ABI3_FORWARD_COMPATIBILITY"] = "1"
     with tempfile.TemporaryDirectory(
         prefix=".cargo-release-candidate-",
         dir=output_parent,
