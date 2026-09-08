@@ -2430,6 +2430,7 @@ fn shared_library_has_only_platform_dependencies_and_no_embedded_search_path() {
         let system_libraries = [
             "ADVAPI32.DLL",
             "BCRYPT.DLL",
+            "BCRYPTPRIMITIVES.DLL",
             "CRYPT32.DLL",
             "KERNEL32.DLL",
             "MSVCRT.DLL",
@@ -2549,7 +2550,8 @@ fn clean_staged_cmake_consumer_finds_links_and_runs_generated_package() {
     assert!(
         fs::read_to_string(&installed_pkg_config)
             .expect("pkg-config metadata is UTF-8")
-            .contains("\nVersion: 1.6.0\n")
+            .lines()
+            .any(|line| line == "Version: 1.6.0")
     );
     for metadata in [&installed_config, &installed_pkg_config] {
         let contents = fs::read_to_string(metadata).expect("installed metadata is UTF-8");
