@@ -1,0 +1,3694 @@
+{
+  "schema_version": 1,
+  "repository": "ds1sqe/type-bridge",
+  "tag": "v2.0.2",
+  "tag_object": "e8f7a9c5c26dc1e415ae5707c337e79dddcafde6",
+  "run": {
+    "id": 34077021385,
+    "event": "push",
+    "head_branch": "v2.0.2",
+    "head_sha": "f94703f4c9b44a965a089f85b47c17933f4d9be6",
+    "run_attempt": 1,
+    "status": "completed",
+    "conclusion": "failure",
+    "workflow": {
+      "id": 229807619,
+      "name": "Release",
+      "path": ".github/workflows/release.yml"
+    }
+  },
+  "jobs": {
+    "Test": "success",
+    "Validate v2.0.0 recovery": "skipped",
+    "Validate release identity": "success",
+    "Build type-bridge": "success",
+    "Build V2 smoke server": "success",
+    "Build server OCI (linux/amd64)": "success",
+    "Build core sdist": "success",
+    "Build server OCI (linux/arm64)": "success",
+    "Build Node native module (darwin-x64)": "success",
+    "Build Node native module (linux-x64-gnu)": "success",
+    "Build Node native module (darwin-arm64)": "success",
+    "Build Node native module (win32-x64-msvc)": "success",
+    "Build Node native module (linux-arm64-gnu)": "success",
+    "Build Node native module (win32-arm64-msvc)": "success",
+    "Build core wheel (x86_64-apple-darwin)": "success",
+    "Build core wheel (x86_64-pc-windows-msvc)": "success",
+    "Build core wheel (aarch64-apple-darwin)": "success",
+    "Build core wheel (aarch64-unknown-linux-gnu)": "success",
+    "Build core wheel (x86_64-unknown-linux-gnu)": "success",
+    "Accept server OCI (linux/amd64)": "success",
+    "Accept server OCI (linux/arm64)": "success",
+    "Pack Node release candidate": "success",
+    "Accept Node package (win32-x64-msvc, Node 20)": "success",
+    "Accept Node package (linux-x64-gnu, Node 18)": "success",
+    "Accept Node package (linux-arm64-gnu, Node 20)": "success",
+    "Accept Node package (darwin-x64, Node 20)": "success",
+    "Accept Node package (darwin-arm64, Node 20)": "success",
+    "Accept Node package (win32-arm64-msvc, Node 20)": "success",
+    "Accept Node package (linux-x64-gnu, Node 20)": "success",
+    "Accept live artifact parity (Python 3.13.5, typedb/typedb:3.11.5)": "success",
+    "Accept live artifact parity (Python 3.14, typedb/typedb:3.12.1)": "success",
+    "Accept Python release artifacts (3.14)": "success",
+    "Accept live artifact parity (Python 3.12, typedb/typedb:3.8.3)": "success",
+    "Accept Python release artifacts (3.13.5)": "success",
+    "Accept Python release artifacts (3.12)": "success",
+    "Preflight selected release channel": "success",
+    "Publish Rust crates to crates.io": "success",
+    "Publish Node package to npm": "success",
+    "Publish accepted TypeBridge server OCI": "success",
+    "Publish type-bridge-core to PyPI": "success",
+    "Publish type-bridge to PyPI": "failure",
+    "Create GitHub Release": "skipped"
+  },
+  "skipped_steps": {
+    "Test": [],
+    "Validate v2.0.0 recovery": [],
+    "Validate release identity": [],
+    "Build type-bridge": [],
+    "Build V2 smoke server": [],
+    "Build server OCI (linux/amd64)": [],
+    "Build core sdist": [],
+    "Build server OCI (linux/arm64)": [],
+    "Build Node native module (darwin-x64)": [],
+    "Build Node native module (linux-x64-gnu)": [],
+    "Build Node native module (darwin-arm64)": [],
+    "Build Node native module (win32-x64-msvc)": [],
+    "Build Node native module (linux-arm64-gnu)": [],
+    "Build Node native module (win32-arm64-msvc)": [],
+    "Build core wheel (x86_64-apple-darwin)": [],
+    "Build core wheel (x86_64-pc-windows-msvc)": [],
+    "Build core wheel (aarch64-apple-darwin)": [],
+    "Build core wheel (aarch64-unknown-linux-gnu)": [],
+    "Build core wheel (x86_64-unknown-linux-gnu)": [],
+    "Accept server OCI (linux/amd64)": [
+      "Set up QEMU for arm64 runtime proof"
+    ],
+    "Accept server OCI (linux/arm64)": [
+      "Run external generated Rust application through the exact image"
+    ],
+    "Pack Node release candidate": [],
+    "Accept Node package (win32-x64-msvc, Node 20)": [],
+    "Accept Node package (linux-x64-gnu, Node 18)": [],
+    "Accept Node package (linux-arm64-gnu, Node 20)": [],
+    "Accept Node package (darwin-x64, Node 20)": [],
+    "Accept Node package (darwin-arm64, Node 20)": [],
+    "Accept Node package (win32-arm64-msvc, Node 20)": [],
+    "Accept Node package (linux-x64-gnu, Node 20)": [],
+    "Accept live artifact parity (Python 3.13.5, typedb/typedb:3.11.5)": [
+      "Require one passing V2 artifact regression",
+      "Run exact-artifact V2 authoring and remote-model parity"
+    ],
+    "Accept live artifact parity (Python 3.14, typedb/typedb:3.12.1)": [],
+    "Accept Python release artifacts (3.14)": [],
+    "Accept live artifact parity (Python 3.12, typedb/typedb:3.8.3)": [
+      "Require one passing V2 artifact regression",
+      "Run exact-artifact V2 authoring and remote-model parity"
+    ],
+    "Accept Python release artifacts (3.13.5)": [],
+    "Accept Python release artifacts (3.12)": [],
+    "Preflight selected release channel": [],
+    "Publish Rust crates to crates.io": [],
+    "Publish Node package to npm": [
+      "Checkout recovery payload controls",
+      "Revalidate recovery npm payload"
+    ],
+    "Publish accepted TypeBridge server OCI": [
+      "Attest amd64 recovery promotion",
+      "Attest arm64 recovery promotion",
+      "Attest multi-platform recovery promotion",
+      "Checkout recovery payload controls",
+      "Record recovery promotion predicate",
+      "Revalidate recovery OCI payloads"
+    ],
+    "Publish type-bridge-core to PyPI": [
+      "Checkout recovery payload controls",
+      "Revalidate recovery core payloads"
+    ],
+    "Publish type-bridge to PyPI": [
+      "Checkout recovery payload controls",
+      "Post Set up Python",
+      "Revalidate recovery Python payload",
+      "Verify published PyPI hashes"
+    ],
+    "Create GitHub Release": []
+  },
+  "known_failure": {
+    "job": "Publish type-bridge to PyPI",
+    "step": "Publish to PyPI"
+  },
+  "skipped_mutators": [
+    "Create GitHub Release",
+    "Validate v2.0.0 recovery"
+  ],
+  "artifacts": [
+    {
+      "id": 10003412276,
+      "name": "server-oci-release-metadata",
+      "size_in_bytes": 945,
+      "digest": "sha256:57704dd9672c0b6f6d72535fe793698b07a4e39aef06e3b493f03ec5c2f74457",
+      "files": [
+        {
+          "path": "server-oci-release.json",
+          "size_in_bytes": 949,
+          "sha256": "baf9e28274bea7c965a12e3dc7c51195cc7806c979849717dce15ea3b8ac780d"
+        },
+        {
+          "path": "server-oci-release.md",
+          "size_in_bytes": 345,
+          "sha256": "993f96b4fa14ffa0e2b36ae1f769344c83e4fcfaaee9f37d9f71eddf1a84eaa8"
+        }
+      ]
+    },
+    {
+      "id": 10003172656,
+      "name": "core-wheels-macos-x86_64",
+      "size_in_bytes": 18061805,
+      "digest": "sha256:4e177e759b9502531f154887eb57f299d67e39c856748aa267e53d2a112e06d8",
+      "files": [
+        {
+          "path": "type_bridge_core-2.0.2-cp312-abi3-macosx_10_12_x86_64.whl",
+          "size_in_bytes": 18112852,
+          "sha256": "310e2616112a09eeee189a4a9fa093c13464f7eea40427945c9fdd0e7d86db55"
+        }
+      ]
+    },
+    {
+      "id": 10003112730,
+      "name": "server-oci-accepted-amd64",
+      "size_in_bytes": 49488521,
+      "digest": "sha256:1a52c9227c368a603139cf4b5414b1e2bed341f747aca01a68a5ec19380e37d8",
+      "files": [
+        {
+          "path": "installed-packages.txt",
+          "size_in_bytes": 2015,
+          "sha256": "92bc3e2ef67fc47b2be0323a97f87cdfaa9ccd6d87deb918d37578f86b64bf59"
+        },
+        {
+          "path": "layout-report.json",
+          "size_in_bytes": 540,
+          "sha256": "f2fc55f83ba9538816b551889e46059839d0dc7ea10d9854163d0f4e0d931f66"
+        },
+        {
+          "path": "layout.sha256",
+          "size_in_bytes": 99,
+          "sha256": "64f81f32e03990c7eedf8f5659a555468f513a65dab7cf382b30d29d5809a86b"
+        },
+        {
+          "path": "runtime-report.json",
+          "size_in_bytes": 55,
+          "sha256": "1235607e16e49784629e6a259997142bc6b336a4d9f8a7fe8f3ae370e4333a16"
+        },
+        {
+          "path": "server.spdx.json",
+          "size_in_bytes": 2428313,
+          "sha256": "17f33797976decaf2888218c7db4f144d51cf172f7cee7d0092cb80eb0334d0d"
+        },
+        {
+          "path": "trivy.json",
+          "size_in_bytes": 375736,
+          "sha256": "9eab8e5f21fef1106219158cbbf9a14265a9d1d12598ba1cb0e488323f1f3907"
+        },
+        {
+          "path": "type-bridge-server-amd64.oci.tar",
+          "size_in_bytes": 49536512,
+          "sha256": "4283b6119d42e73d943ae1c65cc017bbb03d2873156f46fae573d9fafc8dc28c"
+        }
+      ]
+    },
+    {
+      "id": 10003067956,
+      "name": "core-wheels-windows-x86_64",
+      "size_in_bytes": 17623160,
+      "digest": "sha256:c8f87172cd41887a2a57bc4a220907cacaecd0262de145460bd6210e8e146b72",
+      "files": [
+        {
+          "path": "type_bridge_core-2.0.2-cp312-abi3-win_amd64.whl",
+          "size_in_bytes": 17663869,
+          "sha256": "e549d740cc4d01bd40be4d59d9dd84cfef4c6ac4c1951b759e0a3af25694d803"
+        }
+      ]
+    },
+    {
+      "id": 10003065651,
+      "name": "node-package",
+      "size_in_bytes": 70406877,
+      "digest": "sha256:6545aec54ceb3b9c00728143859b924433e7d7ca80bdfd8c07179663e90d784c",
+      "files": [
+        {
+          "path": "type-bridge-node-2.0.2.tgz",
+          "size_in_bytes": 70765109,
+          "sha256": "918416960faf894bf4635fa825f6c375cb14affbd2dfe88b301513aaf20703f6"
+        }
+      ]
+    },
+    {
+      "id": 10003039092,
+      "name": "node-native-darwin-x64",
+      "size_in_bytes": 11978207,
+      "digest": "sha256:cfa1be65a1fbb81ad5271b08f9a956b86bd8797d1e412a5e5396185723d31d2a",
+      "files": [
+        {
+          "path": "type_bridge_node.darwin-x64.node",
+          "size_in_bytes": 33305952,
+          "sha256": "a0c78a408140a04e9b498ca39355cfbd62a914335ae6361bd08a0554015f0106"
+        }
+      ]
+    },
+    {
+      "id": 10003033246,
+      "name": "node-native-win32-x64-msvc",
+      "size_in_bytes": 11495344,
+      "digest": "sha256:2f68620bffc43be6c5fdb37daf8fa06c72e0d11a2c91d615a827976abda33d50",
+      "files": [
+        {
+          "path": "type_bridge_node.win32-x64-msvc.node",
+          "size_in_bytes": 33651200,
+          "sha256": "e9dcfec3d45ee55d8777a26ee221ddc29532e46875fce9bd3e29bf2084b63cc9"
+        }
+      ]
+    },
+    {
+      "id": 10003029134,
+      "name": "server-oci-accepted-arm64",
+      "size_in_bytes": 47768881,
+      "digest": "sha256:9814f44056f7d1ce0269b4be9e34728085c8a767f1af31987d19d5ef050264de",
+      "files": [
+        {
+          "path": "installed-packages.txt",
+          "size_in_bytes": 2015,
+          "sha256": "92bc3e2ef67fc47b2be0323a97f87cdfaa9ccd6d87deb918d37578f86b64bf59"
+        },
+        {
+          "path": "layout-report.json",
+          "size_in_bytes": 540,
+          "sha256": "5270b876dd42d86b8d8709488834a181e84c54eb7fb05e6b72463d52d632ca9b"
+        },
+        {
+          "path": "layout.sha256",
+          "size_in_bytes": 99,
+          "sha256": "50812ab1123e915a23a076ca30909303b3dc70f45894d5edef3ece2f54cc7ac6"
+        },
+        {
+          "path": "runtime-report.json",
+          "size_in_bytes": 55,
+          "sha256": "2e1f16befd55830cf2e1706bbd9952e33623582f362cccd15ea4d4a47f47ae8a"
+        },
+        {
+          "path": "server.spdx.json",
+          "size_in_bytes": 2428260,
+          "sha256": "fe1263258469fec662cf5e7e1521277348d7796e3393c33fb43a634227d5a5fa"
+        },
+        {
+          "path": "trivy.json",
+          "size_in_bytes": 376677,
+          "sha256": "8a2e1c3b7101336d6d40b108da253ce6df0e5658dbafb8ab96baa56974e27401"
+        },
+        {
+          "path": "type-bridge-server-arm64.oci.tar",
+          "size_in_bytes": 47929856,
+          "sha256": "bd78a021849565eb95655748693fe21921ca2641e3f84c47812ffcba28a5b004"
+        }
+      ]
+    },
+    {
+      "id": 10003013329,
+      "name": "core-wheels-linux-x86_64",
+      "size_in_bytes": 18929787,
+      "digest": "sha256:6e0c68250ab222493db15bb729179e7b035f1ac3d62473226d6fb1129f3c81fc",
+      "files": [
+        {
+          "path": "type_bridge_core-2.0.2-cp312-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+          "size_in_bytes": 19050321,
+          "sha256": "8f16416adcb9e5b7734775c80aa27367f8b0b560a1a60696d0ba6735f25db9a8"
+        }
+      ]
+    },
+    {
+      "id": 10003007147,
+      "name": "core-wheels-macos-aarch64",
+      "size_in_bytes": 17273622,
+      "digest": "sha256:649d7d0d6860786c0898b6196ce824a2cfce184d4d04a1ad7168d9e21458e8c5",
+      "files": [
+        {
+          "path": "type_bridge_core-2.0.2-cp312-abi3-macosx_11_0_arm64.whl",
+          "size_in_bytes": 17315878,
+          "sha256": "977db06d6ca4dd04004061333ff488a33c3c6433c99f3ed32f1e00b1ffb09abd"
+        }
+      ]
+    },
+    {
+      "id": 10002990434,
+      "name": "node-native-win32-arm64-msvc",
+      "size_in_bytes": 10667213,
+      "digest": "sha256:8173c4a051042e3ca71ceb40113a954ba815b435d15268242b7f522e0773bbc0",
+      "files": [
+        {
+          "path": "type_bridge_node.win32-arm64-msvc.node",
+          "size_in_bytes": 27913216,
+          "sha256": "74e269556a5833066b6851ef9a703b2bef414483cc5555f7d2923e180f191129"
+        }
+      ]
+    },
+    {
+      "id": 10002988522,
+      "name": "node-native-darwin-arm64",
+      "size_in_bytes": 11509196,
+      "digest": "sha256:815cd4481845a6902df56ccc1715805b9d248fd0743d233878a1387ab93c743d",
+      "files": [
+        {
+          "path": "type_bridge_node.darwin-arm64.node",
+          "size_in_bytes": 31488224,
+          "sha256": "132a9d580d6bde5d3f2d12d129c4b420448a18fa9274df9046c01a837cbdd6a6"
+        }
+      ]
+    },
+    {
+      "id": 10002977028,
+      "name": "core-wheels-linux-aarch64",
+      "size_in_bytes": 18532645,
+      "digest": "sha256:75f9fe953f9a98b355ccc1dfee4d8ee1ea84c05f2a58f1920e0688b146a051d1",
+      "files": [
+        {
+          "path": "type_bridge_core-2.0.2-cp312-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+          "size_in_bytes": 18667153,
+          "sha256": "8ef57c999722a43f62300815d07412c039d5d8a0f2f1c4c448ff7fbd652f9a47"
+        }
+      ]
+    },
+    {
+      "id": 10002973565,
+      "name": "server-oci-layout-amd64",
+      "size_in_bytes": 49104834,
+      "digest": "sha256:1a9968bb3122502eddf65f7544d942d587e9f7857c18cd45b542bac6f82daa83",
+      "files": [
+        {
+          "path": "layout-report.json",
+          "size_in_bytes": 540,
+          "sha256": "f2fc55f83ba9538816b551889e46059839d0dc7ea10d9854163d0f4e0d931f66"
+        },
+        {
+          "path": "layout.sha256",
+          "size_in_bytes": 99,
+          "sha256": "64f81f32e03990c7eedf8f5659a555468f513a65dab7cf382b30d29d5809a86b"
+        },
+        {
+          "path": "type-bridge-server-amd64.oci.tar",
+          "size_in_bytes": 49536512,
+          "sha256": "4283b6119d42e73d943ae1c65cc017bbb03d2873156f46fae573d9fafc8dc28c"
+        }
+      ]
+    },
+    {
+      "id": 10002968705,
+      "name": "v2-smoke-server",
+      "size_in_bytes": 10800028,
+      "digest": "sha256:c977b41411094296997af9025529209dd994e22cf1c47e367023d6da9b4ac224",
+      "files": [
+        {
+          "path": "v2_smoke_server",
+          "size_in_bytes": 33496232,
+          "sha256": "57db417a04d388a6a408854c288dd05d5982f9dd8c42a924e006b52706a22e4e"
+        }
+      ]
+    },
+    {
+      "id": 10002956118,
+      "name": "node-native-linux-x64-gnu",
+      "size_in_bytes": 12753311,
+      "digest": "sha256:8241fbaa92f6412b1d989804f0d8331fc54572c3f5e8ae0c723d9e1deb87d465",
+      "files": [
+        {
+          "path": "type_bridge_node.linux-x64-gnu.node",
+          "size_in_bytes": 39635872,
+          "sha256": "31b60af9b89239fc2c4dfdcece92af281468e3545393d0a340c9fc19f10e9d38"
+        }
+      ]
+    },
+    {
+      "id": 10002952013,
+      "name": "server-oci-layout-arm64",
+      "size_in_bytes": 47385240,
+      "digest": "sha256:72fa5a13c7a4cc941b8584b416320ab7e6f1df66348c4edab8f43fee194892e0",
+      "files": [
+        {
+          "path": "layout-report.json",
+          "size_in_bytes": 540,
+          "sha256": "5270b876dd42d86b8d8709488834a181e84c54eb7fb05e6b72463d52d632ca9b"
+        },
+        {
+          "path": "layout.sha256",
+          "size_in_bytes": 99,
+          "sha256": "50812ab1123e915a23a076ca30909303b3dc70f45894d5edef3ece2f54cc7ac6"
+        },
+        {
+          "path": "type-bridge-server-arm64.oci.tar",
+          "size_in_bytes": 47929856,
+          "sha256": "bd78a021849565eb95655748693fe21921ca2641e3f84c47812ffcba28a5b004"
+        }
+      ]
+    },
+    {
+      "id": 10002935495,
+      "name": "node-native-linux-arm64-gnu",
+      "size_in_bytes": 12517540,
+      "digest": "sha256:a3b5350cf920ffed53812640229fcfde8f432516ce83f8e256a284c02d0a6d29",
+      "files": [
+        {
+          "path": "type_bridge_node.linux-arm64-gnu.node",
+          "size_in_bytes": 36604968,
+          "sha256": "11209051a5b8466a117d2e66f278afaf46d0de6a06982f327d85d9bda344550f"
+        }
+      ]
+    },
+    {
+      "id": 10002879139,
+      "name": "core-sdist",
+      "size_in_bytes": 2140923,
+      "digest": "sha256:aded79722e4fe63117843372aa0a609605c7f53a0632abcd9121fcf7f54c1be6",
+      "files": [
+        {
+          "path": "type_bridge_core-2.0.2.tar.gz",
+          "size_in_bytes": 2140606,
+          "sha256": "1550dd265e8db2bd3c98d6af15a01a228794ddb322cfb290c81a55626221d9d0"
+        }
+      ]
+    },
+    {
+      "id": 10002878766,
+      "name": "python-dist",
+      "size_in_bytes": 565311,
+      "digest": "sha256:155622003a6d889103c49b524d5bc0de009602d0acb4a068dfad95e55d7075e4",
+      "files": [
+        {
+          "path": "type_bridge-2.0.2-py3-none-any.whl",
+          "size_in_bytes": 320641,
+          "sha256": "32de7653ae89a7a33ecfee26c7390d42025297c310d44f04f1b71608c950cf91"
+        },
+        {
+          "path": "type_bridge-2.0.2.tar.gz",
+          "size_in_bytes": 255190,
+          "sha256": "4f8da4945c923d7da0171da53aefa27fb9c5d78cd07615dd5795b41444fc9357"
+        }
+      ]
+    }
+  ],
+  "job_steps": {
+    "Test": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Install Rust toolchain",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Install uv",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Install dependencies",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Install pinned cargo-audit",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Audit all maintained Rust lockfiles",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 8
+      },
+      {
+        "name": "Run linting",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      },
+      {
+        "name": "Run cargo test",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10
+      },
+      {
+        "name": "Check alternate serde_json backends",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Check released validation-rule wire without feature unification",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Install generated Rust MSRV",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      },
+      {
+        "name": "Check generated Rust projection on MSRV 1.88",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 14
+      },
+      {
+        "name": "Run unit tests",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 15
+      },
+      {
+        "name": "Post Install uv",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 28
+      },
+      {
+        "name": "Post Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 29
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 30
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 31
+      }
+    ],
+    "Validate v2.0.0 recovery": [],
+    "Validate release identity": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Install pinned Rust toolchain for native notice validation",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Install pinned cargo-about",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Verify locked native dependency notice",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Verify historical band-9 registry compatibility keys",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Package and preflight the complete crates.io graph",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 8
+      },
+      {
+        "name": "Validate identity and legacy TypeDB package provenance",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      },
+      {
+        "name": "Validate the owner-frozen official TypeDB 3.12.1 driver graph",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10
+      },
+      {
+        "name": "Post Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 19
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 20
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 21
+      }
+    ],
+    "Build type-bridge": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Install uv",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Install Rust toolchain",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Build package",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Upload build artifacts",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Post Install uv",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Post Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 14
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 15
+      }
+    ],
+    "Build V2 smoke server": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Install Rust toolchain",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Build exact V2 smoke server",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Upload immutable V2 smoke server",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      }
+    ],
+    "Build server OCI (linux/amd64)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout exact release source",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Set up pinned Docker Buildx",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Build immutable platform OCI layout",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Upload immutable platform OCI layout",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Post Set up pinned Docker Buildx",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      },
+      {
+        "name": "Post Checkout exact release source",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      }
+    ],
+    "Build core sdist": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Build sdist",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Upload sdist artifact",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 8
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      }
+    ],
+    "Build server OCI (linux/arm64)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout exact release source",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Set up pinned Docker Buildx",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Build immutable platform OCI layout",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Upload immutable platform OCI layout",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Post Set up pinned Docker Buildx",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      },
+      {
+        "name": "Post Checkout exact release source",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      }
+    ],
+    "Build Node native module (darwin-x64)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Install Rust toolchain",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Build native module",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Upload immutable native module",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Post Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      }
+    ],
+    "Build Node native module (linux-x64-gnu)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Install Rust toolchain",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Build native module",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Upload immutable native module",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Post Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      }
+    ],
+    "Build Node native module (darwin-arm64)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Install Rust toolchain",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Build native module",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Upload immutable native module",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Post Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      }
+    ],
+    "Build Node native module (win32-x64-msvc)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Install Rust toolchain",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Build native module",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Upload immutable native module",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Post Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      }
+    ],
+    "Build Node native module (linux-arm64-gnu)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Install Rust toolchain",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Build native module",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Upload immutable native module",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Post Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      }
+    ],
+    "Build Node native module (win32-arm64-msvc)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Install Rust toolchain",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Build native module",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Upload immutable native module",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Post Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      }
+    ],
+    "Build core wheel (x86_64-apple-darwin)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Build wheel",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Download exact root Python distribution",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Execute target-native V2 authoring artifact",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Upload wheel artifact",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Post Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 14
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 15
+      }
+    ],
+    "Build core wheel (x86_64-pc-windows-msvc)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Build wheel",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Download exact root Python distribution",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Execute target-native V2 authoring artifact",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Upload wheel artifact",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Post Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 14
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 15
+      }
+    ],
+    "Build core wheel (aarch64-apple-darwin)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Build wheel",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Download exact root Python distribution",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Execute target-native V2 authoring artifact",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Upload wheel artifact",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Post Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 14
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 15
+      }
+    ],
+    "Build core wheel (aarch64-unknown-linux-gnu)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Build wheel",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Download exact root Python distribution",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Execute target-native V2 authoring artifact",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Upload wheel artifact",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Post Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 14
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 15
+      }
+    ],
+    "Build core wheel (x86_64-unknown-linux-gnu)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Build wheel",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Download exact root Python distribution",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Execute target-native V2 authoring artifact",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Upload wheel artifact",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Post Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 14
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 15
+      }
+    ],
+    "Accept server OCI (linux/amd64)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Initialize containers",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Checkout exact release source",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Set up QEMU for arm64 runtime proof",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 4
+      },
+      {
+        "name": "Install Rust toolchain",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Download immutable platform OCI layout",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Import exact layout into the runtime daemon",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Prove binary identity under deployment restrictions",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 8
+      },
+      {
+        "name": "Wait for pinned TypeDB",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      },
+      {
+        "name": "Run exact-image V1 compatibility and authenticated V2 query",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10
+      },
+      {
+        "name": "Run external generated Rust application through the exact image",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Report runtime packages and image size",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Generate SPDX JSON SBOM",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      },
+      {
+        "name": "Scan exact runtime for vulnerabilities and secrets",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 14
+      },
+      {
+        "name": "Assemble accepted OCI evidence",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 15
+      },
+      {
+        "name": "Upload exact accepted OCI bytes and evidence",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 16
+      },
+      {
+        "name": "Enforce the accepted-image vulnerability and secret gate",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 17
+      },
+      {
+        "name": "Post Scan exact runtime for vulnerabilities and secrets",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 32
+      },
+      {
+        "name": "Post Checkout exact release source",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 33
+      },
+      {
+        "name": "Stop containers",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 34
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 35
+      }
+    ],
+    "Accept server OCI (linux/arm64)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Initialize containers",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Checkout exact release source",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Set up QEMU for arm64 runtime proof",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Install Rust toolchain",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Download immutable platform OCI layout",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Import exact layout into the runtime daemon",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Prove binary identity under deployment restrictions",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 8
+      },
+      {
+        "name": "Wait for pinned TypeDB",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      },
+      {
+        "name": "Run exact-image V1 compatibility and authenticated V2 query",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10
+      },
+      {
+        "name": "Run external generated Rust application through the exact image",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 11
+      },
+      {
+        "name": "Report runtime packages and image size",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Generate SPDX JSON SBOM",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      },
+      {
+        "name": "Scan exact runtime for vulnerabilities and secrets",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 14
+      },
+      {
+        "name": "Assemble accepted OCI evidence",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 15
+      },
+      {
+        "name": "Upload exact accepted OCI bytes and evidence",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 16
+      },
+      {
+        "name": "Enforce the accepted-image vulnerability and secret gate",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 17
+      },
+      {
+        "name": "Post Scan exact runtime for vulnerabilities and secrets",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 31
+      },
+      {
+        "name": "Post Set up QEMU for arm64 runtime proof",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 32
+      },
+      {
+        "name": "Post Checkout exact release source",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 33
+      },
+      {
+        "name": "Stop containers",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 34
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 35
+      }
+    ],
+    "Pack Node release candidate": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Install Node dependencies",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Download all immutable native modules",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Verify exact native fan-in inventory",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Build TypeScript surface once",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 8
+      },
+      {
+        "name": "Typecheck",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      },
+      {
+        "name": "Unified Query contract typecheck",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10
+      },
+      {
+        "name": "Thin-binding scope probe",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Unit tests",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "DTS comparator tests",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      },
+      {
+        "name": "DTS baseline parity",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 14
+      },
+      {
+        "name": "Package smoke",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 15
+      },
+      {
+        "name": "Pack npm release candidate",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 16
+      },
+      {
+        "name": "Validate npm release identity before upload",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 17
+      },
+      {
+        "name": "Upload immutable npm release candidate",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 18
+      },
+      {
+        "name": "Post Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 34
+      },
+      {
+        "name": "Post Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 35
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 36
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 37
+      }
+    ],
+    "Accept Node package (win32-x64-msvc, Node 20)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Set up Node.js 20",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Install Node dependencies",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Download immutable npm release candidate",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Execute packed Node consumer",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Post Set up Node.js 20",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      }
+    ],
+    "Accept Node package (linux-x64-gnu, Node 18)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Set up Node.js 18",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Install Node dependencies",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Download immutable npm release candidate",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Execute packed Node consumer",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Post Set up Node.js 18",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      }
+    ],
+    "Accept Node package (linux-arm64-gnu, Node 20)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Set up Node.js 20",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Install Node dependencies",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Download immutable npm release candidate",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Execute packed Node consumer",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Post Set up Node.js 20",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      }
+    ],
+    "Accept Node package (darwin-x64, Node 20)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Set up Node.js 20",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Install Node dependencies",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Download immutable npm release candidate",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Execute packed Node consumer",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Post Set up Node.js 20",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      }
+    ],
+    "Accept Node package (darwin-arm64, Node 20)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Set up Node.js 20",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Install Node dependencies",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Download immutable npm release candidate",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Execute packed Node consumer",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Post Set up Node.js 20",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      }
+    ],
+    "Accept Node package (win32-arm64-msvc, Node 20)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Set up Node.js 20",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Install Node dependencies",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Download immutable npm release candidate",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Execute packed Node consumer",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Post Set up Node.js 20",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      }
+    ],
+    "Accept Node package (linux-x64-gnu, Node 20)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Set up Node.js 20",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Install Node dependencies",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Download immutable npm release candidate",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Execute packed Node consumer",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Post Set up Node.js 20",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      }
+    ],
+    "Accept live artifact parity (Python 3.13.5, typedb/typedb:3.11.5)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Initialize containers",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Install uv",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Download exact Linux x64 core wheel",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Download exact root Python distribution",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 8
+      },
+      {
+        "name": "Download exact multi-native npm tarball",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      },
+      {
+        "name": "Download exact V2 smoke server",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10
+      },
+      {
+        "name": "Export exact release candidate paths",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Prepare exact-wheel parity environment",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Wait for TypeDB connect and version endpoints",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      },
+      {
+        "name": "Run exact-artifact live F8 parity",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 14
+      },
+      {
+        "name": "Require one passing live artifact regression",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 15
+      },
+      {
+        "name": "Run exact-artifact V2 authoring and remote-model parity",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 16
+      },
+      {
+        "name": "Require one passing V2 artifact regression",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 17
+      },
+      {
+        "name": "Post Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 30
+      },
+      {
+        "name": "Post Install uv",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 31
+      },
+      {
+        "name": "Post Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 32
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 33
+      },
+      {
+        "name": "Stop containers",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 34
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 35
+      }
+    ],
+    "Accept live artifact parity (Python 3.14, typedb/typedb:3.12.1)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Initialize containers",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Install uv",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Download exact Linux x64 core wheel",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Download exact root Python distribution",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 8
+      },
+      {
+        "name": "Download exact multi-native npm tarball",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      },
+      {
+        "name": "Download exact V2 smoke server",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10
+      },
+      {
+        "name": "Export exact release candidate paths",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Prepare exact-wheel parity environment",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Wait for TypeDB connect and version endpoints",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      },
+      {
+        "name": "Run exact-artifact live F8 parity",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 14
+      },
+      {
+        "name": "Require one passing live artifact regression",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 15
+      },
+      {
+        "name": "Run exact-artifact V2 authoring and remote-model parity",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 16
+      },
+      {
+        "name": "Require one passing V2 artifact regression",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 17
+      },
+      {
+        "name": "Post Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 30
+      },
+      {
+        "name": "Post Install uv",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 31
+      },
+      {
+        "name": "Post Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 32
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 33
+      },
+      {
+        "name": "Stop containers",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 34
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 35
+      }
+    ],
+    "Accept Python release artifacts (3.14)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Install Rust toolchain",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Set up Python 3.14",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Install uv",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Download all core wheels",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Download core sdist",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Download root Python distribution",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 8
+      },
+      {
+        "name": "Validate exact Python release inventory",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      },
+      {
+        "name": "Prove Python facade/core resolver lockstep",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10
+      },
+      {
+        "name": "Prepare typed consumer interpreter and Pyright",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Audit both immutable GNU wheels against manylinux policy",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Prove published V1 root compatibility with candidate core",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      },
+      {
+        "name": "Run isolated Python artifact acceptance",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 14
+      },
+      {
+        "name": "Run CLI wheel acceptance (legacy and V2 verbs)",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 15
+      },
+      {
+        "name": "Post Install uv",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 28
+      },
+      {
+        "name": "Post Set up Python 3.14",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 29
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 30
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 31
+      }
+    ],
+    "Accept live artifact parity (Python 3.12, typedb/typedb:3.8.3)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Initialize containers",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Install uv",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Download exact Linux x64 core wheel",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Download exact root Python distribution",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 8
+      },
+      {
+        "name": "Download exact multi-native npm tarball",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      },
+      {
+        "name": "Download exact V2 smoke server",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10
+      },
+      {
+        "name": "Export exact release candidate paths",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Prepare exact-wheel parity environment",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Wait for TypeDB connect and version endpoints",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      },
+      {
+        "name": "Run exact-artifact live F8 parity",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 14
+      },
+      {
+        "name": "Require one passing live artifact regression",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 15
+      },
+      {
+        "name": "Run exact-artifact V2 authoring and remote-model parity",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 16
+      },
+      {
+        "name": "Require one passing V2 artifact regression",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 17
+      },
+      {
+        "name": "Post Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 30
+      },
+      {
+        "name": "Post Install uv",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 31
+      },
+      {
+        "name": "Post Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 32
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 33
+      },
+      {
+        "name": "Stop containers",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 34
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 35
+      }
+    ],
+    "Accept Python release artifacts (3.13.5)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Install Rust toolchain",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Set up Python 3.13.5",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Install uv",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Download all core wheels",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Download core sdist",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Download root Python distribution",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 8
+      },
+      {
+        "name": "Validate exact Python release inventory",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      },
+      {
+        "name": "Prove Python facade/core resolver lockstep",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10
+      },
+      {
+        "name": "Prepare typed consumer interpreter and Pyright",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Audit both immutable GNU wheels against manylinux policy",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Prove published V1 root compatibility with candidate core",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      },
+      {
+        "name": "Run isolated Python artifact acceptance",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 14
+      },
+      {
+        "name": "Run CLI wheel acceptance (legacy and V2 verbs)",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 15
+      },
+      {
+        "name": "Post Install uv",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 28
+      },
+      {
+        "name": "Post Set up Python 3.13.5",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 29
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 30
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 31
+      }
+    ],
+    "Accept Python release artifacts (3.12)": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Install Rust toolchain",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Set up Python 3.12",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Install uv",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Download all core wheels",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Download core sdist",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Download root Python distribution",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 8
+      },
+      {
+        "name": "Validate exact Python release inventory",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      },
+      {
+        "name": "Prove Python facade/core resolver lockstep",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10
+      },
+      {
+        "name": "Prepare typed consumer interpreter and Pyright",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Audit both immutable GNU wheels against manylinux policy",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Prove published V1 root compatibility with candidate core",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      },
+      {
+        "name": "Run isolated Python artifact acceptance",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 14
+      },
+      {
+        "name": "Run CLI wheel acceptance (legacy and V2 verbs)",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 15
+      },
+      {
+        "name": "Post Install uv",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 28
+      },
+      {
+        "name": "Post Set up Python 3.12",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 29
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 30
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 31
+      }
+    ],
+    "Preflight selected release channel": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Authenticate npm publication credential",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Post Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 8
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      }
+    ],
+    "Publish Rust crates to crates.io": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Install Rust toolchain",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Publish accepted crates in dependency order",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 8
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      }
+    ],
+    "Publish Node package to npm": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Checkout recovery payload controls",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 3
+      },
+      {
+        "name": "Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Install pinned npm publisher",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Download accepted npm tarball",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Revalidate recovery npm payload",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 8
+      },
+      {
+        "name": "Revalidate accepted npm identity before publish",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      },
+      {
+        "name": "Revalidate immutable release tag",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10
+      },
+      {
+        "name": "Publish to npm registry",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Post Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 20
+      },
+      {
+        "name": "Post Set up Node.js",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 21
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 22
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 23
+      }
+    ],
+    "Publish accepted TypeBridge server OCI": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout exact release source",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Checkout recovery payload controls",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 3
+      },
+      {
+        "name": "Download accepted amd64 OCI",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Download accepted arm64 OCI",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Revalidate recovery OCI payloads",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 6
+      },
+      {
+        "name": "Set up pinned Docker Buildx",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Install pinned Cosign",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 8
+      },
+      {
+        "name": "Install Skopeo",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      },
+      {
+        "name": "Authenticate GHCR",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10
+      },
+      {
+        "name": "Revalidate immutable release tag",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Publish exact accepted platform manifests",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Create exact stable manifest and aliases",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      },
+      {
+        "name": "Sign exact platform and multi-platform digests",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 14
+      },
+      {
+        "name": "Attest amd64 build provenance",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 15
+      },
+      {
+        "name": "Attest arm64 build provenance",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 16
+      },
+      {
+        "name": "Attest multi-platform provenance",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 17
+      },
+      {
+        "name": "Record recovery promotion predicate",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 18
+      },
+      {
+        "name": "Attest amd64 recovery promotion",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 19
+      },
+      {
+        "name": "Attest arm64 recovery promotion",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 20
+      },
+      {
+        "name": "Attest multi-platform recovery promotion",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 21
+      },
+      {
+        "name": "Attest amd64 SPDX SBOM",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 22
+      },
+      {
+        "name": "Attest arm64 SPDX SBOM",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 23
+      },
+      {
+        "name": "Record immutable OCI release identity",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 24
+      },
+      {
+        "name": "Upload immutable OCI release metadata",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 25
+      },
+      {
+        "name": "Post Authenticate GHCR",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 48
+      },
+      {
+        "name": "Post Set up pinned Docker Buildx",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 49
+      },
+      {
+        "name": "Post Checkout exact release source",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 50
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 51
+      }
+    ],
+    "Publish type-bridge-core to PyPI": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Checkout recovery payload controls",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 3
+      },
+      {
+        "name": "Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Download core wheel artifacts",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Download core sdist",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Revalidate recovery core payloads",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 7
+      },
+      {
+        "name": "List artifacts",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 8
+      },
+      {
+        "name": "Snapshot immutable PyPI candidate",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      },
+      {
+        "name": "Verify idempotent PyPI hashes",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10
+      },
+      {
+        "name": "Revalidate immutable release tag",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Publish to PyPI",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Verify published PyPI hashes",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      },
+      {
+        "name": "Post Publish to PyPI",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 24
+      },
+      {
+        "name": "Post Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 25
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 26
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 27
+      }
+    ],
+    "Publish type-bridge to PyPI": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Checkout recovery payload controls",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 3
+      },
+      {
+        "name": "Set up Python",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Download build artifacts",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Revalidate recovery Python payload",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 6
+      },
+      {
+        "name": "Snapshot immutable PyPI candidate",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Verify idempotent PyPI hashes",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 8
+      },
+      {
+        "name": "Revalidate immutable release tag",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      },
+      {
+        "name": "Publish to PyPI",
+        "status": "completed",
+        "conclusion": "failure",
+        "number": 10
+      },
+      {
+        "name": "Verify published PyPI hashes",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 11
+      },
+      {
+        "name": "Post Publish to PyPI",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 20
+      },
+      {
+        "name": "Post Set up Python",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 21
+      },
+      {
+        "name": "Post Checkout code",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 22
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 23
+      }
+    ],
+    "Create GitHub Release": []
+  }
+}

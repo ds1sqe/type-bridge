@@ -96,7 +96,7 @@ impl ValidationEngine {
         py: Python<'_>,
         clauses: Vec<Bound<'_, PyAny>>,
         schema: &TypeSchema,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let mut core_clauses = Vec::new();
         for clause in &clauses {
             let c: core::ast::Clause = depythonize(clause).map_err(|e| {
@@ -162,7 +162,7 @@ impl ValidationEngine {
         py: Python<'_>,
         entity_data: Bound<'_, PyAny>,
         schema: Option<&TypeSchema>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let json_data: serde_json::Value = depythonize(&entity_data).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!(
                 "Failed to deserialize entity data: {}",
@@ -225,7 +225,7 @@ impl QueryCompiler {
     }
 
     /// Parse a TypeQL query string into a list of clause dicts (serde-tagged-enum format).
-    fn parse(&self, py: Python<'_>, input: &str) -> PyResult<PyObject> {
+    fn parse(&self, py: Python<'_>, input: &str) -> PyResult<Py<PyAny>> {
         let clauses = core::query_parser::parse_typeql_query(input)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         pythonize(py, &clauses)
@@ -282,7 +282,7 @@ impl TypeSchema {
     }
 
     /// Get all owned attributes for an entity or relation (as list of dicts).
-    fn get_all_owned_attributes(&self, py: Python<'_>, name: &str) -> PyResult<PyObject> {
+    fn get_all_owned_attributes(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
         let attrs = self.inner.get_all_owned_attributes(name);
         pythonize(py, &attrs)
             .map(|obj| obj.unbind())
@@ -290,7 +290,7 @@ impl TypeSchema {
     }
 
     /// Get all played roles for an entity or relation (as list of dicts).
-    fn get_all_plays_roles(&self, py: Python<'_>, name: &str) -> PyResult<PyObject> {
+    fn get_all_plays_roles(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
         let roles = self.inner.get_all_plays_roles(name);
         pythonize(py, &roles)
             .map(|obj| obj.unbind())
@@ -298,7 +298,7 @@ impl TypeSchema {
     }
 
     /// Get all relates (role specs) for a relation (as list of dicts).
-    fn get_all_relates(&self, py: Python<'_>, name: &str) -> PyResult<PyObject> {
+    fn get_all_relates(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
         let roles = self.inner.get_all_relates(name);
         pythonize(py, &roles)
             .map(|obj| obj.unbind())
@@ -307,7 +307,7 @@ impl TypeSchema {
 
     /// Get the entities map as a Python dict.
     #[getter]
-    fn entities(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn entities(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         pythonize(py, &self.inner.entities)
             .map(|obj| obj.unbind())
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
@@ -315,7 +315,7 @@ impl TypeSchema {
 
     /// Get the relations map as a Python dict.
     #[getter]
-    fn relations(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn relations(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         pythonize(py, &self.inner.relations)
             .map(|obj| obj.unbind())
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
@@ -323,7 +323,7 @@ impl TypeSchema {
 
     /// Get the attributes map as a Python dict.
     #[getter]
-    fn attributes(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn attributes(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         pythonize(py, &self.inner.attributes)
             .map(|obj| obj.unbind())
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
@@ -331,7 +331,7 @@ impl TypeSchema {
 
     /// Get the functions map as a Python dict.
     #[getter]
-    fn functions(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn functions(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         pythonize(py, &self.inner.functions)
             .map(|obj| obj.unbind())
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
@@ -339,7 +339,7 @@ impl TypeSchema {
 
     /// Get the structs map as a Python dict.
     #[getter]
-    fn structs(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn structs(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         pythonize(py, &self.inner.structs)
             .map(|obj| obj.unbind())
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
@@ -348,7 +348,11 @@ impl TypeSchema {
     /// Validate a query (as list of clause dicts) against this schema.
     ///
     /// Convenience method equivalent to `ValidationEngine().validate_query(clauses, schema)`.
-    fn validate_query(&self, py: Python<'_>, clauses: Vec<Bound<'_, PyAny>>) -> PyResult<PyObject> {
+    fn validate_query(
+        &self,
+        py: Python<'_>,
+        clauses: Vec<Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
         let engine = core::validation::ValidationEngine::new();
         let mut core_clauses = Vec::new();
         for clause in &clauses {
@@ -390,7 +394,7 @@ impl ValueCoercer {
         py: Python<'_>,
         value: Bound<'_, PyAny>,
         target_type: &str,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let json_val = py_to_json_value(&value)?;
         let coerced = self
             .inner
@@ -404,13 +408,13 @@ impl ValueCoercer {
         &self,
         py: Python<'_>,
         pairs: Vec<(Bound<'_, PyAny>, String)>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let json_pairs: Vec<(serde_json::Value, String)> = pairs
             .iter()
             .map(|(v, t)| Ok((py_to_json_value(v)?, t.clone())))
             .collect::<PyResult<Vec<_>>>()?;
         let results = self.inner.coerce_batch(&json_pairs);
-        let py_results: Vec<PyObject> = results
+        let py_results: Vec<Py<PyAny>> = results
             .into_iter()
             .map(|r| match r {
                 Ok(cv) => coerced_value_to_python(py, &cv),
@@ -433,7 +437,7 @@ impl ValueCoercer {
     }
 }
 
-fn pythonize_serde_value<T>(py: Python<'_>, value: &T) -> PyResult<PyObject>
+fn pythonize_serde_value<T>(py: Python<'_>, value: &T) -> PyResult<Py<PyAny>>
 where
     T: serde::Serialize + ?Sized,
 {
@@ -444,7 +448,7 @@ where
 
 /// Convert JSON without exposing serde_json's private arbitrary-precision
 /// number representation to Python.
-fn json_value_to_python(py: Python<'_>, value: &serde_json::Value) -> PyResult<PyObject> {
+fn json_value_to_python(py: Python<'_>, value: &serde_json::Value) -> PyResult<Py<PyAny>> {
     match value {
         serde_json::Value::Null => Ok(py.None()),
         serde_json::Value::Bool(value) => pythonize_serde_value(py, value),
@@ -498,7 +502,7 @@ fn json_value_to_python(py: Python<'_>, value: &serde_json::Value) -> PyResult<P
 fn coerced_value_to_python(
     py: Python<'_>,
     coerced: &core::value_coercion::CoercedValue,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let result = PyDict::new(py);
     result.set_item("value", json_value_to_python(py, &coerced.value)?)?;
     result.set_item("value_type", &coerced.value_type)?;
@@ -633,7 +637,7 @@ fn format_value(value: Bound<'_, PyAny>) -> PyResult<String> {
 
 /// Standalone coerce function.
 #[pyfunction]
-fn coerce_value(py: Python<'_>, value: Bound<'_, PyAny>, target_type: &str) -> PyResult<PyObject> {
+fn coerce_value(py: Python<'_>, value: Bound<'_, PyAny>, target_type: &str) -> PyResult<Py<PyAny>> {
     let coercer = core::value_coercion::ValueCoercer::new();
     let json_val = py_to_json_value(&value)?;
     let coerced = coercer
@@ -646,7 +650,7 @@ fn coerce_value(py: Python<'_>, value: Bound<'_, PyAny>, target_type: &str) -> P
 ///
 /// Standalone function equivalent to `QueryCompiler().parse(input)`.
 #[pyfunction]
-fn parse_typeql_query(py: Python<'_>, input: &str) -> PyResult<PyObject> {
+fn parse_typeql_query(py: Python<'_>, input: &str) -> PyResult<Py<PyAny>> {
     let clauses = core::query_parser::parse_typeql_query(input)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
     pythonize(py, &clauses)
@@ -697,10 +701,11 @@ fn generated_declared_descriptors_json(input: &str) -> PyResult<String> {
 /// the whole run so connected commands do not block other Python threads.
 #[pyfunction]
 fn run_v2_cli(py: Python<'_>, arguments: Vec<String>) -> i32 {
-    py.allow_threads(|| type_bridge_cli::run_cli(arguments))
+    py.detach(|| type_bridge_cli::run_cli(arguments))
 }
 
-#[pymodule]
+// Preserve the GIL-required module contract across the dependency migration.
+#[pymodule(gil_used = true)]
 fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ValidationEngine>()?;
     m.add_class::<QueryCompiler>()?;

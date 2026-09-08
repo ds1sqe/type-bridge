@@ -4,6 +4,14 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Security and release reliability
+
+- Forward-ported the patched PyO3 0.29.2 and dependency graph from the 2.0.2
+  maintenance release, preserving the generated-only 2.1 boundary, abi3-py312
+  and GIL-required semantics. CI and releases require fresh dependency audits.
+- Pinned deterministic native license selection and the metadata-2.5-compatible
+  PyPI publisher; validate facade metadata before cross-registry publication.
+
 ### Changed
 
 - **Generated-only application bindings (#189)** - Split YAML plus
@@ -25,6 +33,20 @@ All notable changes to TypeBridge will be documented in this file.
 - **2.1.0 artifact identity** - Python, npm, Cargo, generated Rust templates,
   documentation, and release validation now share the 2.1.0 identity. Release
   timing remains readiness-driven; no release date is declared here.
+
+## [2.0.2] - 2026-09-07
+
+### Security and compatibility notice
+
+- Patched PyO3, crossbeam-epoch, h2, rustls-webpki, anyhow, rand and chacha20
+  while retaining 2.0.x APIs, provider support, existing warnings and abi3-py312.
+- Published the expanded, fully qualified 2.1 removal/replacement inventory
+  and safe `<2.1` pins in the
+  [2.0.2 release notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.0.2).
+  This new notice does not rewrite the historical 2.0.0/2.0.1 commitments.
+- Recovered the unchanged Python facade artifacts with a metadata-compatible
+  publisher; the release notice records original source and recovery-control
+  provenance. Existing tag and registry bytes were not replaced or rebuilt.
 
 ## [2.0.1] - 2026-08-03
 

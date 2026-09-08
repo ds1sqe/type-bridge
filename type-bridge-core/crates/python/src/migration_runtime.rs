@@ -23,14 +23,14 @@ use type_bridge_orm::ProviderRuntimeOwner;
 use crate::orm_runtime::{PyRustDatabase, provider_block_on};
 
 /// Opaque revision token retained by the adoption-only directory authority.
-#[pyclass(name = "PyAdoptionRevision", frozen)]
+#[pyclass(name = "PyAdoptionRevision", frozen, from_py_object)]
 #[derive(Clone)]
 struct PyAdoptionRevision {
     inner: LegacyMetadataRevision,
 }
 
 /// One no-follow entry captured by the adoption-only directory authority.
-#[pyclass(name = "PyAdoptionDirectoryEntry", frozen)]
+#[pyclass(name = "PyAdoptionDirectoryEntry", frozen, from_py_object)]
 #[derive(Clone)]
 struct PyAdoptionDirectoryEntry {
     inner: LegacyDirectoryEntry,
@@ -197,7 +197,7 @@ impl PyAdoptionDirectoryAuthority {
 
 /// Normalize a serialized `MigrationSpec` dict through Rust serde.
 #[pyfunction]
-fn normalize_migration_spec(py: Python<'_>, spec: Bound<'_, PyAny>) -> PyResult<PyObject> {
+fn normalize_migration_spec(py: Python<'_>, spec: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let spec: MigrationSpec = depythonize(&spec)
         .map_err(|error| py_value_error(format!("Invalid MigrationSpec: {error}")))?;
     pythonize(py, &spec)
@@ -207,7 +207,7 @@ fn normalize_migration_spec(py: Python<'_>, spec: Bound<'_, PyAny>) -> PyResult<
 
 /// Normalize a serialized `MigrationGraph` dict through Rust serde.
 #[pyfunction]
-fn normalize_migration_graph(py: Python<'_>, graph: Bound<'_, PyAny>) -> PyResult<PyObject> {
+fn normalize_migration_graph(py: Python<'_>, graph: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let graph: MigrationGraph = depythonize(&graph)
         .map_err(|error| py_value_error(format!("Invalid MigrationGraph: {error}")))?;
     pythonize(py, &graph)
@@ -225,7 +225,7 @@ fn migration_spec_to_json(spec: Bound<'_, PyAny>) -> PyResult<String> {
 
 /// Deserialize a `MigrationSpec` JSON string and return its normalized dict.
 #[pyfunction]
-fn migration_spec_from_json(py: Python<'_>, json: &str) -> PyResult<PyObject> {
+fn migration_spec_from_json(py: Python<'_>, json: &str) -> PyResult<Py<PyAny>> {
     let spec: MigrationSpec = serde_json::from_str(json)
         .map_err(|error| py_value_error(format!("Invalid MigrationSpec JSON: {error}")))?;
     pythonize(py, &spec)
@@ -242,7 +242,7 @@ fn migration_spec_from_json(py: Python<'_>, json: &str) -> PyResult<PyObject> {
 ///
 /// Reuses the same serde JSON path as [`migration_spec_from_json`].
 #[pyfunction]
-fn load_migration_sidecar(py: Python<'_>, py_path: &str) -> PyResult<Option<PyObject>> {
+fn load_migration_sidecar(py: Python<'_>, py_path: &str) -> PyResult<Option<Py<PyAny>>> {
     match load_sidecar(Path::new(py_path)) {
         Ok(None) => Ok(None),
         Ok(Some(spec)) => {
@@ -265,7 +265,7 @@ fn migration_graph_to_json(graph: Bound<'_, PyAny>) -> PyResult<String> {
 
 /// Deserialize a `MigrationGraph` JSON string and return its normalized dict.
 #[pyfunction]
-fn migration_graph_from_json(py: Python<'_>, json: &str) -> PyResult<PyObject> {
+fn migration_graph_from_json(py: Python<'_>, json: &str) -> PyResult<Py<PyAny>> {
     let graph: MigrationGraph = serde_json::from_str(json)
         .map_err(|error| py_value_error(format!("Invalid MigrationGraph JSON: {error}")))?;
     pythonize(py, &graph)
@@ -281,7 +281,7 @@ fn calculate_migration_file_checksum(content: &str) -> String {
 
 /// Return TypeBridge's canonical migration-state schema as a `SchemaInfo` dict.
 #[pyfunction]
-fn migration_state_schema(py: Python<'_>) -> PyResult<PyObject> {
+fn migration_state_schema(py: Python<'_>) -> PyResult<Py<PyAny>> {
     pythonize(py, rust_migration_state_schema())
         .map(|object| object.unbind())
         .map_err(|error| py_value_error(error.to_string()))
@@ -317,7 +317,7 @@ fn validate_migration_graph(
     py: Python<'_>,
     graph: Bound<'_, PyAny>,
     applied_records: Option<Bound<'_, PyAny>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let graph: MigrationGraph = depythonize(&graph)
         .map_err(|error| py_value_error(format!("Invalid MigrationGraph: {error}")))?;
     let applied_records = depythonize_applied_records(applied_records)?;
@@ -349,7 +349,7 @@ fn plan_migration_graph(
     graph: Bound<'_, PyAny>,
     applied_records: Option<Bound<'_, PyAny>>,
     target: Option<&str>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let graph: MigrationGraph = depythonize(&graph)
         .map_err(|error| py_value_error(format!("Invalid MigrationGraph: {error}")))?;
     let applied_records = depythonize_applied_records(applied_records)?;
@@ -380,7 +380,7 @@ impl PyMigrationStateReader {
     }
 
     /// Load applied records without creating or repairing legacy state schema.
-    fn load_applied(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn load_applied(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let records = provider_block_on(
             py,
             self.runtime.as_ref(),
@@ -393,7 +393,7 @@ impl PyMigrationStateReader {
     }
 
     /// Load all migration run-log records as a list of dicts.
-    fn load_runs(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn load_runs(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let records = provider_block_on(py, self.runtime.as_ref(), self.store.load_runs_archival())
             .map_err(|error| py_value_error(error.to_string()))?;
         pythonize(py, &records)

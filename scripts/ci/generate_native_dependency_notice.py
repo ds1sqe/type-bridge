@@ -43,6 +43,7 @@ EXPECTED_TARGETS = (
 )
 EXPECTED_WORKAROUNDS = ("chrono", "prost", "ring", "rustix", "rustls")
 CURVE25519_LICENSE_CHECKSUM = "cca0bd3c4fcdba74145ef9d49c62337e2c9fbf9368288f11d0547f1b0273219f"
+MINIZ_OXIDE_LICENSE_CHECKSUM = "799e9ca9d179295ef372f25d3769cdda7d25bb2668add6a6a1e22d1e4c678b8d"
 EXCEPTION_MARKERS: Mapping[str, tuple[str, ...]] = {
     "LLVM-exception": ("LLVM Exceptions to the Apache 2.0 License",),
 }
@@ -166,6 +167,24 @@ def load_policy(workspace: Path) -> NoticePolicy:
         raise ValidationError(
             "curve25519-dalek clarification must bind the complete upstream LICENSE: "
             f"actual={files!r}, expected={[expected_file]!r}"
+        )
+
+    miniz_config = config.get("miniz_oxide")
+    miniz = miniz_config.get("clarify") if isinstance(miniz_config, dict) else None
+    expected_miniz = {
+        "license": "MIT OR Zlib OR Apache-2.0",
+        "files": [
+            {
+                "path": "LICENSE-MIT.md",
+                "license": "MIT",
+                "checksum": MINIZ_OXIDE_LICENSE_CHECKSUM,
+            }
+        ],
+    }
+    if miniz != expected_miniz:
+        raise ValidationError(
+            "miniz_oxide clarification must retain its SPDX expression and bind "
+            "the complete upstream LICENSE-MIT.md"
         )
 
     for accepted_id in accepted:
@@ -717,6 +736,7 @@ def run_cargo_about(executable: str, root: RootSpec, *, workspace: Path) -> Mapp
             capture_output=True,
             text=True,
             timeout=300,
+            env={**os.environ, "RUSTUP_TOOLCHAIN": RUST_TOOLCHAIN},
         )
     except subprocess.CalledProcessError as error:
         detail = error.stderr.strip() or error.stdout.strip() or str(error)

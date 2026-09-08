@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -151,6 +153,38 @@ def test_actual_policy_is_exact_and_checksum_clarified() -> None:
 
     assert loaded.targets == generator.EXPECTED_TARGETS
     assert "Apache-2.0 WITH LLVM-exception" in loaded.accepted
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ("LICENSE-MIT.md", "LICENSE"),
+        (generator.MINIZ_OXIDE_LICENSE_CHECKSUM, "0" * 64),
+        ('license = "MIT OR Zlib OR Apache-2.0"', 'license = "MIT"'),
+    ],
+)
+def test_miniz_clarification_rejects_ambiguous_or_changed_inputs(
+    tmp_path: Path, before: str, after: str
+) -> None:
+    source = (ROOT / "type-bridge-core/about.toml").read_text()
+    (tmp_path / "about.toml").write_text(source.replace(before, after))
+    with pytest.raises(generator.ValidationError, match="miniz_oxide clarification"):
+        generator.load_policy(tmp_path)
+
+
+def test_cargo_about_uses_the_documented_rust_toolchain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RUSTUP_TOOLCHAIN", "nightly")
+    captured = []
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured.append(kwargs["env"])
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps({}), stderr="")
+
+    monkeypatch.setattr(generator.subprocess, "run", fake_run)
+    generator.run_cargo_about("cargo-about", generator.ROOT_SPECS[0], workspace=tmp_path)
+    assert captured[0]["RUSTUP_TOOLCHAIN"] == generator.RUST_TOOLCHAIN == "1.94.1"
 
 
 def test_write_repairs_generated_only_copy_divergence(tmp_path: Path) -> None:

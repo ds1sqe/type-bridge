@@ -156,7 +156,10 @@ def test_target_plan_rejects_manifest_and_documentation_policy_drift() -> None:
         validator.plan_rustdoc_targets(inventory, metadata, workspace_root=CORE)
 
 
-def test_rustdoc_probes_deny_warnings_and_collect_all_package_failures() -> None:
+def test_rustdoc_probes_deny_warnings_and_collect_all_package_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PYO3_USE_ABI3_FORWARD_COMPATIBILITY", raising=False)
     inventory = inventory_module.load_inventory()
     targets = validator.plan_rustdoc_targets(
         inventory,
@@ -171,7 +174,7 @@ def test_rustdoc_probes_deny_warnings_and_collect_all_package_failures() -> None
         assert isinstance(environment, dict)
         assert "RUSTDOCFLAGS" not in environment
         assert "CARGO_ENCODED_RUSTDOCFLAGS" not in environment
-        assert environment["PYO3_USE_ABI3_FORWARD_COMPATIBILITY"] == "1"
+        assert "PYO3_USE_ABI3_FORWARD_COMPATIBILITY" not in environment
         package_name = command[command.index("-p") + 1]
         returncode = 2 if package_name in {"type-bridge-contract", "type-bridge-migration"} else 0
         return subprocess.CompletedProcess(

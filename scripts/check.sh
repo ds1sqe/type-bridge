@@ -6,10 +6,8 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-# PyO3 0.23 predates CPython 3.14, while this extension deliberately targets
-# abi3-py312. Keep source builds usable on both declared interpreter lines,
-# including Python-only checks whose initial `uv run` may rebuild the core.
-export PYO3_USE_ABI3_FORWARD_COMPATIBILITY="${PYO3_USE_ABI3_FORWARD_COMPATIBILITY:-1}"
+# PyO3 0.29 supports the declared CPython matrix and abi3-py312 directly.
+# Do not opt unverified future Python versions into source builds by default.
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -38,6 +36,9 @@ run_step() {
 # ── Rust checks (matching ci.yml rust-check job) ────────────────────────────
 run_rust() {
     printf "${BOLD}━━━ Rust ━━━${RESET}\n\n"
+
+    run_step "cargo audit (all maintained lockfiles)" \
+        bash scripts/ci/check_dependency_security.sh
 
     run_step "cargo check --all-targets" \
         cargo check --manifest-path type-bridge-core/Cargo.toml --all-targets

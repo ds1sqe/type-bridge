@@ -222,14 +222,16 @@ def validate_query_against_schema(
     *,
     strict: bool = False,
 ) -> dict[str, Any]:
-    """Validate parsed query clauses against a TypeSchema.
+    """Validate retained query clauses against an archived schema snapshot.
 
     This performs semantic validation: ownership checks, role validation,
     value type compatibility, abstract type instantiation, and cardinality hints.
+    It is a retained compatibility utility, not an active V2 schema-authoring
+    entry point. Generated applications use their installed projection authority.
 
     Args:
         clauses: Parsed clauses (from ``QueryCompiler().parse()`` or manual construction).
-        schema: A ``TypeSchema`` instance from ``type_bridge_core``.
+        schema: An archived schema snapshot from the private recovery machinery.
         strict: If ``True``, raise ``ImportError`` when the Rust core is unavailable
             and treat warnings as errors.
 
@@ -275,7 +277,8 @@ def validate_entity_data(
     Args:
         entity_data: Dict with ``__type__`` key and attribute values.
         rules_json: JSON string of validation rules.
-        schema: Optional ``TypeSchema`` instance for ownership checks.
+        schema: Optional archived schema snapshot for retained ownership checks;
+            not an active V2 schema-authoring input.
 
     Returns:
         Dict with ``is_valid`` (bool) and ``errors`` (list of error dicts).
