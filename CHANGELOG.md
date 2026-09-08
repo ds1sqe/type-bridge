@@ -4,6 +4,8 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-08
+
 ### Security and release reliability
 
 - Forward-ported the patched PyO3 0.29.2 and dependency graph from the 2.0.2
@@ -31,8 +33,9 @@ All notable changes to TypeBridge will be documented in this file.
   Read-only TOML conversion and archived migration loading, checksum
   verification, ledger import, snapshots, adoption, and recovery remain.
 - **2.1.0 artifact identity** - Python, npm, Cargo, generated Rust templates,
-  documentation, and release validation now share the 2.1.0 identity. Release
-  timing remains readiness-driven; no release date is declared here.
+  documentation, and release validation share the 2.1.0 identity. See the
+  [2.1.0 release notes](https://github.com/ds1sqe/type-bridge/releases/tag/v2.1.0)
+  for the complete cutover inventory and upgrade guidance.
 
 ## [2.0.2] - 2026-09-07
 
