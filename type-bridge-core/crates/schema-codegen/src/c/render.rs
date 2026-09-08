@@ -27,11 +27,10 @@ const C_EMBEDDED_BYTE_CHUNK_MAX: usize = 32_768;
 const C_CREATE_ARGS_VERSION: u32 = 1;
 const C_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT: usize = 340;
 const C_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT: usize = 262;
-// GCC, Clang, MinGW GCC, and clang-cl require at most 715 predefined or
-// stddef/stdint platform macros beyond the repository-owned runtime header.
-// Keep a power-of-two reserve above that measured maximum so compiler updates
-// cannot consume the complete C minimum without tripping the parity test.
-const C_SUPPORTED_IMPLEMENTATION_MACRO_RESERVE: usize = 1_024;
+// Windows Clang exposes 1580 predefined and stddef/stdint platform macros.
+// Reserve space above that measured count while keeping the complete macro
+// inventory within the C minimum of 4095.
+const C_SUPPORTED_IMPLEMENTATION_MACRO_RESERVE: usize = 2_048;
 const C_GENERATED_SYMBOL_DOMAIN: &str = "typebridge.generator.c-symbol";
 const C_GENERATED_SYMBOL_CANONICALIZATION: &str = "typebridge.c-generated-symbol/v2";
 

@@ -1756,7 +1756,7 @@ jobs:
           TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE: ${{ steps.prepare-c-sdk-v2.outputs.run_nonce }}
         run: >-
           bash scripts/ci/run_exact_ignored_rust_test.sh
-          live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_1
+          live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3
           --locked --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-schema-codegen --test c_projection_live
 
@@ -1769,7 +1769,7 @@ jobs:
           ACCEPTANCE_TARGET_DIR: ${{ runner.temp }}/typebridge-c-query-live-target
         run: >-
           bash scripts/ci/run_exact_ignored_rust_test.sh
-          live_c17_and_cpp17_generated_successor_batches_round_trip_exact_3_12_1
+          generated_data_model_runtime_v3_live
           --locked --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-schema-codegen --test c_projection_live
 

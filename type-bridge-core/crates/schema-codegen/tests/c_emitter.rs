@@ -711,10 +711,7 @@ fn ordered_c_v3_nominal_successors_compile_strictly_and_reject_cross_model_or_om
         .expect("ordered C-v3 package emits");
     let stage = TempDirectory::new();
     write_package(&package, stage.path());
-    let runtime_include = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("c/include");
+    let runtime_include = runtime_include();
 
     let positive = include_str!("c_crud/positive.c");
     let wrong_model = include_str!("c_crud/wrong_model.c");
@@ -852,10 +849,7 @@ fn ordered_c_v3_nominal_alias_and_recovery_wrappers_execute_provider_free() {
         .expect("ordered C-v3 package emits");
     let stage = TempDirectory::new();
     write_package(&package, stage.path());
-    let runtime_include = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("c/include");
+    let runtime_include = runtime_include();
     let header = std::str::from_utf8(package.get("include/acme_v3/models.h").unwrap()).unwrap();
     let model_token = emitted_function_model_token(header, "acme_v3_keyed_database_insert_v2");
     let probe = include_str!("c_crud/recovery.c").replace("@MODEL_TOKEN@", model_token);
@@ -1498,10 +1492,7 @@ int main(void) {
     )
     .expect("coalescing consumer is written");
 
-    let runtime_include = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../c/include")
-        .canonicalize()
-        .expect("C runtime include directory exists");
+    let runtime_include = runtime_include();
     let generated_include = stage.path().join("include");
     let generated_source = stage.path().join("src/models.c");
     let mut invocations = 0;
@@ -1758,10 +1749,7 @@ fn large_embedded_resources_are_byte_exact_portable_chunks() {
 
     let stage = TempDirectory::new();
     write_package(&package, stage.path());
-    let runtime_include = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../c/include")
-        .canonicalize()
-        .expect("C runtime include directory exists");
+    let runtime_include = runtime_include();
     let generated_include = stage.path().join("include");
     let generated_source = stage.path().join("src/models.c");
     let mut invocations = 0;
@@ -1880,10 +1868,7 @@ fn high_variant_role_union_keeps_constant_alias_stack() {
 
     let stage = TempDirectory::new();
     write_package(&package, stage.path());
-    let runtime_include = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../c/include")
-        .canonicalize()
-        .expect("C runtime include directory exists");
+    let runtime_include = runtime_include();
     let generated_include = stage.path().join("include");
     let generated_source = stage.path().join("src/models.c");
     let mut invocations = 0;
@@ -2023,10 +2008,7 @@ fn dense_relation_reachability_surface_is_linear_in_role_count() {
 
     let stage = TempDirectory::new();
     write_package(&package, stage.path());
-    let runtime_include = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../c/include")
-        .canonicalize()
-        .expect("C runtime include directory exists");
+    let runtime_include = runtime_include();
     let generated_include = stage.path().join("include");
     let generated_source = stage.path().join("src/models.c");
     let mut invocations = 0;
@@ -2243,10 +2225,7 @@ int main(void) {
 "#,
     )
     .expect("empty-role consumer is written");
-    let runtime_include = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../c/include")
-        .canonicalize()
-        .expect("C runtime include directory exists");
+    let runtime_include = runtime_include();
     let generated_include = stage.path().join("include");
     let generated_source = stage.path().join("src/models.c");
     let mut invocations = 0;
@@ -2319,6 +2298,16 @@ fn write_package(package: &GeneratedPackage, root: &Path) {
             .expect("generated parent directory is created");
         fs::write(path, contents).expect("generated C package file is written");
     }
+}
+
+fn runtime_include() -> PathBuf {
+    // C compiler include flags do not accept Windows verbatim paths.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("schema-codegen belongs to the crate directory")
+        .join("c/include");
+    assert!(path.join("typebridge/type_bridge.h").is_file());
+    path
 }
 
 fn command_exists(program: &str) -> bool {
@@ -2521,7 +2510,7 @@ fn runtime_header_macro_names() -> BTreeSet<String> {
 
 #[test]
 fn supported_c_preprocessors_fit_the_frozen_implementation_macro_reserve() {
-    const IMPLEMENTATION_MACRO_RESERVE: usize = 1_024;
+    const IMPLEMENTATION_MACRO_RESERVE: usize = 2_048;
 
     let stage = TempDirectory::new();
     let probe = stage.path().join("standard-header-macros.c");
@@ -2822,10 +2811,7 @@ int main(void) {
     )
     .expect("C consumer is written");
 
-    let runtime_include = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../c/include")
-        .canonicalize()
-        .expect("C runtime include directory exists");
+    let runtime_include = runtime_include();
     let generated_include = stage.path().join("include");
     let generated_source = stage.path().join("src/models.c");
     let mut invocations = 0;
@@ -2914,10 +2900,7 @@ fn generated_header_source_and_frame_are_strict_msvc_c17() {
         "#include <acme/models.h>\nint main(void) { return 0; }\n",
     )
     .expect("MSVC consumer is written");
-    let runtime_include = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../c/include")
-        .canonicalize()
-        .expect("C runtime include directory exists");
+    let runtime_include = runtime_include();
     let generated_include = stage.path().join("include");
     let generated_source = stage.path().join("src/models.c");
 
@@ -3074,10 +3057,7 @@ fn generated_query_facade_is_complete_and_function_pointer_compatible() {
         .expect("C package emits");
     let stage = TempDirectory::new();
     write_package(&package, stage.path());
-    let runtime_include = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../c/include")
-        .canonicalize()
-        .expect("C runtime include directory exists");
+    let runtime_include = runtime_include();
     let generated_include = stage.path().join("include");
     let consumer = stage.path().join("query-consumer.c");
     fs::write(
@@ -3984,10 +3964,7 @@ int main(void) {
     )
     .expect("provider-free generated query consumer is written");
 
-    let runtime_include = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../c/include")
-        .canonicalize()
-        .expect("C runtime include directory exists");
+    let runtime_include = runtime_include();
     let generated_include = stage.path().join("include");
     let generated_source = stage.path().join("src/models.c");
     let mut invocations = 0;
@@ -4588,10 +4565,7 @@ int main(void) {
     )
     .expect("provider-free function consumer is written");
 
-    let runtime_include = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../c/include")
-        .canonicalize()
-        .expect("C runtime include directory exists");
+    let runtime_include = runtime_include();
     let generated_include = stage.path().join("include");
     let generated_source = stage.path().join("src/models.c");
     let mut invocations = 0;
@@ -4834,10 +4808,7 @@ plays:
         ),
     )
     .expect("query subtype consumer is written");
-    let runtime_include = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../c/include")
-        .canonicalize()
-        .expect("C runtime include directory exists");
+    let runtime_include = runtime_include();
     let generated_include = stage.path().join("include");
     let mut invocations = 0;
     for (compiler, standard, language) in [
@@ -5071,10 +5042,7 @@ int main() {
     )
     .expect("C++ consumer is written");
 
-    let runtime_include = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../c/include")
-        .canonicalize()
-        .expect("C runtime include directory exists");
+    let runtime_include = runtime_include();
     let generated_include = stage.path().join("include");
     let mut invocations = 0;
     for compiler in ["g++", "clang++", "c++"] {
@@ -5149,10 +5117,7 @@ fn generated_nominal_entity_and_relation_apis_reject_wrong_types() {
         .expect("C package emits");
     let stage = TempDirectory::new();
     write_package(&package, stage.path());
-    let runtime_include = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../c/include")
-        .canonicalize()
-        .expect("C runtime include directory exists");
+    let runtime_include = runtime_include();
     let generated_include = stage.path().join("include");
     let cases = [
         (
