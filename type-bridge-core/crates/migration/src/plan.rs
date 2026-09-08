@@ -8,14 +8,14 @@
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
-use type_bridge_orm::TxType;
-use type_bridge_orm::schema::annotations::{
+use type_bridge_orm::_schema::annotations::{
     AnnotationToken, AnnotationTokenDiff, diff_annotation_tokens, split_annotation_tokens,
 };
-use type_bridge_orm::schema::info::{
+use type_bridge_orm::_schema::info::{
     AttributeSchemaEntry, EntitySchemaEntry, OwnedAttributeEntry, RelationSchemaEntry, RoleEntry,
     SchemaInfo,
 };
+use type_bridge_orm::TxType;
 
 use crate::checksum::check_checksum_drift;
 use crate::error::MigrationError;
@@ -601,7 +601,7 @@ fn undefine_annotation_ref(token: &AnnotationToken) -> String {
     {
         return format!(
             "@meta({})",
-            type_bridge_orm::schema::annotations::escaped_string_literal(&key)
+            type_bridge_orm::_schema::annotations::escaped_string_literal(&key)
         );
     }
     format!("@{}", token.name)
@@ -862,11 +862,12 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use type_bridge_orm::schema::info::{
+    use type_bridge_orm::_entity::Annotation;
+    use type_bridge_orm::_schema::info::{
         AttributeSchemaEntry, EntitySchemaEntry, OwnedAttributeEntry, RelationSchemaEntry,
         RoleEntry, SchemaInfo,
     };
-    use type_bridge_orm::{Annotation, ValueType};
+    use type_bridge_orm::ValueType;
 
     use crate::graph::AppliedMigrationRecord;
     use crate::spec::{MigrationDependencySpec, MigrationGraph, MigrationSpec, OperationSpec};

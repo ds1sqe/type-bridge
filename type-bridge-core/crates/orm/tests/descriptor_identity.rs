@@ -1,7 +1,11 @@
 //! Deterministic descriptor identity and request-relevant fingerprint coverage.
 
-use type_bridge_orm::registry::DescriptorFingerprintRoot;
+use type_bridge_orm::_registry::DescriptorFingerprintRoot;
 use type_bridge_orm::*;
+
+#[path = "support/internal.rs"]
+mod internal;
+use internal::*;
 
 fn attribute(field_name: &str, attr_name: &str, value_type: ValueType) -> OwnedAttributeDescriptor {
     OwnedAttributeDescriptor {

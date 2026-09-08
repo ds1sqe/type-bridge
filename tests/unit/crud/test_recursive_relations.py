@@ -4,7 +4,7 @@ These tests verify the ORM handles recursive structures correctly
 without infinite loops or stack overflows.
 """
 
-from type_bridge import Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
+from tests.utils.handwritten import Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
 
 
 # Models for testing recursive structures

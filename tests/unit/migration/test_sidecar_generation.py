@@ -30,8 +30,8 @@ from type_bridge.migration._adoption_authority import (
     AdoptionDirectoryAuthority,
     AdoptionDirectoryEntry,
 )
+from type_bridge.migration._archive_base import _ArchivedMigration as Migration
 from type_bridge.migration._lower import lower_migration
-from type_bridge.migration.base import Migration
 from type_bridge.migration.loader import LoadedMigration, MigrationLoader
 from type_bridge.migration.sidecar import SidecarConversionError, generate_sidecars
 

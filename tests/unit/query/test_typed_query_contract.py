@@ -15,18 +15,9 @@ RESULTS_PATH = FIXTURES / "expected-results-v1.json"
 CONTRACT_PATH = ROOT / "docs" / "development" / "typed-query-contract.md"
 PYTHON_DOCUMENTED_EXAMPLES = FIXTURES / "python" / "documented_examples.py"
 TYPESCRIPT_DOCUMENTED_EXAMPLES = (
-    ROOT
-    / "type-bridge-core"
-    / "crates"
-    / "node"
-    / "tests"
-    / "compat"
-    / "typed-query-contract"
-    / "documented-examples.typecheck.ts"
+    ROOT / "tests" / "contracts" / "typed_query" / "typescript" / "documented_examples.ts"
 )
-LIVE_PARITY_CONTRACT = (
-    ROOT / "tests" / "integration" / "parity" / "fixtures" / "typed-query" / "contract.json"
-)
+GENERATED_OPERATION_PROJECTION = FIXTURES / "generated-operation-projection-v1.json"
 
 EXAMPLE_MARKER = re.compile(r"<!-- typed-query-example: ([a-z0-9-]+) -->")
 EXAMPLE_BLOCK = re.compile(
@@ -257,12 +248,12 @@ def test_expected_result_references_pin_distinct_identity_semantics() -> None:
     assert expected["exists_by_person"] is True
 
 
-def test_live_public_artifact_projection_is_derived_from_the_identity_manifest() -> None:
+def test_generated_operation_projection_is_derived_from_the_identity_manifest() -> None:
     results = _load(RESULTS_PATH)
     expected = results["expected"]
-    live = _load(LIVE_PARITY_CONTRACT)["semantic_corpus_projection"]
+    generated = _load(GENERATED_OPERATION_PROJECTION)
 
-    assert live == {
+    assert generated == {
         "source_fixture": results["fixture_id"],
         "distinct_roots": expected["distinct_roots"],
         "page_by_person_offset_0_limit_1": expected["page_by_person_offset_0_limit_1"],
@@ -292,10 +283,13 @@ def test_contract_document_pins_required_sections_and_implemented_import_status(
     }
 
     assert required_headings <= set(contract.splitlines())
-    assert "The immutable facade is available from `type_bridge.typed`" in contract
-    assert "@type-bridge/node/typed" in contract
+    assert "emitted together inside each generated Python or TypeScript package" in contract
+    assert "from your_generated_package import Query, QuerySession" in contract
+    assert 'from "./your-generated-package/index.js"' in contract
+    assert "@type-bridge/node/typed" not in contract
+    assert "from type_bridge.typed import" not in contract
     assert "Future API — activated by #174" not in contract
     assert "between 1 and 16 selections" in contract
     assert "A seventeenth" in contract
     assert "no SQL wildcard meaning" in contract
-    assert "explicit migration choice" in contract
+    assert "does not accept handwritten descriptors" in contract

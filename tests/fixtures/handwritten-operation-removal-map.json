@@ -1,0 +1,2114 @@
+{
+  "format": "typebridge.handwritten-operation-removal-map/v2",
+  "cutover_bindings": [
+    "python",
+    "node",
+    "rust"
+  ],
+  "generated_inventory": "tests/fixtures/generated-only-operation-parity-inventory.json",
+  "expected_case_counts": {
+    "python": 606,
+    "node": 70,
+    "rust": 246
+  },
+  "scope": {
+    "python": [
+      "tests/integration/crud/**/test_*.py",
+      "tests/integration/queries/test_*.py"
+    ],
+    "node": [
+      "type-bridge-core/crates/node/tests/integration/**/*.test.ts"
+    ],
+    "rust": [
+      "type-bridge-core/crates/orm/tests/dynamic_manager.rs",
+      "type-bridge-core/crates/orm/tests/entity_manager_tests.rs",
+      "type-bridge-core/crates/orm/tests/hooks_tests.rs",
+      "type-bridge-core/crates/orm/tests/query_tests.rs",
+      "type-bridge-core/crates/orm/tests/relation_hooks_tests.rs",
+      "type-bridge-core/crates/orm/tests/relation_manager_tests.rs",
+      "type-bridge-core/crates/orm/tests/integration/rust_binding/entities.rs",
+      "type-bridge-core/crates/orm/tests/integration/rust_binding/queries.rs",
+      "type-bridge-core/crates/orm/tests/integration/rust_binding/relations.rs",
+      "type-bridge-core/crates/orm/tests/integration/rust_binding/transactions.rs"
+    ]
+  },
+  "retained_contracts": {
+    "python_query_ast_and_function_v1": "Python query AST/compiler and FunctionQuery behavior remain part of the unscheduled V1/raw query surface; handwritten model fixtures must become private fixtures.",
+    "query_v2_low_level": "Canonical Query V2 bytes, authority, preparation, exchange, and validation remain public low-level contracts.",
+    "rust_match_request_and_v1_query": "Rust MatchRequest and the V1 entity/relation/group-by facades remain explicitly retained.",
+    "shared_dynamic_manager_engine": "Dynamic managers remain private execution machinery behind verified generated projections, not a public descriptor-authoring route."
+  },
+  "families": [
+    {
+      "id": "python_attribute_crud",
+      "binding": "python",
+      "disposition": "generated_successor",
+      "sources": [
+        "tests/integration/crud/attributes/test_*.py"
+      ],
+      "successor_operations": [
+        "model_construction_scalar_domains_optional_multivalue_and_references",
+        "projected_attribute_and_ownership_constraint_validation",
+        "entity_single_crud_iid_and_manager_terminals",
+        "entity_insert_and_put_batches",
+        "entity_relation_batch_update_delete_and_atomicity"
+      ]
+    },
+    {
+      "id": "python_entity_crud",
+      "binding": "python",
+      "disposition": "generated_successor",
+      "sources": [
+        "tests/integration/crud/entities/test_*.py"
+      ],
+      "successor_operations": [
+        "entity_single_crud_iid_and_manager_terminals",
+        "entity_insert_and_put_batches",
+        "entity_relation_batch_update_delete_and_atomicity",
+        "python_filtered_callback_update_and_filtered_delete",
+        "python_key_fallback_update_delete_without_iid",
+        "concise_single_type_filters_and_dunder_field_names",
+        "optional_ownership_and_iid_set_predicates"
+      ]
+    },
+    {
+      "id": "python_relation_crud",
+      "binding": "python",
+      "disposition": "generated_successor",
+      "sources": [
+        "tests/integration/crud/relations/test_*.py"
+      ],
+      "successor_operations": [
+        "relation_single_crud_roles_iid_and_manager_terminals",
+        "relation_insert_and_put_batches",
+        "entity_relation_batch_update_delete_and_atomicity",
+        "python_filtered_callback_update_and_filtered_delete",
+        "python_key_fallback_update_delete_without_iid",
+        "role_player_constraints_and_relation_references",
+        "exact_subtype_binding_and_concrete_hydration"
+      ]
+    },
+    {
+      "id": "python_crud_interop",
+      "binding": "python",
+      "disposition": "generated_successor",
+      "sources": [
+        "tests/integration/crud/interop/test_*.py"
+      ],
+      "successor_operations": [
+        "model_construction_scalar_domains_optional_multivalue_and_references",
+        "entity_single_crud_iid_and_manager_terminals",
+        "relation_single_crud_roles_iid_and_manager_terminals",
+        "exact_subtype_binding_and_concrete_hydration"
+      ]
+    },
+    {
+      "id": "python_cross_cutting_crud",
+      "binding": "python",
+      "disposition": "generated_successor",
+      "sources": [
+        "tests/integration/crud/test_*.py"
+      ],
+      "successor_operations": [
+        "model_construction_scalar_domains_optional_multivalue_and_references",
+        "projected_attribute_and_ownership_constraint_validation",
+        "entity_single_crud_iid_and_manager_terminals",
+        "entity_insert_and_put_batches",
+        "relation_single_crud_roles_iid_and_manager_terminals",
+        "relation_insert_and_put_batches",
+        "entity_relation_batch_update_delete_and_atomicity",
+        "python_cross_type_attribute_owner_lookup",
+        "python_key_fallback_update_delete_without_iid",
+        "concise_single_type_filters_and_dunder_field_names",
+        "optional_ownership_and_iid_set_predicates",
+        "exact_subtype_binding_and_concrete_hydration"
+      ]
+    },
+    {
+      "id": "python_manager_query_scenarios",
+      "binding": "python",
+      "disposition": "generated_successor",
+      "sources": [
+        "tests/integration/queries/test_bookstore_queries.py",
+        "tests/integration/queries/test_complex_graph.py",
+        "tests/integration/queries/test_cyber_threat_queries.py",
+        "tests/integration/queries/test_drug_discovery_queries.py",
+        "tests/integration/queries/test_expressions.py",
+        "tests/integration/queries/test_filters.py",
+        "tests/integration/queries/test_iam_queries.py",
+        "tests/integration/queries/test_lookup_filters.py",
+        "tests/integration/queries/test_match.py",
+        "tests/integration/queries/test_order_by.py",
+        "tests/integration/queries/test_pagination.py",
+        "tests/integration/queries/test_role_field_expressions.py",
+        "tests/integration/queries/test_role_lookup_filters.py",
+        "tests/integration/queries/test_role_multi_lookup_filters.py",
+        "tests/integration/queries/test_role_players.py",
+        "tests/integration/queries/test_social_network_queries.py",
+        "tests/integration/queries/test_typedb_38_builtins.py"
+      ],
+      "successor_operations": [
+        "model_construction_scalar_domains_optional_multivalue_and_references",
+        "entity_single_crud_iid_and_manager_terminals",
+        "relation_single_crud_roles_iid_and_manager_terminals",
+        "concise_single_type_filters_and_dunder_field_names",
+        "optional_ownership_and_iid_set_predicates",
+        "exact_subtype_binding_and_concrete_hydration",
+        "comparison_string_boolean_and_field_predicates",
+        "role_player_constraints_and_relation_references",
+        "bounded_reachability_and_explicit_cross_join",
+        "positional_named_collected_distinct_and_ordered_shapes",
+        "ordered_windowed_one_first_rows_page_count_and_exists",
+        "direct_reducers_and_grouping"
+      ]
+    },
+    {
+      "id": "python_model_query_v2",
+      "binding": "python",
+      "disposition": "generated_successor",
+      "sources": [
+        "tests/integration/queries/test_remote_query_session_parity.py",
+        "tests/integration/queries/test_typed_query_executor.py"
+      ],
+      "successor_operations": [
+        "exact_subtype_binding_and_concrete_hydration",
+        "comparison_string_boolean_and_field_predicates",
+        "role_player_constraints_and_relation_references",
+        "bounded_reachability_and_explicit_cross_join",
+        "positional_named_collected_distinct_and_ordered_shapes",
+        "ordered_windowed_one_first_rows_page_count_and_exists",
+        "direct_reducers_and_grouping",
+        "remote_rows_terminals_and_identical_materialization",
+        "remote_reducers_fail_uniformly_before_exchange"
+      ]
+    },
+    {
+      "id": "python_retained_query_contracts",
+      "binding": "python",
+      "disposition": "retained_contract",
+      "sources": [
+        "tests/integration/queries/test_compiler_integration.py",
+        "tests/integration/queries/test_function_query.py",
+        "tests/integration/queries/test_query_v2_binding_smoke.py"
+      ],
+      "retained_contract_ids": [
+        "python_query_ast_and_function_v1",
+        "query_v2_low_level"
+      ]
+    },
+    {
+      "id": "node_descriptor_crud",
+      "binding": "node",
+      "disposition": "generated_successor",
+      "sources": [
+        "type-bridge-core/crates/node/tests/integration/crud/*.test.ts"
+      ],
+      "successor_operations": [
+        "model_construction_scalar_domains_optional_multivalue_and_references",
+        "projected_attribute_and_ownership_constraint_validation",
+        "entity_single_crud_iid_and_manager_terminals",
+        "entity_insert_and_put_batches",
+        "relation_single_crud_roles_iid_and_manager_terminals",
+        "relation_insert_and_put_batches"
+      ]
+    },
+    {
+      "id": "node_dynamic_queries",
+      "binding": "node",
+      "disposition": "generated_successor",
+      "sources": [
+        "type-bridge-core/crates/node/tests/integration/queries/dynamic-query.test.ts",
+        "type-bridge-core/crates/node/tests/integration/queries/filters.test.ts"
+      ],
+      "successor_operations": [
+        "concise_single_type_filters_and_dunder_field_names",
+        "comparison_string_boolean_and_field_predicates",
+        "role_player_constraints_and_relation_references",
+        "ordered_windowed_one_first_rows_page_count_and_exists"
+      ]
+    },
+    {
+      "id": "node_model_query_v2",
+      "binding": "node",
+      "disposition": "generated_successor",
+      "sources": [
+        "type-bridge-core/crates/node/tests/integration/queries/typed-remote-query-parity.test.ts"
+      ],
+      "successor_operations": [
+        "exact_subtype_binding_and_concrete_hydration",
+        "positional_named_collected_distinct_and_ordered_shapes",
+        "ordered_windowed_one_first_rows_page_count_and_exists",
+        "remote_rows_terminals_and_identical_materialization"
+      ]
+    },
+    {
+      "id": "node_retained_query_v2",
+      "binding": "node",
+      "disposition": "retained_contract",
+      "sources": [
+        "type-bridge-core/crates/node/tests/integration/queries/query-v2-smoke.test.ts"
+      ],
+      "retained_contract_ids": [
+        "query_v2_low_level"
+      ]
+    },
+    {
+      "id": "node_transactions",
+      "binding": "node",
+      "disposition": "generated_successor",
+      "sources": [
+        "type-bridge-core/crates/node/tests/integration/transactions/*.test.ts"
+      ],
+      "successor_operations": [
+        "borrowed_write_commit_rollback_and_reusable_read"
+      ]
+    },
+    {
+      "id": "node_handwritten_typed_models",
+      "binding": "node",
+      "disposition": "generated_successor",
+      "sources": [
+        "type-bridge-core/crates/node/tests/integration/typed/*.test.ts"
+      ],
+      "successor_operations": [
+        "model_construction_scalar_domains_optional_multivalue_and_references",
+        "entity_single_crud_iid_and_manager_terminals",
+        "relation_single_crud_roles_iid_and_manager_terminals",
+        "exact_subtype_binding_and_concrete_hydration",
+        "comparison_string_boolean_and_field_predicates",
+        "role_player_constraints_and_relation_references",
+        "positional_named_collected_distinct_and_ordered_shapes",
+        "ordered_windowed_one_first_rows_page_count_and_exists",
+        "direct_reducers_and_grouping"
+      ]
+    },
+    {
+      "id": "rust_dynamic_execution_engine",
+      "binding": "rust",
+      "disposition": "retained_engine",
+      "sources": [
+        "type-bridge-core/crates/orm/tests/dynamic_manager.rs"
+      ],
+      "retained_contract_ids": [
+        "shared_dynamic_manager_engine"
+      ]
+    },
+    {
+      "id": "rust_handwritten_manager_contracts",
+      "binding": "rust",
+      "disposition": "generated_successor",
+      "sources": [
+        "type-bridge-core/crates/orm/tests/entity_manager_tests.rs",
+        "type-bridge-core/crates/orm/tests/hooks_tests.rs",
+        "type-bridge-core/crates/orm/tests/relation_hooks_tests.rs",
+        "type-bridge-core/crates/orm/tests/relation_manager_tests.rs",
+        "type-bridge-core/crates/orm/tests/integration/rust_binding/entities.rs",
+        "type-bridge-core/crates/orm/tests/integration/rust_binding/relations.rs",
+        "type-bridge-core/crates/orm/tests/integration/rust_binding/transactions.rs"
+      ],
+      "successor_operations": [
+        "entity_single_crud_iid_and_manager_terminals",
+        "entity_insert_and_put_batches",
+        "relation_single_crud_roles_iid_and_manager_terminals",
+        "relation_insert_and_put_batches",
+        "entity_relation_batch_update_delete_and_atomicity",
+        "lifecycle_hook_ordering_cancellation_and_post_failure",
+        "borrowed_write_commit_rollback_and_reusable_read",
+        "exact_subtype_binding_and_concrete_hydration"
+      ]
+    },
+    {
+      "id": "rust_retained_v1_queries",
+      "binding": "rust",
+      "disposition": "retained_contract",
+      "sources": [
+        "type-bridge-core/crates/orm/tests/query_tests.rs"
+      ],
+      "retained_contract_ids": [
+        "rust_match_request_and_v1_query"
+      ]
+    },
+    {
+      "id": "rust_handwritten_query_live_contracts",
+      "binding": "rust",
+      "disposition": "generated_successor",
+      "sources": [
+        "type-bridge-core/crates/orm/tests/integration/rust_binding/queries.rs"
+      ],
+      "successor_operations": [
+        "concise_single_type_filters_and_dunder_field_names",
+        "ordered_windowed_one_first_rows_page_count_and_exists",
+        "direct_reducers_and_grouping"
+      ]
+    },
+    {
+      "id": "python_node_handwritten_parity_harness",
+      "binding": "python",
+      "disposition": "generated_successor",
+      "sources": [
+        "tests/integration/parity/test_descriptor_snapshots.py",
+        "tests/integration/parity/test_fixture_contract.py",
+        "tests/integration/parity/test_python_writer_node_reader.py",
+        "tests/integration/parity/test_typed_query_live_parity.py",
+        "tests/integration/parity/test_typed_serialization_parity.py"
+      ],
+      "supporting_sources": [
+        "tests/integration/parity/canonical.py",
+        "tests/integration/parity/conftest.py",
+        "tests/integration/parity/cross_language.py",
+        "tests/integration/parity/descriptor_snapshots.py",
+        "tests/integration/parity/models.py",
+        "tests/integration/parity/typed_query_models.py",
+        "tests/integration/parity/node_descriptor_snapshot.cjs",
+        "tests/integration/parity/node_parity_descriptors.cjs",
+        "tests/integration/parity/node_reader.cjs",
+        "tests/integration/parity/node_typed_query_reader.cjs",
+        "tests/integration/parity/node_v2_authoring_reader.cjs",
+        "tests/integration/parity/fixtures"
+      ],
+      "successor_operations": [
+        "split_yaml_clean_generation_and_package_isolation",
+        "model_construction_scalar_domains_optional_multivalue_and_references",
+        "entity_single_crud_iid_and_manager_terminals",
+        "relation_single_crud_roles_iid_and_manager_terminals",
+        "exact_subtype_binding_and_concrete_hydration",
+        "positional_named_collected_distinct_and_ordered_shapes",
+        "ordered_windowed_one_first_rows_page_count_and_exists",
+        "remote_rows_terminals_and_identical_materialization"
+      ]
+    },
+    {
+      "id": "python_handwritten_artifact_consumers",
+      "binding": "python",
+      "disposition": "generated_successor",
+      "sources": [
+        "tests/unit/compat/test_legacy_python_runner.py",
+        "tests/unit/compat/test_typed_python_artifact_runner.py"
+      ],
+      "supporting_sources": [
+        "scripts/ci/run_legacy_python_compat.py",
+        "scripts/ci/run_typed_python_artifact.py",
+        "tests/compat/legacy_python",
+        "tests/compat/typed_python"
+      ],
+      "successor_operations": [
+        "split_yaml_clean_generation_and_package_isolation",
+        "model_construction_scalar_domains_optional_multivalue_and_references",
+        "projected_attribute_and_ownership_constraint_validation",
+        "entity_single_crud_iid_and_manager_terminals",
+        "relation_single_crud_roles_iid_and_manager_terminals",
+        "exact_subtype_binding_and_concrete_hydration",
+        "positional_named_collected_distinct_and_ordered_shapes",
+        "remote_rows_terminals_and_identical_materialization"
+      ]
+    }
+  ],
+  "case_inventory": [
+    {
+      "path": "tests/integration/crud/attributes/test_boolean.py",
+      "binding": "python",
+      "family_id": "python_attribute_crud",
+      "source_sha256": "6475a61b9cac35734db1697038cd3b41cdf9aa4d88fa548b319cde5e09c87a6d",
+      "test_cases": [
+        "test_boolean_insert",
+        "test_boolean_fetch",
+        "test_boolean_update",
+        "test_boolean_delete"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/attributes/test_date.py",
+      "binding": "python",
+      "family_id": "python_attribute_crud",
+      "source_sha256": "bc25ed8f11cb973ee8fd14d4314dd6a4ff456cdab9121793cbfa884f0b3c0f41",
+      "test_cases": [
+        "test_date_insert",
+        "test_date_fetch",
+        "test_date_update",
+        "test_date_delete"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/attributes/test_datetime.py",
+      "binding": "python",
+      "family_id": "python_attribute_crud",
+      "source_sha256": "593a8a02a356f0a7be646ec31652c0f95adc539616de3bc331449f1eea0539e7",
+      "test_cases": [
+        "test_datetime_insert",
+        "test_datetime_fetch",
+        "test_datetime_update",
+        "test_datetime_delete"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/attributes/test_datetimetz.py",
+      "binding": "python",
+      "family_id": "python_attribute_crud",
+      "source_sha256": "1783aae65051dd586f508cf609d0bf2f27240fd4cdf48d8c03990531298bdeee",
+      "test_cases": [
+        "test_datetimetz_insert",
+        "test_datetimetz_fetch",
+        "test_datetimetz_update",
+        "test_datetimetz_delete"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/attributes/test_decimal.py",
+      "binding": "python",
+      "family_id": "python_attribute_crud",
+      "source_sha256": "bb9214f01136ac146e10396eb987ea72f1eec68bb5b51e7be668e6e7016e1da1",
+      "test_cases": [
+        "test_decimal_insert",
+        "test_decimal_fetch",
+        "test_decimal_update",
+        "test_decimal_delete"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/attributes/test_double.py",
+      "binding": "python",
+      "family_id": "python_attribute_crud",
+      "source_sha256": "feb5060d3b59816486d6c7ef289b362d2cc18bece269ef13f985e6b806824151",
+      "test_cases": [
+        "test_double_insert",
+        "test_double_fetch",
+        "test_double_update",
+        "test_double_delete"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/attributes/test_duration.py",
+      "binding": "python",
+      "family_id": "python_attribute_crud",
+      "source_sha256": "815f327ab375e53f6c32996bab32a32b4af302e0a2aec3de65c177ea4bd1641d",
+      "test_cases": [
+        "test_duration_insert",
+        "test_duration_fetch",
+        "test_duration_update",
+        "test_duration_delete"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/attributes/test_integer.py",
+      "binding": "python",
+      "family_id": "python_attribute_crud",
+      "source_sha256": "0c9f39f1b7019da09e6803262d50ef4e03709a359461b4f9cc1586dde68f6092",
+      "test_cases": [
+        "test_integer_insert",
+        "test_integer_fetch",
+        "test_integer_update",
+        "test_integer_delete"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/attributes/test_multi_value.py",
+      "binding": "python",
+      "family_id": "python_attribute_crud",
+      "source_sha256": "5bbd92ea804e3fcdc47b72a0e96b18eb4fd833991dc97ca4f4fae07790b52e6f",
+      "test_cases": [
+        "test_multi_value_boolean",
+        "test_multi_value_integer",
+        "test_multi_value_string",
+        "test_multi_value_double",
+        "test_multi_value_date",
+        "test_multi_value_datetime",
+        "test_multi_value_datetimetz",
+        "test_multi_value_decimal",
+        "test_multi_value_duration"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/attributes/test_multivalue_escaping.py",
+      "binding": "python",
+      "family_id": "python_attribute_crud",
+      "source_sha256": "3fa810dc9bfa828beb6ddbd8ff81a56dc0d045ce33c5beae686b5ffabf25f61f",
+      "test_cases": [
+        "test_entity_multivalue_quotes_insert_fetch",
+        "test_entity_multivalue_backslashes_insert_fetch",
+        "test_entity_multivalue_mixed_escaping_insert_fetch",
+        "test_entity_multivalue_insert_many_with_escaping",
+        "test_entity_multivalue_update_with_escaping",
+        "test_relation_multivalue_quotes_insert_fetch",
+        "test_relation_multivalue_insert_many_with_escaping",
+        "test_relation_multivalue_update_with_escaping",
+        "test_multivalue_empty_string_escaping"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/attributes/test_string.py",
+      "binding": "python",
+      "family_id": "python_attribute_crud",
+      "source_sha256": "a043247cb43bcf00e7a6c0d8584b333d4c3b87a2a3569dcbb50b69298f77042b",
+      "test_cases": [
+        "test_string_insert",
+        "test_string_fetch",
+        "test_string_update",
+        "test_string_delete",
+        "test_string_special_characters_escaping"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/entities/test_bulk_operations.py",
+      "binding": "python",
+      "family_id": "python_entity_crud",
+      "source_sha256": "5502020ce8078b3153fd88cbe301397b17a3a283f9db79b47538aadbf390a53f",
+      "test_cases": [
+        "test_update_many",
+        "test_update_many_multivalue",
+        "test_delete_many_with_filter_expression",
+        "test_delete_many_instances",
+        "test_delete_many_with_combined_filter",
+        "test_delete_many_empty_list_returns_empty"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/entities/test_chainable.py",
+      "binding": "python",
+      "family_id": "python_entity_crud",
+      "source_sha256": "f763070ad6fb24009ad96c6d033ad8e54b94c06f0e399b59db69819f5b64e7b0",
+      "test_cases": [
+        "test_chainable_delete_with_expression_filter",
+        "test_chainable_delete_with_multiple_filters",
+        "test_chainable_delete_returns_zero_for_no_matches",
+        "test_chainable_delete_with_range_filter",
+        "test_update_with_lambda_increments_age",
+        "test_update_with_function_modifies_status",
+        "test_update_with_returns_empty_list_for_no_matches",
+        "test_update_with_complex_function_multiple_attributes",
+        "test_update_with_atomic_transaction"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/entities/test_delete.py",
+      "binding": "python",
+      "family_id": "python_entity_crud",
+      "source_sha256": "5666bba5eef70fbff181201818b00100f444c45b499c6448b75e73e5ceea8249",
+      "test_cases": [
+        "test_delete_entity_instance",
+        "test_delete_entity_returns_instance",
+        "test_delete_entity_with_none_key_raises",
+        "test_delete_many_entities",
+        "test_delete_many_empty_list",
+        "test_entity_delete_instance_method",
+        "test_filter_based_delete_still_works",
+        "test_delete_entity_without_key_single_match",
+        "test_delete_entity_without_key_and_no_iid_raises",
+        "test_delete_entity_without_key_and_no_iid_raises_even_if_not_in_db",
+        "test_delete_nonexistent_entity_with_key_is_idempotent",
+        "test_delete_many_nonexistent_entity_is_idempotent",
+        "test_delete_many_strict_mode_raises_for_missing",
+        "test_delete_many_strict_mode_succeeds_when_all_exist"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/entities/test_fetch.py",
+      "binding": "python",
+      "family_id": "python_entity_crud",
+      "source_sha256": "b5714b1e1106a457877212784512978bd804b7d3a582d2cf6d2c54f6120e23dc",
+      "test_cases": [
+        "test_fetch_single_entity",
+        "test_fetch_all",
+        "test_fetch_with_filter",
+        "test_chainable_query"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/entities/test_insert.py",
+      "binding": "python",
+      "family_id": "python_entity_crud",
+      "source_sha256": "a3acd780f3ea84e884274c6bab4e740df36e8f5fb93c4a038fee2fdaf8475aba",
+      "test_cases": [
+        "test_insert_single_entity",
+        "test_insert_many",
+        "test_insert_with_optional_attributes"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/entities/test_integer_key_bug.py",
+      "binding": "python",
+      "family_id": "python_entity_crud",
+      "source_sha256": "a8ce38f10a562fd811e0dd6caf26567ba4332f5a158c39ee6cf93c54af61468a",
+      "test_cases": [
+        "test_integer_key_insert_and_query",
+        "test_integer_key_vs_string_key_comparison",
+        "test_integer_key_with_different_values",
+        "test_integer_key_filter_chainable_query",
+        "test_integer_key_all_and_count"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/entities/test_put.py",
+      "binding": "python",
+      "family_id": "python_entity_crud",
+      "source_sha256": "8319cae5e293be15857a6eee6d2edc585ba4e8236b265fa26cfd6764a0ee2108",
+      "test_cases": [
+        "test_put_single_entity",
+        "test_put_many_entities",
+        "test_put_partial_match",
+        "test_put_vs_insert_duplicates",
+        "test_put_populates_iid",
+        "test_put_many_populates_iid"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/entities/test_update.py",
+      "binding": "python",
+      "family_id": "python_entity_crud",
+      "source_sha256": "5574b4fb8f140fcf36a6df9c0b3d7b9862e166cb8c1c630ca04dff4b072d80ab",
+      "test_cases": [
+        "test_update_single_value_attribute",
+        "test_update_multi_value_attribute"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/interop/test_mixed_entity.py",
+      "binding": "python",
+      "family_id": "python_crud_interop",
+      "source_sha256": "b94f81c00795f1979df5431bd4f633e702867d1433773a21bbb9488ecc687de8",
+      "test_cases": [
+        "test_insert_entity_with_all_types",
+        "test_fetch_entity_with_all_types",
+        "test_update_multiple_types",
+        "test_optional_types_mixed_with_required",
+        "test_multi_value_mixed_with_single_value",
+        "test_verify_serialization_all_types"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/interop/test_mixed_queries.py",
+      "binding": "python",
+      "family_id": "python_crud_interop",
+      "source_sha256": "8f883dcc2d2b110e05561697cdc88dd7e63410d2434dca3cb064f6fb5bd12483",
+      "test_cases": [
+        "test_query_with_two_types_string_integer",
+        "test_query_with_three_types",
+        "test_query_with_temporal_types",
+        "test_query_with_all_nine_types",
+        "test_range_queries_on_numeric_types",
+        "test_range_queries_on_temporal_types",
+        "test_complex_query_with_multiple_filters",
+        "test_type_coercion_in_queries"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/interop/test_type_combinations.py",
+      "binding": "python",
+      "family_id": "python_crud_interop",
+      "source_sha256": "b5e558208686c7c79223ca8ee4bdeb42a1acf009d7c7def04f0db68186f1d24a",
+      "test_cases": [
+        "test_person_entity_string_integer_date",
+        "test_product_entity_string_decimal_integer_boolean",
+        "test_event_entity_string_datetime_duration",
+        "test_measurement_entity_string_double_datetimetz",
+        "test_account_entity_string_boolean_datetime",
+        "test_order_entity_integer_decimal_date_string",
+        "test_session_entity_string_datetime_datetimetz_duration",
+        "test_score_entity_string_integer_double_boolean",
+        "test_audit_entity_all_nine_types"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/relations/test_abstract_roles.py",
+      "binding": "python",
+      "family_id": "python_relation_crud",
+      "source_sha256": "a747d704ea1c4b926b7e9e0ea13b075bee88c2de2bfb6e00db448bfd493bc0b5",
+      "test_cases": [
+        "test_insert_relation_with_abstract_role_type",
+        "test_query_relation_by_abstract_role_player",
+        "test_insert_many_with_abstract_role_types",
+        "test_update_entity_with_inherited_attributes",
+        "test_get_relations_comprehensive_filtering"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/relations/test_chainable.py",
+      "binding": "python",
+      "family_id": "python_relation_crud",
+      "source_sha256": "7c2793a0d9c1524d0a98559f01b593005721cae1c16c62da1a1c3736c797cfa7",
+      "test_cases": [
+        "test_chainable_delete_with_expression_filter",
+        "test_chainable_delete_with_multiple_filters",
+        "test_chainable_delete_returns_zero_for_no_matches",
+        "test_chainable_delete_with_range_filter",
+        "test_update_with_lambda_increments_salary",
+        "test_update_with_function_modifies_position",
+        "test_update_with_returns_empty_list_for_no_matches",
+        "test_update_with_complex_function_multiple_attributes",
+        "test_update_with_atomic_transaction",
+        "test_update_with_optional_attribute",
+        "test_update_with_multi_value_attribute",
+        "test_update_with_preserves_role_players",
+        "test_delete_with_multiple_role_players"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/relations/test_delete.py",
+      "binding": "python",
+      "family_id": "python_relation_crud",
+      "source_sha256": "24232fb152e28d1825535ba32d0f9904e80131f865d18c6f9f0f648134f4f956",
+      "test_cases": [
+        "test_relation_manager_has_delete_method",
+        "test_delete_relation_instance",
+        "test_delete_relation_returns_instance",
+        "test_delete_relation_missing_role_player_raises",
+        "test_delete_relation_preserves_role_player_entities",
+        "test_delete_many_relations",
+        "test_delete_many_empty_list",
+        "test_relation_delete_instance_method",
+        "test_filter_based_delete_still_works",
+        "test_delete_nonexistent_relation_is_idempotent"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/relations/test_fetch.py",
+      "binding": "python",
+      "family_id": "python_relation_crud",
+      "source_sha256": "029b2edfbd339d25d3a7df3d390f9158b0b1e4272c377b05ca4d85bf94b04f89",
+      "test_cases": [
+        "test_fetch_relation_by_role_player",
+        "test_fetch_relation_by_attribute",
+        "test_fetch_all_includes_relations_with_empty_optional_roles"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/relations/test_filter.py",
+      "binding": "python",
+      "family_id": "python_relation_crud",
+      "source_sha256": "e1949e09017bdec363cc6648ce489779ee7819989923cf27dedb8717b72a9d50",
+      "test_cases": [
+        "test_filter_relations_by_attribute",
+        "test_filter_relations_by_role_player",
+        "test_filter_relations_combined_attribute_and_role",
+        "test_filter_relations_with_invalid_attribute_raises_error",
+        "test_filter_relations_empty_result",
+        "test_filter_relations_with_multiple_matching_results",
+        "test_filter_relations_by_both_role_players",
+        "test_relation_manager_has_filter_method",
+        "test_filter_with_limit_and_offset",
+        "test_filter_first_and_count",
+        "test_filter_with_dict_filters",
+        "test_filter_combining_role_players_and_attributes",
+        "test_relation_query_delete",
+        "test_relation_query_delete_with_role_player_filter",
+        "test_relation_query_update_with",
+        "test_relation_query_update_with_complex_function"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/relations/test_insert.py",
+      "binding": "python",
+      "family_id": "python_relation_crud",
+      "source_sha256": "ebc64d6f04a6962309e2c96af3e2dafbe203fd476bc06de96d7d14bd2dc6a381",
+      "test_cases": [
+        "test_insert_relation"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/relations/test_multi_role.py",
+      "binding": "python",
+      "family_id": "python_relation_crud",
+      "source_sha256": "daf42d848a1f902b67dc45de5265e2bc3603802f1a2d7ad889ea19548f337aaa",
+      "test_cases": [
+        "test_insert_relation_with_multi_role_document",
+        "test_insert_relation_with_multi_role_email",
+        "test_insert_multiple_relations_with_different_role_players",
+        "test_filter_relation_by_multi_role_player",
+        "test_delete_relation_with_multi_role_filter",
+        "test_update_relation_with_multi_role",
+        "test_update_with_chainable_multi_role",
+        "test_multiple_relations_same_role_player",
+        "test_multi_role_with_three_entity_types",
+        "test_filter_by_attribute_with_multi_role",
+        "test_expression_filter_with_multi_role",
+        "test_update_preserves_multi_role_player",
+        "test_insert_many_with_multi_role"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/relations/test_put.py",
+      "binding": "python",
+      "family_id": "python_relation_crud",
+      "source_sha256": "91eb4110cf862b49736e4369054353d2cd2f409e5d56fe9919fd753b7572fbfb",
+      "test_cases": [
+        "test_put_single_relation",
+        "test_put_many_relations"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/relations/test_relation_subtype_roles.py",
+      "binding": "python",
+      "family_id": "python_relation_crud",
+      "source_sha256": "b5a302beba64c8b16a05ec9305b150eeb778c3be20e38b3297cc3499d45b998e",
+      "test_cases": [
+        "TestRelationSubtypeRoles::test_authoring_descriptor_effective_roles",
+        "TestRelationSubtypeRoles::test_insert_and_fetch_authoring_with_both_roles",
+        "TestRelationSubtypeRoles::test_contribution_manager_unaffected",
+        "TestAbstractParentRole::test_sync_schema_succeeds",
+        "TestAbstractParentRole::test_insert_through_specializing_role_works",
+        "TestAbstractParentRole::test_insert_through_inherited_abstract_role_works"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/relations/test_update.py",
+      "binding": "python",
+      "family_id": "python_relation_crud",
+      "source_sha256": "3e675dac2fe2f1157310999fe06bb0b7a69abd9f7f59bdddb78b0f17effdab8b",
+      "test_cases": [
+        "test_relation_manager_has_update_method",
+        "test_update_relation_by_role_players",
+        "test_relation_attribute_update_via_direct_typeql",
+        "test_updating_relation_preserves_role_players",
+        "test_update_relation_with_optional_attribute",
+        "test_update_multiple_relations"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/test_complex_relations.py",
+      "binding": "python",
+      "family_id": "python_cross_cutting_crud",
+      "source_sha256": "6615cd1ba1a87efb8cf59e6f39c101961d2beaeaf3fa3e0da29fc09e5b8c3089",
+      "test_cases": [
+        "TestSelfReferentialRelations::test_insert_self_referential_relation",
+        "TestSelfReferentialRelations::test_query_self_referential_relation",
+        "TestSelfReferentialRelations::test_chain_of_self_referential_relations",
+        "TestThreeRoleRelations::test_insert_three_role_relation",
+        "TestThreeRoleRelations::test_multiple_three_role_relations",
+        "TestPolymorphicRolePlayers::test_insert_with_concrete_subtype_report",
+        "TestPolymorphicRolePlayers::test_insert_with_concrete_subtype_memo",
+        "TestPolymorphicRolePlayers::test_mixed_subtypes_in_relations",
+        "TestMultiValueRoles::test_insert_with_list_of_role_players",
+        "TestMultiValueRoles::test_insert_with_three_players",
+        "TestMultiValueRoles::test_put_with_list_of_role_players",
+        "TestMultiValueRoles::test_to_insert_query_with_multi_role",
+        "TestRelationWithAttributes::test_insert_relation_with_required_attr",
+        "TestRelationWithAttributes::test_insert_relation_with_optional_attr",
+        "TestRelationWithAttributes::test_update_relation_attribute"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/test_crud_edge_cases.py",
+      "binding": "python",
+      "family_id": "python_cross_cutting_crud",
+      "source_sha256": "44985be36b04db6e3cf1ca27e4da21507cf499d939c7a1c2ea5d37713dd38c7b",
+      "test_cases": [
+        "TestUpdateEdgeCases::test_update_optional_from_none_to_value",
+        "TestUpdateEdgeCases::test_update_optional_from_value_to_none",
+        "TestUpdateEdgeCases::test_update_changes_value",
+        "TestUpdateEdgeCases::test_update_multiple_optional_attrs",
+        "TestDeleteEdgeCases::test_delete_entity_succeeds",
+        "TestDeleteEdgeCases::test_delete_entity_leaves_relation_with_remaining_player",
+        "TestDeleteEdgeCases::test_delete_relation_then_entity_succeeds",
+        "TestOptionalAttributeLifecycle::test_optional_attribute_lifecycle",
+        "TestMultiValueAttributeOperations::test_insert_with_empty_list",
+        "TestMultiValueAttributeOperations::test_insert_with_multiple_values",
+        "TestMultiValueAttributeOperations::test_update_add_to_list",
+        "TestMultiValueAttributeOperations::test_update_remove_from_list",
+        "TestMultiValueAttributeOperations::test_update_replace_entire_list"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/test_filter_validation.py",
+      "binding": "python",
+      "family_id": "python_cross_cutting_crud",
+      "source_sha256": "d4317eb8c03d509a371b8a4a962ba8c88a76dacc87f9c80951881a0ac10f440a",
+      "test_cases": [
+        "test_filter_with_unowned_attribute_raises_error",
+        "test_filter_with_multiple_unowned_attributes",
+        "test_filter_validation_error_message_includes_available_types",
+        "test_filter_with_inherited_attributes_passes",
+        "test_filter_ownership_check_on_chained_calls",
+        "test_filter_with_owned_attribute_succeeds"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/test_has_lookup.py",
+      "binding": "python",
+      "family_id": "python_cross_cutting_crud",
+      "source_sha256": "eba00b4cb7cb03808c6859da65d5194ddd4ee978ce2ac6737927172690b6f180",
+      "test_cases": [
+        "TestEntityHas::test_entity_has_exact_match",
+        "TestEntityHas::test_entity_has_no_value_returns_all_with_attr",
+        "TestEntityHas::test_entity_has_shared_attr_returns_only_entities",
+        "TestEntityHas::test_entity_has_comparison",
+        "TestEntityHas::test_entity_has_with_attribute_instance",
+        "TestEntityHas::test_entity_has_returns_iid",
+        "TestEntityHas::test_entity_has_mixed_types_correct_classes",
+        "TestEntityHas::test_entity_has_no_match_returns_empty",
+        "TestEntityHas::test_entity_has_contains_expression",
+        "TestEntityHas::test_concrete_class_narrows_to_subclass",
+        "TestEntityHas::test_concrete_class_excludes_other_entity_types",
+        "TestEntityHas::test_concrete_class_narrows_with_attribute_unique_to_one_type",
+        "TestEntityHas::test_base_entity_has_remains_cross_type",
+        "TestRelationHas::test_relation_has_exact_match",
+        "TestRelationHas::test_relation_has_no_value_returns_all",
+        "TestRelationHas::test_relation_has_shared_attr_only_relations",
+        "TestRelationHas::test_relation_has_returns_iid",
+        "TestRelationHas::test_relation_has_integer_attr",
+        "TestRelationHas::test_relation_has_comparison_expression",
+        "TestRelationHas::test_relation_has_no_match_returns_empty",
+        "TestRelationHas::test_concrete_relation_narrows_to_subclass",
+        "TestRelationHas::test_base_relation_has_remains_cross_type",
+        "TestRelationHas::test_concrete_relation_hydrates_role_players",
+        "TestRelationHas::test_cross_type_relation_hydrates_role_players",
+        "TestRelationHas::test_relation_has_returns_iid_after_hydration"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/test_iid_feature.py",
+      "binding": "python",
+      "family_id": "python_cross_cutting_crud",
+      "source_sha256": "627aadcc28ffdc5505ecf0f097421f94901fccf52c73cf8e820366272a2523a7",
+      "test_cases": [
+        "TestEntityIidPopulation::test_get_populates_iid",
+        "TestEntityIidPopulation::test_filter_execute_populates_iid",
+        "TestEntityIidPopulation::test_iid_is_stable_across_queries",
+        "TestGetByIid::test_get_by_iid_returns_entity",
+        "TestGetByIid::test_get_by_iid_returns_none_for_nonexistent",
+        "TestGetByIid::test_get_by_iid_returns_none_for_invalid_format",
+        "TestRelationIidPopulation::test_relation_get_populates_iid",
+        "TestRelationIidPopulation::test_relation_get_by_iid",
+        "TestRelationIidPopulation::test_relation_get_populates_role_player_iids",
+        "TestRelationIidPopulation::test_relation_filter_execute_populates_role_player_iids",
+        "TestRelationIidPopulation::test_relation_all_populates_role_player_iids",
+        "TestRelationAllIidCorrectness::test_all_returns_unique_role_player_iids_issue_78",
+        "TestRelationAllIidCorrectness::test_get_returns_unique_role_player_iids_issue_78",
+        "TestIidInLookup::test_entity_filter_iid_in_multiple",
+        "TestIidInLookup::test_entity_filter_iid_in_single",
+        "TestIidInLookup::test_entity_filter_iid_in_with_other_filters",
+        "TestIidInLookup::test_relation_filter_iid_in",
+        "TestIidInLookup::test_relation_filter_role_iid_in",
+        "TestIidInLookup::test_relation_filter_role_iid_in_multiple"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/test_inherited_attribute_filter.py",
+      "binding": "python",
+      "family_id": "python_cross_cutting_crud",
+      "source_sha256": "f8ebe872c768a26cf447c8904cf28ef006d3b9fbbebf81de9729ca26305ce9e8",
+      "test_cases": [
+        "test_get_subtype_by_inherited_key_attribute",
+        "test_get_subtype_by_inherited_attribute_no_match",
+        "test_delete_subtype_by_inherited_attribute",
+        "test_query_delete_with_inherited_attribute_filter",
+        "test_get_with_both_inherited_and_owned_attributes"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/test_issue_47.py",
+      "binding": "python",
+      "family_id": "python_cross_cutting_crud",
+      "source_sha256": "91fbb6eaf6e329ff975785dd5a7528fb5da49f606ef135bc22130e97354963e8",
+      "test_cases": [
+        "test_update_entity_with_multiple_none_optional_attributes"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/test_list_interfaces.py",
+      "binding": "python",
+      "family_id": "python_cross_cutting_crud",
+      "source_sha256": "c34475b0a4c49068bde1bef3530ee6f5464a36a165f7491304b3bb4ab0f82d72",
+      "test_cases": [
+        "TestListInterfaces::test_list_schema_sync_accepted",
+        "TestListInterfaces::test_list_instance_writes_unimplemented"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/test_polymorphic_queries.py",
+      "binding": "python",
+      "family_id": "python_cross_cutting_crud",
+      "source_sha256": "73965cbaf6b6b73cf2a3f2bc0b6c794f8e5dae3456d7b4f6655223ce905613ac",
+      "test_cases": [
+        "TestPolymorphicEntityQueries::test_query_supertype_returns_concrete_subtypes",
+        "TestPolymorphicEntityQueries::test_query_concrete_type_returns_same_type",
+        "TestPolymorphicEntityQueries::test_filter_supertype_returns_concrete_subtypes",
+        "TestPolymorphicEntityQueries::test_get_by_iid_on_supertype_returns_concrete_type",
+        "TestPolymorphicEntityQueries::test_polymorphic_query_with_multiple_same_type",
+        "TestPolymorphicEntityQueries::test_get_by_iid_on_supertype_fetches_subtype_attributes",
+        "TestPolymorphicEntityQueries::test_get_on_supertype_fetches_subtype_attributes",
+        "TestPolymorphicEntityQueries::test_filter_on_supertype_fetches_subtype_attributes",
+        "TestPolymorphicEntityQueries::test_all_on_supertype_fetches_subtype_attributes",
+        "TestPolymorphicEntityQueries::test_mixed_subtypes_with_optional_attributes"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/test_range_validation.py",
+      "binding": "python",
+      "family_id": "python_cross_cutting_crud",
+      "source_sha256": "61e8b0e4149f8875f1bc0b1ab633a218f7097b428c48274af2730d78c1d03109",
+      "test_cases": [
+        "TestIntegerRangeValidationOnInsert::test_insert_valid_age_succeeds",
+        "TestIntegerRangeValidationOnInsert::test_insert_age_at_boundaries_succeeds",
+        "TestIntegerRangeValidationOnInsert::test_insert_negative_age_raises_error",
+        "TestIntegerRangeValidationOnInsert::test_insert_age_above_max_raises_error",
+        "TestDoubleRangeValidationOnInsert::test_insert_valid_temperature_succeeds",
+        "TestDoubleRangeValidationOnInsert::test_insert_temperature_at_boundaries_succeeds",
+        "TestDoubleRangeValidationOnInsert::test_insert_temperature_below_min_raises_error",
+        "TestDoubleRangeValidationOnInsert::test_insert_temperature_above_max_raises_error",
+        "TestOpenEndedRangeValidation::test_min_only_allows_large_values",
+        "TestOpenEndedRangeValidation::test_min_only_rejects_negative",
+        "TestOpenEndedRangeValidation::test_max_only_allows_negative_values",
+        "TestOpenEndedRangeValidation::test_max_only_rejects_above_max",
+        "TestRangeValidationOnUpdate::test_update_to_valid_value_succeeds",
+        "TestRangeValidationOnUpdate::test_update_to_invalid_value_raises_error",
+        "TestRangeValidationWithPut::test_put_with_valid_value_succeeds",
+        "TestRangeValidationWithPut::test_put_with_invalid_value_raises_error"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/test_typedb_manager.py",
+      "binding": "python",
+      "family_id": "python_cross_cutting_crud",
+      "source_sha256": "ee8aece77943010259e6f2a32e9f8bf518126884fa80ed83481204d7de04caeb",
+      "test_cases": [
+        "test_typedb_manager_entity_insert",
+        "test_typedb_manager_entity_get",
+        "test_typedb_manager_entity_update",
+        "test_typedb_manager_entity_delete",
+        "test_typedb_manager_multi_value_update",
+        "test_typedb_manager_relation_insert",
+        "test_typedb_manager_relation_delete_with_iid"
+      ]
+    },
+    {
+      "path": "tests/integration/crud/test_update_advanced.py",
+      "binding": "python",
+      "family_id": "python_cross_cutting_crud",
+      "source_sha256": "78898f693620b4aaea1ee90b03dc84de7872a0e8a1fe2b584dd6fb489f4382e7",
+      "test_cases": [
+        "test_update_entity_add_optional_attribute",
+        "test_update_entity_modify_existing_attribute",
+        "test_update_entity_with_multi_value_attribute_append",
+        "test_update_preserves_other_attributes",
+        "test_update_with_inherited_attributes",
+        "test_update_entity_remove_optional_attribute",
+        "test_update_multiple_entities_separately",
+        "test_update_entity_clears_multi_value_attribute"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_bookstore_queries.py",
+      "binding": "python",
+      "family_id": "python_manager_query_scenarios",
+      "source_sha256": "042a8ec0b213c289e5ccd99da5086f5d921bdec2c385f5dcb46a28462444767d",
+      "test_cases": [
+        "TestAbstractAttributeInheritance::test_insert_book_with_both_isbn_types",
+        "TestAbstractAttributeInheritance::test_insert_book_without_optional_isbn10",
+        "TestAbstractAttributeInheritance::test_query_different_book_formats",
+        "TestTernaryRelations::test_insert_ternary_relation",
+        "TestTernaryRelations::test_query_ternary_by_one_role",
+        "TestRelationsWithAttributes::test_insert_relation_with_attribute",
+        "TestRelationsWithAttributes::test_filter_relation_by_owned_attribute",
+        "TestEntityMultipleRelations::test_same_person_different_roles",
+        "TestEntityMultipleRelations::test_same_work_multiple_contributors",
+        "TestHierarchicalEntities::test_build_place_hierarchy",
+        "TestHierarchicalEntities::test_query_polymorphic_place_role",
+        "TestRelationAggregations::test_count_relations",
+        "TestRelationAggregations::test_count_relations_with_filter",
+        "TestRelationAggregations::test_relation_query_with_limit_offset",
+        "TestRelationOrdering::test_order_by_relation_attribute",
+        "TestRelationOrdering::test_order_by_role_player_attribute",
+        "TestRelationOrdering::test_combined_ordering_and_limit",
+        "TestComplexRelationFilters::test_filter_by_relation_attribute_range",
+        "TestComplexRelationFilters::test_filter_by_role_player_and_attribute"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_compiler_integration.py",
+      "binding": "python",
+      "family_id": "python_retained_query_contracts",
+      "source_sha256": "5e14b935c51d5fda80fdf790686d42bcfaa433d793e36755ec709a011af24b2f",
+      "test_cases": [
+        "TestMatchPatterns::test_entity_pattern_basic",
+        "TestMatchPatterns::test_entity_pattern_with_has_constraint",
+        "TestMatchPatterns::test_entity_pattern_with_has_variable",
+        "TestMatchPatterns::test_relation_pattern_with_role_players",
+        "TestMatchPatterns::test_value_comparison_pattern",
+        "TestMatchPatterns::test_value_comparison_with_variable",
+        "TestMatchPatterns::test_not_pattern",
+        "TestMatchPatterns::test_or_pattern",
+        "TestMatchPatterns::test_raw_pattern",
+        "TestMutationStatements::test_insert_entity",
+        "TestMutationStatements::test_insert_relation_with_variable",
+        "TestMutationStatements::test_insert_relation_without_variable",
+        "TestMutationStatements::test_delete_entity",
+        "TestFetchItems::test_fetch_attribute",
+        "TestFetchItems::test_fetch_variable",
+        "TestFetchItems::test_fetch_function",
+        "TestFetchItems::test_fetch_nested_wildcard",
+        "TestFetchItems::test_fetch_raw_string",
+        "TestReduce::test_reduce_count",
+        "TestReduce::test_reduce_with_string_expression",
+        "TestLetAssignment::test_let_single_variable_non_stream",
+        "TestLetAssignment::test_let_single_variable_stream",
+        "TestLetAssignment::test_let_with_string_expression",
+        "TestIidOperations::test_iid_pattern",
+        "TestIidOperations::test_iid_constraint",
+        "TestCompileBatch::test_compile_batch_multiple_clauses"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_complex_graph.py",
+      "binding": "python",
+      "family_id": "python_manager_query_scenarios",
+      "source_sha256": "3a22e922ae865a9faef3c963761e96b36efbdbccd466aba058d6680da0a8af6c",
+      "test_cases": [
+        "TestCrossEntityFiltering::test_filter_by_related_entity_attribute",
+        "TestPolymorphicQueries::test_query_concrete_subtypes_independently",
+        "TestPolymorphicQueries::test_filter_concrete_type_by_shared_attribute",
+        "TestChainedRelations::test_insert_chained_relations",
+        "TestChainedRelations::test_multiple_chains_sharing_middle",
+        "TestAggregationWithFilters::test_count_with_filter",
+        "TestAggregationWithFilters::test_multiple_filters_combined",
+        "TestVariableScoping::test_many_to_many_relations"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_cyber_threat_queries.py",
+      "binding": "python",
+      "family_id": "python_manager_query_scenarios",
+      "source_sha256": "ef846dd9ec3435c06086a6189aabacdb9c993e597d9ac3c7485b4b38457eabc3",
+      "test_cases": [
+        "TestStixDomainObjectHierarchy::test_insert_attack_pattern",
+        "TestStixDomainObjectHierarchy::test_insert_multiple_stix_types",
+        "TestStixRelationships::test_threat_actor_uses_malware",
+        "TestStixRelationships::test_threat_intelligence_chain",
+        "TestSightingPattern::test_create_sighting_with_all_roles",
+        "TestCyberObservables::test_insert_ip_address",
+        "TestCyberObservables::test_file_with_multiple_hashes",
+        "TestCyberObservables::test_domain_resolves_to_ip",
+        "TestMarkingDefinitions::test_create_tlp_marking",
+        "TestMarkingDefinitions::test_apply_marking_to_object",
+        "TestMarkingDefinitions::test_multiple_markings_on_object",
+        "TestThreatIntelligenceAggregations::test_count_campaigns_per_threat_actor",
+        "TestThreatIntelligenceAggregations::test_filter_high_severity_attack_patterns",
+        "TestThreatIntelligenceAggregations::test_order_threat_actors_by_sophistication",
+        "TestComplexStixRelationships::test_query_attack_patterns_by_kill_chain_phase",
+        "TestComplexStixRelationships::test_count_patterns_per_phase",
+        "TestComplexStixRelationships::test_order_phases_and_paginate"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_drug_discovery_queries.py",
+      "binding": "python",
+      "family_id": "python_manager_query_scenarios",
+      "source_sha256": "df176c49cb1185d7d503aa1217c03413ef110917d92f5cd08c8fff238d1d0f58",
+      "test_cases": [
+        "TestDeepAttributeInheritance::test_insert_entity_with_multiple_id_types",
+        "TestDeepAttributeInheritance::test_query_by_different_id_types",
+        "TestAbstractRelationHierarchies::test_create_transcription_chain",
+        "TestAbstractRelationHierarchies::test_relation_with_score_attribute",
+        "TestRelationsAsRolePlayersComplex::test_publication_mentions_gene_interaction",
+        "TestRelationsAsRolePlayersComplex::test_multiple_mentions_of_same_interaction",
+        "TestBioMultiValueAttributes::test_gene_with_multiple_aliases",
+        "TestBioMultiValueAttributes::test_update_multi_value_bio_attributes",
+        "TestBioSelfReferentialRelations::test_create_gene_gene_interaction",
+        "TestBioSelfReferentialRelations::test_gene_interaction_network",
+        "TestChainedRelationTraversal::test_traverse_publication_to_genes",
+        "TestChainedRelationTraversal::test_count_mentions_per_interaction",
+        "TestSelfReferentialAggregations::test_filter_high_confidence_interactions",
+        "TestSelfReferentialAggregations::test_order_interactions_by_score",
+        "TestSelfReferentialAggregations::test_count_interactions_from_source"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_expressions.py",
+      "binding": "python",
+      "family_id": "python_manager_query_scenarios",
+      "source_sha256": "54ef204f26ebc008d3b5755225e8fd0a6248565546ac75870d80a9af7dd6505c",
+      "test_cases": [
+        "test_greater_than_filter",
+        "test_less_than_filter",
+        "test_range_query",
+        "test_equality_filter",
+        "test_not_equal_filter",
+        "test_contains_filter",
+        "test_like_regex_filter",
+        "test_or_logic",
+        "test_and_logic_explicit",
+        "test_and_logic_implicit",
+        "test_not_logic",
+        "test_complex_boolean",
+        "test_single_aggregation",
+        "test_multiple_aggregations",
+        "test_filtered_aggregation",
+        "test_group_by_single_field",
+        "test_group_by_with_filter",
+        "test_group_by_multiple_fields",
+        "test_limit",
+        "test_offset",
+        "test_first",
+        "test_count",
+        "test_complex_query_promotion_candidates",
+        "test_complex_query_with_aggregation",
+        "test_backward_compatibility_dict_filters",
+        "test_mixed_dict_and_expression_filters"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_filters.py",
+      "binding": "python",
+      "family_id": "python_manager_query_scenarios",
+      "source_sha256": "68c336a93e8f8bb3c3ef1fae7be4481612d83af934ee8f44a80c60e3f6af3d5f",
+      "test_cases": [
+        "test_query_with_multiple_filters",
+        "test_query_with_multi_value_attributes"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_function_query.py",
+      "binding": "python",
+      "family_id": "python_retained_query_contracts",
+      "source_sha256": "dfea56c68af18d7cf86cb3c7c1d707775788fe1e881a73aac64cdaae9210ac8a",
+      "test_cases": [
+        "TestCountFunction::test_count_function_query_generation",
+        "TestCountFunction::test_count_function_executes",
+        "TestStreamFunction::test_stream_function_query_generation",
+        "TestStreamFunction::test_stream_function_with_limit",
+        "TestStreamFunction::test_stream_function_executes",
+        "TestStreamFunction::test_stream_function_with_limit_executes",
+        "TestCompositeFunction::test_composite_function_query_generation",
+        "TestCompositeFunction::test_composite_function_executes",
+        "TestQueryModifiers::test_sort_query_generation",
+        "TestQueryModifiers::test_pagination_query_generation"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_iam_queries.py",
+      "binding": "python",
+      "family_id": "python_manager_query_scenarios",
+      "source_sha256": "50e4e62b600987b18c7ea3e14442dd8a8e8ac94b8bdb1613391fe828b406e789",
+      "test_cases": [
+        "TestRelationInheritance::test_insert_concrete_relation_subtype",
+        "TestRelationInheritance::test_query_relation_with_polymorphic_member",
+        "TestBoundedMultiValueAttributes::test_insert_with_minimum_values",
+        "TestBoundedMultiValueAttributes::test_insert_with_maximum_values",
+        "TestBoundedMultiValueAttributes::test_update_multi_value_within_bounds",
+        "TestAttributeInheritance::test_different_id_types_are_distinct",
+        "TestAttributeInheritance::test_query_by_specialized_id",
+        "TestRelationsAsRolePlayers::test_insert_relation_with_relation_as_player",
+        "TestRelationsAsRolePlayers::test_query_permission_chain",
+        "TestRoleCardinalityConstraints::test_insert_with_exact_role_cardinality",
+        "TestRoleCardinalityConstraints::test_query_segregation_policy_actions",
+        "TestDeepEntityInheritance::test_query_deep_subtype_has_all_inherited_attrs",
+        "TestDeepEntityInheritance::test_sibling_types_have_different_attrs",
+        "TestDeepEntityInheritance::test_filter_on_inherited_attribute"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_lookup_filters.py",
+      "binding": "python",
+      "family_id": "python_manager_query_scenarios",
+      "source_sha256": "f5400c457e8d0cb16e8ecd3c7d69dac7c794d43303badb39a4d02a1d227b4b39",
+      "test_cases": [
+        "test_string_lookups",
+        "test_numeric_lookups_and_in",
+        "test_isnull_lookup",
+        "test_comparison_lookups_gte_lt_lte",
+        "test_exact_and_eq_lookups",
+        "test_combined_lookups",
+        "test_special_characters_in_string_patterns",
+        "test_lookup_empty_results",
+        "test_range_query_same_field"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_match.py",
+      "binding": "python",
+      "family_id": "python_manager_query_scenarios",
+      "source_sha256": "6e273c464625a5ee498053ab7bb7130d486e93d08eff8dd4493dcfd5f06f9c05",
+      "test_cases": [
+        "test_simple_match_query"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_order_by.py",
+      "binding": "python",
+      "family_id": "python_manager_query_scenarios",
+      "source_sha256": "05be85a3ee0a92c12ed18f7fddd789fbda0b16d8991acf4870ace99abe6bf80d",
+      "test_cases": [
+        "test_entity_order_by_ascending",
+        "test_entity_order_by_descending",
+        "test_entity_order_by_multiple",
+        "test_entity_order_by_with_pagination",
+        "test_entity_order_by_with_filter",
+        "test_relation_order_by_attribute_asc",
+        "test_relation_order_by_attribute_desc",
+        "test_relation_order_by_role_player_asc",
+        "test_relation_order_by_role_player_desc",
+        "test_relation_order_by_mixed",
+        "test_relation_order_by_with_pagination",
+        "test_relation_order_by_with_role_lookup_filter",
+        "test_relation_order_by_employer_name"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_pagination.py",
+      "binding": "python",
+      "family_id": "python_manager_query_scenarios",
+      "source_sha256": "a16b03b1d7eacf6e7cfe470be2bff70ead9c908ad01bc967ef4d44d35146cf2a",
+      "test_cases": [
+        "test_query_with_limit_and_offset",
+        "test_query_first_method",
+        "test_query_count_method"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_query_v2_binding_smoke.py",
+      "binding": "python",
+      "family_id": "python_retained_query_contracts",
+      "source_sha256": "71839d64f52390968f2a287c368589cc03b292e100d87018f1b98d794e5e6429",
+      "test_cases": [
+        "test_prepared_plan_executes_locally_and_remotely"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_remote_query_session_parity.py",
+      "binding": "python",
+      "family_id": "python_model_query_v2",
+      "source_sha256": "2b1b17f703d6a4d19c9def6dd4eab333a89cd5b22d759d51d209980e306168cc",
+      "test_cases": [
+        "test_public_remote_query_session_matches_direct_subtype_hydration"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_role_field_expressions.py",
+      "binding": "python",
+      "family_id": "python_manager_query_scenarios",
+      "source_sha256": "e1ae2fa33a5b17d38b85fd6a636548f5d7a019d738c73b2e854a27bf81626ce5",
+      "test_cases": [
+        "TestRoleFieldExpressionComparisons::test_gt_filter",
+        "TestRoleFieldExpressionComparisons::test_lt_filter",
+        "TestRoleFieldExpressionComparisons::test_gte_filter",
+        "TestRoleFieldExpressionComparisons::test_lte_filter",
+        "TestRoleFieldExpressionComparisons::test_eq_filter",
+        "TestRoleFieldExpressionComparisons::test_neq_filter",
+        "TestRoleFieldExpressionStringMethods::test_contains_filter",
+        "TestRoleFieldExpressionStringMethods::test_like_filter",
+        "TestCombinedExpressions::test_combine_with_relation_attribute",
+        "TestCombinedExpressions::test_combine_with_django_style_lookup",
+        "TestCombinedExpressions::test_multiple_role_field_expressions",
+        "TestCombinedWithPagination::test_combined_with_order_by_and_limit",
+        "TestCombinedWithPagination::test_chained_filter_with_pagination",
+        "TestBackwardCompatibilityWithDjangoStyle::test_django_style_still_works",
+        "TestBackwardCompatibilityWithDjangoStyle::test_equivalent_results"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_role_lookup_filters.py",
+      "binding": "python",
+      "family_id": "python_manager_query_scenarios",
+      "source_sha256": "39ee971fb180ed9f2b6846da78d78dd6062542d264442a1820e720eeadd627a6",
+      "test_cases": [
+        "test_filter_by_role_player_attribute_exact",
+        "test_filter_by_role_player_attribute_gt",
+        "test_filter_by_role_player_attribute_gte",
+        "test_filter_by_role_player_attribute_lt",
+        "test_filter_by_role_player_attribute_lte",
+        "test_filter_by_role_player_string_contains",
+        "test_filter_by_role_player_string_startswith",
+        "test_filter_by_role_player_string_endswith",
+        "test_filter_role_player_and_relation_attribute",
+        "test_filter_multiple_role_players",
+        "test_filter_multiple_lookups_same_role",
+        "test_filter_role_player_in_list",
+        "test_filter_role_player_city_exact",
+        "test_delete_with_role_player_filter",
+        "test_delete_with_combined_role_player_filters",
+        "test_filter_unknown_role_raises_error",
+        "test_filter_unknown_role_attribute_raises_error",
+        "test_filter_string_lookup_on_integer_raises_error"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_role_multi_lookup_filters.py",
+      "binding": "python",
+      "family_id": "python_manager_query_scenarios",
+      "source_sha256": "11edaa7adaa62970ff44c8b3407df21be7287fe9f8fb8fb5b09c0f59bad70a81",
+      "test_cases": [
+        "test_filter_multi_role_by_shared_attribute",
+        "test_filter_multi_role_by_shared_attribute_contains",
+        "test_filter_multi_role_by_type_specific_attribute",
+        "test_filter_multi_role_by_other_type_attribute",
+        "test_filter_multi_role_combined_with_relation_attr",
+        "test_filter_multi_role_combined_with_other_role",
+        "test_filter_multi_role_in_list",
+        "test_delete_multi_role_by_type_specific_attr"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_role_players.py",
+      "binding": "python",
+      "family_id": "python_manager_query_scenarios",
+      "source_sha256": "775395cc4a09ddf73cf698cbc2bce064b8c436e274d2673215342eea88db769d",
+      "test_cases": [
+        "test_relation_query_by_role_player",
+        "test_complex_query_with_relations"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_social_network_queries.py",
+      "binding": "python",
+      "family_id": "python_manager_query_scenarios",
+      "source_sha256": "04fb2b797c33097ee30c915e5aec1db39b1f049f17dc3eb8760e6a6c9dfbddda",
+      "test_cases": [
+        "TestDeepInheritanceHierarchy::test_query_concrete_returns_all_inherited_attrs",
+        "TestDeepInheritanceHierarchy::test_filter_on_inherited_attribute",
+        "TestDeepInheritanceHierarchy::test_sibling_types_isolated",
+        "TestSelfReferentialRelations::test_insert_self_referential_relation",
+        "TestSelfReferentialRelations::test_query_friends_of_person",
+        "TestSelfReferentialRelations::test_bidirectional_friendship_query",
+        "TestGeographicHierarchy::test_hierarchical_insert_and_query",
+        "TestGeographicHierarchy::test_cross_hierarchy_query",
+        "TestPolymorphicRolePlayers::test_insert_relation_with_person_author",
+        "TestPolymorphicRolePlayers::test_insert_relation_with_org_author",
+        "TestPolymorphicRolePlayers::test_mixed_authors_resolved_to_concrete_types",
+        "TestMultiValueAttributes::test_insert_with_multiple_tags",
+        "TestMultiValueAttributes::test_filter_by_tag_value",
+        "TestMultiValueAttributes::test_update_tags_list",
+        "TestChainedRelations::test_employment_with_salary",
+        "TestChainedRelations::test_find_employees_by_company",
+        "TestChainedRelations::test_company_location_chain",
+        "TestComplexFilterCombinations::test_filter_by_multiple_entity_attributes",
+        "TestComplexFilterCombinations::test_relation_filter_by_role_player_attributes"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_typed_query_executor.py",
+      "binding": "python",
+      "family_id": "python_model_query_v2",
+      "source_sha256": "32dd3200709087de5508903ab6c03b26d7252249ff8f33ae43c2ee381384e235",
+      "test_cases": [
+        "test_typed_rows_execute_exact_and_subtype_targets",
+        "test_typed_one_boolean_predicates_and_cardinality_errors",
+        "test_typed_string_predicates_use_version_adaptive_parameter_transport",
+        "test_typed_repeated_models_field_comparison_and_stable_offset",
+        "test_typed_hidden_witnesses_deduplicate_selected_identity",
+        "test_typed_bounded_reachability_depths_cycles_and_shared_subtrees",
+        "test_typed_exact_one_scans_past_duplicate_hidden_witnesses",
+        "test_typed_five_slot_cycle_and_complete_relation_hydration",
+        "test_typed_borrowed_read_context_survives_multiple_terminals",
+        "test_typed_pages_count_exists_and_named_collections",
+        "test_typed_page_collection_multiplicity_distinct_and_relation_roles",
+        "test_typed_borrowed_context_reuses_page_count_and_exists",
+        "test_typed_nullable_order_fails_closed"
+      ]
+    },
+    {
+      "path": "tests/integration/queries/test_typedb_38_builtins.py",
+      "binding": "python",
+      "family_id": "python_manager_query_scenarios",
+      "source_sha256": "8e69f9f5e50c8ab11cfd7f41ae2e4c0739e7a86b682e2f8789c11d1dbf29651a",
+      "test_cases": [
+        "TestIidFunction::test_entity_has_iid_after_insert",
+        "TestIidFunction::test_iid_is_unique_per_entity",
+        "TestIidFunction::test_iid_persists_across_queries",
+        "TestLabelFunction::test_concrete_type_has_correct_label",
+        "TestLabelFunction::test_polymorphic_query_returns_correct_types",
+        "TestUnicodeIdentifiers::test_unicode_in_string_values",
+        "TestUnicodeIdentifiers::test_unicode_in_key_values",
+        "TestUnicodeIdentifiers::test_mixed_unicode_ascii"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/node/tests/integration/crud/attributes.test.ts",
+      "binding": "node",
+      "family_id": "node_descriptor_crud",
+      "source_sha256": "28ac99a6898f8eb90d7df72a0243b15c83a156ba2a5b9501c87ac2d805e58707",
+      "test_cases": [
+        "insert with all 9 primitives and verify round-trip",
+        "update changes all 9 primitive values",
+        "insert multiple values for each attribute and verify counts",
+        "update replaces only the provided attributes"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/node/tests/integration/crud/entities.test.ts",
+      "binding": "node",
+      "family_id": "node_descriptor_crud",
+      "source_sha256": "e8a83f3307014ed73e0aa5a908197008ff3dfbd5de3ed812559b25716d92b120",
+      "test_cases": [
+        "insert returns a non-empty IID",
+        "get with equality filter returns matching rows",
+        "update by IID changes attributes",
+        "putMany inserts two entities and returns two IIDs",
+        "count returns the current number of entities",
+        "aggregate with count function returns a numeric value",
+        "groupByAggregate returns one group per distinct name",
+        "deleteByIid removes the entity"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/node/tests/integration/crud/relations.test.ts",
+      "binding": "node",
+      "family_id": "node_descriptor_crud",
+      "source_sha256": "b1b84509d541b500513aea05170d82ff153e93b2bc1cf6a8acc742868cfbfac7",
+      "test_cases": [
+        "insert returns a non-empty IID",
+        "getWithRolePlayers filters by attribute and role player",
+        "update by IID changes the attribute",
+        "putMany inserts two relations and returns two IIDs",
+        "count returns at least the inserted relations",
+        "aggregate with count function returns a numeric value",
+        "deleteByIid removes the relation",
+        "document-origin trace inserts via document player type",
+        "email-origin trace inserts via email player type",
+        "filter by document role player returns only document traces",
+        "update and delete work for multi-player-type relation",
+        "abstract token manager returns both concrete subtypes",
+        "abstract-role filter accepts concrete symptom player",
+        "all origins include both concrete token player types"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/node/tests/integration/queries/dynamic-query.test.ts",
+      "binding": "node",
+      "family_id": "node_dynamic_queries",
+      "source_sha256": "613e05764f092298db699089c950a28c1ac8844beeeea0003426f05ae99cc34e",
+      "test_cases": [
+        "OR-filtered query matches both branches",
+        "OR-filtered count matches both branches",
+        "OR + sort desc + limit returns the single top DB-side row"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/node/tests/integration/queries/filters.test.ts",
+      "binding": "node",
+      "family_id": "node_dynamic_queries",
+      "source_sha256": "e3a77489aef1ee8792ad85d976f63a1f50937db0329232efd536206d1488bd93",
+      "test_cases": [
+        "equality filter returns exactly one match",
+        "comparison filter >= returns multiple matches",
+        "count with comparison filter counts correctly",
+        "lookup for non-existent entity returns empty array",
+        "relation attribute filter returns one match",
+        "role-player filter returns the matching relation"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/node/tests/integration/queries/query-v2-smoke.test.ts",
+      "binding": "node",
+      "family_id": "node_retained_query_v2",
+      "source_sha256": "4aa0eaf5feba3c77e173d7d4794b33052bfaff46644507633c61b7f9c01581b8",
+      "test_cases": [
+        "prepared plan executes locally and remotely"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/node/tests/integration/queries/typed-remote-query-parity.test.ts",
+      "binding": "node",
+      "family_id": "node_model_query_v2",
+      "source_sha256": "eb420bb6febac261a360f1554bbe7406fffb729b4e036264983a118095bf2ced",
+      "test_cases": [
+        "public remote model query matches local three-binding subtype hydration"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/node/tests/integration/transactions/commit_rollback.test.ts",
+      "binding": "node",
+      "family_id": "node_transactions",
+      "source_sha256": "52ff5de2d36b4eb23cb4ab53991f019d6e0348eaddb215e21ecb6658ecbbfb00",
+      "test_cases": [
+        "rollback isolation: rolled-back write is invisible to database manager",
+        "commit durability: committed write is visible to database manager",
+        "transaction type is reported correctly"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/node/tests/integration/typed/entity-crud.test.ts",
+      "binding": "node",
+      "family_id": "node_handwritten_typed_models",
+      "source_sha256": "d97ffc0f2bef5345f346b7cb4bdbfcb6645023a82123afe653a028c8e646ae51",
+      "test_cases": [
+        "insert, getByIid, get, all, count, and delete hydrate typed instances"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/node/tests/integration/typed/inheritance.test.ts",
+      "binding": "node",
+      "family_id": "node_handwritten_typed_models",
+      "source_sha256": "d5b945310d117410744eddce25ea19632798acf3f4ad867777afd9c0c3b94050",
+      "test_cases": [
+        "insert assigns _iid and both inherited and child-local fields are accessible",
+        "getByIid round-trips inherited and child fields with brands and _iid preserved",
+        "update does not throw and re-read returns the entity",
+        "delete removes the entity; getByIid returns null afterward",
+        "scalar-only (non-inherited) model still hydrates correctly (Plan 08 regression guard)"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/node/tests/integration/typed/multivalue.test.ts",
+      "binding": "node",
+      "family_id": "node_handwritten_typed_models",
+      "source_sha256": "f134370d17b6def69a4410a1be0b09e64bd28c946f34869af5351e56be0910b0",
+      "test_cases": [
+        "insert with 3 tags; read back yields Tag[] with set-semantics equality",
+        "insert without tags (absent optional list); read back yields undefined",
+        "insert with empty tags array; read back yields undefined (no wire tuples emitted)",
+        "scalar field alongside list field hydrates without corruption (Plan 08 regression guard)"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/node/tests/integration/typed/query-aggregates.test.ts",
+      "binding": "node",
+      "family_id": "node_handwritten_typed_models",
+      "source_sha256": "5afdffc159145942327e179c9282958e0771c060dd8aa4f294de102414ea95dc",
+      "test_cases": [
+        "count and avg normalize to user-facing result keys",
+        "aggregate honors the expression filter",
+        "median and std reduce numeric attributes DB-side",
+        "count over an empty match set normalizes to zero",
+        "groupBy returns one normalized row per group"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/node/tests/integration/typed/query-expressions.test.ts",
+      "binding": "node",
+      "family_id": "node_handwritten_typed_models",
+      "source_sha256": "dd373e2eb5fc4018008bbf9e2ddd0c2677586e8deb50184450c3a85cf0a219f6",
+      "test_cases": [
+        "comparison filter executes DB-side and hydrates typed instances",
+        "string startsWith filter matches the anchored prefix",
+        "and_ combines comparisons",
+        "or_ executes through Rust, not a client scan",
+        "not_ excludes the matched row",
+        "orderBy + offset + limit page DB-side",
+        "first returns the leading row under a sort",
+        "count and exists reflect the expression filter",
+        "relation-owned attribute filter preserves role-player hydration"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/node/tests/integration/typed/query-v2.test.ts",
+      "binding": "node",
+      "family_id": "node_handwritten_typed_models",
+      "source_sha256": "f1761dc18087b964992ffed43d705774f28e07ea9d691e156897178c7a00036a",
+      "test_cases": [
+        "live server warning is exact, filterable, and line-classified",
+        "owned selected rows preserve exact/subtype constructors and order",
+        "bounded reachability preserves subtype hydration across cycles and shared subtrees",
+        "named collected pages deduplicate roots and values, order each collection, and hydrate roles",
+        "borrowed read contexts remain reusable across repeated count and exists terminals"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/node/tests/integration/typed/relation-crud.test.ts",
+      "binding": "node",
+      "family_id": "node_handwritten_typed_models",
+      "source_sha256": "289693366633a9b712647a4163c594f9736ff2606541d1857d611dc9a8a0e183",
+      "test_cases": [
+        "insert by key fallback, read hydration, repeated role merge, and delete"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/orm/tests/dynamic_manager.rs",
+      "binding": "rust",
+      "family_id": "rust_dynamic_execution_engine",
+      "source_sha256": "ff6ce8c87ce0d98c3d21e42095e6ac23396c79acc6985cdfdcbb20a1e60ab874",
+      "test_cases": [
+        "dynamic_relation_identity_dto_is_owned_and_serializable",
+        "dynamic_relation_identity_query_inventory_is_exact",
+        "dynamic_relation_identity_query_rejects_invalid_iid_before_building",
+        "dynamic_relation_exact_count_query_contrasts_inclusive",
+        "dynamic_relation_exact_delete_query_contrasts_inclusive",
+        "dynamic_relation_update_exact_attribute_builder_is_complete_and_strict",
+        "dynamic_relation_update_exact_builder_guards_are_exact",
+        "dynamic_relation_update_exact_preflight_zero_io_table",
+        "dynamic_relation_update_exact_identity_boundary_distinct_keys_reach_both_lookups",
+        "dynamic_relation_update_exact_identity_boundary_convergence_is_post_resolution",
+        "dynamic_relation_update_exact_player_answer_matrix_is_relation_rooted_and_pre_mutation",
+        "dynamic_relation_update_exact_player_answer_finishes_lookups_before_mutation_and_rejects_read_tx",
+        "dynamic_relation_update_exact_success_replaces_complete_active_state_in_order",
+        "dynamic_relation_update_exact_preflight_accounts_by_descriptor_index",
+        "dynamic_relation_put_exact_single_preflight_zero_io_table",
+        "dynamic_relation_put_exact_single_miss_inserts_after_strict_resolution",
+        "dynamic_relation_put_exact_single_hit_delegates_complete_update",
+        "dynamic_relation_put_exact_single_key_answer_matrix_is_strict",
+        "dynamic_relation_put_many_exact_preflight_and_empty_are_zero_io",
+        "dynamic_relation_put_many_exact_mixed_hit_miss_preserves_order",
+        "dynamic_relation_put_many_exact_no_key_rows_are_lookup_free",
+        "dynamic_relation_put_many_exact_later_row_failures_are_atomic_and_preserve_primary",
+        "dynamic_relation_put_many_exact_commit_failure_is_not_rolled_back",
+        "dynamic_relation_put_many_exact_canonical_database_preserves_mode",
+        "dynamic_relation_put_many_exact_caller_owned_contexts_preserve_ownership",
+        "dynamic_relation_update_exact_owned_failure_table_rolls_back_once",
+        "dynamic_relation_update_exact_owned_rollback_failure_preserves_primary",
+        "dynamic_relation_update_exact_owned_commit_failure_is_not_rolled_back",
+        "dynamic_relation_exact_put_builder_key_lookup_inventory",
+        "dynamic_relation_exact_put_builder_resolved_insert_inventory",
+        "dynamic_relation_update_exact_mode_and_transaction_canonical_database_success",
+        "dynamic_relation_update_exact_mode_and_transaction_legacy_write_reuses_context",
+        "dynamic_relation_update_exact_mode_and_transaction_canonical_write_success_and_failure",
+        "dynamic_relation_identity_discovery_rejects_wrong_and_duplicate_iids",
+        "dynamic_relation_exact_preflight_is_zero_io",
+        "dynamic_relation_new_methods_use_legacy_database_lifecycle",
+        "dynamic_relation_new_methods_reuse_canonical_write_transaction",
+        "dynamic_relation_identity_hydration_accepts_exact_direct_and_wrapped",
+        "dynamic_relation_identity_hydration_rejects_exact_malformed_matrix",
+        "dynamic_relation_identity_discovery_preserves_exact_order_and_cardinality",
+        "dynamic_relation_identity_discovery_rejects_answer_kinds_on_both_routes",
+        "dynamic_entity_legacy_and_canonical_selection_are_distinct",
+        "dynamic_relation_canonical_transaction_read_keeps_canonical_mode",
+        "dynamic_entity_canonical_database_read_close_failure_is_reported",
+        "dynamic_canonical_database_read_success_has_one_close",
+        "dynamic_canonical_database_read_error_close_failure_keeps_query_error",
+        "dynamic_canonical_database_write_success_commits_and_closes",
+        "dynamic_canonical_database_write_error_cleanup_keeps_query_error",
+        "dynamic_canonical_database_commit_error_close_failure_keeps_commit_error",
+        "dynamic_canonical_database_successful_write_close_failure_is_reported",
+        "dynamic_entity_canonical_batch_keeps_nested_queries_canonical",
+        "dynamic_relation_canonical_insert_many_keeps_nested_queries_canonical",
+        "dynamic_relation_legacy_insert_many_keeps_nested_queries_legacy",
+        "dynamic_entity_transaction_insert_rejects_zero_iid_documents",
+        "dynamic_entity_transaction_insert_rejects_multiple_iid_documents",
+        "dynamic_entity_transaction_insert_rejects_noncanonical_iid",
+        "dynamic_entity_insert_query_matches_typed_equivalent",
+        "dynamic_entity_put_query_uses_put_clause",
+        "dynamic_entity_update_query_matches_by_iid_and_skips_key",
+        "dynamic_entity_update_query_can_match_by_key",
+        "dynamic_entity_exact_count_query_contrasts_inclusive_target",
+        "dynamic_entity_exact_update_query_contrasts_inclusive_target",
+        "dynamic_entity_exact_replacement_clears_omitted_optional_and_replaces_multivalue",
+        "dynamic_entity_put_exact_existing_key_without_non_key_runs_delete_only_replacement",
+        "dynamic_entity_key_only_exact_update_is_zero_provider_operation",
+        "dynamic_entity_exact_unknown_input_is_rejected_before_provider_io",
+        "dynamic_entity_legacy_patch_update_omits_absent_optional_ownership",
+        "dynamic_entity_exact_delete_query_contrasts_inclusive_target",
+        "dynamic_entity_identity_discovery_fetches_only_iid_and_concrete_type",
+        "dynamic_entity_exact_key_lookup_is_strict_and_never_uses_put",
+        "dynamic_entity_update_replaces_multi_value_attributes",
+        "dynamic_entity_aggregate_query_binds_attribute_aggregate",
+        "dynamic_entity_aggregate_query_binds_multi_value_attribute_aggregate",
+        "dynamic_entity_fetch_query_binds_comparison_filter",
+        "dynamic_entity_expr_fetch_supports_boolean_sort_and_limit",
+        "dynamic_relation_group_by_aggregate_query_groups_relation_attribute",
+        "dynamic_relation_fetch_query_binds_role_player_filter",
+        "dynamic_relation_expr_fetch_binds_role_player_expr_and_sort",
+        "dynamic_relation_insert_query_matches_typed_shape",
+        "dynamic_relation_put_query_uses_put_clause",
+        "dynamic_relation_update_query_matches_by_iid",
+        "dynamic_relation_update_query_can_match_by_role_players",
+        "dynamic_relation_update_replaces_multi_value_attributes",
+        "dynamic_entity_manager_insert_fetch_count_delete",
+        "dynamic_entity_manager_put_returns_iid",
+        "dynamic_entity_manager_batch_insert_and_put_use_one_transaction",
+        "dynamic_entity_manager_update_executes_query",
+        "dynamic_entity_manager_fetches_by_iid",
+        "dynamic_entity_manager_exact_count_update_delete_use_strict_targets",
+        "dynamic_entity_exact_mutations_reject_invalid_iid_before_provider_io",
+        "dynamic_entity_put_exact_updates_existing_exact_row_and_preserves_iid",
+        "dynamic_entity_put_exact_rejects_nonunique_exact_identity_and_rolls_back",
+        "dynamic_entity_put_exact_missing_row_inserts_requested_type",
+        "dynamic_entity_put_exact_excludes_same_key_subtype_and_never_mutates_it",
+        "dynamic_entity_delete_exact_absent_target_is_a_strict_noop",
+        "dynamic_entity_put_exact_without_usable_key_inserts_without_lookup",
+        "dynamic_entity_put_many_exact_preserves_order_in_one_transaction",
+        "dynamic_entity_put_many_exact_rolls_back_atomically_and_preserves_primary_error",
+        "dynamic_entity_put_many_exact_empty_input_performs_zero_provider_operations",
+        "dynamic_entity_transaction_bound_put_exact_does_not_auto_commit",
+        "dynamic_entity_identity_discovery_preserves_rows_and_handles_by_iid_cardinality",
+        "dynamic_entity_identity_discovery_rejects_every_malformed_shape",
+        "dynamic_entity_identity_discovery_rejects_invalid_input_before_provider_io",
+        "dynamic_entity_manager_aggregate_executes_reduce_query",
+        "dynamic_relation_manager_insert_fetch_count_delete",
+        "dynamic_relation_manager_put_and_update_execute_queries",
+        "dynamic_relation_manager_batch_insert_and_put_use_one_transaction",
+        "dynamic_relation_manager_fetches_by_iid",
+        "dynamic_relation_read_routes_converge_on_one_coalesced_row",
+        "dynamic_relation_legacy_database_and_canonical_transaction_reads_share_coalescer",
+        "dynamic_relation_by_iid_boundaries_and_answer_kinds_are_exact",
+        "dynamic_relation_manager_group_by_aggregate_executes_reduce_query",
+        "dynamic_get_one_not_found_returns_not_found",
+        "dynamic_entity_manager_can_use_shared_transaction_context",
+        "dynamic_entity_manager_rejects_write_in_read_transaction_context",
+        "entity_expr_aggregate_query_uses_or_filter",
+        "entity_expr_aggregate_query_uses_not_filter",
+        "entity_expr_group_by_aggregate_query_uses_or_filter",
+        "entity_expr_group_by_aggregate_query_uses_not_filter",
+        "dynamic_entity_manager_aggregate_with_query_executes_reduce_query",
+        "dynamic_entity_manager_group_by_aggregate_with_query_executes_reduce_query",
+        "relation_expr_aggregate_query_uses_or_filter",
+        "relation_expr_group_by_aggregate_query_uses_not_filter",
+        "dynamic_relation_manager_aggregate_with_query_executes_reduce_query",
+        "dynamic_relation_manager_group_by_aggregate_with_query_executes_reduce_query",
+        "starts_with_emits_anchored_prefix_like_regex",
+        "ends_with_emits_anchored_suffix_like_regex",
+        "starts_with_escapes_regex_metacharacters_in_literal",
+        "ends_with_escapes_regex_metacharacters_in_literal",
+        "dynamic_entity_manager_starts_with_get_with_query_executes",
+        "dynamic_entity_manager_ends_with_get_with_query_executes"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/orm/tests/entity_manager_tests.rs",
+      "binding": "rust",
+      "family_id": "rust_handwritten_manager_contracts",
+      "source_sha256": "e825b40bdf06875c9e62da72763dfe2f9609a9a23f2ada7f7f5474c4df2b85df",
+      "test_cases": [
+        "insert_sets_iid_and_returns_it",
+        "get_returns_hydrated_entities",
+        "get_with_filters",
+        "get_one_returns_single",
+        "get_one_not_found",
+        "all_delegates_to_get",
+        "delete_executes_query",
+        "count_returns_value",
+        "count_with_filters",
+        "hydration_with_flat_document",
+        "insert_with_wrapped_iid_response",
+        "update_executes_query",
+        "put_sets_iid_and_returns_it",
+        "put_query_contains_put_keyword",
+        "insert_many_sets_iids",
+        "insert_many_empty_slice",
+        "delete_many_executes_all_queries",
+        "update_many_executes_all_queries"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/orm/tests/hooks_tests.rs",
+      "binding": "rust",
+      "family_id": "rust_handwritten_manager_contracts",
+      "source_sha256": "8c7b7ce50b53852cbe6f6c3e14def439ffd633d281fc052dae84e41aeb9c327c",
+      "test_cases": [
+        "insert_fires_pre_and_post_hooks",
+        "delete_fires_pre_and_post_hooks",
+        "update_fires_pre_and_post_hooks",
+        "put_fires_pre_and_post_hooks",
+        "pre_hook_rejection_prevents_insert",
+        "pre_hook_rejection_prevents_delete",
+        "pre_hook_rejection_prevents_update",
+        "pre_hook_rejection_prevents_put",
+        "post_hook_error_does_not_propagate",
+        "should_run_filters_by_operation",
+        "multiple_hooks_run_in_order",
+        "rejection_short_circuits_subsequent_hooks",
+        "insert_many_fires_hooks_per_entity",
+        "insert_many_rejection_aborts_entire_batch",
+        "delete_many_fires_hooks_per_entity",
+        "update_many_fires_hooks_per_entity",
+        "no_hooks_means_no_overhead",
+        "pre_hook_receives_correct_context",
+        "hook_runner_has_hooks_returns_false_when_empty",
+        "hook_runner_has_hooks_returns_true_after_add",
+        "hook_runner_pre_hooks_noop_when_empty",
+        "hook_runner_post_hooks_noop_when_empty"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/orm/tests/integration/rust_binding/entities.rs",
+      "binding": "rust",
+      "family_id": "rust_handwritten_manager_contracts",
+      "source_sha256": "c5e9fef33a1ae51f1ed405c2ec8a1d82fee4170657ac929f4d524a780e26b798",
+      "test_cases": [
+        "full_entity_lifecycle",
+        "batch_insert_and_delete",
+        "entity_get_one_count_and_update_many",
+        "entity_update_lifecycle",
+        "entity_put_creates_and_updates"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/orm/tests/integration/rust_binding/queries.rs",
+      "binding": "rust",
+      "family_id": "rust_handwritten_query_live_contracts",
+      "source_sha256": "db8d4ba0b1e88ab052937960155a9336c3f61f3c2dfbbe85c7e31f82f53c4602",
+      "test_cases": [
+        "query_builder_with_filters",
+        "query_builder_with_sort_and_limit",
+        "query_builder_first_count_aggregate_and_group_by",
+        "test_answer_json_shape_band_invariant"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/orm/tests/integration/rust_binding/relations.rs",
+      "binding": "rust",
+      "family_id": "rust_handwritten_manager_contracts",
+      "source_sha256": "ba1a5610f4743c232a4dc7be7400467be9e7c1bf1d7409b49a61f5f54d819120",
+      "test_cases": [
+        "full_relation_lifecycle",
+        "relation_batch_filters_counts_and_role_player_query"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/orm/tests/integration/rust_binding/transactions.rs",
+      "binding": "rust",
+      "family_id": "rust_handwritten_manager_contracts",
+      "source_sha256": "02a82d20a214146ec6c61c868ca6e6d3c9a6641131a97189e5fa47f77461656f",
+      "test_cases": [
+        "transaction_context_batch_commit"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/orm/tests/query_tests.rs",
+      "binding": "rust",
+      "family_id": "rust_retained_v1_queries",
+      "source_sha256": "42e3f4fed2dce581867642beecd420262ab9d81e34f02a3c68efbcd56c76422d",
+      "test_cases": [
+        "query_with_gt_filter",
+        "query_with_string_contains",
+        "query_with_and_expression",
+        "query_with_or_expression",
+        "query_with_not_expression",
+        "query_with_sort",
+        "query_with_limit_offset",
+        "query_execute_returns_entities",
+        "query_first_returns_single",
+        "query_first_returns_none_when_empty",
+        "query_count_returns_value",
+        "query_aggregate_sum",
+        "query_chain_all_modifiers",
+        "relation_query_with_filter",
+        "relation_query_with_sort_and_limit",
+        "relation_query_count",
+        "relation_query_first",
+        "relation_query_aggregate",
+        "query_with_like_filter",
+        "query_multiple_sort_fields",
+        "query_with_in_range",
+        "query_with_startswith",
+        "query_with_endswith",
+        "entity_group_by_aggregate",
+        "entity_group_by_with_filter",
+        "relation_group_by_aggregate",
+        "relation_query_with_role_player_filter",
+        "relation_query_with_multiple_role_player_filters"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/orm/tests/relation_hooks_tests.rs",
+      "binding": "rust",
+      "family_id": "rust_handwritten_manager_contracts",
+      "source_sha256": "46089b421bea10fe68792efa7494f24fbdef34033e7bbb83df89b01834905ae0",
+      "test_cases": [
+        "insert_fires_pre_and_post_hooks",
+        "delete_fires_pre_and_post_hooks",
+        "pre_hook_rejection_prevents_insert",
+        "pre_hook_rejection_prevents_delete",
+        "post_hook_error_does_not_propagate",
+        "should_run_filters_by_operation",
+        "multiple_hooks_run_in_order",
+        "rejection_short_circuits_subsequent_hooks",
+        "insert_many_fires_hooks_per_relation",
+        "insert_many_rejection_aborts_entire_batch",
+        "delete_many_fires_hooks_per_relation",
+        "pre_hook_receives_correct_context",
+        "no_hooks_means_no_overhead"
+      ]
+    },
+    {
+      "path": "type-bridge-core/crates/orm/tests/relation_manager_tests.rs",
+      "binding": "rust",
+      "family_id": "rust_handwritten_manager_contracts",
+      "source_sha256": "02a071585f4c280fb0d4e109116366ecfd3d1df94537dc262220adc14054d73e",
+      "test_cases": [
+        "insert_sets_iid_and_returns_it",
+        "insert_with_wrapped_iid_response",
+        "get_returns_hydrated_relations",
+        "get_with_filters",
+        "get_one_returns_single",
+        "get_one_not_found",
+        "all_returns_multiple",
+        "delete_executes_query",
+        "count_returns_value",
+        "count_with_filters",
+        "relation_type_name",
+        "relation_role_info",
+        "relation_owned_attributes",
+        "insert_clauses_produce_match_and_insert",
+        "match_pattern_with_iid",
+        "match_pattern_without_iid_uses_role_players",
+        "hydration_from_flat_document",
+        "hydration_with_missing_optional_attrs",
+        "hydration_with_nested_document",
+        "insert_many_sets_iids",
+        "insert_many_empty_slice",
+        "delete_many_executes_all_queries"
+      ]
+    },
+    {
+      "path": "tests/integration/parity/test_descriptor_snapshots.py",
+      "binding": "python",
+      "family_id": "python_node_handwritten_parity_harness",
+      "source_sha256": "22f26dfd4cc19f54103a927cd5038125b45a0c0bb28a5487bd8474c61fcf1adb",
+      "test_cases": [
+        "test_python_descriptor_snapshot_matches_fixture_without_typedb",
+        "test_node_descriptor_snapshot_matches_fixture_without_typedb",
+        "test_python_and_node_descriptor_snapshots_match_without_typedb"
+      ]
+    },
+    {
+      "path": "tests/integration/parity/test_fixture_contract.py",
+      "binding": "python",
+      "family_id": "python_node_handwritten_parity_harness",
+      "source_sha256": "49bda4eea7d2122a8dcc933c45e7fd373d0760f4bfdc90381abacf1908dea2d4",
+      "test_cases": [
+        "test_phase5_fixture_contract_loads_and_validates_without_typedb",
+        "test_canonical_json_output_is_stable",
+        "test_npm_pack_manifest_accepts_array_and_workspace_object_shapes"
+      ]
+    },
+    {
+      "path": "tests/integration/parity/test_python_writer_node_reader.py",
+      "binding": "python",
+      "family_id": "python_node_handwritten_parity_harness",
+      "source_sha256": "af00b8413129680a5c2a13c7341180af8c65813b783dffe50458de3a60350d7c",
+      "test_cases": [
+        "test_python_writer_node_reader_matches_canonical_fixture"
+      ]
+    },
+    {
+      "path": "tests/integration/parity/test_typed_query_live_parity.py",
+      "binding": "python",
+      "family_id": "python_node_handwritten_parity_harness",
+      "source_sha256": "afcde13d891920e25e44bd73d8f9afc074c1d47695a21bf87dff595e3eeab981",
+      "test_cases": [
+        "test_live_typed_query_summary_and_f8_contract_match_built_artifacts"
+      ]
+    },
+    {
+      "path": "tests/integration/parity/test_typed_serialization_parity.py",
+      "binding": "python",
+      "family_id": "python_node_handwritten_parity_harness",
+      "source_sha256": "ff66bae455e31fe5f9a5b7141e94437354d422e02bc5370506206da5bcc5b1c1",
+      "test_cases": [
+        "test_typed_todict_offline_matches_canonical_value_oracle",
+        "test_python_writer_typed_node_reader_matches_canonical_fixture"
+      ]
+    },
+    {
+      "path": "tests/unit/compat/test_legacy_python_runner.py",
+      "binding": "python",
+      "family_id": "python_handwritten_artifact_consumers",
+      "source_sha256": "5164ade198ca8110c468e122d37eb2787704e309b24833a978ae998019a56d47",
+      "test_cases": [
+        "test_clean_environment_removes_import_overrides",
+        "test_validate_artifacts_resolves_files_and_rejects_missing",
+        "test_absolute_executable_preserves_virtualenv_symlink",
+        "test_parse_probe_report_uses_final_nonempty_json_line",
+        "test_probe_distribution_versions_bind_released_root_to_candidate_core",
+        "test_expected_distribution_versions_must_be_provided_together",
+        "test_execute_probe_copies_outside_source_and_uses_isolated_mode",
+        "test_probe_source_leak_detection_resolves_symlinks",
+        "test_probe_requires_separate_typed_subpath_exports"
+      ]
+    },
+    {
+      "path": "tests/unit/compat/test_typed_python_artifact_runner.py",
+      "binding": "python",
+      "family_id": "python_handwritten_artifact_consumers",
+      "source_sha256": "2918bcb8c0b9c3c4538bf47ca62c8f9f3628a7e2f4e2329811831c6016fad50c",
+      "test_cases": [
+        "test_environment_and_explicit_executable_validation",
+        "test_wheel_inspection_requires_typed_files_stub_marker_and_native",
+        "test_safe_extraction_rejects_traversal_links_and_collisions",
+        "test_report_marker_and_pyright_config_helpers",
+        "test_pyright_language_version_comes_from_supplied_interpreter",
+        "test_pyright_harness_accepts_clean_positive_and_exact_negative",
+        "test_main_routes_interpreter_version_only_to_pyright",
+        "test_live_harness_passes_connection_and_parses_report",
+        "test_parser_requires_prebuilt_wheels_and_prepared_tools",
+        "test_source_package_declares_inline_typing"
+      ]
+    }
+  ]
+}

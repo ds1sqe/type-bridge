@@ -1,8 +1,11 @@
 //! One-way compatibility front-ends for the V2 schema fact graph.
 //!
-//! This crate is deliberately unpublished. Source-language parsers converge on
-//! `type_bridge_schema::FactAssembler`; contract and schema crates never depend
-//! on compatibility parsers or their transitive grammar dependencies.
+//! This public supporting crate is deliberately narrow. Source-language parsers
+//! converge on `type_bridge_schema::FactAssembler`; contract and schema crates
+//! never depend on compatibility parsers or their transitive grammar
+//! dependencies.
+
+#![deny(missing_docs)]
 
 mod adopted_genesis;
 mod descriptor;

@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use crate::common::dynamic_crud::{
     attr, setup_dynamic_database, setup_dynamic_typeql, unique_schema_suffix,
 };
+use crate::internal::*;
 use type_bridge_core_lib::decimal::parse_decimal;
 use type_bridge_orm::*;
 

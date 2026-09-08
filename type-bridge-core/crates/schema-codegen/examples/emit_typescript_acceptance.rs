@@ -2,10 +2,15 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::fingerprint::SemanticProfileId;
+use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
 use type_bridge_contract::schema::DocumentId;
-use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+use type_bridge_schema::{
+    BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SchemaDocumentSet, build_schema_authority,
+    normalize_documents, project, resolve,
+};
 use type_bridge_schema_codegen::TypeScriptEmitter;
 
 fn main() {
@@ -24,7 +29,9 @@ fn main() {
     )])
     .expect("acceptance schema parses");
     let declared = normalize_documents(&documents).expect("acceptance schema normalizes");
-    let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("semantic profile is valid");
+    let profile_name = env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")
+        .unwrap_or_else(|_| "typedb-3.12.1/v1".to_owned());
+    let profile = SemanticProfileId::new(&profile_name).expect("semantic profile is valid");
     let resolved = resolve(&declared, &profile).expect("acceptance schema resolves");
     let emitter = TypeScriptEmitter::new();
     let handlers = emitter.generator_handlers();
@@ -37,7 +44,20 @@ fn main() {
         &resources,
     )
     .expect("acceptance schema projects");
-    let package = emitter.emit(&projection).expect("TypeScript package emits");
+    let available: CapabilitySet = BUILTIN_SCHEMA_CAPABILITY_IDS
+        .iter()
+        .map(|id| CapabilityId::new(*id).expect("built-in capability ID"))
+        .collect();
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("node-generated-acceptance").expect("acceptance scope"),
+        profile,
+        available,
+    );
+    let authority = build_schema_authority(&declared, declared.required_capabilities(), &context)
+        .expect("acceptance authority builds");
+    let package = emitter
+        .emit(&projection, &authority)
+        .expect("TypeScript package emits");
 
     fs::create_dir_all(&output_path).expect("output directory is created");
     for (relative, bytes) in package.files() {

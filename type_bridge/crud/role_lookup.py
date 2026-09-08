@@ -20,8 +20,8 @@ from type_bridge.expressions import (
 )
 
 if TYPE_CHECKING:
-    from type_bridge.attribute import Attribute
-    from type_bridge.models import Relation
+    from type_bridge.attribute.base import _QueryAttribute as Attribute
+    from type_bridge.models.relation import _QueryRelation as Relation
 
 
 def parse_role_lookup_filters(

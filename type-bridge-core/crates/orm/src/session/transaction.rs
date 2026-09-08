@@ -194,7 +194,7 @@ impl Transaction {
 
     fn check_schema_annotation_support(&self, typeql: &str) -> Result<()> {
         if self.tx_type == TxType::Schema {
-            crate::schema::annotations::check_schema_annotation_support(
+            crate::_schema::annotations::check_schema_annotation_support(
                 typeql,
                 self.server_version,
             )?;

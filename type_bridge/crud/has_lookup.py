@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from type_bridge.expressions.base import Expression
 
 if TYPE_CHECKING:
-    from type_bridge.attribute.base import Attribute
-    from type_bridge.models.base import TypeDBType
+    from type_bridge.attribute.base import _QueryAttribute as Attribute
+    from type_bridge.models.base import _QueryTypeDBType as TypeDBType
     from type_bridge.session import Connection
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ def _build_has_query(
     """Build has-lookup TypeQL through the Rust ORM query builder."""
     core = _rust_core()
     expression = _has_lookup_expression(attr_class, value)
-    return core.build_has_lookup_query(
+    return core._query_build_has_lookup_query(
         kind,
         attr_class.get_attribute_name(),
         expression,
@@ -61,7 +61,7 @@ def has_lookup(
     Returns:
         Hydrated model instances (mixed concrete types).
     """
-    from type_bridge.models.registry import ModelRegistry
+    from type_bridge.models.registry import _QueryModelRegistry as ModelRegistry
     from type_bridge.session import ConnectionExecutor
 
     query = _build_has_query(attr_class, value, kind=kind, type_name=type_name)
@@ -222,7 +222,7 @@ def _hydrate_results(
         connection: Connection used for the relation follow-up fetches.
     """
     from type_bridge.crud.exceptions import HydrationError
-    from type_bridge.models.relation import Relation
+    from type_bridge.models.relation import _QueryRelation as Relation
 
     instances: list[Any] = []
     for result in results:

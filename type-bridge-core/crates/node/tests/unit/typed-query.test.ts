@@ -2,16 +2,39 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import {
+  AggregateSpec,
+  ComparisonExpr,
+  SortExpr,
   TypedQuery,
   agg,
-  attr,
+  long,
+  string,
   type AggregateInput,
   type DynamicEntityRow,
   type DynamicQuerySpec,
 } from "../../typescript/index.js";
 
-class Name extends attr.String("q-name") {}
-class Age extends attr.Integer("q-age") {}
+const nameField = { attrName: "q-name" } as const;
+const ageField = { attrName: "q-age" } as const;
+
+const name = {
+  eq: (value: string) => new ComparisonExpr(nameField.attrName, "eq", string(value)),
+  startsWith: (value: string) =>
+    new ComparisonExpr(nameField.attrName, "starts_with", string(value)),
+  asc: () => new SortExpr(nameField.attrName, "Asc"),
+};
+
+const age = {
+  ne: (value: bigint) => new ComparisonExpr(ageField.attrName, "neq", long(value)),
+  gt: (value: bigint) => new ComparisonExpr(ageField.attrName, "gt", long(value)),
+  gte: (value: bigint) => new ComparisonExpr(ageField.attrName, "gte", long(value)),
+  desc: () => new SortExpr(ageField.attrName, "Desc"),
+  avg: () =>
+    new AggregateSpec(
+      { result_key: "avg_q_age", function: "mean", attr_name: ageField.attrName },
+      "avg_q-age",
+    ),
+};
 
 // Records the spec/args each terminal method receives and returns canned rows,
 // so the query builder and aggregate normalizers can be exercised without a DB.
@@ -58,7 +81,7 @@ function queryOver(stub: StubManager): TypedQuery<DynamicEntityRow, DynamicEntit
 
 describe("typed query expression serialization", () => {
   test("comparison + boolean tree serializes to the DynamicExpr wire shape", () => {
-    const expr = Age.gte(new Age(18n)).and_(Name.eq(new Name("Al")));
+    const expr = age.gte(18n).and_(name.eq("Al"));
     assert.deepEqual(expr.toExpr(), {
       kind: "and",
       exprs: [
@@ -69,7 +92,7 @@ describe("typed query expression serialization", () => {
   });
 
   test("startsWith carries the raw literal under the starts_with op", () => {
-    assert.deepEqual(Name.startsWith("Al").toExpr(), {
+    assert.deepEqual(name.startsWith("Al").toExpr(), {
       kind: "compare",
       attr_name: "q-name",
       operator: "starts_with",
@@ -78,13 +101,13 @@ describe("typed query expression serialization", () => {
   });
 
   test("ne lowers to the neq wire operator", () => {
-    assert.equal((Age.ne(new Age(1n)).toExpr() as { operator: string }).operator, "neq");
+    assert.equal((age.ne(1n).toExpr() as { operator: string }).operator, "neq");
   });
 });
 
 describe("typed aggregate lowering", () => {
   test("avg lowers to mean; wire key is sanitized, user-facing key keeps the name", () => {
-    const avg = Age.avg();
+    const avg = age.avg();
     assert.deepEqual(avg.input, { result_key: "avg_q_age", function: "mean", attr_name: "q-age" });
     assert.equal(avg.resultKey, "avg_q-age");
   });
@@ -100,8 +123,8 @@ describe("typed query builder", () => {
   test("filter/orderBy/limit/offset accumulate into one spec", () => {
     const stub = new StubManager();
     queryOver(stub)
-      .filter(Age.gt(new Age(30n)))
-      .orderBy(Name.asc(), Age.desc())
+      .filter(age.gt(30n))
+      .orderBy(name.asc(), age.desc())
       .offset(5)
       .limit(10)
       .all();
@@ -119,7 +142,7 @@ describe("typed query builder", () => {
   test("count sends only the expr list", () => {
     const stub = new StubManager();
     stub.countValue = 7n;
-    assert.equal(queryOver(stub).filter(Age.gt(new Age(1n))).count(), 7n);
+    assert.equal(queryOver(stub).filter(age.gt(1n)).count(), 7n);
     assert.deepEqual(stub.lastSpec, {
       expr: [{ kind: "compare", attr_name: "q-age", operator: "gt", value: { value_type: "long", value: "1" } }],
     });
@@ -135,7 +158,7 @@ describe("typed query builder", () => {
   test("execute is an alias for all", () => {
     const stub = new StubManager();
     stub.rows = [{ iid: "0x1", type_name: "q-age", attributes: [] }];
-    const query = queryOver(stub).filter(Age.gt(new Age(1n)));
+    const query = queryOver(stub).filter(age.gt(1n));
     assert.deepEqual(query.execute(), query.all());
   });
 });
@@ -144,7 +167,7 @@ describe("typed aggregate normalization", () => {
   test("aggregate unwraps reduce { value } documents under user-facing keys", () => {
     const stub = new StubManager();
     stub.aggregateRows = [{ count: { value: 2 }, avg_q_age: { value: 31.5 } }];
-    assert.deepEqual(queryOver(stub).aggregate(agg.count(), Age.avg()), {
+    assert.deepEqual(queryOver(stub).aggregate(agg.count(), age.avg()), {
       count: 2,
       "avg_q-age": 31.5,
     });
@@ -153,7 +176,7 @@ describe("typed aggregate normalization", () => {
   test("groupBy maps group<index> back to attribute names", () => {
     const stub = new StubManager();
     stub.groupRows = [{ group0: { value: "Alice" }, count: { value: 1 } }];
-    const result = queryOver(stub).groupBy(Name).aggregate(agg.count());
+    const result = queryOver(stub).groupBy(nameField).aggregate(agg.count());
     assert.deepEqual(result, [{ "q-name": "Alice", count: 1 }]);
     assert.deepEqual(stub.lastGroupFields, ["q-name"]);
   });

@@ -6,7 +6,7 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::entity::TypeBridgeEntity;
+use crate::_entity::TypeBridgeEntity;
 use crate::error::{OrmError, Result};
 use crate::filter::Filter;
 use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, TypeKind};
@@ -23,6 +23,9 @@ use super::query_builder;
 /// inserting, fetching, deleting, and counting entities.
 ///
 /// # Example
+///
+/// This example is ignored because it requires a live TypeDB service and
+/// generated `Person` model values from a consumer package.
 ///
 /// ```ignore
 /// let manager = EntityManager::<Person>::new(&db);
@@ -307,6 +310,9 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
     /// Create a chainable query builder for this entity type.
     ///
     /// # Example
+    ///
+    /// This example is ignored because it requires a live TypeDB service and
+    /// a generated entity type bound by the surrounding manager.
     ///
     /// ```ignore
     /// let adults = manager.query()

@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Unit tests for the .d.ts parity gate's compare logic (Plan 11 Phase 3).
+ * Unit tests for the generated-only .d.ts parity gate's compare logic.
  *
  * These exercise `compareDeclarations` directly with in-memory file maps — no
  * tsc emit — to prove the gate is a real diff gate, not a no-op:

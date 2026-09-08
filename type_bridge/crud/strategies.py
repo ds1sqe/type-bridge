@@ -17,9 +17,10 @@ from type_bridge.query.ast import (
 )
 
 if TYPE_CHECKING:
-    from type_bridge.attribute.base import Attribute
-    from type_bridge.models import Entity, Relation
-    from type_bridge.models.base import TypeDBType
+    from type_bridge.attribute.base import _QueryAttribute as Attribute
+    from type_bridge.models.base import _QueryTypeDBType as TypeDBType
+    from type_bridge.models.entity import _QueryEntity as Entity
+    from type_bridge.models.relation import _QueryRelation as Relation
 
 logger = logging.getLogger(__name__)
 
@@ -230,3 +231,12 @@ class RelationStrategy(ModelStrategy["Relation"]):
         # Combine all patterns: entity patterns first, then the relation
         all_patterns: list = entity_patterns + [relation_pattern]
         return MatchClause(patterns=all_patterns)
+
+
+_QueryModelStrategy = ModelStrategy
+_QueryEntityStrategy = EntityStrategy
+_QueryRelationStrategy = RelationStrategy
+
+del ModelStrategy
+del EntityStrategy
+del RelationStrategy

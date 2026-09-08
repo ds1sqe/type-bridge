@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use crate::descriptor::{EntityDescriptor, RelationDescriptor};
-use crate::dynamic::{
+use crate::_descriptor::{EntityDescriptor, RelationDescriptor};
+use crate::_dynamic::{
     DynamicAggregate, DynamicAttributeMap, DynamicEntityIdentity, DynamicEntityRow, DynamicExpr,
     DynamicRelationIdentity, DynamicRelationRow, DynamicRolePlayerInput, DynamicSort,
 };
@@ -220,7 +220,7 @@ impl<'db> DynamicEntityManager<'db> {
     /// Completely replace non-key ownership on one exact-type entity identified by a mandatory
     /// canonical IID; omitted optional and multivalue values are removed.
     pub async fn update_exact(&self, iid: &str, attributes: &DynamicAttributeMap) -> Result<()> {
-        crate::dynamic::validate_exact_iid(&self.descriptor.type_name, iid)?;
+        crate::_dynamic::validate_exact_iid(&self.descriptor.type_name, iid)?;
         for (name, _) in attributes {
             if self.descriptor.attribute(name).is_none() {
                 return Err(OrmError::QueryExecution(format!(
@@ -246,6 +246,109 @@ impl<'db> DynamicEntityManager<'db> {
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT UPDATE");
         self.target.execute(&typeql, TxType::Write).await?;
         Ok(())
+    }
+
+    /// Replace and rehydrate one exact entity in the same write transaction.
+    pub async fn update_and_get_exact(
+        &self,
+        iid: &str,
+        attributes: &DynamicAttributeMap,
+    ) -> Result<DynamicEntityRow> {
+        match &self.target {
+            DynamicExecutionTarget::Database(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                match manager
+                    .update_and_get_exact_in_transaction(iid, attributes)
+                    .await
+                {
+                    Ok(row) => {
+                        tx.commit().await?;
+                        Ok(row)
+                    }
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            }
+            DynamicExecutionTarget::CanonicalDatabase(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager =
+                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                match manager
+                    .update_and_get_exact_in_transaction(iid, attributes)
+                    .await
+                {
+                    Ok(row) => {
+                        tx.commit().await?;
+                        Ok(row)
+                    }
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            }
+            DynamicExecutionTarget::Transaction(tx)
+            | DynamicExecutionTarget::CanonicalTransaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                self.update_and_get_exact_in_transaction(iid, attributes)
+                    .await
+            }
+        }
+    }
+
+    /// Replace and rehydrate exact entities atomically in input order.
+    pub async fn update_many_and_get_exact(
+        &self,
+        items: &[(String, DynamicAttributeMap)],
+    ) -> Result<Vec<DynamicEntityRow>> {
+        if items.is_empty() {
+            return Ok(vec![]);
+        }
+        match &self.target {
+            DynamicExecutionTarget::Database(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                match manager
+                    .update_many_and_get_exact_in_transaction(items)
+                    .await
+                {
+                    Ok(rows) => {
+                        tx.commit().await?;
+                        Ok(rows)
+                    }
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            }
+            DynamicExecutionTarget::CanonicalDatabase(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager =
+                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                match manager
+                    .update_many_and_get_exact_in_transaction(items)
+                    .await
+                {
+                    Ok(rows) => {
+                        tx.commit().await?;
+                        Ok(rows)
+                    }
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            }
+            DynamicExecutionTarget::Transaction(tx)
+            | DynamicExecutionTarget::CanonicalTransaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                self.update_many_and_get_exact_in_transaction(items).await
+            }
+        }
     }
 
     /// Fetch entities matching equality filters.
@@ -284,6 +387,54 @@ impl<'db> DynamicEntityManager<'db> {
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXPR FETCH");
         let result = self.target.execute(&typeql, TxType::Read).await?;
         self.hydrate_documents(result)
+    }
+
+    /// Fetch exact-type entities matching dynamic expressions, sorting, and pagination.
+    pub async fn get_exact_with_query(
+        &self,
+        expressions: &[DynamicExpr],
+        sorts: &[DynamicSort],
+        limit: Option<u64>,
+        offset: Option<u64>,
+    ) -> Result<Vec<DynamicEntityRow>> {
+        let typeql = query_builder::build_dynamic_entity_expr_fetch_exact(
+            &self.descriptor,
+            expressions,
+            sorts,
+            limit,
+            offset,
+            "$e",
+        )?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT EXPR FETCH");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        self.hydrate_documents(result)
+    }
+
+    /// Fetch only the first exact-type entity matching dynamic expressions.
+    pub async fn first_exact_with_query(
+        &self,
+        expressions: &[DynamicExpr],
+    ) -> Result<Option<DynamicEntityRow>> {
+        let typeql = query_builder::build_dynamic_entity_expr_fetch_exact(
+            &self.descriptor,
+            expressions,
+            &[],
+            Some(1),
+            None,
+            "$e",
+        )?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT FIRST");
+        match self.target.execute(&typeql, TxType::Read).await? {
+            QueryResult::Documents(docs) => docs
+                .first()
+                .map(|doc| hydrate_dynamic_entity(&self.descriptor, doc))
+                .transpose(),
+            QueryResult::Ok => Ok(None),
+            QueryResult::Rows(_) => Err(OrmError::Hydration {
+                type_name: self.descriptor.type_name.clone(),
+                message: "Expected Documents from first query, got Rows".into(),
+            }),
+        }
     }
 
     /// Fetch exactly one entity matching equality filters.
@@ -425,6 +576,30 @@ impl<'db> DynamicEntityManager<'db> {
         extract_count(&result)
     }
 
+    /// Count exact-type entities matching dynamic expressions in the database.
+    pub async fn count_exact_with_query(&self, expressions: &[DynamicExpr]) -> Result<u64> {
+        let typeql = query_builder::build_dynamic_entity_expr_count_exact(
+            &self.descriptor,
+            expressions,
+            "$e",
+        )?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT EXPR COUNT");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        extract_count(&result)
+    }
+
+    /// Test exact-type entity existence with a database-side limit-one query.
+    pub async fn exists_exact_with_query(&self, expressions: &[DynamicExpr]) -> Result<bool> {
+        let typeql = query_builder::build_dynamic_entity_expr_exists_exact(
+            &self.descriptor,
+            expressions,
+            "$e",
+        )?;
+        tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT EXPR EXISTS");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        extract_exists(&self.descriptor.type_name, result)
+    }
+
     /// Run aggregate reductions over entities matching equality filters.
     pub async fn aggregate(
         &self,
@@ -515,6 +690,43 @@ impl<'db> DynamicEntityManager<'db> {
         Ok(())
     }
 
+    /// Delete exact-type entities atomically by canonical IID.
+    pub async fn delete_many_by_iid_exact(&self, iids: &[String]) -> Result<()> {
+        if iids.is_empty() {
+            return Ok(());
+        }
+        match &self.target {
+            DynamicExecutionTarget::Database(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                match manager.delete_many_by_iid_exact_in_transaction(iids).await {
+                    Ok(()) => tx.commit().await,
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            }
+            DynamicExecutionTarget::CanonicalDatabase(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager =
+                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                match manager.delete_many_by_iid_exact_in_transaction(iids).await {
+                    Ok(()) => tx.commit().await,
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            }
+            DynamicExecutionTarget::Transaction(tx)
+            | DynamicExecutionTarget::CanonicalTransaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                self.delete_many_by_iid_exact_in_transaction(iids).await
+            }
+        }
+    }
+
     async fn put_exact_in_transaction(&self, attributes: &DynamicAttributeMap) -> Result<String> {
         let Some(typeql) = query_builder::build_dynamic_entity_exact_key_lookup(
             &self.descriptor,
@@ -533,6 +745,41 @@ impl<'db> DynamicEntityManager<'db> {
             }
             None => self.insert(attributes).await,
         }
+    }
+
+    async fn update_and_get_exact_in_transaction(
+        &self,
+        iid: &str,
+        attributes: &DynamicAttributeMap,
+    ) -> Result<DynamicEntityRow> {
+        self.update_exact(iid, attributes).await?;
+        self.get_by_iid_exact(iid).await?.ok_or_else(|| {
+            OrmError::NotFound(format!(
+                "Exact entity {} at IID {iid} was not found after update",
+                self.descriptor.type_name
+            ))
+        })
+    }
+
+    async fn update_many_and_get_exact_in_transaction(
+        &self,
+        items: &[(String, DynamicAttributeMap)],
+    ) -> Result<Vec<DynamicEntityRow>> {
+        let mut rows = Vec::with_capacity(items.len());
+        for (iid, attributes) in items {
+            rows.push(
+                self.update_and_get_exact_in_transaction(iid, attributes)
+                    .await?,
+            );
+        }
+        Ok(rows)
+    }
+
+    async fn delete_many_by_iid_exact_in_transaction(&self, iids: &[String]) -> Result<()> {
+        for iid in iids {
+            self.delete_by_iid_exact(iid).await?;
+        }
+        Ok(())
     }
 
     async fn write_many(
@@ -845,6 +1092,114 @@ impl<'db> DynamicRelationManager<'db> {
         }
     }
 
+    /// Replace and rehydrate one exact relation in the same write transaction.
+    pub async fn update_and_get_exact(
+        &self,
+        iid: &str,
+        attributes: &DynamicAttributeMap,
+        role_players: &[DynamicRolePlayerInput],
+    ) -> Result<DynamicRelationRow> {
+        validate_relation_exact_update_input(&self.descriptor, iid, attributes, role_players)?;
+        match &self.target {
+            DynamicExecutionTarget::Database(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                match manager
+                    .update_and_get_exact_in_transaction(iid, attributes, role_players)
+                    .await
+                {
+                    Ok(row) => {
+                        tx.commit().await?;
+                        Ok(row)
+                    }
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            }
+            DynamicExecutionTarget::CanonicalDatabase(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager =
+                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                match manager
+                    .update_and_get_exact_in_transaction(iid, attributes, role_players)
+                    .await
+                {
+                    Ok(row) => {
+                        tx.commit().await?;
+                        Ok(row)
+                    }
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            }
+            DynamicExecutionTarget::Transaction(tx)
+            | DynamicExecutionTarget::CanonicalTransaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                self.update_and_get_exact_in_transaction(iid, attributes, role_players)
+                    .await
+            }
+        }
+    }
+
+    /// Replace and rehydrate exact relations atomically in input order.
+    pub async fn update_many_and_get_exact(
+        &self,
+        items: &[(String, DynamicAttributeMap, Vec<DynamicRolePlayerInput>)],
+    ) -> Result<Vec<DynamicRelationRow>> {
+        if items.is_empty() {
+            return Ok(vec![]);
+        }
+        for (iid, attributes, role_players) in items {
+            validate_relation_exact_update_input(&self.descriptor, iid, attributes, role_players)?;
+        }
+        match &self.target {
+            DynamicExecutionTarget::Database(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                match manager
+                    .update_many_and_get_exact_in_transaction(items)
+                    .await
+                {
+                    Ok(rows) => {
+                        tx.commit().await?;
+                        Ok(rows)
+                    }
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            }
+            DynamicExecutionTarget::CanonicalDatabase(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager =
+                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                match manager
+                    .update_many_and_get_exact_in_transaction(items)
+                    .await
+                {
+                    Ok(rows) => {
+                        tx.commit().await?;
+                        Ok(rows)
+                    }
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            }
+            DynamicExecutionTarget::Transaction(tx)
+            | DynamicExecutionTarget::CanonicalTransaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                self.update_many_and_get_exact_in_transaction(items).await
+            }
+        }
+    }
+
     /// Put one exact concrete relation.
     ///
     /// Declared keys identify at most one relation. A hit preserves its IID
@@ -1103,6 +1458,44 @@ impl<'db> DynamicRelationManager<'db> {
         Ok(())
     }
 
+    async fn update_and_get_exact_in_transaction(
+        &self,
+        iid: &str,
+        attributes: &DynamicAttributeMap,
+        role_players: &[DynamicRolePlayerInput],
+    ) -> Result<DynamicRelationRow> {
+        self.update_exact_in_transaction(iid, attributes, role_players)
+            .await?;
+        match self.get_by_iid_exact(iid).await?.as_slice() {
+            [row] => Ok(row.clone()),
+            [] => Err(OrmError::NotFound(format!(
+                "Exact relation {} at IID {iid} was not found after update",
+                self.descriptor.type_name
+            ))),
+            rows => Err(OrmError::Hydration {
+                type_name: self.descriptor.type_name.clone(),
+                message: format!(
+                    "Exact relation update returned {} rows for IID {iid}",
+                    rows.len()
+                ),
+            }),
+        }
+    }
+
+    async fn update_many_and_get_exact_in_transaction(
+        &self,
+        items: &[(String, DynamicAttributeMap, Vec<DynamicRolePlayerInput>)],
+    ) -> Result<Vec<DynamicRelationRow>> {
+        let mut rows = Vec::with_capacity(items.len());
+        for (iid, attributes, role_players) in items {
+            rows.push(
+                self.update_and_get_exact_in_transaction(iid, attributes, role_players)
+                    .await?,
+            );
+        }
+        Ok(rows)
+    }
+
     /// Fetch relations matching equality filters.
     pub async fn get(&self, filters: &[Filter]) -> Result<Vec<DynamicRelationRow>> {
         let typeql = query_builder::build_dynamic_relation_fetch(&self.descriptor, filters, "$r")?;
@@ -1139,6 +1532,55 @@ impl<'db> DynamicRelationManager<'db> {
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXPR FETCH");
         let result = self.target.execute(&typeql, TxType::Read).await?;
         self.hydrate_documents(result)
+    }
+
+    /// Fetch exact-type relations matching dynamic expressions, sorting, and pagination.
+    pub async fn get_exact_with_query(
+        &self,
+        expressions: &[DynamicExpr],
+        sorts: &[DynamicSort],
+        limit: Option<u64>,
+        offset: Option<u64>,
+    ) -> Result<Vec<DynamicRelationRow>> {
+        let typeql = query_builder::build_dynamic_relation_expr_fetch_exact(
+            &self.descriptor,
+            expressions,
+            sorts,
+            limit,
+            offset,
+            "$r",
+        )?;
+        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXACT EXPR FETCH");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        self.hydrate_documents(result)
+    }
+
+    /// Fetch only the first exact-type relation matching dynamic expressions.
+    pub async fn first_exact_with_query(
+        &self,
+        expressions: &[DynamicExpr],
+    ) -> Result<Option<DynamicRelationRow>> {
+        let typeql = query_builder::build_dynamic_relation_expr_fetch_exact(
+            &self.descriptor,
+            expressions,
+            &[],
+            Some(1),
+            None,
+            "$r",
+        )?;
+        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXACT FIRST");
+        match self.target.execute(&typeql, TxType::Read).await? {
+            QueryResult::Documents(docs) => {
+                let first = docs.first().into_iter().cloned().collect::<Vec<_>>();
+                coalesce_dynamic_relations(&self.descriptor, &first)
+                    .map(|rows| rows.into_iter().next())
+            }
+            QueryResult::Ok => Ok(None),
+            QueryResult::Rows(_) => Err(OrmError::Hydration {
+                type_name: self.descriptor.type_name.clone(),
+                message: "Expected Documents from first query, got Rows".into(),
+            }),
+        }
     }
 
     /// Fetch relations matching attribute and role-player filters.
@@ -1234,7 +1676,7 @@ impl<'db> DynamicRelationManager<'db> {
 
     /// Discover at most one concrete relation identity by canonical IID.
     pub async fn discover_by_iid(&self, iid: &str) -> Result<Option<DynamicRelationIdentity>> {
-        crate::dynamic::validate_relation_iid(&self.descriptor.type_name, iid)?;
+        crate::_dynamic::validate_relation_iid(&self.descriptor.type_name, iid)?;
         let q = query_builder::build_dynamic_relation_identity_discovery(
             &self.descriptor,
             Some(iid),
@@ -1288,6 +1730,50 @@ impl<'db> DynamicRelationManager<'db> {
         self.target.execute(&q, TxType::Write).await.map(|_| ())
     }
 
+    /// Delete exact-type relations atomically by canonical IID.
+    pub async fn delete_many_by_iid_exact(&self, iids: &[String]) -> Result<()> {
+        if iids.is_empty() {
+            return Ok(());
+        }
+        match &self.target {
+            DynamicExecutionTarget::Database(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                match manager.delete_many_by_iid_exact_in_transaction(iids).await {
+                    Ok(()) => tx.commit().await,
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            }
+            DynamicExecutionTarget::CanonicalDatabase(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                let manager =
+                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                match manager.delete_many_by_iid_exact_in_transaction(iids).await {
+                    Ok(()) => tx.commit().await,
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            }
+            DynamicExecutionTarget::Transaction(tx)
+            | DynamicExecutionTarget::CanonicalTransaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                self.delete_many_by_iid_exact_in_transaction(iids).await
+            }
+        }
+    }
+
+    async fn delete_many_by_iid_exact_in_transaction(&self, iids: &[String]) -> Result<()> {
+        for iid in iids {
+            self.delete_by_iid_exact(iid).await?;
+        }
+        Ok(())
+    }
+
     /// Count relations for this descriptor.
     pub async fn count(&self) -> Result<u64> {
         self.count_with_filters(&[]).await
@@ -1308,6 +1794,30 @@ impl<'db> DynamicRelationManager<'db> {
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXPR COUNT");
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_count(&result)
+    }
+
+    /// Count exact-type relations matching dynamic expressions in the database.
+    pub async fn count_exact_with_query(&self, expressions: &[DynamicExpr]) -> Result<u64> {
+        let typeql = query_builder::build_dynamic_relation_expr_count_exact(
+            &self.descriptor,
+            expressions,
+            "$r",
+        )?;
+        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXACT EXPR COUNT");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        extract_count(&result)
+    }
+
+    /// Test exact-type relation existence with a database-side limit-one query.
+    pub async fn exists_exact_with_query(&self, expressions: &[DynamicExpr]) -> Result<bool> {
+        let typeql = query_builder::build_dynamic_relation_expr_exists_exact(
+            &self.descriptor,
+            expressions,
+            "$r",
+        )?;
+        tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXACT EXPR EXISTS");
+        let result = self.target.execute(&typeql, TxType::Read).await?;
+        extract_exists(&self.descriptor.type_name, result)
     }
 
     /// Run aggregate reductions over relations matching equality filters.
@@ -1496,7 +2006,7 @@ fn validate_relation_exact_write_input(
     policy: ExactWritePolicy,
 ) -> Result<()> {
     if matches!(policy, ExactWritePolicy::Update) {
-        crate::dynamic::validate_relation_iid(&descriptor.type_name, iid.unwrap_or_default())?;
+        crate::_dynamic::validate_relation_iid(&descriptor.type_name, iid.unwrap_or_default())?;
     }
     validate_relation_exact_update_input_inner(descriptor, attributes, players, policy)
 }
@@ -1682,7 +2192,7 @@ fn validate_relation_exact_update_input_inner(
             }
         }
         if let Some((key, value)) = &player.key {
-            if crate::dynamic::is_blank_key_value(value) {
+            if crate::_dynamic::is_blank_key_value(value) {
                 return Err(OrmError::QueryExecution(format!(
                     "{}: player key value must be nonblank",
                     descriptor.type_name
@@ -2001,6 +2511,20 @@ fn extract_exact_key_lookup_iid(type_name: &str, result: QueryResult) -> Result<
     }
 }
 
+fn extract_exists(type_name: &str, result: QueryResult) -> Result<bool> {
+    match result {
+        QueryResult::Documents(documents) => Ok(!documents.is_empty()),
+        QueryResult::Ok => Err(OrmError::Hydration {
+            type_name: type_name.to_owned(),
+            message: "Expected Documents from limit-one existence query, got Ok".into(),
+        }),
+        QueryResult::Rows(_) => Err(OrmError::Hydration {
+            type_name: type_name.to_owned(),
+            message: "Expected Documents from limit-one existence query, got Rows".into(),
+        }),
+    }
+}
+
 fn extract_rows(
     type_name: &str,
     result: QueryResult,
@@ -2026,8 +2550,8 @@ fn extract_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::attribute::ValueType;
-    use crate::descriptor::OwnedAttributeDescriptor;
+    use crate::_attribute::ValueType;
+    use crate::_descriptor::OwnedAttributeDescriptor;
 
     fn attribute(
         field_name: &str,

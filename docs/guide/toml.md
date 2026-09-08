@@ -1,388 +1,45 @@
-# TOML Schema DSL
+# TOML recovery and conversion
 
-Author TypeDB schemas in TOML instead of TypeQL.
+TOML is not an active TypeBridge schema or model-authoring format. The retained
+surface is a frozen, read-only conversion from historical TOML bytes to TypeQL
+so an existing system can be recovered into a canonical Split-YAML workspace.
 
-> **Deprecated:** direct TOML desired-schema authoring is scheduled for
-> removal in type-bridge 2.1.0 — see the
-> [V2 deprecation inventory](v2-deprecations.md#toml-schema-authoring).
-> Both authoring routes (`generate_models(..., format="toml")` and `.toml`
-> auto-routing) emit a Python `DeprecationWarning`. Author split YAML schema
-> documents for new work; deployments that still author TOML must translate
-> before upgrading past 2.0.x or pin `type-bridge>=2,<2.1`. The read-only
-> `type_bridge_core.toml_to_typeql` converter remains permanent for
-> rendering existing TOML schemas during migration.
-
-## Overview
-
-TypeBridge accepts schemas in two formats: TypeQL (`.tql`) and a TOML
-DSL (`.toml`). Both formats feed the same parser and code generator — TOML
-is an alternative authoring surface, not a separate pipeline.
-
-The TOML DSL is useful when you prefer a data-file syntax over TypeQL prose,
-want IDE tooling for schema keys, or are generating schema files
-programmatically.
-
-## Routing
-
-When `generate_models` receives a path that ends in `.toml`, it
-automatically routes the file through the TOML transpiler before passing the
-result to the generator. No extra flags are required.
+## Convert a frozen input
 
 ```python
-from type_bridge.generator import generate_models
+from pathlib import Path
 
-# .toml suffix routes automatically through the transpiler
-generate_models("schema.toml", "out/models/")
+from type_bridge_core import toml_to_typeql
+
+source = Path("historical-schema.toml").read_text(encoding="utf-8")
+typeql = toml_to_typeql(source)
+Path("historical-schema.typeql").write_text(typeql, encoding="utf-8")
 ```
 
-If you hold TOML text in memory (not in a file), pass `format="toml"` to
-force the TOML path:
-
-```python
-toml_text = """
-[attributes.name]
-value = "string"
-
-[entities.person]
-owns = ["name"]
-"""
-
-generate_models(toml_text, "out/models/", format="toml")
-```
-
-A `.tql` file or raw TypeQL text continues to work exactly as before.
-
-## DSL Reference
-
-### Attributes
-
-```toml
-[attributes.NAME]
-value = "string"      # value type (see table below); required unless sub is set
-sub   = "parent"      # inherit from a parent attribute instead of declaring a value type
-abstract = true       # mark as abstract
-bindgen_case = "SnakeCase" # specify class name case explicitly for bindgen
-annotations = ["dto_name(MyDTO)"] # specify code generator annotations for bindgen
-
-
-# Annotation constraints (optional, combine as needed)
-regex  = "^active|inactive$"
-values = ["active", "inactive"]
-range  = "0..150"
-```
-
-`value` and `sub` are mutually exclusive — an attribute either has a value
-type or inherits from a parent, not both.
-
-**Supported value types:**
-
-| TOML value      | TypeDB type  |
-| --------------- | ------------ |
-| `"string"`      | `string`     |
-| `"long"`        | `long`       |
-| `"integer"`     | `integer`    |
-| `"int"`         | `integer`    |
-| `"double"`      | `double`     |
-| `"boolean"`     | `boolean`    |
-| `"bool"`        | `boolean`    |
-| `"datetime"`    | `datetime`   |
-| `"datetime-tz"` | `datetime-tz`|
-| `"date"`        | `date`       |
-| `"duration"`    | `duration`   |
-| `"decimal"`     | `decimal`    |
-
-**Example — annotation constraints:**
-
-```toml
-[attributes.status]
-value  = "string"
-values = ["active", "inactive", "archived"]
-
-[attributes.age]
-value = "integer"
-range = "0..150"
-
-[attributes.email]
-value = "string"
-regex = "^[^@]+@[^@]+\\.[^@]+$"
-
-[attributes.person-id]
-sub = "id"     # inherits from id; no value key
-```
-
-### Entities
-
-```toml
-[entities.NAME]
-sub      = "parent"    # optional; inherit from another entity
-abstract = true        # optional; mark as abstract
-bindgen_case = "PascalCase" # optional; explicitly override class case naming
-annotations = ["dto_name(MyDTO)"] # optional; add custom generator annotations
-owns     = [...]       # list of owned attributes (see below)
-plays    = [...]       # list of roles the entity plays (see below)
-```
-
-**`owns` entries** accept either a plain string (attribute name) or a table
-with options:
-
-```toml
-owns = [
-    "name",                                       # optional, no annotation
-    { attribute = "email", key = true },          # @key
-    { attribute = "tag",   unique = true },       # @unique
-    { attribute = "score", card = "0..100" },     # @card(0..100)
-]
-```
-
-**`plays` entries** are tables that name the relation and role:
-
-```toml
-plays = [
-    { relation = "employment", role = "employee" },
-    { relation = "friendship", role = "friend", card = "0..5" },
-]
-```
-
-Set `card` on a `plays` entry to emit plays-side cardinality:
-`plays relation:role @card(...)`.
-
-**Full entity example:**
-
-```toml
-[attributes.username]
-value = "string"
-
-[attributes.score]
-value = "integer"
-range = "0..10000"
-
-[attributes.tag]
-value  = "string"
-values = ["beginner", "intermediate", "expert"]
-
-[entities.user]
-bindgen_case = "PascalCase"
-annotations = ["dto_name(UserDto)"]
-owns = [
-    { attribute = "username", key = true },
-    "score",
-    { attribute = "tag", card = "0..3" },
-]
-plays = [
-    { relation = "membership", role = "member" }
-]
-```
-
-### Relations
-
-```toml
-[relations.NAME]
-sub      = "parent"    # optional; inherit from another relation
-abstract = true        # optional; mark as abstract
-bindgen_case = "PascalCase" # optional; explicitly override class case naming
-annotations = ["dto_name(MyDTO)"] # optional; add custom generator annotations
-roles    = [...]       # list of role definitions (see below)
-owns     = [...]       # list of owned attributes (same syntax as entities)
-plays    = [...]       # roles this relation itself plays
-```
-
-**`roles` entries** define the roles a relation relates. Each role is a table:
-
-```toml
-roles = [
-    { name = "employer" },                        # no cardinality constraint
-    { name = "employee", card = "1..3" },         # @card(1..3)
-    { name = "author",   as = "contributor" },    # role override
-]
-```
-
-`card` sets the `@card` annotation on the role. `as` sets a role override
-(`as contributor`).
-
-Relations can also play roles in other relations, using the same `plays`
-entry syntax as entities:
-
-```toml
-[relations.publication]
-roles = [{ name = "publisher" }]
-plays = [
-    { relation = "contribution", role = "work" },
-    { relation = "review", role = "reviewed", card = "0..5" },
-]
-```
-
-**Full relation example:**
-
-```toml
-[relations.membership]
-roles = [
-    { name = "member", card = "1.." },
-    { name = "group",  card = "1..1" },
-]
-owns = ["joined-at"]
-plays = []
-```
-
-### Functions
-
-```toml
-[functions.NAME]
-signature = "fun NAME($param: type) -> return-type"
-body      = """
-  match
-    ...;
-  return ...;"""
-```
-
-The `signature` string is the full TypeQL function signature, without a
-trailing colon. The `body` string is verbatim TypeQL passed through to the
-transpiler unchanged.
-
-Stream return (curly-brace form):
-
-```toml
-[functions.top-scorer]
-signature = "fun top-scorer($g: game) -> { player }"
-body = """  match
-    ($g, $p) isa participation;
-  return { $p };"""
-```
-
-Scalar return:
-
-```toml
-[functions.max-score]
-signature = "fun max-score($g: game) -> double"
-body = """  match
-    $g has score $s;
-  return max($s);"""
-```
-
-### Structs
-
-```toml
-[structs.NAME]
-fields = [
-    { name = "field-name", type = "string" },
-    { name = "optional-field", type = "integer", optional = true },
-]
-```
-
-Each field entry must have `name` and `type`. Set `optional = true` for
-nullable fields (generates `field: T | None = None` in Python).
-
-```toml
-[structs.player-stats]
-fields = [
-    { name = "wins",     type = "integer" },
-    { name = "losses",   type = "integer" },
-    { name = "nickname", type = "string",  optional = true },
-]
-```
-
-## Complete Example
-
-The following schema combines every TOML family:
-
-```toml
-# Attributes
-[attributes.email]
-value = "string"
-regex = "^[^@]+@[^@]+\\.[^@]+$"
-
-[attributes.username]
-value = "string"
-
-[attributes.score]
-value    = "integer"
-range    = "0..10000"
-
-[attributes.tag]
-value  = "string"
-values = ["beginner", "intermediate", "expert"]
-
-[attributes.created-at]
-value = "datetime"
-
-# Entities
-[entities.user]
-owns = [
-    { attribute = "username",     key  = true },
-    "email",
-    "score",
-    { attribute = "tag",          card = "0..5" },
-]
-plays = [{ relation = "membership", role = "member" }]
-
-[entities.team]
-owns = [
-    { attribute = "username", key = true },
-    "created-at",
-]
-plays = [{ relation = "membership", role = "group" }]
-
-# Relations
-[relations.membership]
-roles = [
-    { name = "member", card = "1.."  },
-    { name = "group",  card = "1..1" },
-]
-owns = ["created-at"]
-
-# Functions
-[functions.team-members]
-signature = "fun team-members($t: team) -> { user }"
-body = """  match
-    ($t, $u) isa membership;
-  return { $u };"""
-
-# Structs
-[structs.user-profile]
-fields = [
-    { name = "display-name", type = "string" },
-    { name = "bio",          type = "string", optional = true },
-]
-```
-
-Generate models from this file:
-
-```python
-from type_bridge.generator import generate_models
-
-generate_models("schema.toml", "out/models/")
-```
-
-Or from TOML text held in memory:
-
-```python
-generate_models(toml_text, "out/models/", format="toml")
-```
-
-## Error Reporting
-
-A malformed TOML schema raises `ValueError` with a message that identifies
-the offending field or type. Common errors:
-
-| Condition | Example error |
-| --------- | ------------- |
-| Attribute has both `value` and `sub` | `"Attribute 'id': cannot set both value and sub"` |
-| Unknown value type | `"Attribute 'score': unknown value type 'uint'"` |
-| Attribute `sub` references an unknown parent | `"Attribute 'child-id': sub parent 'unknown' not defined"` |
-| Role player references an unknown type | `"Relation 'review': role 'reviewer' player type not found"` |
-| Struct with no fields | `"Struct 'empty-struct': fields list is empty"` |
-| Malformed function body | `"Function 'my-fn': body does not contain a return statement"` |
-
-## Current Scope
-
-The TOML DSL covers attributes, entities, relations, functions, and structs for
-the schema forms used by the generator. It supports abstract subtypes,
-relation-level `plays`, and per-`plays` cardinality. TOML is still a front-end
-to TypeQL: emitted TypeQL is parsed by the shared schema parser before model
-generation.
-
-## See Also
-
-- [Code Generator](generator.md) — full `generate_models` API reference and CLI usage
-- [Attributes](attributes.md) — attribute types and constraints
-- [Entities](entities.md) — entity inheritance and ownership
-- [Relations](relations.md) — relations, roles, and role players
+The converter does not connect to TypeDB, generate application models, write a
+workspace, or become desired-schema authority. Preserve the original bytes and
+review the emitted TypeQL.
+
+## Move to Split-YAML
+
+1. Freeze and checksum the historical TOML input.
+2. Convert it with `type_bridge_core.toml_to_typeql` and retain the output for
+   review/recovery evidence.
+3. Author an equivalent [Split-YAML workspace](split-yaml-v1.md).
+4. Run `type-bridge schema check`.
+5. Compare the declared schema and migration plan against the recovered TypeQL.
+6. Generate Python, TypeScript, and Rust bindings from the workspace only.
+
+Direct `.toml` generator routing and `generate_models(..., format="toml")` are
+not retained. New schema changes belong in Split-YAML and canonical V2
+migrations.
+
+## Frozen parser contract
+
+The converter remains strict and bounded for recovery. Invalid TOML, unknown
+historical shapes, duplicate definitions, unresolved players, or unsupported
+values fail without producing partial active authority. Frozen fixtures verify
+deterministic output and diagnostics.
+
+See the [upgrade guide](upgrade-v2.md) and
+[compatibility inventory](v2-deprecations.md) before removing a pre-cutover pin.

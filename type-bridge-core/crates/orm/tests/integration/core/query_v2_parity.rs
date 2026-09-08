@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 use crate::common::dynamic_crud::{
     DynamicCrudSchema, company_attrs, relation_attrs, role_players, setup_dynamic_database,
 };
+use crate::internal::*;
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_orm::integration_test_support::adapt_match_request_for_live_test;
 use type_bridge_orm::*;

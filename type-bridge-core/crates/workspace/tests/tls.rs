@@ -197,6 +197,40 @@ fn explicit_tls_truth_table_resolves_to_one_typed_policy() {
 }
 
 #[test]
+fn schema_authority_output_cannot_replace_configured_trust_material() {
+    let directory = TempDirectory::new("authority-output-overlap");
+    directory.write("certs/root.json", TEST_CA_PEM);
+    let manifest = yaml("    tls: 'true'\n    tls-root-ca: ../certs/root.json\n").replace(
+        "environments:\n",
+        "artifacts:\n  schema-authority:\n    output: ../certs/root.json\nenvironments:\n",
+    );
+    let origin = ConfigOrigin::new(
+        directory.root(),
+        "config/typebridge.yaml",
+        "authority output overlap fixture",
+    )
+    .unwrap();
+    let error = TypeBridgeConfigSpec::parse_yaml(manifest, origin)
+        .unwrap()
+        .resolve(&TypeBridgeConfigServices::new(
+            &SystemSchemaSourceService,
+            &AcceptSecrets,
+            &AcceptExtensions,
+        ))
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::OverlappingWorkspacePath
+    );
+    assert_eq!(
+        error.detail(),
+        Some("artifact.schema_authority,environment.dev.tls_root_ca")
+    );
+    assert_eq!(error.origin(), Some("authority output overlap fixture"));
+    assert!(error.source_span().is_some());
+}
+
+#[test]
 fn root_ca_without_enabled_tls_is_a_spanned_contradiction() {
     let directory = TempDirectory::new("contradictions");
     directory.write("certs/root.pem", TEST_CA_PEM);

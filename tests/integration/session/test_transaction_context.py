@@ -3,15 +3,16 @@
 import pytest
 from typedb.driver import TransactionType
 
-from type_bridge import (
+from tests.utils.handwritten import (
+    AttributeFlags,
     Entity,
     Flag,
     Integer,
     Key,
-    SchemaManager,
     String,
     TypeFlags,
 )
+from tests.utils.typeql import define_schema
 
 
 @pytest.mark.integration
@@ -20,10 +21,10 @@ def test_transaction_context_commits_all_operations(clean_db):
     """Managers created from a transaction context share a single commit."""
 
     class Prefix(String):
-        flags = TypeFlags(name="prefix")
+        flags = AttributeFlags(name="prefix")
 
     class NextValue(Integer):
-        flags = TypeFlags(name="next_value")
+        flags = AttributeFlags(name="next_value")
 
     class Counter(Entity):
         flags = TypeFlags(name="counter")
@@ -31,15 +32,22 @@ def test_transaction_context_commits_all_operations(clean_db):
         next_value: NextValue
 
     class DisplayId(String):
-        flags = TypeFlags(name="display_id")
+        flags = AttributeFlags(name="display_id")
 
     class Artifact(Entity):
         flags = TypeFlags(name="artifact")
         display_id: DisplayId = Flag(Key)
 
-    schema_manager = SchemaManager(clean_db)
-    schema_manager.register(Counter, Artifact)
-    schema_manager.sync_schema(force=True)
+    define_schema(
+        clean_db,
+        """
+        attribute prefix, value string;
+        attribute next_value, value integer;
+        attribute display_id, value string;
+        entity counter, owns prefix @key, owns next_value;
+        entity artifact, owns display_id @key;
+        """,
+    )
 
     with clean_db.transaction(TransactionType.WRITE) as tx:
         counter_mgr = Counter.manager(tx)
@@ -66,15 +74,19 @@ def test_transaction_context_rolls_back_on_exception(clean_db):
     """Rollback on exception inside context leaves no partial writes."""
 
     class Name(String):
-        flags = TypeFlags(name="name")
+        flags = AttributeFlags(name="name")
 
     class Counter(Entity):
         flags = TypeFlags(name="rollback_counter")
         name: Name = Flag(Key)
 
-    schema_manager = SchemaManager(clean_db)
-    schema_manager.register(Counter)
-    schema_manager.sync_schema(force=True)
+    define_schema(
+        clean_db,
+        """
+        attribute name, value string;
+        entity rollback_counter, owns name @key;
+        """,
+    )
 
     with pytest.raises(RuntimeError):
         with clean_db.transaction(TransactionType.WRITE) as tx:

@@ -11,18 +11,16 @@ use type_bridge_core_lib::ast::{
 };
 use type_bridge_core_lib::compiler::QueryCompiler;
 
-use crate::entity::TypeBridgeEntity;
+use crate::_descriptor::{EntityDescriptor, RelationDescriptor};
+use crate::_dynamic::{
+    DynamicAggregate, DynamicAttributeMap, DynamicExpr, DynamicRolePlayerInput, DynamicSort,
+};
+use crate::_entity::TypeBridgeEntity;
+use crate::_relation::TypeBridgeRelation;
 use crate::error::{OrmError, Result};
 use crate::expr::{Agg, Expr, SortDir};
 use crate::filter::Filter;
-use crate::relation::TypeBridgeRelation;
 use crate::value::AttributeValue;
-use crate::{
-    descriptor::{EntityDescriptor, RelationDescriptor},
-    dynamic::{
-        DynamicAggregate, DynamicAttributeMap, DynamicExpr, DynamicRolePlayerInput, DynamicSort,
-    },
-};
 
 /// Build an insert + fetch-IID query for the given entity.
 ///
@@ -114,7 +112,7 @@ pub fn build_dynamic_entity_insert_with_iid(
     attributes: &DynamicAttributeMap,
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::entity_insert_clauses(descriptor, attributes, var);
+    let clauses = crate::_dynamic::entity_insert_clauses(descriptor, attributes, var);
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -125,7 +123,7 @@ pub fn build_dynamic_entity_put(
     attributes: &DynamicAttributeMap,
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::entity_put_clauses(descriptor, attributes, var)?;
+    let clauses = crate::_dynamic::entity_put_clauses(descriptor, attributes, var)?;
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -137,7 +135,7 @@ pub fn build_dynamic_entity_update(
     attributes: &DynamicAttributeMap,
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::entity_update_clauses(descriptor, iid, attributes, var)?;
+    let clauses = crate::_dynamic::entity_update_clauses(descriptor, iid, attributes, var)?;
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -149,7 +147,7 @@ pub fn build_dynamic_entity_update_exact(
     attributes: &DynamicAttributeMap,
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::entity_update_exact_clauses(descriptor, iid, attributes, var)?;
+    let clauses = crate::_dynamic::entity_update_exact_clauses(descriptor, iid, attributes, var)?;
     Ok(QueryCompiler::new().compile(&clauses))
 }
 
@@ -159,7 +157,7 @@ pub fn build_dynamic_entity_fetch(
     filters: &[Filter],
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::entity_fetch_clauses(descriptor, filters, var);
+    let clauses = crate::_dynamic::entity_fetch_clauses(descriptor, filters, var);
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -170,7 +168,7 @@ pub fn build_dynamic_entity_fetch_exact(
     filters: &[Filter],
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::entity_fetch_exact_clauses(descriptor, filters, var);
+    let clauses = crate::_dynamic::entity_fetch_exact_clauses(descriptor, filters, var);
     Ok(QueryCompiler::new().compile(&clauses))
 }
 
@@ -183,7 +181,7 @@ pub fn build_dynamic_entity_expr_fetch(
     offset: Option<u64>,
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::entity_expr_fetch_clauses(
+    let clauses = crate::_dynamic::entity_expr_fetch_clauses(
         descriptor,
         expressions,
         sorts,
@@ -193,6 +191,26 @@ pub fn build_dynamic_entity_expr_fetch(
     )?;
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
+}
+
+/// Build an expression-aware exact-type fetch query for a runtime entity descriptor.
+pub fn build_dynamic_entity_expr_fetch_exact(
+    descriptor: &EntityDescriptor,
+    expressions: &[DynamicExpr],
+    sorts: &[DynamicSort],
+    limit: Option<u64>,
+    offset: Option<u64>,
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::_dynamic::entity_expr_fetch_exact_clauses(
+        descriptor,
+        expressions,
+        sorts,
+        limit,
+        offset,
+        var,
+    )?;
+    Ok(QueryCompiler::new().compile(&clauses))
 }
 
 /// Build a cross-type or narrowed attribute-owner lookup query.
@@ -278,7 +296,7 @@ pub fn build_dynamic_entity_fetch_by_iid(
     iid: &str,
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::entity_fetch_by_iid_clauses(descriptor, iid, var);
+    let clauses = crate::_dynamic::entity_fetch_by_iid_clauses(descriptor, iid, var);
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -289,7 +307,7 @@ pub fn build_dynamic_entity_fetch_by_iid_exact(
     iid: &str,
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::entity_fetch_by_iid_exact_clauses(descriptor, iid, var);
+    let clauses = crate::_dynamic::entity_fetch_by_iid_exact_clauses(descriptor, iid, var);
     Ok(QueryCompiler::new().compile(&clauses))
 }
 
@@ -299,7 +317,7 @@ pub fn build_dynamic_entity_count(
     filters: &[Filter],
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::entity_count_clauses(descriptor, filters, var);
+    let clauses = crate::_dynamic::entity_count_clauses(descriptor, filters, var);
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -309,7 +327,7 @@ pub fn build_dynamic_entity_count_exact(
     descriptor: &EntityDescriptor,
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::entity_count_exact_clauses(descriptor, var);
+    let clauses = crate::_dynamic::entity_count_exact_clauses(descriptor, var);
     Ok(QueryCompiler::new().compile(&clauses))
 }
 
@@ -319,7 +337,7 @@ pub fn build_dynamic_entity_identity_discovery(
     iid: Option<&str>,
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::entity_identity_discovery_clauses(descriptor, iid, var)?;
+    let clauses = crate::_dynamic::entity_identity_discovery_clauses(descriptor, iid, var)?;
     Ok(QueryCompiler::new().compile(&clauses))
 }
 
@@ -329,7 +347,7 @@ pub fn build_dynamic_relation_identity_discovery(
     var: &str,
 ) -> Result<String> {
     Ok(
-        QueryCompiler::new().compile(&crate::dynamic::relation_identity_discovery_clauses(
+        QueryCompiler::new().compile(&crate::_dynamic::relation_identity_discovery_clauses(
             descriptor, iid, var,
         )?),
     )
@@ -340,7 +358,7 @@ pub fn build_dynamic_relation_count_exact(
     var: &str,
 ) -> Result<String> {
     Ok(
-        QueryCompiler::new().compile(&crate::dynamic::relation_count_exact_clauses(
+        QueryCompiler::new().compile(&crate::_dynamic::relation_count_exact_clauses(
             descriptor, var,
         )),
     )
@@ -352,7 +370,7 @@ pub fn build_dynamic_relation_delete_by_iid_exact(
     var: &str,
 ) -> Result<String> {
     Ok(
-        QueryCompiler::new().compile(&crate::dynamic::relation_delete_by_iid_exact_clauses(
+        QueryCompiler::new().compile(&crate::_dynamic::relation_delete_by_iid_exact_clauses(
             descriptor, iid, var,
         )?),
     )
@@ -366,7 +384,7 @@ pub fn build_dynamic_entity_exact_key_lookup(
     attributes: &DynamicAttributeMap,
     var: &str,
 ) -> Result<Option<String>> {
-    crate::dynamic::entity_exact_key_lookup_clauses(descriptor, attributes, var)
+    crate::_dynamic::entity_exact_key_lookup_clauses(descriptor, attributes, var)
         .map(|clauses| clauses.map(|clauses| QueryCompiler::new().compile(&clauses)))
 }
 
@@ -376,9 +394,29 @@ pub fn build_dynamic_entity_expr_count(
     expressions: &[DynamicExpr],
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::entity_expr_count_clauses(descriptor, expressions, var)?;
+    let clauses = crate::_dynamic::entity_expr_count_clauses(descriptor, expressions, var)?;
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
+}
+
+/// Build an expression-aware exact-type count query for a runtime entity descriptor.
+pub fn build_dynamic_entity_expr_count_exact(
+    descriptor: &EntityDescriptor,
+    expressions: &[DynamicExpr],
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::_dynamic::entity_expr_count_exact_clauses(descriptor, expressions, var)?;
+    Ok(QueryCompiler::new().compile(&clauses))
+}
+
+/// Build an expression-aware exact-type limit-one existence query.
+pub fn build_dynamic_entity_expr_exists_exact(
+    descriptor: &EntityDescriptor,
+    expressions: &[DynamicExpr],
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::_dynamic::entity_expr_exists_exact_clauses(descriptor, expressions, var)?;
+    Ok(QueryCompiler::new().compile(&clauses))
 }
 
 /// Build an expression-aware aggregate query for a runtime entity descriptor.
@@ -389,7 +427,7 @@ pub fn build_dynamic_entity_expr_aggregate(
     var: &str,
 ) -> Result<String> {
     let clauses =
-        crate::dynamic::entity_expr_aggregate_clauses(descriptor, expressions, aggregates, var)?;
+        crate::_dynamic::entity_expr_aggregate_clauses(descriptor, expressions, aggregates, var)?;
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -402,7 +440,7 @@ pub fn build_dynamic_entity_expr_group_by_aggregate(
     aggregates: &[DynamicAggregate],
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::entity_expr_group_by_aggregate_clauses(
+    let clauses = crate::_dynamic::entity_expr_group_by_aggregate_clauses(
         descriptor,
         expressions,
         group_fields,
@@ -420,7 +458,7 @@ pub fn build_dynamic_entity_aggregate(
     aggregates: &[DynamicAggregate],
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::entity_aggregate_clauses(descriptor, filters, aggregates, var)?;
+    let clauses = crate::_dynamic::entity_aggregate_clauses(descriptor, filters, aggregates, var)?;
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -433,7 +471,7 @@ pub fn build_dynamic_entity_group_by_aggregate(
     aggregates: &[DynamicAggregate],
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::entity_group_by_aggregate_clauses(
+    let clauses = crate::_dynamic::entity_group_by_aggregate_clauses(
         descriptor,
         filters,
         group_fields,
@@ -450,7 +488,7 @@ pub fn build_dynamic_entity_delete_by_iid(
     iid: &str,
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::entity_delete_by_iid_clauses(descriptor, iid, var);
+    let clauses = crate::_dynamic::entity_delete_by_iid_clauses(descriptor, iid, var);
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -461,7 +499,7 @@ pub fn build_dynamic_entity_delete_by_iid_exact(
     iid: &str,
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::entity_delete_by_iid_exact_clauses(descriptor, iid, var)?;
+    let clauses = crate::_dynamic::entity_delete_by_iid_exact_clauses(descriptor, iid, var)?;
     Ok(QueryCompiler::new().compile(&clauses))
 }
 
@@ -649,7 +687,7 @@ pub fn build_dynamic_relation_insert_with_iid(
     var: &str,
 ) -> Result<String> {
     let clauses =
-        crate::dynamic::relation_insert_clauses(descriptor, attributes, role_players, var);
+        crate::_dynamic::relation_insert_clauses(descriptor, attributes, role_players, var);
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -660,7 +698,7 @@ pub fn build_dynamic_relation_exact_key_lookup(
     attributes: &DynamicAttributeMap,
     var: &str,
 ) -> Result<Option<String>> {
-    crate::dynamic::relation_exact_key_lookup_clauses(descriptor, attributes, var)
+    crate::_dynamic::relation_exact_key_lookup_clauses(descriptor, attributes, var)
         .map(|c| c.map(|clauses| QueryCompiler::new().compile(&clauses)))
 }
 
@@ -672,7 +710,7 @@ pub fn build_dynamic_relation_insert_resolved_with_iid(
     var: &str,
 ) -> Result<String> {
     Ok(
-        QueryCompiler::new().compile(&crate::dynamic::relation_insert_resolved_clauses(
+        QueryCompiler::new().compile(&crate::_dynamic::relation_insert_resolved_clauses(
             descriptor, attributes, resolved, var,
         )?),
     )
@@ -685,7 +723,7 @@ pub fn build_dynamic_relation_put(
     role_players: &[DynamicRolePlayerInput],
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::relation_put_clauses(descriptor, attributes, role_players, var);
+    let clauses = crate::_dynamic::relation_put_clauses(descriptor, attributes, role_players, var);
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -699,7 +737,7 @@ pub fn build_dynamic_relation_update(
     var: &str,
 ) -> Result<String> {
     let clauses =
-        crate::dynamic::relation_update_clauses(descriptor, iid, attributes, role_players, var)?;
+        crate::_dynamic::relation_update_clauses(descriptor, iid, attributes, role_players, var)?;
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -712,7 +750,7 @@ pub fn build_dynamic_relation_update_exact(
     var: &str,
 ) -> Result<String> {
     Ok(
-        QueryCompiler::new().compile(&crate::dynamic::relation_update_exact_clauses(
+        QueryCompiler::new().compile(&crate::_dynamic::relation_update_exact_clauses(
             descriptor, iid, attributes, var,
         )?),
     )
@@ -746,7 +784,7 @@ pub fn build_dynamic_relation_player_lookup(
         if name.trim().is_empty() || !type_bridge_core_lib::compiler::is_valid_typeql_label(name) {
             return Err(OrmError::QueryExecution("unsafe player key label".into()));
         }
-        if crate::dynamic::is_blank_key_value(value) {
+        if crate::_dynamic::is_blank_key_value(value) {
             return Err(OrmError::QueryExecution(
                 "player key value must be nonblank".into(),
             ));
@@ -796,7 +834,7 @@ pub fn build_dynamic_relation_clear_role(
         ));
     }
     Ok(
-        QueryCompiler::new().compile(&crate::dynamic::relation_clear_role_clauses(
+        QueryCompiler::new().compile(&crate::_dynamic::relation_clear_role_clauses(
             descriptor, iid, role, var,
         )?),
     )
@@ -827,7 +865,7 @@ pub fn build_dynamic_relation_attach(
         }
     }
     Ok(
-        QueryCompiler::new().compile(&crate::dynamic::relation_attach_clauses(
+        QueryCompiler::new().compile(&crate::_dynamic::relation_attach_clauses(
             descriptor, iid, resolved, var,
         )?),
     )
@@ -839,7 +877,7 @@ pub fn build_dynamic_relation_fetch(
     filters: &[Filter],
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::relation_fetch_clauses(descriptor, filters, var);
+    let clauses = crate::_dynamic::relation_fetch_clauses(descriptor, filters, var);
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -850,7 +888,7 @@ pub fn build_dynamic_relation_fetch_exact(
     filters: &[Filter],
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::relation_fetch_exact_clauses(descriptor, filters, var);
+    let clauses = crate::_dynamic::relation_fetch_exact_clauses(descriptor, filters, var);
     Ok(QueryCompiler::new().compile(&clauses))
 }
 
@@ -861,7 +899,7 @@ pub fn build_dynamic_relation_fetch_with_role_filters(
     role_filters: &[DynamicRolePlayerInput],
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::relation_fetch_with_role_filters_clauses(
+    let clauses = crate::_dynamic::relation_fetch_with_role_filters_clauses(
         descriptor,
         filters,
         role_filters,
@@ -880,7 +918,7 @@ pub fn build_dynamic_relation_expr_fetch(
     offset: Option<u64>,
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::relation_expr_fetch_clauses(
+    let clauses = crate::_dynamic::relation_expr_fetch_clauses(
         descriptor,
         expressions,
         sorts,
@@ -892,13 +930,33 @@ pub fn build_dynamic_relation_expr_fetch(
     Ok(compiler.compile(&clauses))
 }
 
+/// Build an expression-aware exact-type fetch query for a runtime relation descriptor.
+pub fn build_dynamic_relation_expr_fetch_exact(
+    descriptor: &RelationDescriptor,
+    expressions: &[DynamicExpr],
+    sorts: &[DynamicSort],
+    limit: Option<u64>,
+    offset: Option<u64>,
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::_dynamic::relation_expr_fetch_exact_clauses(
+        descriptor,
+        expressions,
+        sorts,
+        limit,
+        offset,
+        var,
+    )?;
+    Ok(QueryCompiler::new().compile(&clauses))
+}
+
 /// Build a polymorphic IID fetch query for a runtime relation descriptor.
 pub fn build_dynamic_relation_fetch_by_iid(
     descriptor: &RelationDescriptor,
     iid: &str,
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::relation_fetch_by_iid_clauses(descriptor, iid, var);
+    let clauses = crate::_dynamic::relation_fetch_by_iid_clauses(descriptor, iid, var);
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -909,7 +967,7 @@ pub fn build_dynamic_relation_fetch_by_iid_exact(
     iid: &str,
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::relation_fetch_by_iid_exact_clauses(descriptor, iid, var);
+    let clauses = crate::_dynamic::relation_fetch_by_iid_exact_clauses(descriptor, iid, var);
     Ok(QueryCompiler::new().compile(&clauses))
 }
 
@@ -919,7 +977,7 @@ pub fn build_dynamic_relation_count(
     filters: &[Filter],
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::relation_count_clauses(descriptor, filters, var);
+    let clauses = crate::_dynamic::relation_count_clauses(descriptor, filters, var);
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -930,9 +988,30 @@ pub fn build_dynamic_relation_expr_count(
     expressions: &[DynamicExpr],
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::relation_expr_count_clauses(descriptor, expressions, var)?;
+    let clauses = crate::_dynamic::relation_expr_count_clauses(descriptor, expressions, var)?;
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
+}
+
+/// Build an expression-aware exact-type count query for a runtime relation descriptor.
+pub fn build_dynamic_relation_expr_count_exact(
+    descriptor: &RelationDescriptor,
+    expressions: &[DynamicExpr],
+    var: &str,
+) -> Result<String> {
+    let clauses = crate::_dynamic::relation_expr_count_exact_clauses(descriptor, expressions, var)?;
+    Ok(QueryCompiler::new().compile(&clauses))
+}
+
+/// Build an expression-aware exact-type limit-one existence query.
+pub fn build_dynamic_relation_expr_exists_exact(
+    descriptor: &RelationDescriptor,
+    expressions: &[DynamicExpr],
+    var: &str,
+) -> Result<String> {
+    let clauses =
+        crate::_dynamic::relation_expr_exists_exact_clauses(descriptor, expressions, var)?;
+    Ok(QueryCompiler::new().compile(&clauses))
 }
 
 /// Build an expression-aware aggregate query for a runtime relation descriptor.
@@ -943,7 +1022,7 @@ pub fn build_dynamic_relation_expr_aggregate(
     var: &str,
 ) -> Result<String> {
     let clauses =
-        crate::dynamic::relation_expr_aggregate_clauses(descriptor, expressions, aggregates, var)?;
+        crate::_dynamic::relation_expr_aggregate_clauses(descriptor, expressions, aggregates, var)?;
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -956,7 +1035,7 @@ pub fn build_dynamic_relation_expr_group_by_aggregate(
     aggregates: &[DynamicAggregate],
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::relation_expr_group_by_aggregate_clauses(
+    let clauses = crate::_dynamic::relation_expr_group_by_aggregate_clauses(
         descriptor,
         expressions,
         group_fields,
@@ -974,7 +1053,8 @@ pub fn build_dynamic_relation_aggregate(
     aggregates: &[DynamicAggregate],
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::relation_aggregate_clauses(descriptor, filters, aggregates, var)?;
+    let clauses =
+        crate::_dynamic::relation_aggregate_clauses(descriptor, filters, aggregates, var)?;
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -987,7 +1067,7 @@ pub fn build_dynamic_relation_group_by_aggregate(
     aggregates: &[DynamicAggregate],
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::relation_group_by_aggregate_clauses(
+    let clauses = crate::_dynamic::relation_group_by_aggregate_clauses(
         descriptor,
         filters,
         group_fields,
@@ -1004,7 +1084,7 @@ pub fn build_dynamic_relation_delete_by_iid(
     iid: &str,
     var: &str,
 ) -> Result<String> {
-    let clauses = crate::dynamic::relation_delete_by_iid_clauses(descriptor, iid, var);
+    let clauses = crate::_dynamic::relation_delete_by_iid_clauses(descriptor, iid, var);
     let compiler = QueryCompiler::new();
     Ok(compiler.compile(&clauses))
 }
@@ -1386,8 +1466,8 @@ pub fn build_relation_group_by_aggregate<R: TypeBridgeRelation>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::attribute::ValueType;
-    use crate::entity::{Annotation, OwnedAttributeInfo};
+    use crate::_attribute::ValueType;
+    use crate::_entity::{Annotation, OwnedAttributeInfo};
     use crate::value::AttributeValue;
 
     // Minimal test entity for query builder tests.

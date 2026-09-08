@@ -1,14 +1,20 @@
 use std::collections::BTreeSet;
 use std::str;
 
+use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{FunctionId, RoleId, StructId, TypeId};
 use type_bridge_contract::projection::{
     BindingTarget, CodeResourceDigest, ProjectionConfig, RuntimeProjection,
 };
 use type_bridge_contract::schema::{DocumentId, OwnsFactId, PlaysFactId};
-use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+use type_bridge_schema::{
+    SchemaDocumentSet, VerifiedSchemaAuthority, encode_schema_authority, normalize_documents,
+    project, resolve,
+};
 use type_bridge_schema_codegen::{GeneratedPackage, PythonEmitter, RustEmitter, TypeScriptEmitter};
+
+mod support;
 
 #[derive(Debug, Eq, PartialEq)]
 struct CanonicalProjectionIds {
@@ -94,6 +100,25 @@ fn assert_embeds_fingerprints(
     assert!(source.contains(&projection_digest));
 }
 
+fn assert_embeds_authority(
+    package: &GeneratedPackage,
+    authority_path: &str,
+    authority: &VerifiedSchemaAuthority,
+) {
+    let source = str::from_utf8(
+        package
+            .get(authority_path)
+            .expect("private authority source is emitted"),
+    )
+    .expect("private authority source is UTF-8");
+    let envelope = String::from_utf8(encode_schema_authority(authority)).unwrap();
+    let escaped = String::from_utf8(to_canonical_json(&envelope).unwrap()).unwrap();
+    assert!(
+        source.contains(&escaped),
+        "{authority_path} did not embed exact authority bytes"
+    );
+}
+
 #[test]
 fn shared_schema_preserves_canonical_ids_and_target_specific_evidence() {
     let documents = SchemaDocumentSet::parse([(
@@ -104,6 +129,7 @@ fn shared_schema_preserves_canonical_ids_and_target_specific_evidence() {
     let declared = normalize_documents(&documents).unwrap();
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
+    let authority = support::authority(include_str!("acceptance/schema.yaml"));
 
     let python_emitter = PythonEmitter::new();
     let python_handlers = python_emitter.generator_handlers();
@@ -162,12 +188,29 @@ fn shared_schema_preserves_canonical_ids_and_target_specific_evidence() {
         rust.projection_fingerprint()
     );
 
-    let python_package = python_emitter.emit(&python).unwrap();
-    let typescript_package = typescript_emitter.emit(&typescript).unwrap();
-    let rust_package = rust_emitter.emit(&rust).unwrap();
+    let python_package = python_emitter.emit(&python, &authority).unwrap();
+    let typescript_package = typescript_emitter.emit(&typescript, &authority).unwrap();
+    let rust_package = rust_emitter.emit(&rust, &authority).unwrap();
     assert_embeds_fingerprints(&python_package, "_schema.py", &python);
     assert_embeds_fingerprints(&typescript_package, "src/schema.ts", &typescript);
     assert_embeds_fingerprints(&rust_package, "src/schema.rs", &rust);
+    assert_embeds_authority(&python_package, "_authority.py", &authority);
+    assert_embeds_authority(&typescript_package, "src/authority.ts", &authority);
+    assert_embeds_authority(&rust_package, "src/schema.rs", &authority);
+
+    let foreign_authority =
+        support::authority("format: typebridge.schema/v2\nentities:\n  foreign-workspace: {}\n");
+    for error in [
+        python_emitter
+            .emit(&python, &foreign_authority)
+            .unwrap_err(),
+        typescript_emitter
+            .emit(&typescript, &foreign_authority)
+            .unwrap_err(),
+        rust_emitter.emit(&rust, &foreign_authority).unwrap_err(),
+    ] {
+        assert_eq!(error.code().as_str(), "schema_codegen_authority_mismatch");
+    }
 
     for resources in [
         missing_resource(&python_resources),
@@ -182,7 +225,11 @@ fn shared_schema_preserves_canonical_ids_and_target_specific_evidence() {
         )
         .unwrap();
         assert_eq!(
-            python_emitter.emit(&invalid).unwrap_err().code().as_str(),
+            python_emitter
+                .emit(&invalid, &authority)
+                .unwrap_err()
+                .code()
+                .as_str(),
             "python_emitter_evidence_mismatch",
         );
     }
@@ -201,7 +248,7 @@ fn shared_schema_preserves_canonical_ids_and_target_specific_evidence() {
         .unwrap();
         assert_eq!(
             typescript_emitter
-                .emit(&invalid)
+                .emit(&invalid, &authority)
                 .unwrap_err()
                 .code()
                 .as_str(),
@@ -222,8 +269,61 @@ fn shared_schema_preserves_canonical_ids_and_target_specific_evidence() {
         )
         .unwrap();
         assert_eq!(
-            rust_emitter.emit(&invalid).unwrap_err().code().as_str(),
+            rust_emitter
+                .emit(&invalid, &authority)
+                .unwrap_err()
+                .code()
+                .as_str(),
             "rust_emitter_evidence_mismatch",
         );
     }
+}
+
+#[test]
+fn exact_split_yaml_docs_fixture_emits_every_binding_target() {
+    let source = include_str!("../../../../docs/fixtures/split-yaml-v1/schema/fixture.yaml");
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("fixture.yaml").unwrap(), source)]).unwrap();
+    let declared = normalize_documents(&documents).unwrap();
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+    let resolved = resolve(&declared, &profile).unwrap();
+    let authority = support::authority(source);
+
+    let python_emitter = PythonEmitter::new();
+    let python = project(
+        &resolved,
+        BindingTarget::Python,
+        &ProjectionConfig::python(),
+        &python_emitter.generator_handlers(),
+        &python_emitter.code_resources().unwrap(),
+    )
+    .unwrap();
+    let python_package = python_emitter.emit(&python, &authority).unwrap();
+    assert!(python_package.get("_models.py").is_some());
+
+    let typescript_emitter = TypeScriptEmitter::new();
+    let typescript = project(
+        &resolved,
+        BindingTarget::TypeScript,
+        &ProjectionConfig::typescript(),
+        &typescript_emitter.generator_handlers(),
+        &typescript_emitter.code_resources().unwrap(),
+    )
+    .unwrap();
+    let typescript_package = typescript_emitter.emit(&typescript, &authority).unwrap();
+    assert!(typescript_package.get("src/models.ts").is_some());
+
+    let rust_emitter = RustEmitter::new();
+    let rust = project(
+        &resolved,
+        BindingTarget::Rust,
+        &ProjectionConfig::rust(),
+        &rust_emitter.generator_handlers(),
+        &rust_emitter.code_resources().unwrap(),
+    )
+    .unwrap();
+    let rust_package = rust_emitter.emit(&rust, &authority).unwrap();
+    let rust_read = str::from_utf8(rust_package.get("src/read.rs").unwrap()).unwrap();
+    assert!(rust_read.contains("pub enum IdentifierFamily"));
+    assert!(rust_read.contains("pub fn value(&self) -> &String"));
 }

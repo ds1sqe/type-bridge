@@ -1,12 +1,12 @@
-"""Unit tests for Query and QueryBuilder classes."""
+"""Unit tests for raw Query construction and value formatting."""
 
 from datetime import UTC
 
 import pytest
 
-from type_bridge import Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
+from tests.utils.handwritten import String
 from type_bridge.crud.utils import format_value
-from type_bridge.query import Query, QueryBuilder
+from type_bridge.query import Query
 
 
 class TestQuery:
@@ -171,111 +171,6 @@ class TestQueryPagination:
         limit_pos = result.find("limit")
         sort_pos = result.find("sort")
         assert sort_pos < offset_pos < limit_pos < fetch_pos
-
-
-class TestQueryBuilderHelpers:
-    """Tests for QueryBuilder helper methods."""
-
-    def test_match_entity_basic(self):
-        """match_entity should create basic entity match pattern."""
-
-        class Name(String):
-            pass
-
-        class Person(Entity):
-            flags = TypeFlags(name="person")
-            name: Name = Flag(Key)
-
-        query = QueryBuilder.match_entity(Person, "$e")
-        result = query.build()
-        assert "$e isa person" in result
-
-    def test_match_entity_with_filters(self):
-        """match_entity with filters should include attribute conditions."""
-
-        class Name(String):
-            pass
-
-        class Person(Entity):
-            flags = TypeFlags(name="person")
-            name: Name = Flag(Key)
-
-        query = QueryBuilder.match_entity(Person, "$e", name="Alice")
-        result = query.build()
-        assert "$e isa person" in result
-        # Attribute name comes from the class name (Name -> Name)
-        assert 'has Name "Alice"' in result
-
-    def test_match_entity_with_attribute_instance(self):
-        """match_entity should extract value from Attribute instances."""
-
-        class Name(String):
-            pass
-
-        class Person(Entity):
-            flags = TypeFlags(name="person")
-            name: Name = Flag(Key)
-
-        query = QueryBuilder.match_entity(Person, "$e", name=Name("Bob"))
-        result = query.build()
-        # Attribute name comes from the class name (Name -> Name)
-        assert 'has Name "Bob"' in result
-
-    def test_match_relation_basic(self):
-        """match_relation should create basic relation match pattern."""
-
-        class Doc(String):
-            pass
-
-        class User(Entity):
-            flags = TypeFlags(name="user")
-            doc: Doc = Flag(Key)
-
-        class Friendship(Relation):
-            flags = TypeFlags(name="friendship")
-            friend: Role[User] = Role("friend", User)
-
-        query = QueryBuilder.match_relation(Friendship, "$r")
-        result = query.build()
-        assert "$r isa friendship" in result
-
-    def test_match_relation_with_role_players(self):
-        """match_relation with role players should include role patterns."""
-
-        class Doc(String):
-            pass
-
-        class User(Entity):
-            flags = TypeFlags(name="user")
-            doc: Doc = Flag(Key)
-
-        class Friendship(Relation):
-            flags = TypeFlags(name="friendship")
-            friend: Role[User] = Role("friend", User)
-
-        query = QueryBuilder.match_relation(Friendship, "$r", role_players={"friend": "$u"})
-        result = query.build()
-        # TypeDB 3.x syntax: isa type comes before role players
-        assert "$r isa friendship (friend: $u)" in result
-
-    def test_insert_entity_generates_correct_pattern(self):
-        """insert_entity should generate insert query from instance."""
-
-        class Name(String):
-            pass
-
-        class Age(Integer):
-            pass
-
-        class Person(Entity):
-            flags = TypeFlags(name="person")
-            name: Name = Flag(Key)
-            age: Age | None = None
-
-        person = Person(name=Name("Charlie"), age=Age(25))
-        query = QueryBuilder.insert_entity(person, "$e")
-        result = query.build()
-        assert "insert" in result
 
 
 class TestFormatValue:

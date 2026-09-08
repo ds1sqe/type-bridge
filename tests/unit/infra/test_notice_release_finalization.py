@@ -77,9 +77,18 @@ def test_only_exact_successful_facade_recovery_passes(mutation):
             finalize.validate_publisher(manifest, run, jobs)
 
 
-def test_notice_body_and_asset_authority_are_frozen(tmp_path):
+def test_notice_body_and_asset_authority_are_frozen(tmp_path, monkeypatch):
     manifest, _, _ = publisher()
     assert len(manifest["assets"]) == 13
+
+    def original_notice(command, *, cwd):
+        assert cwd == ROOT
+        assert command == ["git", "show", f"{finalize.recovery.SOURCE}:docs/guide/v2.0.2-notice.md"]
+        return (ROOT / "docs/guide/v2.0.2-notice.md").read_bytes()
+
+    # Unit checks also run in shallow checkouts; the real finalizer fetches
+    # full history and reads this exact original source, verified above.
+    monkeypatch.setattr(finalize.subprocess, "check_output", original_notice)
     body = finalize.body_from(ROOT, manifest)
     assert hashlib.sha256(body.encode()).hexdigest() == manifest["body_sha256"]
     assert "## Exact Public Inventory\n" in body

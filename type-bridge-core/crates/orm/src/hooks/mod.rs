@@ -1,7 +1,7 @@
 //! Lifecycle hook system for CRUD operations.
 //!
 //! Hooks are registered on manager instances via
-//! [`add_hook`](crate::manager::EntityManager::add_hook).
+//! [`add_hook`](crate::_manager::EntityManager::add_hook).
 //! Pre-hooks run in registration order and may reject operations.
 //! Post-hooks run in reverse order; errors are logged but not propagated.
 

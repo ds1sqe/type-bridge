@@ -3,6 +3,8 @@
 //! The V2 route test executes against a live TypeDB (TYPEDB_ADDRESS /
 //! TYPEDB_HTTP_PORT); run it explicitly with `-- --ignored`.
 
+mod support;
+
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
@@ -30,7 +32,7 @@ use type_bridge_contract::query_plan::{
 use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteLimits};
 use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact,
-    TypeFact, ValueFact, ValueFactId, encode_declared_schema,
+    TypeFact, ValueFact, ValueFactId,
 };
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
@@ -43,9 +45,13 @@ use type_bridge_orm::session::real_driver::{
     ConnectOptions, SecureConnectOptions, delete_database_secure, ensure_database_exists,
 };
 use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan};
-use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema, managed_schema_state, resolve};
-use type_bridge_server::test_helpers::{MockExecutor, make_pipeline};
+use type_bridge_schema::{
+    ManagedDeltaContext, ResolvedSchema, build_schema_authority, encode_schema_authority,
+    managed_schema_state, resolve,
+};
 use type_bridge_server::transport::v2::{V2QueryState, create_router_with_v2};
+
+use support::{MockExecutor, make_pipeline};
 
 fn binding(id: u16, variable: &str) -> AssertionBinding {
     AssertionBinding::new(
@@ -282,9 +288,7 @@ struct ProductionLogging {
 #[derive(Serialize)]
 struct ProductionV2<'a> {
     enabled: bool,
-    declared_schema_file: &'a str,
-    scope: &'a str,
-    profile: &'a str,
+    schema_authority_file: &'a str,
     authority_mode: &'static str,
 }
 
@@ -670,16 +674,13 @@ async fn production_binary_serves_v1_health_and_v2_query() {
         invocation,
         ..
     } = live_query_fixture("production").await;
-    let scope = delta_context.scope_id().as_str().to_owned();
-    let profile = delta_context.semantic_profile().as_str().to_owned();
-
     let directory = tempfile::tempdir().expect("production-server test directory");
-    let declared_path = directory.path().join("declared-schema.json");
-    std::fs::write(
-        &declared_path,
-        encode_declared_schema(&declared).expect("canonical declared-schema bytes"),
-    )
-    .expect("write canonical declared-schema fixture");
+    let authority =
+        build_schema_authority(&declared, declared.required_capabilities(), &delta_context)
+            .expect("build source-free schema authority");
+    let authority_path = directory.path().join("schema-authority.json");
+    std::fs::write(&authority_path, encode_schema_authority(&authority))
+        .expect("write canonical schema-authority fixture");
 
     // The production process must construct its own driver and live authority;
     // it cannot inherit the fixture's already-connected Database handle.
@@ -687,9 +688,9 @@ async fn production_binary_serves_v1_health_and_v2_query() {
     drop(database);
 
     let port = reserve_loopback_port();
-    let declared_schema_file = declared_path
+    let schema_authority_file = authority_path
         .to_str()
-        .expect("temporary declared-schema path is UTF-8");
+        .expect("temporary schema-authority path is UTF-8");
     let config = ProductionServerConfig {
         server: ProductionListener {
             host: "127.0.0.1",
@@ -709,9 +710,7 @@ async fn production_binary_serves_v1_health_and_v2_query() {
         },
         v2: ProductionV2 {
             enabled: true,
-            declared_schema_file,
-            scope: &scope,
-            profile: &profile,
+            schema_authority_file,
             authority_mode: "query_only",
         },
     };

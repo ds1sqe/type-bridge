@@ -4,7 +4,7 @@
 //! into, plus pure validation, checksum gates, the transaction-aware planner,
 //! and the async executor that runs each step over a `Database`.
 
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 
 // The legacy CLI source is shared by the standalone binary and the Python
 // extension. Give the library its package name so the shared module can keep

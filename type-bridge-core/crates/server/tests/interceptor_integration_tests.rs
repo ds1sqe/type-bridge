@@ -3,6 +3,8 @@
 //! Tests interceptor ordering, metadata propagation, audit log behavior,
 //! and multi-interceptor interactions via `QueryPipeline`.
 
+mod support;
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -14,7 +16,8 @@ use type_bridge_server::config::AuditLogConfig;
 use type_bridge_server::interceptor::audit_log::AuditLogInterceptor;
 use type_bridge_server::interceptor::{InterceptError, Interceptor, RequestContext};
 use type_bridge_server::pipeline::{PipelineBuilder, QueryInput};
-use type_bridge_server::test_helpers::MockExecutor;
+
+use support::MockExecutor;
 
 // ── Helper interceptors ──────────────────────────────────────────────
 

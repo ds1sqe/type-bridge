@@ -22,6 +22,10 @@ bindings:
   rust:
     output: generated/rust
 
+artifacts:
+  schema-authority:
+    output: generated/schema-authority.json
+
 secrets:
   service.api-token:
     env: EXAMPLE_API_TOKEN

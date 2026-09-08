@@ -2,8 +2,7 @@
 
 import pytest
 
-from type_bridge import Boolean, Entity, Flag, Integer, Key, String, TypeFlags
-from type_bridge.attribute import Card
+from tests.utils.handwritten import Boolean, Card, Entity, Flag, Integer, Key, String, TypeFlags
 from type_bridge.crud.types import wrap_attribute_value
 
 

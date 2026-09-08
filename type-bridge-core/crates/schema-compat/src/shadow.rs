@@ -12,8 +12,8 @@ use type_bridge_contract::schema::{
     SemanticSchemaFingerprint, TypeReference,
 };
 use type_bridge_contract::value::{CanonicalValue, Cardinality as V2Cardinality, ValueTypeTag};
-use type_bridge_core_lib::parser;
-use type_bridge_core_lib::schema::{
+use type_bridge_core_lib::_parser as parser;
+use type_bridge_core_lib::_schema::{
     Cardinality as V1Cardinality, FunctionType as V1Function, OwnedAttribute, PlayedRole, RoleSpec,
     SchemaError, StructType as V1Struct, TypeSchema,
 };

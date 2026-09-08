@@ -39,12 +39,12 @@ compatibility override is required. The module retains its GIL requirement.
 
 | Path | Responsibility |
 | --- | --- |
-| `type_bridge/` | Python facade, Pydantic models, compatibility APIs |
+| `type_bridge/` | Python connection/query facade and read-only archive recovery APIs |
 | `type-bridge-core/crates/` | Rust contracts, engines, ORM, bindings, CLI, and server |
 | `type-bridge-core/crates/node/` | N-API boundary and TypeScript package |
 | `type-bridge-core/crates/rust/` | Public generated-model Rust client |
 | `docs/` | MkDocs source, guides, maintainer contracts, and site assets |
-| `examples/` | Executable Python examples |
+| `examples/` | Split-YAML workspace and generated-package application examples |
 | `tests/` | Python unit, integration, compatibility, contract, and parity tests |
 | `scripts/` | Source-tree checks, generated files, and focused live runners |
 
@@ -58,8 +58,10 @@ duplicated directory snapshot here.
   facades; they do not reimplement schema, query, migration, or ORM rules.
 - Generated files are projections of canonical schema authority and must not be
   edited by hand.
-- Existing V1 compatibility surfaces stay available unless the exact
-  deprecation inventory schedules their removal.
+- Separately retained V1 query surfaces stay available unless an exact future
+  inventory schedules their removal; they are not schema authority.
+- Split-YAML is the only active schema/model authoring authority. Python,
+  TypeScript/Node, and Rust applications consume generated projections.
 - Rust releases starting with 2.0.1 resolve a complete, version-locked crates.io
   graph; the historical 2.0.0 SDK resolves from its exact release Git revision.
 - Release-specific compatibility, trust, resource-limit, and security
@@ -75,14 +77,18 @@ changing a shared boundary.
 Use the smallest focused check while iterating, then the scope-level check
 before handoff.
 
-The Rust scope checks require cargo-audit 0.22.2. The shared CI/release gate
+Rust scope checks require cargo-audit 0.22.2. The shared CI/release gate
 `bash scripts/ci/check_dependency_security.sh` audits both maintained lockfiles
-against a freshly fetched advisory database, with no target or severity filters.
-Vulnerabilities, unsoundness, yanked packages, and audit failures block acceptance.
-Informational maintenance notices remain visible. In the 2.0.2 graph,
-rustls-pemfile 2.2.0 (RUSTSEC-2025-0134) is unmaintained, not reported vulnerable;
-the immutable band-7/8 and official TypeDB drivers still require it through
-tonic 0.12.3. Replacing that transport stack is not a 2.0.x dependency patch.
+against a freshly fetched database without target/severity filters.
+Vulnerabilities, unsoundness, yanked crates and audit errors block acceptance.
+The retained TypeDB transport graph requires rustls-pemfile 2.2.0 through
+tonic 0.12.3. RUSTSEC-2025-0134 reports it unmaintained, not vulnerable; that
+informational finding remains visible without an advisory ignore.
+
+Facade builds validate metadata in the exact digest-verified PyPI publisher
+image with networking disabled before cross-registry publication. PyPI uses
+the pinned metadata-2.5-compatible publisher with Trusted Publishing and
+attestations enabled. Historical recovery identities remain unchanged.
 
 ```bash
 # Default offline Python tests

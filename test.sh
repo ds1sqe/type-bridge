@@ -332,11 +332,11 @@ if [[ "$integration" == 1 ]]; then
     run_step "type-bridge-server V1 + V2 live smoke" \
         timeout --foreground 10m \
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
-        cargo test --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-server --features v2-query \
-            --test v2_query_integration_tests \
+        bash scripts/ci/run_exact_ignored_rust_test.sh \
             production_binary_serves_v1_health_and_v2_query \
-            -- --ignored --exact --nocapture
+            --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-server --features v2-query \
+            --test v2_query_integration_tests
 
     printf "${BOLD}━━━ Generated Rust projection (integration) ━━━${RESET}\n\n"
     run_step "generated Rust application parity" \
@@ -344,14 +344,15 @@ if [[ "$integration" == 1 ]]; then
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE="type_bridge_rust_projection_live_${$}" \
             ACCEPTANCE_TARGET_DIR="$ROOT/type-bridge-core/target/tmp_projection_live_target" \
-        cargo test --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-schema-codegen --test rust_projection_live \
+        bash scripts/ci/run_exact_ignored_rust_test.sh \
             generated_rust_projection_round_trips_exact_live_models \
-            -- --ignored --exact --nocapture
+            --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-schema-codegen --test rust_projection_live
 
     printf "${BOLD}━━━ CLI workspace lifecycle (integration) ━━━${RESET}\n\n"
     for cli_live_test in \
         empty_workspace_to_replayed_history_live \
+        documented_examples_initial_constraints_apply_and_verify_live \
         verify_never_creates_databases_live \
         adopt_legacy_history_then_evolve_live \
         shipped_python_converter_to_native_adoption_live; do
@@ -359,10 +360,28 @@ if [[ "$integration" == 1 ]]; then
             timeout --foreground 10m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
                 TYPE_BRIDGE_TEST_PYTHON="$ROOT/.venv/bin/python" \
-            cargo test --manifest-path type-bridge-core/Cargo.toml \
-                -p type-bridge-cli --test e2e_workspace_live \
-                "$cli_live_test" -- --ignored --exact --nocapture
+            bash scripts/ci/run_exact_ignored_rust_test.sh "$cli_live_test" \
+                --manifest-path type-bridge-core/Cargo.toml \
+                -p type-bridge-cli --test e2e_workspace_live
     done
+
+    printf "${BOLD}━━━ Connected migration recovery (integration) ━━━${RESET}\n\n"
+    run_step "connected rollback and reapply lifecycle" \
+        timeout --foreground 10m \
+        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE="type_bridge_local_rollback_${$}" \
+        bash scripts/ci/run_exact_ignored_rust_test.sh \
+            runner_rolls_back_the_applied_head_and_reapplies_on_3_12_1 \
+            --manifest-path type-bridge-core/Cargo.toml --locked \
+            -p type-bridge-schema-migration-typedb --test live_runner
+    run_step "interrupted-plan fenced recovery lifecycle" \
+        timeout --foreground 10m \
+        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE="type_bridge_local_recovery_${$}" \
+        bash scripts/ci/run_exact_ignored_rust_test.sh \
+            control_schema_and_fenced_lease_round_trip_on_3_12_1 \
+            --manifest-path type-bridge-core/Cargo.toml --locked \
+            -p type-bridge-schema-migration-typedb --test live_store
 
     printf "${BOLD}━━━ Python (integration) ━━━${RESET}\n\n"
     run_step "pytest -m integration" \
@@ -370,26 +389,24 @@ if [[ "$integration" == 1 ]]; then
         env USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
         uv run pytest -m integration --tb=short "${pytest_args[@]}"
 
-    # The parity suite mixes live-TypeDB tests with deliberately unmarked
-    # offline ones (descriptor snapshots, generator parity); the marker
-    # override mirrors CI's cross-language-parity job so the offline tests
-    # don't fall through both the unit and `-m integration` selections.
-    printf "${BOLD}━━━ Python (cross-language parity) ━━━${RESET}\n\n"
-    run_step "pytest tests/integration/parity" \
-        timeout --foreground 10m \
-        env USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
-        uv run pytest tests/integration/parity -m "integration or not integration" \
-        --tb=short "${pytest_args[@]}"
-
     printf "${BOLD}━━━ Node (integration) ━━━${RESET}\n\n"
-    # The Node suites default TYPEDB_ADDRESS to :1730; we pass it explicitly. test:integration
-    # chains test:typed-integration, so this one command covers both Node integration suites.
+    # The Node suite defaults TYPEDB_ADDRESS to :1730; pass the live endpoint explicitly.
     native="$(ls "$NODE_DIR"/type_bridge_node.*.node 2>/dev/null | head -1 || true)"
+    if [[ -n "$native" ]]; then
+        native="$ROOT/$native"
+    fi
     run_step "npm run test:integration" \
         timeout --foreground 15m \
-        bash -c "cd '$NODE_DIR' && TYPE_BRIDGE_NODE_NATIVE_PATH='${native:+$PWD/$native}' \
+        bash -c "cd '$NODE_DIR' && TYPE_BRIDGE_NODE_NATIVE_PATH='$native' \
             USE_DOCKER=false TYPEDB_ADDRESS='$TYPEDB_ADDRESS' TYPEDB_HTTP_PORT='$TYPEDB_HTTP_PORT' \
             npm run test:integration"
+    run_step "npm run test:projection-integration" \
+        timeout --foreground 15m \
+        env TYPE_BRIDGE_NODE_NATIVE_PATH="$native" \
+            USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" \
+            TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            TYPE_BRIDGE_NODE_INTG_DATABASE="type_bridge_projection_live_${$}" \
+        npm --prefix "$NODE_DIR" run test:projection-integration
 fi
 
 # ── TLS transport tier (opt-in) ──────────────────────────────────────────────
@@ -434,10 +451,10 @@ run_tls_transport_steps() {
                 TYPE_BRIDGE_RUST_PROJECTION_TLS=1 \
                 TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE="type_bridge_rust_projection_tls_${$}" \
                 ACCEPTANCE_TARGET_DIR="$ROOT/type-bridge-core/target/tmp_projection_live_target" \
-            cargo test --manifest-path type-bridge-core/Cargo.toml \
-                -p type-bridge-schema-codegen --test rust_projection_live \
+            bash scripts/ci/run_exact_ignored_rust_test.sh \
                 generated_rust_projection_round_trips_exact_live_models \
-                -- --ignored --exact --nocapture
+                --manifest-path type-bridge-core/Cargo.toml \
+                -p type-bridge-schema-codegen --test rust_projection_live
     else
         printf "${CYAN}External TLS runtime proof is custom-root only; native-root and exact-topology assertions require the isolated 3.12.1 lane.${RESET}\n\n"
         run_step "TLS runtime HTTP + gRPC lifecycle (external custom-root)" \
@@ -455,9 +472,10 @@ run_tls_transport_steps() {
         env TYPEDB_TLS_ADDRESS="$tls_address" \
             TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
             TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
-        cargo test --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-cli --test e2e_workspace_live \
-            tls_workspace_apply_and_verify_live -- --ignored --exact --nocapture
+        bash scripts/ci/run_exact_ignored_rust_test.sh \
+            tls_workspace_apply_and_verify_live \
+            --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-cli --test e2e_workspace_live
 
     run_step "TLS Python local query + HTTPS remote envelope" \
         timeout --foreground 10m \
@@ -471,16 +489,17 @@ run_tls_transport_steps() {
             tests/integration/queries/test_query_v2_binding_smoke.py::test_prepared_plan_executes_locally_and_remotely \
             -m integration --tb=short -q
 
-    run_step "TLS Python and packed Node remote model parity" \
+    run_step "TLS generated Python application parity" \
         timeout --foreground 10m \
-        env TYPEDB_TLS_ADDRESS="$tls_address" \
-            TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
+        env USE_DOCKER=false \
+            TYPEDB_ADDRESS="$tls_address" \
+            TYPEDB_HTTP_PORT="$tls_http_port" \
             TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
             SMOKE_TLS_CERT="$fixture_server_cert" \
             SMOKE_TLS_KEY="$fixture_server_key" \
             SMOKE_TLS_ROOT_CA="$fixture_root_ca" \
         uv run pytest \
-            tests/integration/queries/test_remote_query_session_parity.py::test_public_remote_query_session_matches_direct_subtype_hydration \
+            tests/integration/schema/test_generated_projection_live.py::test_generated_package_preserves_application_operation_outcomes_live \
             -m integration --tb=short -q
 
     run_step "TLS Node local query + HTTPS remote envelope" \
@@ -495,17 +514,17 @@ run_tls_transport_steps() {
         node --test \
             "$NODE_DIR/tests/integration/queries/query-v2-smoke.test.ts"
 
-    run_step "TLS Node remote model subtype hydration" \
+    run_step "TLS generated Node application parity" \
         timeout --foreground 10m \
         env TYPE_BRIDGE_NODE_NATIVE_PATH="$node_native" \
-            TYPEDB_TLS_ADDRESS="$tls_address" \
-            TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
+            TYPEDB_ADDRESS="$tls_address" \
+            TYPEDB_HTTP_PORT="$tls_http_port" \
             TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
             SMOKE_TLS_CERT="$fixture_server_cert" \
             SMOKE_TLS_KEY="$fixture_server_key" \
             NODE_EXTRA_CA_CERTS="$fixture_root_ca" \
-        node --test \
-            "$NODE_DIR/tests/integration/queries/typed-remote-query-parity.test.ts"
+            TYPE_BRIDGE_NODE_INTG_DATABASE="type_bridge_projection_tls_${$}" \
+        npm --prefix "$NODE_DIR" run test:projection-integration
 }
 
 if [[ "$tls" == 1 ]]; then

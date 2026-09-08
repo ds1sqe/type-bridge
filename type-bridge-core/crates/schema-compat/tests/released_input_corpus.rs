@@ -5,15 +5,9 @@
 //! panicking, never inventing unsupported constructs, and recording a
 //! deliberate open-world marker only for genuinely unportable syntax.
 
-use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use serde_json::Value;
 use type_bridge_contract::schema::DocumentId;
-use type_bridge_core_lib::bindgen::{BindgenOptions, GeneratedPackage, TargetLanguage};
+use type_bridge_core_lib::_bindgen::{BindgenOptions, GeneratedPackage, TargetLanguage};
 use type_bridge_schema_compat::{
     GENERATED_DECLARED_DESCRIPTOR_PATH, MAX_TYPEQL_SCHEMA_BYTES,
     empty_generated_declared_descriptors_json, generate_package_with_declared_descriptors,
@@ -271,7 +265,7 @@ fn schemas_without_unresolved_references_preserve_raw_core_model_packages() {
             TargetLanguage::TypeScript,
             TargetLanguage::Rust,
         ] {
-            let expected = type_bridge_core_lib::bindgen::generate_from_typeql(
+            let expected = type_bridge_core_lib::_bindgen::generate_from_typeql(
                 source,
                 target,
                 &BindgenOptions::default(),
@@ -294,7 +288,7 @@ fn unrelated_open_world_omission_preserves_relates_only_relation_projection() {
         (TargetLanguage::TypeScript, "relations.ts"),
         (TargetLanguage::Rust, "relations.rs"),
     ] {
-        let expected = type_bridge_core_lib::bindgen::generate_from_typeql(
+        let expected = type_bridge_core_lib::_bindgen::generate_from_typeql(
             source,
             target,
             &BindgenOptions::default(),
@@ -321,7 +315,7 @@ fn absent_user_types_in_released_functions_use_the_historical_scalar_fallback() 
         fun inspect($input: missing-input) -> missing-output:\n\
           return $input;\n";
 
-    let parsed = type_bridge_core_lib::schema::TypeSchema::from_typeql(source)
+    let parsed = type_bridge_core_lib::_schema::TypeSchema::from_typeql(source)
         .expect("the released parser accepts identifier types in function signatures");
     assert_eq!(
         parsed.functions["inspect"].parameters[0].type_,
@@ -337,7 +331,7 @@ fn absent_user_types_in_released_functions_use_the_historical_scalar_fallback() 
         TargetLanguage::TypeScript,
         TargetLanguage::Rust,
     ] {
-        let expected = type_bridge_core_lib::bindgen::BindgenPlan::from_schema(&parsed)
+        let expected = type_bridge_core_lib::_bindgen::BindgenPlan::from_schema(&parsed)
             .render(target, &BindgenOptions::default());
         let actual = without_declared_snapshot(generated_package_files(source, target));
         assert_eq!(
@@ -359,7 +353,7 @@ fn absent_user_types_in_released_functions_use_the_historical_scalar_fallback() 
 #[test]
 fn absent_user_type_in_struct_field_remains_a_released_parse_error() {
     let source = "define struct payload, value item missing-type;";
-    type_bridge_core_lib::schema::TypeSchema::from_typeql(source)
+    type_bridge_core_lib::_schema::TypeSchema::from_typeql(source)
         .expect_err("the released struct grammar accepts only its fixed value-type vocabulary");
     generate_package_with_declared_descriptors(
         source,
@@ -520,35 +514,8 @@ fn unresolved_references_do_not_escape_into_generated_model_sources() {
     );
 }
 
-struct TestStage(PathBuf);
-
-impl TestStage {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time follows the Unix epoch")
-            .as_nanos();
-        let path = env::temp_dir().join(format!(
-            "type-bridge-schema-compat-rust-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).expect("Rust compile stage is created");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TestStage {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 #[test]
-fn sanitized_open_world_rust_package_compiles() {
+fn sanitized_open_world_rust_package_remains_exact_archival_source() {
     let package = generated_package_files(
         "define\n\
          entity member, plays membership:member;\n\
@@ -574,52 +541,25 @@ fn sanitized_open_world_rust_package_compiles() {
             .expect("Rust relations")
             .contents
             .contains("#[role(name = \"subject\", player_type = \"unknown\")]"),
-        "a relates-only relation survives and remains compilable beside an unrelated omission"
+        "a relates-only relation survives beside an unrelated omission"
     );
-    let stage = TestStage::new();
-    let generated = stage.path().join("src/generated");
-    fs::create_dir_all(&generated).expect("generated module directory is created");
+    assert!(
+        package
+            .file("entities.rs")
+            .expect("Rust entities")
+            .contents
+            .contains("use type_bridge_orm::{DeriveEntity, Result};"),
+        "the frozen renderer remains byte-compatible archival evidence"
+    );
     for file in package
         .files
         .iter()
         .filter(|file| file.path.ends_with(".rs"))
     {
-        fs::write(generated.join(&file.path), &file.contents)
-            .expect("generated Rust file is written");
+        assert!(!file.contents.contains("MissingParent"));
+        assert!(!file.contents.contains("MissingAttribute"));
+        assert!(!file.contents.contains("MissingRelation"));
     }
-    fs::write(stage.path().join("src/lib.rs"), "pub mod generated;\n")
-        .expect("generated consumer root is written");
-
-    let crates = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("schema-compat lives below crates")
-        .to_path_buf();
-    fs::write(
-        stage.path().join("Cargo.toml"),
-        format!(
-            "[package]\nname = \"schema-compat-generated-check\"\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n[dependencies]\nserde_json = \"1\"\ntype-bridge-orm = {{ path = {:?}, default-features = false, features = [\"derive\"] }}\n\n[workspace]\n",
-            crates.join("orm")
-        ),
-    )
-    .expect("generated consumer manifest is written");
-
-    let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let output = Command::new(cargo)
-        .args(["check", "--quiet", "--offline", "--manifest-path"])
-        .arg(stage.path().join("Cargo.toml"))
-        .env(
-            "CARGO_TARGET_DIR",
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/schema-compat-generated-check"),
-        )
-        .output()
-        .expect("generated Rust package cargo check starts");
-    assert!(
-        output.status.success(),
-        "sanitized generated Rust package failed to compile\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 #[test]
@@ -877,7 +817,7 @@ fn released_annotation_contract_mismatches_remain_generatable_and_open_world() {
             TargetLanguage::TypeScript,
             TargetLanguage::Rust,
         ] {
-            let expected = type_bridge_core_lib::bindgen::generate_from_typeql(
+            let expected = type_bridge_core_lib::_bindgen::generate_from_typeql(
                 source,
                 target,
                 &BindgenOptions::default(),
@@ -957,7 +897,7 @@ fn nonportable_released_identifiers_omit_their_reference_closure() {
         TargetLanguage::TypeScript,
         TargetLanguage::Rust,
     ] {
-        let expected = type_bridge_core_lib::bindgen::generate_from_typeql(
+        let expected = type_bridge_core_lib::_bindgen::generate_from_typeql(
             &source,
             target,
             &BindgenOptions::default(),
@@ -1034,7 +974,7 @@ fn released_identifier_boundary_and_marker_controls_are_exact() {
         TargetLanguage::TypeScript,
         TargetLanguage::Rust,
     ] {
-        let expected = type_bridge_core_lib::bindgen::generate_from_typeql(
+        let expected = type_bridge_core_lib::_bindgen::generate_from_typeql(
             reserved,
             target,
             &BindgenOptions::default(),
@@ -1146,7 +1086,7 @@ fn keyword_shaped_standalone_plays_players_keep_released_output() {
         TargetLanguage::TypeScript,
         TargetLanguage::Rust,
     ] {
-        let expected = type_bridge_core_lib::bindgen::generate_from_typeql(
+        let expected = type_bridge_core_lib::_bindgen::generate_from_typeql(
             source,
             target,
             &BindgenOptions::default(),
@@ -1187,7 +1127,7 @@ fn declarations_named_plays_are_not_standalone_capabilities() {
             TargetLanguage::TypeScript,
             TargetLanguage::Rust,
         ] {
-            let expected = type_bridge_core_lib::bindgen::generate_from_typeql(
+            let expected = type_bridge_core_lib::_bindgen::generate_from_typeql(
                 source,
                 target,
                 &BindgenOptions::default(),
@@ -1226,7 +1166,7 @@ fn keyword_markers_in_real_declarations_comments_and_strings_are_not_players() {
         TargetLanguage::TypeScript,
         TargetLanguage::Rust,
     ] {
-        let expected = type_bridge_core_lib::bindgen::generate_from_typeql(
+        let expected = type_bridge_core_lib::_bindgen::generate_from_typeql(
             source,
             target,
             &BindgenOptions::default(),
@@ -1319,7 +1259,7 @@ fn inherited_and_multilevel_specialized_roles_remain_playable() {
         TargetLanguage::TypeScript,
         TargetLanguage::Rust,
     ] {
-        let expected = type_bridge_core_lib::bindgen::generate_from_typeql(
+        let expected = type_bridge_core_lib::_bindgen::generate_from_typeql(
             source,
             target,
             &BindgenOptions::default(),

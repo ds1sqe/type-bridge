@@ -201,7 +201,7 @@ async fn legacy_writer_fence_survives_a_live_struct_valued_schema_export_on_3_12
     .expect("insert exact cutover sentinel");
     rows.commit().await.expect("commit writer authority");
 
-    let schema_manager = type_bridge_orm::SchemaManager::new(managed.as_ref());
+    let schema_manager = type_bridge_orm::_schema::SchemaManager::new(managed.as_ref());
     let error = schema_manager
         .sync_schema(true, false)
         .await
@@ -1044,7 +1044,7 @@ async fn runner_imports_a_completed_legacy_frontier_on_3_12_1() {
             "{error}"
         );
     }
-    let released_schema_manager = type_bridge_orm::SchemaManager::new(managed.as_ref());
+    let released_schema_manager = type_bridge_orm::_schema::SchemaManager::new(managed.as_ref());
     let schema_error = released_schema_manager
         .sync_schema(true, false)
         .await

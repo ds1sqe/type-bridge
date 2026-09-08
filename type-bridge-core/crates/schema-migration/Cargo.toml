@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-schema-migration"
-version = "2.0.2"
+version = "2.1.0"
 edition = "2024"
 description = "Canonical schema migration planning for type-bridge"
 license.workspace = true
@@ -8,6 +8,9 @@ license-file.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish = ["crates-io"]
+readme = "README.md"
+documentation = "https://docs.rs/type-bridge-schema-migration/2.1.0"
+rust-version = "1.88"
 
 [dependencies]
 cap-fs-ext = "4.0"
@@ -16,9 +19,9 @@ fs2 = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-type-bridge-contract = { path = "../contract", version = "2.0.2" }
-type-bridge-query = { path = "../query", version = "2.0.2" }
-type-bridge-schema = { path = "../schema", version = "2.0.2" }
+type-bridge-contract = { path = "../contract", version = "2.1.0" }
+type-bridge-query = { path = "../query", version = "2.1.0" }
+type-bridge-schema = { path = "../schema", version = "2.1.0" }
 
 [lints]
 workspace = true

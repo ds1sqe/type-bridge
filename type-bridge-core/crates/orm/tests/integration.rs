@@ -4,5 +4,5 @@
 mod common;
 #[path = "integration/core/mod.rs"]
 mod core;
-#[path = "integration/rust_binding/mod.rs"]
-mod rust_binding;
+#[path = "support/internal.rs"]
+mod internal;

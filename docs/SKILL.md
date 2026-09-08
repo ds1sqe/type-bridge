@@ -33,9 +33,9 @@ available. Otherwise use <https://ds1sqe.github.io/type-bridge/>.
    documentation branch matches the installed version.
 3. Identify the language surface, TypeBridge version, TypeDB server version,
    and whether execution is direct or remote.
-4. Identify the desired-schema authority: Python models, existing TypeQL, or a
-   V2 Split-YAML workspace. Do not introduce a second writer for the same
-   scope.
+4. Identify the canonical V2 Split-YAML workspace. Treat existing TypeQL or
+   released Python/Node declarations as migration input, never as a second
+   active writer for the same scope.
 5. Read only the relevant guide pages from the routing table before changing
    an API boundary.
 6. Implement through the language facade and let the Rust engine own semantic
@@ -58,8 +58,8 @@ behavior in these ownership areas:
 
 - Keep Rust as the only V2 semantic engine. Do not implement schema, query,
   migration, validation, or ORM rules independently in Python or TypeScript.
-- Choose one desired-schema authority per scope. Prefer Split-YAML for new V2
-  systems; Python model-driven schema management is a compatibility path.
+- Use Split-YAML as the sole active desired-schema authority. Read-only archive
+  conversion and released query compatibility are not authoring paths.
 - Treat generated Python, TypeScript, and Rust files as projections. Regenerate
   them after schema changes; do not edit them by hand.
 - Sync or migrate the schema before inserting application data.
@@ -74,44 +74,41 @@ behavior in these ownership areas:
 
 - Define attributes as reusable independent types. Let entities and relations
   own them.
-- Use `Flag(Key)` for stable identity and `Flag(Unique)` for non-key
-  uniqueness.
-- Treat `T | None = None` as optional single ownership.
-- Treat `list[T]` cardinality as unordered unless `Flag(Ordered)` explicitly
-  declares TypeDB 3.12 ordered ownership.
-- Use `Card(min, max)` for ownership, relates-side, and plays-side constraints;
-  verify which side a role constraint applies to.
-- Use `Role[T]` for one player type and `Role.multi(...)` for a deliberate
-  union of player types.
-- Use abstract TypeDB types for polymorphic contracts and `TypeFlags(base=True)`
-  only for Python-only inheritance.
-- Keep TypeDB labels explicit with `AttributeFlags` or `TypeFlags` when stable
-  schema names must not follow Python class names.
+- Mark stable identity with Split-YAML `key: true` and non-key uniqueness with
+  `unique: true`.
+- Express optional and repeated ownership with explicit `card` bounds.
+- Put `ordered` and `distinct` on the exact ownership or role edge that carries
+  those semantics.
+- Keep relates-side and plays-side cardinalities separate.
+- Use abstract schema types and explicit `sub` edges for polymorphic contracts.
+- Treat schema labels as authority; target-language names are generated
+  projections.
 
-Define relation roles and owned attributes separately:
+Define relation roles and owned attributes in Split-YAML:
 
-```python
-from type_bridge import Entity, Flag, Key, Relation, Role, String, TypeFlags
-
-class Name(String):
-    pass
-
-class Position(String):
-    pass
-
-class Person(Entity):
-    flags = TypeFlags(name="person")
-    name: Name = Flag(Key)
-
-class Company(Entity):
-    flags = TypeFlags(name="company")
-    name: Name = Flag(Key)
-
-class Employment(Relation):
-    flags = TypeFlags(name="employment")
-    employee: Role[Person] = Role("employee", Person)
-    employer: Role[Company] = Role("employer", Company)
-    position: Position
+```yaml
+format: typebridge.schema/v2
+attributes:
+  name: { value: string }
+  age: { value: integer }
+entities:
+  person:
+    owns:
+      name: { key: true }
+      age: { card: { min: 0, max: 1 } }
+  company:
+    owns:
+      name: { key: true }
+relations:
+  employment:
+    relates:
+      employee: { card: 1 }
+      employer: { card: 1 }
+plays:
+  person:
+    employment: { employee: {} }
+  company:
+    employment: { employer: {} }
 ```
 
 Read `guide/attributes.md`, `guide/entities.md`, `guide/relations.md`, and
@@ -126,43 +123,30 @@ Install Python 3.12–3.14 support:
 pip install type-bridge
 ```
 
-Define attributes and models, create the database, synchronize the schema, then
-write data:
+Generate the Python package from the workspace, apply the canonical migration,
+then use only generated models and tokens:
 
 ```python
-from type_bridge import Database, Entity, Flag, Integer, Key, SchemaManager, String
-
-class PersonId(String):
-    pass
-
-class Age(Integer):
-    pass
-
-class Person(Entity):
-    person_id: PersonId = Flag(Key)
-    age: Age | None = None
+from app_models import Age, Name, Person
+from type_bridge import Database
 
 db = Database(address="localhost:1729", database="example")
 db.connect()
 db.create_database()
 
-schema = SchemaManager(db)
-schema.register(Person)
-schema.sync_schema()
-
-ada = Person(person_id=PersonId("ada"), age=Age(36))
+ada = Person(name=Name("ada"), age=Age(36))
 Person.manager(db).put(ada)
-adults = Person.manager(db).filter(age__gte=18).all()
+adults = Person.manager(db).filter(age__gte=Age(18)).all()
 ```
 
-Use keyword arguments for entity and relation constructors. Add explicit
-`TypeFlags` only when changing defaults such as the TypeDB name, abstractness,
-or Python-only base behavior.
+Use keyword arguments for generated entity and relation constructors. Change
+labels, abstractness, ownership, roles, or cardinalities in Split-YAML and
+regenerate; do not hand-edit emitted packages.
 
-Use model managers for ordinary CRUD, filtering, ordering, grouping, and
-transactions. Use `type_bridge.typed` for connected multi-model selection,
-owner-aware fields and roles, named pages, counts, existence checks, bounded
-reachability, or one-exchange remote execution.
+Use generated model managers for ordinary CRUD, filtering, ordering, grouping,
+and transactions. Import the generated package's `QuerySession` for connected
+multi-model selection, owner-aware fields and roles, named pages, counts,
+existence checks, bounded reachability, or one-exchange remote execution.
 
 ## Choose the data operation
 
@@ -198,9 +182,9 @@ authorization for database recreation and data loss.
 
 - Use manager filters for a single root model, Django-style lookups,
   aggregation, ordering, pagination, and ordinary CRUD.
-- Use `type_bridge.typed` or `@type-bridge/node/typed` for owner-aware,
-  connected, multi-model matches. Create variables from one `QuerySession`;
-  do not mix handles between sessions.
+- Use the generated Python or TypeScript package's `QuerySession` for
+  owner-aware, connected, multi-model matches. Create variables from one
+  session and never mix handles or tokens between generated packages.
 - Use `type_bridge.query_v2` or `@type-bridge/node/query-v2` for complete
   binding-neutral plan authoring. Let Rust create canonical bytes and
   fingerprints; never assemble mutable plan JSON in a facade.
@@ -210,6 +194,10 @@ authorization for database recreation and data loss.
 Treat query construction as local and synchronous. Direct terminals perform
 provider work. A remote terminal performs exactly one caller-owned exchange;
 the client owns transport, authentication, retry policy, and capability trust.
+Generated Python and TypeScript `RemoteQuerySession` constructors derive
+authority from private package evidence. Supply advertisement bytes, the
+one-exchange callback, and limits; never read an authority file or construct a
+low-level `QueryV2Authority` for this normal path.
 
 ## TypeScript and Node workflow
 
@@ -218,17 +206,17 @@ npm install @type-bridge/node
 ```
 
 ```ts
-import { Entity, Key, attr, field } from "@type-bridge/node";
+import { Age, Name, Person, QuerySession } from "./generated/app-models/index.js";
+import { RustDatabase } from "@type-bridge/node";
 
-class PersonId extends attr.String("person-id") {}
-class Person extends Entity("person", {
-  personId: field(PersonId, Key),
-}) {}
-
-const ada = new Person({ personId: new PersonId("ada") });
+const db = RustDatabase.connect("localhost:1729", "example");
+const ada = Person.create({ name: Name.create("ada"), age: Age.create(36n) });
+Person.manager(db).put(ada);
+const adults = Person.manager(db).filter({ age__gte: Age.create(18n) }).all();
+const session = new QuerySession(db);
 ```
 
-Import immutable queries from `@type-bridge/node/typed` and low-level V2 plan
+Import immutable model queries from the generated package and low-level V2 plan
 authoring from `@type-bridge/node/query-v2`. Consult `guide/typescript.md` for
 database lifecycle, integer `bigint` values, managers, and generation.
 
@@ -257,26 +245,42 @@ change TypeDB.
 Use this lifecycle:
 
 1. Validate the schema set and workspace offline.
-2. Review resolved schema diagnostics and generated TypeQL.
+2. Generate every configured language package from that checked snapshot.
 3. Create a named migration.
-4. Review the migration plan and destructive classifications.
+4. Review its TypeQL, plan, and destructive classifications.
 5. Apply only in an environment whose policy permits migration.
-6. Generate every configured language projection.
-7. Commit the schema authority, migration, and generated projections together
-   when the repository's generation policy tracks them.
+6. Verify the resulting database and journal state.
+7. Commit Split-YAML, `typebridge.yaml`, migrations, and generated packages
+   together when the repository tracks generated outputs.
 
 Treat `schema check`, migration planning, and generation as read-only with
-respect to TypeDB. Treat migration application and Python `sync_schema()` as
-database mutations. Direct TOML desired-schema authoring is deprecated for
-removal in TypeBridge 2.1; migrate new work to Split-YAML.
+respect to TypeDB. Only the explicit connected migration commands mutate the
+managed schema. Split-YAML is the sole active authoring authority; historical
+TOML is a read-only conversion input.
 
-For a retained single-TypeQL input, select the projection target explicitly:
+Configure every projection target in `typebridge.yaml`, then generate them from
+the same checked workspace. No standalone JSON is required for generated
+managers or package-owned query sessions.
+
+If deploying the generic server, configure its authority artifact alongside the
+bindings and commit it with the other generated outputs when the repository
+tracks them:
+
+```yaml
+artifacts:
+  schema-authority:
+    output: generated/schema-authority.json
+```
 
 ```bash
-python -m type_bridge.generator schema.tql --output generated/python
-python -m type_bridge.generator schema.tql --output generated/typescript --target typescript
-python -m type_bridge.generator schema.tql --output generated/rust --target rust
+type-bridge --manifest typebridge.yaml schema check
+type-bridge --manifest typebridge.yaml schema generate
 ```
+
+One generation snapshot embeds compiled authority into every configured
+package and, when configured, writes the byte-equivalent server artifact. Its
+canonical JSON is an internal, source-free deployment codec, not a
+user-maintained schema input.
 
 ## Rust and server boundaries
 
@@ -291,10 +295,12 @@ fields across direct and remote execution. In a caller-owned
 `RemoteQueryTransport`, wrap transport failures with `Error::remote` and a
 stable lowercase snake-case code.
 
-Use the server container only with the configuration, TLS, declared-schema
-authority, resource limits, and immutable digest described in
-`guide/server-container.md`. The client owns remote transport, authentication,
-retry, and capability-advertisement trust.
+Use the server container only with the configuration, TLS, generated
+`schema_authority_file`, explicit `authority_mode`, resource limits, and
+immutable digest described in `guide/server-container.md`. Scope and semantic
+profile come from the verified artifact rather than duplicate server settings.
+The client owns remote transport, authentication, retry, and
+capability-advertisement trust.
 
 ## Diagnose failures by boundary
 
@@ -308,7 +314,7 @@ retry, and capability-advertisement trust.
 | Node integer rejected | Use `bigint`, not JavaScript `number` |
 | Generated model mismatch | Regenerate from the canonical schema and compare schema identity/fingerprint |
 | Typed-query owner/session error | Recreate fields, roles, and variables from the same model owner and session |
-| Remote reply rejected | Check declared schema, scope, profile, capabilities, executor epoch, signature, deadline, and size limits |
+| Remote reply rejected | Check embedded schema authority, capabilities, executor epoch, signature, deadline, and size limits |
 | Closed-handle failure | Do not reuse a closed database or transaction; inspect lease ownership |
 
 Read `development/typedb.md` before changing compatibility or provider

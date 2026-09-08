@@ -4,7 +4,7 @@ use type_bridge_core_lib::ast::{Clause, Constraint, FetchItem, Pattern, RolePlay
 
 use serde::Serialize;
 
-use crate::entity::OwnedAttributeInfo;
+use crate::_entity::OwnedAttributeInfo;
 use crate::error::Result;
 use crate::filter::Filter;
 use crate::value::AttributeValue;
@@ -68,7 +68,7 @@ impl RolePlayerRef {
 /// Trait for TypeDB relation types.
 ///
 /// Implement this for each relation struct to enable CRUD operations via
-/// [`RelationManager`](crate::manager::RelationManager).
+/// [`RelationManager`](crate::_manager::RelationManager).
 ///
 /// # Required methods
 ///

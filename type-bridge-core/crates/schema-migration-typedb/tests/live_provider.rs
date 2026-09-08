@@ -29,8 +29,8 @@ use type_bridge_schema_migration::{
     execute_verified_migration_apply_plan, schema_lowering_profile_binding,
 };
 use type_bridge_schema_migration_typedb::{
-    TypeDbMigrationProvider, TypeDbMigrationStore, VerifiedMigrationCatalog,
-    derived_journal_database_name, execution_capability_vocabulary,
+    TypeDbExecutionBinding, TypeDbMigrationProvider, TypeDbMigrationStore,
+    VerifiedMigrationCatalog, derived_journal_database_name, execution_capability_vocabulary,
 };
 
 fn connection() -> (String, String, String, String, ConnectOptions) {
@@ -248,18 +248,19 @@ async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_1() {
     .expect("verified apply plan");
     assert_eq!(plan.migrations().len(), 2);
 
-    let catalog = VerifiedMigrationCatalog::new([&first, &second]).expect("catalog");
-    let store = TypeDbMigrationStore::new(
+    let binding = TypeDbExecutionBinding::new(
         Arc::clone(&managed),
         Arc::clone(&journal_database),
-        context.scope_id().clone(),
-        catalog,
+        context.clone(),
     )
-    .expect("paired store")
-    .bind_plan(&plan)
-    .expect("bind exact plan");
+    .expect("bind exact managed/journal pair and context");
+    let catalog = VerifiedMigrationCatalog::new([&first, &second]).expect("catalog");
+    let store = TypeDbMigrationStore::new(&binding, catalog)
+        .expect("paired store")
+        .bind_plan(&plan)
+        .expect("bind exact plan");
     let provider =
-        TypeDbMigrationProvider::new(Arc::clone(&managed)).expect("version-gated provider");
+        TypeDbMigrationProvider::new(&binding).expect("version-gated provider from shared binding");
     let holder = LeaseHolderId::new("live-provider-coordinator").expect("holder");
 
     let outcome = execute_verified_migration_apply_plan(&store, &provider, &holder, &plan)

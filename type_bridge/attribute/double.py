@@ -117,3 +117,7 @@ class Double(NumericAttribute):
         if isinstance(value, cls):
             return value  # Return attribute instance as-is
         return cls(float_value)  # Wrap raw float in attribute instance
+
+
+_QueryDouble = Double
+del Double

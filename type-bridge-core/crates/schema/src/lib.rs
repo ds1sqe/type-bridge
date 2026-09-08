@@ -3,8 +3,11 @@
 //! This crate owns source-oriented schema concerns so YAML parsing never enters
 //! the protocol-level `type-bridge-contract` dependency graph.
 
+#![deny(missing_docs)]
+
 mod adoption;
 mod assembler;
+mod authority;
 mod delta;
 mod delta_dependencies;
 mod delta_safety;
@@ -24,6 +27,12 @@ mod yaml;
 
 pub use adoption::{AdoptionBaseline, adopt_observed_schema};
 pub use assembler::FactAssembler;
+pub use authority::{
+    MAX_SCHEMA_AUTHORITY_BYTES, SCHEMA_AUTHORITY_FINGERPRINT_CANONICALIZATION,
+    SCHEMA_AUTHORITY_FINGERPRINT_DOMAIN, SchemaAuthorityError, SchemaAuthorityErrorCode,
+    TYPEBRIDGE_SCHEMA_AUTHORITY_V1, VerifiedSchemaAuthority, build_schema_authority,
+    decode_schema_authority, encode_schema_authority, schema_authority_capability_vocabulary,
+};
 pub use delta::{
     DeltaError, ManagedDeltaContext, apply_delta, diff_managed, inverse_delta, managed_schema_state,
 };
@@ -60,9 +69,9 @@ pub use resolve::{
 };
 pub use safety_condition::{
     DerivedSafetyConditions, RequiredSafetyCondition, SAFETY_CONDITION_CANONICALIZATION,
-    SAFETY_CONDITION_FINGERPRINT_DOMAIN, SafetyCondition, SafetyConditionId, SafetyConditionUnlock,
-    SafetyDerivationProfile, ScalarSafetySubject, UnresolvableSafetyReason,
-    derive_safety_conditions,
+    SAFETY_CONDITION_FINGERPRINT_DOMAIN, SafetyCondition, SafetyConditionDomainIndex,
+    SafetyConditionId, SafetyConditionUnlock, SafetyDerivationProfile, ScalarSafetySubject,
+    UnresolvableSafetyReason, derive_safety_conditions, derive_safety_conditions_with_domain_index,
 };
 pub use schema_set::{
     SCHEMA_DISCOVERY_V1, SCHEMA_SET_V1_FORMAT, SchemaDiscoveryVersion, SchemaSetManifest,

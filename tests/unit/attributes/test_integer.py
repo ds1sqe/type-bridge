@@ -1,6 +1,6 @@
 """Test Integer attribute type."""
 
-from type_bridge import Entity, Flag, Integer, Key, String, TypeFlags
+from tests.utils.handwritten import Entity, Flag, Integer, Key, String, TypeFlags
 
 
 def test_integer_creation():

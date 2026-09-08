@@ -9,8 +9,8 @@
 //! artifacts.
 
 use sha2::{Digest, Sha256};
-use type_bridge_orm::schema::SchemaDiff;
-use type_bridge_orm::schema::info::SchemaInfo;
+use type_bridge_orm::_schema::SchemaDiff;
+use type_bridge_orm::_schema::info::SchemaInfo;
 
 use crate::author::map::map_schema_diff;
 use crate::author::python_render::{PythonRenderRequest, render_migration_python};
@@ -254,8 +254,8 @@ fn validate_stem(stem: &str) -> crate::Result<()> {
 mod tests {
     use std::collections::BTreeMap;
 
+    use type_bridge_orm::_schema::info::{AttributeSchemaEntry, EntitySchemaEntry};
     use type_bridge_orm::ValueType;
-    use type_bridge_orm::schema::info::{AttributeSchemaEntry, EntitySchemaEntry};
 
     use super::*;
 
@@ -499,10 +499,10 @@ mod tests {
                 type_name: "person".to_string(),
                 is_abstract: false,
                 parent_type: None,
-                owned_attributes: vec![type_bridge_orm::schema::info::OwnedAttributeEntry {
+                owned_attributes: vec![type_bridge_orm::_schema::info::OwnedAttributeEntry {
                     attr_name: "legacy-name".to_string(),
                     value_type: ValueType::String,
-                    annotations: vec![type_bridge_orm::Annotation::Key],
+                    annotations: vec![type_bridge_orm::_entity::Annotation::Key],
                     is_ordered: false,
                     doc: None,
                     meta: BTreeMap::new(),
@@ -523,10 +523,10 @@ mod tests {
                 type_name: "person".to_string(),
                 is_abstract: false,
                 parent_type: None,
-                owned_attributes: vec![type_bridge_orm::schema::info::OwnedAttributeEntry {
+                owned_attributes: vec![type_bridge_orm::_schema::info::OwnedAttributeEntry {
                     attr_name: "display-name".to_string(),
                     value_type: ValueType::String,
-                    annotations: vec![type_bridge_orm::Annotation::Key],
+                    annotations: vec![type_bridge_orm::_entity::Annotation::Key],
                     is_ordered: false,
                     doc: None,
                     meta: BTreeMap::new(),

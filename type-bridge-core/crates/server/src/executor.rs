@@ -10,6 +10,9 @@ use crate::error::PipelineError;
 ///
 /// # Example
 ///
+/// This example is ignored because a complete custom executor belongs in an
+/// application crate that supplies its own concrete backend and error policy.
+///
 /// ```rust,ignore
 /// use type_bridge_server::{QueryExecutor, PipelineError};
 /// use std::pin::Pin;

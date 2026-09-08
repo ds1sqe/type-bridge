@@ -1,6 +1,6 @@
 """Test Double attribute type."""
 
-from type_bridge import Card, Double, Entity, Flag, Key, String, TypeFlags
+from tests.utils.handwritten import Card, Double, Entity, Flag, Key, String, TypeFlags
 
 
 def test_double_creation():

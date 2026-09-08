@@ -2,7 +2,7 @@
 
 import pytest
 
-from type_bridge import (
+from tests.utils.handwritten import (
     AttributeFlags,
     Card,
     Entity,

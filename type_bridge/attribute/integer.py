@@ -124,3 +124,7 @@ class Integer(NumericAttribute):
     def _supports_literal_types(cls) -> bool:
         """Integer supports Literal type annotations."""
         return True
+
+
+_QueryInteger = Integer
+del Integer

@@ -1,0 +1,50 @@
+format: typebridge.schema/v2
+
+attributes:
+  person-id: {value: string}
+  company-id: {value: string}
+  display-name: {value: string}
+  age:
+    value:
+      type: integer
+      range: {min: 0, max: 150}
+  aliases: {value: string}
+  industry: {value: string}
+  position: {value: string}
+  salary:
+    value:
+      type: integer
+      range: {min: 0}
+
+entities:
+  actor:
+    abstract: true
+    owns:
+      display-name: {card: 1}
+  person:
+    sub: actor
+    owns:
+      person-id: {key: true}
+      age: {card: {min: 0, max: 1}}
+      aliases: {card: {min: 0, max: 5}}
+  company:
+    owns:
+      company-id: {key: true}
+      display-name: {card: 1}
+      industry: {card: {min: 1, max: 5}}
+
+relations:
+  employment:
+    owns:
+      position: {card: 1}
+      salary: {card: {min: 0, max: 1}}
+    relates:
+      employee: {card: 1}
+      employer: {card: 1}
+
+plays:
+  person:
+    employment:
+      employee: {card: {min: 0, max: 1}}
+  company:
+    employment: [employer]

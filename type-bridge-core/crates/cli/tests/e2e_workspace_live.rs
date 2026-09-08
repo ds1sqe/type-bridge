@@ -89,7 +89,7 @@ fn source_tree_python() -> PathBuf {
     absolute
 }
 
-fn run_sidecar_converter(workspace: &Path, legacy_directory: &Path) -> std::process::Output {
+fn run_sidecar_converter(workspace: &Path, archive_directory: &Path) -> std::process::Output {
     Command::new(source_tree_python())
         .current_dir(workspace)
         .env_remove("PYTHONHOME")
@@ -99,7 +99,7 @@ fn run_sidecar_converter(workspace: &Path, legacy_directory: &Path) -> std::proc
         .env("PYTHONSAFEPATH", "1")
         .env("PYTHONWARNINGS", "error")
         .args(["-m", "type_bridge.migration.sidecar"])
-        .arg(legacy_directory)
+        .arg(archive_directory)
         .output()
         .expect("the shipped Python sidecar converter runs")
 }
@@ -288,17 +288,6 @@ async fn empty_workspace_to_replayed_history_live() {
     }
     let primary = format!("tb_e2e_smoke_{}", std::process::id());
     let replay = format!("{primary}_replay");
-    for database in [&primary, &replay] {
-        type_bridge_orm::session::real_driver::ensure_database_exists(
-            &address,
-            database,
-            &username,
-            &password,
-            connect_options(&http_port),
-        )
-        .await
-        .expect("database exists");
-    }
 
     let workspace = tempfile::tempdir().expect("workspace directory");
     let root = workspace.path();
@@ -484,6 +473,242 @@ async fn empty_workspace_to_replayed_history_live() {
     }
     database.delete_database().await.expect("primary cleanup");
     replayed.delete_database().await.expect("replay cleanup");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB 3.12.1 server"]
+async fn documented_examples_initial_constraints_apply_and_verify_live() {
+    let address = std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into());
+    let http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap_or_else(|_| "8000".into());
+    let username = std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into());
+    let password = std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
+    // SAFETY: ignored live test process, set before any CLI child spawns.
+    unsafe {
+        std::env::set_var("TYPEDB_USERNAME", &username);
+        std::env::set_var("TYPEDB_PASSWORD", &password);
+    }
+
+    let database_name = format!("tb_e2e_documented_examples_{}", std::process::id());
+    let journal_name =
+        type_bridge_schema_migration_typedb::derived_journal_database_name(&database_name);
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples");
+    let workspace = tempfile::tempdir().expect("workspace directory");
+    let root = workspace.path();
+    fs::create_dir(root.join("schema")).expect("schema directory");
+    for relative in [
+        "typebridge.yaml",
+        "schema/schema.yaml",
+        "schema/application.yaml",
+    ] {
+        fs::copy(source.join(relative), root.join(relative))
+            .unwrap_or_else(|error| panic!("copy documented {relative}: {error}"));
+        assert_eq!(
+            fs::read(source.join(relative)).expect("source example reads"),
+            fs::read(root.join(relative)).expect("copied example reads"),
+            "documented {relative} changed while staging live acceptance",
+        );
+    }
+
+    // Preserve the copied public manifest byte-for-byte. The derived live
+    // overlay changes only the endpoint and unique database required for an
+    // isolated test; schema, migration, and binding authority remain exact.
+    let documented_manifest =
+        fs::read_to_string(root.join("typebridge.yaml")).expect("documented manifest reads");
+    let documented_environment = "    database: typebridge-examples\n    uri: localhost:1729\n";
+    assert_eq!(
+        documented_manifest.matches(documented_environment).count(),
+        1,
+        "documented environment contract drifted",
+    );
+    let live_manifest = documented_manifest.replacen(
+        documented_environment,
+        &format!(
+            "    database: {database_name}\n    uri: {address}\n    http-port: '{http_port}'\n"
+        ),
+        1,
+    );
+    fs::write(root.join("typebridge-live.yaml"), live_manifest)
+        .expect("live manifest overlay writes");
+
+    let run_example = |arguments: &[&str]| {
+        let mut cli_arguments = vec!["--manifest", "typebridge-live.yaml"];
+        cli_arguments.extend_from_slice(arguments);
+        run_cli(root, &cli_arguments)
+    };
+    for (step, arguments) in [
+        ("documented schema check", &["schema", "check"][..]),
+        ("documented schema generate", &["schema", "generate"][..]),
+        (
+            "documented migration make",
+            &["migration", "make", "--name", "initial"][..],
+        ),
+    ] {
+        assert_success(&run_example(arguments), step);
+    }
+    let plan = run_example(&["migration", "plan"]);
+    assert_success(&plan, "documented migration plan");
+    assert!(
+        String::from_utf8_lossy(&plan.stdout).contains("examples/0001_initial"),
+        "documented migration plan omitted its initial migration: {}",
+        String::from_utf8_lossy(&plan.stdout),
+    );
+
+    assert_success(
+        &run_example(&["migration", "apply", "--environment", "development"]),
+        "documented initial-constraint apply",
+    );
+    assert_success(
+        &run_example(&["migration", "apply", "--environment", "development"]),
+        "documented initial-constraint reapply",
+    );
+    assert_success(
+        &run_example(&["migration", "verify", "--environment", "development"]),
+        "documented initial-constraint verify",
+    );
+
+    for relative in [
+        "typebridge.yaml",
+        "schema/schema.yaml",
+        "schema/application.yaml",
+    ] {
+        assert_eq!(
+            fs::read(source.join(relative)).expect("source example reads"),
+            fs::read(root.join(relative)).expect("copied example reads"),
+            "live acceptance mutated documented {relative}",
+        );
+    }
+
+    let managed = Database::connect_with_options(
+        &address,
+        &database_name,
+        &username,
+        &password,
+        connect_options(&http_port),
+    )
+    .await
+    .expect("documented managed database connects");
+    assert!(
+        managed
+            .database_exists()
+            .await
+            .expect("managed database exists"),
+        "documented apply did not create the managed database",
+    );
+    let journal = Database::connect_with_options(
+        &address,
+        &journal_name,
+        &username,
+        &password,
+        connect_options(&http_port),
+    )
+    .await
+    .expect("documented journal database connects");
+    assert!(
+        journal
+            .database_exists()
+            .await
+            .expect("journal database exists"),
+        "documented apply did not create its journal database",
+    );
+    journal.delete_database().await.expect("journal cleanup");
+    managed.delete_database().await.expect("managed cleanup");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB 3.11.5 server"]
+async fn unsupported_server_apply_creates_neither_database_live() {
+    let address = std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into());
+    let http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap_or_else(|_| "8000".into());
+    let username = std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into());
+    let password = std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
+    // SAFETY: ignored live test process, set before any CLI child spawns.
+    unsafe {
+        std::env::set_var("TYPEDB_USERNAME", &username);
+        std::env::set_var("TYPEDB_PASSWORD", &password);
+    }
+    let managed_name = format!("tb_e2e_unsupported_apply_{}", std::process::id());
+    let journal_name =
+        type_bridge_schema_migration_typedb::derived_journal_database_name(&managed_name);
+
+    let workspace = tempfile::tempdir().expect("workspace directory");
+    let root = workspace.path();
+    fs::create_dir_all(root.join("schema/fragments")).expect("schema directory");
+    fs::create_dir_all(root.join("migrations/v2")).expect("migration directory");
+    write_manifest(root, &address, &http_port, &[("live", &managed_name)]);
+    fs::write(
+        root.join("schema/schema.yaml"),
+        "format: typebridge.schema-set/v1\nsources: [fragments/*.yaml]\n",
+    )
+    .expect("schema set writes");
+    fs::write(
+        root.join("schema/fragments/model.yaml"),
+        "format: typebridge.schema/v2\nentities: {person: {}}\n",
+    )
+    .expect("schema writes");
+    assert_success(
+        &run_cli(root, &["migration", "make", "--name", "init"]),
+        "unsupported-server migration make",
+    );
+
+    let output = run_cli(root, &["migration", "apply", "--environment", "live"]);
+    assert!(
+        !output.status.success(),
+        "3.11.5 migration apply must reject"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("migration_typedb_server_version_unsupported"),
+        "unsupported apply must retain the exact gate diagnostic; stderr: {stderr}"
+    );
+
+    let managed = Database::connect_with_options(
+        &address,
+        &managed_name,
+        &username,
+        &password,
+        connect_options(&http_port),
+    )
+    .await
+    .expect("managed existence probe connects");
+    let journal = Database::connect_with_options(
+        &address,
+        &journal_name,
+        &username,
+        &password,
+        connect_options(&http_port),
+    )
+    .await
+    .expect("journal existence probe connects");
+    let managed_exists = managed
+        .database_exists()
+        .await
+        .expect("managed existence probe");
+    let journal_exists = journal
+        .database_exists()
+        .await
+        .expect("journal existence probe");
+
+    // Clean a regressed run before asserting so a local server remains reusable.
+    if journal_exists {
+        journal
+            .delete_database()
+            .await
+            .expect("regressed journal cleanup");
+    }
+    if managed_exists {
+        managed
+            .delete_database()
+            .await
+            .expect("regressed managed cleanup");
+    }
+    assert!(
+        !managed_exists,
+        "unsupported apply created the managed database"
+    );
+    assert!(
+        !journal_exists,
+        "unsupported apply created the journal database"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -865,7 +1090,7 @@ async fn adopt_legacy_history_then_evolve_live() {
                 "adopt",
                 "--environment",
                 "live",
-                "--legacy-directory",
+                "--archive-directory",
                 "migrations/smoke",
             ],
         ),
@@ -873,7 +1098,7 @@ async fn adopt_legacy_history_then_evolve_live() {
     );
     assert!(root.join("migrations/v2/adopted-genesis.typeql").exists());
     assert!(
-        root.join("migrations/v2/0000_legacy_frontier.tbmigration.json")
+        root.join("migrations/v2/0000_archive_frontier.tbmigration.json")
             .exists(),
     );
     assert_success(
@@ -889,7 +1114,7 @@ async fn adopt_legacy_history_then_evolve_live() {
             "adopt",
             "--environment",
             "live",
-            "--legacy-directory",
+            "--archive-directory",
             "migrations/smoke",
         ],
     );
@@ -911,7 +1136,7 @@ async fn adopt_legacy_history_then_evolve_live() {
                 "adopt",
                 "--environment",
                 "replay",
-                "--legacy-directory",
+                "--archive-directory",
                 "migrations/smoke",
             ],
         ),
@@ -1086,7 +1311,7 @@ async fn adopt_legacy_history_then_evolve_live() {
                 "adopt",
                 "--environment",
                 "live",
-                "--legacy-directory",
+                "--archive-directory",
                 "migrations/smoke",
             ],
         ),
@@ -1107,7 +1332,7 @@ async fn adopt_legacy_history_then_evolve_live() {
                 "adopt",
                 "--environment",
                 "replay",
-                "--legacy-directory",
+                "--archive-directory",
                 "migrations/smoke",
             ],
         ),
@@ -1203,10 +1428,10 @@ async fn shipped_python_converter_to_native_adoption_live() {
 
     let workspace = tempfile::tempdir().expect("converter workspace directory");
     let root = workspace.path();
-    let legacy_directory = root.join("migrations/smoke");
+    let archive_directory = root.join("migrations/smoke");
     fs::create_dir_all(root.join("schema/fragments")).expect("schema directory");
     fs::create_dir_all(root.join("migrations/v2")).expect("V2 migration directory");
-    fs::create_dir_all(&legacy_directory).expect("legacy migration directory");
+    fs::create_dir_all(&archive_directory).expect("legacy migration directory");
     write_manifest(
         root,
         &address,
@@ -1269,17 +1494,17 @@ class _DisabledMigration(Migration):
     dependencies: ClassVar[list[tuple[str, str]]] = []
     operations: ClassVar[list[Operation]] = []
 "#;
-    fs::write(legacy_directory.join("0000_notes.py"), notes_source)
+    fs::write(archive_directory.join("0000_notes.py"), notes_source)
         .expect("ignored notes source writes");
-    fs::write(legacy_directory.join("0001_initial.py"), initial_source)
+    fs::write(archive_directory.join("0001_initial.py"), initial_source)
         .expect("initial Python migration writes");
-    fs::write(legacy_directory.join("0002_backfill.py"), backfill_source)
+    fs::write(archive_directory.join("0002_backfill.py"), backfill_source)
         .expect("RunPython migration writes");
-    fs::write(legacy_directory.join("0003_disabled.py"), disabled_source)
+    fs::write(archive_directory.join("0003_disabled.py"), disabled_source)
         .expect("ignored disabled source writes");
 
     let schema_hash = format!("{:x}", Sha256::digest(legacy_schema.as_bytes()));
-    let snapshot = legacy_directory.join("snapshots/v0001");
+    let snapshot = archive_directory.join("snapshots/v0001");
     fs::create_dir_all(&snapshot).expect("legacy snapshot directory writes");
     fs::write(snapshot.join("schema.tql"), legacy_schema).expect("snapshot schema writes");
     fs::write(
@@ -1336,37 +1561,37 @@ class _DisabledMigration(Migration):
             "converter stdout omitted {emitted}: {conversion_stdout}",
         );
         assert!(
-            legacy_directory.join(emitted).is_file(),
+            archive_directory.join(emitted).is_file(),
             "missing {emitted}"
         );
     }
     assert!(
-        !legacy_directory.join("0002_backfill.json").exists(),
+        !archive_directory.join("0002_backfill.json").exists(),
         "RunPython must not be represented as a native executable sidecar",
     );
     for ignored_sidecar in ["0000_notes.json", "0003_disabled.json"] {
         assert!(
-            !legacy_directory.join(ignored_sidecar).exists(),
+            !archive_directory.join(ignored_sidecar).exists(),
             "V1-ignored sources must not become native graph nodes",
         );
     }
     let notes_adoption: serde_json::Value = serde_json::from_slice(
-        &fs::read(legacy_directory.join("0000_notes.adoption.json"))
+        &fs::read(archive_directory.join("0000_notes.adoption.json"))
             .expect("ignored notes metadata reads"),
     )
     .expect("ignored notes metadata parses");
     let initial_adoption: serde_json::Value = serde_json::from_slice(
-        &fs::read(legacy_directory.join("0001_initial.adoption.json"))
+        &fs::read(archive_directory.join("0001_initial.adoption.json"))
             .expect("initial adoption metadata reads"),
     )
     .expect("initial adoption metadata parses");
     let backfill_adoption: serde_json::Value = serde_json::from_slice(
-        &fs::read(legacy_directory.join("0002_backfill.adoption.json"))
+        &fs::read(archive_directory.join("0002_backfill.adoption.json"))
             .expect("backfill adoption metadata reads"),
     )
     .expect("backfill adoption metadata parses");
     let disabled_adoption: serde_json::Value = serde_json::from_slice(
-        &fs::read(legacy_directory.join("0003_disabled.adoption.json"))
+        &fs::read(archive_directory.join("0003_disabled.adoption.json"))
             .expect("ignored disabled metadata reads"),
     )
     .expect("ignored disabled metadata parses");
@@ -1415,7 +1640,7 @@ class _DisabledMigration(Migration):
                 "adopt",
                 "--environment",
                 "live",
-                "--legacy-directory",
+                "--archive-directory",
                 "migrations/smoke",
             ],
         ),
@@ -1437,7 +1662,7 @@ class _DisabledMigration(Migration):
                 "adopt",
                 "--environment",
                 "replay",
-                "--legacy-directory",
+                "--archive-directory",
                 "migrations/smoke",
             ],
         ),

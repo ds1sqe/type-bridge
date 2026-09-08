@@ -15,11 +15,16 @@ from typing import (
 
 from pydantic import ConfigDict, model_validator
 
-from type_bridge.attribute import AttributeFlags, TypeFlags
+from type_bridge.attribute.flags import (
+    _QueryAttributeFlags as AttributeFlags,
+)
+from type_bridge.attribute.flags import (
+    _QueryTypeFlags as TypeFlags,
+)
 from type_bridge.crud.utils import extract_entity_key, unwrap_attribute
-from type_bridge.models.base import TypeDBType
-from type_bridge.models.role import Role
-from type_bridge.models.utils import MatchClauseInfo
+from type_bridge.models.base import _QueryTypeDBType as TypeDBType
+from type_bridge.models.role import _QueryRole as Role
+from type_bridge.models.utils import _QueryMatchClauseInfo as MatchClauseInfo
 
 if TYPE_CHECKING:
     from type_bridge.query.ast import InsertClause, Pattern
@@ -27,7 +32,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Type variable for self type
-R = TypeVar("R", bound="Relation")
+R = TypeVar("R", bound="_QueryRelation")
 
 
 @dataclass_transform(kw_only_default=True, field_specifiers=(AttributeFlags,))
@@ -79,13 +84,13 @@ class Relation(TypeDBType):
         super().__init_subclass__(**kwargs)
         logger.debug(f"Initializing Relation subclass: {cls.__name__}")
 
-        from type_bridge.models.schema_scanner import SchemaScanner
+        from type_bridge.models.schema_scanner import _QuerySchemaScanner as SchemaScanner
 
         scanner = SchemaScanner(cls)
         cls._roles = scanner.scan_roles()
         cls._owned_attrs = scanner.scan_attributes(is_relation=True)
 
-        from type_bridge.models.registry import ModelRegistry
+        from type_bridge.models.registry import _QueryModelRegistry as ModelRegistry
 
         ModelRegistry.register_attribute_owners(cls)
 
@@ -118,15 +123,15 @@ class Relation(TypeDBType):
         super().__setattr__(name, value)
 
     @classmethod
-    def _get_base_type_class(cls) -> type[Relation]:
+    def _get_base_type_class(cls) -> type[_QueryRelation]:
         """Return Relation as the base type class for supertype resolution."""
-        return Relation
+        return _QueryRelation
 
     @classmethod
     def _get_manager_class(cls) -> type:
-        from type_bridge.crud import TypeDBManager
+        from type_bridge.crud.rust_manager import _QueryRustTypeDBManager
 
-        return TypeDBManager
+        return _QueryRustTypeDBManager
 
     @classmethod
     def get_roles(cls) -> dict[str, Role]:
@@ -144,7 +149,7 @@ class Relation(TypeDBType):
         if not isinstance(values, dict):
             return values
 
-        from type_bridge.fields.role import RoleRef
+        from type_bridge.fields.role import _QueryRoleRef as RoleRef
 
         data = dict(values)
         for role_name in cls._roles:
@@ -163,7 +168,7 @@ class Relation(TypeDBType):
         match time (see to_ast and the query builders), which raise when a
         required player is still unset.
         """
-        from type_bridge.fields.role import RoleRef
+        from type_bridge.fields.role import _QueryRoleRef as RoleRef
 
         for role_name in self.__class__._roles:
             if isinstance(self.__dict__.get(role_name), RoleRef):
@@ -459,3 +464,7 @@ class Relation(TypeDBType):
             return f"{self.get_type_name()}{' '.join(parts)}"
         else:
             return f"{self.get_type_name()}()"
+
+
+_QueryRelation = Relation
+del Relation

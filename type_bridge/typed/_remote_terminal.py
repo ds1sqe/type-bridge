@@ -16,7 +16,7 @@ from type_bridge_core import (
     query_v2_prepare_remote_model_rows,
 )
 
-from type_bridge.models.base import TypeDBType
+from type_bridge.models.base import _QueryTypeDBType as TypeDBType
 from type_bridge.typed.page import Page
 from type_bridge.typed.query import Query, _native_orders, _window
 from type_bridge.typed.references import BoundVar, QueryOrder

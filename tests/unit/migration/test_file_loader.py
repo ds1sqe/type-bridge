@@ -19,6 +19,7 @@ import pytest
 
 from type_bridge import _rust_runtime
 from type_bridge.migration._lower import lower_execution_migration
+from type_bridge.migration._operations import RunTypeQL
 from type_bridge.migration.loader import MigrationLoader, MigrationLoadError
 
 # ---------------------------------------------------------------------------
@@ -503,3 +504,44 @@ def test_released_and_adoption_discovery_accept_empty_migration_suffix(tmp_path:
 
     assert [item.migration.name for item in released] == ["0001_"]
     assert [item.migration.name for item in adopted] == ["0001_"]
+
+
+def test_frozen_source_imports_do_not_restore_public_authoring_names(tmp_path: Path) -> None:
+    from importlib.util import find_spec
+
+    import type_bridge
+    import type_bridge.migration as migration
+
+    _write_py(tmp_path, "0001_archived.py")
+    assert len(MigrationLoader(tmp_path, use_sidecars=False).discover()) == 1
+
+    assert not hasattr(type_bridge, "Entity")
+    assert not hasattr(migration, "Migration")
+    assert not hasattr(migration, "operations")
+    assert find_spec("type_bridge.migration.operations") is None
+
+
+def test_frozen_source_preserves_bare_dotted_import_semantics(tmp_path: Path) -> None:
+    source = """\
+from typing import ClassVar
+
+import type_bridge.migration.operations
+from type_bridge.migration import Migration
+
+
+class AutoMigration(Migration):
+    dependencies: ClassVar[list[tuple[str, str]]] = []
+    operations = [
+        type_bridge.migration.operations.RunTypeQL(
+            forward="define attribute bare-import, value string;",
+            reverse="undefine attribute bare-import;",
+        )
+    ]
+"""
+    _write_py(tmp_path, "0001_bare_import.py", source)
+
+    [loaded] = MigrationLoader(tmp_path, use_sidecars=False).discover()
+
+    operation = loaded.migration.operations[0]
+    assert isinstance(operation, RunTypeQL)
+    assert operation.forward == "define attribute bare-import, value string;"

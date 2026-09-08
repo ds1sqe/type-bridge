@@ -14,7 +14,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from type_bridge.models.base import TypeDBType
+    from type_bridge.models.base import _QueryTypeDBType as TypeDBType
 
 logger = logging.getLogger(__name__)
 

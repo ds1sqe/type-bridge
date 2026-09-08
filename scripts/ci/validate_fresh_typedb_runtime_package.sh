@@ -54,10 +54,6 @@ payload = tomllib.loads(runtime_manifest.read_text(encoding="utf-8"))
 dependencies = payload.get("dependencies", {})
 authorities = (
     (
-        "type-bridge-typedb-driver-b7",
-        "PINNED_DRIVER_VERSION_B7",
-    ),
-    (
         "type-bridge-typedb-driver-b8",
         "PINNED_DRIVER_VERSION",
     ),
@@ -93,13 +89,12 @@ for dependency, constant in authorities:
     print(pin)
 PY
 )
-if [[ ${#driver_pins[@]} -ne 3 ]]; then
-  echo "Extracted runtime did not yield exactly three driver pins" >&2
+if [[ ${#driver_pins[@]} -ne 2 ]]; then
+  echo "Extracted runtime did not yield exactly two retained driver pins" >&2
   exit 1
 fi
-driver_b7_pin="${driver_pins[0]}"
-driver_b8_pin="${driver_pins[1]}"
-driver_b9_pin="${driver_pins[2]}"
+driver_b8_pin="${driver_pins[0]}"
+driver_b9_pin="${driver_pins[1]}"
 
 driver_b8_archive="$package_dir/type-bridge-typedb-driver-b8-${driver_b8_pin}.crate"
 if [[ ! -f "$driver_b8_archive" || -L "$driver_b8_archive" ]]; then
@@ -142,11 +137,9 @@ if [[ ${#protocol_pins[@]} -ne 1 ]]; then
   echo "Extracted b8 driver did not yield exactly one compatibility protocol pin" >&2
   exit 1
 fi
-protocol_b7_pin="3.7.0"
 protocol_b8_pin="${protocol_pins[0]}"
 
-# Both b7 packages are immutable pre-existing crates.io packages and are never
-# repackaged. The expected-new b8 packages are validated from candidate archives.
+# The expected-new b8 packages are validated from candidate archives.
 protocol_b8_archive="$package_dir/type-bridge-typedb-protocol-b8-${protocol_b8_pin}.crate"
 if [[ ! -f "$protocol_b8_archive" || -L "$protocol_b8_archive" ]]; then
   echo "Expected one regular packaged crate: $protocol_b8_archive" >&2
@@ -161,10 +154,8 @@ protocol_b8_root="$extract_root/type-bridge-typedb-protocol-b8-${protocol_b8_pin
   "$contract_root" \
   "$driver_b8_root" \
   "$protocol_b8_root" \
-  "$driver_b7_pin" \
   "$driver_b8_pin" \
   "$driver_b9_pin" \
-  "$protocol_b7_pin" \
   "$protocol_b8_pin" \
   "$consumer_root/Cargo.toml" \
   "$consumer_root/expected-versions.json" <<'PY'
@@ -180,10 +171,10 @@ import tomllib
     driver_b8_root,
     protocol_b8_root,
 ) = map(pathlib.Path, sys.argv[1:6])
-driver_b7_pin, driver_b8_pin, driver_b9_pin = sys.argv[6:9]
-protocol_b7_pin, protocol_b8_pin = sys.argv[9:11]
-consumer_manifest = pathlib.Path(sys.argv[11])
-expected_versions = pathlib.Path(sys.argv[12])
+driver_b8_pin, driver_b9_pin = sys.argv[6:8]
+protocol_b8_pin = sys.argv[8]
+consumer_manifest = pathlib.Path(sys.argv[9])
+expected_versions = pathlib.Path(sys.argv[10])
 
 expected_packages = (
     (runtime_root, "type-bridge-typedb-runtime", None),
@@ -241,8 +232,6 @@ consumer_manifest.write_text(
 expected_versions.write_text(
     json.dumps(
         {
-            "type-bridge-typedb-driver-b7": driver_b7_pin,
-            "type-bridge-typedb-protocol-b7": protocol_b7_pin,
             "type-bridge-typedb-driver-b8": driver_b8_pin,
             "type-bridge-typedb-protocol-b8": protocol_b8_pin,
             "typedb-driver": driver_b9_pin,
@@ -299,16 +288,6 @@ def require_package(
     return package
 
 
-require_package(
-    "type-bridge-typedb-driver-b7",
-    expected["type-bridge-typedb-driver-b7"],
-    registry=True,
-)
-require_package(
-    "type-bridge-typedb-protocol-b7",
-    expected["type-bridge-typedb-protocol-b7"],
-    registry=True,
-)
 require_package(
     "type-bridge-typedb-driver-b8",
     expected["type-bridge-typedb-driver-b8"],
@@ -371,13 +350,13 @@ runtime_nodes = [
 if len(runtime_nodes) != 1:
     raise SystemExit(f"Expected one runtime resolve node, found: {runtime_nodes!r}")
 features = set(runtime_nodes[0].get("features", []))
-if not {"default", "band7", "band8", "band9"} <= features:
+if not {"default", "band8", "band9"} <= features:
     raise SystemExit(f"Fresh runtime did not activate its default multiband graph: {features!r}")
+if "band7" in features:
+    raise SystemExit(f"Fresh runtime activated the retired band-7 feature: {features!r}")
 
 print(
     "fresh extracted default runtime resolved "
-    f"b7 {expected['type-bridge-typedb-driver-b7']}/"
-    f"{expected['type-bridge-typedb-protocol-b7']}, "
     f"b8 {expected['type-bridge-typedb-driver-b8']}/"
     f"{expected['type-bridge-typedb-protocol-b8']}, and "
     f"official b9 {expected['typedb-driver']}/{official_protocol_pin}"

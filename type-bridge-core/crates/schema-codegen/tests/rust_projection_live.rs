@@ -9,19 +9,29 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
-use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
-use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+use type_bridge_contract::schema::DocumentId;
+use type_bridge_schema::{
+    SchemaDocumentSet, encode_schema_authority, normalize_documents, project, resolve,
+};
 use type_bridge_schema_codegen::RustEmitter;
 
+mod support;
+
 const SCHEMA: &str = include_str!("acceptance/schema.yaml");
+const SCHEMA_3_11: &str = include_str!("acceptance/schema-3.11.5.yaml");
 const PROVIDER_SCHEMA: &str = include_str!("acceptance/provider-3.12.1.tql");
+const PROVIDER_SCHEMA_3_11: &str = include_str!("acceptance/provider-3.11.5.tql");
 const INTERNAL_FIXTURE: &str = include_str!("rust_projection_live/internal_fixture.rs");
 const CONSUMER: &str = include_str!("rust_projection_live/consumer.rs");
-const CONSUMER_TESTS: [&str; 5] = [
+const CONSUMER_TESTS: [&str; 9] = [
     "generated_schema_handshake_and_tokens",
     "generated_entity_crud_batches_and_scalar_domains",
     "generated_inheritance_exact_and_subtype_reads",
     "generated_relation_query_and_remote_lifecycle",
+    "generated_integer_keys_and_polymorphic_role_parity",
+    "generated_plain_inherited_abstract_role_parity",
+    "generated_unkeyed_entity_iid_lifecycle_and_singular_query",
+    "generated_lifecycle_hooks_and_atomic_mutation_batches",
     "generated_write_transaction_commit_rollback_and_drop",
 ];
 
@@ -154,16 +164,65 @@ fn external_consumer_remains_a_focused_public_api_suite() {
 }
 
 #[test]
-#[ignore = "requires isolated TypeDB 3.12.1"]
+fn typedb_3_11_acceptance_is_the_same_application_without_3_12_docs() {
+    fn strip_yaml_docs(source: &str) -> String {
+        source
+            .split_inclusive('\n')
+            .map(|line| {
+                let Some(start) = line.find(", doc: ") else {
+                    return line.to_owned();
+                };
+                let end = line.rfind(" }").expect("inline YAML doc closes");
+                format!("{}{}", &line[..start], &line[end..])
+            })
+            .collect()
+    }
+
+    fn strip_typeql_docs(source: &str) -> String {
+        source
+            .split_inclusive('\n')
+            .map(|line| {
+                let Some(start) = line.find(" @doc(\"") else {
+                    return line.to_owned();
+                };
+                let relative_end = line[start..]
+                    .find("\")")
+                    .expect("TypeQL doc annotation closes");
+                let end = start + relative_end + 2;
+                format!("{}{}", &line[..start], &line[end..])
+            })
+            .collect()
+    }
+
+    assert_eq!(SCHEMA.matches(", doc: ").count(), 12);
+    assert_eq!(PROVIDER_SCHEMA.matches(" @doc(\"").count(), 12);
+    assert!(!SCHEMA_3_11.contains("doc:"));
+    assert!(!PROVIDER_SCHEMA_3_11.contains("@doc"));
+    assert_eq!(strip_yaml_docs(SCHEMA), SCHEMA_3_11);
+    assert_eq!(strip_typeql_docs(PROVIDER_SCHEMA), PROVIDER_SCHEMA_3_11);
+}
+
+#[test]
+#[ignore = "requires an isolated retained TypeDB server"]
 fn generated_rust_projection_round_trips_exact_live_models() {
+    let profile_name = env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")
+        .unwrap_or_else(|_| "typedb-3.12.1/v1".to_owned());
+    let (schema, provider_schema) = match profile_name.as_str() {
+        "typedb-3.11.5/v1" => (SCHEMA_3_11, PROVIDER_SCHEMA_3_11),
+        "typedb-3.12.1/v1" => (SCHEMA, PROVIDER_SCHEMA),
+        other => panic!("unsupported generated live semantic profile: {other}"),
+    };
     let documents = SchemaDocumentSet::parse([(
         DocumentId::new("rust-projection-live.yaml").expect("document ID is valid"),
-        SCHEMA,
+        schema,
     )])
     .expect("shared acceptance schema parses");
     let declared = normalize_documents(&documents).expect("acceptance schema normalizes");
-    let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("semantic profile is valid");
+    let profile = SemanticProfileId::new(&profile_name).expect("semantic profile is valid");
     let resolved = resolve(&declared, &profile).expect("acceptance schema resolves");
+    let authority =
+        support::authority_for_declared(&declared, "rust-projection-live", &profile_name);
+    let authority_bytes = encode_schema_authority(&authority);
     let emitter = RustEmitter::new();
     let handlers = emitter.generator_handlers();
     let resources = emitter.code_resources().expect("emitter resources hash");
@@ -176,7 +235,7 @@ fn generated_rust_projection_round_trips_exact_live_models() {
     )
     .expect("acceptance schema projects to Rust");
     let package = emitter
-        .emit_with_declared_schema(&projection, &declared)
+        .emit(&projection, &authority)
         .expect("Rust package emits");
 
     let stage = Stage::new();
@@ -299,11 +358,12 @@ fn generated_rust_projection_round_trips_exact_live_models() {
         String::from_utf8_lossy(&consumer_check.stderr)
     );
 
-    // 1. Run internal engine/projection fixture for dynamic map CRUD live coverage
+    // 1. Prepare the provider schema through the retained raw execution seam.
+    // Application CRUD/query evidence comes only from the generated consumer below.
     let fixture = stage.path().join("internal_fixture");
     fs::create_dir_all(fixture.join("src")).expect("fixture source directory is created");
     fs::write(fixture.join("src/main.rs"), INTERNAL_FIXTURE).expect("fixture source is written");
-    fs::write(fixture.join("src/provider-3.12.1.tql"), PROVIDER_SCHEMA)
+    fs::write(fixture.join("src/provider.tql"), provider_schema)
         .expect("provider fixture is written");
 
     let fixture_manifest = format!(
@@ -314,20 +374,12 @@ edition = "2024"
 publish = false
 
 [dependencies]
-type-bridge-generated-schema = {{ path = "{}", features = ["test-harness"] }}
-type-bridge-contract = {{ path = "{}" }}
 type-bridge-orm = {{ path = "{}" }}
 tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
 
-[patch.crates-io]
-type-bridge = {{ path = "{}" }}
-
 [workspace]
 "#,
-        manifest_path(&generated),
-        manifest_path(&crates_dir.join("contract")),
         manifest_path(&crates_dir.join("orm")),
-        manifest_path(&crates_dir.join("rust")),
     );
     let fixture_manifest_path = fixture.join("Cargo.toml");
     fs::write(&fixture_manifest_path, fixture_manifest).expect("fixture manifest is written");
@@ -338,24 +390,20 @@ type-bridge = {{ path = "{}" }}
         .arg("--manifest-path")
         .arg(&fixture_manifest_path)
         .env("CARGO_TARGET_DIR", &target_dir)
+        .env("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE", &profile_name)
         .output()
-        .expect("internal projection fixture starts");
+        .expect("provider schema setup starts");
 
     assert!(
         fixture_output.status.success(),
-        "internal projection fixture failed\nstdout:\n{}\nstderr:\n{}",
+        "provider schema setup failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&fixture_output.stdout),
         String::from_utf8_lossy(&fixture_output.stderr),
     );
     assert!(
         String::from_utf8_lossy(&fixture_output.stdout)
-            .contains("F2B-03 internal dynamic regression: passed")
+            .contains("generated provider schema setup: passed")
     );
-    assert!(
-        String::from_utf8_lossy(&fixture_output.stdout)
-            .contains("TypeDB 3.12 annotation export: passed")
-    );
-    println!("F2B-03 internal dynamic regression: passed");
 
     let server_port = free_port();
     let server_log_path = stage.path().join("v2-smoke-server.log");
@@ -364,8 +412,6 @@ type-bridge = {{ path = "{}" }}
         .try_clone()
         .expect("V2 server log handle is cloned");
     let core_dir = crates_dir.parent().expect("crates has a core parent");
-    let declared_bytes =
-        encode_declared_schema(&declared).expect("declared schema encodes canonically");
     let image = env::var("TYPE_BRIDGE_SERVER_IMAGE").ok();
     let container_name = image
         .as_ref()
@@ -376,8 +422,8 @@ type-bridge = {{ path = "{}" }}
             Ok("1"),
             "exact production-image generated parity currently uses the plain isolated lane"
         );
-        let declared_path = stage.path().join("declared-schema.json");
-        fs::write(&declared_path, &declared_bytes).expect("declared schema is staged");
+        let authority_path = stage.path().join("schema-authority.json");
+        fs::write(&authority_path, &authority_bytes).expect("schema authority is staged");
         let config_path = stage.path().join("server.toml");
         let address = env::var("TYPEDB_ADDRESS").expect("TYPEDB_ADDRESS is configured");
         let username = env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned());
@@ -392,17 +438,16 @@ type-bridge = {{ path = "{}" }}
                  [typedb]\naddress = {}\ndatabase = {}\nusername = {}\npassword = {}\n\
                  http_port = {http_port}\ntls = false\n\
                  [logging]\nlevel = \"info\"\nformat = \"text\"\n\
-                 [v2]\nenabled = true\ndeclared_schema_file = {}\n\
-                 scope = \"rust-projection-live\"\nprofile = \"typedb-3.12.1/v1\"\n\
+                 [v2]\nenabled = true\nschema_authority_file = {}\n\
                  authority_mode = \"query_only\"\n",
                 toml_string(&address),
                 toml_string(&database),
                 toml_string(&username),
                 toml_string(&password),
                 toml_string(
-                    declared_path
+                    authority_path
                         .to_str()
-                        .expect("declared-schema path is UTF-8")
+                        .expect("schema-authority path is UTF-8")
                 ),
             ),
         )
@@ -473,9 +518,7 @@ type-bridge = {{ path = "{}" }}
                 env::var("TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE")
                     .expect("live database name is configured"),
             )
-            .env("SMOKE_DECLARED_B64", base64(&declared_bytes))
-            .env("SMOKE_SCOPE", "rust-projection-live")
-            .env("SMOKE_PROFILE", "typedb-3.12.1/v1")
+            .env("SMOKE_AUTHORITY_B64", base64(&authority_bytes))
             .env("SMOKE_PORT", server_port.to_string());
         if env::var("TYPE_BRIDGE_RUST_PROJECTION_TLS").as_deref() == Ok("1") {
             command.env("SMOKE_TYPEDB_TLS", "true").env(
@@ -507,6 +550,7 @@ type-bridge = {{ path = "{}" }}
             "TYPE_BRIDGE_REMOTE_URL",
             format!("http://127.0.0.1:{server_port}"),
         )
+        .env("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE", &profile_name)
         .output()
         .expect("dependency-isolated client consumer starts");
 
@@ -517,7 +561,10 @@ type-bridge = {{ path = "{}" }}
         String::from_utf8_lossy(&consumer_output.stderr),
     );
     let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout);
-    assert!(consumer_stdout.contains("test result: ok. 5 passed; 0 failed"));
+    assert!(consumer_stdout.contains(&format!(
+        "test result: ok. {} passed; 0 failed",
+        CONSUMER_TESTS.len()
+    )));
     assert!(consumer_stdout.contains("public generated schema handshake and tokens: passed"));
     assert!(
         consumer_stdout
@@ -526,13 +573,26 @@ type-bridge = {{ path = "{}" }}
     assert!(consumer_stdout.contains("F2B-03 public generated entity lifecycle: passed"));
     assert!(consumer_stdout.contains("F2C-03 public generated relation lifecycle: passed"));
     assert!(consumer_stdout.contains("F2D public write transaction lifecycle: passed"));
+    assert!(
+        consumer_stdout.contains("generated lifecycle hooks and atomic mutation batches: passed")
+    );
     assert!(consumer_stdout.contains("F3 public generated query lifecycle: passed"));
     assert!(consumer_stdout.contains("F4 public selected/read/remote lifecycle: passed"));
     assert!(consumer_stdout.contains("F5 public relation parity and bounded reachability: passed"));
+    assert!(consumer_stdout.contains("generated integer keys and polymorphic role parity: passed"));
+    assert!(consumer_stdout.contains("generated plain-inherited abstract role parity: passed"));
+    assert!(
+        consumer_stdout
+            .contains("generated unkeyed entity IID lifecycle and singular query: passed")
+    );
     println!("F2B-03 public generated entity lifecycle: passed");
     println!("F2C-03 public generated relation lifecycle: passed");
     println!("F2D public write transaction lifecycle: passed");
+    println!("generated lifecycle hooks and atomic mutation batches: passed");
     println!("F3 public generated query lifecycle: passed");
     println!("F4 public selected/read/remote lifecycle: passed");
     println!("F5 public relation parity and bounded reachability: passed");
+    println!("generated integer keys and polymorphic role parity: passed");
+    println!("generated plain-inherited abstract role parity: passed");
+    println!("generated unkeyed entity IID lifecycle and singular query: passed");
 }

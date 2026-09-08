@@ -11,7 +11,10 @@ pub enum PreHookResult {
     /// Continue with the operation.
     Continue,
     /// Reject the operation with a reason.
-    Reject { reason: String },
+    Reject {
+        /// Caller-safe explanation for the rejection.
+        reason: String,
+    },
 }
 
 /// Trait for lifecycle hooks that run before and after CRUD operations.
@@ -20,6 +23,9 @@ pub enum PreHookResult {
 /// Methods use [`BoxFuture`] for object-safe async.
 ///
 /// # Example
+///
+/// This intentionally abbreviated implementor is ignored because it omits
+/// imports and the surrounding generated-model application wiring.
 ///
 /// ```ignore
 /// struct AuditLogger;

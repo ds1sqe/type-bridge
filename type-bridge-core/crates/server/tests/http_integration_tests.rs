@@ -3,6 +3,8 @@
 //! Tests the full HTTP request/response flow through the router with
 //! various pipeline configurations.
 
+mod support;
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -16,8 +18,9 @@ use tower::ServiceExt;
 
 use type_bridge_core_lib::ast::{Clause, Constraint, LiteralValue, Pattern, Value};
 use type_bridge_server::interceptor::{InterceptError, Interceptor, RequestContext};
-use type_bridge_server::test_helpers::{MockExecutor, make_pipeline, make_simple_clauses};
 use type_bridge_server::transport::http::create_router;
+
+use support::{MockExecutor, make_pipeline, make_simple_clauses};
 
 // ── Helpers ──────────────────────────────────────────────────────────
 

@@ -1,17 +1,23 @@
 """Unit tests for FieldDescriptor and FieldRef classes."""
 
 import type_bridge.fields as public_fields
-from type_bridge import Entity, TypeFlags
-from type_bridge.attribute import Boolean, DateTime, Double, Integer, String
-from type_bridge.attribute.decimal import Decimal
-from type_bridge.attribute.flags import Flag, Key
-from type_bridge.fields import (
+from tests.utils.handwritten import (
+    Boolean,
+    DateTime,
+    Decimal,
+    Double,
+    Entity,
     FieldDescriptor,
     FieldRef,
+    Flag,
+    Integer,
+    Key,
     NumericFieldRef,
+    RoleRef,
+    String,
     StringFieldRef,
+    TypeFlags,
 )
-from type_bridge.fields.role import RoleRef
 
 
 # Test attribute types

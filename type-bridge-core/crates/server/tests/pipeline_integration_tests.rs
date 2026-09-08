@@ -3,6 +3,8 @@
 //! Tests the full validate → intercept → compile → execute → intercept flow
 //! from an external test crate perspective.
 
+mod support;
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -14,7 +16,8 @@ use type_bridge_server::error::PipelineError;
 use type_bridge_server::interceptor::{InterceptError, Interceptor, RequestContext};
 use type_bridge_server::pipeline::{PipelineBuilder, QueryInput, ValidateInput};
 use type_bridge_server::schema_source::InMemorySchemaSource;
-use type_bridge_server::test_helpers::{MockExecutor, make_pipeline, make_simple_clauses};
+
+use support::{MockExecutor, SIMPLE_SCHEMA, make_pipeline, make_simple_clauses};
 
 // ── Helper interceptors ──────────────────────────────────────────────
 
@@ -198,9 +201,7 @@ async fn execute_without_schema_skips_validation() {
 #[tokio::test]
 async fn skip_validation_allows_invalid_queries() {
     let pipeline = PipelineBuilder::new(MockExecutor::new())
-        .with_schema_source(InMemorySchemaSource::new(
-            type_bridge_server::test_helpers::SIMPLE_SCHEMA,
-        ))
+        .with_schema_source(InMemorySchemaSource::new(SIMPLE_SCHEMA))
         .with_default_database("test_db")
         .with_skip_validation()
         .build()
@@ -216,9 +217,7 @@ async fn skip_validation_allows_invalid_queries() {
 #[tokio::test]
 async fn skip_validation_schema_still_accessible() {
     let pipeline = PipelineBuilder::new(MockExecutor::new())
-        .with_schema_source(InMemorySchemaSource::new(
-            type_bridge_server::test_helpers::SIMPLE_SCHEMA,
-        ))
+        .with_schema_source(InMemorySchemaSource::new(SIMPLE_SCHEMA))
         .with_skip_validation()
         .build()
         .unwrap();

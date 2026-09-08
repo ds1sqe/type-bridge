@@ -33,6 +33,6 @@ def manager_class(default_manager: type[Any]) -> type[Any]:
     if default_manager.__name__ == "RustTypeDBManager":
         return default_manager
 
-    from type_bridge.crud.rust_manager import RustTypeDBManager
+    from type_bridge.crud.rust_manager import _QueryRustTypeDBManager
 
-    return RustTypeDBManager
+    return _QueryRustTypeDBManager

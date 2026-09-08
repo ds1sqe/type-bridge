@@ -1,0 +1,200 @@
+schema-version = 1
+release-version = "2.1.0"
+first-party-msrv = "1.88"
+candidate-toolchain = "1.94.1"
+repository = "https://github.com/ds1sqe/type-bridge"
+
+# This is the closed Cargo product inventory. Publication order is dependency
+# order; immutable packages are verified in place and private bindings are
+# classified here so they cannot silently enter a crates.io release.
+
+[[packages]]
+name = "type-bridge-contract"
+manifest = "crates/contract/Cargo.toml"
+classification = "public-first-party"
+role = "supporting"
+version-policy = "lockstep"
+publish-order = 1
+docs-target = "lib"
+
+[[packages]]
+name = "type-bridge-core-lib"
+manifest = "crates/core/Cargo.toml"
+classification = "public-first-party"
+role = "supporting"
+version-policy = "lockstep"
+publish-order = 2
+docs-target = "lib"
+
+[[packages]]
+name = "type-bridge-schema"
+manifest = "crates/schema/Cargo.toml"
+classification = "public-first-party"
+role = "supporting"
+version-policy = "lockstep"
+publish-order = 3
+docs-target = "lib"
+
+[[packages]]
+name = "type-bridge-query"
+manifest = "crates/query/Cargo.toml"
+classification = "public-first-party"
+role = "supporting"
+version-policy = "lockstep"
+publish-order = 4
+docs-target = "lib"
+
+[[packages]]
+name = "type-bridge-schema-migration"
+manifest = "crates/schema-migration/Cargo.toml"
+classification = "public-first-party"
+role = "supporting"
+version-policy = "lockstep"
+publish-order = 5
+docs-target = "lib"
+
+[[packages]]
+name = "type-bridge-toml-transpiler"
+manifest = "crates/toml-transpiler/Cargo.toml"
+classification = "public-first-party"
+role = "supporting"
+version-policy = "lockstep"
+publish-order = 6
+docs-target = "lib"
+
+[[packages]]
+name = "type-bridge-schema-compat"
+manifest = "crates/schema-compat/Cargo.toml"
+classification = "public-first-party"
+role = "supporting"
+version-policy = "lockstep"
+publish-order = 7
+docs-target = "lib"
+
+[[packages]]
+name = "type-bridge-schema-codegen"
+manifest = "crates/schema-codegen/Cargo.toml"
+classification = "public-first-party"
+role = "supporting"
+version-policy = "lockstep"
+publish-order = 8
+docs-target = "lib"
+
+[[packages]]
+name = "type-bridge-orm-derive"
+manifest = "crates/orm-derive/Cargo.toml"
+classification = "public-first-party"
+role = "supporting"
+version-policy = "lockstep"
+publish-order = 9
+docs-target = "lib"
+
+[[packages]]
+name = "type-bridge-typedb-protocol-b8"
+manifest = "vendor/typedb-protocol-b8/Cargo.toml"
+classification = "public-immutable"
+role = "compatibility"
+version-policy = "fixed"
+version = "3.11.0"
+registry-checksum = "e181af88e3742a13e35225c439f8a98968f014417b1814b18736743f6d799b16"
+publish-order = 10
+docs-target = "lib"
+
+[[packages]]
+name = "type-bridge-typedb-driver-b8"
+manifest = "vendor/typedb-driver-b8/Cargo.toml"
+classification = "public-immutable"
+role = "compatibility"
+version-policy = "fixed"
+version = "3.11.5"
+registry-checksum = "a2c4fe7da8c6c8d6a075bb667c916f8fceda416bbb844d0396f987cd48204d2e"
+publish-order = 11
+docs-target = "lib"
+
+[[packages]]
+name = "type-bridge-typedb-runtime"
+manifest = "crates/typedb-runtime/Cargo.toml"
+classification = "public-first-party"
+role = "supporting"
+version-policy = "lockstep"
+publish-order = 12
+docs-target = "lib"
+
+[[packages]]
+name = "type-bridge-orm"
+manifest = "crates/orm/Cargo.toml"
+classification = "public-first-party"
+role = "supporting"
+version-policy = "lockstep"
+publish-order = 13
+docs-target = "lib"
+
+[[packages]]
+name = "type-bridge-migration"
+manifest = "crates/migration/Cargo.toml"
+classification = "public-first-party"
+role = "supporting"
+version-policy = "lockstep"
+publish-order = 14
+docs-target = "lib"
+
+[[packages]]
+name = "type-bridge-schema-migration-typedb"
+manifest = "crates/schema-migration-typedb/Cargo.toml"
+classification = "public-first-party"
+role = "supporting"
+version-policy = "lockstep"
+publish-order = 15
+docs-target = "lib"
+
+[[packages]]
+name = "type-bridge-server"
+manifest = "crates/server/Cargo.toml"
+classification = "public-first-party"
+role = "primary"
+version-policy = "lockstep"
+publish-order = 16
+docs-target = "lib"
+
+[[packages]]
+name = "type-bridge-workspace"
+manifest = "crates/workspace/Cargo.toml"
+classification = "public-first-party"
+role = "supporting"
+version-policy = "lockstep"
+publish-order = 17
+docs-target = "lib"
+
+[[packages]]
+name = "type-bridge-cli"
+manifest = "crates/cli/Cargo.toml"
+classification = "public-first-party"
+role = "primary"
+version-policy = "lockstep"
+publish-order = 18
+docs-target = "lib"
+
+[[packages]]
+name = "type-bridge"
+manifest = "crates/rust/Cargo.toml"
+classification = "public-first-party"
+role = "primary"
+version-policy = "lockstep"
+publish-order = 19
+docs-target = "lib"
+
+[[packages]]
+name = "type-bridge-core"
+manifest = "crates/python/Cargo.toml"
+classification = "private-binding"
+role = "binding"
+version-policy = "lockstep"
+docs-target = "none"
+
+[[packages]]
+name = "type-bridge-node"
+manifest = "crates/node/Cargo.toml"
+classification = "private-binding"
+role = "binding"
+version-policy = "lockstep"
+docs-target = "none"

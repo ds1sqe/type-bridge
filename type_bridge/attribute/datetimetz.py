@@ -7,16 +7,16 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self, TypeVar
 
 from pydantic_core import core_schema
 
-from type_bridge.attribute.base import Attribute
+from type_bridge.attribute.base import _QueryAttribute
 
 if TYPE_CHECKING:
-    from type_bridge.attribute.datetime import DateTime
+    from type_bridge.attribute.datetime import _QueryDateTime
 
 # TypeVar for proper type checking
 DateTimeTZValue = TypeVar("DateTimeTZValue", bound=datetime_type)
 
 
-class DateTimeTZ(Attribute):
+class DateTimeTZ(_QueryAttribute):
     """DateTimeTZ attribute type that accepts timezone-aware datetime values.
 
     This maps to TypeDB's 'datetime-tz' type, which requires timezone information.
@@ -61,7 +61,7 @@ class DateTimeTZ(Attribute):
             return datetime_type.now(UTC)
         return self._value
 
-    def strip_timezone(self, tz: timezone_type | None = None) -> "DateTime":
+    def strip_timezone(self, tz: timezone_type | None = None) -> "_QueryDateTime":
         """Convert DateTimeTZ to DateTime by stripping timezone information.
 
         Implicit conversion (tz=None): Just strip timezone as-is
@@ -84,7 +84,7 @@ class DateTimeTZ(Attribute):
             jst = timezone(timedelta(hours=9))
             naive_jst = dt_tz.strip_timezone(jst)
         """
-        from type_bridge.attribute.datetime import DateTime
+        from type_bridge.attribute.datetime import _QueryDateTime
 
         dt_value = self.value
         if tz is not None:
@@ -93,9 +93,9 @@ class DateTimeTZ(Attribute):
 
         # Strip timezone info
         naive_dt = dt_value.replace(tzinfo=None)
-        return DateTime(naive_dt)
+        return _QueryDateTime(naive_dt)
 
-    def __add__(self, other: Any) -> "DateTimeTZ":
+    def __add__(self, other: Any) -> Self:
         """Add a Duration to this DateTimeTZ.
 
         Args:
@@ -114,16 +114,16 @@ class DateTimeTZ(Attribute):
             duration = Duration("P1M")
             result = dt + duration  # DateTimeTZ(2024-02-28 14:00:00+00:00)
         """
-        from type_bridge.attribute.duration import Duration
+        from type_bridge.attribute.duration import _QueryDuration
 
-        if isinstance(other, Duration):
+        if isinstance(other, _QueryDuration):
             # Add duration to timezone-aware datetime
             # isodate handles timezone-aware datetime + duration correctly
             new_dt = self.value + other.value
-            return DateTimeTZ(new_dt)
+            return type(self)(new_dt)
         return NotImplemented
 
-    def __radd__(self, other: Any) -> "DateTimeTZ":
+    def __radd__(self, other: Any) -> Self:
         """Reverse addition for Duration + DateTimeTZ."""
         return self.__add__(other)
 
@@ -173,3 +173,7 @@ class DateTimeTZ(Attribute):
         if dt.tzinfo is None:
             raise ValueError("DateTimeTZ requires timezone-aware datetime")
         return cls(dt)
+
+
+_QueryDateTimeTZ = DateTimeTZ
+del DateTimeTZ

@@ -236,8 +236,8 @@ mod tests {
     fn authored_output_passes_checked_loading_validation_and_planning() {
         use std::collections::BTreeMap;
 
+        use type_bridge_orm::_schema::info::{AttributeSchemaEntry, EntitySchemaEntry, SchemaInfo};
         use type_bridge_orm::ValueType;
-        use type_bridge_orm::schema::info::{AttributeSchemaEntry, EntitySchemaEntry, SchemaInfo};
 
         use crate::author::build::{
             AuthorMigrationRequest, MigrationMetadata, PositionedOperations, SnapshotContext,

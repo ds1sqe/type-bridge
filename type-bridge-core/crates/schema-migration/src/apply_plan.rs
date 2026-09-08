@@ -469,7 +469,7 @@ pub fn build_verified_migration_apply_plan(
                 &source_catalog,
                 &target_catalog,
                 lowering_binding,
-                coverage.conditional_operation_indices(),
+                coverage.discharged_operation_indices(),
                 approved,
             )?;
             verified_steps.push(VerifiedMigrationApplyStep::SchemaDelta {

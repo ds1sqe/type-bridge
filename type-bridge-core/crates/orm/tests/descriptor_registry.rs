@@ -4,6 +4,10 @@ use std::sync::Arc;
 
 use type_bridge_orm::*;
 
+#[path = "support/internal.rs"]
+mod internal;
+use internal::*;
+
 fn attr(name: &str, value_type: ValueType) -> OwnedAttributeDescriptor {
     OwnedAttributeDescriptor {
         field_name: name.replace('-', "_"),

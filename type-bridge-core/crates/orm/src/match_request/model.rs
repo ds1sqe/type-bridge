@@ -174,6 +174,20 @@ pub enum MatchExpr {
         /// Right-hand bound field.
         right: BoundFieldId,
     },
+    /// Require a bound field to have at least one value or no values.
+    FieldPresence {
+        /// Bound field being tested.
+        field: BoundFieldId,
+        /// `true` requires presence; `false` requires absence.
+        present: bool,
+    },
+    /// Match one bound thing by its canonical provider IID.
+    BindingIid {
+        /// Thing binding being tested.
+        binding: BindingId,
+        /// Canonical TypeDB thing IID.
+        iid: String,
+    },
     /// Require a relation binding to connect a player through one role.
     RoleEdge {
         /// Deterministic identity used by provider evidence.
@@ -438,6 +452,26 @@ pub enum MatchOperation {
         /// Ordered typed reducer terms, bounded by the selection ceiling.
         reducers: Vec<ReduceTerm>,
     },
+    /// Reduce matched evidence to typed scalar values, grouped by one
+    /// descriptor-qualified owned field value.
+    ReduceByField {
+        /// Root binding whose matched stream feeds the reducers.
+        root: BindingId,
+        /// Bound owned field whose witnessed values group rows.
+        group: BoundFieldId,
+        /// Ordered typed reducer terms, bounded by the selection ceiling.
+        reducers: Vec<ReduceTerm>,
+    },
+    /// Reduce matched evidence to typed scalar values, grouped by the
+    /// Cartesian tuple of multiple descriptor-qualified owned field values.
+    ReduceByFields {
+        /// Root binding whose matched stream feeds the reducers.
+        root: BindingId,
+        /// Ordered bound owned fields whose witnessed value tuple groups rows.
+        groups: Vec<BoundFieldId>,
+        /// Ordered typed reducer terms, bounded by the selection ceiling.
+        reducers: Vec<ReduceTerm>,
+    },
     /// Test whether any distinct matching root identity exists.
     ExistsBy {
         /// Root binding whose existence is tested.
@@ -450,13 +484,18 @@ impl MatchOperation {
     pub const fn output(&self) -> Option<&FetchShape> {
         match self {
             Self::FetchRows { output, .. } | Self::PageBy { output, .. } => Some(output),
-            Self::CountBy { .. } | Self::ExistsBy { .. } | Self::ReduceBy { .. } => None,
+            Self::CountBy { .. }
+            | Self::ExistsBy { .. }
+            | Self::ReduceBy { .. }
+            | Self::ReduceByField { .. }
+            | Self::ReduceByFields { .. } => None,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::ids::FieldId;
     use super::*;
 
     fn binding(id: u16, descriptor: &str, thing_kind: ThingKind) -> MatchBinding {
@@ -514,10 +553,15 @@ mod tests {
 
     #[test]
     fn every_operation_variant_roundtrips_without_untyped_values() {
+        let root = BindingId::new(0);
+        let age = BoundFieldId::new(
+            root,
+            FieldId::new(DescriptorId::new("entity:person"), "age"),
+        );
         let output = FetchShape::Positional {
             slots: vec![one(0)],
         };
-        let operations = [
+        let operations = vec![
             MatchOperation::FetchRows {
                 output: output.clone(),
                 order: Vec::new(),
@@ -537,12 +581,47 @@ mod tests {
                 },
                 include_total: true,
             },
-            MatchOperation::CountBy {
-                root: BindingId::new(0),
+            MatchOperation::CountBy { root },
+            MatchOperation::ReduceBy {
+                root,
+                group: Some(BindingId::new(1)),
+                reducers: vec![
+                    ReduceTerm {
+                        reduction: Reduction::Count,
+                        input: None,
+                    },
+                    ReduceTerm {
+                        reduction: Reduction::Sum,
+                        input: Some(age.clone()),
+                    },
+                ],
             },
-            MatchOperation::ExistsBy {
-                root: BindingId::new(0),
+            MatchOperation::ReduceByField {
+                root,
+                group: age,
+                reducers: vec![ReduceTerm {
+                    reduction: Reduction::Count,
+                    input: None,
+                }],
             },
+            MatchOperation::ReduceByFields {
+                root,
+                groups: vec![
+                    BoundFieldId::new(
+                        root,
+                        FieldId::new(DescriptorId::new("entity:person"), "city"),
+                    ),
+                    BoundFieldId::new(
+                        root,
+                        FieldId::new(DescriptorId::new("entity:person"), "department"),
+                    ),
+                ],
+                reducers: vec![ReduceTerm {
+                    reduction: Reduction::Count,
+                    input: None,
+                }],
+            },
+            MatchOperation::ExistsBy { root },
         ];
 
         for operation in operations {

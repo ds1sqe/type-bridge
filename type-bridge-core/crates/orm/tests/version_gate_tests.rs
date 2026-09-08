@@ -12,9 +12,7 @@
 
 use type_bridge_core_lib::version::{self as core_version, VersionError};
 use type_bridge_orm::error::OrmError;
-use type_bridge_orm::session::real_driver::{
-    PINNED_DRIVER_VERSION, PINNED_DRIVER_VERSION_B7, PINNED_DRIVER_VERSION_B9,
-};
+use type_bridge_orm::session::real_driver::{PINNED_DRIVER_VERSION, PINNED_DRIVER_VERSION_B9};
 
 // ── 1. Cargo.lock pin assertion ──────────────────────────────────────────────
 
@@ -72,53 +70,6 @@ fn cargo_lock_pin() {
     );
 }
 
-/// Assert that `PINNED_DRIVER_VERSION_B7` matches the
-/// `type-bridge-typedb-driver-b7` entry in `Cargo.lock`, and that the pinned
-/// fork version falls in the expected protocol band (7).
-///
-/// If this test breaks after a fork refresh, update `PINNED_DRIVER_VERSION_B7`
-/// in `crates/orm/src/session/real_driver.rs` to the new value.
-#[test]
-fn cargo_lock_pin_b7() {
-    let lock_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock");
-    let lock_contents =
-        std::fs::read_to_string(lock_path).expect("Cargo.lock not found relative to crate root");
-
-    // Find the type-bridge-typedb-driver-b7 package block and extract its version.
-    let lock_version = lock_contents
-        .split("[[package]]")
-        .find(|block| block.contains("name = \"type-bridge-typedb-driver-b7\""))
-        .and_then(|block| {
-            block
-                .lines()
-                .find(|l| l.trim_start().starts_with("version = "))
-        })
-        .and_then(|line| {
-            let start = line.find('"')? + 1;
-            let end = line.rfind('"')?;
-            Some(&line[start..end])
-        })
-        .expect("could not parse type-bridge-typedb-driver-b7 version from Cargo.lock");
-
-    assert_eq!(
-        lock_version, PINNED_DRIVER_VERSION_B7,
-        "PINNED_DRIVER_VERSION_B7 ({PINNED_DRIVER_VERSION_B7}) does not match \
-         Cargo.lock type-bridge-typedb-driver-b7 version ({lock_version}); \
-         update the constant in crates/orm/src/session/real_driver.rs"
-    );
-
-    // Assert the band-7 fork is in band 7.
-    let pinned: core_version::Version = PINNED_DRIVER_VERSION_B7
-        .parse()
-        .expect("PINNED_DRIVER_VERSION_B7 must be a valid version string");
-    assert_eq!(
-        core_version::band(&pinned),
-        Some(7),
-        "pinned band-7 fork {PINNED_DRIVER_VERSION_B7} is no longer in band 7; \
-         update PINNED_DRIVER_VERSION_B7 and review the compatibility window"
-    );
-}
-
 /// Assert that `PINNED_DRIVER_VERSION_B9` matches the
 /// upstream `typedb-driver` entry in `Cargo.lock`, and that the pinned version
 /// falls in the expected protocol band (9).
@@ -173,9 +124,9 @@ fn cargo_lock_pin_b9() {
 /// contain "protocol" as a bare term (band numbers are not user-facing text).
 #[test]
 fn orm_error_band_mismatch_message_preserved() {
-    // Driver 3.11.5 (band 8) vs server 3.10.4 (band 7) → BandMismatch.
+    // Driver 3.12.1 (band 9) vs server 3.11.5 (band 8) → BandMismatch.
     let core_err =
-        core_version::check_supported(&"3.11.5".parse().unwrap(), &"3.10.4".parse().unwrap())
+        core_version::check_supported(&"3.12.1".parse().unwrap(), &"3.11.5".parse().unwrap())
             .unwrap_err();
 
     // Wrap into OrmError via the #[from] impl.
@@ -185,12 +136,12 @@ fn orm_error_band_mismatch_message_preserved() {
 
     // Both version strings must appear.
     assert!(
-        msg.contains("3.11.5"),
-        "OrmError message missing driver version 3.11.5: {msg}"
+        msg.contains("3.12.1"),
+        "OrmError message missing driver version 3.12.1: {msg}"
     );
     assert!(
-        msg.contains("3.10.4"),
-        "OrmError message missing server version 3.10.4: {msg}"
+        msg.contains("3.11.5"),
+        "OrmError message missing server version 3.11.5: {msg}"
     );
 
     // Remediation stays interpreter-neutral while still telling users to
@@ -203,7 +154,7 @@ fn orm_error_band_mismatch_message_preserved() {
     // Protocol-band NUMBERS must never surface — the explanation stays in
     // human versions ("not protocol-compatible" prose is fine; "band 7" is not).
     assert!(
-        !msg.contains("band 7") && !msg.contains("band 8"),
+        !msg.contains("band 8") && !msg.contains("band 9"),
         "OrmError message exposes protocol band numbers: {msg}"
     );
     assert!(
@@ -214,14 +165,14 @@ fn orm_error_band_mismatch_message_preserved() {
 
 // ── 3. Window negative — Unsupported server via OrmError ────────────────────
 
-/// Server 3.7.3 is below the support floor (3.8.0).  The error must name
-/// 3.7.3 and describe the supported window.
+/// Server 3.10.4 is below the support floor (3.11.0). The error must name
+/// 3.10.4 and describe the supported window.
 #[test]
-fn orm_error_window_negative_server_3_7_3() {
-    // Use a 3.10.0 driver (in-window, band 7) against server 3.7.3 (below
-    // the floor).  The gate must reject on the server window check.
+fn orm_error_window_negative_server_3_10_4() {
+    // Use a retained 3.11 driver against a retired 3.10 server. The gate must
+    // reject on the server window check.
     let core_err =
-        core_version::check_supported(&"3.10.0".parse().unwrap(), &"3.7.3".parse().unwrap())
+        core_version::check_supported(&"3.11.5".parse().unwrap(), &"3.10.4".parse().unwrap())
             .unwrap_err();
 
     let orm_err: OrmError = core_err.into();
@@ -229,15 +180,15 @@ fn orm_error_window_negative_server_3_7_3() {
 
     // The detected out-of-range version must be named.
     assert!(
-        msg.contains("3.7.3"),
-        "OrmError message missing out-of-window server version 3.7.3: {msg}"
+        msg.contains("3.10.4"),
+        "OrmError message missing out-of-window server version 3.10.4: {msg}"
     );
 
     // The window boundary must be mentioned so the user knows what is
     // acceptable.
     assert!(
-        msg.contains("3.8"),
-        "OrmError message missing window floor 3.8: {msg}"
+        msg.contains("3.11"),
+        "OrmError message missing window floor 3.11: {msg}"
     );
 }
 
@@ -397,7 +348,7 @@ fn given_stage_gate_rejects_312_server_when_provider_remains_band8() {
 
 #[test]
 fn annotation_gate_defers_to_server_when_version_unknown() {
-    // Band-7 gRPC fallback: version undetectable; the DDL is sent as-is.
+    // Custom backends can lack version identity; the DDL is sent as-is.
     let db = Database::with_backend(Box::new(VersionedBackend::new(None)), "gate-test");
     assert!(db.check_schema_annotation_support(ANNOTATED_DDL).is_ok());
 }

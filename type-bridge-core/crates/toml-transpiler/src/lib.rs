@@ -4,6 +4,12 @@
 //! This crate has no PyO3, no `type-bridge-*` dependencies, and no runtime
 //! dependency beyond `toml`, `serde`, `indexmap`, and `thiserror`.
 
+#![deny(missing_docs)]
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub mod readme_doctests {}
+
 mod emit;
 mod model;
 mod validate;
@@ -15,8 +21,11 @@ use thiserror::Error;
 /// Kind of schema type involved in a dangling-sub or missing-role diagnostic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeKind {
+    /// An attribute type.
     Attribute,
+    /// An entity type.
     Entity,
+    /// A relation type.
     Relation,
 }
 
@@ -45,7 +54,12 @@ pub enum TranspileError {
          (expected one of: datetime-tz, datetime, boolean, decimal, duration, \
          integer, string, double, date, long, bool, int)"
     )]
-    UnknownValueType { type_name: String, value: String },
+    UnknownValueType {
+        /// The attribute type containing the invalid value declaration.
+        type_name: String,
+        /// The unsupported value-type spelling.
+        value: String,
+    },
 
     /// A struct field declares a `type` that is not one of the 12 known
     /// TypeDB value type keywords.
@@ -55,18 +69,27 @@ pub enum TranspileError {
          integer, string, double, date, long, bool, int)"
     )]
     UnknownStructFieldType {
+        /// The struct containing the invalid field declaration.
         struct_name: String,
+        /// The field whose value type is invalid.
         field: String,
+        /// The unsupported value-type spelling.
         value: String,
     },
 
     /// An attribute sets both `value` and `sub`; exactly one must be present.
     #[error("attribute `{attr}` sets both `value` and `sub`; specify exactly one")]
-    AttributeValueSubConflict { attr: String },
+    AttributeValueSubConflict {
+        /// The attribute that declares both `value` and `sub`.
+        attr: String,
+    },
 
     /// An attribute sets neither `value` nor `sub`; exactly one must be present.
     #[error("attribute `{attr}` sets neither `value` nor `sub`; specify exactly one")]
-    AttributeMissingValueSub { attr: String },
+    AttributeMissingValueSub {
+        /// The attribute missing both `value` and `sub`.
+        attr: String,
+    },
 
     /// A type declares `sub = "<parent>"` but the parent is not defined in the
     /// same section of the schema.
@@ -75,8 +98,11 @@ pub enum TranspileError {
          is not defined in the schema"
     )]
     DanglingSubParent {
+        /// The kind of schema type containing the invalid `sub` declaration.
         kind: TypeKind,
+        /// The type whose parent cannot be resolved.
         type_name: String,
+        /// The unresolved parent type name.
         parent: String,
     },
 
@@ -87,8 +113,11 @@ pub enum TranspileError {
          is not defined in the schema"
     )]
     MissingRoleRelation {
+        /// The entity or relation that declares the `plays` capability.
         player: String,
+        /// The unresolved relation type name.
         relation: String,
+        /// The role name qualified by the missing relation.
         role: String,
     },
 
@@ -99,14 +128,20 @@ pub enum TranspileError {
          has no role named `{role}`"
     )]
     MissingRole {
+        /// The entity or relation that declares the `plays` capability.
         player: String,
+        /// The resolved relation type name.
         relation: String,
+        /// The role not declared by the relation.
         role: String,
     },
 
     /// A struct declares no fields; structs require at least one field.
     #[error("struct `{struct_name}` declares no fields; structs require at least one")]
-    EmptyStruct { struct_name: String },
+    EmptyStruct {
+        /// The struct that declares no fields.
+        struct_name: String,
+    },
 
     /// A function body has no `return` clause; a function body must reach
     /// `return ...;`.
@@ -114,7 +149,10 @@ pub enum TranspileError {
         "function `{function}` body has no `return` clause; \
          a function body must reach `return ...;`"
     )]
-    MalformedFunctionBody { function: String },
+    MalformedFunctionBody {
+        /// The function whose body has no return clause.
+        function: String,
+    },
 
     /// A role or owns clause has `distinct = true` but `ordered = false`.
     /// `@distinct` is only valid on a list form (`relates name[]` / `owns attr[]`).
@@ -123,8 +161,11 @@ pub enum TranspileError {
          @distinct requires the list form"
     )]
     DistinctWithoutOrdered {
+        /// The kind of schema type containing the capability.
         kind: TypeKind,
+        /// The type that owns or relates the invalid item.
         type_name: String,
+        /// The role or owned attribute marked distinct without list ordering.
         item: String,
     },
 }

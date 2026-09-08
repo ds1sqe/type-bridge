@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::attribute::ValueType;
-use crate::entity::Annotation;
+use crate::_attribute::ValueType;
+use crate::_entity::Annotation;
 
 /// Owned metadata about one attribute owned by an entity or relation type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

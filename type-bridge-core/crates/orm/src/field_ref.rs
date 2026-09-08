@@ -15,7 +15,7 @@
 
 use std::marker::PhantomData;
 
-use crate::attribute::TypeBridgeAttribute;
+use crate::_attribute::TypeBridgeAttribute;
 use crate::expr::{Agg, Expr, SortDir};
 
 /// A typed reference to an entity/relation attribute field.
@@ -178,6 +178,9 @@ impl<A: TypeBridgeAttribute> FieldRef<A> {
 ///
 /// # Example
 ///
+/// This is ignored because `Employment` and `Age` are generated from the
+/// consumer's schema and therefore do not exist inside this crate's doctests.
+///
 /// ```ignore
 /// Employment::fields().employee.attr::<Age>("age").gte(Age(30))
 /// ```
@@ -303,6 +306,9 @@ impl<A: TypeBridgeAttribute> RolePlayerFieldRef<A> {
 ///
 /// # Example
 ///
+/// This is ignored because `Employment` and `Age` are generated from the
+/// consumer's schema and therefore do not exist inside this crate's doctests.
+///
 /// ```ignore
 /// // Access a role player's attribute:
 /// Employment::fields().employee.attr::<Age>("age").gte(Age(30))
@@ -326,10 +332,10 @@ impl RoleRef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::define_attribute;
+    use crate::_define_attribute;
 
-    define_attribute!(TestName, "name", "string");
-    define_attribute!(TestAge, "age", "long");
+    _define_attribute!(TestName, "name", "string");
+    _define_attribute!(TestAge, "age", "long");
 
     #[test]
     fn field_ref_eq() {

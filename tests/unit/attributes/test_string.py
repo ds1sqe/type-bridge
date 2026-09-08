@@ -1,6 +1,6 @@
 """Test String attribute type."""
 
-from type_bridge import Entity, Flag, Key, String, TypeFlags
+from tests.utils.handwritten import Entity, Flag, Key, String, TypeFlags
 
 
 def test_string_creation():

@@ -1,12 +1,13 @@
-# Python public static contract
+# Python static contracts
 
-These test-only fixtures import the real `type_bridge.typed` facade. They pin
-the #171 contract against the surface activated by #174 instead of maintaining
-a second declaration-only model.
+`documented_examples.py` imports the emitted `generated_v2` acceptance package
+and is compiled by the schema-codegen acceptance runner. The remaining
+positive/negative files isolate the separately retained Python V1 facade with
+test-only model fixtures; they are not application-authoring examples.
 
 `documented_examples.py` is the ordered concatenation of all five Python code
 blocks marked in `docs/development/typed-query-contract.md`. The corpus unit
-test rejects source drift, and the repository Pyright pass compiles the file.
+test rejects source drift, and generated-package acceptance compiles the file.
 
 Run the positive fixture with repository Pyright:
 

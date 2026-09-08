@@ -42,20 +42,20 @@ use type_bridge_schema::{
 };
 use type_bridge_schema_compat::released_typeql_to_declared_projection;
 
-use crate::AttributeValue;
-use crate::attribute::ValueType;
-use crate::descriptor::{
+use crate::_attribute::ValueType;
+use crate::_descriptor::{
     OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor, TypeDescriptorRef,
 };
-use crate::entity::Annotation;
+use crate::_entity::Annotation;
+use crate::_registry::DescriptorRegistry;
+use crate::_schema::{SchemaInfo, generator::generate_define_block};
+use crate::AttributeValue;
 use crate::match_request::{
     BoundFieldId, Capability, ComparisonOp, FetchShape, FetchSlot, MatchExpr, MatchMode,
     MatchOperation, MatchRequest, MatchRequestVersion, MissingOrder, RowCardinality, SortDirection,
     StableOrderSpec, ThingKind, ValidatedMatchRequest,
 };
 use crate::query_v2_builder::{QueryCompatibilityPlanInput, QueryPlanBuilder};
-use crate::registry::DescriptorRegistry;
-use crate::schema::{SchemaInfo, generator::generate_define_block};
 
 // This identifies the current Rust resolver table; it is not a connected
 // server or protocol-band selector. Released descriptor projections
@@ -200,7 +200,12 @@ pub(crate) fn adapt_match_request(
             ));
         }
     }
-    if matches!(request.operation, MatchOperation::ReduceBy { .. }) {
+    if matches!(
+        request.operation,
+        MatchOperation::ReduceBy { .. }
+            | MatchOperation::ReduceByField { .. }
+            | MatchOperation::ReduceByFields { .. }
+    ) {
         return Ok(MatchRequestAdaptation::NativeOnly);
     }
     if request
@@ -627,7 +632,9 @@ fn adapt_operation(
                 vec![root],
             )
         }
-        MatchOperation::ReduceBy { .. } => {
+        MatchOperation::ReduceBy { .. }
+        | MatchOperation::ReduceByField { .. }
+        | MatchOperation::ReduceByFields { .. } => {
             return Err(type_bridge_contract::diagnostic::Diagnostic::new(
                 type_bridge_contract::diagnostic::DiagnosticCategory::UnsupportedCapability,
                 type_bridge_contract::diagnostic::DiagnosticCode::new(
@@ -749,6 +756,14 @@ fn adapt_expression(
             left: adapt_field(left, request, registry)?,
             comparator: adapt_comparator(*operator),
             right: adapt_field(right, request, registry)?,
+        },
+        MatchExpr::FieldPresence { field, present } => QueryPatternV2::FieldPresence {
+            field: adapt_field(field, request, registry)?,
+            present: *present,
+        },
+        MatchExpr::BindingIid { binding, iid } => QueryPatternV2::BindingIid {
+            binding: BindingId::new(binding.get())?,
+            iid: iid.clone(),
         },
         MatchExpr::RoleEdge {
             relation,
@@ -921,6 +936,8 @@ fn predicate_has_artifact_sized_literal(expression: &MatchExpr) -> bool {
         }
         MatchExpr::Not { expression } => predicate_has_artifact_sized_literal(expression),
         MatchExpr::FieldComparison { .. }
+        | MatchExpr::FieldPresence { .. }
+        | MatchExpr::BindingIid { .. }
         | MatchExpr::RoleEdge { .. }
         | MatchExpr::Reachable { .. } => false,
     }

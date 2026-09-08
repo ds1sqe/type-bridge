@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use type_bridge_contract::capability::CapabilitySet;
+use type_bridge_schema::decode_schema_authority;
 use type_bridge_server::config::{OutboundTlsMode, RuntimeServerConfig, V2AuthorityMode};
 
 #[test]
@@ -14,9 +16,17 @@ fn documented_runtime_config_is_executable() {
     assert_eq!(config.schema.source_file, "schema.tql");
     assert_eq!(config.interceptors.enabled, ["audit-log"]);
     assert!(config.v2.enabled);
-    assert_eq!(config.v2.declared_schema_file, "declared-schema.json");
-    assert_eq!(config.v2.scope, "production");
-    assert_eq!(config.v2.profile, "typedb-3.12.1/v1");
+    assert_eq!(config.v2.schema_authority_file, "schema-authority.json");
+    let authority = decode_schema_authority(
+        config.v2_schema_authority_bytes().unwrap().unwrap(),
+        &CapabilitySet::new(),
+    )
+    .expect("documented source-free authority is canonical and verified");
+    assert_eq!(authority.managed_scope().id().as_str(), "production");
+    assert_eq!(
+        authority.semantic_profile().id().as_str(),
+        "typedb-3.12.1/v1"
+    );
     assert_eq!(config.v2.authority_mode, V2AuthorityMode::Managed);
     let audit_log = config.interceptors.audit_log.unwrap();
     assert_eq!(audit_log.output, "file");

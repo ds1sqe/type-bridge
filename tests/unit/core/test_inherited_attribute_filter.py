@@ -1,14 +1,6 @@
-"""Unit tests for inherited attribute filtering.
+"""Private-engine tests for inherited attribute discovery."""
 
-Tests that get_all_attributes() correctly includes inherited attributes,
-and that query generation uses get_all_attributes() for dictionary-based filters.
-
-Bug reference: Filters on inherited attributes were silently ignored because
-get_owned_attributes() only returns directly-owned attributes.
-"""
-
-from type_bridge import Entity, Flag, Integer, Key, String, TypeFlags
-from type_bridge.query import QueryBuilder
+from tests.utils.handwritten import Entity, Flag, Integer, Key, String, TypeFlags
 
 
 # Test model hierarchy
@@ -118,52 +110,6 @@ class TestGetAllAttributesVsGetOwnedAttributes:
         assert child_all["child_id"].typ == ChildId
 
 
-class TestQueryBuilderMatchEntity:
-    """Test that QueryBuilder.match_entity uses get_all_attributes for filters."""
-
-    def test_match_entity_with_inherited_attribute_filter(self):
-        """match_entity should include inherited attribute in TypeQL query."""
-        # Filter by 'name' which is inherited from Living
-        query = QueryBuilder.match_entity(Dog, var="$d", name=LivingName("Buddy"))
-
-        query_str = query.build()
-
-        # Should include the filter on inherited 'name' attribute
-        assert "$d isa dog" in query_str
-        assert 'has LivingName "Buddy"' in query_str
-
-    def test_match_entity_with_owned_attribute_filter(self):
-        """match_entity should include owned attribute in TypeQL query."""
-        # Filter by 'age' which is directly owned by Dog
-        query = QueryBuilder.match_entity(Dog, var="$d", age=LivingAge(5))
-
-        query_str = query.build()
-
-        assert "$d isa dog" in query_str
-        assert "has LivingAge 5" in query_str
-
-    def test_match_entity_with_both_inherited_and_owned_filters(self):
-        """match_entity should handle both inherited and owned attributes."""
-        query = QueryBuilder.match_entity(Dog, var="$d", name=LivingName("Buddy"), age=LivingAge(3))
-
-        query_str = query.build()
-
-        assert "$d isa dog" in query_str
-        assert 'has LivingName "Buddy"' in query_str
-        assert "has LivingAge 3" in query_str
-
-    def test_match_entity_unknown_attribute_ignored(self):
-        """match_entity should ignore attributes not in get_all_attributes."""
-        # 'unknown_field' is not an attribute of Dog
-        query = QueryBuilder.match_entity(Dog, var="$d", unknown_field="value")
-
-        query_str = query.build()
-
-        # Should not include the unknown field, just the base match
-        assert "$d isa dog" in query_str
-        assert "unknown_field" not in query_str
-
-
 class TestDeepInheritanceChain:
     """Test inherited attribute filtering with deeper inheritance chains."""
 
@@ -202,26 +148,3 @@ class TestDeepInheritanceChain:
         assert "name" not in child_owned
         assert "age" not in child_owned
         assert "score" in child_owned
-
-    def test_query_with_grandparent_attribute(self):
-        """Test that query generation works with grandparent attributes."""
-
-        class GrandparentId(String):
-            pass
-
-        class Grandparent(Entity):
-            flags = TypeFlags(abstract=True, name="gp")
-            gp_id: GrandparentId = Flag(Key)
-
-        class Parent(Grandparent):
-            flags = TypeFlags(abstract=True, name="par")
-
-        class Child(Parent):
-            flags = TypeFlags(name="ch")
-
-        query = QueryBuilder.match_entity(Child, var="$c", gp_id=GrandparentId("ID123"))
-
-        query_str = query.build()
-
-        assert "$c isa ch" in query_str
-        assert 'has GrandparentId "ID123"' in query_str

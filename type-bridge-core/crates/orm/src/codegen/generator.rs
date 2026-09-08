@@ -1,13 +1,13 @@
 //! Code generator: TypeQL schema -> Rust source files.
 //!
-//! The generation policy lives in `type_bridge_core_lib::bindgen`; this module
-//! keeps the historical `type_bridge_orm::codegen` entrypoints.
+//! The generation policy lives in `type_bridge_core_lib::_bindgen`; this module
+//! keeps the historical `type_bridge_orm::_codegen` entrypoints.
 
-use type_bridge_core_lib::bindgen::{self, BindgenPlan};
-use type_bridge_core_lib::bindgen::{
+use type_bridge_core_lib::_bindgen::{self as bindgen, BindgenPlan};
+use type_bridge_core_lib::_bindgen::{
     BindgenOptions, GeneratedPackage, GeneratedRustModels, TargetLanguage,
 };
-use type_bridge_core_lib::schema::TypeSchema;
+use type_bridge_core_lib::_schema::TypeSchema;
 
 /// Generated Rust model source files.
 pub type GeneratedModels = GeneratedRustModels;

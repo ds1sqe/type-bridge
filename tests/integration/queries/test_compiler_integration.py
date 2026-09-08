@@ -7,10 +7,7 @@ supported AST node types.
 
 import pytest
 
-from type_bridge import Database, Entity, Relation, TypeFlags
-from type_bridge.attribute import AttributeFlags, Integer, String
-from type_bridge.attribute.flags import Card, Flag, Key
-from type_bridge.models.role import Role
+from type_bridge import Database
 from type_bridge.query.ast import (
     DeleteClause,
     DeleteThingStatement,
@@ -44,41 +41,7 @@ from type_bridge.query.ast import (
 )
 from type_bridge.query.compiler import QueryCompiler
 
-# ============================================================================
-# Test Schema
-# ============================================================================
-
-
-class PersonName(String):
-    flags = AttributeFlags(name="person-name")
-
-
-class PersonAge(Integer):
-    flags = AttributeFlags(name="person-age")
-
-
-class PersonEmail(String):
-    flags = AttributeFlags(name="person-email")
-
-
-class Person(Entity):
-    flags = TypeFlags(name="test_person")
-    name: PersonName = Flag(Key)
-    age: PersonAge | None = None
-    emails: list[PersonEmail] = Flag(Card(min=0))  # Multi-value, unbounded max
-
-
-class FriendshipSince(Integer):
-    flags = AttributeFlags(name="friendship-since")
-
-
-class Friendship(Relation):
-    flags = TypeFlags(name="test_friendship")
-    friend: Role[Person] = Flag(Card(2, 2))
-    since: FriendshipSince | None = None
-
-
-# Schema for testing
+# Raw schema fixture for the retained query-AST compiler.
 TEST_SCHEMA = """
 define
 attribute person-name, value string;

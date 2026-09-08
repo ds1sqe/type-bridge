@@ -2,9 +2,9 @@
 //!
 //! This module is only compiled when the `typedb` feature is enabled.
 
-#[cfg(not(any(feature = "band7", feature = "band8", feature = "band9")))]
+#[cfg(not(any(feature = "band8", feature = "band9")))]
 compile_error!(
-    "type-bridge-orm: the `typedb` machinery requires at least one band feature; enable `band7`, `band8`, and/or `band9` (all are default)"
+    "type-bridge-orm: the `typedb` machinery requires at least one band feature; enable `band8` and/or `band9` (both are default)"
 );
 
 use std::sync::Arc;
@@ -13,9 +13,8 @@ use type_bridge_core_lib::ast::{TypedFetchRows, TypedRootScan};
 use type_bridge_typedb_runtime as runtime;
 
 pub use runtime::{
-    ConnectOptions, PINNED_DRIVER_VERSION, PINNED_DRIVER_VERSION_B7, PINNED_DRIVER_VERSION_B9,
-    PreparedSecureConnectOptions, SecureConnectError, SecureConnectOptions, SecureResult, TlsMode,
-    embedded_driver_versions,
+    ConnectOptions, PINNED_DRIVER_VERSION, PINNED_DRIVER_VERSION_B9, PreparedSecureConnectOptions,
+    SecureConnectError, SecureConnectOptions, SecureResult, TlsMode, embedded_driver_versions,
 };
 
 use super::backend::{
@@ -251,10 +250,6 @@ impl DriverBackend for RealBackend {
 
     fn server_version(&self) -> Option<type_bridge_core_lib::version::Version> {
         self.inner.server_version()
-    }
-
-    fn server_deprecation_notice(&self) -> Option<String> {
-        self.inner.server_deprecation_notice()
     }
 
     fn supports_given_rows(&self) -> bool {

@@ -24,9 +24,6 @@ VALID_ROOT_CA = (
 class _CurrentRustDatabaseHandle:
     """Minimal successful native handle used by transport-focused test doubles."""
 
-    def server_deprecation_notice(self) -> None:
-        return None
-
     def close(self) -> None:
         pass
 
@@ -287,16 +284,6 @@ def test_driver_options_lower_custom_roots_for_each_driver_api(
 ) -> None:
     options = MagicMock()
     monkeypatch.setattr(typedb_driver, "DriverOptions", options)
-
-    if sys.version_info < (3, 14):
-        # The band-7 keyword form only exists where a band-7 driver is
-        # installable; on CPython 3.14+ the interpreter gate rejects driver
-        # 3.10 before option dispatch, so that form is unreachable there.
-        monkeypatch.setattr(typedb_driver, "driver_version", lambda: "3.10.0")
-
-        typedb_driver.create_driver_options(True, tls_root_ca="root.pem")
-        options.assert_called_once_with(is_tls_enabled=True, tls_root_ca_path="root.pem")
-        options.reset_mock()
 
     custom_tls = object()
     tls_config = MagicMock()

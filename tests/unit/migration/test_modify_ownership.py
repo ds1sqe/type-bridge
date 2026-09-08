@@ -8,9 +8,8 @@ with ``undefine``. The historical blanket ``redefine`` lowering failed live
 
 from __future__ import annotations
 
-from type_bridge import Entity, Flag, Key, String, TypeFlags
-from type_bridge.attribute import AttributeFlags
-from type_bridge.migration import operations as ops
+from tests.utils.handwritten import AttributeFlags, Entity, Flag, Key, String, TypeFlags
+from type_bridge.migration import _operations as ops
 
 
 class MoNickname(String):

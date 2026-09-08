@@ -11,6 +11,8 @@
 //! surface ships both as the standalone `type-bridge` executable and
 //! in-process inside the Python wheel via [`run_cli`].
 
+#![deny(missing_docs)]
+
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
@@ -62,7 +64,7 @@ enum SchemaCommand {
     Check,
     /// Generate the configured binding projections from the canonical schema.
     Generate,
-    /// Export canonical declared-schema bytes for V2 executors.
+    /// Export canonical declared-schema bytes for low-level V2 tooling.
     ExportDeclared {
         /// Workspace-relative destination for the canonical JSON artifact.
         #[arg(long, default_value = "declared-schema.json")]
@@ -95,16 +97,16 @@ enum MigrationCommand {
         #[arg(long)]
         environment: String,
     },
-    /// Adopt a completed legacy (v1) history as the canonical genesis.
+    /// Adopt a completed archived V1 history as the canonical genesis.
     Adopt {
         /// The manifest environment holding the migrated v1 database.
         #[arg(long)]
         environment: String,
-        /// Directory containing the completed legacy migration files.
+        /// Directory containing the completed archived migration files.
         #[arg(long)]
-        legacy_directory: PathBuf,
+        archive_directory: PathBuf,
         /// Migration name recorded for the zero-operation bridge manifest.
-        #[arg(long, default_value = "0000_legacy_frontier")]
+        #[arg(long, default_value = "0000_archive_frontier")]
         name: String,
     },
 }
@@ -193,7 +195,7 @@ fn run(cli: &Cli) -> Result<(), String> {
         } => run_schema_export_declared(&workspace, output),
         Command::Migration { command } => match command {
             MigrationCommand::Make { name } => {
-                let directory = workspace.open_migration_directory().map_err(display)?;
+                let directory = workspace.ensure_migration_directory().map_err(display)?;
                 match workspace
                     .migration_make_in(&directory, name)
                     .map_err(display)?
@@ -231,13 +233,13 @@ fn run(cli: &Cli) -> Result<(), String> {
             }
             MigrationCommand::Adopt {
                 environment,
-                legacy_directory,
+                archive_directory,
                 name,
             } => run_connected(
                 &workspace,
                 environment,
                 ConnectedAction::Adopt {
-                    legacy_directory: legacy_directory.clone(),
+                    archive_directory: archive_directory.clone(),
                     name: name.clone(),
                 },
             ),
@@ -323,6 +325,18 @@ fn sanitize_connected_error(
     }
 }
 
+/// Render a database operation failure after credentials have been resolved.
+///
+/// Unlike secure connection errors, ordinary ORM errors have no closed safe
+/// projection and may contain provider-controlled request metadata.
+fn sanitize_connected_orm_error(
+    context: String,
+    code: &'static str,
+    _error: type_bridge_orm::OrmError,
+) -> String {
+    format!("{context} [{code}]; inspect provider logs")
+}
+
 /// Schema export happens after credentials have been resolved, so no raw ORM
 /// error or source chain may cross the CLI boundary.
 fn sanitize_schema_export_error(_error: type_bridge_orm::OrmError) -> String {
@@ -378,24 +392,39 @@ fn sanitize_migration_execution_outcome(
 /// The resolved workspace schema is projected per configured target with
 /// each shipped emitter's handler and code-resource evidence — the same
 /// path the codegen acceptance fixtures pin — and emitted
-/// deterministically. Files land under the confined output directories
-/// through same-directory temporary files renamed into place; files not
-/// produced by the emitter are never touched or deleted.
+/// deterministically. The complete generation is prepared beneath the
+/// retained workspace authority and committed as one rollback-verified batch,
+/// with schema authority last; files not produced by an emitter are never
+/// touched or deleted.
 fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
     use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
-    use type_bridge_schema::project;
+    use type_bridge_schema::{build_schema_authority, encode_schema_authority, project};
     use type_bridge_schema_codegen::{PythonEmitter, RustEmitter, TypeScriptEmitter};
 
     let outputs = workspace.config().outputs();
-    if outputs.is_empty() {
+    let authority_output = workspace.config().schema_authority_output();
+    if outputs.is_empty() && authority_output.is_none() {
         return Err(
-            "no binding outputs configured; add bindings.<target>.output to the manifest".into(),
+            "no generated outputs configured; add bindings.<target>.output or \
+             artifacts.schema-authority.output to the manifest"
+                .into(),
         );
     }
 
     let resolved = workspace.resolved_schema();
+    let authority = build_schema_authority(
+        workspace.declared_schema(),
+        workspace.required_capabilities(),
+        workspace.delta_context(),
+    )
+    .map_err(display)?;
+    let authority_bytes = encode_schema_authority(&authority);
 
-    for (target, directory) in outputs {
+    // Finish every pure projection before mutating any output. A target-level
+    // generation failure therefore cannot publish an earlier language from a
+    // different semantic attempt.
+    let mut packages = Vec::with_capacity(outputs.len());
+    for (&target, directory) in outputs {
         let package = match target {
             BindingTarget::Python => {
                 let emitter = PythonEmitter::new();
@@ -407,7 +436,7 @@ fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
                     &emitter.code_resources().map_err(display)?,
                 )
                 .map_err(display)?;
-                emitter.emit(&projection)
+                emitter.emit(&projection, &authority)
             }
             BindingTarget::TypeScript => {
                 let emitter = TypeScriptEmitter::new();
@@ -419,7 +448,7 @@ fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
                     &emitter.code_resources().map_err(display)?,
                 )
                 .map_err(display)?;
-                emitter.emit(&projection)
+                emitter.emit(&projection, &authority)
             }
             BindingTarget::Rust => {
                 let emitter = RustEmitter::new();
@@ -431,41 +460,72 @@ fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
                     &emitter.code_resources().map_err(display)?,
                 )
                 .map_err(display)?;
-                emitter.emit_with_declared_schema(&projection, workspace.declared_schema())
+                emitter.emit(&projection, &authority)
             }
         }
         .map_err(display)?;
+        packages.push((target, directory, package));
+    }
 
-        let workspace_root = workspace.output_root()?;
-        let root = workspace_root.open_beneath(directory.as_path())?;
+    // Build one workspace-relative batch without touching the filesystem. The
+    // workspace authority prevalidates every destination and prepares every
+    // flushed same-directory temporary before it publishes in this order. The
+    // final server authority is deliberately appended last.
+    let workspace_root = workspace.output_root()?;
+    let mut generated_files = Vec::new();
+    let mut generated_packages = Vec::with_capacity(packages.len());
+    for (target, directory, package) in &packages {
+        let display_root = workspace_root.display_path().join(directory.as_path());
+        let file_count = package.files().len();
         for (path, bytes) in package.files() {
             let relative = std::path::Path::new(path);
             validate_generated_relative_path(relative)?;
-            let parent = root.open_beneath(
-                relative
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("")),
-            )?;
-            let file_name = relative
-                .file_name()
-                .ok_or_else(|| format!("generated path {path:?} has no file name"))?;
-            parent.write_atomic(file_name, bytes)?;
+            generated_files.push((directory.as_path().join(relative), bytes.as_slice()));
         }
+        generated_packages.push((*target, display_root, file_count));
+    }
+    let prepared_authority = authority_output
+        .map(|output| {
+            let path = output.as_path();
+            let _file_name = path
+                .file_name()
+                .ok_or_else(|| "schema-authority output has no file name".to_owned())?;
+            Ok::<_, String>(path.to_path_buf())
+        })
+        .transpose()?;
+
+    if let Some(relative) = &prepared_authority {
+        generated_files.push((relative.clone(), authority_bytes.as_slice()));
+    }
+    workspace_root.write_atomic_batch(
+        generated_files
+            .iter()
+            .map(|(path, bytes)| (path.as_path(), *bytes)),
+    )?;
+
+    for (target, display_root, file_count) in generated_packages {
         println!(
             "generated {} file(s) for {} into {}",
-            package.files().len(),
+            file_count,
             match target {
                 BindingTarget::Python => "python",
                 BindingTarget::TypeScript => "typescript",
                 BindingTarget::Rust => "rust",
             },
-            root.display_path().display(),
+            display_root.display(),
+        );
+    }
+    if let Some(relative) = prepared_authority {
+        println!(
+            "generated schema authority at {}\n  authority identity: {}",
+            workspace_root.display_path().join(relative).display(),
+            authority.authority_fingerprint().digest().to_hex(),
         );
     }
     Ok(())
 }
 
-/// Export the same canonical declared bytes consumed by the V2 server.
+/// Export canonical declared bytes for explicitly low-level V2 tooling.
 fn run_schema_export_declared(
     workspace: &TypeBridgeWorkspace,
     output: &Path,
@@ -537,7 +597,7 @@ enum ConnectedAction {
     },
     Verify,
     Adopt {
-        legacy_directory: PathBuf,
+        archive_directory: PathBuf,
         name: String,
     },
 }
@@ -618,7 +678,16 @@ async fn run_connected_async(
     {
         return Err(format!(
             "environment {environment_name:?} is not opted into migration \
-             application; set `migrate: true` in the manifest to allow it"
+            application; set `migrate: true` in the manifest to allow it"
+        ));
+    }
+    let supported = &type_bridge_schema_migration::typedb_3_12_1_profile().semantic_profile;
+    if config.semantic_profile() != supported {
+        return Err(format!(
+            "workspace semantic profile {:?} cannot run connected TypeDB migration operations \
+             [migration_typedb_semantic_profile_unsupported]; expected {:?}",
+            config.semantic_profile().as_str(),
+            supported.as_str(),
         ));
     }
     environment
@@ -626,13 +695,17 @@ async fn run_connected_async(
         .ensure_supported_by(&execution_capability_vocabulary().map_err(display)?)
         .map_err(display)?;
 
-    // Validate the name and capture one immutable legacy-history authority
+    // Validate the name and capture one immutable archive-history authority
     // before creating the canonical directory or resolving credentials.
     let prepared_adoption = match &action {
         ConnectedAction::Adopt {
-            legacy_directory,
+            archive_directory,
             name,
-        } => Some(prepare_legacy_adoption(workspace, legacy_directory, name)?),
+        } => Some(prepare_archive_adoption(
+            workspace,
+            archive_directory,
+            name,
+        )?),
         ConnectedAction::Apply { .. } | ConnectedAction::Verify => None,
     };
 
@@ -671,8 +744,8 @@ async fn run_connected_async(
     };
 
     // Resolve and snapshot the complete transport policy before reading either
-    // credential. Every later lifecycle/connect call clones this prepared
-    // handle, so no custom-root path is reopened after secret resolution.
+    // credential. Every later connect call clones this prepared handle, so no
+    // custom-root path is reopened after secret resolution.
     let options = preflight_secure_connect_options(workspace, environment_name)?;
     let username = resolve_credential(environment.username())?;
     let password = resolve_credential(environment.password())?;
@@ -694,45 +767,10 @@ async fn run_connected_async(
         }
         ConnectedAction::Apply { .. } => None,
     };
-    if let Some(reason) = managed_requires_existing {
-        let exists = type_bridge_orm::database_exists_prepared_secure(
-            environment.uri(),
-            environment.database(),
-            &username,
-            &password,
-            options.clone(),
-        )
-        .await
-        .map_err(|error| {
-            sanitize_connected_error(
-                format!("cannot check database {:?}", environment.database()),
-                "typedb_database_exists_failed",
-                error,
-            )
-        })?;
-        if !exists {
-            return Err(format!(
-                "database {:?} does not exist; {reason}",
-                environment.database()
-            ));
-        }
-    } else {
-        type_bridge_orm::ensure_database_exists_prepared_secure(
-            environment.uri(),
-            environment.database(),
-            &username,
-            &password,
-            options.clone(),
-        )
-        .await
-        .map_err(|error| {
-            sanitize_connected_error(
-                format!("cannot ensure database {:?}", environment.database()),
-                "typedb_database_ensure_failed",
-                error,
-            )
-        })?;
-    }
+    // A TypeDB connection is server-scoped: binding a database name does not
+    // require that database to exist. Negotiate and gate both pair members
+    // before checking or creating either database, then retain both handles
+    // through migration.
     let managed = std::sync::Arc::new(
         type_bridge_orm::Database::connect_prepared_secure_with_options(
             environment.uri(),
@@ -750,60 +788,6 @@ async fn run_connected_async(
             )
         })?,
     );
-
-    // Adoption's live-schema comparison and complete pair publication precede
-    // journal creation. Publication is bridge-first under the canonical
-    // authoring lock, rolls back files created by a failed attempt, and accepts
-    // exact orphan pieces so interrupted attempts remain adopt-only resumable.
-    let adoption_files = if let Some(prepared) = prepared_adoption.as_ref() {
-        verify_prepared_adoption_live(&managed, prepared).await?;
-        Some(publish_prepared_adoption(
-            workspace,
-            &migration_directory,
-            prepared,
-        )?)
-    } else {
-        None
-    };
-
-    if matches!(&action, ConnectedAction::Verify) {
-        let exists = type_bridge_orm::database_exists_prepared_secure(
-            environment.uri(),
-            &journal_name,
-            &username,
-            &password,
-            options.clone(),
-        )
-        .await
-        .map_err(|error| {
-            sanitize_connected_error(
-                format!("cannot check database {journal_name:?}"),
-                "typedb_database_exists_failed",
-                error,
-            )
-        })?;
-        if !exists {
-            return Err(format!(
-                "database {journal_name:?} does not exist; `migration verify` is read-only and never creates databases"
-            ));
-        }
-    } else {
-        type_bridge_orm::ensure_database_exists_prepared_secure(
-            environment.uri(),
-            &journal_name,
-            &username,
-            &password,
-            options.clone(),
-        )
-        .await
-        .map_err(|error| {
-            sanitize_connected_error(
-                format!("cannot ensure database {journal_name:?}"),
-                "typedb_database_ensure_failed",
-                error,
-            )
-        })?;
-    }
     let journal = std::sync::Arc::new(
         type_bridge_orm::Database::connect_prepared_secure_with_options(
             environment.uri(),
@@ -821,6 +805,74 @@ async fn run_connected_async(
             )
         })?,
     );
+    type_bridge_schema_migration_typedb::require_supported_migration_execution_binding(
+        &managed,
+        &journal,
+        workspace.delta_context(),
+    )
+    .map_err(display)?;
+
+    if let Some(reason) = managed_requires_existing {
+        let exists = managed.database_exists().await.map_err(|error| {
+            sanitize_connected_orm_error(
+                format!("cannot check database {:?}", environment.database()),
+                "typedb_database_exists_failed",
+                error,
+            )
+        })?;
+        if !exists {
+            return Err(format!(
+                "database {:?} does not exist; {reason}",
+                environment.database()
+            ));
+        }
+    } else {
+        managed.create_database().await.map_err(|error| {
+            sanitize_connected_orm_error(
+                format!("cannot ensure database {:?}", environment.database()),
+                "typedb_database_ensure_failed",
+                error,
+            )
+        })?;
+    }
+
+    // Adoption's live-schema comparison and complete pair publication precede
+    // journal creation. Publication is bridge-first under the canonical
+    // authoring lock, rolls back files created by a failed attempt, and accepts
+    // exact orphan pieces so interrupted attempts remain adopt-only resumable.
+    let adoption_files = if let Some(prepared) = prepared_adoption.as_ref() {
+        verify_prepared_adoption_live(&managed, prepared).await?;
+        Some(publish_prepared_adoption(
+            workspace,
+            &migration_directory,
+            prepared,
+        )?)
+    } else {
+        None
+    };
+
+    if matches!(&action, ConnectedAction::Verify) {
+        let exists = journal.database_exists().await.map_err(|error| {
+            sanitize_connected_orm_error(
+                format!("cannot check database {journal_name:?}"),
+                "typedb_database_exists_failed",
+                error,
+            )
+        })?;
+        if !exists {
+            return Err(format!(
+                "database {journal_name:?} does not exist; `migration verify` is read-only and never creates databases"
+            ));
+        }
+    } else {
+        journal.create_database().await.map_err(|error| {
+            sanitize_connected_orm_error(
+                format!("cannot ensure database {journal_name:?}"),
+                "typedb_database_ensure_failed",
+                error,
+            )
+        })?;
+    }
 
     let genesis = workspace
         .migration_genesis_in(&migration_directory)
@@ -915,7 +967,7 @@ async fn run_connected_async(
                 Ok(
                     type_bridge_schema_migration_typedb::MigrationDirectoryApplyOutcome::UpToDate,
                 ) => {
-                    println!("legacy history is already adopted; the bridged ledger is current");
+                    println!("archive history is already adopted; the bridged ledger is current");
                     Ok(())
                 }
                 Ok(
@@ -924,7 +976,7 @@ async fn run_connected_async(
                     ),
                 ) => {
                     println!(
-                        "adopted the legacy history\n  genesis: {}\n  bridge: {}",
+                        "adopted the archive history\n  genesis: {}\n  bridge: {}",
                         migration_directory
                             .display_path()
                             .join(type_bridge_schema_compat::ADOPTED_GENESIS_FILE_NAME)
@@ -947,7 +999,7 @@ async fn run_connected_async(
     }
 }
 
-struct PreparedLegacyAdoption {
+struct PreparedArchiveAdoption {
     history: type_bridge_migration::LegacyAdoptionHistory,
     reconstructed: type_bridge_migration::VerifiedLegacyHead,
     authority: type_bridge_schema_compat::AdoptedGenesisAuthority,
@@ -956,24 +1008,24 @@ struct PreparedLegacyAdoption {
     bridge_bytes: Vec<u8>,
 }
 
-/// Validate and derive every filesystem authority from one retained legacy
+/// Validate and derive every filesystem authority from one retained archive
 /// history capture. This function performs no canonical-directory writes.
-fn prepare_legacy_adoption(
+fn prepare_archive_adoption(
     workspace: &TypeBridgeWorkspace,
-    legacy_directory: &std::path::Path,
+    archive_directory: &std::path::Path,
     name: &str,
-) -> Result<PreparedLegacyAdoption, String> {
+) -> Result<PreparedArchiveAdoption, String> {
     // Validate the caller-controlled name before loading history or creating
     // the configured canonical directory.
     let migration_name =
         type_bridge_contract::migration::MigrationName::new(name.to_owned()).map_err(display)?;
     let bridge_name = format!("{}.tbmigration.json", migration_name.as_str());
     let history =
-        type_bridge_migration::load_adoption_history(legacy_directory).map_err(|error| {
-            format!("legacy migration directory failed the checked adoption loader: {error}")
+        type_bridge_migration::load_adoption_history(archive_directory).map_err(|error| {
+            format!("archive migration directory failed the checked adoption loader: {error}")
         })?;
     let reconstructed = type_bridge_migration::reconstruct_legacy_head(&history)
-        .map_err(|error| format!("legacy head reconstruction failed: {error}"))?;
+        .map_err(|error| format!("archive head reconstruction failed: {error}"))?;
     let authority = type_bridge_schema_compat::parse_adopted_genesis_authority(
         type_bridge_contract::schema::DocumentId::new("legacy-head-snapshot.typeql")
             .map_err(display)?,
@@ -1005,9 +1057,9 @@ fn prepare_legacy_adoption(
     history
         .require_unchanged_head(&reconstructed)
         .map_err(|error| {
-            format!("legacy migration directory changed during adoption preparation: {error}")
+            format!("archive migration directory changed during adoption preparation: {error}")
         })?;
-    Ok(PreparedLegacyAdoption {
+    Ok(PreparedArchiveAdoption {
         history,
         reconstructed,
         authority,
@@ -1021,7 +1073,7 @@ fn prepare_legacy_adoption(
 /// using live state as publication authority.
 async fn verify_prepared_adoption_live(
     managed: &type_bridge_orm::Database,
-    prepared: &PreparedLegacyAdoption,
+    prepared: &PreparedArchiveAdoption,
 ) -> Result<(), String> {
     let export = managed
         .schema_text()
@@ -1030,7 +1082,7 @@ async fn verify_prepared_adoption_live(
     prepared
         .history
         .require_unchanged_head(&prepared.reconstructed)
-        .map_err(|error| format!("legacy adoption history changed during live export: {error}"))?;
+        .map_err(|error| format!("archive adoption history changed during live export: {error}"))?;
     let expected_internal = type_bridge_schema_compat::released_typeql_to_declared_projection(
         type_bridge_contract::schema::DocumentId::new("managed-fence-schema.typeql")
             .map_err(display)?,
@@ -1053,7 +1105,7 @@ async fn verify_prepared_adoption_live(
         || live.released_extension_identity() != prepared.authority.released_extension_identity()
     {
         return Err(
-            "live managed schema differs from the independently verified legacy-head snapshot"
+            "live managed schema differs from the independently verified archive-head snapshot"
                 .to_owned(),
         );
     }
@@ -1069,7 +1121,7 @@ async fn verify_prepared_adoption_live(
 fn publish_prepared_adoption(
     workspace: &TypeBridgeWorkspace,
     migration_directory: &type_bridge_workspace::MigrationDirectoryAuthority,
-    prepared: &PreparedLegacyAdoption,
+    prepared: &PreparedArchiveAdoption,
 ) -> Result<PathBuf, String> {
     publish_prepared_adoption_with_after_bridge(workspace, migration_directory, prepared, || {})
 }
@@ -1077,7 +1129,7 @@ fn publish_prepared_adoption(
 fn publish_prepared_adoption_with_after_bridge<F>(
     workspace: &TypeBridgeWorkspace,
     migration_directory: &type_bridge_workspace::MigrationDirectoryAuthority,
-    prepared: &PreparedLegacyAdoption,
+    prepared: &PreparedArchiveAdoption,
     after_bridge: F,
 ) -> Result<PathBuf, String>
 where
@@ -1102,7 +1154,7 @@ where
             && existing != genesis_bytes
         {
             return Err(format!(
-                "{genesis_name} already exists but differs from the verified legacy-head snapshot"
+                "{genesis_name} already exists but differs from the verified archive-head snapshot"
             ));
         }
         let bridge_already_published =
@@ -1143,7 +1195,7 @@ where
             .history
             .require_unchanged_head(&prepared.reconstructed)
             .map_err(|error| {
-                format!("legacy adoption history changed before pair publication: {error}")
+                format!("archive adoption history changed before pair publication: {error}")
             })?;
 
         if !bridge_already_published {
@@ -1157,14 +1209,14 @@ where
             .history
             .require_unchanged_head(&prepared.reconstructed)
             .map_err(|error| {
-                format!("legacy adoption history changed before genesis publication: {error}")
+                format!("archive adoption history changed before genesis publication: {error}")
             })?;
         genesis_created = publish_authority(directory, genesis_name, genesis_bytes)?;
         prepared
             .history
             .require_unchanged_head(&prepared.reconstructed)
             .map_err(|error| {
-                format!("legacy adoption history changed after pair publication: {error}")
+                format!("archive adoption history changed after pair publication: {error}")
             })?;
         workspace
             .discover_migrations_in(migration_directory)
@@ -1371,6 +1423,32 @@ mod credential_error_redaction_tests {
         ] {
             let sanitized =
                 sanitize_connected_error(context.to_owned(), code, hostile_secure_error());
+            let rendered = format!("{sanitized}\n{sanitized:?}");
+            for secret in SECRETS {
+                assert!(!rendered.contains(secret), "{secret}: {rendered}");
+            }
+            assert!(rendered.contains(context), "{rendered}");
+            assert!(rendered.contains(code), "{rendered}");
+        }
+    }
+
+    #[test]
+    fn connected_orm_lifecycle_contexts_drop_hostile_provider_text() {
+        for (context, code) in [
+            (
+                "cannot check database \"managed\"",
+                "typedb_database_exists_failed",
+            ),
+            (
+                "cannot ensure database \"managed\"",
+                "typedb_database_ensure_failed",
+            ),
+        ] {
+            let sanitized = sanitize_connected_orm_error(
+                context.to_owned(),
+                code,
+                type_bridge_orm::OrmError::Connection(PROVIDER_TEXT.to_owned()),
+            );
             let rendered = format!("{sanitized}\n{sanitized:?}");
             for secret in SECRETS {
                 assert!(!rendered.contains(secret), "{secret}: {rendered}");
@@ -1756,6 +1834,101 @@ mod transport_option_tests {
 }
 
 #[cfg(test)]
+mod migration_command_tests {
+    use super::*;
+
+    fn write_workspace_manifest(root: &Path, semantic_profile: &str) -> PathBuf {
+        fs::create_dir_all(root.join("schema/fragments")).expect("schema directory");
+        fs::write(
+            root.join("schema/schema.yaml"),
+            "format: typebridge.schema-set/v1\nsources: [fragments/*.yaml]\n",
+        )
+        .expect("schema set writes");
+        fs::write(
+            root.join("schema/fragments/model.yaml"),
+            "format: typebridge.schema/v2\nentities: {person: {}}\n",
+        )
+        .expect("schema writes");
+        let manifest = root.join("typebridge.yaml");
+        fs::write(
+            &manifest,
+            format!(
+                "format: typebridge.workspace/v1\n\
+                 schema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: command-test\n\
+                 compatibility:\n  semantic-profile: {semantic_profile}\n\
+                 migrations:\n  directory: migrations/v2\n  app-label: commandtest\n\
+                 environments:\n  dev:\n    database: command_test\n    uri: never-contact.invalid:1729\n    migrate: 'true'\n    credential:\n      username: env:TYPEBRIDGE_COMMAND_TEST_USERNAME\n      password: env:TYPEBRIDGE_COMMAND_TEST_PASSWORD\n"
+            ),
+        )
+        .expect("manifest writes");
+        manifest
+    }
+
+    #[test]
+    fn migration_make_creates_its_missing_authoring_directory() {
+        let directory = tempfile::tempdir().expect("workspace directory");
+        let manifest = write_workspace_manifest(directory.path(), "typedb-3.11.5/v1");
+        let migration_directory = directory.path().join("migrations/v2");
+        assert!(!migration_directory.exists());
+
+        run(&Cli {
+            manifest,
+            command: Command::Migration {
+                command: MigrationCommand::Make {
+                    name: "initial".to_owned(),
+                },
+            },
+        })
+        .expect("migration make creates and publishes into its authoring directory");
+
+        assert!(
+            migration_directory
+                .join("0001_initial.tbmigration.json")
+                .is_file()
+        );
+        assert!(migration_directory.join("0001_initial.typeql").is_file());
+    }
+
+    #[test]
+    fn unsupported_execution_profile_rejects_before_credentials_or_filesystem_mutation() {
+        let directory = tempfile::tempdir().expect("workspace directory");
+        let manifest = write_workspace_manifest(directory.path(), "typedb-3.11.5/v1");
+        let workspace = load_workspace(&manifest).expect("workspace loads");
+
+        for action in [
+            ConnectedAction::Apply {
+                approvals: Vec::new(),
+            },
+            ConnectedAction::Verify,
+            ConnectedAction::Adopt {
+                archive_directory: directory.path().join("missing-archive"),
+                name: "0000_archive_frontier".to_owned(),
+            },
+        ] {
+            let error = run_connected(&workspace, "dev", action)
+                .expect_err("every connected migration operation uses the exact profile");
+
+            assert!(
+                error.contains("migration_typedb_semantic_profile_unsupported"),
+                "{error}"
+            );
+            assert!(error.contains("typedb-3.11.5/v1"), "{error}");
+            assert!(error.contains("typedb-3.12.1/v1"), "{error}");
+            assert!(
+                !error.contains("credential environment variable")
+                    && !error.contains("cannot connect")
+                    && !error.contains("cannot check database"),
+                "profile gate ran after external setup: {error}"
+            );
+        }
+        assert!(
+            !directory.path().join("migrations/v2").exists(),
+            "profile rejection must not create the migration directory"
+        );
+    }
+}
+
+#[cfg(test)]
 mod adoption_file_tests {
     use super::*;
     use sha2::{Digest as _, Sha256};
@@ -1890,12 +2063,12 @@ mod adoption_file_tests {
     #[test]
     fn invalid_adoption_name_creates_no_canonical_directory() {
         let (directory, workspace) = adoption_workspace();
-        let missing_legacy = directory.path().join("missing-legacy");
+        let missing_archive = directory.path().join("missing-legacy");
         let error = run_connected(
             &workspace,
             "dev",
             ConnectedAction::Adopt {
-                legacy_directory: missing_legacy,
+                archive_directory: missing_archive,
                 name: String::new(),
             },
         )
@@ -1939,7 +2112,7 @@ mod adoption_file_tests {
         for orphan in ["genesis", "bridge"] {
             let (directory, workspace) = adoption_workspace();
             let legacy = write_legacy_fixture(directory.path());
-            let prepared = prepare_legacy_adoption(&workspace, &legacy, "0000_legacy_frontier")
+            let prepared = prepare_archive_adoption(&workspace, &legacy, "0000_archive_frontier")
                 .expect("adoption prepares");
             let migration_directory = workspace
                 .ensure_migration_directory()
@@ -1988,7 +2161,7 @@ mod adoption_file_tests {
     fn legacy_history_race_after_bridge_rolls_back_new_publication() {
         let (directory, workspace) = adoption_workspace();
         let legacy = write_legacy_fixture(directory.path());
-        let prepared = prepare_legacy_adoption(&workspace, &legacy, "0000_legacy_frontier")
+        let prepared = prepare_archive_adoption(&workspace, &legacy, "0000_archive_frontier")
             .expect("adoption prepares");
         let migration_directory = workspace
             .ensure_migration_directory()

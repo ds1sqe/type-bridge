@@ -9,7 +9,7 @@ use type_bridge_core_lib::ast::{
     SortField, Statement, Value,
 };
 
-use crate::descriptor::{EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor};
+use crate::_descriptor::{EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor};
 use crate::error::{OrmError, Result};
 use crate::expr::SortDir;
 use crate::filter::Filter;
@@ -307,7 +307,12 @@ impl DynamicExpr {
                 if *is_null {
                     Ok(vec![Pattern::Not(vec![pattern])])
                 } else {
-                    Ok(vec![pattern])
+                    // Presence is existential. Keeping the owned value bound in
+                    // the outer match would multiply one owner by its number of
+                    // values and make manager rows/counts diverge for cardinality
+                    // many fields. Double negation preserves only the Boolean
+                    // existence condition.
+                    Ok(vec![Pattern::Not(vec![Pattern::Not(vec![pattern])])])
                 }
             }
             Self::And { exprs } => {
@@ -616,6 +621,21 @@ pub(crate) fn entity_expr_fetch_clauses(
         polymorphic_fetch_items(var),
     );
     Ok(clauses)
+}
+
+pub(crate) fn entity_expr_fetch_exact_clauses(
+    descriptor: &EntityDescriptor,
+    expressions: &[DynamicExpr],
+    sorts: &[DynamicSort],
+    limit: Option<u64>,
+    offset: Option<u64>,
+    var: &str,
+) -> Result<Vec<Clause>> {
+    Ok(with_exact_type(
+        entity_expr_fetch_clauses(descriptor, expressions, sorts, limit, offset, var)?,
+        var,
+        &descriptor.type_name,
+    ))
 }
 
 pub(crate) fn entity_fetch_by_iid_clauses(
@@ -1070,6 +1090,29 @@ pub(crate) fn entity_expr_count_clauses(
         match_patterns.extend(expression.to_patterns(var, &mut counter)?);
     }
     Ok(vec![Clause::Match(match_patterns), count_clause(var)])
+}
+
+pub(crate) fn entity_expr_count_exact_clauses(
+    descriptor: &EntityDescriptor,
+    expressions: &[DynamicExpr],
+    var: &str,
+) -> Result<Vec<Clause>> {
+    Ok(with_exact_type(
+        entity_expr_count_clauses(descriptor, expressions, var)?,
+        var,
+        &descriptor.type_name,
+    ))
+}
+
+pub(crate) fn entity_expr_exists_exact_clauses(
+    descriptor: &EntityDescriptor,
+    expressions: &[DynamicExpr],
+    var: &str,
+) -> Result<Vec<Clause>> {
+    Ok(exists_from_count_clauses(
+        entity_expr_count_exact_clauses(descriptor, expressions, var)?,
+        var,
+    ))
 }
 
 pub(crate) fn entity_expr_aggregate_clauses(
@@ -1569,6 +1612,21 @@ pub(crate) fn relation_expr_fetch_clauses(
     Ok(clauses)
 }
 
+pub(crate) fn relation_expr_fetch_exact_clauses(
+    descriptor: &RelationDescriptor,
+    expressions: &[DynamicExpr],
+    sorts: &[DynamicSort],
+    limit: Option<u64>,
+    offset: Option<u64>,
+    var: &str,
+) -> Result<Vec<Clause>> {
+    Ok(with_exact_type(
+        relation_expr_fetch_clauses(descriptor, expressions, sorts, limit, offset, var)?,
+        var,
+        &descriptor.type_name,
+    ))
+}
+
 pub(crate) fn relation_fetch_by_iid_clauses(
     descriptor: &RelationDescriptor,
     iid: &str,
@@ -1783,6 +1841,29 @@ pub(crate) fn relation_expr_count_clauses(
     }
 
     Ok(vec![Clause::Match(match_patterns), count_clause(var)])
+}
+
+pub(crate) fn relation_expr_count_exact_clauses(
+    descriptor: &RelationDescriptor,
+    expressions: &[DynamicExpr],
+    var: &str,
+) -> Result<Vec<Clause>> {
+    Ok(with_exact_type(
+        relation_expr_count_clauses(descriptor, expressions, var)?,
+        var,
+        &descriptor.type_name,
+    ))
+}
+
+pub(crate) fn relation_expr_exists_exact_clauses(
+    descriptor: &RelationDescriptor,
+    expressions: &[DynamicExpr],
+    var: &str,
+) -> Result<Vec<Clause>> {
+    Ok(exists_from_count_clauses(
+        relation_expr_count_exact_clauses(descriptor, expressions, var)?,
+        var,
+    ))
 }
 
 pub(crate) fn relation_expr_aggregate_clauses(
@@ -2642,6 +2723,20 @@ fn count_clause(var: &str) -> Clause {
     }
 }
 
+fn exists_from_count_clauses(mut clauses: Vec<Clause>, var: &str) -> Vec<Clause> {
+    let reduction = clauses
+        .pop()
+        .expect("dynamic count clauses always end in a reduction");
+    debug_assert!(matches!(reduction, Clause::Reduce { .. }));
+    clauses.push(Clause::Limit(1));
+    clauses.push(Clause::Fetch(vec![FetchItem::Function {
+        key: "iid".to_string(),
+        func_name: "iid".to_string(),
+        var: var.to_string(),
+    }]));
+    clauses
+}
+
 fn role_player_match_pattern(player: &DynamicRolePlayerInput, var: &str) -> Pattern {
     let mut constraints = Vec::new();
     if let Some(iid) = &player.iid {
@@ -2675,7 +2770,7 @@ fn role_player_bindings(role_players: &[DynamicRolePlayerInput]) -> Vec<RolePlay
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::descriptor::RoleDescriptor;
+    use crate::_descriptor::RoleDescriptor;
     use type_bridge_core_lib::compiler::QueryCompiler;
 
     fn role(name: &str, cardinality: Option<(u32, Option<u32>)>) -> RoleDescriptor {
@@ -2821,5 +2916,20 @@ mod tests {
         assert!(query.contains("receiver: $rp1"));
         assert!(!query.contains("participant"));
         assert!(!query.contains("observer"));
+    }
+
+    #[test]
+    fn non_null_expression_is_existential_and_does_not_multiply_owners() {
+        let patterns = DynamicExpr::IsNull {
+            attr_name: "alias".to_owned(),
+            is_null: false,
+        }
+        .to_patterns("$owner", &mut 0)
+        .expect("presence expression lowers");
+
+        assert_eq!(
+            compile(&[Clause::Match(patterns)]),
+            "match\nnot { not { $owner has alias $dyn_attr0; }; };"
+        );
     }
 }

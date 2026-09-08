@@ -5,8 +5,9 @@ use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::projection::{
     BindingTarget, CodeResourceDigest, ProjectionConfig, ProjectionHandler, RuntimeProjection,
 };
+use type_bridge_schema::VerifiedSchemaAuthority;
 
-use crate::{GeneratedPackage, invalid};
+use crate::{GeneratedPackage, embedded_authority, invalid};
 
 const PACKAGE_JSON: &[u8] = include_bytes!("package.json");
 const RUNTIME_SOURCE: &[u8] = include_bytes!("runtime.ts");
@@ -44,8 +45,12 @@ impl TypeScriptEmitter {
         Ok(resources)
     }
 
-    /// Emit exactly eight deterministic ESM/NodeNext package files.
-    pub fn emit(&self, projection: &RuntimeProjection) -> Result<GeneratedPackage, Diagnostic> {
+    /// Emit one deterministic ESM package bound to exact verified schema authority.
+    pub fn emit(
+        &self,
+        projection: &RuntimeProjection,
+        authority: &VerifiedSchemaAuthority,
+    ) -> Result<GeneratedPackage, Diagnostic> {
         let handlers = self.generator_handlers();
         let resources = self.code_resources()?;
         if projection.target() != BindingTarget::TypeScript
@@ -58,6 +63,13 @@ impl TypeScriptEmitter {
                 "projection target, handler, or resource evidence does not match this emitter",
             ));
         }
-        render::render(projection, RUNTIME_SOURCE, PACKAGE_JSON, TSCONFIG_JSON)
+        let authority = embedded_authority(projection, authority)?;
+        render::render(
+            projection,
+            &authority,
+            RUNTIME_SOURCE,
+            PACKAGE_JSON,
+            TSCONFIG_JSON,
+        )
     }
 }

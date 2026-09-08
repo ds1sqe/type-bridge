@@ -1,7 +1,6 @@
 """Tests for ModelRegistry.resolve() unified polymorphic resolution."""
 
-from type_bridge import Entity, Flag, Key, String, TypeFlags
-from type_bridge.models.registry import ModelRegistry
+from tests.utils.handwritten import Entity, Flag, Key, ModelRegistry, String, TypeFlags
 
 
 class Name(String):

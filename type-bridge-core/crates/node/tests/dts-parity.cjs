@@ -1,18 +1,16 @@
 "use strict";
 
 /**
- * .d.ts export parity gate (Plan 11 Phase 3).
+ * .d.ts export parity gate for the generated-only Node package boundary.
  *
- * DECLARATION-ONLY / MIGRATION-SAFE BOUNDARY
- * ------------------------------------------
+ * DECLARATION-ONLY BOUNDARY
+ * -------------------------
  * This gate asserts ONLY the content of the emitted TypeScript declaration files
  * (`dist/*.d.ts`, produced by `tsc -p tsconfig.json`, the `build:types` step). It
- * deliberately asserts NOTHING about `package.json` `main`/`exports`, the
- * hand-written `index.js` loader, the native loader, or `*.node` artifacts —
- * those belong to the deferred TS-only Node package migration. The migration may
- * legitimately repoint packaging metadata and rework how JS is emitted/loaded
- * without changing the declaration shape a consumer sees; if it does change a
- * declaration intentionally, the allowed-diffs file is where that is recorded.
+ * deliberately asserts nothing about `package.json` exports, JavaScript files,
+ * the native loader, or `*.node` artifacts. The package smoke gate owns those
+ * surfaces. If a declaration changes intentionally, regenerate the baseline or
+ * record its exact content hash in the allowed-diffs file.
  *
  * HOW IT WORKS
  * ------------

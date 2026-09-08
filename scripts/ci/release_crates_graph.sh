@@ -28,9 +28,7 @@ helper="$script_dir/publish_crate_idempotently.sh"
   exit 1
 }
 
-historical_crates=(
-  type-bridge-typedb-protocol-b7
-  type-bridge-typedb-driver-b7
+preexisting_crates=(
   type-bridge-typedb-protocol-b8
   type-bridge-typedb-driver-b8
 )
@@ -44,10 +42,13 @@ release_crates=(
   type-bridge-schema-compat
   type-bridge-schema-codegen
   type-bridge-orm-derive
+  type-bridge-typedb-protocol-b8
+  type-bridge-typedb-driver-b8
   type-bridge-typedb-runtime
   type-bridge-orm
   type-bridge-migration
   type-bridge-schema-migration-typedb
+  type-bridge-server
   type-bridge-workspace
   type-bridge-cli
   type-bridge
@@ -62,14 +63,11 @@ publish_crates=(
   type-bridge-schema-compat
   type-bridge-schema-codegen
   type-bridge-orm-derive
-  type-bridge-typedb-protocol-b7
-  type-bridge-typedb-driver-b7
-  type-bridge-typedb-protocol-b8
-  type-bridge-typedb-driver-b8
   type-bridge-typedb-runtime
   type-bridge-orm
   type-bridge-migration
   type-bridge-schema-migration-typedb
+  type-bridge-server
   type-bridge-workspace
   type-bridge-cli
   type-bridge
@@ -84,7 +82,7 @@ if [[ "$mode" == "--publish" ]]; then
   exit 0
 fi
 
-for crate in "${historical_crates[@]}"; do
+for crate in "${preexisting_crates[@]}"; do
   bash "$helper" --verify-preexisting "$crate"
 done
 
@@ -98,14 +96,13 @@ patches=(
   --config 'patch.crates-io.type-bridge-schema-compat.path="crates/schema-compat"'
   --config 'patch.crates-io.type-bridge-schema-codegen.path="crates/schema-codegen"'
   --config 'patch.crates-io.type-bridge-orm-derive.path="crates/orm-derive"'
-  --config 'patch.crates-io.type-bridge-typedb-protocol-b7.path="vendor/typedb-protocol-b7"'
-  --config 'patch.crates-io.type-bridge-typedb-driver-b7.path="vendor/typedb-driver-b7"'
   --config 'patch.crates-io.type-bridge-typedb-protocol-b8.path="vendor/typedb-protocol-b8"'
   --config 'patch.crates-io.type-bridge-typedb-driver-b8.path="vendor/typedb-driver-b8"'
   --config 'patch.crates-io.type-bridge-typedb-runtime.path="crates/typedb-runtime"'
   --config 'patch.crates-io.type-bridge-orm.path="crates/orm"'
   --config 'patch.crates-io.type-bridge-migration.path="crates/migration"'
   --config 'patch.crates-io.type-bridge-schema-migration-typedb.path="crates/schema-migration-typedb"'
+  --config 'patch.crates-io.type-bridge-server.path="crates/server"'
   --config 'patch.crates-io.type-bridge-workspace.path="crates/workspace"'
   --config 'patch.crates-io.type-bridge-cli.path="crates/cli"'
   --config 'patch.crates-io.type-bridge.path="crates/rust"'
@@ -122,6 +119,6 @@ for crate in "${release_crates[@]}"; do
   "${cargo_command[@]}" package \
     --locked --allow-dirty --all-features -p "$crate" "${patches[@]}"
 done
-for crate in "${release_crates[@]}"; do
+for crate in "${publish_crates[@]}"; do
   bash "$helper" --preflight "$crate"
 done

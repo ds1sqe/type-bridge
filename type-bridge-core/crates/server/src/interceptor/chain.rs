@@ -6,11 +6,13 @@ use super::traits::{InterceptError, Interceptor, RequestContext};
 #[cfg(feature = "v2-query")]
 use super::traits::{V2PolicyOutcome, V2PolicyRequest};
 
+/// Ordered request interceptor chain with reverse-order response hooks.
 pub struct InterceptorChain {
     interceptors: Vec<Box<dyn Interceptor>>,
 }
 
 impl InterceptorChain {
+    /// Construct a chain whose request order matches the supplied vector.
     pub fn new(interceptors: Vec<Box<dyn Interceptor>>) -> Self {
         Self { interceptors }
     }
@@ -107,6 +109,7 @@ impl InterceptorChain {
             .map_or(Ok(()), Err)
     }
 
+    /// Return configured interceptor names in request order.
     pub fn interceptor_names(&self) -> Vec<&str> {
         self.interceptors.iter().map(|i| i.name()).collect()
     }

@@ -1,15 +1,7 @@
-"""Guard the pre-stable V2 authoring promise against stale deferral text."""
+"""Guard retained low-level and generated Query V2 documentation truth."""
 
-import base64
-import json
 import re
-import shutil
-import subprocess
-import sys
-import textwrap
 from pathlib import Path
-
-import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 DURABLE_PLAN_ROOT = ROOT.parents[2] / "docs/plans/type-bridge/#170-rust-ssot-schema-query-v2"
@@ -53,19 +45,6 @@ FORBIDDEN_DEFERRAL_TEXT = (
 )
 
 
-def _fenced_example(after: str, language: str) -> str:
-    text = (ROOT / "docs/guide/typed-queries.md").read_text(encoding="utf-8")
-    tail = text.split(after, 1)[1]
-    body = tail.split(f"```{language}\n", 1)[1]
-    return body.split("\n```", 1)[0] + "\n"
-
-
-def _marked_source(path: Path, start: str, end: str) -> str:
-    text = path.read_text(encoding="utf-8")
-    body = text.split(start, 1)[1].split(end, 1)[0]
-    return textwrap.dedent(body).strip("\n") + "\n"
-
-
 def test_v2_authoring_sources_do_not_restore_historical_deferral_claims() -> None:
     for path in AUTHORING_TRUTH_FILES:
         text = " ".join(path.read_text(encoding="utf-8").lower().split())
@@ -104,79 +83,52 @@ def test_binding_smokes_pin_one_advanced_cross_language_authored_identity() -> N
     assert len(identities[0]) == 2
 
 
-def test_typed_query_guide_keeps_match_and_v2_error_taxonomies_distinct() -> None:
+def test_typed_query_guide_is_projection_scoped_and_names_remote_failure() -> None:
     text = (ROOT / "docs/guide/typed-queries.md").read_text(encoding="utf-8")
-    assert "Python `MatchRequestError` or Node `TypedMatchError`" in text
-    assert "`invalid_plan`, `cardinality`, `unsupported_capability`, `stale_schema`," in text
-    assert "Low-level plan authoring and the V2 remote envelope use `QueryV2Error`" in text
-    assert "Import it from `type_bridge_core` in Python" in text
-    assert "`@type-bridge/node` package root in Node" in text
-    assert "Its categories are `invalid_contract`, `unsupported_capability`," in text
-    assert "they do not use the model-query `invalid_plan` taxonomy" in text
+    normalized = " ".join(text.split())
+    assert text.startswith("# Immutable generated queries")
+    assert "verified projection" in normalized
+    assert "Only exact registered generated classes and tokens are accepted." in text
+    assert "query_remote_v2_native_only_operation" in text
+    assert "TypeDBType" not in text
+    assert "type_bridge.typed" not in text
 
 
-def test_documented_python_low_level_example_typechecks_and_executes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    snippet = _fenced_example(
-        "This Python example authors a typed-input row plan:",
-        "python",
-    )
-    corpus = json.loads(
-        (ROOT / "tests/fixtures/query-v2-remote-failures.json").read_text(encoding="utf-8")
-    )
-    (tmp_path / "declared-schema.json").write_bytes(base64.b64decode(corpus["declared_b64"]))
-    example = tmp_path / "typed_query_authoring_example.py"
-    example.write_text(snippet, encoding="utf-8")
+def test_documented_python_generated_query_surfaces_have_acceptance_evidence() -> None:
+    guide = (ROOT / "docs/guide/typed-queries.md").read_text(encoding="utf-8")
+    acceptance = (
+        ROOT / "type-bridge-core/crates/schema-codegen/tests/acceptance/positive.py"
+    ).read_text(encoding="utf-8")
 
-    pyright = shutil.which("pyright")
-    assert pyright is not None, "the docs example gate requires the project Pyright tool"
-    checked = subprocess.run(
-        [
-            pyright,
-            "--pythonpath",
-            sys.executable,
-            "--outputjson",
-            str(example),
-        ],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert checked.returncode == 0, checked.stdout + checked.stderr
-
-    namespace: dict[str, object] = {}
-    monkeypatch.chdir(tmp_path)
-    exec(compile(snippet, str(example), "exec"), namespace)
-    plan = namespace["plan"]
-    invocation = namespace["invocation"]
-    assert getattr(plan, "format") == "typebridge.query-plan/v2"
-    assert getattr(invocation, "plan_fingerprint") == getattr(plan, "fingerprint")
+    for documented, accepted in (
+        ("Person.query(", "Person.query("),
+        (".exact(", ".exact("),
+        ("subtypes(Model)", ".subtypes("),
+        (".reachable(", ".reachable("),
+        (".query_as(", ".query_as("),
+        (".page_by(", ".page_by("),
+        (".count_by(", ".count_by("),
+        (".exists_by(", ".exists_by("),
+        (".aggregate(", ".aggregate("),
+        (".group_by(", ".group_by("),
+    ):
+        assert documented in guide, f"generated query guide lost {documented}"
+        assert accepted in acceptance, f"generated acceptance lost {accepted}"
 
 
-def test_documented_remote_examples_are_exact_live_parity_regions() -> None:
-    documented_python = _fenced_example(
-        "This Python fragment is extracted verbatim from the live local/remote parity",
-        "python",
+def test_documented_remote_contract_has_runtime_acceptance() -> None:
+    guide = (ROOT / "docs/guide/typed-queries.md").read_text(encoding="utf-8")
+    runtime = (
+        ROOT / "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py"
+    ).read_text(encoding="utf-8")
+    live = (ROOT / "tests/integration/schema/test_generated_projection_live.py").read_text(
+        encoding="utf-8"
     )
-    live_python = _marked_source(
-        ROOT / "tests/integration/queries/test_remote_query_session_parity.py",
-        "# docs: remote-query-python:start",
-        "# docs: remote-query-python:end",
-    )
-    assert documented_python == live_python
 
-    documented_node = _fenced_example(
-        "The equivalent fragment is extracted verbatim from the Node live parity test.",
-        "typescript",
-    )
-    live_node = _marked_source(
-        ROOT
-        / "type-bridge-core/crates/node/tests/integration/queries"
-        / "typed-remote-query-parity.test.ts",
-        "// docs: remote-query-node:start",
-        "// docs: remote-query-node:end",
-    )
-    assert documented_node == live_node
+    assert "RemoteQuerySession" in guide
+    assert "RemoteQuerySession" in runtime
+    for terminal in ("rows", "page_by", "count_by", "exists_by"):
+        assert f"`{terminal}`" in guide
+        assert f".{terminal}(" in runtime
+    assert "query_remote_v2_native_only_operation" in guide
+    assert "query_remote_v2_native_only_operation" in live

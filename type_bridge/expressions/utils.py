@@ -26,7 +26,7 @@ For example, when ``var="$actor"`` and ``attr="name"``::
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from type_bridge.attribute.base import Attribute
+    from type_bridge.attribute.base import _QueryAttribute as Attribute
 
 
 def generate_attr_var(var: str, attr_type: type["Attribute"]) -> str:

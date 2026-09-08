@@ -1,15 +1,14 @@
 //! Minimal V2 envelope server for cross-binding smoke tests.
 //!
 //! Reads its whole configuration from the environment, builds one
-//! [`V2QueryState`] from canonical declared-schema bytes, and serves the
+//! [`V2QueryState`] from a verified source-free schema authority, and serves the
 //! versioned V2 routes until killed. Requires `--features v2-query`.
 //!
 //! Environment:
 //! - `SMOKE_TYPEDB_ADDRESS` (e.g. `localhost:1729`)
 //! - `SMOKE_TYPEDB_USERNAME` / `SMOKE_TYPEDB_PASSWORD`
 //! - `SMOKE_DATABASE` — existing database name
-//! - `SMOKE_DECLARED_B64` — base64 canonical declared-schema bytes
-//! - `SMOKE_SCOPE` / `SMOKE_PROFILE` — managed scope and semantic profile
+//! - `SMOKE_AUTHORITY_B64` — base64 canonical schema-authority bytes
 //! - `SMOKE_PORT` — listen port on 127.0.0.1
 //! - `SMOKE_TYPEDB_HTTP_PORT` — TypeDB HTTP discovery port (default 8000)
 //! - `SMOKE_TYPEDB_TLS` — optional exact `true` / `false` transport switch
@@ -21,12 +20,13 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use type_bridge_contract::capability::CapabilityId;
 use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
-use type_bridge_contract::schema::decode_declared_schema;
 use type_bridge_orm::session::backend::QueryV2AnswerLimits;
-use type_bridge_schema::{ManagedDeltaContext, managed_schema_state, resolve};
+use type_bridge_schema::{
+    BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, decode_schema_authority,
+};
 use type_bridge_server::config::{
     InboundTlsSection, OutboundTlsMode, SecureTypeDBSection, TypeDBSection,
 };
@@ -131,6 +131,24 @@ async fn main() {
     // Resolve caller path aliases before reading connection credentials. The
     // validated server types below receive only physical paths.
     let tls_mode = typedb_tls_mode();
+
+    let authority_bytes = decode_b64(&env("SMOKE_AUTHORITY_B64"));
+    let mut available_capabilities = query_plan_v2_capability_vocabulary();
+    for capability in BUILTIN_SCHEMA_CAPABILITY_IDS {
+        available_capabilities.insert(CapabilityId::new(*capability).expect("built-in capability"));
+    }
+    let authority = decode_schema_authority(&authority_bytes, &available_capabilities)
+        .expect("schema authority verifies without authoring sources");
+    let declared = authority.declared_schema().clone();
+    let resolved = authority.resolved_schema().clone();
+    let profile = authority.semantic_profile().id().clone();
+    let managed = authority.managed_state().clone();
+    let delta_context = ManagedDeltaContext::new(
+        authority.managed_scope().id().clone(),
+        profile.clone(),
+        authority.required_capabilities().clone(),
+    );
+
     let address = env("SMOKE_TYPEDB_ADDRESS");
     let database_name = env("SMOKE_DATABASE");
     let username = env("SMOKE_TYPEDB_USERNAME");
@@ -152,20 +170,22 @@ async fn main() {
     );
     let prepared_connection = TypeDBClient::prepare_secure_transport(&secure_config)
         .expect("outbound transport policy is valid");
-    let declared_bytes = decode_b64(&env("SMOKE_DECLARED_B64"));
-    let declared = decode_declared_schema(&declared_bytes).expect("declared schema decodes");
-    let profile = SemanticProfileId::new(env("SMOKE_PROFILE")).expect("profile");
-    let resolved = resolve(&declared, &profile).expect("schema resolves");
-    let delta_context = ManagedDeltaContext::new(
-        ManagedScopeId::new(env("SMOKE_SCOPE")).expect("scope"),
-        profile,
-        declared.required_capabilities().clone(),
-    );
-    let managed = managed_schema_state(&declared, &delta_context).expect("managed state");
     let database = prepared_connection
         .connect_database()
         .await
         .expect("database connects");
+    let server_version = database
+        .server_version()
+        .expect("smoke server observes the exact TypeDB version");
+    let negotiated_profile = SemanticProfileId::new(
+        type_bridge_core_lib::version::semantic_profile_id(&server_version)
+            .expect("connected TypeDB has a supported semantic profile"),
+    )
+    .expect("negotiated profile is canonical");
+    assert_eq!(
+        profile, negotiated_profile,
+        "schema-authority profile must match the connected TypeDB server"
+    );
 
     let mut advertised = query_plan_v2_capability_vocabulary();
     if database.supports_given_stage() {

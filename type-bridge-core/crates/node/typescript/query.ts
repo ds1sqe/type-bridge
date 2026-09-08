@@ -7,7 +7,11 @@ import type {
   DynamicSort,
   DynamicSortDir,
 } from "./index.js";
-import type { AttributeClass } from "./model.js";
+
+/** Minimal field label consumed by the separately retained V1 group-by facade. */
+export interface QueryGroupField {
+  readonly attrName: string;
+}
 
 /** Raised when a Rust aggregate/group-by result does not match the documented shape. */
 export class TypedQueryError extends Error {
@@ -204,7 +208,7 @@ export class TypedQuery<T, Row> {
     return normalizeAggregateRow(rows[0], aggregates);
   }
 
-  groupBy(...attrs: AttributeClass[]): TypedGroupByQuery<Row> {
+  groupBy(...attrs: QueryGroupField[]): TypedGroupByQuery<Row> {
     return new TypedGroupByQuery(this.#manager, [...this.#exprs], attrs);
   }
 
@@ -226,9 +230,13 @@ export class TypedQuery<T, Row> {
 export class TypedGroupByQuery<Row> {
   readonly #manager: DynamicManagerLike<Row>;
   readonly #exprs: DynamicExpr[];
-  readonly #groupAttrs: AttributeClass[];
+  readonly #groupAttrs: QueryGroupField[];
 
-  constructor(manager: DynamicManagerLike<Row>, exprs: DynamicExpr[], groupAttrs: AttributeClass[]) {
+  constructor(
+    manager: DynamicManagerLike<Row>,
+    exprs: DynamicExpr[],
+    groupAttrs: QueryGroupField[],
+  ) {
     this.#manager = manager;
     this.#exprs = exprs;
     this.#groupAttrs = groupAttrs;

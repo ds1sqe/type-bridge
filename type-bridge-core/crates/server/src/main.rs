@@ -181,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let router = if config.v2.enabled {
         let state = build_v2_state(&config, &outbound_transport).await?;
         tracing::info!(
-            declared_schema = config.v2.declared_schema_file.as_str(),
+            schema_authority = config.v2.schema_authority_file.as_str(),
             "V2 query surface enabled: /v2/query, /v2/capabilities"
         );
         transport::v2::create_router_with_v2(Arc::new(pipeline), Arc::new(state))
@@ -211,50 +211,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Construct the V2 executor state from the validated `[v2]` config section.
 ///
-/// Every failure is a startup error: missing schema file, undecodable
-/// declared schema, unresolvable profile/scope, or an unreachable database
-/// all abort the server rather than serving a partial surface. Schema
-/// resolution runs under the schema's own required capability set — the
-/// operator supplied the artifact, so its declared requirements are the
-/// authority; request-level gating uses the advertised query vocabulary.
+/// Every failure is a startup error: missing authority, an unverifiable
+/// source-free envelope, a profile mismatch, or an unreachable database all
+/// abort the server rather than serving a partial surface. Scope, profile,
+/// declared schema, resolved semantics, and managed state come from one
+/// constructor-verified artifact; deployment configuration cannot repeat or
+/// override them.
 #[cfg(feature = "v2-query")]
 async fn build_v2_state(
     config: &RuntimeServerConfig,
     outbound_transport: &PreparedSecureTypeDBConnection,
 ) -> Result<transport::v2::V2QueryState, Box<dyn std::error::Error>> {
     use type_bridge_contract::fingerprint::SemanticProfileId;
-    use type_bridge_contract::managed_scope::ManagedScopeId;
     use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
-    use type_bridge_contract::schema::decode_declared_schema;
     use type_bridge_orm::session::backend::QueryV2AnswerLimits;
     use type_bridge_schema::{
-        ManagedDeltaContext, managed_schema_state, resolve_schema_with_capabilities,
+        ManagedDeltaContext, decode_schema_authority, schema_authority_capability_vocabulary,
     };
 
-    if config.v2.declared_schema_file.is_empty() {
-        return Err("v2.enabled requires v2.declared_schema_file".into());
+    if config.v2.schema_authority_file.is_empty() {
+        return Err("v2.enabled requires v2.schema_authority_file".into());
     }
     let bytes = config
-        .v2_declared_schema_bytes()
-        .map_err(|error| format!("cannot use v2.declared_schema_file: {error}"))?
-        .ok_or("v2.declared_schema_file was not captured during configuration loading")?;
-    let declared = decode_declared_schema(bytes).map_err(|e| {
-        format!("v2.declared_schema_file is not a canonical declared schema: {e:?}")
+        .v2_schema_authority_bytes()
+        .map_err(|error| format!("cannot use v2.schema_authority_file: {error}"))?
+        .ok_or("v2.schema_authority_file was not captured during configuration loading")?;
+
+    // The generic server and every generated package reconstruct authority
+    // through the same closed vocabulary. Operation surfaces continue to
+    // advertise their narrower executable capability sets independently.
+    let available_capabilities = schema_authority_capability_vocabulary();
+    let authority = decode_schema_authority(bytes, &available_capabilities).map_err(|error| {
+        format!(
+            "v2.schema_authority_file is not a verified schema authority ({:?})",
+            error.code()
+        )
     })?;
-    let profile = SemanticProfileId::new(&config.v2.profile)
-        .map_err(|e| format!("invalid v2.profile: {e:?}"))?;
-    let scope =
-        ManagedScopeId::new(&config.v2.scope).map_err(|e| format!("invalid v2.scope: {e:?}"))?;
-    let resolved =
-        resolve_schema_with_capabilities(&declared, &profile, declared.required_capabilities())
-            .map_err(|e| format!("v2 declared schema does not resolve: {e:?}"))?;
+    let declared = authority.declared_schema().clone();
+    let resolved = authority.resolved_schema().clone();
+    let profile = authority.semantic_profile().id().clone();
+    let managed = authority.managed_state().clone();
     let delta_context = ManagedDeltaContext::new(
-        scope,
+        authority.managed_scope().id().clone(),
         profile.clone(),
-        declared.required_capabilities().clone(),
+        authority.required_capabilities().clone(),
     );
-    let managed = managed_schema_state(&declared, &delta_context)
-        .map_err(|e| format!("v2 managed schema state rejected: {e:?}"))?;
     let database = outbound_transport
         .connect_database()
         .await
@@ -263,11 +264,15 @@ async fn build_v2_state(
     let server_version = database.server_version().ok_or(
         "v2 requires an exact server-version observation; configure a reachable HTTP probe or explicit server_version",
     )?;
-    let negotiated_profile = SemanticProfileId::new(format!("typedb-{server_version}/v1"))
-        .map_err(|e| format!("negotiated semantic profile is invalid: {e:?}"))?;
+    let negotiated_profile = SemanticProfileId::new(
+        type_bridge_core_lib::version::semantic_profile_id(&server_version).ok_or_else(|| {
+            format!("connected TypeDB {server_version} has no supported semantic profile")
+        })?,
+    )
+    .map_err(|e| format!("negotiated semantic profile is invalid: {e:?}"))?;
     if profile != negotiated_profile {
         return Err(format!(
-            "v2.profile does not match the connected server semantic profile (configured {profile}, negotiated {negotiated_profile})"
+            "schema-authority profile does not match the connected server semantic profile (artifact {profile}, negotiated {negotiated_profile})"
         )
         .into());
     }

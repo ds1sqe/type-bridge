@@ -1,8 +1,8 @@
-"""Unit tests verifying __main__.py stays a thin native CLI dispatcher.
+"""Unit tests verifying __main__.py stays a thin V2 native CLI dispatcher.
 
 No TypeDB connection required. Tests assert the dispatcher's structure:
 - No Typer, no Command class, no MigrationExecutor imports.
-- Both released and V2 parsers come from the required native extension.
+- The canonical workspace parser comes from the required native extension.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ def test_main_shim_has_no_typer_import() -> None:
     )
 
 
-def test_main_shim_uses_native_runners_without_an_external_binary() -> None:
+def test_main_shim_uses_only_the_v2_native_runner_without_an_external_binary() -> None:
     """The wheel entry point must not depend on a separately installed bin."""
     module_name = "type_bridge.migration.__main__"
     if module_name in sys.modules:
@@ -43,6 +43,6 @@ def test_main_shim_uses_native_runners_without_an_external_binary() -> None:
     assert "subprocess" not in source
     assert "shutil" not in source
     assert "_find_bin" not in source
-    assert "run_legacy_migration_cli" in source
+    assert "run_legacy_migration_cli" not in source
     assert "run_v2_cli" in source
     assert "sys.exit" in source, "__main__.py must propagate the native exit code"

@@ -8,12 +8,12 @@ use super::backend::{
     AnswerConsumer, BoundedAnswerLimits, BoundedAnswerStats, GivenRowsSpec, QueryResult,
     TransactionOps, TxType,
 };
+use crate::_registry::DescriptorRegistry;
 use crate::error::{OrmError, Result};
 use crate::match_request::selected_result_executor::SelectedResultExecutor;
 use crate::match_request::{
     CapabilitySet, MatchExecutionLimits, ValidatedMatchRequest, ValidatedMatchResult,
 };
-use crate::registry::DescriptorRegistry;
 use type_bridge_core_lib::ast::{
     TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
 };
@@ -204,7 +204,7 @@ impl TransactionContext {
 
     fn check_schema_annotation_support(&self, typeql: &str) -> Result<()> {
         if self.tx_type == TxType::Schema {
-            crate::schema::annotations::check_schema_annotation_support(
+            crate::_schema::annotations::check_schema_annotation_support(
                 typeql,
                 self.server_version,
             )?;

@@ -4,13 +4,13 @@ from typing import Any, ClassVar, Self, TypeVar
 
 from pydantic_core import core_schema
 
-from type_bridge.attribute.base import Attribute
+from type_bridge.attribute.base import _QueryAttribute
 
 # TypeVar for proper type checking
 BoolValue = TypeVar("BoolValue", bound=bool)
 
 
-class Boolean(Attribute):
+class Boolean(_QueryAttribute):
     """Boolean attribute type that accepts bool values.
 
     Example:
@@ -71,3 +71,7 @@ class Boolean(Attribute):
         if isinstance(value, bool):
             return cls(value)
         raise TypeError(f"{cls.__name__} expects bool, got {type(value).__name__}")
+
+
+_QueryBoolean = Boolean
+del Boolean

@@ -1,5 +1,7 @@
 //! Deterministic emitters over validated binding-neutral runtime projections.
 
+#![deny(missing_docs)]
+
 use std::collections::BTreeMap;
 
 mod package;
@@ -14,7 +16,52 @@ pub use typescript::TypeScriptEmitter;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::projection::{ModelProjection, ProjectedAnnotation};
-use type_bridge_contract::schema::{AnnotationFactId, AnnotationKindId, SchemaAnnotationValue};
+use type_bridge_contract::schema::{
+    AnnotationFactId, AnnotationKindId, SchemaAnnotationValue, encode_declared_schema,
+};
+use type_bridge_schema::{VerifiedSchemaAuthority, encode_schema_authority};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct EmbeddedAuthority {
+    canonical_envelope_json: String,
+    declared_schema_json: String,
+    managed_scope_id: String,
+    semantic_profile_id: String,
+}
+
+fn embedded_authority(
+    projection: &type_bridge_contract::projection::RuntimeProjection,
+    authority: &VerifiedSchemaAuthority,
+) -> Result<EmbeddedAuthority, Diagnostic> {
+    if projection.semantic_fingerprint() != authority.resolved_schema().semantic_fingerprint() {
+        return Err(invalid(
+            "schema_codegen_authority_mismatch",
+            "runtime projection and verified schema authority have different semantic fingerprints",
+        ));
+    }
+
+    let canonical_envelope_json =
+        String::from_utf8(encode_schema_authority(authority)).map_err(|_| {
+            invalid(
+                "schema_codegen_non_utf8_authority",
+                "canonical schema-authority JSON must be UTF-8",
+            )
+        })?;
+    let declared_schema_json =
+        String::from_utf8(encode_declared_schema(authority.declared_schema())?).map_err(|_| {
+            invalid(
+                "schema_codegen_non_utf8_declared_schema",
+                "canonical declared-schema JSON must be UTF-8",
+            )
+        })?;
+
+    Ok(EmbeddedAuthority {
+        canonical_envelope_json,
+        declared_schema_json,
+        managed_scope_id: authority.managed_scope().id().as_str().to_owned(),
+        semantic_profile_id: authority.semantic_profile().id().as_str().to_owned(),
+    })
+}
 
 fn invalid(code: &'static str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(

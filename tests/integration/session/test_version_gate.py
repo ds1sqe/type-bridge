@@ -12,8 +12,7 @@ from typing import Any
 import pytest
 
 import type_bridge.typedb_driver as _tdm
-from type_bridge import Entity, Flag, Integer, String, TypeFlags, Unique, version
-from type_bridge.attribute import AttributeFlags
+from type_bridge import version
 from type_bridge.session import Database
 
 # ---------------------------------------------------------------------------
@@ -92,25 +91,22 @@ class TestServerVersionLive:
 
 
 def _mismatched_driver_version(server: str) -> str:
-    """Pick an installed-driver version the live server rejects.
+    """Pick a driver version the live server gate rejects.
 
-    The embedded runtime now serves every in-window server, so the only
-    in-window rejection left is the installed-driver band mismatch.  The
-    mismatching driver is chosen by asking the gate itself: the first
-    in-window driver line check_supported rejects for this server.  This
-    stays correct as the band map grows (e.g. server 3.12 accepts both its
-    native band 9 and band 8, so only a band-7 driver mismatches it).
+    Prefer the other retained driver line, then use the retired 3.10 line for
+    a 3.12 server that accepts both retained providers. The decision remains
+    owned by the core gate.
     """
     import type_bridge_core
 
-    candidate_lines = ("3.10.0", "3.11.5", "3.12.0")
+    candidate_lines = ("3.11.5", "3.12.1", "3.10.0")
     for candidate in candidate_lines:
         try:
             type_bridge_core.check_supported(candidate, server)
         except type_bridge_core.VersionError:
             return candidate
     raise AssertionError(
-        f"no in-window driver line mismatches server {server!r}; "
+        f"no candidate driver line mismatches server {server!r}; "
         f"extend candidate_lines to cover its band map entry"
     )
 
@@ -158,10 +154,8 @@ class TestVersionGateLiveNegative:
 
         assert driver_called == [], "TypeDB.driver should not have been called"
 
-    def test_unsupported_version_message_contains_both_versions(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Error message from live gate contains both driver and server version strings."""
+    def test_unsupported_version_message_is_actionable(self, monkeypatch: pytest.MonkeyPatch):
+        """The live gate error names the rejected driver and gives remediation."""
         from tests.integration.conftest import TEST_DB_ADDRESS, TEST_DB_HTTP_PORT
 
         detected_server = _tdm.server_version(
@@ -180,9 +174,7 @@ class TestVersionGateLiveNegative:
 
         msg = str(exc_info.value)
         driver_line = mismatched.rsplit(".", 1)[0]
-        server_line = detected_server.rsplit(".", 1)[0]
         assert driver_line in msg, f"Driver version missing from: {msg!r}"
-        assert server_line in msg, f"Server version missing from: {msg!r}"
         assert "install" in msg.lower(), f"'install' hint missing from: {msg!r}"
 
 
@@ -354,44 +346,6 @@ class TestSchemaAnnotationGateLive:
             # The gate fired client-side: the entity never reached the server.
             assert "vg_annotated_ent" not in clean_db.get_schema()
 
-    def test_sync_schema_rejects_annotated_models_on_pre_312(self, clean_db: Database):
-        """SchemaManager.sync_schema fires the gate before the apply transaction."""
-        import type_bridge_core
-
-        from type_bridge import Entity, TypeFlags
-        from type_bridge.migration.schema_manager import SchemaManager
-
-        class VgGatedPerson(Entity):
-            flags = TypeFlags(name="vg-gated-person", doc="A gated person.")
-
-        manager = SchemaManager(clean_db)
-        manager.register(VgGatedPerson)
-
-        if self._live_server_supports_annotations():
-            manager.sync_schema(skip_if_exists=True)
-            assert '@doc("A gated person.")' in clean_db.get_schema()
-        else:
-            with pytest.raises(type_bridge_core.VersionError):
-                manager.sync_schema(skip_if_exists=True)
-            assert "vg-gated-person" not in clean_db.get_schema()
-
-
-# Module level so `from __future__ import annotations` string hints resolve
-# during model scanning (method-local classes cannot be resolved by
-# get_type_hints).
-class VgGivenBulkName(String):
-    flags = AttributeFlags(name="vg-given-bulk-name")
-
-
-class VgGivenBulkAge(Integer):
-    flags = AttributeFlags(name="vg-given-bulk-age")
-
-
-class VgGivenBulkPerson(Entity):
-    flags = TypeFlags(name="vg-given-bulk-person")
-    name: VgGivenBulkName = Flag(Unique)
-    age: VgGivenBulkAge
-
 
 @pytest.mark.integration
 @pytest.mark.order(4124)
@@ -506,28 +460,3 @@ class TestGivenStageLive:
                 ["date", "integer"],
                 [["not-a-date", 1]],
             )
-
-    def test_insert_many_works_on_every_server_leg(self, clean_db: Database):
-        """Bulk insert succeeds everywhere: given fast path on 3.12+, per-row below."""
-        from type_bridge.migration import SchemaManager
-
-        manager = SchemaManager(clean_db)
-        manager.register(VgGivenBulkPerson)
-        manager.sync_schema()
-
-        people = [
-            VgGivenBulkPerson(name=VgGivenBulkName(f"bulk-{i}"), age=VgGivenBulkAge(20 + i))
-            for i in range(5)
-        ]
-        inserted = VgGivenBulkPerson.manager(clean_db).insert_many(people)
-
-        iids = [getattr(person, "_iid", None) for person in inserted]
-        assert all(iids)
-        assert len(set(iids)) == len(people)
-
-        fetched = sorted(
-            VgGivenBulkPerson.manager(clean_db).all(), key=lambda person: person.age.value
-        )
-        assert [(person.name.value, person.age.value) for person in fetched] == [
-            (f"bulk-{i}", 20 + i) for i in range(5)
-        ]

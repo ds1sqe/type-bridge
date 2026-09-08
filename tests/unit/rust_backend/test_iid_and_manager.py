@@ -5,9 +5,20 @@ from typing import Any, cast
 
 import pytest
 
-from type_bridge import Card, Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
+from tests.utils.handwritten import (
+    Card,
+    Entity,
+    Flag,
+    Integer,
+    Key,
+    Relation,
+    Role,
+    String,
+    TypeFlags,
+)
 from type_bridge.crud.hooks import HookCancelled
-from type_bridge.crud.rust_manager import RustTypeDBManager, _strict_bool
+from type_bridge.crud.rust_manager import _QueryRustTypeDBManager as RustTypeDBManager
+from type_bridge.crud.rust_manager import _strict_bool
 from type_bridge.expressions import AggregateExpr
 from type_bridge.session import Database
 
@@ -449,45 +460,6 @@ def test_rust_manager_batch_hook_cancellation_prevents_write(
     assert fake.insert_many_attributes is None
     assert [call[0] for call in hook.calls] == ["pre_insert", "pre_insert"]
     assert [person._iid for person in people] == [None, None]
-
-
-def test_transaction_context_uses_rust_transaction_adapter(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fake_db = FakeRustDatabase()
-    fake_manager = FakeRustEntityManager()
-    seen_connection: dict[str, Any] = {}
-    monkeypatch.setenv("TYPE_BRIDGE_BACKEND", "rust")
-    monkeypatch.setattr(
-        "type_bridge._rust_runtime.rust_database_for",
-        lambda connection: fake_db,
-    )
-    monkeypatch.setattr(
-        "type_bridge.crud.rust_manager.register_model_descriptor",
-        lambda model_class: {"type_name": model_class.get_type_name(), "owned_attributes": []},
-    )
-
-    def manager_for_entity(connection: Any, descriptor: dict[str, Any]) -> FakeRustEntityManager:
-        del descriptor
-        seen_connection["connection"] = connection
-        seen_connection["rust_tx"] = connection._rust_tx
-        return fake_manager
-
-    monkeypatch.setattr(
-        "type_bridge.crud.rust_manager.rust_manager_for_entity",
-        manager_for_entity,
-    )
-
-    with Database().transaction("write") as tx:
-        manager = cast(RustTypeDBManager[RustManagerPerson], tx.manager(RustManagerPerson))
-        person = manager.insert(RustManagerPerson(name=RustManagerName("Alice")))
-
-    assert fake_db.tx_type == "write"
-    assert seen_connection["rust_tx"] is fake_db.tx
-    assert person._iid == "0xabc"
-    assert fake_db.tx.committed is True
-    assert fake_db.tx.rolled_back is False
-    assert fake_db.tx.closed is True
 
 
 def test_transaction_context_rolls_back_rust_adapter_on_exception(

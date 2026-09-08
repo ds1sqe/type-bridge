@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Literal
 from type_bridge.expressions.base import Expression
 
 if TYPE_CHECKING:
-    from type_bridge.attribute.base import Attribute
+    from type_bridge.attribute.base import _QueryAttribute as Attribute
     from type_bridge.query.ast import Pattern
 
 

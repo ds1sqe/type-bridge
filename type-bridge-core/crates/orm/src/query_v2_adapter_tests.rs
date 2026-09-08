@@ -8,7 +8,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use crate::_descriptor::{
+    EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor,
+};
+use crate::_entity::Annotation;
+use crate::_registry::DescriptorRegistry;
 use crate::AttributeValue;
+use crate::ValueType;
 use crate::match_request::lowering::{LoweredMatchExecution, lower_match_execution};
 use crate::match_request::{
     BindingId as V1BindingId, BindingPair, BoundFieldId, ComparisonOp, DescriptorId, FetchShape,
@@ -23,10 +29,6 @@ use crate::query_v2_adapter::{
 };
 use crate::query_v2_compatibility::{
     CompatibilityProviderPlan, lower_validated_compatibility_query,
-};
-use crate::{
-    Annotation, DescriptorRegistry, EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor,
-    RoleDescriptor, ValueType,
 };
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::FormatVersion;
@@ -1117,8 +1119,8 @@ fn production_authority_accepts_released_annotation_and_role_specialization_shap
         })
         .expect("register specialized relation");
 
-    let generated = crate::schema::generator::generate_define_block(
-        &crate::schema::SchemaInfo::from_descriptors(&registry.snapshot()),
+    let generated = crate::_schema::generator::generate_define_block(
+        &crate::_schema::SchemaInfo::from_descriptors(&registry.snapshot()),
     );
     type_bridge_schema_compat::released_typeql_to_declared_projection(
         DocumentId::new("adapter-rich-authority").expect("document"),

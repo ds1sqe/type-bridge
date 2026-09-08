@@ -2,11 +2,12 @@ use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, ProjectionHandler};
 use type_bridge_contract::schema::DocumentId;
-use type_bridge_orm::manager::query_builder::{
+use type_bridge_orm::_descriptor::TypeDescriptor;
+use type_bridge_orm::_manager::query_builder::{
     build_dynamic_entity_fetch, build_dynamic_entity_fetch_exact, build_dynamic_relation_fetch,
     build_dynamic_relation_fetch_exact,
 };
-use type_bridge_orm::{InstalledRuntimeProjection, TypeDescriptor};
+use type_bridge_orm::InstalledRuntimeProjection;
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 
 fn installed() -> InstalledRuntimeProjection {

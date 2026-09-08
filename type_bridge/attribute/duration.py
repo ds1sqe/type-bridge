@@ -7,7 +7,7 @@ import isodate
 from isodate import Duration as IsodateDuration
 from pydantic_core import core_schema
 
-from type_bridge.attribute.base import Attribute
+from type_bridge.attribute.base import _QueryAttribute
 
 # TypeVar for proper type checking
 DurationValue = TypeVar("DurationValue", bound=timedelta | IsodateDuration)
@@ -63,7 +63,7 @@ def _timedelta_to_duration(td: timedelta) -> IsodateDuration:
     return IsodateDuration(months=0, days=td.days, seconds=td.seconds, microseconds=td.microseconds)
 
 
-class Duration(Attribute):
+class Duration(_QueryAttribute):
     """Duration attribute type that accepts ISO 8601 duration values.
 
     This maps to TypeDB's 'duration' type, which represents calendar-aware time spans
@@ -157,7 +157,7 @@ class Duration(Attribute):
         """
         return isodate.duration_isoformat(self.value)
 
-    def __add__(self, other: Any) -> "Duration":
+    def __add__(self, other: Any) -> Self:
         """Add two durations.
 
         Args:
@@ -171,17 +171,17 @@ class Duration(Attribute):
             d2 = Duration("P15D")
             result = d1 + d2  # P1M15D
         """
-        if isinstance(other, Duration):
+        if isinstance(other, _QueryDuration):
             # Both are Durations, add their components
             result = self.value + other.value
-            return Duration(result)
+            return type(self)(result)
         return NotImplemented
 
-    def __radd__(self, other: Any) -> "Duration":
+    def __radd__(self, other: Any) -> Self:
         """Reverse addition for Duration."""
         return self.__add__(other)
 
-    def __sub__(self, other: Any) -> "Duration":
+    def __sub__(self, other: Any) -> Self:
         """Subtract two durations.
 
         Args:
@@ -195,10 +195,10 @@ class Duration(Attribute):
             d2 = Duration("P15D")
             result = d1 - d2  # P1M-15D
         """
-        if isinstance(other, Duration):
+        if isinstance(other, _QueryDuration):
             # Both are Durations, subtract their components
             result = self.value - other.value
-            return Duration(result)
+            return type(self)(result)
         return NotImplemented
 
     # Pydantic integration hooks (used by base class __get_pydantic_core_schema__)
@@ -233,3 +233,7 @@ class Duration(Attribute):
         if isinstance(value, (IsodateDuration, timedelta)):
             return cls(value)
         return cls(isodate.parse_duration(str(value)))
+
+
+_QueryDuration = Duration
+del Duration

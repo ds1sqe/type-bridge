@@ -1,0 +1,96 @@
+define
+attribute identifier, value string;
+attribute nickname, value string;
+attribute aliases, value string;
+attribute score, value integer;
+attribute val_double, value double;
+attribute val_decimal, value decimal;
+attribute val_bool, value boolean;
+attribute val_date, value date;
+attribute val_datetime, value datetime;
+attribute val_datetime_tz, value datetime-tz;
+attribute val_duration, value duration;
+attribute val_constrained, value integer;
+attribute party_name, value string;
+attribute rank, value integer;
+attribute manager_note, value string;
+attribute contractor_code, value string;
+attribute robot_id, value integer;
+attribute foo__bar, value integer;
+attribute score__gte, value integer;
+attribute counter_value, value integer;
+
+relation membership,
+    relates member @card(1..1);
+relation interaction,
+    owns identifier @key,
+    owns nickname @card(0..1),
+    relates actor @card(0..1),
+    relates target @card(1..1);
+relation employment sub membership,
+    relates employee as member @card(1..1);
+relation container,
+    relates item @card(0..2);
+relation event,
+    relates subject @card(1..1),
+    plays container:item @card(0..3);
+relation network-link,
+    owns identifier @key,
+    owns nickname @card(0..1),
+    relates origin @card(1..1),
+    relates destination @card(1..1),
+    relates participant @card(0..3);
+relation base-activity,
+    relates participant @abstract @card(1..1);
+relation plain-activity sub base-activity;
+
+entity actor @abstract,
+    owns nickname @card(0..1);
+entity person sub actor,
+    owns identifier @key,
+    owns aliases @unique @card(0..3),
+    owns score @card(1..1),
+    owns foo__bar @card(0..1),
+    owns score__gte @card(0..1),
+    owns val_double @card(1..1),
+    owns val_decimal @card(1..1),
+    owns val_bool @card(1..1),
+    owns val_date @card(1..1),
+    owns val_datetime @card(1..1),
+    owns val_datetime_tz @card(1..1),
+    owns val_duration @card(1..1),
+    owns val_constrained @card(1..1) @range(20..80),
+    plays membership:member @card(0..2),
+    plays interaction:actor @card(0..2),
+    plays interaction:target @card(0..2),
+    plays employment:employee @card(0..1),
+    plays event:subject @card(0..1),
+    plays network-link:origin @card(0..3),
+    plays network-link:destination @card(0..3),
+    plays network-link:participant @card(0..3),
+    plays base-activity:participant @card(0..1);
+entity party @abstract,
+    owns identifier @key,
+    owns party_name @card(1..1);
+entity employee sub party,
+    owns rank @card(1..1);
+entity manager sub employee,
+    owns manager_note @card(1..1);
+entity contractor sub party,
+    owns contractor_code @card(1..1);
+entity robot sub actor,
+    owns robot_id @key,
+    owns val_constrained @card(1..1) @range(0..50),
+    plays membership:member @card(0..2),
+    plays interaction:actor @card(0..2);
+entity counter,
+    owns counter_value @card(1..1);
+
+struct player-stats:
+    nickname value string?,
+    wins value integer;
+
+fun find-events($event: event) -> { event }:
+match
+  $event isa event;
+return { $event };

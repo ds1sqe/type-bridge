@@ -474,19 +474,22 @@ def test_pinned_preexisting_crate_uses_committed_checksum_without_packaging(
     assert "no package or publish attempted" in result.stdout
 
 
-def test_historical_band8_absence_never_republishes(tmp_path: Path) -> None:
+def test_preexisting_band8_absence_fails_without_packaging_or_publishing(
+    tmp_path: Path,
+) -> None:
     result, commands, _ = run_helper(
         tmp_path,
-        api_sequence="missing,matching",
-        index_sequence="missing,matching",
-        publish_mode="success",
+        api_sequence="missing",
+        index_sequence="missing",
+        mode="verify-preexisting",
         crate="type-bridge-typedb-protocol-b8",
         version="3.11.0",
-        registry_checksum=CANDIDATE_CHECKSUM,
+        registry_checksum=PINNED_PROTOCOL_B8_CHECKSUM,
     )
 
     assert result.returncode != 0
     assert commands == ["pkgid -p type-bridge-typedb-protocol-b8"]
+    assert "did not expose verifiable" in result.stderr
 
 
 def test_verify_preexisting_rejects_unmapped_crate(tmp_path: Path) -> None:
@@ -585,11 +588,14 @@ def test_cutoff_state_is_closed_to_the_first_graph_crate(tmp_path: Path) -> None
     assert f"restricted to the {CUTOFF_WITNESS} graph witness" in result.stderr
 
 
-def test_cargo_inclusive_release_workflow_invokes_the_cargo_helper() -> None:
+def test_cargo_inclusive_release_workflow_uses_the_exact_candidate_publisher() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
     assert "--artifact-contract cargo-inclusive" in workflow
-    assert RELEASE_GRAPH.name in workflow
+    assert "cargo_release_candidate.py build" in workflow
+    assert "publish_cargo_release_candidate.py preflight" in workflow
+    assert "publish_cargo_release_candidate.py publish" in workflow
+    assert RELEASE_GRAPH.name not in workflow
     assert "--cutoff-state" not in workflow
     assert "publish-crates:" in workflow
 
@@ -637,14 +643,11 @@ printf '%s\\n' "$1" >> "$INVOCATION_LOG"
         "type-bridge-schema-compat",
         "type-bridge-schema-codegen",
         "type-bridge-orm-derive",
-        "type-bridge-typedb-protocol-b7",
-        "type-bridge-typedb-driver-b7",
-        "type-bridge-typedb-protocol-b8",
-        "type-bridge-typedb-driver-b8",
         "type-bridge-typedb-runtime",
         "type-bridge-orm",
         "type-bridge-migration",
         "type-bridge-schema-migration-typedb",
+        "type-bridge-server",
         "type-bridge-workspace",
         "type-bridge-cli",
         "type-bridge",

@@ -1,4 +1,4 @@
-from type_bridge import Database, Entity, Relation
+from tests.utils.handwritten import Database, Entity, Relation
 
 
 def assert_entity_exists(db: Database, entity_type: type[Entity], **attrs) -> Entity:

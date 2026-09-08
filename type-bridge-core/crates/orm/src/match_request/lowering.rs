@@ -9,14 +9,14 @@ use type_bridge_core_lib::ast::{
 };
 
 use super::error::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
-use super::ids::{BoundFieldId, DescriptorId, FieldId};
+use super::ids::{BindingId, BoundFieldId, DescriptorId, FieldId};
 use super::model::{
     ComparisonOp, FetchShape, FetchSlot, MatchExpr, MatchMode, MatchOperation, MissingOrder,
-    RowCardinality, SortDirection, ThingKind,
+    ReduceTerm, RowCardinality, SortDirection, ThingKind,
 };
 use super::validation::{StableOrderSpec, ValidatedMatchRequest};
-use crate::descriptor::TypeDescriptorRef;
-use crate::registry::DescriptorRegistry;
+use crate::_descriptor::TypeDescriptorRef;
+use crate::_registry::DescriptorRegistry;
 use crate::value::AttributeValue;
 
 /// One fully preflighted typed operation plan.
@@ -32,8 +32,8 @@ pub(crate) enum LoweredMatchExecution {
         scan: TypedRootScan,
     },
     ReduceBy {
-        root: super::ids::BindingId,
-        group: Option<super::ids::BindingId>,
+        root: BindingId,
+        group: Option<LoweredReduceGroup>,
         scan: TypedRootScan,
         rematch: Option<TypedPageRematch>,
         terms: Vec<LoweredReduceTerm>,
@@ -48,6 +48,17 @@ pub(crate) enum LoweredMatchExecution {
         selection: Box<TypedRootScan>,
         rematch: TypedPageRematch,
     },
+}
+
+/// Registry-resolved group key for one lowered reduction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LoweredReduceGroup {
+    /// Group by one attached thing's distinct identity.
+    Binding(BindingId),
+    /// Group by each witnessed value of one descriptor-qualified owned field.
+    Field(BoundFieldId),
+    /// Group by the Cartesian tuple of witnessed values from multiple owned fields.
+    Fields(Vec<BoundFieldId>),
 }
 
 /// The canonical numeric domain of one lowered reducer input.
@@ -81,12 +92,12 @@ struct LoweredGraph {
 }
 
 fn reduce_owner_attribute(
-    descriptor: &crate::descriptor::TypeDescriptorRef,
+    descriptor: &crate::_descriptor::TypeDescriptorRef,
     field_name: &str,
-) -> Result<crate::descriptor::OwnedAttributeDescriptor, MatchError> {
+) -> Result<crate::_descriptor::OwnedAttributeDescriptor, MatchError> {
     let attributes = match descriptor {
-        crate::descriptor::TypeDescriptorRef::Entity(entity) => &entity.owned_attributes,
-        crate::descriptor::TypeDescriptorRef::Relation(relation) => &relation.owned_attributes,
+        crate::_descriptor::TypeDescriptorRef::Entity(entity) => &entity.owned_attributes,
+        crate::_descriptor::TypeDescriptorRef::Relation(relation) => &relation.owned_attributes,
     };
     attributes
         .iter()
@@ -98,6 +109,76 @@ fn reduce_owner_attribute(
                 "validated reducer input lost its registered field",
             )
         })
+}
+
+fn lower_reduce_execution(
+    registry: &DescriptorRegistry,
+    validated: &ValidatedMatchRequest,
+    root: BindingId,
+    group: Option<LoweredReduceGroup>,
+    reducers: &[ReduceTerm],
+) -> Result<LoweredMatchExecution, MatchError> {
+    let graph = lower_graph(registry, validated, &[])?;
+    let mut terms = Vec::with_capacity(reducers.len());
+    let mut needs_rematch = group.is_some();
+    for term in reducers {
+        let input = term
+            .input
+            .as_ref()
+            .map(|field| {
+                needs_rematch = true;
+                let owner_name = registry
+                    .descriptor_type_name(&field.field.owner)
+                    .ok_or_else(|| {
+                        unsupported(
+                            "unknown_descriptor",
+                            "validated reducer input lost its registered owner",
+                        )
+                    })?;
+                let descriptor = registry.get(&owner_name).ok_or_else(|| {
+                    unsupported(
+                        "unknown_descriptor",
+                        "validated reducer input lost its registered owner",
+                    )
+                })?;
+                let attribute = reduce_owner_attribute(&descriptor, &field.field.name)?;
+                let domain = match attribute.value_type.as_str() {
+                    "long" | "integer" => ReduceDomain::Long,
+                    "double" => ReduceDomain::Double,
+                    _ => {
+                        return Err(unsupported(
+                            "reduce_input_domain",
+                            "validated reducer input lost its numeric domain",
+                        ));
+                    }
+                };
+                Ok(LoweredReduceInput {
+                    binding: field.binding,
+                    field: field.field.clone(),
+                    domain,
+                })
+            })
+            .transpose()?;
+        terms.push(LoweredReduceTerm {
+            reduction: term.reduction,
+            input,
+        });
+    }
+    let rematch = needs_rematch.then(|| TypedPageRematch {
+        targets: graph.targets.clone(),
+        fields: graph.fields.clone(),
+        predicate: graph.predicate.clone(),
+        root: root.get(),
+        root_concept_ids: Vec::new(),
+        collection_orders: Vec::new(),
+    });
+    Ok(LoweredMatchExecution::ReduceBy {
+        root,
+        group,
+        scan: root_scan(graph, root.get(), Vec::new(), None, None),
+        rematch,
+        terms,
+    })
 }
 
 /// Lower one validated operation into its complete bounded typed statement plan.
@@ -142,69 +223,35 @@ pub(crate) fn lower_match_execution(
             root,
             group,
             reducers,
-        } => {
-            let graph = lower_graph(registry, validated, &[])?;
-            let mut terms = Vec::with_capacity(reducers.len());
-            let mut needs_rematch = group.is_some();
-            for term in reducers {
-                let input = term
-                    .input
-                    .as_ref()
-                    .map(|field| {
-                        needs_rematch = true;
-                        let owner_name = registry
-                            .descriptor_type_name(&field.field.owner)
-                            .ok_or_else(|| {
-                                unsupported(
-                                    "unknown_descriptor",
-                                    "validated reducer input lost its registered owner",
-                                )
-                            })?;
-                        let descriptor = registry.get(&owner_name).ok_or_else(|| {
-                            unsupported(
-                                "unknown_descriptor",
-                                "validated reducer input lost its registered owner",
-                            )
-                        })?;
-                        let attribute = reduce_owner_attribute(&descriptor, &field.field.name)?;
-                        let domain = match attribute.value_type.as_str() {
-                            "long" | "integer" => ReduceDomain::Long,
-                            "double" => ReduceDomain::Double,
-                            _ => {
-                                return Err(unsupported(
-                                    "reduce_input_domain",
-                                    "validated reducer input lost its numeric domain",
-                                ));
-                            }
-                        };
-                        Ok(LoweredReduceInput {
-                            binding: field.binding,
-                            field: field.field.clone(),
-                            domain,
-                        })
-                    })
-                    .transpose()?;
-                terms.push(LoweredReduceTerm {
-                    reduction: term.reduction,
-                    input,
-                });
-            }
-            let rematch = needs_rematch.then(|| TypedPageRematch {
-                targets: graph.targets.clone(),
-                fields: graph.fields.clone(),
-                predicate: graph.predicate.clone(),
-                root: root.get(),
-                root_concept_ids: Vec::new(),
-                collection_orders: Vec::new(),
-            });
-            Ok(LoweredMatchExecution::ReduceBy {
-                root: *root,
-                group: *group,
-                scan: root_scan(graph, root.get(), Vec::new(), None, None),
-                rematch,
-                terms,
-            })
-        }
+        } => lower_reduce_execution(
+            registry,
+            validated,
+            *root,
+            group.map(LoweredReduceGroup::Binding),
+            reducers,
+        ),
+        MatchOperation::ReduceByField {
+            root,
+            group,
+            reducers,
+        } => lower_reduce_execution(
+            registry,
+            validated,
+            *root,
+            Some(LoweredReduceGroup::Field(group.clone())),
+            reducers,
+        ),
+        MatchOperation::ReduceByFields {
+            root,
+            groups,
+            reducers,
+        } => lower_reduce_execution(
+            registry,
+            validated,
+            *root,
+            Some(LoweredReduceGroup::Fields(groups.clone())),
+            reducers,
+        ),
         MatchOperation::PageBy {
             root,
             output,
@@ -485,6 +532,14 @@ fn lower_predicate(
             operator: lower_operator(*operator),
             right: field_id(fields, right)?,
         }),
+        MatchExpr::FieldPresence { field, present } => Ok(TypedMatchPredicate::FieldPresence {
+            field: field_id(fields, field)?,
+            present: *present,
+        }),
+        MatchExpr::BindingIid { binding, iid } => Ok(TypedMatchPredicate::BindingIid {
+            binding: binding.get(),
+            iid: iid.clone(),
+        }),
         MatchExpr::RoleEdge {
             id,
             relation,
@@ -585,13 +640,17 @@ fn collect_fields(predicate: &MatchExpr, fields: &mut BTreeSet<BoundFieldId>) {
             fields.insert(left.clone());
             fields.insert(right.clone());
         }
+        MatchExpr::FieldPresence { field, .. } => {
+            fields.insert(field.clone());
+        }
         MatchExpr::And { expressions } | MatchExpr::Or { expressions } => {
             for expression in expressions {
                 collect_fields(expression, fields);
             }
         }
         MatchExpr::Not { expression } => collect_fields(expression, fields),
-        MatchExpr::RoleEdge { .. } | MatchExpr::Reachable { .. } => {}
+        MatchExpr::BindingIid { .. } | MatchExpr::RoleEdge { .. } | MatchExpr::Reachable { .. } => {
+        }
     }
 }
 
@@ -619,7 +678,7 @@ fn provider_attribute_name(
 fn provider_attribute(
     registry: &DescriptorRegistry,
     field: &FieldId,
-) -> Result<crate::descriptor::OwnedAttributeDescriptor, MatchError> {
+) -> Result<crate::_descriptor::OwnedAttributeDescriptor, MatchError> {
     let type_name = registry.descriptor_type_name(&field.owner).ok_or_else(|| {
         unsupported(
             "missing_lowered_field_descriptor",
@@ -664,18 +723,18 @@ fn unsupported(code: &'static str, message: &'static str) -> MatchError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::attribute::ValueType;
-    use crate::descriptor::{
+    use crate::_attribute::ValueType;
+    use crate::_descriptor::{
         EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor,
     };
-    use crate::entity::Annotation;
+    use crate::_entity::Annotation;
+    use crate::_registry::DescriptorRegistry;
     use crate::match_request::ids::{BindingId, RoleEdgeId, RoleId};
     use crate::match_request::model::{
         FetchShape, FetchSlot, MatchBinding, MatchOrder, MatchPlan, MatchRequest, RowCardinality,
         Window,
     };
     use crate::match_request::validation::validate_match_request;
-    use crate::registry::DescriptorRegistry;
     use type_bridge_core_lib::compiler::QueryCompiler;
 
     fn key(name: &str) -> OwnedAttributeDescriptor {

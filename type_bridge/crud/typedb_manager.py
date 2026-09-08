@@ -1,19 +1,12 @@
-"""Compatibility exports for the retired Python ORM manager.
+"""Separately retained V1 query aliases.
 
-The Python TypeQL-building manager was removed in #125 Phase 4. Import paths
-remain stable, but the names now point at the Rust-backed runtime facade.
+Generated packages use projection-owned managers. The handwritten manager
+identity is intentionally absent from this compatibility module.
 """
 
 from __future__ import annotations
 
-from type_bridge.crud.rust_manager import (
-    RustTypeDBGroupByQuery as GroupByQuery,
-)
-from type_bridge.crud.rust_manager import (
-    RustTypeDBManager as TypeDBManager,
-)
-from type_bridge.crud.rust_manager import (
-    RustTypeDBQuery as TypeDBQuery,
-)
+from type_bridge.crud.rust_manager import RustTypeDBGroupByQuery as GroupByQuery
+from type_bridge.crud.rust_manager import RustTypeDBQuery as TypeDBQuery
 
-__all__ = ["GroupByQuery", "TypeDBManager", "TypeDBQuery"]
+__all__ = ["GroupByQuery", "TypeDBQuery"]

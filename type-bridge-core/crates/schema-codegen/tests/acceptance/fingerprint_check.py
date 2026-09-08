@@ -66,8 +66,8 @@ def playing_fact(
     )
 
 
-assert len(BASE_PLAYING_FACTS) == 8
-assert len(VARIANT_PLAYING_FACTS) == 8
+assert len(BASE_PLAYING_FACTS) == 12
+assert len(VARIANT_PLAYING_FACTS) == 12
 base_membership = playing_fact(BASE_PLAYING_FACTS, "membership", "member", "person")
 variant_membership = playing_fact(VARIANT_PLAYING_FACTS, "membership", "member", "person")
 assert base_membership["multiplicity"]["cardinality"]["max"] == "2"

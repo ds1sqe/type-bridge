@@ -1,6 +1,7 @@
 //! Verifier-derived safety conditions for exact schema transitions.
 
 use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 use type_bridge_contract::codec::to_canonical_json;
@@ -361,8 +362,88 @@ impl RequiredSafetyCondition {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct DerivedSafetyConditions {
     conditions: Vec<RequiredSafetyCondition>,
+    #[serde(skip)]
+    condition_free: bool,
     operation_index: u32,
     policy: SafetyClass,
+}
+
+/// Precomputed source-domain evidence shared by every operation in one delta.
+///
+/// Construction walks the target subtype graph once and propagates every
+/// source-declared type to its target supertypes. Per-operation condition-free
+/// checks are then bounded map lookups rather than repeated graph traversals.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SafetyConditionDomainIndex {
+    possible_source_instance_domains: BTreeSet<TypeId>,
+    source_declared: DeclaredIdentityFingerprint,
+    source_types: BTreeSet<TypeId>,
+    target_declared: DeclaredIdentityFingerprint,
+}
+
+impl SafetyConditionDomainIndex {
+    /// Bind one reusable proof index to exact source and target declarations.
+    pub fn new(source: &DeclaredSchema, target: &DeclaredSchema) -> Self {
+        let source_types = source
+            .facts()
+            .filter_map(|fact| match fact {
+                SchemaFact::Type(fact) => Some(fact.id().clone()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let mut parents_by_subtype = BTreeMap::<TypeId, Vec<TypeId>>::new();
+        for fact in target.facts() {
+            if let SchemaFact::Sub(sub) = fact {
+                parents_by_subtype
+                    .entry(sub.id().subtype().clone())
+                    .or_default()
+                    .push(sub.id().supertype().clone());
+            }
+        }
+
+        let mut possible_source_instance_domains = source_types.clone();
+        let mut frontier = source_types.iter().cloned().collect::<Vec<_>>();
+        while let Some(subtype) = frontier.pop() {
+            for supertype in parents_by_subtype.get(&subtype).into_iter().flatten() {
+                if possible_source_instance_domains.insert(supertype.clone()) {
+                    frontier.push(supertype.clone());
+                }
+            }
+        }
+
+        Self {
+            possible_source_instance_domains,
+            source_declared: source.declared_identity_fingerprint().clone(),
+            source_types,
+            target_declared: target.declared_identity_fingerprint().clone(),
+        }
+    }
+
+    fn ensure_bound_to(
+        &self,
+        source: &DeclaredSchema,
+        target: &DeclaredSchema,
+    ) -> Result<(), Diagnostic> {
+        if &self.source_declared == source.declared_identity_fingerprint()
+            && &self.target_declared == target.declared_identity_fingerprint()
+        {
+            Ok(())
+        } else {
+            Err(failure(
+                DiagnosticCategory::Integrity,
+                "safety_condition_domain_index_mismatch",
+                "safety-condition domain index does not match the exact transition declarations",
+            ))
+        }
+    }
+
+    fn source_declares_type(&self, type_id: &TypeId) -> bool {
+        self.source_types.contains(type_id)
+    }
+
+    fn may_have_source_instances(&self, type_id: &TypeId) -> bool {
+        self.possible_source_instance_domains.contains(type_id)
+    }
 }
 
 impl DerivedSafetyConditions {
@@ -379,6 +460,12 @@ impl DerivedSafetyConditions {
     /// Return conditions in deterministic fact and bound order.
     pub fn conditions(&self) -> &[RequiredSafetyCondition] {
         &self.conditions
+    }
+
+    /// Return whether exact source-domain evidence proves this operation
+    /// cannot encounter pre-existing data that needs an assertion or backfill.
+    pub const fn is_condition_free(&self) -> bool {
+        self.condition_free
     }
 
     /// Return whether every Conditional requirement has an expressible assertion.
@@ -400,6 +487,27 @@ pub fn derive_safety_conditions(
     target_declared: &DeclaredSchema,
     profile: &SafetyDerivationProfile,
 ) -> Result<DerivedSafetyConditions, Diagnostic> {
+    let domain = SafetyConditionDomainIndex::new(source_declared, target_declared);
+    derive_safety_conditions_with_domain_index(
+        operation_index,
+        operation,
+        source_declared,
+        target_declared,
+        profile,
+        &domain,
+    )
+}
+
+/// Derive safety conditions while reusing one exact delta-level domain index.
+pub fn derive_safety_conditions_with_domain_index(
+    operation_index: usize,
+    operation: &SchemaOperation,
+    source_declared: &DeclaredSchema,
+    target_declared: &DeclaredSchema,
+    profile: &SafetyDerivationProfile,
+    domain: &SafetyConditionDomainIndex,
+) -> Result<DerivedSafetyConditions, Diagnostic> {
+    domain.ensure_bound_to(source_declared, target_declared)?;
     let operation_index = u32::try_from(operation_index).map_err(|_| {
         failure(
             DiagnosticCategory::ResourceLimit,
@@ -423,6 +531,7 @@ pub fn derive_safety_conditions(
                     target_declared,
                     profile,
                     &semantic,
+                    domain,
                     &mut conditions,
                 )?;
             }
@@ -454,10 +563,9 @@ pub fn derive_safety_conditions(
         )?,
     }
 
-    if policy == SafetyClass::Conditional
-        && conditions.is_empty()
-        && !is_proven_condition_free_constraint_transition(operation, source_declared)?
-    {
+    let condition_free =
+        conditions.is_empty() && is_proven_condition_free_constraint_transition(operation, domain)?;
+    if policy == SafetyClass::Conditional && conditions.is_empty() && !condition_free {
         push_condition(
             &mut conditions,
             operation_index,
@@ -474,6 +582,7 @@ pub fn derive_safety_conditions(
 
     Ok(DerivedSafetyConditions {
         conditions,
+        condition_free,
         operation_index,
         policy,
     })
@@ -488,9 +597,19 @@ fn derive_defined_fact(
     target: &DeclaredSchema,
     profile: &SafetyDerivationProfile,
     semantic: &SemanticProfile,
+    domain: &SafetyConditionDomainIndex,
     conditions: &mut Vec<RequiredSafetyCondition>,
 ) -> Result<(), Diagnostic> {
     match fact {
+        SchemaFact::Annotation(annotation)
+            if annotation_subject_is_uninhabited(
+                annotation.id().subject(),
+                annotation.id().kind(),
+                domain,
+            ) =>
+        {
+            Ok(())
+        }
         SchemaFact::Annotation(annotation) => derive_annotation_transition(
             None,
             Some(annotation),
@@ -508,11 +627,7 @@ fn derive_defined_fact(
         // instances — the exactly-observed source lacks the type and the
         // introducing delta commits in one transaction group — so its `sub`
         // edge is provably condition-free.
-        SchemaFact::Sub(sub)
-            if source
-                .fact(&SchemaFactId::Type(sub.id().subtype().clone()))
-                .is_some() =>
-        {
+        SchemaFact::Sub(sub) if domain.source_declares_type(sub.id().subtype()) => {
             push_unresolvable(
                 conditions,
                 operation_index,
@@ -805,10 +920,10 @@ fn derive_annotation_transition(
 
 fn is_proven_condition_free_constraint_transition(
     operation: &SchemaOperation,
-    source: &DeclaredSchema,
+    domain: &SafetyConditionDomainIndex,
 ) -> Result<bool, Diagnostic> {
     if operation.kind() == SchemaOperationKind::Define {
-        return Ok(is_proven_condition_free_define(operation, source));
+        return Ok(is_proven_condition_free_define(operation, domain));
     }
     if operation.kind() != SchemaOperationKind::Redefine {
         return Ok(false);
@@ -839,30 +954,39 @@ fn is_proven_condition_free_constraint_transition(
 
 /// Prove a conditional define carries only condition-free work.
 ///
-/// The only proven shape is a `sub` edge whose subtype is absent from the
-/// exactly-observed source: the type is introduced by this same transition and
-/// cannot have instances when the introducing transaction group runs. Any
-/// annotation, struct, or specializing-relates fact deliberately fails the
-/// proof — those keep the conservative backfill catch-all even when their own
-/// derivation produced no condition.
-fn is_proven_condition_free_define(operation: &SchemaOperation, source: &DeclaredSchema) -> bool {
+/// A new subtype edge and a constraint anchored to a type absent from the
+/// exactly-observed source are both data-free. The introducing transaction
+/// group can therefore define the type and its constraints without asserting
+/// over a source domain in which that type does not yet exist. Constraints on
+/// an existing anchor, structs, and specializing-relates facts remain
+/// conservative.
+fn is_proven_condition_free_define(
+    operation: &SchemaOperation,
+    domain: &SafetyConditionDomainIndex,
+) -> bool {
     let Some(facts) = operation.defined_facts() else {
         return false;
     };
-    let mut proven_sub = false;
+    let mut proven_constraint = false;
     for fact in facts {
         match fact {
             SchemaFact::Sub(sub) => {
-                if source
-                    .fact(&SchemaFactId::Type(sub.id().subtype().clone()))
-                    .is_some()
-                {
+                if domain.source_declares_type(sub.id().subtype()) {
                     return false;
                 }
-                proven_sub = true;
+                proven_constraint = true;
             }
             SchemaFact::Relates(relates) if relates.specializes().is_some() => {
                 return false;
+            }
+            SchemaFact::Annotation(annotation)
+                if annotation_subject_is_uninhabited(
+                    annotation.id().subject(),
+                    annotation.id().kind(),
+                    domain,
+                ) =>
+            {
+                proven_constraint = true;
             }
             SchemaFact::Annotation(_) | SchemaFact::Struct(_) => return false,
             SchemaFact::Type(_)
@@ -873,7 +997,43 @@ fn is_proven_condition_free_define(operation: &SchemaOperation, source: &Declare
             | SchemaFact::Function(_) => {}
         }
     }
-    proven_sub
+    proven_constraint
+}
+
+/// Prove that an annotation's data-bearing anchor has no possible instances
+/// in the exact source declaration. Interface annotations are anchored to the
+/// owner/relation/player rather than to the newly introduced interface itself:
+/// adding a required ownership to an existing owner still requires backfill.
+fn annotation_subject_is_uninhabited(
+    subject: &AnnotationSubjectId,
+    kind: &AnnotationKindId,
+    domain: &SafetyConditionDomainIndex,
+) -> bool {
+    let (anchor, include_target_subtypes) = match subject {
+        // `@abstract` rejects direct instances only; source-existing types
+        // attached as descendants in this delta remain valid descendants.
+        AnnotationSubjectId::Type(type_id) => {
+            (type_id.clone(), !matches!(kind, AnnotationKindId::Abstract))
+        }
+        AnnotationSubjectId::Sub(sub) => (sub.subtype().clone(), true),
+        AnnotationSubjectId::Value(value) => {
+            let Ok(attribute) =
+                TypeId::new(TypeKind::Attribute, value.attribute().label().as_str())
+            else {
+                return false;
+            };
+            (attribute, true)
+        }
+        AnnotationSubjectId::Owns(owns) => (owns.owner().clone(), true),
+        AnnotationSubjectId::Relates(relates) => (relates.relation().clone(), true),
+        AnnotationSubjectId::Plays(plays) => (plays.player().clone(), true),
+        AnnotationSubjectId::Function(_) => return false,
+    };
+    if include_target_subtypes {
+        !domain.may_have_source_instances(&anchor)
+    } else {
+        !domain.source_declares_type(&anchor)
+    }
 }
 
 fn range_payload(annotation: &AnnotationFact) -> Result<&CanonicalValueRange, Diagnostic> {
@@ -1354,6 +1514,7 @@ mod tests {
         let second = derive_safety_conditions(7, &operation, &source, &target, &profile)
             .expect("conditions");
         assert_eq!(first, second);
+        assert!(!first.is_condition_free());
         assert_eq!(first.conditions().len(), 2);
         assert!(matches!(
             first.conditions()[0].condition(),
@@ -1412,6 +1573,7 @@ mod tests {
         )
         .expect("abstract condition");
         assert_eq!(abstract_conditions.policy(), SafetyClass::Conditional);
+        assert!(!abstract_conditions.is_condition_free());
         assert!(abstract_conditions.resolves_conditional_requirements());
         assert!(matches!(
             abstract_conditions.conditions()[0].condition(),
@@ -1438,10 +1600,37 @@ mod tests {
         )
         .expect("key condition");
         assert_eq!(key_conditions.policy(), SafetyClass::BackfillRequired);
+        assert!(!key_conditions.is_condition_free());
         assert!(matches!(
             key_conditions.conditions()[0].condition(),
             SafetyCondition::Unresolvable {
                 reason: UnresolvableSafetyReason::KeyRequiresDistinctOwners,
+                unlock: SafetyConditionUnlock::BindingDistinct,
+            }
+        ));
+
+        let (unique_base, unique_owns) = owns_fixture();
+        let unique = annotation_fact(
+            AnnotationSubjectId::Owns(unique_owns),
+            AnnotationKindId::Unique,
+            SchemaAnnotationValue::Presence,
+        );
+        let unique_source = declared(unique_base.clone());
+        let unique_target = declared(unique_base.into_iter().chain([unique.clone()]).collect());
+        let unique_conditions = derive_safety_conditions(
+            2,
+            &SchemaOperation::define(vec![unique]).expect("unique operation"),
+            &unique_source,
+            &unique_target,
+            &profile,
+        )
+        .expect("unique condition");
+        assert_eq!(unique_conditions.policy(), SafetyClass::BackfillRequired);
+        assert!(!unique_conditions.is_condition_free());
+        assert!(matches!(
+            unique_conditions.conditions()[0].condition(),
+            SafetyCondition::Unresolvable {
+                reason: UnresolvableSafetyReason::UniqueRequiresDistinctOwners,
                 unlock: SafetyConditionUnlock::BindingDistinct,
             }
         ));
@@ -1476,6 +1665,7 @@ mod tests {
         )
         .expect("range conditions");
         assert_eq!(range_conditions.conditions().len(), 2);
+        assert!(!range_conditions.is_condition_free());
         assert!(range_conditions.resolves_conditional_requirements());
 
         let values = annotation_fact(
@@ -1501,6 +1691,7 @@ mod tests {
             &profile,
         )
         .expect("values condition");
+        assert!(!values_conditions.is_condition_free());
         assert!(matches!(
             values_conditions.conditions()[0].condition(),
             SafetyCondition::ValuesNarrowed { allowed, .. } if allowed.len() == 2
@@ -1531,11 +1722,113 @@ mod tests {
             &profile,
         )
         .expect("regex gate");
+        assert!(!regex_conditions.is_condition_free());
         assert!(matches!(
             regex_conditions.conditions()[0].condition(),
             SafetyCondition::Unresolvable {
                 reason: UnresolvableSafetyReason::RegexNarrowingRequiresValueRegex,
                 unlock: SafetyConditionUnlock::ValueRegex,
+            }
+        ));
+    }
+
+    #[test]
+    fn new_anchor_constraints_are_condition_free_only_without_existing_descendants() {
+        let profile = test_safety_profile();
+        let actor = type_id(TypeKind::Entity, "actor");
+        let person = type_id(TypeKind::Entity, "person");
+        let code = AttributeId::new("code").expect("attribute");
+        let owns = OwnsFactId::new(actor.clone(), code.clone()).expect("owns");
+        let key = annotation_fact(
+            AnnotationSubjectId::Owns(owns.clone()),
+            AnnotationKindId::Key,
+            SchemaAnnotationValue::Presence,
+        );
+        let target_facts = vec![
+            SchemaFact::Type(TypeFact::new(actor.clone()).expect("actor")),
+            SchemaFact::Type(TypeFact::new(person.clone()).expect("person")),
+            SchemaFact::Type(
+                TypeFact::new(type_id(TypeKind::Attribute, "code")).expect("attribute type"),
+            ),
+            SchemaFact::Value(ValueFact::new(ValueFactId::new(code), ValueTypeTag::String)),
+            SchemaFact::Sub(type_bridge_contract::schema::SubFact::new(
+                type_bridge_contract::schema::SubFactId::new(person.clone(), actor)
+                    .expect("sub identity"),
+            )),
+            SchemaFact::Owns(OwnsFact::new(owns)),
+            key.clone(),
+        ];
+
+        let empty = declared(Vec::new());
+        let target = declared(target_facts.clone());
+        let initial = derive_safety_conditions(
+            0,
+            &SchemaOperation::define(vec![key.clone()]).expect("key operation"),
+            &empty,
+            &target,
+            &profile,
+        )
+        .expect("initial derivation");
+        assert_eq!(initial.policy(), SafetyClass::BackfillRequired);
+        assert!(initial.is_condition_free());
+        assert!(initial.conditions().is_empty());
+        assert!(
+            !String::from_utf8(to_canonical_json(&initial).expect("serialize derived conditions"))
+                .expect("derived conditions serialize as UTF-8")
+                .contains("condition_free"),
+            "ephemeral proof evidence must not change the serialized shape",
+        );
+
+        let domain = SafetyConditionDomainIndex::new(&empty, &target);
+        let indexed = derive_safety_conditions_with_domain_index(
+            0,
+            &SchemaOperation::define(vec![key.clone()]).expect("key operation"),
+            &empty,
+            &target,
+            &profile,
+            &domain,
+        )
+        .expect("indexed initial derivation");
+        assert_eq!(indexed, initial);
+
+        let source = declared(vec![
+            SchemaFact::Type(TypeFact::new(person).expect("existing person")),
+            SchemaFact::Type(
+                TypeFact::new(type_id(TypeKind::Attribute, "code")).expect("attribute type"),
+            ),
+            SchemaFact::Value(ValueFact::new(
+                ValueFactId::new(AttributeId::new("code").expect("attribute")),
+                ValueTypeTag::String,
+            )),
+        ]);
+        let inherited = derive_safety_conditions(
+            0,
+            &SchemaOperation::define(vec![key.clone()]).expect("key operation"),
+            &source,
+            &target,
+            &profile,
+        )
+        .expect("inherited derivation");
+        assert_eq!(
+            derive_safety_conditions_with_domain_index(
+                0,
+                &SchemaOperation::define(vec![key.clone()]).expect("key operation"),
+                &source,
+                &target,
+                &profile,
+                &domain,
+            )
+            .expect_err("a proof index cannot cross declaration identities")
+            .code()
+            .as_str(),
+            "safety_condition_domain_index_mismatch",
+        );
+        assert!(!inherited.is_condition_free());
+        assert!(matches!(
+            inherited.conditions()[0].condition(),
+            SafetyCondition::Unresolvable {
+                reason: UnresolvableSafetyReason::KeyRequiresDistinctOwners,
+                ..
             }
         ));
     }

@@ -8,9 +8,10 @@ use std::sync::Arc;
 
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
+use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::query_v2_prepared::QueryAuthority;
 use type_bridge_orm::{
-    DescriptorRegistry, InstalledRuntimeProjection, RemoteModelQueryV2Error, ValidatedMatchRequest,
+    InstalledRuntimeProjection, RemoteModelQueryV2Error, ValidatedMatchRequest,
     ValidatedMatchResult, prepare_remote_model_query_v2,
 };
 
@@ -74,8 +75,8 @@ impl RemoteQueryLimits {
 
 /// Connection-time authority, transport, and limit configuration.
 pub struct RemoteConnectionOptions {
-    scope: String,
-    semantic_profile: String,
+    scope: Option<String>,
+    semantic_profile: Option<String>,
     limits: RemoteQueryLimits,
     transport: Arc<dyn RemoteQueryTransport>,
     advertisement: Option<Vec<u8>>,
@@ -92,8 +93,21 @@ impl RemoteConnectionOptions {
         transport: impl RemoteQueryTransport,
     ) -> Self {
         Self {
-            scope: scope.into(),
-            semantic_profile: semantic_profile.into(),
+            scope: Some(scope.into()),
+            semantic_profile: Some(semantic_profile.into()),
+            limits,
+            transport: Arc::new(transport),
+            advertisement: None,
+        }
+    }
+
+    /// Construct normal generated-package options; schema scope and semantic
+    /// profile are derived from [`SchemaPackage`] during binding.
+    #[must_use]
+    pub fn generated(limits: RemoteQueryLimits, transport: impl RemoteQueryTransport) -> Self {
+        Self {
+            scope: None,
+            semantic_profile: None,
             limits,
             transport: Arc::new(transport),
             advertisement: None,
@@ -143,24 +157,65 @@ impl RemoteDatabase<Unbound> {
 
     /// Verify and bind one generated schema package and its remote authority.
     pub fn with_schema<S: Schema>(mut self, schema: SchemaPackage<S>) -> Result<RemoteDatabase<S>> {
-        let declared = schema
-            .declared_schema_json()
-            .ok_or_else(|| Error::SchemaVerification {
-                message: "generated schema package omits remote declared-schema authority".into(),
-                source: None,
-            })?;
-        let installed = schema.verify_and_install()?;
+        let (installed, embedded_authority) = schema.verify_and_install_with_authority()?;
         let registry = Arc::new(installed.match_registry().map_err(Error::from_orm)?);
         let options = self.options.take().ok_or_else(|| Error::Other {
             message: "remote connection options are unavailable".into(),
             source: None,
         })?;
-        let authority = QueryAuthority::from_declared_bytes(
-            declared.as_bytes(),
-            &options.scope,
-            &options.semantic_profile,
-        )
-        .map_err(remote_diagnostic)?;
+        let authority = if let Some(embedded) = embedded_authority {
+            let embedded_scope = embedded.managed_scope().id().as_str();
+            let embedded_profile = embedded.semantic_profile().id().as_str();
+            if options
+                .scope
+                .as_deref()
+                .is_some_and(|scope| scope != embedded_scope)
+                || options
+                    .semantic_profile
+                    .as_deref()
+                    .is_some_and(|profile| profile != embedded_profile)
+            {
+                return Err(Error::SchemaVerification {
+                    message: "remote options disagree with generated schema authority".into(),
+                    source: None,
+                });
+            }
+            let declared =
+                type_bridge_contract::schema::encode_declared_schema(embedded.declared_schema())
+                    .map_err(|error| Error::SchemaVerification {
+                        message: "verified generated authority cannot reconstruct its declaration"
+                            .into(),
+                        source: Some(Box::new(error)),
+                    })?;
+            QueryAuthority::from_declared_bytes(&declared, embedded_scope, embedded_profile)
+                .map_err(remote_diagnostic)?
+        } else {
+            let declared =
+                schema
+                    .declared_schema_json()
+                    .ok_or_else(|| Error::SchemaVerification {
+                        message: "generated schema package omits remote declared-schema authority"
+                            .into(),
+                        source: None,
+                    })?;
+            let scope = options
+                .scope
+                .as_deref()
+                .ok_or_else(|| Error::SchemaVerification {
+                    message: "schema package has no embedded managed scope".into(),
+                    source: None,
+                })?;
+            let semantic_profile =
+                options
+                    .semantic_profile
+                    .as_deref()
+                    .ok_or_else(|| Error::SchemaVerification {
+                        message: "schema package has no embedded semantic profile".into(),
+                        source: None,
+                    })?;
+            QueryAuthority::from_declared_bytes(declared.as_bytes(), scope, semantic_profile)
+                .map_err(remote_diagnostic)?
+        };
         if !authority.matches_semantic_fingerprint(installed.projection().semantic_fingerprint()) {
             return Err(Error::SchemaVerification {
                 message: "remote declared-schema authority does not match the generated projection"
@@ -267,24 +322,29 @@ fn remote_model_hydration_error(error: RemoteModelQueryV2Error) -> Error {
 mod tests {
     use std::sync::Mutex;
 
+    use type_bridge_contract::capability::CapabilitySet;
     use type_bridge_contract::codec::to_canonical_json;
     use type_bridge_contract::diagnostic::{
-        Diagnostic, DiagnosticCategory, DiagnosticCode, DiagnosticPathSegment,
+        Diagnostic, DiagnosticCategory, DiagnosticCode, DiagnosticPath, DiagnosticPathSegment,
     };
     use type_bridge_contract::fingerprint::SemanticProfileId;
+    use type_bridge_contract::managed_scope::ManagedScopeId;
     use type_bridge_contract::migration_assertion::BindingId;
     use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
     use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
     use type_bridge_contract::query_remote::RemoteExecutorBinding;
     use type_bridge_contract::query_remote_v2::{
-        HydrationGraphV2, RemoteOutcomeV2, RemoteQueryRequestV2, RemoteQueryResponseV2,
-        RemoteResultKindV2, query_remote_v2_required_capabilities,
+        HydrationGraphV2, RemoteOutcomeV2, RemoteQueryFailureV2, RemoteQueryRequestV2,
+        RemoteQueryResponseV2, RemoteResultKindV2, query_remote_v2_required_capabilities,
     };
     use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
     use type_bridge_orm::OrmError;
     use type_bridge_orm::match_request::SessionHandle;
     use type_bridge_orm::query_v2_remote::RemoteReplySigningKey;
-    use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+    use type_bridge_schema::{
+        ManagedDeltaContext, SchemaDocumentSet, build_schema_authority, encode_schema_authority,
+        normalize_documents, project, resolve,
+    };
     use type_bridge_schema_codegen::RustEmitter;
 
     use super::*;
@@ -298,6 +358,7 @@ mod tests {
     impl sealed::Sealed for TestSchema {}
     impl Schema for TestSchema {}
 
+    #[derive(Debug)]
     struct Person;
     impl sealed::Sealed for Person {}
     impl Model for Person {
@@ -326,6 +387,7 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
     struct PersonCreate;
     impl sealed::Sealed for PersonCreate {}
     impl IntoEncodedCreate for PersonCreate {
@@ -380,9 +442,16 @@ mod tests {
         )])
         .unwrap();
         let declared = normalize_documents(&documents).unwrap();
-        let resolved = resolve(
+        let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+        let resolved = resolve(&declared, &profile).unwrap();
+        let authority = build_schema_authority(
             &declared,
-            &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+            declared.required_capabilities(),
+            &ManagedDeltaContext::new(
+                ManagedScopeId::new("rust-client-test").unwrap(),
+                profile,
+                CapabilitySet::new(),
+            ),
         )
         .unwrap();
         let emitter = RustEmitter::new();
@@ -397,12 +466,112 @@ mod tests {
         let leak = |bytes: Vec<u8>| {
             Box::leak(String::from_utf8(bytes).unwrap().into_boxed_str()) as &'static str
         };
-        SchemaPackage::new_with_declared(
+        SchemaPackage::new_with_authority(
             leak(to_canonical_json(projection.semantic_fingerprint()).unwrap()),
             leak(to_canonical_json(projection.projection_fingerprint()).unwrap()),
             leak(to_canonical_json(&projection).unwrap()),
+            leak(encode_schema_authority(&authority)),
             leak(encode_declared_schema(&declared).unwrap()),
+            "rust-client-test",
+            "typedb-3.12.1/v1",
         )
+    }
+
+    fn released_declared_package() -> SchemaPackage<TestSchema> {
+        let generated = package();
+        SchemaPackage::new_with_declared(
+            generated.semantic_fingerprint_json(),
+            generated.projection_fingerprint_json(),
+            generated.runtime_projection_json(),
+            generated
+                .declared_schema_json()
+                .expect("test package carries a declaration"),
+        )
+    }
+
+    struct UnusedTransport;
+
+    impl RemoteQueryTransport for UnusedTransport {
+        fn capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
+            Box::pin(async { panic!("compatibility test performs no transport I/O") })
+        }
+
+        fn exchange<'a>(
+            &'a self,
+            _request: &'a [u8],
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+            Box::pin(async { panic!("compatibility test performs no transport I/O") })
+        }
+    }
+
+    fn unconnected_remote(mut options: RemoteConnectionOptions) -> RemoteDatabase<Unbound> {
+        options.advertisement = Some(Vec::new());
+        RemoteDatabase {
+            options: Some(options),
+            runtime: None,
+            installed: None,
+            registry: None,
+            marker: PhantomData,
+        }
+    }
+
+    #[test]
+    fn generated_authority_accepts_matching_legacy_options_and_rejects_overrides() {
+        let limits = || RemoteQueryLimits::new(10, 1 << 20, 10, 100, 100, 100);
+        let matching = RemoteConnectionOptions::new(
+            "rust-client-test",
+            "typedb-3.12.1/v1",
+            limits(),
+            UnusedTransport,
+        );
+        unconnected_remote(matching)
+            .with_schema(package())
+            .expect("matching 2.0.1-style options remain compatible");
+
+        for mismatched in [
+            RemoteConnectionOptions::new(
+                "other-scope",
+                "typedb-3.12.1/v1",
+                limits(),
+                UnusedTransport,
+            ),
+            RemoteConnectionOptions::new(
+                "rust-client-test",
+                "typedb-3.11.5/v1",
+                limits(),
+                UnusedTransport,
+            ),
+        ] {
+            let error = unconnected_remote(mismatched)
+                .with_schema(package())
+                .expect_err("caller strings cannot override generated authority");
+            assert!(
+                error
+                    .to_string()
+                    .contains("disagree with generated schema authority"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn released_declared_package_retains_explicit_remote_options_compatibility() {
+        let limits = || RemoteQueryLimits::new(10, 1 << 20, 10, 100, 100, 100);
+        let options = RemoteConnectionOptions::new(
+            "rust-client-test",
+            "typedb-3.12.1/v1",
+            limits(),
+            UnusedTransport,
+        );
+        unconnected_remote(options)
+            .with_schema(released_declared_package())
+            .expect("2.0.1 generated package and explicit options remain compatible");
+
+        let generated_options = RemoteConnectionOptions::generated(limits(), UnusedTransport);
+        let error = unconnected_remote(generated_options)
+            .with_schema(released_declared_package())
+            .expect_err("detached 2.0.1 package cannot invent embedded deployment authority");
+        assert!(error.to_string().contains("no embedded managed scope"));
     }
 
     struct Transport {
@@ -410,6 +579,7 @@ mod tests {
         advertisement: Vec<u8>,
         capabilities: Arc<Mutex<usize>>,
         exchanges: Arc<Mutex<Vec<Vec<u8>>>>,
+        failure: Option<Diagnostic>,
         signer: RemoteReplySigningKey,
     }
 
@@ -430,6 +600,20 @@ mod tests {
                 request
                     .validate_advertisement(&self.advertisement_contract)
                     .map_err(remote_diagnostic)?;
+                if let Some(diagnostic) = &self.failure {
+                    return RemoteQueryFailureV2::bound(
+                        request.nonce(),
+                        &request.fingerprint().map_err(remote_diagnostic)?,
+                        diagnostic,
+                    )
+                    .and_then(|failure| {
+                        failure.encode_signed(
+                            &self.advertisement_contract.fingerprint()?,
+                            &self.signer,
+                        )
+                    })
+                    .map_err(remote_diagnostic);
+                }
                 let plan = request.plan().map_err(remote_diagnostic)?;
                 let root = BindingId::new(0).map_err(remote_diagnostic)?;
                 let outcome = match request.result_kind() {
@@ -495,11 +679,10 @@ mod tests {
             advertisement,
             capabilities: Arc::clone(&capability_calls),
             exchanges: Arc::clone(&exchanges),
+            failure: None,
             signer,
         };
-        let options = RemoteConnectionOptions::new(
-            "rust-client-test",
-            "typedb-3.12.1/v1",
+        let options = RemoteConnectionOptions::generated(
             RemoteQueryLimits::new(10, 1 << 20, 10, 100, 100, 100),
             transport,
         );
@@ -544,5 +727,101 @@ mod tests {
                 .unwrap()
                 .contains("\"format\":\"typebridge.query-remote-request/v2\"")
         );
+    }
+
+    #[tokio::test]
+    async fn generated_remote_query_preserves_complete_authenticated_structured_diagnostic() {
+        let signer = RemoteReplySigningKey::from_secret_bytes([0x42; 32]);
+        let mut capabilities = query_plan_v2_capability_vocabulary();
+        for capability in query_remote_v2_required_capabilities(true) {
+            capabilities.insert(capability);
+        }
+        let advertisement_contract = RemoteCapabilities::new(
+            capabilities,
+            RemoteExecutorBinding::new("rust-generated-acceptance", "epoch-00000000002").unwrap(),
+            signer.public_key(),
+        );
+        let advertisement = advertisement_contract.encode().unwrap();
+        let capability_calls = Arc::new(Mutex::new(0));
+        let exchanges = Arc::new(Mutex::new(Vec::new()));
+        let diagnostic = Diagnostic::new(
+            DiagnosticCategory::InvalidContract,
+            DiagnosticCode::new("remote_application_failure").unwrap(),
+            "the remote application rejected this query",
+        )
+        .with_path(DiagnosticPath::from_segments([
+            DiagnosticPathSegment::Field("plan".into()),
+            DiagnosticPathSegment::Index(0),
+            DiagnosticPathSegment::Identifier("person".into()),
+        ]))
+        .with_detail("attempt", 7_i64)
+        .with_detail("expected", vec!["person".to_owned(), "employee".to_owned()])
+        .with_detail("retryable", false)
+        .with_detail("subject", "person");
+        let transport = Transport {
+            advertisement_contract,
+            advertisement,
+            capabilities: Arc::clone(&capability_calls),
+            exchanges: Arc::clone(&exchanges),
+            failure: Some(diagnostic),
+            signer,
+        };
+        let options = RemoteConnectionOptions::generated(
+            RemoteQueryLimits::new(10, 1 << 20, 10, 100, 100, 100),
+            transport,
+        );
+        let remote = RemoteDatabase::connect(options)
+            .await
+            .unwrap()
+            .with_schema(package())
+            .unwrap();
+        let mut session = remote.query().unwrap();
+        let person = session.exact::<Person>().unwrap();
+        let error = session
+            .query(person)
+            .unwrap()
+            .one()
+            .await
+            .expect_err("generated query must return the authenticated application failure");
+
+        assert_eq!(error.category(), crate::ErrorCategory::Remote);
+        assert_eq!(error.code(), Some("remote_application_failure"));
+        assert_eq!(
+            error.message(),
+            "the remote application rejected this query"
+        );
+        assert_eq!(
+            error.path(),
+            Some(&["plan".to_owned(), "[0]".to_owned(), "person".to_owned()][..])
+        );
+        assert_eq!(
+            error.diagnostic_path(),
+            Some(
+                &[
+                    crate::ErrorPathSegment::Field("plan".into()),
+                    crate::ErrorPathSegment::Index(0),
+                    crate::ErrorPathSegment::Identifier("person".into()),
+                ][..]
+            )
+        );
+        let details = error.details().expect("authenticated diagnostic details");
+        assert_eq!(details.get("attempt"), Some(&crate::ErrorDetail::Long(7)));
+        assert_eq!(
+            details.get("expected"),
+            Some(&crate::ErrorDetail::TextList(vec![
+                "person".to_owned(),
+                "employee".to_owned(),
+            ]))
+        );
+        assert_eq!(
+            details.get("retryable"),
+            Some(&crate::ErrorDetail::Boolean(false))
+        );
+        assert_eq!(
+            details.get("subject"),
+            Some(&crate::ErrorDetail::Text("person".to_owned()))
+        );
+        assert_eq!(*capability_calls.lock().unwrap(), 1);
+        assert_eq!(exchanges.lock().unwrap().len(), 1);
     }
 }

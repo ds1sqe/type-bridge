@@ -72,21 +72,19 @@ impl std::fmt::Display for ValueType {
     }
 }
 
-/// Trait for TypeDB attribute types.
+/// Internal contract implemented by generated TypeDB attribute types.
 ///
-/// Each attribute type in TypeDB (e.g., `name`, `age`, `email`) is represented
-/// by a Rust type implementing this trait. The `define_attribute!` macro
-/// provides a convenient way to define attribute types.
+/// Application code receives these implementations from generated bindings;
+/// handwritten model authoring is not a package-root API.
 ///
 /// # Example
 ///
 /// ```
-/// use type_bridge_orm::define_attribute;
+/// use type_bridge_orm::_attribute::TypeBridgeAttribute;
 ///
-/// define_attribute!(Name, "name", "string");
-/// define_attribute!(Age, "age", "long");
-/// define_attribute!(Score, "score", "double");
-/// define_attribute!(Active, "active", "boolean");
+/// fn generated_attribute_label<A: TypeBridgeAttribute>() -> &'static str {
+///     A::ATTR_NAME
+/// }
 /// ```
 pub trait TypeBridgeAttribute: Clone + Send + Sync + 'static {
     /// The TypeDB attribute type name (e.g. `"name"`, `"age"`, `"email"`).
@@ -106,9 +104,11 @@ pub trait TypeBridgeAttribute: Clone + Send + Sync + 'static {
     fn from_value(value: &AttributeValue) -> Option<Self>;
 }
 
-/// Define a TypeDB attribute type with a single line.
+/// Expand one generated TypeDB attribute declaration.
 ///
-/// Generates a newtype struct implementing [`TypeBridgeAttribute`].
+/// This hidden macro is an implementation seam for generated/internal models,
+/// not a handwritten application-model API. It generates a newtype struct
+/// implementing [`TypeBridgeAttribute`].
 ///
 /// # Supported value types
 ///
@@ -125,21 +125,22 @@ pub trait TypeBridgeAttribute: Clone + Send + Sync + 'static {
 /// # Examples
 ///
 /// ```
-/// use type_bridge_orm::define_attribute;
+/// use type_bridge_orm::_define_attribute;
 ///
-/// define_attribute!(Name, "name", "string");
-/// define_attribute!(Age, "age", "long");
+/// _define_attribute!(Name, "name", "string");
+/// _define_attribute!(Age, "age", "long");
 ///
 /// let name = Name("Alice".to_string());
 /// let age = Age(30);
 /// ```
+#[doc(hidden)]
 #[macro_export]
-macro_rules! define_attribute {
+macro_rules! _define_attribute {
     ($name:ident, $attr_name:expr, "string") => {
         #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub String);
 
-        impl $crate::TypeBridgeAttribute for $name {
+        impl $crate::_attribute::TypeBridgeAttribute for $name {
             const ATTR_NAME: &'static str = $attr_name;
             const VALUE_TYPE: &'static str = "string";
             const VALUE_TYPE_ENUM: $crate::ValueType = $crate::ValueType::String;
@@ -160,7 +161,7 @@ macro_rules! define_attribute {
         #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub i64);
 
-        impl $crate::TypeBridgeAttribute for $name {
+        impl $crate::_attribute::TypeBridgeAttribute for $name {
             const ATTR_NAME: &'static str = $attr_name;
             const VALUE_TYPE: &'static str = "long";
             const VALUE_TYPE_ENUM: $crate::ValueType = $crate::ValueType::Long;
@@ -178,16 +179,16 @@ macro_rules! define_attribute {
         }
     };
     ($name:ident, $attr_name:expr, "integer") => {
-        $crate::define_attribute!($name, $attr_name, "long");
+        $crate::_define_attribute!($name, $attr_name, "long");
     };
     ($name:ident, $attr_name:expr, "int") => {
-        $crate::define_attribute!($name, $attr_name, "long");
+        $crate::_define_attribute!($name, $attr_name, "long");
     };
     ($name:ident, $attr_name:expr, "double") => {
         #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub f64);
 
-        impl $crate::TypeBridgeAttribute for $name {
+        impl $crate::_attribute::TypeBridgeAttribute for $name {
             const ATTR_NAME: &'static str = $attr_name;
             const VALUE_TYPE: &'static str = "double";
             const VALUE_TYPE_ENUM: $crate::ValueType = $crate::ValueType::Double;
@@ -208,7 +209,7 @@ macro_rules! define_attribute {
         #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub bool);
 
-        impl $crate::TypeBridgeAttribute for $name {
+        impl $crate::_attribute::TypeBridgeAttribute for $name {
             const ATTR_NAME: &'static str = $attr_name;
             const VALUE_TYPE: &'static str = "boolean";
             const VALUE_TYPE_ENUM: $crate::ValueType = $crate::ValueType::Boolean;
@@ -226,13 +227,13 @@ macro_rules! define_attribute {
         }
     };
     ($name:ident, $attr_name:expr, "bool") => {
-        $crate::define_attribute!($name, $attr_name, "boolean");
+        $crate::_define_attribute!($name, $attr_name, "boolean");
     };
     ($name:ident, $attr_name:expr, "date") => {
         #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub String);
 
-        impl $crate::TypeBridgeAttribute for $name {
+        impl $crate::_attribute::TypeBridgeAttribute for $name {
             const ATTR_NAME: &'static str = $attr_name;
             const VALUE_TYPE: &'static str = "date";
             const VALUE_TYPE_ENUM: $crate::ValueType = $crate::ValueType::Date;
@@ -253,7 +254,7 @@ macro_rules! define_attribute {
         #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub String);
 
-        impl $crate::TypeBridgeAttribute for $name {
+        impl $crate::_attribute::TypeBridgeAttribute for $name {
             const ATTR_NAME: &'static str = $attr_name;
             const VALUE_TYPE: &'static str = "datetime";
             const VALUE_TYPE_ENUM: $crate::ValueType = $crate::ValueType::DateTime;
@@ -274,7 +275,7 @@ macro_rules! define_attribute {
         #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub String);
 
-        impl $crate::TypeBridgeAttribute for $name {
+        impl $crate::_attribute::TypeBridgeAttribute for $name {
             const ATTR_NAME: &'static str = $attr_name;
             const VALUE_TYPE: &'static str = "datetime-tz";
             const VALUE_TYPE_ENUM: $crate::ValueType = $crate::ValueType::DateTimeTz;
@@ -295,7 +296,7 @@ macro_rules! define_attribute {
         #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub String);
 
-        impl $crate::TypeBridgeAttribute for $name {
+        impl $crate::_attribute::TypeBridgeAttribute for $name {
             const ATTR_NAME: &'static str = $attr_name;
             const VALUE_TYPE: &'static str = "decimal";
             const VALUE_TYPE_ENUM: $crate::ValueType = $crate::ValueType::Decimal;
@@ -316,7 +317,7 @@ macro_rules! define_attribute {
         #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub String);
 
-        impl $crate::TypeBridgeAttribute for $name {
+        impl $crate::_attribute::TypeBridgeAttribute for $name {
             const ATTR_NAME: &'static str = $attr_name;
             const VALUE_TYPE: &'static str = "duration";
             const VALUE_TYPE_ENUM: $crate::ValueType = $crate::ValueType::Duration;

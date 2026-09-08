@@ -3,13 +3,21 @@ from __future__ import annotations
 # pyright: reportMissingImports=false
 import pytest
 
-from type_bridge import Entity, Flag, Key, Relation, Role, String, TypeFlags
+from tests.utils.handwritten import (
+    AttributeFlags,
+    Entity,
+    Flag,
+    Key,
+    Relation,
+    Role,
+    String,
+    TypeFlags,
+)
 from type_bridge._rust_runtime import (
     descriptor_registry,
     model_schema_info,
     register_model_descriptor,
 )
-from type_bridge.attribute import AttributeFlags
 
 
 class Name(String):

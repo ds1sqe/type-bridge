@@ -1,42 +1,4 @@
 {
-  "$comment": "Allowed-diffs for the .d.ts export parity gate (tests/dts-parity.cjs). DECLARATION-ONLY: this gate and file concern ONLY the emitted dist/*.d.ts declaration content. They assert nothing about package.json main/exports, index.js, the native loader, or *.node — those belong to the deferred TS-only Node package migration. Each allowedDiffs entry permits exactly one emitted file content (by sha256) to differ from the committed baseline, with a rationale; it cannot blanket-permit a file. When the public type surface intentionally changes, regenerate the baseline with `npm run dts:baseline` (preferred) or add an entry here.",
-  "rationales": [
-    {
-      "symbol": "ModelInstance.toDict() / ModelClass.fromDict() (model.d.ts)",
-      "rationale": "Plan 11 Phase 1: additive instance/static serialization API to/from the canonical plain dict, mirroring Python to_dict()/from_dict()."
-    },
-    {
-      "symbol": "InstanceDict / PlainFieldValue (model.d.ts)",
-      "rationale": "Plan 11 Phase 1: schema-derived plain-dict shape produced by toDict() and consumed by fromDict() — no `any` escape hatch."
-    },
-    {
-      "symbol": "attributeToPlain / plainToAttribute (codec.d.ts)",
-      "rationale": "Plan 11 Phase 1: serialization-only unwrap / re-brand helpers reused by toDict()/fromDict()."
-    },
-    {
-      "symbol": "parseSchema + TypeSchema/EntityType/RelationType/AttributeType/... (parser.d.ts, new file)",
-      "rationale": "Plan 12 Phase 1: marshalling-only typed wrapper over the new parseSchemaJson NAPI binding; TypeSchema mirrors the Rust serde shape (parse + inheritance resolution stay in Rust). SchemaParserNative is the minimal injected-native contract."
-    },
-    {
-      "symbol": "generateModels + GenerateModelsOptions + NamingOptions (index.d.ts re-export from generator/index.js)",
-      "rationale": "Plan 12: the TypeScript model generator entrypoint, the Node equivalent of Python generate_models(). Naming helpers (toClassName/toFieldName) stay generator-internal and are NOT re-exported at the package root (minimal surface)."
-    },
-    {
-      "symbol": "native.d.ts (new file) + loadNative re-export in index.d.ts",
-      "rationale": "Package migration: the real native loader (TYPE_BRIDGE_NODE_NATIVE_PATH override + package-root .node candidate resolution) moved from the hand-written root index.js into typescript/native.ts so it compiles into dist/. index.ts now re-exports loadNative from native.js (the public signature `loadNative(): NativeModule` is unchanged; the dead ambient stub was removed)."
-    },
-    {
-      "symbol": "FieldSpec.ordered() / ListFieldSpec.distinct() (model.d.ts)",
-      "rationale": "TypeDB 3.12 alignment: generated and hand-written Node models can express bare or explicitly cardinalized ordered ownerships, retain composed annotations, and add @distinct without an untyped escape hatch."
-    },
-    {
-      "symbol": "QueryV2Authority / PendingQueryV2Remote / prepared V2 helpers (index.d.ts)",
-      "rationale": "Plan 06: additive typed-plan execution surface, including an explicit database-bound query-only authority and one-shot request-bound remote reply decoding."
-    },
-    {
-      "symbol": "RustDatabase.close() / tlsEnabled / tlsRootCa (index.d.ts)",
-      "rationale": "Landing remediation: expose deterministic native connection closure and the explicit TLS/custom-root transport contract in the generated Node declarations."
-    }
-  ],
+  "$comment": "Exact declaration-content exceptions for the generated-only @type-bridge/node boundary. Package exports, JavaScript files, and native symbols are verified separately by package-smoke.cjs. Prefer regenerating the committed baseline for an intentional cutover; any temporary exception must name one file, its exact sha256, and a concrete rationale.",
   "allowedDiffs": []
 }

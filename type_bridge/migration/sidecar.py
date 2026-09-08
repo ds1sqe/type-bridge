@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from type_bridge import _rust_runtime
-from type_bridge.migration import operations as ops
+from type_bridge.migration import _operations as ops
 from type_bridge.migration._adoption_authority import (
     AdoptionDirectoryAuthority,
     AdoptionDirectoryEntry,
@@ -1280,7 +1280,7 @@ def _conversion_journal_json(
         # A newly published canonical output becomes a captured existing
         # sidecar on retry. Keep the plan digest classification-stable by
         # representing identical bytes only in the planned-output domain.
-        # A released legacy sidecar with different formatting/omitted fields
+        # A released archive sidecar with different formatting/omitted fields
         # remains an independently bound input.
         if planned_digests.get(captured.path) == captured.sha256:
             continue

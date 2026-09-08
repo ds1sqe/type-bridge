@@ -8,6 +8,10 @@ use type_bridge_orm::match_request::{
 };
 use type_bridge_orm::*;
 
+#[path = "support/internal.rs"]
+mod internal;
+use internal::*;
+
 fn attribute(field_name: &str, attr_name: &str, value_type: ValueType) -> OwnedAttributeDescriptor {
     OwnedAttributeDescriptor {
         field_name: field_name.to_owned(),

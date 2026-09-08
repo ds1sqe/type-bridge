@@ -9,12 +9,13 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha2::{Digest, Sha256};
+use type_bridge_contract::id::is_canonical_thing_iid;
 use type_bridge_core_lib::decimal::parse_decimal;
 
-use crate::attribute::ValueType;
-use crate::descriptor::{OwnedAttributeDescriptor, TypeDescriptorRef};
-use crate::entity::Annotation;
-use crate::registry::{DescriptorFingerprintRoot, DescriptorRegistry};
+use crate::_attribute::ValueType;
+use crate::_descriptor::{OwnedAttributeDescriptor, TypeDescriptorRef};
+use crate::_entity::Annotation;
+use crate::_registry::{DescriptorFingerprintRoot, DescriptorRegistry};
 use crate::value::AttributeValue;
 
 use super::capability::{CapabilitySet, derive_required_capabilities};
@@ -362,6 +363,16 @@ fn inspect_predicate_structure(
             validate_bound_field_id(left)?;
             validate_bound_field_id(right)?;
         }
+        MatchExpr::FieldPresence { field, .. } => validate_bound_field_id(field)?,
+        MatchExpr::BindingIid { iid, .. } => {
+            if !is_canonical_thing_iid(iid) {
+                return Err(invalid(
+                    "invalid_iid",
+                    "IID predicates require a canonical TypeDB thing IID",
+                )
+                .at(MatchErrorPathSegment::Predicate));
+            }
+        }
         MatchExpr::Reachable {
             relation,
             role_from,
@@ -499,35 +510,53 @@ fn validate_operation_structure(request: &MatchRequest) -> Result<(), MatchError
                     .at(MatchErrorPathSegment::Operation));
                 }
             }
-            if reducers.is_empty() {
+            validate_reducer_structure(reducers)?;
+            (None, None, None)
+        }
+        MatchOperation::ReduceByField {
+            root,
+            group,
+            reducers,
+        } => {
+            require_binding(request, *root)?;
+            validate_bound_field_id(group)?;
+            validate_reducer_structure(reducers)?;
+            (None, None, None)
+        }
+        MatchOperation::ReduceByFields {
+            root,
+            groups,
+            reducers,
+        } => {
+            require_binding(request, *root)?;
+            if groups.len() < 2 {
                 return Err(invalid(
-                    "empty_reducers",
-                    "typed reductions require at least one reducer term",
+                    "field_group_tuple_too_short",
+                    "tuple-field reductions require at least two group fields",
                 )
                 .at(MatchErrorPathSegment::Operation));
             }
-            if reducers.len() > MAX_SELECTED_SLOTS {
+            if groups.len() > MAX_SELECTED_SLOTS {
                 return Err(invalid(
-                    "reducer_cap_exceeded",
-                    "typed reductions exceed the canonical sixteen-slot ceiling",
+                    "field_group_tuple_cap_exceeded",
+                    "tuple-field reductions exceed the canonical sixteen-field ceiling",
                 )
                 .at(MatchErrorPathSegment::Operation)
-                .with_detail("actual", usize_detail(reducers.len()))
+                .with_detail("actual", usize_detail(groups.len()))
                 .with_detail("maximum", usize_detail(MAX_SELECTED_SLOTS)));
             }
-            for term in reducers {
-                match (&term.input, term.reduction.requires_input()) {
-                    (Some(field), _) => validate_bound_field_id(field)?,
-                    (None, true) => {
-                        return Err(invalid(
-                            "reduce_input_required",
-                            "this reducer requires a bound scalar field input",
-                        )
-                        .at(MatchErrorPathSegment::Operation));
-                    }
-                    (None, false) => {}
+            let mut unique = BTreeSet::new();
+            for group in groups {
+                validate_bound_field_id(group)?;
+                if !unique.insert(group) {
+                    return Err(invalid(
+                        "duplicate_field_group",
+                        "tuple-field reductions require distinct group fields",
+                    )
+                    .at(MatchErrorPathSegment::Field(group.field.clone())));
                 }
             }
+            validate_reducer_structure(reducers)?;
             (None, None, None)
         }
     };
@@ -629,6 +658,39 @@ fn validate_operation_structure(request: &MatchRequest) -> Result<(), MatchError
     Ok(())
 }
 
+fn validate_reducer_structure(reducers: &[super::model::ReduceTerm]) -> Result<(), MatchError> {
+    if reducers.is_empty() {
+        return Err(invalid(
+            "empty_reducers",
+            "typed reductions require at least one reducer term",
+        )
+        .at(MatchErrorPathSegment::Operation));
+    }
+    if reducers.len() > MAX_SELECTED_SLOTS {
+        return Err(invalid(
+            "reducer_cap_exceeded",
+            "typed reductions exceed the canonical sixteen-slot ceiling",
+        )
+        .at(MatchErrorPathSegment::Operation)
+        .with_detail("actual", usize_detail(reducers.len()))
+        .with_detail("maximum", usize_detail(MAX_SELECTED_SLOTS)));
+    }
+    for term in reducers {
+        match (&term.input, term.reduction.requires_input()) {
+            (Some(field), _) => validate_bound_field_id(field)?,
+            (None, true) => {
+                return Err(invalid(
+                    "reduce_input_required",
+                    "this reducer requires a bound scalar field input",
+                )
+                .at(MatchErrorPathSegment::Operation));
+            }
+            (None, false) => {}
+        }
+    }
+    Ok(())
+}
+
 fn resolve_bindings(
     registry: &DescriptorRegistry,
     request: &MatchRequest,
@@ -719,6 +781,25 @@ fn validate_expr_node(
             validate_operator(*operator, left_attr.value_type, false)
                 .map_err(|error| error.at(MatchErrorPathSegment::Field(left.field.clone())))?;
         }
+        MatchExpr::FieldPresence { field, .. } => {
+            resolve_bound_field(registry, field, bindings)?;
+        }
+        MatchExpr::BindingIid { binding, iid } => {
+            if !bindings.contains_key(binding) {
+                return Err(invalid(
+                    "unknown_binding",
+                    "IID predicate references an undeclared binding",
+                )
+                .at(MatchErrorPathSegment::Binding(*binding)));
+            }
+            if !is_canonical_thing_iid(iid) {
+                return Err(invalid(
+                    "invalid_iid",
+                    "IID predicates require a canonical TypeDB thing IID",
+                )
+                .at(MatchErrorPathSegment::Binding(*binding)));
+            }
+        }
         MatchExpr::RoleEdge {
             id,
             relation,
@@ -777,12 +858,19 @@ fn validate_expr_node(
                 .at(MatchErrorPathSegment::RoleEdge(*id))
             })?;
             let player_name = player_descriptor.type_name();
-            let descriptor_role = relation_descriptor.role(&role.name).expect("resolved role");
-            if !descriptor_role
-                .player_type_names
+            let player_binding = request
+                .plan
+                .bindings
                 .iter()
-                .any(|allowed| is_type_or_subtype(registry, player_name, allowed))
-            {
+                .find(|binding| binding.id == *player)
+                .expect("resolved player binding remains declared");
+            let descriptor_role = relation_descriptor.role(&role.name).expect("resolved role");
+            if !role_accepts_binding(
+                registry,
+                player_name,
+                player_binding.match_mode,
+                &descriptor_role.player_type_names,
+            ) {
                 return Err(invalid(
                     "incompatible_role_player",
                     "player binding is not compatible with the relation role",
@@ -886,6 +974,8 @@ fn validate_expr_node(
 fn validate_or_exports(expression: &MatchExpr) -> Result<BTreeSet<BindingId>, MatchError> {
     match expression {
         MatchExpr::FieldValue { field, .. } => Ok(BTreeSet::from([field.binding])),
+        MatchExpr::FieldPresence { field, .. } => Ok(BTreeSet::from([field.binding])),
+        MatchExpr::BindingIid { binding, .. } => Ok(BTreeSet::from([*binding])),
         MatchExpr::FieldComparison { left, right, .. } => {
             Ok(BTreeSet::from([left.binding, right.binding]))
         }
@@ -979,7 +1069,9 @@ fn definite_positive_edges(
         return BTreeSet::new();
     }
     match expression {
-        MatchExpr::FieldValue { .. } => BTreeSet::new(),
+        MatchExpr::FieldValue { .. }
+        | MatchExpr::FieldPresence { .. }
+        | MatchExpr::BindingIid { .. } => BTreeSet::new(),
         MatchExpr::FieldComparison { left, right, .. } => {
             BTreeSet::from([canonical_edge(left.binding, right.binding)])
         }
@@ -1096,7 +1188,20 @@ fn validate_operation(
         MatchOperation::CountBy { .. } | MatchOperation::ExistsBy { .. } => {
             Ok((StableOrderSpec::default(), BTreeMap::new()))
         }
-        MatchOperation::ReduceBy { reducers, .. } => {
+        MatchOperation::ReduceBy { reducers, .. }
+        | MatchOperation::ReduceByField { reducers, .. }
+        | MatchOperation::ReduceByFields { reducers, .. } => {
+            match &request.operation {
+                MatchOperation::ReduceByField { group, .. } => {
+                    resolve_bound_field(registry, group, bindings)?;
+                }
+                MatchOperation::ReduceByFields { groups, .. } => {
+                    for group in groups {
+                        resolve_bound_field(registry, group, bindings)?;
+                    }
+                }
+                _ => {}
+            }
             for term in reducers {
                 let Some(field) = &term.input else { continue };
                 let attribute = resolve_bound_field(registry, field, bindings)?;
@@ -1314,26 +1419,6 @@ fn descriptor_attributes(descriptor: &TypeDescriptorRef) -> &[OwnedAttributeDesc
         TypeDescriptorRef::Entity(descriptor) => &descriptor.owned_attributes,
         TypeDescriptorRef::Relation(descriptor) => &descriptor.owned_attributes,
     }
-}
-
-fn is_type_or_subtype(registry: &DescriptorRegistry, actual: &str, expected: &str) -> bool {
-    let mut current = Some(actual.to_owned());
-    let mut visited = BTreeSet::new();
-    while let Some(type_name) = current {
-        if type_name == expected {
-            return true;
-        }
-        if !visited.insert(type_name.clone()) {
-            return false;
-        }
-        current = registry
-            .get(&type_name)
-            .and_then(|descriptor| match descriptor {
-                TypeDescriptorRef::Entity(descriptor) => descriptor.parent_type.clone(),
-                TypeDescriptorRef::Relation(descriptor) => descriptor.parent_type.clone(),
-            });
-    }
-    false
 }
 
 fn role_accepts_binding(
@@ -1570,6 +1655,8 @@ fn collect_reachability_descriptors(
         MatchExpr::Not { expression } => collect_reachability_descriptors(expression, roots),
         MatchExpr::FieldValue { .. }
         | MatchExpr::FieldComparison { .. }
+        | MatchExpr::FieldPresence { .. }
+        | MatchExpr::BindingIid { .. }
         | MatchExpr::RoleEdge { .. } => {}
     }
 }
@@ -1744,10 +1831,10 @@ mod tests {
     use type_bridge_contract::temporal::{CanonicalDateTime, CanonicalDateTimeTz};
 
     use super::*;
-    use crate::descriptor::{
+    use crate::_descriptor::{
         EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor,
     };
-    use crate::entity::Annotation;
+    use crate::_entity::Annotation;
     use crate::match_request::ids::FieldId;
     use crate::match_request::model::{FetchSlot, MissingOrder, Window};
 

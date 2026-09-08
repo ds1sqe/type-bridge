@@ -9,6 +9,7 @@ use crate::ast::{
 use crate::decimal::parse_decimal;
 use crate::reserved_words::is_reserved_word;
 use std::sync::OnceLock;
+use type_bridge_contract::id::is_canonical_thing_iid;
 use type_bridge_contract::limits::{MAX_PREDICATE_DEPTH, MAX_PREDICATE_NODES};
 use unicode_ident::{is_xid_continue, is_xid_start};
 
@@ -711,6 +712,26 @@ impl QueryCompiler {
                     field_variable(right.id)
                 ))
             }
+            TypedMatchPredicate::FieldPresence { field, present } => {
+                let field = typed_field(fields, *field)?;
+                let has = format!(
+                    "{} has {} {}",
+                    binding_variable(field.owner),
+                    field.field_name,
+                    field_variable(field.id)
+                );
+                if *present {
+                    // Presence is an existential predicate. A positive `has`
+                    // would keep the value variable in the match and multiply
+                    // owners with cardinality-many fields before reductions.
+                    Ok(format!("not {{ not {{ {has}; }}; }}"))
+                } else {
+                    Ok(format!("not {{ {has}; }}"))
+                }
+            }
+            TypedMatchPredicate::BindingIid { binding, iid } => {
+                Ok(format!("{} iid {iid}", binding_variable(*binding)))
+            }
             TypedMatchPredicate::RoleEdge {
                 relation,
                 role_name,
@@ -1207,6 +1228,8 @@ fn contains_reachable(predicate: &TypedMatchPredicate) -> bool {
         TypedMatchPredicate::Not { expression } => contains_reachable(expression),
         TypedMatchPredicate::FieldValue { .. }
         | TypedMatchPredicate::FieldComparison { .. }
+        | TypedMatchPredicate::FieldPresence { .. }
+        | TypedMatchPredicate::BindingIid { .. }
         | TypedMatchPredicate::RoleEdge { .. } => false,
     }
 }
@@ -1544,6 +1567,8 @@ fn inspect_typed_predicate_structure(
         }
         TypedMatchPredicate::FieldValue { .. }
         | TypedMatchPredicate::FieldComparison { .. }
+        | TypedMatchPredicate::FieldPresence { .. }
+        | TypedMatchPredicate::BindingIid { .. }
         | TypedMatchPredicate::RoleEdge { .. } => {}
     }
     Ok(())
@@ -1568,6 +1593,25 @@ fn validate_typed_predicate_semantics(
             if !fields.contains(left) || !fields.contains(right) {
                 return Err(TypedCompileError::new(
                     "typed field comparison references an unknown field",
+                ));
+            }
+        }
+        TypedMatchPredicate::FieldPresence { field, .. } => {
+            if !fields.contains(field) {
+                return Err(TypedCompileError::new(format!(
+                    "typed field-presence predicate references unknown field ID {field}"
+                )));
+            }
+        }
+        TypedMatchPredicate::BindingIid { binding, iid } => {
+            if !targets.contains(binding) {
+                return Err(TypedCompileError::new(format!(
+                    "typed IID predicate references unknown binding ID {binding}"
+                )));
+            }
+            if !is_canonical_thing_iid(iid) {
+                return Err(TypedCompileError::new(
+                    "typed IID predicate contains a non-canonical thing IID",
                 ));
             }
         }
@@ -2005,6 +2049,67 @@ mod tests {
             offset: 0,
             limit: 1,
         }
+    }
+
+    #[test]
+    fn typed_presence_and_iid_predicates_compile_without_raw_fragments() {
+        assert_eq!(
+            compiler()
+                .compile_typed_fetch_rows(&typed_predicate_query(
+                    TypedMatchPredicate::FieldPresence {
+                        field: 0,
+                        present: true,
+                    },
+                ))
+                .unwrap(),
+            "match\n\
+             $b0 isa person;\n\
+             not { not { $b0 has score $f0; }; };\n\
+             select $b0;\n\
+             distinct;\n\
+             limit 1;"
+        );
+        assert_eq!(
+            compiler()
+                .compile_typed_fetch_rows(&typed_predicate_query(
+                    TypedMatchPredicate::FieldPresence {
+                        field: 0,
+                        present: false,
+                    },
+                ))
+                .unwrap(),
+            "match\n\
+             $b0 isa person;\n\
+             not { $b0 has score $f0; };\n\
+             select $b0;\n\
+             distinct;\n\
+             limit 1;"
+        );
+        assert_eq!(
+            compiler()
+                .compile_typed_fetch_rows(&typed_predicate_query(TypedMatchPredicate::BindingIid {
+                    binding: 0,
+                    iid: "0xAb12".into(),
+                },))
+                .unwrap(),
+            "match\n\
+             $b0 isa person;\n\
+             $b0 iid 0xAb12;\n\
+             select $b0;\n\
+             distinct;\n\
+             limit 1;"
+        );
+
+        let error = compiler()
+            .compile_typed_fetch_rows(&typed_predicate_query(TypedMatchPredicate::BindingIid {
+                binding: 0,
+                iid: "not-an-iid".into(),
+            }))
+            .unwrap_err();
+        assert_eq!(
+            error.message(),
+            "typed IID predicate contains a non-canonical thing IID"
+        );
     }
 
     fn lit(value: serde_json::Value, value_type: &str) -> Value {

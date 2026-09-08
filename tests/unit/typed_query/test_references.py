@@ -11,8 +11,18 @@ from tests.unit.typed_query._support import (
     invoke_untyped,
     runtime_attribute,
 )
-from type_bridge import Boolean, Entity, Flag, Integer, Key, Relation, Role, String, TypeFlags
-from type_bridge.fields import StringFieldRef
+from tests.utils.handwritten import (
+    Boolean,
+    Entity,
+    Flag,
+    Integer,
+    Key,
+    Relation,
+    Role,
+    String,
+    StringFieldRef,
+    TypeFlags,
+)
 from type_bridge.typed import (
     BoundField,
     BoundRole,

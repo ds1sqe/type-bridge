@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use crate::common::dynamic_crud::*;
+use crate::internal::*;
 use type_bridge_orm::*;
 
 struct MultiRoleSchema {

@@ -65,6 +65,7 @@ impl IntoResponse for PipelineError {
 
 // --- Router ---
 
+/// Build the released V1 HTTP router around a shared query pipeline.
 pub fn create_router(pipeline: Arc<QueryPipeline>) -> Router {
     Router::new()
         .route("/query", post(handle_query))
@@ -185,7 +186,7 @@ async fn handle_schema(
 
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn schema_to_json(
-    schema: &type_bridge_core_lib::schema::TypeSchema,
+    schema: &type_bridge_core_lib::_schema::TypeSchema,
 ) -> Result<Json<serde_json::Value>, PipelineError> {
     let json = schema.to_json().map_err(to_schema_error)?;
 

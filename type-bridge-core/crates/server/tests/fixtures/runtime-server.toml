@@ -32,7 +32,5 @@ format = "json"
 
 [v2]
 enabled = true
-declared_schema_file = "declared-schema.json"
-scope = "production"
-profile = "typedb-3.12.1/v1"
+schema_authority_file = "schema-authority.json"
 authority_mode = "managed"

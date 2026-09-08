@@ -2,31 +2,51 @@
 
 All notable changes to TypeBridge will be documented in this file.
 
+## [Unreleased]
+
+### Security and release reliability
+
+- Forward-ported the patched PyO3 0.29.2 and dependency graph from the 2.0.2
+  maintenance release, preserving the generated-only 2.1 boundary, abi3-py312
+  and GIL-required semantics. CI and releases require fresh dependency audits.
+- Pinned deterministic native license selection and the metadata-2.5-compatible
+  PyPI publisher; validate facade metadata before cross-registry publication.
+
+### Changed
+
+- **Generated-only application bindings (#189)** - Split YAML plus
+  `type-bridge schema generate` is now the sole active schema/model authoring
+  path. Generated Python, TypeScript/Node, and Rust packages retain the
+  supported CRUD, transaction, hook, query, reducer, local/remote, hydration,
+  and diagnostic outcomes previously exercised through handwritten models.
+  Python keeps the concise generated single-type manager API, including
+  `Person.manager(db).put(...)` and lookup-suffixed `filter(...)` terminals.
+- **TypeDB 3.11/3.12 support window** - Native packages now contain only bands
+  8 and 9. Active TypeDB 3.8/3.10 support, provider sources, warning APIs,
+  build features, matrices, and release inputs are removed; retired versions
+  fail before data work.
+- **Authoring cutover with recovery retained** - Handwritten Python/Node/Rust
+  schema declarations, direct TOML generator routing, programmatic TypeQL
+  model generation, and root Python/JSON migration authoring are removed.
+  Read-only TOML conversion and archived migration loading, checksum
+  verification, ledger import, snapshots, adoption, and recovery remain.
+- **2.1.0 artifact identity** - Python, npm, Cargo, generated Rust templates,
+  documentation, and release validation now share the 2.1.0 identity. Release
+  timing remains readiness-driven; no release date is declared here.
+
 ## [2.0.2] - 2026-09-07
 
-### Security
+### Security and compatibility notice
 
-- Update PyO3 to 0.29.2 with pythonize 0.29.0, crossbeam-epoch to 0.9.20,
-  h2 to 0.4.16, and rustls-webpki to 0.103.13 to resolve the dependency audit's
-  vulnerability findings. Preserve the Python API, GIL requirement, and
-  abi3-py312 baseline while migrating the native binding APIs.
-- Update anyhow to 1.0.103 and rand 0.8 to 0.8.6 to resolve unsoundness
-  advisories, and replace yanked chacha20 0.10.0 with 0.10.2.
-- Gate CI and releases on fresh audits of both maintained Rust lockfiles,
-  rejecting vulnerabilities, unsoundness, and yanked inputs. The pinned TypeDB
-  transport graph still requires rustls-pemfile 2.2.0; its informational
-  unmaintained advisory remains visible and is not a vulnerability finding.
-
-### Compatibility notice
-
-- Publish the exact expanded 2.1.0 removal inventory approved in #189, naming
-  handwritten Python/Node/Rust authoring, native-binding escape hatches and
-  programmatic generators, their generated replacements, and safe 2.0.x pins.
-  The complete inventory is in `docs/guide/v2.0.2-notice.md` and this release's
-  notes. This is a new maintainer decision, not retroactive 2.0.0/2.0.1 notice.
-- Preserve all 2.0.x APIs, provider support, retained V1 queries, archive
-  recovery, and existing warning behavior. Add no new handwritten-authoring
-  warning. Keep the published band-7/8 compatibility crates immutable.
+- Patched PyO3, crossbeam-epoch, h2, rustls-webpki, anyhow, rand and chacha20
+  while retaining 2.0.x APIs, provider support, existing warnings and abi3-py312.
+- Published the expanded, fully qualified 2.1 removal/replacement inventory
+  and safe `<2.1` pins in the
+  [2.0.2 release notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.0.2).
+  This new notice does not rewrite the historical 2.0.0/2.0.1 commitments.
+- Recovered the unchanged Python facade artifacts with a metadata-compatible
+  publisher; the release notice records original source and recovery-control
+  provenance. Existing tag and registry bytes were not replaced or rebuilt.
 
 ## [2.0.1] - 2026-08-03
 
@@ -156,7 +176,7 @@ All notable changes to TypeBridge will be documented in this file.
   raised later by application-owned Node `warning` listeners retain ordinary
   Node process semantics.
   The removal schedule names a single release, documented exactly in
-  [V2 Deprecations](docs/guide/v2-deprecations.md#scheduled-for-removal-in-210).
+  [V2 Deprecations](docs/guide/v2-deprecations.md#removed-in-21).
   Every scheduled removal lands in the 2.1.0 minor release as a deliberate,
   exactly-enumerated exception to ordinary major-version scheduling:
   active TypeDB 3.8/3.10 provider and driver support ends (the wheel then

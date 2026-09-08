@@ -1,0 +1,143 @@
+format: typebridge.schema/v2
+attributes:
+  identifier: { value: string }
+  nickname: { value: string }
+  aliases: { value: string }
+  score: { value: integer }
+  val_double: { value: double }
+  val_decimal: { value: decimal }
+  val_bool: { value: boolean }
+  val_date: { value: date }
+  val_datetime: { value: datetime }
+  val_datetime_tz: { value: datetime-tz }
+  val_duration: { value: duration }
+  val_constrained: { value: integer }
+  party_name: { value: string }
+  rank: { value: integer }
+  manager_note: { value: string }
+  contractor_code: { value: string }
+  robot_id: { value: integer }
+  foo__bar: { value: integer }
+  score__gte: { value: integer }
+  counter_value: { value: integer }
+entities:
+  actor:
+    abstract: true
+    owns:
+      nickname: { card: { min: 0, max: 1 } }
+  party:
+    abstract: true
+    owns:
+      identifier: { key: true }
+      party_name: { card: 1 }
+  person:
+    sub: actor
+    owns:
+      identifier: { key: true }
+      aliases: { unique: true, card: { min: 0, max: 3 } }
+      score: { card: 1 }
+      foo__bar: { card: { min: 0, max: 1 } }
+      score__gte: { card: { min: 0, max: 1 } }
+      val_double: { card: 1 }
+      val_decimal: { card: 1 }
+      val_bool: { card: 1 }
+      val_date: { card: 1 }
+      val_datetime: { card: 1 }
+      val_datetime_tz: { card: 1 }
+      val_duration: { card: 1 }
+      val_constrained: { card: 1, range: { min: 20, max: 80 } }
+  employee:
+    sub: party
+    owns:
+      rank: { card: 1 }
+  manager:
+    sub: employee
+    owns:
+      manager_note: { card: 1 }
+  contractor:
+    sub: party
+    owns:
+      contractor_code: { card: 1 }
+  robot:
+    sub: actor
+    owns:
+      robot_id: { key: true }
+      val_constrained: { card: 1, range: { min: 0, max: 50 } }
+  counter:
+    owns:
+      counter_value: { card: 1 }
+relations:
+  membership:
+    relates:
+      member: { card: 1 }
+  interaction:
+    owns:
+      identifier: { key: true }
+      nickname: { card: { min: 0, max: 1 } }
+    relates:
+      actor: { card: { min: 0, max: 1 } }
+      target: { card: 1 }
+  employment:
+    sub: membership
+    relates:
+      employee: { as: member, card: 1 }
+  container:
+    relates:
+      item: { card: { min: 0, max: 2 } }
+  event:
+    relates:
+      subject: { card: 1 }
+  network-link:
+    owns:
+      identifier: { key: true }
+      nickname: { card: { min: 0, max: 1 } }
+    relates:
+      origin: { card: 1 }
+      destination: { card: 1 }
+      participant: { card: { min: 0, max: 3 } }
+  base-activity:
+    relates:
+      participant: { abstract: true, card: 1 }
+  plain-activity:
+    sub: base-activity
+plays:
+  person:
+    membership:
+      member: { card: { min: 0, max: 2 } }
+    interaction:
+      actor: { card: { min: 0, max: 2 } }
+      target: { card: { min: 0, max: 2 } }
+    employment:
+      employee: { card: { min: 0, max: 1 } }
+    event:
+      subject: { card: { min: 0, max: 1 } }
+    network-link:
+      origin: { card: { min: 0, max: 3 } }
+      destination: { card: { min: 0, max: 3 } }
+      participant: { card: { min: 0, max: 3 } }
+    base-activity:
+      participant: { card: { min: 0, max: 1 } }
+  event:
+    container:
+      item: { card: { min: 0, max: 3 } }
+  robot:
+    membership:
+      member: { card: { min: 0, max: 2 } }
+    interaction:
+      actor: { card: { min: 0, max: 2 } }
+structs:
+  player-stats:
+    fields:
+      - { name: nickname, type: string, optional: true }
+      - { name: wins, type: integer }
+functions:
+  find-events:
+    parameters:
+      - { name: event, type: event }
+    returns:
+      stream: [event]
+    body:
+      typeql: |-
+        match
+          $event isa event;
+        return { $event };

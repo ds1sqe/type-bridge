@@ -77,7 +77,7 @@ fn py_value_to_json(value: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
 ///
 /// Generates TypeQL query strings from entity/relation type names
 /// and attribute specifications. No database connection required.
-#[pyclass]
+#[pyclass(name = "_QueryCrudQueryBuilder", module = "type_bridge_core")]
 pub struct CrudQueryBuilder {
     compiler: QueryCompiler,
 }

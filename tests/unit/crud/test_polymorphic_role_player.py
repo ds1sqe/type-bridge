@@ -6,7 +6,7 @@ player is resolved to its actual concrete type, not just the first type in
 the union.
 """
 
-from type_bridge import Entity, Flag, Key, Relation, Role, String, TypeFlags
+from tests.utils.handwritten import Entity, Flag, Key, Relation, Role, String, TypeFlags
 from type_bridge.crud.utils import (
     build_role_player_fetch_items,
     extract_role_players_from_results,

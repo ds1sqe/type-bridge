@@ -3,10 +3,10 @@
 from abc import abstractmethod
 from typing import Any, ClassVar, Self
 
-from type_bridge.attribute.base import Attribute
+from type_bridge.attribute.base import _QueryAttribute
 
 
-class NumericAttribute(Attribute):
+class NumericAttribute(_QueryAttribute):
     """Base class for numeric attribute types with arithmetic operators.
 
     This provides shared implementation for arithmetic operations

@@ -5,6 +5,10 @@ use std::collections::BTreeSet;
 
 use type_bridge_orm::*;
 
+#[path = "support/internal.rs"]
+mod internal;
+use internal::*;
+
 fn attribute(
     field: &str,
     schema: &str,
@@ -28,9 +32,19 @@ fn registry() -> DescriptorRegistry {
     let registry = DescriptorRegistry::new();
     registry
         .register_entity(EntityDescriptor {
+            type_name: "actor".into(),
+            is_abstract: true,
+            parent_type: None,
+            owned_attributes: vec![],
+            doc: None,
+            meta: Default::default(),
+        })
+        .unwrap();
+    registry
+        .register_entity(EntityDescriptor {
             type_name: "person".into(),
             is_abstract: false,
-            parent_type: None,
+            parent_type: Some("actor".into()),
             owned_attributes: vec![
                 attribute(
                     "name",
@@ -137,8 +151,8 @@ fn binding(registry: &DescriptorRegistry, id: u16, name: &str) -> MatchBinding {
         id: BindingId::new(id),
         descriptor: registry.descriptor_id(name).unwrap(),
         thing_kind: match descriptor {
-            type_bridge_orm::descriptor::TypeDescriptorRef::Entity(_) => ThingKind::Entity,
-            type_bridge_orm::descriptor::TypeDescriptorRef::Relation(_) => ThingKind::Relation,
+            type_bridge_orm::_descriptor::TypeDescriptorRef::Entity(_) => ThingKind::Entity,
+            type_bridge_orm::_descriptor::TypeDescriptorRef::Relation(_) => ThingKind::Relation,
         },
         match_mode: MatchMode::Exact,
     }
@@ -357,6 +371,57 @@ fn role_player_or_scope_and_positive_connectivity_are_enforced() {
         "incompatible_role_player"
     );
 
+    let mut actor_subtypes = binding(&registry, 0, "actor");
+    actor_subtypes.match_mode = MatchMode::Subtypes;
+    let mut request = fetch_request(
+        &registry,
+        vec![actor_subtypes, employment.clone()],
+        Some(MatchExpr::RoleEdge {
+            id: RoleEdgeId::new(0),
+            relation: BindingId::new(1),
+            role: employee_role.clone(),
+            player: BindingId::new(0),
+        }),
+        vec![one(0), one(1)],
+    );
+    if let MatchOperation::FetchRows {
+        window,
+        cardinality,
+        ..
+    } = &mut request.operation
+    {
+        window.limit = 1;
+        *cardinality = RowCardinality::ExactlyOne;
+    }
+    request
+        .validate(&registry)
+        .expect("subtype binding with a concrete role-player overlap validates");
+
+    let mut request = fetch_request(
+        &registry,
+        vec![binding(&registry, 0, "actor"), employment.clone()],
+        Some(MatchExpr::RoleEdge {
+            id: RoleEdgeId::new(0),
+            relation: BindingId::new(1),
+            role: employee_role.clone(),
+            player: BindingId::new(0),
+        }),
+        vec![one(0), one(1)],
+    );
+    if let MatchOperation::FetchRows {
+        window,
+        cardinality,
+        ..
+    } = &mut request.operation
+    {
+        window.limit = 1;
+        *cardinality = RowCardinality::ExactlyOne;
+    }
+    assert_eq!(
+        code(request.validate(&registry)),
+        "incompatible_role_player"
+    );
+
     let partial_or = MatchExpr::Or {
         expressions: vec![
             MatchExpr::FieldValue {
@@ -540,5 +605,95 @@ fn shape_page_order_and_stable_key_rules_are_operation_specific() {
     assert_eq!(
         code(page.validate(&registry)),
         "singular_non_root_page_slot"
+    );
+}
+
+#[test]
+fn field_grouped_reduction_requires_an_attached_owner_qualified_field() {
+    let registry = registry();
+    let person = binding(&registry, 0, "person");
+    let request = |group: BoundFieldId| {
+        MatchRequest::v1(
+            MatchPlan {
+                bindings: vec![person.clone()],
+                predicate: None,
+                allowed_cross_joins: BTreeSet::new(),
+            },
+            MatchOperation::ReduceByField {
+                root: BindingId::new(0),
+                group,
+                reducers: vec![ReduceTerm {
+                    reduction: Reduction::Count,
+                    input: None,
+                }],
+            },
+        )
+    };
+
+    let valid = request(field(&registry, 0, "person", "aliases"))
+        .validate(&registry)
+        .unwrap();
+    assert!(valid.capabilities().contains(Capability::TypedReduction));
+
+    assert_eq!(
+        code(request(field(&registry, 0, "company", "name")).validate(&registry)),
+        "cross_owner_field"
+    );
+    assert_eq!(
+        code(
+            request(BoundFieldId::new(
+                BindingId::new(0),
+                FieldId::new(registry.descriptor_id("person").unwrap(), "missing"),
+            ))
+            .validate(&registry),
+        ),
+        "unknown_field"
+    );
+    assert_eq!(
+        code(request(field(&registry, 7, "person", "age")).validate(&registry)),
+        "unknown_binding"
+    );
+}
+
+#[test]
+fn tuple_field_grouped_reduction_requires_two_to_sixteen_distinct_fields() {
+    let registry = registry();
+    let person = binding(&registry, 0, "person");
+    let request = |groups: Vec<BoundFieldId>| {
+        MatchRequest::v1(
+            MatchPlan {
+                bindings: vec![person.clone()],
+                predicate: None,
+                allowed_cross_joins: BTreeSet::new(),
+            },
+            MatchOperation::ReduceByFields {
+                root: BindingId::new(0),
+                groups,
+                reducers: vec![ReduceTerm {
+                    reduction: Reduction::Count,
+                    input: None,
+                }],
+            },
+        )
+    };
+
+    let age = field(&registry, 0, "person", "age");
+    let active = field(&registry, 0, "person", "active");
+    let valid = request(vec![age.clone(), active])
+        .validate(&registry)
+        .unwrap();
+    assert!(valid.capabilities().contains(Capability::TypedReduction));
+
+    assert_eq!(
+        code(request(vec![age.clone()]).validate(&registry)),
+        "field_group_tuple_too_short"
+    );
+    assert_eq!(
+        code(request(vec![age.clone(), age.clone()]).validate(&registry)),
+        "duplicate_field_group"
+    );
+    assert_eq!(
+        code(request(vec![age; MAX_SELECTED_SLOTS + 1]).validate(&registry)),
+        "field_group_tuple_cap_exceeded"
     );
 }

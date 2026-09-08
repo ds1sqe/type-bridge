@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from type_bridge import (
+from tests.utils.handwritten import (
     Boolean,
     Card,
     DateTime,

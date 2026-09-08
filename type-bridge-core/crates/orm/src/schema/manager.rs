@@ -2,9 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::entity::TypeBridgeEntity;
+use crate::_entity::TypeBridgeEntity;
+use crate::_relation::TypeBridgeRelation;
 use crate::error::Result;
-use crate::relation::TypeBridgeRelation;
 use crate::session::backend::TxType;
 use crate::session::{Database, require_legacy_writer_open_in_transaction};
 
@@ -22,6 +22,9 @@ fn meta_map(pairs: &[(&'static str, &'static str)]) -> BTreeMap<String, String> 
 /// Manages schema registration, generation, and synchronization.
 ///
 /// # Example
+///
+/// This example is ignored because it requires a live TypeDB service and
+/// generated schema types supplied by the consuming package.
 ///
 /// ```ignore
 /// let mut schema = SchemaManager::new(&db);
@@ -174,6 +177,9 @@ impl<'db> SchemaManager<'db> {
     ///
     /// # Example
     ///
+    /// This example is ignored because schema introspection requires a live
+    /// TypeDB service and generated desired-schema registrations.
+    ///
     /// ```ignore
     /// let schema = SchemaManager::new(&db);
     /// let live = schema.introspect().await?;
@@ -292,7 +298,7 @@ impl<'db> SchemaManager<'db> {
                     let value_type = known_attrs
                         .get(attr_name)
                         .map(|a| a.value_type)
-                        .unwrap_or(crate::attribute::ValueType::String);
+                        .unwrap_or(crate::_attribute::ValueType::String);
                     entries.push(OwnedAttributeEntry {
                         attr_name: attr_name.to_string(),
                         value_type,
@@ -376,8 +382,8 @@ impl<'db> SchemaManager<'db> {
 }
 
 /// Parse a value type string from TypeDB introspection into our enum.
-fn parse_value_type(s: &str) -> Option<crate::attribute::ValueType> {
-    use crate::attribute::ValueType;
+fn parse_value_type(s: &str) -> Option<crate::_attribute::ValueType> {
+    use crate::_attribute::ValueType;
     match s {
         "string" => Some(ValueType::String),
         "long" => Some(ValueType::Long),

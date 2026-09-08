@@ -8,5 +8,9 @@
     "strict": true,
     "target": "ES2022"
   },
-  "include": ["typescript/**/*.ts"]
+  "files": [
+    "typescript/public.ts",
+    "typescript/query-v2.ts",
+    "typescript/runtime-projection.ts"
+  ]
 }

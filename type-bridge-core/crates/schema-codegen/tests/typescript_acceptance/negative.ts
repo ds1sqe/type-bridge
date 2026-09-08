@@ -1,10 +1,12 @@
 import {
+  Actor,
   Container,
   Employment,
   Event,
   Identifier,
   Membership,
   Person,
+  Robot,
   Score,
   ValBool,
   ValConstrained,
@@ -14,7 +16,11 @@ import {
   ValDecimal,
   ValDouble,
   ValDuration,
+  QuerySession,
+  aggregate,
 } from "./generated_v2/src/index.js";
+import { Person as ForeignPerson } from "./generated_foreign/src/index.js";
+import type { RustDatabase } from "@type-bridge/node";
 
 const identifier = Identifier.create("person-1");
 const person = (value: Identifier): Person => Person.create({
@@ -32,6 +38,15 @@ const person = (value: Identifier): Person => Person.create({
 const personReference = Person.reference("person-iid", { identifier });
 const eventReference = Event.reference("event-iid", {});
 declare const exactPersonManager: ReturnType<typeof Person.manager>;
+declare const maybeIdentifier: string | undefined;
+declare const database: RustDatabase;
+const querySession = new QuerySession(database);
+const personVar = querySession.var(Person);
+const eventVar = querySession.var(Event);
+const employmentVar = querySession.var(Employment);
+const exactActorVar = querySession.exact(Actor);
+const exactRobotVar = querySession.exact(Robot);
+const subtypeRobotVar = querySession.subtypes(Robot);
 
 // @ts-expect-error subject is required
 Event.create({});
@@ -59,3 +74,39 @@ identifier.iid = "replacement-iid";
 Person.manager({});
 // @ts-expect-error an exact person manager cannot insert an event
 exactPersonManager.insert(Event.create({ subject: person(identifier) }));
+// @ts-expect-error undefined filter values would be omitted by JSON serialization
+exactPersonManager.filter({ identifier: maybeIdentifier });
+// @ts-expect-error field tokens retain their exact generated owner
+eventVar.field(Person.identifier);
+// @ts-expect-error comparisons retain the exact generated attribute wrapper
+personVar.field(Person.identifier).eq(Score.create(3n));
+// @ts-expect-error generated relation roles retain their accepted player union
+employmentVar.role(Employment.employee).connects(eventVar);
+// @ts-expect-error an exact abstract ancestor is not itself an accepted player
+eventVar.role(Event.subject).connects(exactActorVar);
+// @ts-expect-error an unrelated concrete subtype remains rejected
+eventVar.role(Event.subject).connects(exactRobotVar);
+// @ts-expect-error a subtype root whose closure has no accepted player remains rejected
+eventVar.role(Event.subject).connects(subtypeRobotVar);
+// @ts-expect-error generated queries require at least one selection
+querySession.query();
+// @ts-expect-error generated named queries require at least one selection
+querySession.queryNamed({});
+// @ts-expect-error generated query tokens are nominal to one emitted package
+querySession.var(ForeignPerson);
+// @ts-expect-error generated field tokens are nominal to one emitted package
+personVar.field(ForeignPerson.identifier);
+// @ts-expect-error generated positional query typing is capped at sixteen selections
+querySession.query(personVar, personVar, personVar, personVar, personVar, personVar, personVar, personVar, personVar, personVar, personVar, personVar, personVar, personVar, personVar, personVar, personVar);
+// @ts-expect-error aggregate fields must carry a generated long or double value
+aggregate.mean(personVar.field(Person.identifier));
+// @ts-expect-error generated aggregate terms are non-empty
+querySession.query(personVar).aggregate(personVar, [] as const);
+// @ts-expect-error generated aggregate typing is capped at sixteen terms
+querySession.query(personVar).aggregate(personVar, [
+  aggregate.count(), aggregate.count(), aggregate.count(), aggregate.count(),
+  aggregate.count(), aggregate.count(), aggregate.count(), aggregate.count(),
+  aggregate.count(), aggregate.count(), aggregate.count(), aggregate.count(),
+  aggregate.count(), aggregate.count(), aggregate.count(), aggregate.count(),
+  aggregate.count(),
+] as const);

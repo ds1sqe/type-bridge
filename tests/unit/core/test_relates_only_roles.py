@@ -4,9 +4,9 @@ from typing import assert_type
 
 import pytest
 
-from type_bridge import Card, Entity, Relation, Role, TypeFlags
-from type_bridge.fields.role import RoleRef
-from type_bridge.migration.info import SchemaInfo
+from tests.utils.handwritten import Card, Entity, Relation, Role, RoleRef, TypeFlags
+from type_bridge._rust_runtime import generate_define_block
+from type_bridge.migration._lower import _schema_info_for_models
 
 
 class RelatesOnlyPerson(Entity):
@@ -33,11 +33,9 @@ def test_bare_and_explicit_relates_only_roles_register_without_players() -> None
 
 
 def test_relates_only_roles_emit_empty_player_type_names() -> None:
-    schema = SchemaInfo()
-    schema.entities.append(RelatesOnlyPerson)
-    schema.relations.append(RelatesOnlyRelation)
-
-    roles = schema.to_rust_schema_info()["relations"]["relates-only-rel"]["roles"]
+    roles = _schema_info_for_models([RelatesOnlyPerson, RelatesOnlyRelation])["relations"][
+        "relates-only-rel"
+    ]["roles"]
 
     base = {
         "cardinality": None,
@@ -105,14 +103,10 @@ def test_plays_cardinality_on_relates_only_role_is_rejected() -> None:
 
 
 def test_schema_to_typeql_mixes_relates_only_and_bound_roles() -> None:
-    core = pytest.importorskip("type_bridge_core")
-    if not hasattr(core, "generate_define_block"):
-        pytest.skip("type_bridge_core extension does not expose generate_define_block")
-    schema = SchemaInfo()
-    schema.entities.append(RelatesOnlyPerson)
-    schema.relations.append(RelatesOnlyRelation)
-
-    typeql = schema.to_typeql()
+    pytest.importorskip("type_bridge_core")
+    typeql = generate_define_block(
+        _schema_info_for_models([RelatesOnlyPerson, RelatesOnlyRelation])
+    )
 
     assert "    relates definition," in typeql
     assert "    relates allowed_value," in typeql

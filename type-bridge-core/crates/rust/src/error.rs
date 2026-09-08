@@ -1,9 +1,12 @@
 //! Error handling for the public TypeBridge client.
 
+use std::collections::BTreeMap;
 use std::error::Error as StdError;
 use std::fmt;
 
-use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticPathSegment};
+use type_bridge_contract::diagnostic::{
+    Diagnostic, DiagnosticCategory, DiagnosticDetailValue, DiagnosticPathSegment,
+};
 use type_bridge_orm::match_request::{MatchError, MatchErrorCategory};
 
 /// Stable public classification for TypeBridge client failures.
@@ -30,6 +33,8 @@ pub enum ErrorCategory {
     ResourceLimit,
     /// A requested entity or schema element was not found.
     NotFound,
+    /// A generated-model lifecycle hook rejected or failed an operation.
+    Lifecycle,
     /// An underlying database operation failed outside a narrower category.
     Database,
     /// A client invariant failed outside the stable categories above.
@@ -51,6 +56,7 @@ impl ErrorCategory {
             Self::Capability => "capability",
             Self::ResourceLimit => "resource_limit",
             Self::NotFound => "not_found",
+            Self::Lifecycle => "lifecycle",
             Self::Database => "database",
             Self::Other => "other",
         }
@@ -72,6 +78,54 @@ pub enum ModelValidationPhase {
     Hydration,
 }
 
+/// One typed value from a structured engine or remote diagnostic.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ErrorDetail {
+    /// Textual context.
+    Text(String),
+    /// A signed integer.
+    Long(i64),
+    /// A boolean fact.
+    Boolean(bool),
+    /// An ordered list of text values.
+    TextList(Vec<String>),
+}
+
+/// One typed segment from a structured engine or remote diagnostic path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ErrorPathSegment {
+    /// A named field in the rejected contract.
+    Field(String),
+    /// An indexed member in the rejected contract.
+    Index(u64),
+    /// A schema or query identifier.
+    Identifier(String),
+}
+
+/// Complete typed metadata supplied by one structured engine or remote
+/// diagnostic.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ErrorDiagnostic {
+    path: Vec<ErrorPathSegment>,
+    details: BTreeMap<String, ErrorDetail>,
+}
+
+impl ErrorDiagnostic {
+    /// Return the typed diagnostic path.
+    #[must_use]
+    pub fn path(&self) -> &[ErrorPathSegment] {
+        &self.path
+    }
+
+    /// Return the deterministic typed detail map.
+    #[must_use]
+    pub fn details(&self) -> &BTreeMap<String, ErrorDetail> {
+        &self.details
+    }
+}
+
 /// Primary error type for the TypeBridge client SDK.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -79,10 +133,15 @@ pub enum Error {
     /// Generated-model evidence did not match the installed schema projection.
     #[error("Model validation failed during {phase:?}: {message}")]
     ModelValidation {
+        /// Validation stage at which the evidence failed.
         phase: ModelValidationPhase,
+        /// Stable language-neutral failure code.
         code: String,
+        /// Canonical path to the rejected value or model evidence.
         path: Vec<String>,
+        /// Human-readable failure summary.
         message: String,
+        /// Optional underlying error that caused the validation failure.
         #[source]
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     },
@@ -91,11 +150,19 @@ pub enum Error {
     /// client-owned categories, codes, and paths.
     #[error("{category} error [{code}]: {message}")]
     Classified {
+        /// Stable public error category.
         category: ErrorCategory,
+        /// Model-validation phase when applicable to this failure.
         phase: Option<ModelValidationPhase>,
+        /// Stable language-neutral failure code.
         code: String,
+        /// Canonical flattened path to the rejected contract member.
         path: Vec<String>,
+        /// Typed engine or remote diagnostic metadata, when supplied.
+        diagnostic: Option<Box<ErrorDiagnostic>>,
+        /// Human-readable failure summary.
         message: String,
+        /// Optional underlying error that caused the classified failure.
         #[source]
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     },
@@ -103,7 +170,9 @@ pub enum Error {
     /// Schema verification or installation failed.
     #[error("Schema verification failed: {message}")]
     SchemaVerification {
+        /// Human-readable schema verification failure summary.
         message: String,
+        /// Optional underlying schema decoding or installation error.
         #[source]
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     },
@@ -111,7 +180,9 @@ pub enum Error {
     /// Connection to the database failed.
     #[error("Connection error: {message}")]
     Connection {
+        /// Human-readable connection failure summary.
         message: String,
+        /// Optional underlying transport or provider error.
         #[source]
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     },
@@ -119,7 +190,9 @@ pub enum Error {
     /// Database query or operation failed.
     #[error("Query execution error: {message}")]
     QueryExecution {
+        /// Human-readable query execution failure summary.
         message: String,
+        /// Optional underlying provider or remote execution error.
         #[source]
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     },
@@ -127,7 +200,9 @@ pub enum Error {
     /// Database transaction failed.
     #[error("Transaction error: {message}")]
     Transaction {
+        /// Human-readable transaction failure summary.
         message: String,
+        /// Optional underlying provider transaction error.
         #[source]
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     },
@@ -135,7 +210,9 @@ pub enum Error {
     /// Requested schema element or database entity was not found.
     #[error("Entity not found: {message}")]
     NotFound {
+        /// Human-readable description of the missing resource.
         message: String,
+        /// Optional underlying lookup error.
         #[source]
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     },
@@ -143,7 +220,9 @@ pub enum Error {
     /// Underlying database error.
     #[error("Database error: {message}")]
     Database {
+        /// Human-readable database failure summary.
         message: String,
+        /// Optional underlying database driver error.
         #[source]
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     },
@@ -151,7 +230,9 @@ pub enum Error {
     /// Client request or execution error.
     #[error("Client error: {message}")]
     Other {
+        /// Human-readable client failure summary.
         message: String,
+        /// Optional underlying error outside the narrower variants.
         #[source]
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     },
@@ -183,11 +264,24 @@ impl Error {
         message: impl Into<String>,
         source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     ) -> Self {
+        Self::classified_with_diagnostic(category, phase, code, path, None, message, source)
+    }
+
+    fn classified_with_diagnostic(
+        category: ErrorCategory,
+        phase: Option<ModelValidationPhase>,
+        code: impl Into<String>,
+        path: Vec<String>,
+        diagnostic: Option<ErrorDiagnostic>,
+        message: impl Into<String>,
+        source: Option<Box<dyn StdError + Send + Sync + 'static>>,
+    ) -> Self {
         Self::Classified {
             category,
             phase,
             code: code.into(),
             path,
+            diagnostic: diagnostic.map(Box::new),
             message: message.into(),
             source,
         }
@@ -262,8 +356,59 @@ impl Error {
                 DiagnosticPathSegment::Identifier(value) => value.clone(),
             })
             .collect();
+        let diagnostic_path = error
+            .path()
+            .segments()
+            .iter()
+            .map(|segment| match segment {
+                DiagnosticPathSegment::Field(value) => ErrorPathSegment::Field(value.clone()),
+                DiagnosticPathSegment::Index(value) => ErrorPathSegment::Index(*value),
+                DiagnosticPathSegment::Identifier(value) => {
+                    ErrorPathSegment::Identifier(value.clone())
+                }
+            })
+            .collect();
+        let details = error
+            .details()
+            .iter()
+            .map(|(key, value)| {
+                let value = match value {
+                    DiagnosticDetailValue::Text(value) => ErrorDetail::Text(value.clone()),
+                    DiagnosticDetailValue::Long(value) => ErrorDetail::Long(*value),
+                    DiagnosticDetailValue::Boolean(value) => ErrorDetail::Boolean(*value),
+                    DiagnosticDetailValue::TextList(value) => ErrorDetail::TextList(value.clone()),
+                };
+                (key.clone(), value)
+            })
+            .collect();
         let message = error.message().to_owned();
-        Self::classified(category, None, code, path, message, Some(Box::new(error)))
+        Self::classified_with_diagnostic(
+            category,
+            None,
+            code,
+            path,
+            Some(ErrorDiagnostic {
+                path: diagnostic_path,
+                details,
+            }),
+            message,
+            Some(Box::new(error)),
+        )
+    }
+
+    pub(crate) fn from_hook(error: crate::hooks::HookError) -> Self {
+        let code = match error {
+            crate::hooks::HookError::Rejected { .. } => "lifecycle_hook_rejected",
+            crate::hooks::HookError::Internal { .. } => "lifecycle_hook_failed",
+        };
+        Self::classified(
+            ErrorCategory::Lifecycle,
+            None,
+            code,
+            Vec::new(),
+            error.to_string(),
+            Some(Box::new(error)),
+        )
     }
 
     #[allow(dead_code)]
@@ -361,6 +506,29 @@ impl Error {
         }
     }
 
+    /// Return the typed diagnostic path, when the source supplied one.
+    ///
+    /// [`Self::path`] remains available as the compatibility-oriented textual
+    /// projection of the same path.
+    #[must_use]
+    pub fn diagnostic_path(&self) -> Option<&[ErrorPathSegment]> {
+        match self {
+            Self::Classified { diagnostic, .. } => diagnostic.as_deref().map(ErrorDiagnostic::path),
+            _ => None,
+        }
+    }
+
+    /// Return deterministic typed diagnostic details, when available.
+    #[must_use]
+    pub fn details(&self) -> Option<&BTreeMap<String, ErrorDetail>> {
+        match self {
+            Self::Classified { diagnostic, .. } => {
+                diagnostic.as_deref().map(ErrorDiagnostic::details)
+            }
+            _ => None,
+        }
+    }
+
     /// Return the model-validation phase, when applicable.
     #[must_use]
     pub const fn model_validation_phase(&self) -> Option<ModelValidationPhase> {
@@ -392,6 +560,7 @@ mod tests {
             (ErrorCategory::Capability, "capability"),
             (ErrorCategory::ResourceLimit, "resource_limit"),
             (ErrorCategory::NotFound, "not_found"),
+            (ErrorCategory::Lifecycle, "lifecycle"),
             (ErrorCategory::Database, "database"),
             (ErrorCategory::Other, "other"),
         ];

@@ -13,7 +13,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::decimal::parse_decimal;
 use crate::diagnostic::{Diagnostic, DiagnosticCategory};
-use crate::id::{AttributeId, RoleId, TypeId, TypeKind};
+use crate::id::{AttributeId, RoleId, TypeId, TypeKind, is_canonical_thing_iid};
 use crate::limits::{MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES, StructuralLimits};
 use crate::migration_assertion::BindingId;
 use crate::temporal::{CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration};
@@ -26,6 +26,7 @@ pub(crate) const CAP_PLAN_V2: &str = "query.plan.v2";
 pub(crate) const CAP_DISJUNCTION: &str = "query.pattern.disjunction";
 pub(crate) const CAP_STRING_OPERATORS: &str = "query.pattern.string-operators";
 pub(crate) const CAP_LINKS_SUBTYPES: &str = "query.pattern.links-subtypes";
+pub(crate) const CAP_IID: &str = "query.pattern.iid";
 pub(crate) const CAP_CROSS_JOIN: &str = "query.topology.cross-join";
 pub(crate) const CAP_OUTPUT_NAMED: &str = "query.output.named";
 pub(crate) const CAP_OUTPUT_COLLECT: &str = "query.output.collect";
@@ -822,6 +823,21 @@ pub enum QueryPatternV2 {
         comparator: QueryComparatorV2,
         /// Right field.
         right: QueryFieldV2,
+    },
+    /// Require one descriptor-qualified field to be present or absent.
+    FieldPresence {
+        /// Descriptor-qualified field.
+        field: QueryFieldV2,
+        /// `true` requires at least one value; `false` requires none.
+        present: bool,
+    },
+    /// Match one thing binding by its canonical provider IID.
+    BindingIid {
+        /// Thing binding.
+        #[serde(deserialize_with = "deserialize_binding")]
+        binding: BindingId,
+        /// Canonical TypeDB thing IID.
+        iid: String,
     },
     /// Require one descriptor-qualified role edge.
     RoleEdge {
@@ -1741,6 +1757,10 @@ fn validate_pattern_authority(
             validate_predicate_field_authority(left, hydration)?;
             validate_predicate_field_authority(right, hydration)
         }
+        QueryPatternV2::FieldPresence { field, .. } => {
+            validate_predicate_field_authority(field, hydration)
+        }
+        QueryPatternV2::BindingIid { .. } => Ok(()),
         QueryPatternV2::Reachable { .. } => Ok(()),
     }
 }
@@ -2017,6 +2037,18 @@ fn validate_pattern(
                     DiagnosticCategory::InvalidContract,
                     "query_plan_v2_boolean_operator",
                     "boolean fields admit only equality and inequality",
+                ));
+            }
+            Ok(())
+        }
+        QueryPatternV2::FieldPresence { field, .. } => check_field(field, binding_count),
+        QueryPatternV2::BindingIid { binding, iid } => {
+            check_binding(*binding, binding_count)?;
+            if !is_canonical_thing_iid(iid) {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_plan_v2_invalid_iid",
+                    "IID predicates require a canonical TypeDB thing IID",
                 ));
             }
             Ok(())
@@ -2719,6 +2751,16 @@ fn add_pattern_capabilities(
         }
         QueryPatternV2::FieldComparison { .. } => {
             insert_capability(capabilities, super::CAP_VALUE)?;
+        }
+        QueryPatternV2::FieldPresence { .. } => {
+            insert_capability(capabilities, super::CAP_HAS)?;
+            // Both absence and existential presence lower through closed
+            // negation patterns so cardinality-many values cannot multiply an
+            // owner row.
+            insert_capability(capabilities, super::CAP_NEGATION)?;
+        }
+        QueryPatternV2::BindingIid { .. } => {
+            insert_capability(capabilities, CAP_IID)?;
         }
         QueryPatternV2::RoleEdge {
             include_relation_subtypes,

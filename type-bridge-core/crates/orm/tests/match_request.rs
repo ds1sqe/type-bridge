@@ -4,8 +4,12 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
-use type_bridge_orm::registry::DescriptorFingerprintRoot;
+use type_bridge_orm::_registry::DescriptorFingerprintRoot;
 use type_bridge_orm::*;
+
+#[path = "support/internal.rs"]
+mod internal;
+use internal::*;
 
 fn attribute(
     field_name: &str,
@@ -406,6 +410,54 @@ fn fixture_requests(registry: &DescriptorRegistry) -> Vec<(&'static str, MatchRe
                 bare_plan.clone(),
                 MatchOperation::CountBy {
                     root: BindingId::new(0),
+                },
+            ),
+        ),
+        (
+            "reduce-by.json",
+            MatchRequest::v1(
+                bare_plan.clone(),
+                MatchOperation::ReduceBy {
+                    root: BindingId::new(0),
+                    group: Some(BindingId::new(2)),
+                    reducers: vec![
+                        ReduceTerm {
+                            reduction: Reduction::Count,
+                            input: None,
+                        },
+                        ReduceTerm {
+                            reduction: Reduction::Sum,
+                            input: Some(field(0, &ids.person_age)),
+                        },
+                    ],
+                },
+            ),
+        ),
+        (
+            "reduce-by-field.json",
+            MatchRequest::v1(
+                bare_plan.clone(),
+                MatchOperation::ReduceByField {
+                    root: BindingId::new(0),
+                    group: field(0, &ids.person_age),
+                    reducers: vec![ReduceTerm {
+                        reduction: Reduction::Count,
+                        input: None,
+                    }],
+                },
+            ),
+        ),
+        (
+            "reduce-by-fields.json",
+            MatchRequest::v1(
+                bare_plan.clone(),
+                MatchOperation::ReduceByFields {
+                    root: BindingId::new(0),
+                    groups: vec![field(0, &ids.person_name), field(0, &ids.person_age)],
+                    reducers: vec![ReduceTerm {
+                        reduction: Reduction::Count,
+                        input: None,
+                    }],
                 },
             ),
         ),

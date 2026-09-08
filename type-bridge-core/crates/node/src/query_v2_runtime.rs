@@ -14,7 +14,9 @@ use std::sync::Arc;
 use napi::NapiRaw;
 use napi::bindgen_prelude::{AsyncTask, BigInt, Buffer, Env, FromNapiValue, Unknown};
 use napi_derive::napi;
+use type_bridge_contract::codec::{from_canonical_json, to_canonical_json};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::fingerprint::Fingerprint;
 use type_bridge_contract::limits::{
     MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES, MAX_QUERY_INVOCATION_BYTES,
     MAX_REMOTE_ENVELOPE_BYTES,
@@ -23,11 +25,16 @@ use type_bridge_contract::query_remote::{
     RemoteLimits, checked_remote_deadline, checked_remote_limit, remote_deadline_limit,
     remote_limit_invalid,
 };
+use type_bridge_contract::schema::encode_declared_schema;
 use type_bridge_orm::query_v2_prepared::{
     ClaimedRemoteReply, PendingRemoteQuery, QueryAuthority, decode_remote_capabilities,
     execute_prepared_local, prepare_remote_query, query_v2_host_string_unicode_error,
 };
 use type_bridge_orm::session::backend::{BoundedAnswerLimits, QueryV2AnswerLimits};
+use type_bridge_schema::{
+    MAX_SCHEMA_AUTHORITY_BYTES, SchemaAuthorityError, SchemaAuthorityErrorCode,
+    decode_schema_authority, schema_authority_capability_vocabulary,
+};
 
 use crate::NodeRustDatabase;
 
@@ -263,6 +270,14 @@ fn semantic_profile_id_too_large() -> Diagnostic {
     .with_detail("identifier_kind", "SemanticProfileId")
 }
 
+fn schema_authority_too_large() -> Diagnostic {
+    binding_diagnostic(
+        DiagnosticCategory::ResourceLimit,
+        "canonical_json_too_large",
+        "canonical JSON exceeds the byte ceiling",
+    )
+}
+
 /// Validate a raw addon byte argument before napi-rs constructs a Rust slice.
 ///
 /// A Node Buffer can be backed by SharedArrayBuffer. Another Worker may then
@@ -411,6 +426,110 @@ pub fn query_v2_authority(
     Ok(NodeQueryV2Authority {
         authority: Arc::new(authority),
     })
+}
+
+fn schema_authority_diagnostic(error: &SchemaAuthorityError) -> Diagnostic {
+    if let Some(contract) = error.contract() {
+        return contract.clone();
+    }
+    let (category, code, message) = match error.code() {
+        SchemaAuthorityErrorCode::Contract => (
+            DiagnosticCategory::InvalidContract,
+            "generated_schema_authority_invalid",
+            "generated schema authority is not a valid canonical contract",
+        ),
+        SchemaAuthorityErrorCode::Schema => (
+            DiagnosticCategory::InvalidContract,
+            "generated_schema_authority_schema_invalid",
+            "generated schema authority cannot reconstruct its declared schema",
+        ),
+        SchemaAuthorityErrorCode::UnsupportedVersion => (
+            DiagnosticCategory::InvalidContract,
+            "generated_schema_authority_unsupported_version",
+            "generated schema authority uses an unsupported version",
+        ),
+        SchemaAuthorityErrorCode::UnsupportedCapability => (
+            DiagnosticCategory::UnsupportedCapability,
+            "generated_schema_authority_unsupported_capability",
+            "generated schema authority requires an unsupported capability",
+        ),
+        SchemaAuthorityErrorCode::ResourceLimit => (
+            DiagnosticCategory::ResourceLimit,
+            "generated_schema_authority_resource_limit",
+            "generated schema authority exceeds a structural limit",
+        ),
+        SchemaAuthorityErrorCode::IntegrityMismatch => (
+            DiagnosticCategory::Integrity,
+            "generated_schema_authority_integrity_mismatch",
+            "generated schema authority contains stale or mismatched evidence",
+        ),
+    };
+    binding_diagnostic(category, code, message)
+}
+
+fn build_query_v2_authority_from_schema_authority(
+    schema_authority: &[u8],
+    semantic_fingerprint: &[u8],
+) -> Result<NodeQueryV2Authority, Diagnostic> {
+    let verified =
+        decode_schema_authority(schema_authority, &schema_authority_capability_vocabulary())
+            .map_err(|error| schema_authority_diagnostic(&error))?;
+    let expected: Fingerprint = from_canonical_json(semantic_fingerprint)?;
+    if &expected
+        != verified
+            .resolved_schema()
+            .semantic_fingerprint()
+            .as_fingerprint()
+    {
+        return Err(binding_diagnostic(
+            DiagnosticCategory::Integrity,
+            "generated_schema_authority_semantic_mismatch",
+            "generated schema authority does not belong to the installed runtime projection",
+        ));
+    }
+    if to_canonical_json(verified.resolved_schema().semantic_fingerprint())? != semantic_fingerprint
+    {
+        return Err(binding_diagnostic(
+            DiagnosticCategory::InvalidContract,
+            "generated_schema_authority_semantic_noncanonical",
+            "generated semantic fingerprint is not canonical",
+        ));
+    }
+    let declared = encode_declared_schema(verified.declared_schema())?;
+    let authority = QueryAuthority::from_declared_bytes(
+        &declared,
+        verified.managed_scope().id().as_str(),
+        verified.semantic_profile().id().as_str(),
+    )?;
+    Ok(NodeQueryV2Authority {
+        authority: Arc::new(authority),
+    })
+}
+
+/// Verify one generated package's complete schema-authority envelope.
+#[napi(js_name = "queryV2AuthorityFromSchemaAuthority")]
+pub fn query_v2_authority_from_schema_authority(
+    env: Env,
+    schema_authority: Unknown,
+    semantic_fingerprint: Unknown,
+) -> napi::Result<NodeQueryV2Authority> {
+    let schema_authority = bounded_string(
+        &env,
+        schema_authority,
+        MAX_SCHEMA_AUTHORITY_BYTES,
+        schema_authority_too_large,
+    )?;
+    let semantic_fingerprint = bounded_string(
+        &env,
+        semantic_fingerprint,
+        MAX_CANONICAL_BYTES,
+        schema_authority_too_large,
+    )?;
+    build_query_v2_authority_from_schema_authority(
+        schema_authority.as_bytes(),
+        semantic_fingerprint.as_bytes(),
+    )
+    .map_err(|diagnostic| napi_error(&diagnostic))
 }
 
 /// Build a local-only authority for a database with no migration controls.
@@ -612,8 +731,79 @@ pub fn query_v2_prepare_remote(
 
 #[cfg(test)]
 mod tests {
-    use super::bounded_response_snapshot;
+    use super::{bounded_response_snapshot, build_query_v2_authority_from_schema_authority};
+    use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
+    use type_bridge_contract::codec::to_canonical_json;
+    use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
+    use type_bridge_contract::managed_scope::ManagedScopeId;
+    use type_bridge_contract::schema::DocumentId;
+    use type_bridge_schema::{
+        BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SchemaDocumentSet,
+        build_schema_authority, encode_schema_authority, normalize_documents,
+    };
+
+    fn generated_authority_fixture(source: &str) -> (Vec<u8>, Vec<u8>) {
+        let documents = SchemaDocumentSet::parse([(
+            DocumentId::new("node-generated-authority").expect("document"),
+            source,
+        )])
+        .expect("schema parses");
+        let declared = normalize_documents(&documents).expect("schema normalizes");
+        let available: CapabilitySet = BUILTIN_SCHEMA_CAPABILITY_IDS
+            .iter()
+            .map(|id| CapabilityId::new(*id).expect("capability"))
+            .collect();
+        let context = ManagedDeltaContext::new(
+            ManagedScopeId::new("node-generated-authority").expect("scope"),
+            SemanticProfileId::new("typedb-3.12.1/v1").expect("profile"),
+            available,
+        );
+        let authority =
+            build_schema_authority(&declared, declared.required_capabilities(), &context)
+                .expect("authority builds");
+        let semantic =
+            to_canonical_json(authority.resolved_schema().semantic_fingerprint()).unwrap();
+        (encode_schema_authority(&authority), semantic)
+    }
+
+    #[test]
+    fn generated_authority_constructor_verifies_envelope_and_projection_binding() {
+        let (authority, semantic) =
+            generated_authority_fixture("format: typebridge.schema/v2\nentities:\n  person: {}\n");
+        build_query_v2_authority_from_schema_authority(&authority, &semantic)
+            .expect("verified generated authority installs");
+
+        let (_, foreign_semantic) =
+            generated_authority_fixture("format: typebridge.schema/v2\nentities:\n  robot: {}\n");
+        assert_eq!(
+            build_query_v2_authority_from_schema_authority(&authority, &foreign_semantic)
+                .err()
+                .expect("foreign projection fingerprint must fail")
+                .code()
+                .as_str(),
+            "generated_schema_authority_semantic_mismatch",
+        );
+        assert_eq!(
+            build_query_v2_authority_from_schema_authority(b"{", &semantic)
+                .err()
+                .expect("malformed envelope must fail")
+                .code()
+                .as_str(),
+            "malformed_canonical_json",
+        );
+        assert_eq!(
+            build_query_v2_authority_from_schema_authority(
+                &vec![b' '; type_bridge_schema::MAX_SCHEMA_AUTHORITY_BYTES + 1],
+                &semantic,
+            )
+            .err()
+            .expect("oversized envelope must fail")
+            .code()
+            .as_str(),
+            "canonical_json_too_large",
+        );
+    }
 
     #[test]
     fn reply_snapshot_never_exceeds_the_supplied_budget_marker() {

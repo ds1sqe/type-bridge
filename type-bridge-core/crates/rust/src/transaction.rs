@@ -5,13 +5,12 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use type_bridge_contract::id::{TypeId, is_canonical_thing_iid};
-use type_bridge_orm::manager::{DynamicEntityManager, DynamicRelationManager};
+use type_bridge_orm::_descriptor::{EntityDescriptor, RelationDescriptor};
+use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
+use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::session::backend::TxType;
 use type_bridge_orm::session::context::TransactionContext;
-use type_bridge_orm::{
-    DescriptorRegistry, DynamicAttributeMap, DynamicRolePlayerInput, EntityDescriptor,
-    InstalledRuntimeProjection, RelationDescriptor,
-};
+use type_bridge_orm::{DynamicAttributeMap, DynamicRolePlayerInput, InstalledRuntimeProjection};
 
 use crate::__codegen::{CompleteModel, EntityModel, HydrationCapability, RelationModel};
 use crate::entity_codec::{

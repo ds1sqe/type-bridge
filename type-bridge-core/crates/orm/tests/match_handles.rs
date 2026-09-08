@@ -5,6 +5,10 @@ use std::sync::Arc;
 
 use type_bridge_orm::*;
 
+#[path = "support/internal.rs"]
+mod internal;
+use internal::*;
+
 fn attribute(field_name: &str, attr_name: &str, value_type: ValueType) -> OwnedAttributeDescriptor {
     OwnedAttributeDescriptor {
         field_name: field_name.to_owned(),
@@ -519,6 +523,8 @@ fn collect_role_edge_ids(expression: &MatchExpr, ids: &mut Vec<u16>) {
         MatchExpr::Not { expression } => collect_role_edge_ids(expression, ids),
         MatchExpr::FieldValue { .. }
         | MatchExpr::FieldComparison { .. }
+        | MatchExpr::FieldPresence { .. }
+        | MatchExpr::BindingIid { .. }
         | MatchExpr::Reachable { .. } => {}
     }
 }
@@ -548,6 +554,30 @@ fn duplicate_cross_session_and_unattached_handles_are_rejected() {
     );
     assert_match_code(query.add_hidden(person.clone()), "duplicate_binding");
     assert_match_code(query.count_by(&company), "unattached_binding");
+    assert_match_code(
+        query.reduce_by_field(
+            &person,
+            &company.field("name").unwrap(),
+            &[(Reduction::Count, None)],
+        ),
+        "unattached_binding",
+    );
+    assert_match_code(
+        query.reduce_by_field(
+            &person,
+            &foreign_person.field("name").unwrap(),
+            &[(Reduction::Count, None)],
+        ),
+        "cross_session_handle",
+    );
+    assert_match_code(
+        query.reduce_by_field(
+            &person,
+            &person.field("age").unwrap(),
+            &[(Reduction::Sum, Some(&company.field("name").unwrap()))],
+        ),
+        "unattached_binding",
+    );
     assert_match_code(
         query.where_predicate(
             company
@@ -1015,5 +1045,23 @@ fn every_terminal_only_builds_an_unvalidated_request() {
     assert!(matches!(
         query.exists_by(&person).unwrap().operation,
         MatchOperation::ExistsBy { .. }
+    ));
+    assert!(matches!(
+        query
+            .reduce_by(&person, None, &[(Reduction::Count, None)])
+            .unwrap()
+            .operation,
+        MatchOperation::ReduceBy { .. }
+    ));
+    assert!(matches!(
+        query
+            .reduce_by_field(
+                &person,
+                &person.field("age").unwrap(),
+                &[(Reduction::Count, None)],
+            )
+            .unwrap()
+            .operation,
+        MatchOperation::ReduceByField { .. }
     ));
 }

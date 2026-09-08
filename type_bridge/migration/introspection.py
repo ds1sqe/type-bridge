@@ -11,7 +11,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from type_bridge.models import Entity, Relation
+    from type_bridge.models.entity import _QueryEntity as Entity
+    from type_bridge.models.relation import _QueryRelation as Relation
     from type_bridge.session import Database
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ class IntrospectedOwnership:
     owner_name: str
     attribute_name: str
     # Live-introspected schemas carry annotation DTOs serialized by the Rust engine;
-    # older/hand-built paths may still deliver legacy strings (@key, @unique, @card).
+    # Archived hand-built paths may still deliver V1 strings (@key, @unique, @card).
     # Both forms are accepted so downstream comparison is form-agnostic.
     annotations: list[object] = field(default_factory=list)
     doc: str | None = None
@@ -383,7 +384,8 @@ class SchemaIntrospector:
             IntrospectedSchema with info about existing types
         """
         from type_bridge._rust_runtime import introspect_schema
-        from type_bridge.models import Entity, Relation
+        from type_bridge.models.entity import _QueryEntity as Entity
+        from type_bridge.models.relation import _QueryRelation as Relation
 
         schema = IntrospectedSchema()
 

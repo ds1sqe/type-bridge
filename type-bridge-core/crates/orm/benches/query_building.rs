@@ -1,8 +1,8 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
-use type_bridge_orm::attribute::ValueType;
-use type_bridge_orm::codegen::generator::generate_from_typeql;
-use type_bridge_orm::schema::info::*;
+use type_bridge_orm::_attribute::ValueType;
+use type_bridge_orm::_codegen::generator::generate_from_typeql;
+use type_bridge_orm::_schema::info::*;
 
 fn make_schema_info_for_generation(entity_count: usize) -> SchemaInfo {
     let mut info = SchemaInfo::default();

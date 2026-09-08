@@ -98,6 +98,7 @@ impl RemoteReplySigner for RemoteReplySigningKey {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
+/// Stateless Ed25519 verifier for authenticated remote reply digests.
 pub struct Ed25519RemoteReplyVerifier;
 
 impl RemoteReplyVerifier for Ed25519RemoteReplyVerifier {
@@ -1507,16 +1508,24 @@ pub fn preflight_remote_request_versioned(
 pub enum RemoteReplyExpectation {
     /// V1 correlation and shape contract.
     V1 {
+        /// Authenticated ceilings used while decoding the reply.
         limits: RemoteReplyDecodeLimits,
+        /// Request nonce that the reply must echo exactly.
         nonce: String,
+        /// Fingerprint of the prepared plan selected by the request.
         plan: QueryPlanFingerprint,
+        /// Fingerprint of the complete V1 request envelope.
         request: RemoteRequestFingerprint,
     },
     /// V2 correlation, shape, and structured-diagnostic contract.
     V2 {
+        /// Authenticated ceilings used while decoding the V2 reply.
         limits: RemoteReplyDecodeLimitsV2,
+        /// Fingerprint of the prepared plan selected by the request.
         plan: QueryPlanFingerprint,
+        /// Fingerprint of the complete V2 request envelope.
         request: RemoteRequestFingerprintV2,
+        /// Exact request retained for V2 correlation and result-shape checks.
         request_envelope: RemoteQueryRequestV2,
     },
 }

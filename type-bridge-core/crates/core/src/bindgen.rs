@@ -1,7 +1,7 @@
 //! Rust-hosted model generation for all supported language targets.
 //!
 //! This module is the bindgen single source of truth: it derives generation
-//! decisions from a resolved [`TypeSchema`](crate::schema::TypeSchema) and
+//! decisions from a resolved [`TypeSchema`](crate::_schema::TypeSchema) and
 //! renders Python, TypeScript, or Rust source files from the same policy.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::schema::{Cardinality, EntityType, OwnedAttribute, RelationType, RoleSpec, TypeSchema};
+use crate::_schema::{Cardinality, EntityType, OwnedAttribute, RelationType, RoleSpec, TypeSchema};
 
 /// Custom comment annotations keyed by annotation name.
 pub type AnnotationMap = BTreeMap<String, Value>;

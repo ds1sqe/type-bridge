@@ -1,9 +1,9 @@
-"""Cross-language golden for a representative public native-handle request."""
+"""Cross-language golden for a representative retained query request."""
 
 from pathlib import Path
 
 import pytest
-from type_bridge_core import MatchSessionHandle, PyDescriptorRegistry
+from type_bridge_core import MatchSessionHandle, _QueryDescriptorRegistry
 
 GOLDEN = (
     Path(__file__).parents[3]
@@ -17,8 +17,8 @@ GOLDEN = (
 )
 
 
-def _registry() -> PyDescriptorRegistry:
-    registry = PyDescriptorRegistry()
+def _registry() -> _QueryDescriptorRegistry:
+    registry = _QueryDescriptorRegistry()
     for type_name, attr_name in (
         ("person", "person-name"),
         ("company", "company-name"),

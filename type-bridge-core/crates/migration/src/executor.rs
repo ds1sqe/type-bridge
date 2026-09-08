@@ -8,7 +8,8 @@
 //! # Per-step commit contract
 //!
 //! TypeDB forbids multiple `define` blocks per transaction.  Each
-//! [`ExecutionStep`] is executed in its own transaction and committed
+//! [`ExecutionStep`](crate::plan::ExecutionStep) is executed in its own
+//! transaction and committed
 //! independently.  When a step fails, earlier committed steps in the same
 //! migration are **not** rolled back (there is no cross-step atomicity).
 //! This matches the current Python per-statement-commit behavior and is the

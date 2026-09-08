@@ -2143,6 +2143,7 @@ fn v2_capability_vocabulary_is_closed_and_deterministic() {
             "query.pattern.disjunction",
             "query.pattern.function-call",
             "query.pattern.has",
+            "query.pattern.iid",
             "query.pattern.isa",
             "query.pattern.isa-subtypes",
             "query.pattern.links",

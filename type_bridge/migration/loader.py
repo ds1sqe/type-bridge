@@ -21,7 +21,7 @@ from type_bridge.migration._adoption_authority import (
     AdoptionDirectoryEntry,
     AdoptionDirectoryError,
 )
-from type_bridge.migration.base import Migration
+from type_bridge.migration._archive_base import _ArchivedMigration as Migration
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class LoadedMigration:
         checksum: SHA256 hash of file content (first 16 chars)
         execution_spec: Optional pre-lowered MigrationSpec dict loaded from
             the JSON sidecar.  Present only for generated migrations that carry
-            a ``.json`` sibling; ``None`` for legacy/hand-authored files.
+            a ``.json`` sibling; ``None`` for archived hand-authored files.
             Keyword-only so existing positional construction sites are unaffected.
     """
 
@@ -256,7 +256,7 @@ class MigrationLoader:
                 self._directory_authority = None
 
     def _discover_adoption_sources(self) -> list[Path]:
-        """Discover legacy sources through the bounded adoption trust boundary."""
+        """Discover archive sources through the bounded adoption trust boundary."""
         files: list[Path] = []
         try:
             entries = self._require_directory_authority().entries(
@@ -409,6 +409,12 @@ class MigrationLoader:
             return None
 
         module = importlib.util.module_from_spec(spec)
+        from type_bridge.migration._archive_imports import (
+            archive_builtins,
+            archive_import_context,
+        )
+
+        module.__dict__["__builtins__"] = archive_builtins()
 
         # Execute the module
         import sys
@@ -422,7 +428,8 @@ class MigrationLoader:
             # Adoption points this standard loader at a private mirror made
             # from the retained raw bytes. Ordinary discovery keeps the
             # released ambient path unchanged.
-            spec.loader.exec_module(module)
+            with archive_import_context():
+                spec.loader.exec_module(module)
         except Exception as e:
             raise MigrationLoadError(f"Error executing migration {path}: {e}") from e
         finally:

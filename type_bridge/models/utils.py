@@ -8,15 +8,13 @@ from typing import Any, Literal, get_args, get_origin
 
 from pydantic import BeforeValidator
 
-from type_bridge.attribute import (
-    Attribute,
-    AttributeFlags,
-    Boolean,
-    DateTime,
-    Double,
-    Integer,
-    String,
-)
+from type_bridge.attribute.base import _QueryAttribute as Attribute
+from type_bridge.attribute.boolean import _QueryBoolean as Boolean
+from type_bridge.attribute.datetime import _QueryDateTime as DateTime
+from type_bridge.attribute.double import _QueryDouble as Double
+from type_bridge.attribute.flags import _QueryAttributeFlags as AttributeFlags
+from type_bridge.attribute.integer import _QueryInteger as Integer
+from type_bridge.attribute.string import _QueryString as String
 from type_bridge.validation import validate_type_name as validate_reserved_word
 
 
@@ -105,7 +103,7 @@ class ModelAttrInfo:
     flags: AttributeFlags
 
 
-def extract_metadata(field_type: type) -> FieldInfo:
+def extract_metadata(field_type: type) -> _QueryFieldInfo:
     """Extract attribute type, cardinality, and key/unique metadata from a type annotation.
 
     Handles:
@@ -125,7 +123,7 @@ def extract_metadata(field_type: type) -> FieldInfo:
     args = get_args(field_type)
 
     # Default cardinality: exactly one (1,1)
-    info = FieldInfo(card_min=1, card_max=1)
+    info = _QueryFieldInfo(card_min=1, card_max=1)
 
     # Handle Union types (Optional[T] or Literal[...] | T)
     from types import UnionType
@@ -255,7 +253,7 @@ def get_ast_value_type(attr_cls: type[Attribute]) -> AstValueType:
         The AST value type string ("string", "long", "double", "boolean",
         "datetime", "datetime-tz", or "date")
     """
-    from type_bridge.attribute.datetimetz import DateTimeTZ
+    from type_bridge.attribute.datetimetz import _QueryDateTimeTZ as DateTimeTZ
 
     # Check for DateTimeTZ first (before DateTime, since DateTimeTZ doesn't inherit DateTime)
     if issubclass(attr_cls, DateTimeTZ):
@@ -305,3 +303,14 @@ def validate_type_name(
     # Then check TypeQL reserved words
     # This will raise ReservedWordError if type_name is reserved
     validate_reserved_word(type_name, context)
+
+
+_QueryMatchClauseInfo = MatchClauseInfo
+_QueryWriteQueryInfo = WriteQueryInfo
+_QueryFieldInfo = FieldInfo
+_QueryModelAttrInfo = ModelAttrInfo
+
+del MatchClauseInfo
+del WriteQueryInfo
+del FieldInfo
+del ModelAttrInfo

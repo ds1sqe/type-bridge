@@ -67,10 +67,9 @@ if [[ -z "$version" || "$version" == "$pkgid" || ! "$version" =~ ^[0-9A-Za-z.+-]
   exit 1
 fi
 
-# This is intentionally a closed map. Historical b7/b8 packages are consumed as
-# immutable registry inputs, so their committed registry checksums are the
-# identity authority and the ordinary release workflow can never replace their
-# keys. All four were published before the 2.0.2 notice release.
+# This is intentionally a closed map. Historical b7 checksums remain recovery
+# evidence only; retained b8 packages are immutable registry inputs for the
+# current graph. The ordinary release workflow can never replace those keys.
 pinned_registry_checksum() {
   case "$1@$2" in
     type-bridge-typedb-protocol-b7@3.7.0)

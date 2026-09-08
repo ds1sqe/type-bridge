@@ -1,27 +1,27 @@
 # Read and write data
 
-TypeBridge offers two complementary application query styles over the same
-Rust ORM runtime.
+Generated TypeBridge packages offer two complementary application query styles
+over the same Rust ORM runtime.
 
 ## Model managers
 
-Use [CRUD managers](crud.md) for model-centered insert, put, update, delete,
-filter, ordering, aggregation, and transaction workflows. The
-[query-expression guide](queries.md) covers predicates, Boolean composition,
-pagination, grouping, raw queries, and TypeDB 3.12 given-stage parameters.
+Use each generated model's [manager](crud.md) for concise single-type insert,
+put, update, delete, IID lookup, filtering, and terminal workflows. Managers
+can own a transaction or reuse a caller-provided transaction.
 
 Schema-defined [functions](functions.md) can be invoked through typed
 function-query helpers.
 
 ## Immutable typed queries
 
-Use [immutable typed queries](typed-queries.md) for connected multi-model
+Use package-local [immutable typed queries](typed-queries.md) for connected multi-model
 matches, owner-aware fields and roles, exact or subtype selection, bounded
 reachability, named pages, counts, existence checks, and one-exchange remote
 execution.
 
-The immutable facade is additive. Existing managers and the package-root raw
-query APIs remain available, so an application can adopt it per query.
+Use a manager for one type and a query session when the result or predicate
+spans types. The package-root raw `Query`/`QueryBuilder` compatibility facade is
+separate from the generated query contract.
 
 ## Transactions and execution location
 

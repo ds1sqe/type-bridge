@@ -10,7 +10,7 @@ from type_bridge.expressions.base import Expression
 from type_bridge.expressions.utils import generate_attr_var
 
 if TYPE_CHECKING:
-    from type_bridge.attribute.string import String
+    from type_bridge.attribute.string import _QueryString as String
     from type_bridge.query.ast import Pattern
 
 

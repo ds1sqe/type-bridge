@@ -2,15 +2,15 @@
 //!
 //! This module is only compiled when the `typedb` feature is enabled.
 
-#[cfg(not(any(feature = "band7", feature = "band8", feature = "band9")))]
+#[cfg(not(any(feature = "band8", feature = "band9")))]
 compile_error!(
-    "type-bridge-server: the `typedb` machinery requires at least one band feature; enable `band7`, `band8`, and/or `band9` (all are default)"
+    "type-bridge-server: the `typedb` machinery requires at least one band feature; enable `band8` and/or `band9` (both are default)"
 );
 
 use type_bridge_typedb_runtime as runtime;
 
 use runtime::PreparedSecureConnectOptions;
-pub use runtime::{PINNED_DRIVER_VERSION, PINNED_DRIVER_VERSION_B7};
+pub use runtime::{PINNED_DRIVER_VERSION, PINNED_DRIVER_VERSION_B9};
 
 use super::backend::{BoxFuture, DriverBackend, QueryResultKind, TransactionOps, TransactionType};
 use crate::config::{OutboundTlsMode, SecureTypeDBSection, TypeDBSection};

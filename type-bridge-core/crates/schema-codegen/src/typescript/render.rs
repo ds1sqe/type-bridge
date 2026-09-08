@@ -15,7 +15,9 @@ use type_bridge_contract::value::ValueTypeTag;
 use super::reserved::{
     MODEL_RESERVED_NAMES, PUBLIC_RUNTIME_NAMES, PUBLIC_SCHEMA_NAMES, is_typescript_keyword,
 };
-use crate::{GeneratedPackage, documentation_annotation, invalid, model_documentation};
+use crate::{
+    EmbeddedAuthority, GeneratedPackage, documentation_annotation, invalid, model_documentation,
+};
 
 macro_rules! canonical_text {
     ($value:expr) => {
@@ -33,6 +35,7 @@ macro_rules! identity_literal {
 
 pub(super) fn render(
     projection: &RuntimeProjection,
+    authority: &EmbeddedAuthority,
     runtime: &[u8],
     package_json: &[u8],
     tsconfig_json: &[u8],
@@ -40,6 +43,10 @@ pub(super) fn render(
     validate_projection(projection)?;
     GeneratedPackage::try_new([
         ("package.json".to_owned(), package_json.to_vec()),
+        (
+            "src/authority.ts".to_owned(),
+            render_authority(authority)?.into_bytes(),
+        ),
         (
             "src/functions.ts".to_owned(),
             render_functions(projection)?.into_bytes(),
@@ -83,10 +90,18 @@ fn render_index(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(format!(
-        "{}import {{ __installRuntimeProjectionPackage }} from \"./runtime.js\";\nimport {{ {} }} from \"./models.js\";\nimport {{ PROJECTION_FINGERPRINT_JSON, RUNTIME_PROJECTION_JSON, SEMANTIC_SCHEMA_FINGERPRINT_JSON }} from \"./schema.js\";\n\n__installRuntimeProjectionPackage(\n  RUNTIME_PROJECTION_JSON,\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  [{}],\n);\n\nexport * from \"./runtime.js\";\nexport * from \"./models.js\";\nexport * from \"./structs.js\";\nexport * from \"./functions.js\";\nexport * from \"./schema.js\";\n",
+        "{}import {{ SCHEMA_AUTHORITY_JSON }} from \"./authority.js\";\nimport {{ __installRuntimeProjectionPackage }} from \"./runtime.js\";\nimport {{ {} }} from \"./models.js\";\nimport {{ PROJECTION_FINGERPRINT_JSON, RUNTIME_PROJECTION_JSON, SEMANTIC_SCHEMA_FINGERPRINT_JSON }} from \"./schema.js\";\n\n__installRuntimeProjectionPackage(\n  RUNTIME_PROJECTION_JSON,\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  [{}],\n  SCHEMA_AUTHORITY_JSON,\n);\n\nexport * from \"./runtime.js\";\nexport * from \"./models.js\";\nexport * from \"./structs.js\";\nexport * from \"./functions.js\";\nexport * from \"./schema.js\";\n",
         header(),
         names.join(", "),
         names.join(", "),
+    ))
+}
+
+fn render_authority(authority: &EmbeddedAuthority) -> Result<String, Diagnostic> {
+    Ok(format!(
+        "{}export const SCHEMA_AUTHORITY_JSON = {};\n",
+        header(),
+        js_string(&authority.canonical_envelope_json)?,
     ))
 }
 
@@ -274,12 +289,17 @@ fn render_model_shell(
     for token in model.query_tokens().roles().values() {
         let role = identity_literal!(token.role());
         let players = logical_player_union(projection, token.accepted_players(), "")?;
+        let subtype_roots = logical_player_union(
+            projection,
+            &compatible_subtype_roots(projection, token.accepted_players())?,
+            "",
+        )?;
         if let Some(documentation) = documentation_annotation(token.annotations()) {
             render_indented_jsdoc(output, "  ", documentation);
         }
         let _ = writeln!(
             output,
-            "  readonly {}: RoleToken<{id}, {role}, {players}>;",
+            "  readonly {}: RoleToken<{id}, {role}, {players}, {subtype_roots}>;",
             token.target_name().as_str()
         );
     }
@@ -373,6 +393,11 @@ fn render_model_link(
     for token in model.query_tokens().roles().values() {
         let role = identity_literal!(token.role());
         let players = logical_player_union(projection, token.accepted_players(), "")?;
+        let subtype_roots = logical_player_union(
+            projection,
+            &compatible_subtype_roots(projection, token.accepted_players())?,
+            "",
+        )?;
         let accepted = token
             .accepted_players()
             .iter()
@@ -382,7 +407,7 @@ fn render_model_link(
         let metadata = canonical_text!(token);
         let _ = writeln!(
             output,
-            "    {}: defineRoleToken<{id}, {role}, {players}>({{",
+            "    {}: defineRoleToken<{id}, {role}, {players}, {subtype_roots}>({{",
             token.target_name().as_str()
         );
         let _ = writeln!(output, "      owner: {id},");
@@ -763,6 +788,22 @@ fn logical_player_union(
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|values| values.join(" | "))
+}
+
+fn compatible_subtype_roots(
+    projection: &RuntimeProjection,
+    accepted_players: &BTreeSet<TypeId>,
+) -> Result<BTreeSet<TypeId>, Diagnostic> {
+    let mut roots = BTreeSet::new();
+    for player in accepted_players {
+        let projected = projection
+            .models()
+            .get(player)
+            .ok_or_else(|| facet_error("role token references an absent player model"))?;
+        roots.insert(player.clone());
+        roots.extend(projected.complete_read().nominal_upcasts().iter().cloned());
+    }
+    Ok(roots)
 }
 
 fn model_use_literal(value: &ProjectedModelUse) -> Result<String, Diagnostic> {

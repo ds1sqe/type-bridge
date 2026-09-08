@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from type_bridge import (
+from tests.utils.handwritten import (
     Boolean,
-    Database,
     Entity,
     Flag,
     Integer,
@@ -14,6 +13,7 @@ from type_bridge import (
     String,
     TypeFlags,
 )
+from type_bridge import Database
 from type_bridge.typed import QuerySession
 
 

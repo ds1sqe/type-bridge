@@ -1,6 +1,6 @@
 # Rust Client
 
-TypeBridge 2.0 ships a public, generated-schema Rust application surface with
+TypeBridge 2.1 ships a public, generated-schema Rust application surface with
 the same model, CRUD, immutable-query, transaction, and one-exchange remote
 contracts as the Python and TypeScript bindings. Rust 1.88 or newer is
 required.
@@ -41,8 +41,7 @@ crate's exact `type-bridge` requirement from one immutable source revision.
 
 ## Generate the schema crate
 
-Declare the Rust output in the
-[Split-YAML workspace](split-yaml-v1.md):
+Declare the Rust output in the [Split-YAML workspace](split-yaml-v1.md):
 
 ```yaml
 bindings:
@@ -59,17 +58,10 @@ type-bridge --manifest typebridge.yaml schema generate
 
 The Rust output is an ordinary application-owned crate. It contains the model
 and create types, type/field/role tokens, schema fingerprints, canonical
-declared-schema bytes, and the owner-branded `SCHEMA` package used at
-connection time. Regenerate it whenever the canonical schema changes; do not
-hand-edit it.
-
-For the older single-TypeQL input path, the equivalent target is:
-
-```bash
-python -m type_bridge.generator schema.tql \
-  --target rust \
-  --output generated/rust
-```
+compiled authority, and the owner-branded `SCHEMA` package used at connection
+time. Its managers and query sessions need no external JSON authority.
+Regenerate the crate whenever the canonical Split-YAML schema changes; do not
+hand-edit generated code.
 
 ## Apply the schema
 
@@ -224,9 +216,7 @@ use type_bridge::{
     RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits,
 };
 
-let options = RemoteConnectionOptions::new(
-    "application-scope",
-    "typedb-3.12.1/v1",
+let options = RemoteConnectionOptions::generated(
     RemoteQueryLimits::new(100, 8 << 20, 1_000, 1_000, 1_000, 1_000)
         .deadline_ms(30_000),
     transport,
@@ -243,14 +233,14 @@ let rows: Vec<Person> = session
 ```
 
 The transport owns authentication and authenticated TLS. The SDK binds
-capability discovery, schema authority, nonce, request fingerprint, deadline,
-limits, and reply identity before materializing the same generated model
-types used by local execution.
+capability discovery, the scope and semantic profile embedded in `SCHEMA`,
+nonce, request fingerprint, deadline, limits, and reply identity before
+materializing the same generated model types used by local execution.
 
 ## Classified errors
 
-Handle failures through the stable category, code, and path accessors. Human
-messages are diagnostic text and are not a machine-readable contract:
+Handle failures through the stable category, code, path, and detail accessors.
+Human messages are diagnostic text and are not a machine-readable contract:
 
 ```rust
 use type_bridge::{Error, ErrorCategory, ModelValidationPhase};
@@ -276,6 +266,8 @@ fn inspect(error: &Error) {
 
 Direct and remote query paths map canonical failures to the same
 `ErrorCategory` and preserve stable codes and structured paths when supplied
-by the engine or remote diagnostic. Implementations of `RemoteQueryTransport`
-should wrap application-owned transport failures with
+by the engine or remote diagnostic. Authenticated remote failures also expose
+their exact typed path through `diagnostic_path()` and deterministic detail map
+through `details()`. Implementations of `RemoteQueryTransport` should wrap
+application-owned transport failures with
 `Error::remote("stable_snake_case_code", message, source)`.

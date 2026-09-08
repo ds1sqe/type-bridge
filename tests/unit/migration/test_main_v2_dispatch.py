@@ -2,10 +2,9 @@
 """The console entry point serves V2 workspace verbs from the wheel itself.
 
 Covers:
-- ``schema`` / ``migration`` / ``--manifest`` invocations run the in-process
-  V2 CLI shipped inside the native extension (no external binary involved)
+- every invocation runs the in-process V2 CLI shipped inside the native
+  extension (no external binary involved)
 - a real split-YAML workspace passes ``schema check`` through the entry point
-- legacy verbs and global help/version forms use the released native parser
 - exit codes propagate unchanged
 """
 
@@ -15,54 +14,41 @@ from pathlib import Path
 
 import pytest
 
-from type_bridge.migration.__main__ import _is_v2_invocation, main
+from type_bridge.migration.__main__ import main
 
 pytest.importorskip("type_bridge_core")
 
 
-def test_v2_invocations_are_detected() -> None:
-    assert _is_v2_invocation(["schema", "check"])
-    assert _is_v2_invocation(["migration", "make", "--name", "init"])
-    assert _is_v2_invocation(["--manifest", "x.yaml", "schema", "check"])
-    assert _is_v2_invocation(["--manifest=x.yaml", "schema", "check"])
-
-
-def test_legacy_invocations_still_forward() -> None:
-    for argv in (
-        ["migrate", "--database", "mydb"],
-        ["showmigrations"],
-        ["makemigrations", "--name", "add_phone"],
-        ["plan"],
-        ["sqlmigrate", "0001_initial"],
-        ["--help"],
-        ["-h"],
-        ["--version"],
-        ["-V"],
+@pytest.mark.parametrize(
+    "arguments",
+    [
         [],
-    ):
-        assert not _is_v2_invocation(argv)
-
-
-@pytest.mark.parametrize("flag", ["--help", "-h", "--version", "-V"])
-def test_global_forms_run_verbatim_through_the_released_native_parser(
-    flag: str, monkeypatch: pytest.MonkeyPatch
+        ["schema", "check"],
+        ["migration", "make", "--name", "init"],
+        ["--manifest=x.yaml", "schema", "check"],
+        ["--help"],
+        ["--version"],
+    ],
+)
+def test_invocations_run_verbatim_through_the_v2_native_parser(
+    arguments: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     observed: list[list[str]] = []
 
     class Native:
         @staticmethod
-        def run_legacy_migration_cli(arguments: list[str]) -> int:
-            observed.append(arguments)
+        def run_v2_cli(native_arguments: list[str]) -> int:
+            observed.append(native_arguments)
             return 27
 
     monkeypatch.setattr("type_bridge._rust_runtime.rust_core", lambda: Native())
-    monkeypatch.setattr("sys.argv", ["type-bridge", flag])
+    monkeypatch.setattr("sys.argv", ["type-bridge", *arguments])
 
     with pytest.raises(SystemExit) as excinfo:
         main()
 
     assert excinfo.value.code == 27
-    assert observed == [["type-bridge-migration", flag]]
+    assert observed == [["type-bridge", *arguments]]
 
 
 def _write_workspace(root: Path) -> Path:

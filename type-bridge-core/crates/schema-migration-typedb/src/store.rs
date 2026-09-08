@@ -10,17 +10,19 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, Diagnosti
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration::MigrationId;
 use type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX;
-use type_bridge_contract::schema::DocumentId;
+use type_bridge_contract::schema::{DocumentId, ManagedSchemaState};
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{Database, OrmError, Transaction};
+use type_bridge_schema::ManagedDeltaContext;
 use type_bridge_schema_compat::typeql_to_declared;
 use type_bridge_schema_migration::{
-    AppliedRecord, ExecutionFence, ExecutionFuture, ExecutionScope, GroupEventRecord,
-    GroupJournalEventKind, JournalEntry, JournalSequence, LeaseHolderId, MigrationExecutionJournal,
-    MigrationLease, MigrationLeaseStore, OpenPlanRecord, OpenRollbackPlanRecord, PlanRecord,
-    RollbackPlanRecord, RollbackStepEventRecord, RolledBackRecord, VerifiedMigrationApplyPlan,
-    VerifiedMigrationRollbackPlan, VerifiedMigrationTransactionGroup,
-    VerifiedSchemaMigrationManifest, active_applied_entries, verified_manifest_digest,
+    AppliedRecord, ExecutionBindingToken, ExecutionFence, ExecutionFuture, ExecutionScope,
+    GroupEventRecord, GroupJournalEventKind, JournalEntry, JournalSequence, LeaseHolderId,
+    MigrationExecutionJournal, MigrationLease, MigrationLeaseStore, OpenPlanRecord,
+    OpenRollbackPlanRecord, PlanRecord, RollbackPlanRecord, RollbackStepEventRecord,
+    RolledBackRecord, VerifiedMigrationApplyPlan, VerifiedMigrationRollbackPlan,
+    VerifiedMigrationTransactionGroup, VerifiedSchemaMigrationManifest, active_applied_entries,
+    verified_manifest_digest,
 };
 
 use crate::control_schema::{
@@ -33,6 +35,7 @@ use crate::control_schema::{
     ROLLED_BACK_RECORD_KIND,
 };
 use crate::observation::{partition_typeql_export, partition_typeql_export_lossless};
+use crate::provider::{TypeDbExecutionBinding, require_managed_state_execution_context};
 use crate::wire::{
     decode_applied, decode_event, decode_plan, decode_rollback_event, decode_rollback_plan,
     decode_rolled_back, encode_applied, encode_event, encode_plan, encode_rollback_event,
@@ -50,6 +53,47 @@ use crate::wire::{
 #[must_use]
 pub fn derived_journal_database_name(managed_database_name: &str) -> String {
     format!("{managed_database_name}{TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX}")
+}
+
+/// Require the immutable provider authority and names of one migration pair.
+///
+/// This consumes only in-memory handle identity and performs no provider I/O.
+pub(crate) fn require_migration_database_pair_identity(
+    managed_database: &Database,
+    journal_database: &Database,
+) -> Result<(), Diagnostic> {
+    if !managed_database.shares_connection_authority_with(journal_database) {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_typedb_database_authority_mismatch",
+            "managed and journal databases must share one provider connection authority",
+        ));
+    }
+    if managed_database.database_name() == journal_database.database_name() {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_typedb_database_pair_alias",
+            "managed and journal databases must be distinct",
+        ));
+    }
+    let expected = derived_journal_database_name(managed_database.database_name());
+    if journal_database.database_name() != expected {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_typedb_journal_database_name_mismatch",
+            "journal database name is not the one-to-one derivative of the managed database",
+        )
+        .with_detail(
+            "managed_database",
+            managed_database.database_name().to_owned(),
+        )
+        .with_detail("expected_journal_database", expected)
+        .with_detail(
+            "actual_journal_database",
+            journal_database.database_name().to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// Verified historical manifest catalog used to rederive applied records.
@@ -83,6 +127,200 @@ impl<'a> VerifiedMigrationCatalog<'a> {
     fn values(&self) -> impl ExactSizeIterator<Item = &'a VerifiedSchemaMigrationManifest> + '_ {
         self.manifests.values().copied()
     }
+
+    fn require_execution_context(&self, context: &ManagedDeltaContext) -> Result<(), Diagnostic> {
+        for manifest in self.values() {
+            require_manifest_execution_context(manifest, context)?;
+        }
+        Ok(())
+    }
+}
+
+fn migration_id_text(id: &MigrationId) -> String {
+    format!("{}/{}", id.app_label(), id.name())
+}
+
+fn require_manifest_execution_context(
+    manifest: &VerifiedSchemaMigrationManifest,
+    context: &ManagedDeltaContext,
+) -> Result<(), Diagnostic> {
+    if manifest.managed_scope().id() != context.scope_id() {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_typedb_manifest_scope_mismatch",
+            "verified migration manifest differs from the store execution scope",
+        )
+        .with_detail("migration_id", migration_id_text(manifest.id()))
+        .with_detail(
+            "manifest_scope",
+            manifest.managed_scope().id().as_str().to_owned(),
+        )
+        .with_detail("execution_scope", context.scope_id().as_str().to_owned()));
+    }
+    if manifest.semantic_profile().id() != context.semantic_profile() {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_typedb_manifest_semantic_profile_mismatch",
+            "verified migration manifest differs from the store semantic profile",
+        )
+        .with_detail("migration_id", migration_id_text(manifest.id()))
+        .with_detail(
+            "manifest_semantic_profile",
+            manifest.semantic_profile().id().as_str().to_owned(),
+        )
+        .with_detail(
+            "execution_semantic_profile",
+            context.semantic_profile().as_str().to_owned(),
+        ));
+    }
+    manifest
+        .required_capabilities()
+        .ensure_supported_by(context.available_capabilities())
+        .map_err(|error| error.with_detail("migration_id", migration_id_text(manifest.id())))?;
+    require_managed_state_execution_context(manifest.source_state(), context, "manifest_source")?;
+    require_managed_state_execution_context(manifest.target_state(), context, "manifest_target")?;
+    for step in manifest.steps() {
+        step.required_capabilities()
+            .ensure_supported_by(context.available_capabilities())
+            .map_err(|error| error.with_detail("migration_id", migration_id_text(manifest.id())))?;
+        if let Some(schema_step) = step.as_schema_delta() {
+            require_managed_state_execution_context(
+                schema_step.delta().source(),
+                context,
+                "manifest_step_source",
+            )?;
+            require_managed_state_execution_context(
+                schema_step.delta().target(),
+                context,
+                "manifest_step_target",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn require_state_if_present(
+    state: Option<&ManagedSchemaState>,
+    context: &ManagedDeltaContext,
+    state_role: &'static str,
+) -> Result<(), Diagnostic> {
+    if let Some(state) = state {
+        require_managed_state_execution_context(state, context, state_role)?;
+    }
+    Ok(())
+}
+
+fn require_lowering_execution_context(
+    lowering: &type_bridge_schema_migration::SchemaLoweringPlan,
+    manifest: &VerifiedSchemaMigrationManifest,
+    context: &ManagedDeltaContext,
+    source_role: &'static str,
+    target_role: &'static str,
+) -> Result<(), Diagnostic> {
+    if lowering.profile_id() != manifest.lowering_profile().id()
+        || lowering.profile_fingerprint() != manifest.lowering_profile().fingerprint()
+    {
+        return Err(failure(
+            DiagnosticCategory::Integrity,
+            "migration_typedb_lowering_profile_mismatch",
+            "verified migration lowering differs from its manifest profile binding",
+        )
+        .with_detail("migration_id", migration_id_text(manifest.id())));
+    }
+    require_managed_state_execution_context(lowering.delta().source(), context, source_role)?;
+    require_managed_state_execution_context(lowering.delta().target(), context, target_role)?;
+    for unit in lowering.units() {
+        unit.required_capabilities()
+            .ensure_supported_by(context.available_capabilities())
+            .map_err(|error| error.with_detail("migration_id", migration_id_text(manifest.id())))?;
+    }
+    Ok(())
+}
+
+fn require_apply_plan_execution_context(
+    plan: &VerifiedMigrationApplyPlan,
+    context: &ManagedDeltaContext,
+) -> Result<(), Diagnostic> {
+    plan.required_capabilities()
+        .ensure_supported_by(context.available_capabilities())?;
+    require_state_if_present(plan.source_state(), context, "apply_plan_source")?;
+    require_state_if_present(plan.target_state(), context, "apply_plan_target")?;
+    for migration in plan.migrations() {
+        let manifest = migration.manifest();
+        require_manifest_execution_context(manifest, context)?;
+        for step in migration.steps() {
+            step.step()
+                .required_capabilities()
+                .ensure_supported_by(context.available_capabilities())
+                .map_err(|error| {
+                    error.with_detail("migration_id", migration_id_text(manifest.id()))
+                })?;
+            if let Some(validated) = step.validated_assertion() {
+                require_managed_state_execution_context(
+                    validated.source_state(),
+                    context,
+                    "apply_assertion_source",
+                )?;
+            }
+            if let Some(lowering) = step.lowering() {
+                require_lowering_execution_context(
+                    lowering,
+                    manifest,
+                    context,
+                    "apply_group_source",
+                    "apply_group_target",
+                )?;
+            }
+        }
+        for group in migration.transaction_groups() {
+            let Some(step) = migration.steps().get(group.schema_delta_step_index()) else {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_typedb_transaction_group_out_of_bounds",
+                    "verified transaction group does not name a plan step",
+                )
+                .with_detail("migration_id", migration_id_text(manifest.id())));
+            };
+            let Some(lowering) = step.lowering() else {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_typedb_transaction_group_missing_delta",
+                    "verified transaction group does not end in schema-delta evidence",
+                )
+                .with_detail("migration_id", migration_id_text(manifest.id())));
+            };
+            require_lowering_execution_context(
+                lowering,
+                manifest,
+                context,
+                "apply_transaction_group_source",
+                "apply_transaction_group_target",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn require_rollback_plan_execution_context(
+    plan: &VerifiedMigrationRollbackPlan,
+    context: &ManagedDeltaContext,
+) -> Result<(), Diagnostic> {
+    require_managed_state_execution_context(plan.source_state(), context, "rollback_plan_source")?;
+    require_managed_state_execution_context(plan.target_state(), context, "rollback_plan_target")?;
+    for rollback in plan.rollbacks() {
+        let manifest = rollback.manifest();
+        require_manifest_execution_context(manifest, context)?;
+        for step in rollback.steps() {
+            require_lowering_execution_context(
+                step.lowering(),
+                manifest,
+                context,
+                "rollback_group_source",
+                "rollback_group_target",
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// TypeDB-backed lease and journal store bound to verified history evidence.
@@ -91,11 +329,15 @@ impl<'a> VerifiedMigrationCatalog<'a> {
 /// named companion database. The managed database contains only a fence mirror
 /// read by prepared schema transactions. Acquisition advances authority first,
 /// then waits to publish the mirror; release clears authority first, then the
-/// mirror. The pair is a single backup and recovery unit.
+/// mirror. The pair is a single backup and recovery unit. Every lease issued by
+/// this store carries its process-local [`TypeDbExecutionBinding`] identity;
+/// lease-bearing operations reject unbound and foreign leases before I/O.
 pub struct TypeDbMigrationStore<'a> {
     managed_database: Arc<Database>,
     journal_database: Arc<Database>,
     managed_scope_id: ManagedScopeId,
+    context: ManagedDeltaContext,
+    execution_binding: ExecutionBindingToken,
     catalog: VerifiedMigrationCatalog<'a>,
     plan: Option<&'a VerifiedMigrationApplyPlan>,
     rollback_plan: Option<&'a VerifiedMigrationRollbackPlan>,
@@ -105,47 +347,23 @@ pub struct TypeDbMigrationStore<'a> {
 
 impl<'a> TypeDbMigrationStore<'a> {
     /// Construct a history-bound store over one exact managed/journal pair.
+    ///
+    /// Reuse the supplied binding when constructing the cooperating
+    /// [`crate::TypeDbMigrationProvider`]. Independently constructing another
+    /// binding from identical inputs does not grant it this store's leases.
     pub fn new(
-        managed_database: Arc<Database>,
-        journal_database: Arc<Database>,
-        managed_scope_id: ManagedScopeId,
+        binding: &TypeDbExecutionBinding,
         catalog: VerifiedMigrationCatalog<'a>,
     ) -> Result<Self, Diagnostic> {
-        if !managed_database.shares_connection_authority_with(&journal_database) {
-            return Err(failure(
-                DiagnosticCategory::InvalidContract,
-                "migration_typedb_database_authority_mismatch",
-                "managed and journal databases must share one provider connection authority",
-            ));
-        }
-        if managed_database.database_name() == journal_database.database_name() {
-            return Err(failure(
-                DiagnosticCategory::InvalidContract,
-                "migration_typedb_database_pair_alias",
-                "managed and journal databases must be distinct",
-            ));
-        }
-        let expected = derived_journal_database_name(managed_database.database_name());
-        if journal_database.database_name() != expected {
-            return Err(failure(
-                DiagnosticCategory::InvalidContract,
-                "migration_typedb_journal_database_name_mismatch",
-                "journal database name is not the one-to-one derivative of the managed database",
-            )
-            .with_detail(
-                "managed_database",
-                managed_database.database_name().to_owned(),
-            )
-            .with_detail("expected_journal_database", expected)
-            .with_detail(
-                "actual_journal_database",
-                journal_database.database_name().to_owned(),
-            ));
-        }
+        binding.require_supported()?;
+        let context = binding.context();
+        catalog.require_execution_context(context)?;
         Ok(Self {
-            managed_database,
-            journal_database,
-            managed_scope_id,
+            managed_database: Arc::clone(binding.managed_database()),
+            journal_database: Arc::clone(binding.journal_database()),
+            managed_scope_id: context.scope_id().clone(),
+            context: context.clone(),
+            execution_binding: binding.local_token().clone(),
             catalog,
             plan: None,
             rollback_plan: None,
@@ -185,6 +403,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         plan: &'a VerifiedMigrationApplyPlan,
         allow_legacy_bridge: bool,
     ) -> Result<Self, Diagnostic> {
+        require_apply_plan_execution_context(plan, &self.context)?;
         if !allow_legacy_bridge
             && self
                 .catalog
@@ -246,6 +465,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         plan: &'a VerifiedMigrationRollbackPlan,
         allow_bridged_catalog: bool,
     ) -> Result<Self, Diagnostic> {
+        require_rollback_plan_execution_context(plan, &self.context)?;
         if !allow_bridged_catalog
             && self
                 .catalog
@@ -309,6 +529,17 @@ impl<'a> TypeDbMigrationStore<'a> {
                 "migration operation scope differs from the journal database owner identity",
             ))
         }
+    }
+
+    fn require_owned_lease(&self, lease: &MigrationLease) -> Result<(), Diagnostic> {
+        if !lease.is_bound_to(&self.execution_binding) {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_typedb_execution_binding_mismatch",
+                "migration lease belongs to a different TypeDB execution binding",
+            ));
+        }
+        self.require_owned_scope(lease.scope())
     }
 
     async fn ensure_journal_schema(&self) -> Result<(), Diagnostic> {
@@ -534,7 +765,12 @@ impl<'a> TypeDbMigrationStore<'a> {
             }
         };
         transaction.query(&query).await.map_err(map_orm_error)?;
-        let lease = MigrationLease::new(scope.clone(), holder.clone(), fence);
+        let lease = MigrationLease::new_bound(
+            scope.clone(),
+            holder.clone(),
+            fence,
+            self.execution_binding.clone(),
+        );
         let observed = load_active_control(&mut transaction, &lease).await?;
         if observed.next_sequence != next_sequence {
             let _ = transaction.rollback().await;
@@ -1239,7 +1475,10 @@ impl MigrationLeaseStore for TypeDbMigrationStore<'_> {
     }
 
     fn release<'a>(&'a self, lease: &'a MigrationLease) -> ExecutionFuture<'a, ()> {
-        Box::pin(async move { self.release_inner(lease).await })
+        Box::pin(async move {
+            self.require_owned_lease(lease)?;
+            self.release_inner(lease).await
+        })
     }
 }
 
@@ -1249,7 +1488,10 @@ impl MigrationExecutionJournal for TypeDbMigrationStore<'_> {
         lease: &'a MigrationLease,
         record: PlanRecord,
     ) -> ExecutionFuture<'a, JournalEntry<PlanRecord>> {
-        Box::pin(async move { self.begin_plan_inner(lease, record).await })
+        Box::pin(async move {
+            self.require_owned_lease(lease)?;
+            self.begin_plan_inner(lease, record).await
+        })
     }
 
     fn record_group_event<'a>(
@@ -1257,7 +1499,10 @@ impl MigrationExecutionJournal for TypeDbMigrationStore<'_> {
         lease: &'a MigrationLease,
         record: GroupEventRecord,
     ) -> ExecutionFuture<'a, JournalEntry<GroupEventRecord>> {
-        Box::pin(async move { self.record_event_inner(lease, record).await })
+        Box::pin(async move {
+            self.require_owned_lease(lease)?;
+            self.record_event_inner(lease, record).await
+        })
     }
 
     fn record_applied<'a>(
@@ -1265,21 +1510,30 @@ impl MigrationExecutionJournal for TypeDbMigrationStore<'_> {
         lease: &'a MigrationLease,
         record: AppliedRecord,
     ) -> ExecutionFuture<'a, JournalEntry<AppliedRecord>> {
-        Box::pin(async move { self.record_applied_inner(lease, record).await })
+        Box::pin(async move {
+            self.require_owned_lease(lease)?;
+            self.record_applied_inner(lease, record).await
+        })
     }
 
     fn load_applied<'a>(
         &'a self,
         lease: &'a MigrationLease,
     ) -> ExecutionFuture<'a, Vec<JournalEntry<AppliedRecord>>> {
-        Box::pin(async move { self.load_applied_inner(lease).await })
+        Box::pin(async move {
+            self.require_owned_lease(lease)?;
+            self.load_applied_inner(lease).await
+        })
     }
 
     fn load_open_plan<'a>(
         &'a self,
         lease: &'a MigrationLease,
     ) -> ExecutionFuture<'a, Option<OpenPlanRecord>> {
-        Box::pin(async move { self.load_open_plan_inner(lease).await })
+        Box::pin(async move {
+            self.require_owned_lease(lease)?;
+            self.load_open_plan_inner(lease).await
+        })
     }
 
     fn begin_rollback_plan<'a>(
@@ -1287,7 +1541,10 @@ impl MigrationExecutionJournal for TypeDbMigrationStore<'_> {
         lease: &'a MigrationLease,
         record: RollbackPlanRecord,
     ) -> ExecutionFuture<'a, JournalEntry<RollbackPlanRecord>> {
-        Box::pin(async move { self.begin_rollback_plan_inner(lease, record).await })
+        Box::pin(async move {
+            self.require_owned_lease(lease)?;
+            self.begin_rollback_plan_inner(lease, record).await
+        })
     }
 
     fn record_rollback_step_event<'a>(
@@ -1295,7 +1552,10 @@ impl MigrationExecutionJournal for TypeDbMigrationStore<'_> {
         lease: &'a MigrationLease,
         record: RollbackStepEventRecord,
     ) -> ExecutionFuture<'a, JournalEntry<RollbackStepEventRecord>> {
-        Box::pin(async move { self.record_rollback_event_inner(lease, record).await })
+        Box::pin(async move {
+            self.require_owned_lease(lease)?;
+            self.record_rollback_event_inner(lease, record).await
+        })
     }
 
     fn record_rolled_back<'a>(
@@ -1303,21 +1563,30 @@ impl MigrationExecutionJournal for TypeDbMigrationStore<'_> {
         lease: &'a MigrationLease,
         record: RolledBackRecord,
     ) -> ExecutionFuture<'a, JournalEntry<RolledBackRecord>> {
-        Box::pin(async move { self.record_rolled_back_inner(lease, record).await })
+        Box::pin(async move {
+            self.require_owned_lease(lease)?;
+            self.record_rolled_back_inner(lease, record).await
+        })
     }
 
     fn load_rolled_back<'a>(
         &'a self,
         lease: &'a MigrationLease,
     ) -> ExecutionFuture<'a, Vec<JournalEntry<RolledBackRecord>>> {
-        Box::pin(async move { self.load_rolled_back_inner(lease).await })
+        Box::pin(async move {
+            self.require_owned_lease(lease)?;
+            self.load_rolled_back_inner(lease).await
+        })
     }
 
     fn load_open_rollback_plan<'a>(
         &'a self,
         lease: &'a MigrationLease,
     ) -> ExecutionFuture<'a, Option<OpenRollbackPlanRecord>> {
-        Box::pin(async move { self.load_open_rollback_plan_inner(lease).await })
+        Box::pin(async move {
+            self.require_owned_lease(lease)?;
+            self.load_open_rollback_plan_inner(lease).await
+        })
     }
 }
 
@@ -2189,10 +2458,26 @@ fn failure(category: DiagnosticCategory, code: &'static str, message: &'static s
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use type_bridge_contract::capability::CapabilitySet;
+    use type_bridge_contract::codec::FormatVersion;
+    use type_bridge_contract::fingerprint::SemanticProfileId;
+    use type_bridge_contract::id::{TypeId, TypeKind};
+    use type_bridge_contract::migration::{
+        MigrationAppLabel, MigrationName, MigrationStepId, SchemaDeltaStep,
+    };
+    use type_bridge_contract::schema::{
+        DeclaredSchema, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
+    };
+    use type_bridge_core_lib::version::Version;
     use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, TransactionOps, TxType};
     use type_bridge_orm::{DatabaseConnectionAuthority, OrmError};
+    use type_bridge_schema::{diff_managed, inverse_delta, managed_schema_state};
+    use type_bridge_schema_migration::{
+        MigrationExecutionProvider, SchemaMigrationDraft, build_verified_manifest,
+    };
 
     use super::*;
+    use crate::provider::TypeDbMigrationProvider;
 
     struct NoIoBackend {
         calls: Arc<AtomicUsize>,
@@ -2211,6 +2496,10 @@ mod tests {
         fn is_open(&self) -> bool {
             self.calls.fetch_add(1, Ordering::SeqCst);
             true
+        }
+
+        fn server_version(&self) -> Option<Version> {
+            Some(Version::new(3, 12, 1))
         }
 
         fn close_connection(&self) -> Result<(), OrmError> {
@@ -2251,6 +2540,60 @@ mod tests {
         })
     }
 
+    fn supported_context(scope: ManagedScopeId) -> ManagedDeltaContext {
+        ManagedDeltaContext::new(
+            scope,
+            SemanticProfileId::new("typedb-3.12.1/v1").expect("supported profile"),
+            CapabilitySet::new(),
+        )
+    }
+
+    fn declared(labels: &[&str]) -> DeclaredSchema {
+        let facts = labels.iter().enumerate().map(|(index, label)| {
+            let offset = u64::try_from(index).expect("fixture offset");
+            let line = u32::try_from(index + 1).expect("fixture line");
+            SourcedSchemaFact::new(
+                SchemaFact::Type(
+                    TypeFact::new(TypeId::new(TypeKind::Entity, *label).expect("fixture type ID"))
+                        .expect("fixture type"),
+                ),
+                SourceSpan::new(
+                    DocumentId::new("store-context-fixture").expect("document ID"),
+                    offset,
+                    offset + 1,
+                    line,
+                    1,
+                    line,
+                    2,
+                )
+                .expect("source span"),
+            )
+        });
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), facts)
+            .expect("declared fixture")
+    }
+
+    fn verified_manifest_for_context(
+        context: &ManagedDeltaContext,
+    ) -> VerifiedSchemaMigrationManifest {
+        let source = declared(&[]);
+        let target = declared(&["person"]);
+        let delta = diff_managed(&source, &target, context).expect("fixture delta");
+        let reverse = inverse_delta(&delta).expect("fixture inverse");
+        let step = SchemaDeltaStep::new(
+            MigrationStepId::new("define-person").expect("step ID"),
+            delta,
+            Some(reverse),
+        )
+        .expect("schema step");
+        let id = MigrationId::from_components(
+            MigrationAppLabel::new("store-context").expect("app label"),
+            MigrationName::new("0001_person").expect("migration name"),
+        );
+        let draft = SchemaMigrationDraft::new(id, Vec::new(), vec![step]).expect("draft");
+        build_verified_manifest(draft, (&source, context)).expect("verified manifest")
+    }
+
     #[test]
     fn database_authority_mismatch_rejects_before_backend_io_without_identity_leakage() {
         const SENTINEL: &str = "TB_PROVIDER_SECRET_89ab";
@@ -2260,11 +2603,9 @@ mod tests {
         let managed = no_io_database(managed_name, Arc::clone(&calls), None);
         let journal = no_io_database(journal_name, Arc::clone(&calls), None);
         let scope = ManagedScopeId::new("authority-test-scope").unwrap();
-        let catalog =
-            VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
-                .unwrap();
+        let context = supported_context(scope);
 
-        let result = TypeDbMigrationStore::new(managed, journal, scope, catalog);
+        let result = TypeDbExecutionBinding::new(managed, journal, context);
         let Err(error) = result else {
             panic!("independent custom backend authorities must reject");
         };
@@ -2293,11 +2634,143 @@ mod tests {
             Some(authority),
         );
         let scope = ManagedScopeId::new("authority-test-scope").unwrap();
+        let context = supported_context(scope);
         let catalog =
             VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
                 .unwrap();
 
-        assert!(TypeDbMigrationStore::new(managed, journal, scope, catalog).is_ok());
+        let binding = TypeDbExecutionBinding::new(managed, journal, context)
+            .expect("shared authority must create one exact execution binding");
+        assert!(TypeDbMigrationStore::new(&binding, catalog).is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn foreign_and_unbound_leases_reject_before_either_pair_performs_io() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let scope_id = ManagedScopeId::new("pair-mixing-scope").expect("scope");
+        let context = supported_context(scope_id.clone());
+
+        let authority_a = DatabaseConnectionAuthority::isolated();
+        let managed_a = no_io_database(
+            "managed-a".to_owned(),
+            Arc::clone(&calls),
+            Some(authority_a.clone()),
+        );
+        let journal_a = no_io_database(
+            derived_journal_database_name("managed-a"),
+            Arc::clone(&calls),
+            Some(authority_a),
+        );
+        let binding_a = TypeDbExecutionBinding::new(managed_a, journal_a, context.clone())
+            .expect("first exact 3.12.1 pair");
+
+        let authority_b = DatabaseConnectionAuthority::isolated();
+        let managed_b = no_io_database(
+            "managed-b".to_owned(),
+            Arc::clone(&calls),
+            Some(authority_b.clone()),
+        );
+        let journal_b = no_io_database(
+            derived_journal_database_name("managed-b"),
+            Arc::clone(&calls),
+            Some(authority_b),
+        );
+        let binding_b = TypeDbExecutionBinding::new(managed_b, journal_b, context.clone())
+            .expect("second exact 3.12.1 pair");
+
+        let catalog_a =
+            VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
+                .expect("empty catalog");
+        let catalog_b =
+            VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
+                .expect("empty catalog");
+        let store_a = TypeDbMigrationStore::new(&binding_a, catalog_a).expect("first store");
+        let store_b = TypeDbMigrationStore::new(&binding_b, catalog_b).expect("second store");
+        let provider_a = TypeDbMigrationProvider::new(&binding_a).expect("first provider");
+
+        let scope = ExecutionScope::new(scope_id);
+        let holder = LeaseHolderId::new("same-holder").expect("holder");
+        let fence = ExecutionFence::new(1).expect("fence");
+        let local = MigrationLease::new_bound(
+            scope.clone(),
+            holder.clone(),
+            fence,
+            store_a.execution_binding.clone(),
+        );
+        let foreign = MigrationLease::new_bound(
+            scope.clone(),
+            holder.clone(),
+            fence,
+            store_b.execution_binding.clone(),
+        );
+        let unbound = MigrationLease::new(scope, holder, fence);
+        assert_ne!(local, foreign, "the local binding participates in equality");
+
+        let empty = declared(&[]);
+        let state = managed_schema_state(&empty, &context).expect("managed state");
+        for lease in [&foreign, &unbound] {
+            let provider_error = provider_a
+                .observe_managed_state(lease, &state, &state)
+                .await
+                .expect_err("provider A must require its own bound lease");
+            assert_eq!(
+                provider_error.code().as_str(),
+                "migration_typedb_execution_binding_mismatch"
+            );
+            let release_error = store_a
+                .release(lease)
+                .await
+                .expect_err("store A must not release a lease it did not issue");
+            assert_eq!(
+                release_error.code().as_str(),
+                "migration_typedb_execution_binding_mismatch"
+            );
+            let store_error = store_a
+                .load_applied(lease)
+                .await
+                .expect_err("store A must reject every lease it did not issue");
+            assert_eq!(
+                store_error.code().as_str(),
+                "migration_typedb_execution_binding_mismatch"
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn catalog_from_3_11_cannot_be_relabelled_with_a_3_12_execution_context() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let authority = DatabaseConnectionAuthority::isolated();
+        let managed = no_io_database(
+            "managed".to_owned(),
+            Arc::clone(&calls),
+            Some(authority.clone()),
+        );
+        let journal = no_io_database(
+            derived_journal_database_name("managed"),
+            Arc::clone(&calls),
+            Some(authority),
+        );
+        let scope = ManagedScopeId::new("profile-relabel-scope").expect("scope");
+        let legacy_context = ManagedDeltaContext::new(
+            scope.clone(),
+            SemanticProfileId::new("typedb-3.11.5/v1").expect("legacy profile"),
+            CapabilitySet::new(),
+        );
+        let manifest = verified_manifest_for_context(&legacy_context);
+        let catalog = VerifiedMigrationCatalog::new([&manifest]).expect("verified catalog");
+        let supported_context = supported_context(scope);
+
+        let binding = TypeDbExecutionBinding::new(managed, journal, supported_context)
+            .expect("the exact supported pair must bind without backend I/O");
+        let error = TypeDbMigrationStore::new(&binding, catalog)
+            .err()
+            .expect("a 3.11 catalog cannot be relabelled as a 3.12 execution catalog");
+        assert_eq!(
+            error.code().as_str(),
+            "migration_typedb_manifest_semantic_profile_mismatch"
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 

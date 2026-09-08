@@ -12,8 +12,10 @@ from typing import TYPE_CHECKING, Any
 import isodate
 
 if TYPE_CHECKING:
-    from type_bridge.models.base import TypeDBType
-    from type_bridge.models.relation import Relation
+    from type_bridge_core import PyRustDatabase, PyRustTransactionContext
+
+    from type_bridge.models.base import _QueryTypeDBType as TypeDBType
+    from type_bridge.models.relation import _QueryRelation as Relation
 
 
 @dataclass(frozen=True)
@@ -58,12 +60,12 @@ def rust_core() -> Any:
 @lru_cache(maxsize=1)
 def descriptor_registry() -> Any:
     """Return the process-local PyO3 descriptor registry wrapper."""
-    return rust_core().PyDescriptorRegistry()
+    return rust_core()._QueryDescriptorRegistry()
 
 
 def descriptor_for_model(model_cls: type[TypeDBType]) -> dict[str, Any]:
     """Translate a Python Entity/Relation class into a Rust descriptor dict."""
-    from type_bridge.models import Relation
+    from type_bridge.models.relation import _QueryRelation as Relation
 
     if issubclass(model_cls, Relation):
         return relation_descriptor(model_cls)
@@ -72,7 +74,7 @@ def descriptor_for_model(model_cls: type[TypeDBType]) -> dict[str, Any]:
 
 def register_model_descriptor(model_cls: type[TypeDBType]) -> dict[str, Any]:
     """Register and return the canonical Rust descriptor for a Python model class."""
-    from type_bridge.models import Relation
+    from type_bridge.models.relation import _QueryRelation as Relation
 
     registry = descriptor_registry()
     descriptor = descriptor_for_model(model_cls)
@@ -96,22 +98,22 @@ def model_schema_info() -> dict[str, Any]:
 
 def compute_schema_diff(current: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
     """Compute schema diff through the Rust schema engine."""
-    return rust_core().compute_schema_diff(current, target)
+    return rust_core()._archived_compute_schema_diff(current, target)
 
 
 def classify_schema_diff(diff: dict[str, Any]) -> list[dict[str, Any]]:
     """Classify schema diff changes through the Rust schema engine."""
-    return rust_core().classify_schema_diff(diff)
+    return rust_core()._archived_classify_schema_diff(diff)
 
 
 def schema_diff_is_breaking(diff: dict[str, Any]) -> bool:
     """Return whether the Rust schema diff contains breaking changes."""
-    return bool(rust_core().schema_diff_is_breaking(diff))
+    return bool(rust_core()._archived_schema_diff_is_breaking(diff))
 
 
 def generate_define_block(info: dict[str, Any]) -> str:
     """Generate TypeQL through the Rust schema generator."""
-    return rust_core().generate_define_block(info)
+    return rust_core()._archived_generate_define_block(info)
 
 
 def migration_state_schema() -> dict[str, Any]:
@@ -341,7 +343,7 @@ def _effective_roles(model_cls: type[Relation]) -> list[_RoleMetadata]:
     effective order, recursively), then own roles, with overridden parent roles
     absent — exactly the set the engine accepts on instances of ``model_cls``.
     """
-    from type_bridge.models.relation import Relation as RelationBase
+    from type_bridge.models.relation import _QueryRelation as RelationBase
 
     # Build the ancestry chain from model_cls up to (but not including) Relation base.
     # Reverse it so we process root → leaf.
@@ -486,7 +488,7 @@ def normalize_attributes(model_cls: type[TypeDBType], data: dict[str, Any]) -> d
     return normalized
 
 
-def rust_database_for(connection: Any) -> Any:
+def rust_database_for(connection: Any) -> PyRustDatabase:
     """Return or create a Rust database handle for a Python Database object."""
     from type_bridge.session import Database, TransactionContext
 
@@ -521,21 +523,6 @@ def rust_database_for(connection: Any) -> Any:
                 identity.password or "password",
                 **connect_kwargs,
             )
-            from type_bridge.session import (
-                _emit_server_deprecation_notice,
-            )
-
-            try:
-                _emit_server_deprecation_notice(
-                    rust_db.server_deprecation_notice,
-                    stacklevel=4,
-                )
-            except BaseException:
-                try:
-                    rust_db.close()
-                except BaseException:
-                    pass
-                raise
         except BaseException:
             connection._discard_uncommitted_transport()
             raise
@@ -544,41 +531,12 @@ def rust_database_for(connection: Any) -> Any:
         return rust_db
 
 
-def migration_runner_for(connection: Any) -> Any:
-    """Return a PyMigrationRunner bound to the Rust database for a connection.
-
-    The runner shares the connection's `Arc<Database>` and `Arc<Runtime>`, so
-    migration execution runs on the same Rust connection as the rest of the ORM
-    path — no second runtime is created.
-    """
-    return rust_core().PyMigrationRunner(rust_database_for(connection))
+def state_reader_for(connection: Any) -> Any:
+    """Return the native read-only frozen-ledger reader."""
+    return rust_core().PyMigrationStateReader(rust_database_for(connection))
 
 
-def require_legacy_writer_open(connection: Any) -> None:
-    """Reject a legacy writer after the target database adopts V2 authority."""
-    migration_runner_for(connection).require_legacy_writer_open()
-
-
-def require_legacy_writer_open_in_transaction(connection: Any) -> None:
-    """Guard an active Python transaction before TypeBridge-owned V1 mutation."""
-    rust_tx = rust_transaction_for(connection)
-    if rust_tx is None:
-        raise TypeError("legacy writer transaction guard requires an active TransactionContext")
-    rust_tx.require_legacy_writer_open()
-
-
-def state_manager_for(connection: Any) -> Any:
-    """Return a PyMigrationStateManager bound to the Rust database.
-
-    Resolves the unconfigured default migration-state backend to the
-    TypeDB-backed manager built from the live `PyRustDatabase`, sharing the
-    connection's `Arc<Database>` and `Arc<Runtime>` — the same default path as
-    `migration_runner_for`.
-    """
-    return rust_core().PyMigrationStateManager(rust_database_for(connection))
-
-
-def rust_transaction_for(connection: Any) -> Any | None:
+def rust_transaction_for(connection: Any) -> PyRustTransactionContext | None:
     """Return the Rust transaction adapter for a Python TransactionContext."""
     from type_bridge.session import TransactionContext
 
@@ -595,16 +553,16 @@ def rust_manager_for_entity(connection: Any, descriptor: dict[str, Any]) -> Any:
     """Create a PyO3 dynamic entity manager."""
     rust_tx = rust_transaction_for(connection)
     if rust_tx is not None:
-        return rust_core().PyDynamicEntityManager.for_transaction(rust_tx, descriptor)
-    return rust_core().PyDynamicEntityManager(rust_database_for(connection), descriptor)
+        return rust_core()._QueryDynamicEntityManager.for_transaction(rust_tx, descriptor)
+    return rust_core()._QueryDynamicEntityManager(rust_database_for(connection), descriptor)
 
 
 def rust_manager_for_relation(connection: Any, descriptor: dict[str, Any]) -> Any:
     """Create a PyO3 dynamic relation manager."""
     rust_tx = rust_transaction_for(connection)
     if rust_tx is not None:
-        return rust_core().PyDynamicRelationManager.for_transaction(rust_tx, descriptor)
-    return rust_core().PyDynamicRelationManager(rust_database_for(connection), descriptor)
+        return rust_core()._QueryDynamicRelationManager.for_transaction(rust_tx, descriptor)
+    return rust_core()._QueryDynamicRelationManager(rust_database_for(connection), descriptor)
 
 
 def role_player_inputs(instance: Any) -> list[dict[str, Any]]:
@@ -650,7 +608,7 @@ def role_player_inputs(instance: Any) -> list[dict[str, Any]]:
 
 def _field_name_for_role(model_cls: type[Any], role_name: str) -> str | None:
     """Find the Python field name for a TypeDB role name, searching the MRO."""
-    from type_bridge.models.relation import Relation as RelationBase
+    from type_bridge.models.relation import _QueryRelation as RelationBase
 
     for base in model_cls.__mro__:
         if not (isinstance(base, type) and issubclass(base, RelationBase)):

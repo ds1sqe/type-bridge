@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::schema::{DocumentId, SchemaFact};
-use type_bridge_core_lib::bindgen::{BindgenOptions, TargetLanguage};
+use type_bridge_core_lib::_bindgen::{BindgenOptions, TargetLanguage};
 use type_bridge_schema_compat::{
     GENERATED_DECLARED_DESCRIPTOR_PATH, generate_package_with_declared_descriptors,
     generated_descriptors_to_declared, typeql_to_declared, typeql_to_generated_descriptors,

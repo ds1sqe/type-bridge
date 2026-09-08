@@ -1,4 +1,4 @@
-# Example schema for the TOML Schema DSL guide.
+# Frozen read-only TOML conversion fixture. Not an active schema or generator input.
 # Demonstrates attributes with annotations, entity owns/plays, and relates/plays @card.
 
 [attributes.email]

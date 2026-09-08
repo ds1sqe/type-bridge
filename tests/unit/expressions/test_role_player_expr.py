@@ -1,6 +1,6 @@
 """Unit tests for RolePlayerExpr type-safe role-player expression wrapper."""
 
-from type_bridge import Entity, Flag, Integer, Key, String, TypeFlags
+from tests.utils.handwritten import Entity, Flag, Integer, Key, String, TypeFlags
 from type_bridge.expressions import RolePlayerExpr
 
 

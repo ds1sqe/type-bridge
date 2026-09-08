@@ -14,11 +14,11 @@ use type_bridge_schema::{SchemaComment, SchemaDocument, YamlMapping, YamlNode};
 use type_bridge_schema_migration::{MigrationSafetyPolicy, SafetyClass, SafetyPolicyDecision};
 
 use crate::{
-    ExtensionRequirement, MigrationV2Directory, OutputDirectory, SchemaSetPath, SecretReference,
-    SecretSlot, TypeBridgeConfig, TypeBridgeConfigServices, WorkspaceConfigError,
-    WorkspaceConfigErrorCode, WorkspaceEnvironment, WorkspaceRoot, WorkspaceRootCa,
-    WorkspaceTransportPolicy, confined_relative_path, validate_environment_database,
-    validate_environment_uri, workspace_paths_overlap,
+    ExtensionRequirement, MigrationV2Directory, OutputDirectory, SchemaAuthorityOutputPath,
+    SchemaSetPath, SecretReference, SecretSlot, TypeBridgeConfig, TypeBridgeConfigServices,
+    WorkspaceConfigError, WorkspaceConfigErrorCode, WorkspaceEnvironment, WorkspaceRoot,
+    WorkspaceRootCa, WorkspaceTransportPolicy, confined_relative_path,
+    validate_environment_database, validate_environment_uri, workspace_paths_overlap,
 };
 
 /// The only accepted language-neutral workspace manifest discriminator.
@@ -133,6 +133,7 @@ struct EnvironmentWire {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct WorkspaceWire {
     app_label: SpannedString,
+    authority_output: Option<SpannedString>,
     capabilities: Vec<SpannedString>,
     destructive: Option<SpannedString>,
     environments: Vec<(SpannedString, EnvironmentWire)>,
@@ -258,6 +259,16 @@ impl LocatedConfigSpec {
             .map_err(|error| sourced(error, &origin, &wire.schema_root.span))?;
         let migration_v2_directory = MigrationV2Directory::new(migration_path)
             .map_err(|error| sourced(error, &origin, &wire.migration_directory.span))?;
+        let authority_output = wire
+            .authority_output
+            .as_ref()
+            .map(|output| {
+                let path =
+                    resolve_owned_path(&origin, output, "artifacts.schema-authority.output")?;
+                SchemaAuthorityOutputPath::new(path)
+                    .map_err(|error| sourced(error, &origin, &output.span))
+            })
+            .transpose()?;
         let app_label = MigrationAppLabel::new(wire.app_label.value).map_err(|error| {
             contract_value(error, "migrations.app-label", &wire.app_label.span, &origin)
         })?;
@@ -285,6 +296,9 @@ impl LocatedConfigSpec {
             .exclusive_managed_scope(managed_scope)
             .semantic_profile(semantic_profile)
             .migration_v2_directory(migration_v2_directory);
+        if let Some(output) = authority_output {
+            builder = builder.schema_authority_output(output);
+        }
 
         if let Some(destructive) = wire.destructive {
             // The manifest may only tighten the verifier's floor. Anything
@@ -432,6 +446,9 @@ fn validate_manifest_path_disjointness(
             BindingTarget::Rust => "output.rust",
         };
         owned_paths.push((name, directory.as_path()));
+    }
+    if let Some(output) = config.schema_authority_output() {
+        owned_paths.push(("artifact.schema_authority", output.as_path()));
     }
     for (name, path) in owned_paths {
         if workspace_paths_overlap(manifest, path) {
@@ -638,6 +655,7 @@ fn parse_wire(
     origin: &ConfigOrigin,
 ) -> Result<WorkspaceWire, WorkspaceConfigError> {
     let mut format = None;
+    let mut artifacts = None;
     let mut schema = None;
     let mut compatibility = None;
     let mut migrations = None;
@@ -648,6 +666,7 @@ fn parse_wire(
     for entry in root.entries() {
         match entry.key().value() {
             "format" => format = Some(entry.value()),
+            "artifacts" => artifacts = Some(entry.value()),
             "schema" => schema = Some(entry.value()),
             "compatibility" => compatibility = Some(entry.value()),
             "migrations" => migrations = Some(entry.value()),
@@ -692,6 +711,11 @@ fn parse_wire(
         )?,
         origin,
     )?;
+    let authority_output = artifacts
+        .map(|node| {
+            mapping(node, "artifacts", origin).and_then(|value| parse_artifacts(value, origin))
+        })
+        .transpose()?;
     let outputs = bindings
         .map(|node| {
             mapping(node, "bindings", origin).and_then(|value| parse_bindings(value, origin))
@@ -718,6 +742,7 @@ fn parse_wire(
 
     Ok(WorkspaceWire {
         app_label,
+        authority_output,
         capabilities,
         destructive,
         environments,
@@ -729,6 +754,60 @@ fn parse_wire(
         secrets,
         semantic_profile,
     })
+}
+
+fn parse_artifacts(
+    value: &YamlMapping,
+    origin: &ConfigOrigin,
+) -> Result<SpannedString, WorkspaceConfigError> {
+    let mut schema_authority = None;
+    for entry in value.entries() {
+        match entry.key().value() {
+            "schema-authority" => schema_authority = Some(entry.value()),
+            unknown => {
+                return Err(unknown_key(
+                    "artifacts",
+                    unknown,
+                    entry.key().span(),
+                    origin,
+                ));
+            }
+        }
+    }
+    let schema_authority = mapping(
+        required(
+            schema_authority,
+            "artifacts.schema-authority",
+            value,
+            origin,
+        )?,
+        "artifacts.schema-authority",
+        origin,
+    )?;
+    let mut output = None;
+    for entry in schema_authority.entries() {
+        match entry.key().value() {
+            "output" => output = Some(entry.value()),
+            unknown => {
+                return Err(unknown_key(
+                    "artifacts.schema-authority",
+                    unknown,
+                    entry.key().span(),
+                    origin,
+                ));
+            }
+        }
+    }
+    scalar(
+        required(
+            output,
+            "artifacts.schema-authority.output",
+            schema_authority,
+            origin,
+        )?,
+        "artifacts.schema-authority.output",
+        origin,
+    )
 }
 
 fn parse_schema(

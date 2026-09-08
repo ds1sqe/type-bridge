@@ -11,9 +11,9 @@ use type_bridge_contract::projection::{
 };
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::{CanonicalString, ValueTypeTag};
+use type_bridge_orm::_descriptor::{EntityDescriptor, OwnedAttributeDescriptor};
 use type_bridge_orm::{
-    AttributeValue, DynamicAttributeMap, DynamicEntityRow, EntityDescriptor,
-    InstalledRuntimeProjection,
+    AttributeValue, DynamicAttributeMap, DynamicEntityRow, InstalledRuntimeProjection,
 };
 
 use crate::__codegen::{
@@ -178,7 +178,7 @@ fn lower_encoded_entity_create(
 pub(crate) fn lower_projected_create_fields(
     encoded: &EncodedCreate,
     model: &ModelProjection,
-    descriptor_attributes: &[type_bridge_orm::OwnedAttributeDescriptor],
+    descriptor_attributes: &[OwnedAttributeDescriptor],
     projection: &RuntimeProjection,
 ) -> Result<DynamicAttributeMap> {
     let mut by_declaring = BTreeMap::<Vec<u8>, (&[EncodedScalar], usize)>::new();

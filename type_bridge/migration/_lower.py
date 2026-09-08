@@ -6,8 +6,8 @@ from collections.abc import Sequence
 from typing import Any
 
 from type_bridge import _rust_runtime
-from type_bridge.migration import operations as ops
-from type_bridge.migration.base import Migration
+from type_bridge.migration import _operations as ops
+from type_bridge.migration._archive_base import _ArchivedMigration as Migration
 from type_bridge.migration.loader import LoadedMigration
 
 
@@ -104,7 +104,7 @@ def lower_execution_migration(loaded: LoadedMigration) -> dict[str, Any]:
 
     Generated migrations normally carry a JSON sidecar.  When present, that
     sidecar is the executable contract and is returned after Rust serde
-    normalization.  Legacy or hand-authored ``.py`` files fall back to the same
+    normalization. Archived hand-authored ``.py`` files fall back to the same
     structured lowering as :func:`lower_migration`, preserving typed
     ``OperationSpec`` variants so Rust remains the execution-lowering source of
     truth.  Explicit ``ops.RunTypeQL`` operations still lower to ``run_typeql``.
@@ -269,9 +269,9 @@ def _schema_info_for_models(models: Sequence[type[Any]]) -> dict[str, Any]:
     The attributes section is merged on the Python side to preserve full attribute-class
     metadata (regex, range, allowed_values, etc.) not represented in the descriptor layer.
     """
-    from type_bridge.models import Relation
+    from type_bridge.models.relation import _QueryRelation as Relation
 
-    registry = _rust_runtime.rust_core().PyDescriptorRegistry()
+    registry = _rust_runtime.rust_core()._QueryDescriptorRegistry()
     for model in models:
         if not isinstance(model, type):
             raise TypeError(

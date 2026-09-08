@@ -25,7 +25,7 @@ const TALLY_OWNS: &str = r#"{"attribute":"tally","owner":{"kind":"entity","label
 const ROUTE_FROM: &str = r#"{"declaring_relation":"route","label":"origin"}"#;
 const ROUTE_TO: &str = r#"{"declaring_relation":"route","label":"destination"}"#;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct RecordCreate;
 impl sealed::Sealed for RecordCreate {}
 impl IntoEncodedCreate for RecordCreate {
@@ -637,6 +637,45 @@ async fn query_facade_builds_validated_requests_and_replays_recorded_results() {
     };
     assert!(*value);
     assert_eq!(executor.calls(), 3);
+}
+
+#[test]
+fn singular_keyless_relation_uses_exactly_one_without_a_stable_order_key() {
+    use type_bridge_orm::match_request::model::{MatchOperation, RowCardinality, Window};
+
+    let (db, _state) = test_db();
+    let mut session = db.query().unwrap();
+    let route = session.exact::<Route>().unwrap();
+    let query = session.query(route).unwrap();
+
+    let singular = query.validated_one().unwrap();
+    let MatchOperation::FetchRows {
+        cardinality,
+        window,
+        ..
+    } = singular.request().operation
+    else {
+        panic!("expected row fetch")
+    };
+    assert_eq!(cardinality, RowCardinality::ExactlyOne);
+    assert_eq!(
+        window,
+        Window {
+            offset: 0,
+            limit: 1
+        }
+    );
+
+    let bounded = query
+        .validated_rows(
+            &[],
+            Window {
+                offset: 0,
+                limit: 2,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(bounded.code(), Some("missing_stable_unique_key"));
 }
 
 #[test]

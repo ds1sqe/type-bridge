@@ -27,24 +27,34 @@ from type_bridge_core import (
 )
 
 from type_bridge._rust_runtime import normalize_value, rust_core, rust_value_type
-from type_bridge.attribute.base import Attribute
-from type_bridge.attribute.date import Date
-from type_bridge.attribute.datetime import DateTime
-from type_bridge.attribute.datetimetz import DateTimeTZ
+from type_bridge.attribute.base import _QueryAttribute as Attribute
+from type_bridge.attribute.date import _QueryDate as Date
+from type_bridge.attribute.datetime import _QueryDateTime as DateTime
+from type_bridge.attribute.datetimetz import _QueryDateTimeTZ as DateTimeTZ
 from type_bridge.attribute.numeric import NumericAttribute
-from type_bridge.attribute.string import String
+from type_bridge.attribute.string import _QueryString as String
 from type_bridge.fields.base import (
-    FieldRef,
-    NumericFieldRef,
-    OrderedFieldRef,
-    StringFieldRef,
+    _QueryFieldRef as FieldRef,
+)
+from type_bridge.fields.base import (
+    _QueryNumericFieldRef as NumericFieldRef,
+)
+from type_bridge.fields.base import (
+    _QueryOrderedFieldRef as OrderedFieldRef,
+)
+from type_bridge.fields.base import (
+    _QueryStringFieldRef as StringFieldRef,
+)
+from type_bridge.fields.base import (
     _typed_query_field_reference_owner,
 )
 from type_bridge.fields.role import (
-    RoleRef,
+    _QueryRoleRef as RoleRef,
+)
+from type_bridge.fields.role import (
     _typed_query_role_reference_owner,
 )
-from type_bridge.models.base import TypeDBType
+from type_bridge.models.base import _QueryTypeDBType as TypeDBType
 
 OutputT_co = TypeVar("OutputT_co", covariant=True)
 ModelT = TypeVar("ModelT", bound=TypeDBType)
@@ -321,7 +331,7 @@ class BoundVar[ModelT: TypeDBType](Selection[ModelT], _PlayerBinding[ModelT]):
     def field(self, reference: FieldRef[AttributeT, ModelT]) -> BoundField[AttributeT]: ...
 
     def field(self, reference: Any) -> Any:
-        """Bind an owned attribute class or legacy model field reference."""
+        """Bind an owned attribute class or retained V1 model field reference."""
         if isinstance(reference, type) and issubclass(reference, Attribute):
             field_name = self.__field_name_for_attribute(reference)
             handle = self.__handle.field(field_name)

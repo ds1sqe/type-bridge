@@ -10,9 +10,11 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::descriptor::{RoleDescriptor, TypeDescriptorRef};
+use type_bridge_contract::id::is_canonical_thing_iid;
+
+use crate::_descriptor::{RoleDescriptor, TypeDescriptorRef};
+use crate::_registry::DescriptorRegistry;
 use crate::error::{OrmError, Result};
-use crate::registry::DescriptorRegistry;
 use crate::value::AttributeValue;
 
 use super::error::{MatchError, MatchErrorCategory};
@@ -20,7 +22,9 @@ use super::ids::{
     BindingId, BoundFieldId, DescriptorId, FieldId, RoleEdgeId, RoleId, SessionBindingToken,
     SessionId,
 };
-use super::limits::{MAX_PREDICATE_DEPTH, MAX_PREDICATE_NODES, MAX_SELECTED_SLOTS};
+use super::limits::{
+    MAX_BOOLEAN_TERMS, MAX_PREDICATE_DEPTH, MAX_PREDICATE_NODES, MAX_SELECTED_SLOTS,
+};
 use super::model::{
     BindingPair, ComparisonOp, FetchShape, FetchSlot, MatchBinding, MatchExpr, MatchMode,
     MatchOperation, MatchOrder, MatchPlan, MatchRequest, MissingOrder, NamedFetchSlot, ReduceTerm,
@@ -465,6 +469,63 @@ impl BindingHandle {
         })))
     }
 
+    /// Match this binding by one canonical provider thing IID.
+    pub fn iid(&self, iid: impl Into<String>) -> Result<PredicateHandle> {
+        let iid = iid.into();
+        if !is_canonical_thing_iid(&iid) {
+            return Err(handle_error(
+                "invalid_iid",
+                "IID predicates require a canonical TypeDB thing IID",
+            ));
+        }
+        Ok(PredicateHandle::new(
+            self.session_id(),
+            HandleExpr::BindingIid {
+                binding: self.token(),
+                iid,
+            },
+        ))
+    }
+
+    /// Match this binding by one of a non-empty bounded set of canonical IIDs.
+    pub fn iid_in(
+        &self,
+        iids: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<PredicateHandle> {
+        let iids = iids.into_iter().map(Into::into).collect::<Vec<String>>();
+        if iids.is_empty() {
+            return Err(handle_error(
+                "empty_iid_set",
+                "IID-set predicates require at least one IID",
+            ));
+        }
+        if iids.len() > MAX_BOOLEAN_TERMS {
+            return Err(handle_error(
+                "iid_set_limit",
+                "IID-set predicate exceeds the canonical boolean-term ceiling",
+            ));
+        }
+        if iids.iter().any(|iid| !is_canonical_thing_iid(iid)) {
+            return Err(handle_error(
+                "invalid_iid",
+                "IID-set predicates require canonical TypeDB thing IIDs",
+            ));
+        }
+        Ok(PredicateHandle::new(
+            self.session_id(),
+            HandleExpr::Or(
+                iids.into_iter()
+                    .map(|iid| {
+                        Arc::new(HandleExpr::BindingIid {
+                            binding: self.token(),
+                            iid,
+                        })
+                    })
+                    .collect(),
+            ),
+        ))
+    }
+
     /// Resolve a scalar field while preserving the model type that supplied
     /// the language-level field reference.
     ///
@@ -688,6 +749,18 @@ impl FieldHandle {
         ))
     }
 
+    /// Require this field to have at least one value or no values.
+    pub fn presence(&self, present: bool) -> PredicateHandle {
+        PredicateHandle::new(
+            self.session_id(),
+            HandleExpr::FieldPresence {
+                binding: self.binding_token(),
+                field: self.0.field_id.clone(),
+                present,
+            },
+        )
+    }
+
     /// Use this field as a stable public ordering key.
     pub fn order(&self, direction: SortDirection, missing: MissingOrder) -> OrderHandle {
         OrderHandle(Arc::new(OrderState {
@@ -759,6 +832,15 @@ enum HandleExpr {
         operator: ComparisonOp,
         right_binding: SessionBindingToken,
         right: FieldId,
+    },
+    FieldPresence {
+        binding: SessionBindingToken,
+        field: FieldId,
+        present: bool,
+    },
+    BindingIid {
+        binding: SessionBindingToken,
+        iid: String,
     },
     RoleEdge {
         relation: SessionBindingToken,
@@ -844,6 +926,9 @@ fn collect_expr_bindings(expression: &HandleExpr, bindings: &mut BTreeSet<Sessio
         } => {
             bindings.insert(*left_binding);
             bindings.insert(*right_binding);
+        }
+        HandleExpr::FieldPresence { binding, .. } | HandleExpr::BindingIid { binding, .. } => {
+            bindings.insert(*binding);
         }
         HandleExpr::RoleEdge {
             relation, player, ..
@@ -1199,32 +1284,7 @@ impl QueryHandle {
         let group_id = group
             .map(|group| self.require_attached(group, &lowered.binding_ids))
             .transpose()?;
-        let mut reducers = Vec::with_capacity(terms.len());
-        for (reduction, input) in terms {
-            let input = input
-                .map(|field| {
-                    self.require_session(field.session_id())?;
-                    let binding = lowered
-                        .binding_ids
-                        .get(&field.binding_token())
-                        .copied()
-                        .ok_or_else(|| {
-                            handle_error(
-                                "unattached_binding",
-                                "reducer input binding is not attached to this query",
-                            )
-                        })?;
-                    Ok::<_, OrmError>(BoundFieldId {
-                        binding,
-                        field: field.field_id().clone(),
-                    })
-                })
-                .transpose()?;
-            reducers.push(ReduceTerm {
-                reduction: *reduction,
-                input,
-            });
-        }
+        let reducers = self.lower_reduce_terms(terms, &lowered.binding_ids)?;
         Ok(MatchRequest::v1(
             lowered.plan,
             MatchOperation::ReduceBy {
@@ -1245,6 +1305,139 @@ impl QueryHandle {
     ) -> Result<ValidatedMatchRequest> {
         let request = self.reduce_by(root, group, terms)?;
         Ok(validate_match_request(&self.0.session.registry, request)?)
+    }
+
+    /// Lower this lineage to an unvalidated reduction grouped by one owned
+    /// field's witnessed values.
+    pub fn reduce_by_field(
+        &self,
+        root: &BindingHandle,
+        group: &FieldHandle,
+        terms: &[(Reduction, Option<&FieldHandle>)],
+    ) -> Result<MatchRequest> {
+        let lowered = self.lower()?;
+        let root_id = self.require_attached(root, &lowered.binding_ids)?;
+        self.require_session(group.session_id())?;
+        let group_binding = lowered
+            .binding_ids
+            .get(&group.binding_token())
+            .copied()
+            .ok_or_else(|| {
+                handle_error(
+                    "unattached_binding",
+                    "reduction group field binding is not attached to this query",
+                )
+            })?;
+        let reducers = self.lower_reduce_terms(terms, &lowered.binding_ids)?;
+        Ok(MatchRequest::v1(
+            lowered.plan,
+            MatchOperation::ReduceByField {
+                root: root_id,
+                group: BoundFieldId {
+                    binding: group_binding,
+                    field: group.field_id().clone(),
+                },
+                reducers,
+            },
+        ))
+    }
+
+    /// Canonically validate one owned-field-grouped reduction terminal.
+    #[doc(hidden)]
+    pub fn validate_reduce_by_field(
+        &self,
+        root: &BindingHandle,
+        group: &FieldHandle,
+        terms: &[(Reduction, Option<&FieldHandle>)],
+    ) -> Result<ValidatedMatchRequest> {
+        let request = self.reduce_by_field(root, group, terms)?;
+        Ok(validate_match_request(&self.0.session.registry, request)?)
+    }
+
+    /// Lower this lineage to an unvalidated reduction grouped by the
+    /// Cartesian tuple of multiple owned fields' witnessed values.
+    pub fn reduce_by_fields(
+        &self,
+        root: &BindingHandle,
+        groups: &[&FieldHandle],
+        terms: &[(Reduction, Option<&FieldHandle>)],
+    ) -> Result<MatchRequest> {
+        let lowered = self.lower()?;
+        let root_id = self.require_attached(root, &lowered.binding_ids)?;
+        let groups = groups
+            .iter()
+            .map(|group| {
+                self.require_session(group.session_id())?;
+                let binding = lowered
+                    .binding_ids
+                    .get(&group.binding_token())
+                    .copied()
+                    .ok_or_else(|| {
+                        handle_error(
+                            "unattached_binding",
+                            "reduction group field binding is not attached to this query",
+                        )
+                    })?;
+                Ok(BoundFieldId {
+                    binding,
+                    field: group.field_id().clone(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let reducers = self.lower_reduce_terms(terms, &lowered.binding_ids)?;
+        Ok(MatchRequest::v1(
+            lowered.plan,
+            MatchOperation::ReduceByFields {
+                root: root_id,
+                groups,
+                reducers,
+            },
+        ))
+    }
+
+    /// Canonically validate one tuple-field-grouped reduction terminal.
+    #[doc(hidden)]
+    pub fn validate_reduce_by_fields(
+        &self,
+        root: &BindingHandle,
+        groups: &[&FieldHandle],
+        terms: &[(Reduction, Option<&FieldHandle>)],
+    ) -> Result<ValidatedMatchRequest> {
+        let request = self.reduce_by_fields(root, groups, terms)?;
+        Ok(validate_match_request(&self.0.session.registry, request)?)
+    }
+
+    fn lower_reduce_terms(
+        &self,
+        terms: &[(Reduction, Option<&FieldHandle>)],
+        binding_ids: &BTreeMap<SessionBindingToken, BindingId>,
+    ) -> Result<Vec<ReduceTerm>> {
+        let mut reducers = Vec::with_capacity(terms.len());
+        for (reduction, input) in terms {
+            let input = input
+                .map(|field| {
+                    self.require_session(field.session_id())?;
+                    let binding = binding_ids
+                        .get(&field.binding_token())
+                        .copied()
+                        .ok_or_else(|| {
+                            handle_error(
+                                "unattached_binding",
+                                "reducer input binding is not attached to this query",
+                            )
+                        })?;
+                    Ok::<_, OrmError>(BoundFieldId {
+                        binding,
+                        field: field.field_id().clone(),
+                    })
+                })
+                .transpose()?;
+            reducers.push(ReduceTerm {
+                reduction: *reduction,
+                input,
+            });
+        }
+        Ok(reducers)
     }
 
     fn with_state(
@@ -1417,6 +1610,18 @@ fn lower_expression(
                 lookup_binding_id(*right_binding, binding_ids)?,
                 right.clone(),
             ),
+        }),
+        HandleExpr::FieldPresence {
+            binding,
+            field,
+            present,
+        } => Ok(MatchExpr::FieldPresence {
+            field: BoundFieldId::new(lookup_binding_id(*binding, binding_ids)?, field.clone()),
+            present: *present,
+        }),
+        HandleExpr::BindingIid { binding, iid } => Ok(MatchExpr::BindingIid {
+            binding: lookup_binding_id(*binding, binding_ids)?,
+            iid: iid.clone(),
         }),
         HandleExpr::RoleEdge {
             relation,

@@ -63,6 +63,7 @@ pub struct CrudInterceptorAdapter {
 }
 
 impl CrudInterceptorAdapter {
+    /// Wrap a CRUD-aware interceptor for use in the generic chain.
     pub fn new(interceptor: impl CrudInterceptor + 'static) -> Self {
         Self {
             inner: Box::new(interceptor),

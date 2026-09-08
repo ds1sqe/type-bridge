@@ -21,8 +21,9 @@ use type_bridge_contract::migration_assertion::AssertionExpectation;
 use type_bridge_contract::schema::{DeclaredSchema, SchemaDelta};
 use type_bridge_query::{MigrationAssertionValidationContext, lower_condition_to_plan};
 use type_bridge_schema::{
-    ManagedDeltaContext, SafetyClass, SafetyDerivationProfile, apply_delta,
-    derive_safety_conditions, diff_managed, inverse_delta, managed_schema_state, resolve,
+    ManagedDeltaContext, SafetyClass, SafetyConditionDomainIndex, SafetyDerivationProfile,
+    apply_delta, derive_safety_conditions_with_domain_index, diff_managed, inverse_delta,
+    managed_schema_state, resolve,
 };
 
 use crate::history::MigrationHistoryGraph;
@@ -245,7 +246,7 @@ pub fn render_migration_preview(
             &source_catalog,
             &target_catalog,
             &binding,
-            coverage.conditional_operation_indices(),
+            coverage.discharged_operation_indices(),
             true,
         )?;
         for unit in lowering.units() {
@@ -509,9 +510,16 @@ fn author_steps(
     let validation_context = MigrationAssertionValidationContext::new(&resolved, &source_state);
 
     let mut steps = Vec::new();
+    let domain = SafetyConditionDomainIndex::new(source, target);
     for (ordinal, operation) in delta.operations().iter().enumerate() {
-        let derived =
-            derive_safety_conditions(ordinal, operation, source, target, &safety_profile)?;
+        let derived = derive_safety_conditions_with_domain_index(
+            ordinal,
+            operation,
+            source,
+            target,
+            &safety_profile,
+            &domain,
+        )?;
         // Only conditional requirements become assertions. Destructive guard
         // conditions are deliberately omitted: an approved destructive
         // migration means the data loss is intended, and a NoRows guard would

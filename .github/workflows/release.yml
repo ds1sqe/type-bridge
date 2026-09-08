@@ -3,11 +3,11 @@ name: Release
 on:
   push:
     tags:
-      - 'v2.0.2'
+      - 'v2.1.0'
   workflow_dispatch:
     inputs:
       release_channel:
-        description: Validate 2.0.2 or select one separately frozen publisher recovery
+        description: Validate the 2.1.0 release identity or recover the accepted v2.0.0 tag run
         required: true
         type: choice
         default: candidate
@@ -56,9 +56,10 @@ on:
 # before any publisher executed.
 env:
   # Candidate acceptance verifies the exact stable bytes before the stable tag exists.
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && 'v2.0.0' || 'v2.0.2' }}
-  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0.0' || '2.0.2' }}
-  PYTHON_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0.0' || '2.0.2' }}
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && 'v2.0.0' || 'v2.1.0' }}
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0.0' || '2.1.0' }}
+  PYTHON_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0.0' || '2.1.0' }}
+  SERVER_OCI_MINOR_ALIAS: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0' || '2.1' }}
   RELEASE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel || 'stable' }}
   RELEASE_REVISION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && 'aacf4d16486a3a3bae47c3b10c1d526c587dd7a7' || github.sha }}
   RELEASE_ARTIFACT_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && inputs.recovery_run_id || github.run_id }}
@@ -143,6 +144,9 @@ jobs:
     name: Validate release identity
     needs: test
     runs-on: ubuntu-latest
+    outputs:
+      cargo_candidate_artifact_digest: ${{ steps.upload-cargo-candidate.outputs.artifact-digest }}
+      cargo_candidate_manifest_sha256: ${{ steps.cargo-candidate.outputs.manifest_sha256 }}
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -165,19 +169,51 @@ jobs:
       - name: Verify locked native dependency notice
         run: python scripts/ci/generate_native_dependency_notice.py --check
 
+      - name: Validate first-party public Cargo docs
+        run: python scripts/ci/validate_cargo_rustdoc.py
+
       # These namespaced 3.12.0 keys are historical 1.5.x compatibility
       # artifacts, never current graph inputs.
       - name: Verify historical band-9 registry compatibility keys
         run: python scripts/ci/validate_historical_band9_registry.py
 
-      - name: Package and preflight the complete crates.io graph
-        working-directory: type-bridge-core
-        env:
-          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-        run: bash ../scripts/ci/release_crates_graph.sh --preflight
+      - name: Build the exact Cargo release candidate
+        id: cargo-candidate
+        run: |
+          set -euo pipefail
+          candidate="type-bridge-core/target/cargo-release-candidate"
+          python scripts/ci/cargo_release_candidate.py build \
+            --output "$candidate" \
+            --core-workspace type-bridge-core
+          manifest_sha256="$(sha256sum "$candidate/cargo-release-candidate.json" | cut -d' ' -f1)"
+          test "${#manifest_sha256}" -eq 64
+          printf 'manifest_sha256=%s\n' "$manifest_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Validate exact packaged Rust release graph
+        run: >-
+          python scripts/ci/validate_rust_release_artifacts.py
+          --candidate-bundle type-bridge-core/target/cargo-release-candidate
+          --expected-release-version "$RELEASE_VERSION"
+          --expected-manifest-sha256 "${{ steps.cargo-candidate.outputs.manifest_sha256 }}"
+          --repository-root .
+
+      - name: Accept exact packaged Cargo external consumers
+        run: >-
+          python scripts/ci/validate_cargo_external_consumers.py
+          --candidate-bundle type-bridge-core/target/cargo-release-candidate
+          --expected-release-version "$RELEASE_VERSION"
+          --expected-manifest-sha256 "${{ steps.cargo-candidate.outputs.manifest_sha256 }}"
+          --toolchain 1.94.1
+
+      - name: Preflight exact crates.io keys without upload
+        run: >-
+          python scripts/ci/publish_cargo_release_candidate.py preflight
+          --bundle type-bridge-core/target/cargo-release-candidate
+          --expected-release-version "$RELEASE_VERSION"
+          --expected-manifest-sha256 "${{ steps.cargo-candidate.outputs.manifest_sha256 }}"
 
       # Bind Python, npm, Cargo, and OCI artifacts to one release identity.
-      - name: Validate identity and legacy TypeDB package provenance
+      - name: Validate identity and retained TypeDB package provenance
         run: |
           python scripts/ci/validate_release_identity.py \
             --artifact-contract cargo-inclusive \
@@ -198,6 +234,15 @@ jobs:
           python scripts/ci/validate_latest_typedb_driver_pin.py \
             --committed-cutoff
 
+      - name: Upload accepted Cargo release candidate
+        id: upload-cargo-candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cargo-release-candidate
+          path: type-bridge-core/target/cargo-release-candidate/
+          if-no-files-found: error
+          retention-days: 7
+
   # One non-mutating channel gate must pass after every public candidate has
   # been accepted. Credential checks apply only to the stable tag path.
   channel-preflight:
@@ -214,11 +259,32 @@ jobs:
           node-version: "20"
           registry-url: https://registry.npmjs.org
 
+      # crates.io has no non-mutating endpoint that proves a granular token
+      # may publish every candidate crate. Fail closed on the credential's
+      # local shape before npm performs the first irreversible registry write.
+      - name: Validate Cargo publication credential shape
+        if: github.event_name == 'push' && github.ref == 'refs/tags/v2.1.0'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+
+          token = os.environ.get("CARGO_REGISTRY_TOKEN")
+          if not token or token != token.strip():
+              print(
+                  "CARGO_REGISTRY_TOKEN is required and must not have surrounding whitespace.",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+          PY
+
       # npm exposes no package-scoped, non-mutating command that proves a
       # granular token can publish. Authenticate here, then make npm's exact
       # package PUT the first registry mutation so it is authoritative.
       - name: Authenticate npm publication credential
-        if: github.event_name == 'push' && github.ref == 'refs/tags/v2.0.2'
+        if: github.event_name == 'push' && github.ref == 'refs/tags/v2.1.0'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -234,30 +300,139 @@ jobs:
           )"
           test -n "$authenticated_user"
 
+  # Freeze one annotated-tag object before the first registry mutation. Every
+  # publisher rechecks this object immediately before writing so a deleted or
+  # replaced tag cannot turn an accepted candidate into a different release.
+  release-tag-preflight:
+    name: Freeze immutable release tag
+    if: >-
+      always() &&
+      !cancelled() &&
+      (
+        (
+          github.event_name == 'push' &&
+          github.ref == 'refs/tags/v2.1.0' &&
+          needs.channel-preflight.result == 'success'
+        ) ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/master' &&
+          inputs.release_channel == 'recovery' &&
+          inputs.recovery_mode == 'publish' &&
+          inputs.recovery_run_id == '30612912483' &&
+          needs.recovery-preflight.result == 'success'
+        )
+      )
+    needs: [channel-preflight, recovery-preflight]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag_object: ${{ steps.freeze-tag.outputs.tag_object }}
+    steps:
+      - name: Freeze exact annotated tag object
+        id: freeze-tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag_ref_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}"
+          )"
+          test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
+          tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            test "$tag_object" = \
+              "a4cec6478ad4e764f039e51eabcbb68d45efd45a"
+          fi
+          tag_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
+          )"
+          test "$(jq -r '.object.type' <<<"$tag_json")" = commit
+          test "$(jq -r '.object.sha' <<<"$tag_json")" = "$RELEASE_REVISION"
+          printf 'tag_object=%s\n' "$tag_object" >> "$GITHUB_OUTPUT"
+
   # Publish the complete Rust graph only from the accepted stable tag. The
   # helper proves both registry authorities expose the exact local checksum
   # before an existing immutable version can be treated as success.
   publish-crates:
     name: Publish Rust crates to crates.io
-    if: github.event_name == 'push' && github.ref == 'refs/tags/v2.0.2'
-    needs: channel-preflight
+    if: >-
+      always() &&
+      !cancelled() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/tags/v2.1.0' &&
+      needs.release-tag-preflight.result == 'success' &&
+      needs.validate-release-identity.result == 'success' &&
+      needs.publish-node-npm.result == 'success'
+    needs: [release-tag-preflight, publish-node-npm, validate-release-identity]
     runs-on: ubuntu-latest
     environment: release
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - name: Download accepted Cargo release candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          toolchain: 1.94.1
+          name: cargo-release-candidate
+          path: tmp/cargo-release-candidate
+
+      - name: Verify Cargo candidate artifact and manifest digests
+        env:
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.validate-release-identity.outputs.cargo_candidate_artifact_digest }}
+          EXPECTED_MANIFEST_SHA256: ${{ needs.validate-release-identity.outputs.cargo_candidate_manifest_sha256 }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          artifacts_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100"
+          )"
+          count="$(
+            jq '[.artifacts[] | select(.name == "cargo-release-candidate" and .expired == false)] | length' \
+              <<<"$artifacts_json"
+          )"
+          test "$count" = 1
+          service_digest="$(
+            jq -r '.artifacts[] | select(.name == "cargo-release-candidate" and .expired == false) | .digest' \
+              <<<"$artifacts_json"
+          )"
+          test "$service_digest" = "sha256:${EXPECTED_ARTIFACT_DIGEST}"
+          python scripts/ci/cargo_release_candidate.py validate \
+            --bundle tmp/cargo-release-candidate \
+            --expected-release-version "$RELEASE_VERSION" \
+            --expected-manifest-sha256 "$EXPECTED_MANIFEST_SHA256"
+
+      - name: Revalidate frozen release tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_RELEASE_TAG_OBJECT: ${{ needs.release-tag-preflight.outputs.tag_object }}
+        run: |
+          set -euo pipefail
+          tag_ref_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}"
+          )"
+          test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
+          tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
+          test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"
+          tag_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
+          )"
+          test "$(jq -r '.object.type' <<<"$tag_json")" = commit
+          test "$(jq -r '.object.sha' <<<"$tag_json")" = "$RELEASE_REVISION"
 
       - name: Publish accepted crates in dependency order
-        working-directory: type-bridge-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-        run: bash ../scripts/ci/release_crates_graph.sh --publish
+          EXPECTED_MANIFEST_SHA256: ${{ needs.validate-release-identity.outputs.cargo_candidate_manifest_sha256 }}
+        run: >-
+          python scripts/ci/publish_cargo_release_candidate.py publish
+          --bundle tmp/cargo-release-candidate
+          --expected-release-version "$RELEASE_VERSION"
+          --expected-manifest-sha256 "$EXPECTED_MANIFEST_SHA256"
 
   # Build type-bridge-core wheels for all platforms
   build-core-wheels:
@@ -383,8 +558,13 @@ jobs:
       - name: Build package
         run: uv build
 
-      - name: Validate metadata in the exact publisher image
+      - name: Validate metadata with exact PyPI publisher
         run: bash scripts/ci/check_pypi_publisher_metadata.sh dist
+
+      - name: Prepare generated Python live fixture
+        run: >-
+          scripts/ci/prepare_generated_live_fixture.sh python
+          tmp/release-generated-python
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -393,6 +573,13 @@ jobs:
           path: |
             dist/*.whl
             dist/*.tar.gz
+          if-no-files-found: error
+
+      - name: Upload generated Python live fixture
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: generated-python-live-fixture
+          path: tmp/release-generated-python
           if-no-files-found: error
 
   # Validate every immutable Python artifact produced by this workflow before
@@ -412,7 +599,6 @@ jobs:
     env:
       UV_PYTHON: ${{ matrix.python-version }}
       UV_PYTHON_PREFERENCE: only-system
-      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -451,6 +637,12 @@ jobs:
           name: python-dist
           path: tmp/release-python-artifacts/root
 
+      - name: Download generated Python fixture
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: generated-python-live-fixture
+          path: tmp/release-python-artifacts/generated
+
       - name: Validate exact Python release inventory
         run: |
           version="$PYTHON_RELEASE_VERSION"
@@ -461,10 +653,8 @@ jobs:
             --expected-version "$version" \
             --manifest tmp/release-python-artifacts/manifest.json
 
-      # Prove the root wheel's exact dependency replaces the last released
-      # native engine through ordinary resolver behavior. The candidate core
-      # is deliberately only discoverable via --find-links; it is not named as
-      # an install target in the candidate-wheel command.
+      # The candidate core is deliberately only discoverable through the
+      # candidate wheel directory; the root wheel must resolve the exact pair.
       - name: Prove Python facade/core resolver lockstep
         run: |
           set -euo pipefail
@@ -479,8 +669,6 @@ jobs:
           fi
           resolver_venv="$GITHUB_WORKSPACE/tmp/release-python-resolver-lockstep"
           uv venv --python python "$resolver_venv"
-          uv pip install --python "$resolver_venv/bin/python" \
-            'type-bridge-core==1.5.11'
           uv pip install --python "$resolver_venv/bin/python" \
             --find-links tmp/release-python-artifacts/core-wheels \
             "${root_wheels[0]}"
@@ -500,7 +688,7 @@ jobs:
           PY
           "$resolver_venv/bin/type-bridge" schema --help > /dev/null
 
-      - name: Prepare typed consumer interpreter and Pyright
+      - name: Prepare generated consumer interpreter and Pyright
         run: |
           uv venv --python python tmp/release-python-tools
           uv pip install --python tmp/release-python-tools/bin/python \
@@ -514,86 +702,9 @@ jobs:
             --manifest tmp/release-python-artifacts/manifest.json \
             --core-wheels-dir tmp/release-python-artifacts/core-wheels
 
-      # The durable V1 baseline names the v1.5.7 tag, but PyPI has no 1.5.7
-      # files. The frozen 1.5.x published root is 1.5.11, and its immutable
-      # metadata still permits every newer core. Pair those released root bytes
-      # directly with the candidate core and run the frozen V1 consumer.
-      - name: Prove published V1 root compatibility with candidate core
+      - name: Run isolated generated Python artifact acceptance
         run: |
           set -euo pipefail
-          released_root_dir="$GITHUB_WORKSPACE/tmp/released-python-root"
-          dependency_wheelhouse="$GITHUB_WORKSPACE/tmp/released-root-dependencies"
-          compat_venv="$RUNNER_TEMP/released-root-candidate-core"
-          mkdir -p "$released_root_dir" "$dependency_wheelhouse"
-          python -m pip download \
-            --disable-pip-version-check \
-            --no-deps \
-            --only-binary=:all: \
-            --index-url https://pypi.org/simple \
-            --dest "$released_root_dir" \
-            'type-bridge==1.5.11'
-          mapfile -t released_root_wheels < <(
-            find "$released_root_dir" -maxdepth 1 -type f \
-              -name 'type_bridge-1.5.11-py3-none-any.whl' -print
-          )
-          mapfile -t candidate_core_wheels < <(
-            find tmp/release-python-artifacts/core-wheels -maxdepth 1 -type f \
-              -name 'type_bridge_core-*linux*x86_64.whl' -print
-          )
-          if [[ ${#released_root_wheels[@]} -ne 1 ]]; then
-            printf 'Expected one published 1.5.11 root wheel, found %s\n' \
-              "${#released_root_wheels[@]}" >&2
-            exit 1
-          fi
-          if [[ ${#candidate_core_wheels[@]} -ne 1 ]]; then
-            printf 'Expected one candidate Linux x86_64 core wheel, found %s\n' \
-              "${#candidate_core_wheels[@]}" >&2
-            exit 1
-          fi
-          python scripts/ci/validate_released_python_root.py \
-            --wheel "${released_root_wheels[0]}" \
-            --verify-pypi-authority
-
-          # Resolve only the released root's non-core runtime dependencies,
-          # then install the exact old-root/new-core pair with dependency
-          # resolution disabled. The frozen probe itself runs with -I outside
-          # the checkout through run_legacy_python_compat.py.
-          python -m pip download \
-            --disable-pip-version-check \
-            --only-binary=:all: \
-            --index-url https://pypi.org/simple \
-            --dest "$dependency_wheelhouse" \
-            'isodate==0.7.2' \
-            'jinja2>=3.1.0' \
-            'pydantic>=2.12.4' \
-            'typer>=0.15.0' \
-            'typing-extensions>=4.12'
-          if find "$dependency_wheelhouse" -maxdepth 1 -type f \
-            -name 'type_bridge_core-*' -print -quit | grep -q .; then
-            echo 'Dependency wheelhouse unexpectedly contains type-bridge-core.' >&2
-            exit 1
-          fi
-          uv venv --python python "$compat_venv"
-          uv pip install --python "$compat_venv/bin/python" \
-            --no-index \
-            --find-links "$dependency_wheelhouse" \
-            'isodate==0.7.2' \
-            'jinja2>=3.1.0' \
-            'pydantic>=2.12.4' \
-            'typer>=0.15.0' \
-            'typing-extensions>=4.12'
-          uv pip install --python "$compat_venv/bin/python" \
-            --no-deps \
-            "${released_root_wheels[0]}" \
-            "${candidate_core_wheels[0]}"
-          version="$PYTHON_RELEASE_VERSION"
-          python scripts/ci/run_legacy_python_compat.py \
-            --python "$compat_venv/bin/python" \
-            --expected-root-version 1.5.11 \
-            --expected-core-version "$version"
-
-      - name: Run isolated Python artifact acceptance
-        run: |
           mapfile -t core_wheels < <(
             find tmp/release-python-artifacts/core-wheels -maxdepth 1 -type f \
               -name 'type_bridge_core-*linux*x86_64.whl' -print
@@ -610,52 +721,55 @@ jobs:
             find tmp/release-python-artifacts/root -maxdepth 1 -type f \
               -name 'type_bridge-*.tar.gz' -print
           )
-          if [[ ${#core_wheels[@]} -ne 1 ]]; then
-            printf 'Expected exactly one Linux x86_64 core wheel, found %s\n' \
-              "${#core_wheels[@]}" >&2
-            exit 1
-          fi
-          if [[ ${#root_wheels[@]} -ne 1 ]]; then
-            printf 'Expected exactly one root Python wheel, found %s\n' \
-              "${#root_wheels[@]}" >&2
-            exit 1
-          fi
-          if [[ ${#core_sdists[@]} -ne 1 ]]; then
-            printf 'Expected exactly one core sdist, found %s\n' \
-              "${#core_sdists[@]}" >&2
-            exit 1
-          fi
-          if [[ ${#root_sdists[@]} -ne 1 ]]; then
-            printf 'Expected exactly one root Python sdist, found %s\n' \
-              "${#root_sdists[@]}" >&2
-            exit 1
-          fi
+          for count in \
+            "core wheel:${#core_wheels[@]}" \
+            "root wheel:${#root_wheels[@]}" \
+            "core sdist:${#core_sdists[@]}" \
+            "root sdist:${#root_sdists[@]}"; do
+            if [[ "${count##*:}" -ne 1 ]]; then
+              printf 'Expected exactly one %s, found %s\n' \
+                "${count%%:*}" "${count##*:}" >&2
+              exit 1
+            fi
+          done
 
-          python scripts/ci/run_legacy_python_compat.py \
-            --artifact "${core_wheels[0]}" \
-            --artifact "${root_wheels[0]}"
-
-          python scripts/ci/run_legacy_python_compat.py \
-            --artifact "${core_sdists[0]}" \
-            --artifact "${root_sdists[0]}"
-
-          python scripts/ci/run_typed_python_artifact.py \
+          python scripts/ci/run_generated_python_artifact.py \
             --root-wheel "${root_wheels[0]}" \
             --core-wheel "${core_wheels[0]}" \
+            --generated-stage tmp/release-python-artifacts/generated \
             --python "$PWD/tmp/release-python-tools/bin/python" \
             --pyright "$PWD/tmp/release-python-tools/bin/pyright"
+
+          sdist_venv="$RUNNER_TEMP/release-generated-sdist"
+          sdist_consumer="$RUNNER_TEMP/release-generated-sdist-consumer"
+          uv venv --python python "$sdist_venv"
+          uv pip install --python "$sdist_venv/bin/python" \
+            "${core_sdists[0]}" "${root_sdists[0]}"
+          mkdir -p "$sdist_consumer/generated"
+          cp -R tmp/release-python-artifacts/generated/. "$sdist_consumer/generated/"
+          cp type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py \
+            "$sdist_consumer/runtime_check.py"
+          "$sdist_venv/bin/python" -I - \
+            "$sdist_consumer/generated" "$sdist_consumer/runtime_check.py" <<'PY'
+          import runpy
+          import sys
+          from pathlib import Path
+
+          generated = Path(sys.argv[1]).resolve()
+          runtime_check = Path(sys.argv[2]).resolve()
+          sys.path.insert(0, str(generated))
+          runpy.run_path(str(runtime_check), run_name="__main__")
+          PY
 
           driver_venv="$GITHUB_WORKSPACE/tmp/release-python-driver-smoke"
           uv venv --python python "$driver_venv"
           uv pip install --python "$driver_venv/bin/python" \
-            "${root_wheels[0]}[typedb-driver]" \
-            "${core_wheels[0]}"
+            "${root_wheels[0]}[typedb-driver]" "${core_wheels[0]}"
           version="$PYTHON_RELEASE_VERSION"
           "$driver_venv/bin/python" -I \
             tests/compat/typedb_driver_native/probe.py \
             --expected-version "$version"
-
-      - name: Run CLI wheel acceptance (legacy and V2 verbs)
+      - name: Run generated-only CLI wheel acceptance
         run: |
           set -euo pipefail
           mapfile -t core_wheels < <(
@@ -671,40 +785,7 @@ jobs:
           uv pip install --python "$cli_venv/bin/python" \
             "${root_wheels[0]}" "${core_wheels[0]}"
 
-          # The installed wheels must carry both CLI parsers. Prove the
-          # released verbs work before any standalone comparison binary exists
-          # and with no checkout path injected into the environment.
-          if command -v type-bridge-migration > /dev/null; then
-            printf 'Unexpected external type-bridge-migration on PATH\n' >&2
-            exit 1
-          fi
-          "$cli_venv/bin/type-bridge" plan --help > /dev/null
-          "$cli_venv/bin/type-bridge" makemigrations --help > /dev/null
-
-          # Compare the in-extension parser with the same source compiled as
-          # the standalone legacy binary. Do not add it to PATH: the wheel
-          # entry point must remain self-contained throughout the comparison.
-          cargo build --manifest-path type-bridge-core/Cargo.toml \
-            --release -p type-bridge-migration
-          legacy_bin="$GITHUB_WORKSPACE/type-bridge-core/target/release/type-bridge-migration"
-          parity_dir="$GITHUB_WORKSPACE/tmp/release-python-cli-global-parity"
-          mkdir -p "$parity_dir"
-          for flag in --help -h --version -V; do
-            label="${flag//-/}"
-            "$legacy_bin" "$flag" \
-              > "$parity_dir/direct-$label.stdout" \
-              2> "$parity_dir/direct-$label.stderr"
-            "$cli_venv/bin/type-bridge" "$flag" \
-              > "$parity_dir/forwarded-$label.stdout" \
-              2> "$parity_dir/forwarded-$label.stderr"
-            cmp "$parity_dir/direct-$label.stdout" \
-              "$parity_dir/forwarded-$label.stdout"
-            cmp "$parity_dir/direct-$label.stderr" \
-              "$parity_dir/forwarded-$label.stderr"
-          done
-
-          # V2 workspace help/version remains reachable only after an
-          # unambiguous schema, migration, or manifest opt-in.
+          # Only canonical workspace authoring is exercised from candidate wheels.
           "$cli_venv/bin/type-bridge" schema --help > /dev/null
           "$cli_venv/bin/type-bridge" migration --help > /dev/null
           workspace=$(mktemp -d)
@@ -723,6 +804,9 @@ jobs:
             'bindings:' \
             '  python:' \
             '    output: generated/python' \
+            'artifacts:' \
+            '  schema-authority:' \
+            '    output: generated/schema-authority.json' \
             > "$workspace/typebridge.yaml"
           "$cli_venv/bin/type-bridge" \
             --manifest="$workspace/typebridge.yaml" --version > /dev/null
@@ -743,12 +827,10 @@ jobs:
             cd "$workspace"
             "$cli_venv/bin/type-bridge" schema check
             "$cli_venv/bin/type-bridge" schema generate
-            "$cli_venv/bin/type-bridge" schema export-declared \
-              --output generated/declared-schema.json
             "$cli_venv/bin/type-bridge" migration make --name init
           )
           test -f "$workspace/migrations/v2/0001_init.tbmigration.json"
-          test -s "$workspace/generated/declared-schema.json"
+          test -s "$workspace/generated/schema-authority.json"
           test -n "$(ls "$workspace/generated/python")"
 
   # Build every native target that the public loader advertises. The pack job
@@ -838,6 +920,11 @@ jobs:
         with:
           python-version: "3.13.5"
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+
       - name: Install Node dependencies
         run: npm ci
 
@@ -859,8 +946,13 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Unified Query contract typecheck
-        run: npm run typecheck:query-contract
+      - name: Compile generated projection integration harness
+        run: npm run typecheck:projection-integration
+
+      - name: Prepare generated Node live fixture
+        run: >-
+          "$GITHUB_WORKSPACE/scripts/ci/prepare_generated_live_fixture.sh" node
+          "$GITHUB_WORKSPACE/tmp/release-generated-node"
 
       - name: Thin-binding scope probe
         run: npm run scope:probe
@@ -910,6 +1002,13 @@ jobs:
         with:
           name: node-package
           path: tmp/release-node-package/*.tgz
+          if-no-files-found: error
+
+      - name: Upload generated Node live fixture
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: generated-node-live-fixture
+          path: tmp/release-generated-node
           if-no-files-found: error
 
   # Execute the same immutable tarball on every native target. Linux x64 also
@@ -966,9 +1065,9 @@ jobs:
           name: node-package
           path: tmp/release-node-package
 
-      - name: Execute packed Node consumer
+      - name: Execute generated-only packed Node consumer
         run: >-
-          npm run smoke:legacy-package -- --artifact-directory
+          npm run smoke:packed-package -- --artifact-directory
           "${{ github.workspace }}/tmp/release-node-package"
 
   # Build the internal V2 smoke executor once from the exact candidate commit.
@@ -990,7 +1089,8 @@ jobs:
       - name: Build exact V2 smoke server
         run: >-
           cargo build --manifest-path type-bridge-core/Cargo.toml
-          --release -p type-bridge-server --features v2-query
+          --release -p type-bridge-server --no-default-features
+          --features band9,v2-query
           --example v2_smoke_server
 
       - name: Upload immutable V2 smoke server
@@ -1026,6 +1126,8 @@ jobs:
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
         with:
           version: v0.34.1
+          driver-opts: |
+            image=moby/buildkit@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
 
       - name: Build immutable platform OCI layout
         env:
@@ -1033,7 +1135,12 @@ jobs:
           SERVER_OCI_ARCH: ${{ matrix.architecture }}
         run: |
           set -euo pipefail
-          created="$(git show --no-patch --format=%cI "$GITHUB_SHA")"
+          source_date_epoch="$(git show --no-patch --format=%ct "$GITHUB_SHA")"
+          [[ "$source_date_epoch" =~ ^[0-9]+$ ]]
+          created="$(
+            date --utc --date="@${source_date_epoch}" '+%Y-%m-%dT%H:%M:%SZ'
+          )"
+          export SOURCE_DATE_EPOCH="$source_date_epoch"
           release_identity="${RELEASE_TAG}@${GITHUB_SHA}"
           output="$RUNNER_TEMP/server-oci-${SERVER_OCI_ARCH}"
           mkdir -p "$output"
@@ -1048,6 +1155,7 @@ jobs:
             --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
             --build-arg "RELEASE_VERSION=${RELEASE_VERSION}" \
             --build-arg "CREATED=${created}" \
+            --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" \
             --build-arg "RELEASE_IDENTITY=${release_identity}" \
             --output \
               "type=oci,dest=${archive},oci-mediatypes=false,rewrite-timestamp=true" \
@@ -1091,18 +1199,23 @@ jobs:
             platform: linux/arm64
     services:
       typedb:
-        image: typedb/typedb:3.12.1
+        # Registry index resolves to amd64 config
+        # sha256:f683eed7f07c2c519caa795afbc1cd4df4f83c6422ad2cc07406f28f7537423a.
+        image: typedb/typedb:3.12.1@sha256:4224951114b044d52e2fe48108be26ae2734726041dae8d63453ecd407fe2422
         ports:
           - 1729:1729
           - 8000:8000
     steps:
       - name: Checkout exact release source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up QEMU for arm64 runtime proof
         if: matrix.architecture == 'arm64'
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         with:
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
           platforms: arm64
 
       - name: Install Rust toolchain
@@ -1122,8 +1235,6 @@ jobs:
           SERVER_OCI_PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends skopeo
           archive="$(
             find "tmp/server-oci-layout-${SERVER_OCI_ARCH}" \
               -maxdepth 1 -type f -name '*.oci.tar' -print
@@ -1135,8 +1246,42 @@ jobs:
             sha256sum --check layout.sha256
           )
           image="type-bridge-server:accepted-${GITHUB_SHA}-${SERVER_OCI_ARCH}"
-          skopeo copy --preserve-digests \
-            "oci-archive:${archive}" "docker-daemon:${image}"
+          conversion_dir="$RUNNER_TEMP/server-oci-conversion-${SERVER_OCI_ARCH}"
+          mkdir -p "$conversion_dir"
+          docker_archive="$conversion_dir/server.docker.tar"
+          python scripts/ci/run_pinned_skopeo.py \
+            --write-directory "$conversion_dir" -- \
+            copy --preserve-digests \
+            "oci-archive:${archive}" "docker-archive:${docker_archive}"
+          docker load --input "$docker_archive" > "$conversion_dir/docker-load.txt"
+          expected_config="$(
+            python -c \
+              'import json,sys; print(json.load(open(sys.argv[1]))["config_digest"])' \
+              "tmp/server-oci-layout-${SERVER_OCI_ARCH}/layout-report.json"
+          )"
+          docker tag "$expected_config" "$image"
+          actual_config="$(docker image inspect --format '{{.Id}}' "$image")"
+          test "$actual_config" = "$expected_config"
+          actual_rootfs="$(
+            docker image inspect --format '{{json .RootFS.Layers}}' "$image"
+          )"
+          python - \
+            "tmp/server-oci-layout-${SERVER_OCI_ARCH}/layout-report.json" \
+            "$actual_rootfs" <<'PY'
+          import json
+          import sys
+
+          report_path, actual_json = sys.argv[1:]
+          expected = json.load(open(report_path, encoding="utf-8"))["rootfs_diff_ids"]
+          actual = json.loads(actual_json)
+          if actual != expected:
+              raise SystemExit(
+                  "Socketless Docker import changed accepted rootfs identity: "
+                  f"actual={actual!r}, expected={expected!r}"
+              )
+          PY
+          rm -f "$docker_archive" "$conversion_dir/docker-load.txt"
+          rmdir "$conversion_dir"
           docker inspect "$image" >/dev/null
           printf 'TYPE_BRIDGE_SERVER_IMAGE=%s\n' "$image" >> "$GITHUB_ENV"
           printf 'TYPE_BRIDGE_SERVER_PLATFORM=%s\n' \
@@ -1187,11 +1332,12 @@ jobs:
           TYPE_BRIDGE_SERVER_STARTUP_TIMEOUT_SECONDS: "180"
         run: >-
           timeout --foreground 15m
-          cargo test --manifest-path type-bridge-core/Cargo.toml --locked
-          -p type-bridge-server --features v2-query
-          --test v2_query_integration_tests
+          bash scripts/ci/run_exact_ignored_rust_test.sh
           production_binary_serves_v1_health_and_v2_query
-          -- --ignored --exact --nocapture
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-server --no-default-features
+          --features band9,v2-query
+          --test v2_query_integration_tests
 
       - name: Run external generated Rust application through the exact image
         if: matrix.architecture == 'amd64'
@@ -1202,10 +1348,10 @@ jobs:
           ACCEPTANCE_TARGET_DIR: ${{ runner.temp }}/release-rust-projection-target
         run: >-
           timeout --foreground 15m
-          cargo test --manifest-path type-bridge-core/Cargo.toml --locked
-          -p type-bridge-schema-codegen --test rust_projection_live
+          bash scripts/ci/run_exact_ignored_rust_test.sh
           generated_rust_projection_round_trips_exact_live_models
-          -- --ignored --exact --nocapture
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-schema-codegen --test rust_projection_live
 
       - name: Report runtime packages and image size
         run: |
@@ -1274,32 +1420,18 @@ jobs:
           python scripts/ci/validate_trivy_report.py
           "$SERVER_OCI_ACCEPTED_DIR/trivy.json"
 
-  # Exercise the exact Linux wheel pair and the one final multi-native npm
-  # tarball against live TypeDB before any registry mutation. This job consumes
-  # only uploaded release candidates: it performs no source build or repack.
+  # Execute immutable wheel, npm, generated-fixture, and remote-server
+  # candidates together before any registry mutation. Generation and compilation
+  # happened in producer jobs; this consumer performs no source build or repack.
   accept-live-artifact-parity:
-    name: Accept live artifact parity (Python ${{ matrix.python-version }}, ${{ matrix.typedb-server }})
+    name: Accept generated live artifact parity
     needs: [build-core-wheels, build-python, pack-node-package, build-v2-smoke-server]
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - python-version: "3.12"
-            typedb-server: "typedb/typedb:3.8.3"
-            expect-given: "0"
-            expect-legacy-warning: "1"
-          - python-version: "3.13.5"
-            typedb-server: "typedb/typedb:3.11.5"
-            expect-given: "0"
-            expect-legacy-warning: "0"
-          - python-version: "3.14"
-            typedb-server: "typedb/typedb:3.12.1"
-            expect-given: "1"
-            expect-legacy-warning: "0"
     services:
       typedb:
-        image: ${{ matrix.typedb-server }}
+        # Registry index resolves to amd64 config
+        # sha256:f683eed7f07c2c519caa795afbc1cd4df4f83c6422ad2cc07406f28f7537423a.
+        image: typedb/typedb:3.12.1@sha256:4224951114b044d52e2fe48108be26ae2734726041dae8d63453ecd407fe2422
         ports:
           - 1729:1729
           - 8000:8000
@@ -1307,9 +1439,6 @@ jobs:
       USE_DOCKER: "false"
       TYPEDB_ADDRESS: localhost:1729
       TYPEDB_HTTP_PORT: "8000"
-      TYPE_BRIDGE_PARITY_STRICT: "1"
-      TYPE_BRIDGE_PARITY_EXPECT_GIVEN: ${{ matrix.expect-given }}
-      TYPE_BRIDGE_PARITY_EXPECT_LEGACY_WARNING: ${{ matrix.expect-legacy-warning }}
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -1317,7 +1446,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.13.5"
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -1347,6 +1476,18 @@ jobs:
           name: node-package
           path: tmp/release-live-artifacts/node
 
+      - name: Download generated Python live fixture
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: generated-python-live-fixture
+          path: tmp/release-live-artifacts/generated-python
+
+      - name: Download generated Node live fixture
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: generated-node-live-fixture
+          path: tmp/release-live-artifacts/generated-node
+
       - name: Download exact V2 smoke server
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -1355,6 +1496,7 @@ jobs:
 
       - name: Export exact release candidate paths
         run: |
+          set -euo pipefail
           mapfile -t core_wheels < <(
             find tmp/release-live-artifacts/core -maxdepth 1 -type f \
               -name 'type_bridge_core-*linux*x86_64.whl' -print
@@ -1371,44 +1513,63 @@ jobs:
             find tmp/release-live-artifacts/server -maxdepth 1 -type f \
               -name 'v2_smoke_server' -print
           )
-          if [[ ${#core_wheels[@]} -ne 1 ]]; then
-            printf 'Expected one Linux x64 core wheel, found %s\n' \
-              "${#core_wheels[@]}" >&2
-            exit 1
-          fi
-          if [[ ${#root_wheels[@]} -ne 1 ]]; then
-            printf 'Expected one root Python wheel, found %s\n' \
-              "${#root_wheels[@]}" >&2
-            exit 1
-          fi
-          if [[ ${#node_packages[@]} -ne 1 ]]; then
-            printf 'Expected one multi-native npm tarball, found %s\n' \
-              "${#node_packages[@]}" >&2
-            exit 1
-          fi
-          if [[ ${#smoke_servers[@]} -ne 1 ]]; then
-            printf 'Expected one V2 smoke server, found %s\n' \
-              "${#smoke_servers[@]}" >&2
-            exit 1
-          fi
+          for count in \
+            "core wheel:${#core_wheels[@]}" \
+            "root wheel:${#root_wheels[@]}" \
+            "npm package:${#node_packages[@]}" \
+            "smoke server:${#smoke_servers[@]}"; do
+            if [[ "${count##*:}" -ne 1 ]]; then
+              printf 'Expected exactly one %s candidate, found %s\n' \
+                "${count%%:*}" "${count##*:}" >&2
+              exit 1
+            fi
+          done
+          python_stage="$GITHUB_WORKSPACE/tmp/release-live-artifacts/generated-python"
+          node_stage="$GITHUB_WORKSPACE/tmp/release-live-artifacts/generated-node"
+          for required in \
+            "$python_stage/generated_v2/__init__.py" \
+            "$python_stage/schema-authority.json" \
+            "$node_stage/generated_v2/dist/index.js" \
+            "$node_stage/generated_foreign/dist/index.js" \
+            "$node_stage/schema-authority.json" \
+            "$node_stage/harness/tests/projection-integration/generated-package-live.test.js" \
+            "$node_stage/harness/package.json"; do
+            if [[ ! -f "$required" || -L "$required" ]]; then
+              printf 'Generated live fixture is incomplete: %s\n' "$required" >&2
+              exit 1
+            fi
+          done
           chmod +x "${smoke_servers[0]}"
-          printf 'TYPE_BRIDGE_PARITY_CORE_WHEEL=%s\n' \
+          printf 'TYPE_BRIDGE_CORE_WHEEL=%s\n' \
             "$(realpath "${core_wheels[0]}")" >> "$GITHUB_ENV"
-          printf 'TYPE_BRIDGE_PARITY_ROOT_WHEEL=%s\n' \
+          printf 'TYPE_BRIDGE_ROOT_WHEEL=%s\n' \
             "$(realpath "${root_wheels[0]}")" >> "$GITHUB_ENV"
-          printf 'TYPE_BRIDGE_PARITY_NODE_PACKAGE=%s\n' \
+          printf 'TYPE_BRIDGE_NODE_PACKAGE=%s\n' \
             "$(realpath "${node_packages[0]}")" >> "$GITHUB_ENV"
           printf 'TYPE_BRIDGE_V2_SMOKE_SERVER=%s\n' \
             "$(realpath "${smoke_servers[0]}")" >> "$GITHUB_ENV"
+          printf 'TYPE_BRIDGE_GENERATED_PYTHON_STAGE=%s\n' \
+            "$(realpath "$python_stage")" >> "$GITHUB_ENV"
+          printf 'TYPE_BRIDGE_GENERATED_NODE_STAGE=%s\n' \
+            "$(realpath "$node_stage")" >> "$GITHUB_ENV"
 
-      - name: Prepare exact-wheel parity environment
+      - name: Prepare exact-wheel environment
         run: |
-          parity_venv="$RUNNER_TEMP/release-live-parity"
+          parity_venv="$RUNNER_TEMP/release-generated-parity"
           uv venv --python python "$parity_venv"
           uv pip install --python "$parity_venv/bin/python" \
-            "$TYPE_BRIDGE_PARITY_CORE_WHEEL" \
-            "$TYPE_BRIDGE_PARITY_ROOT_WHEEL" \
-            'pytest>=9.0.1' 'pyright>=1.1.407'
+            "$TYPE_BRIDGE_CORE_WHEEL" "$TYPE_BRIDGE_ROOT_WHEEL" 'pytest>=9.0.1'
+
+      - name: Prepare exact npm environment
+        run: |
+          runtime_root="$RUNNER_TEMP/release-node-runtime"
+          npm install --ignore-scripts --no-audit --no-fund --no-package-lock \
+            --no-save --prefix "$runtime_root" "$TYPE_BRIDGE_NODE_PACKAGE"
+          package_root="$runtime_root/node_modules/@type-bridge/node"
+          test -f "$package_root/dist/public.js"
+          test -f "$package_root/type_bridge_node.linux-x64-gnu.node"
+          printf 'TYPE_BRIDGE_NODE_PACKAGE_ROOT=%s\n' \
+            "$(realpath "$package_root")" >> "$GITHUB_ENV"
 
       - name: Wait for TypeDB connect and version endpoints
         run: |
@@ -1428,13 +1589,13 @@ jobs:
             exit 1
           fi
 
-      - name: Run exact-artifact live F8 parity
+      - name: Run exact-wheel generated Python application
         env:
-          TYPE_BRIDGE_LIVE_PARITY_REPORT: ${{ runner.temp }}/release-live-parity.xml
+          TYPE_BRIDGE_GENERATED_PARITY_REPORT: ${{ runner.temp }}/release-generated-parity.xml
         run: |
           cd "$RUNNER_TEMP"
-          PATH="$RUNNER_TEMP/release-live-parity/bin:$PATH" \
-            "$RUNNER_TEMP/release-live-parity/bin/python" -I - <<'PY'
+          PATH="$RUNNER_TEMP/release-generated-parity/bin:$PATH" \
+            "$RUNNER_TEMP/release-generated-parity/bin/python" -I - <<'PY'
           import importlib
           import os
           import sys
@@ -1457,17 +1618,11 @@ jobs:
           import pytest
 
           sys.path.insert(0, str(workspace))
-          test = (
-              workspace
-              / "tests/integration/parity/test_typed_query_live_parity.py"
-          )
-          test_node = (
-              f"{test}::test_live_typed_query_summary_and_f8_contract_match_built_artifacts"
-          )
+          test = workspace / "tests/integration/schema/test_generated_projection_live.py"
           raise SystemExit(
               pytest.main(
                   [
-                      test_node,
+                      str(test),
                       "--rootdir",
                       str(workspace),
                       "--import-mode=importlib",
@@ -1477,124 +1632,47 @@ jobs:
                       "integration",
                       "-ra",
                       "--tb=short",
-                      f"--junitxml={os.environ['TYPE_BRIDGE_LIVE_PARITY_REPORT']}",
+                      f"--junitxml={os.environ['TYPE_BRIDGE_GENERATED_PARITY_REPORT']}",
                   ]
               )
           )
           PY
 
-      - name: Require one passing live artifact regression
+      - name: Require both generated Python journeys
         env:
-          TYPE_BRIDGE_LIVE_PARITY_REPORT: ${{ runner.temp }}/release-live-parity.xml
+          TYPE_BRIDGE_GENERATED_PARITY_REPORT: ${{ runner.temp }}/release-generated-parity.xml
         run: |
           python - <<'PY'
           import os
           import xml.etree.ElementTree as ET
           from pathlib import Path
 
-          report = Path(os.environ["TYPE_BRIDGE_LIVE_PARITY_REPORT"])
+          report = Path(os.environ["TYPE_BRIDGE_GENERATED_PARITY_REPORT"])
           if not report.is_file():
-              raise SystemExit(f"Live artifact parity report is missing: {report}")
+              raise SystemExit(f"Generated parity report is missing: {report}")
           root = ET.parse(report).getroot()
           suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
           totals = {
               key: sum(int(suite.get(key, "0")) for suite in suites)
               for key in ("tests", "failures", "errors", "skipped")
           }
-          expected_name = "test_live_typed_query_summary_and_f8_contract_match_built_artifacts"
-          names = [case.get("name") for case in root.iter("testcase")]
-          print(f"live artifact parity: totals={totals} tests={names}")
-          if totals != {"tests": 1, "failures": 0, "errors": 0, "skipped": 0}:
-              raise SystemExit(f"Live artifact parity did not pass exactly once: {totals}")
-          if names != [expected_name]:
-              raise SystemExit(f"Unexpected live artifact parity test cases: {names}")
-          PY
-
-      - name: Run exact-artifact V2 authoring and remote-model parity
-        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
-        env:
-          TYPE_BRIDGE_V2_ARTIFACT_REPORT: ${{ runner.temp }}/release-v2-artifact-parity.xml
-        run: |
-          cd "$RUNNER_TEMP"
-          PATH="$RUNNER_TEMP/release-live-parity/bin:$PATH" \
-            "$RUNNER_TEMP/release-live-parity/bin/python" -I - <<'PY'
-          import importlib
-          import os
-          import sys
-          from pathlib import Path
-
-          workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
-          environment = Path(sys.prefix).resolve()
-          for module_name in ("type_bridge", "type_bridge_core"):
-              module = importlib.import_module(module_name)
-              module_path = Path(module.__file__).resolve()
-              if module_path == workspace or workspace in module_path.parents:
-                  raise SystemExit(
-                      f"{module_name} leaked to the source checkout: {module_path}"
-                  )
-              if module_path != environment and environment not in module_path.parents:
-                  raise SystemExit(
-                      f"{module_name} escaped the exact-wheel environment: {module_path}"
-                  )
-
-          import pytest
-
-          sys.path.insert(0, str(workspace))
-          test = (
-              workspace
-              / "tests/integration/queries/test_remote_query_session_parity.py"
-          )
-          test_node = (
-              f"{test}::test_public_remote_query_session_matches_direct_subtype_hydration"
-          )
-          raise SystemExit(
-              pytest.main(
-                  [
-                      test_node,
-                      "--rootdir",
-                      str(workspace),
-                      "--import-mode=importlib",
-                      "-o",
-                      "addopts=",
-                      "-m",
-                      "integration",
-                      "-ra",
-                      "--tb=short",
-                      f"--junitxml={os.environ['TYPE_BRIDGE_V2_ARTIFACT_REPORT']}",
-                  ]
-              )
-          )
-          PY
-
-      - name: Require one passing V2 artifact regression
-        if: matrix.typedb-server == 'typedb/typedb:3.12.1'
-        env:
-          TYPE_BRIDGE_V2_ARTIFACT_REPORT: ${{ runner.temp }}/release-v2-artifact-parity.xml
-        run: |
-          python - <<'PY'
-          import os
-          import xml.etree.ElementTree as ET
-          from pathlib import Path
-
-          report = Path(os.environ["TYPE_BRIDGE_V2_ARTIFACT_REPORT"])
-          if not report.is_file():
-              raise SystemExit(f"V2 artifact parity report is missing: {report}")
-          root = ET.parse(report).getroot()
-          suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
-          totals = {
-              key: sum(int(suite.get(key, "0")) for suite in suites)
-              for key in ("tests", "failures", "errors", "skipped")
+          expected = {
+              "test_generated_package_preserves_application_operation_outcomes_live",
+              "test_generated_projection_round_trips_live_models",
           }
-          expected_name = (
-              "test_public_remote_query_session_matches_direct_subtype_hydration"
-          )
-          names = [case.get("name") for case in root.iter("testcase")]
-          print(f"V2 artifact parity: totals={totals} tests={names}")
-          if totals != {"tests": 1, "failures": 0, "errors": 0, "skipped": 0}:
-              raise SystemExit(f"V2 artifact parity did not pass exactly once: {totals}")
-          if names != [expected_name]:
-              raise SystemExit(f"Unexpected V2 artifact parity test cases: {names}")
+          names = {case.get("name") for case in root.iter("testcase")}
+          print(f"generated artifact parity: totals={totals} tests={sorted(names)}")
+          if totals != {"tests": 2, "failures": 0, "errors": 0, "skipped": 0}:
+              raise SystemExit(f"Generated parity did not pass exactly twice: {totals}")
+          if names != expected:
+              raise SystemExit(f"Unexpected generated parity cases: {sorted(names)}")
           PY
+
+      - name: Run exact-package generated Node application
+        working-directory: type-bridge-core/crates/node
+        run: >-
+          node --test --test-concurrency=1
+          "$TYPE_BRIDGE_GENERATED_NODE_STAGE/harness/tests/projection-integration/generated-package-live.test.js"
 
   # The immutable v2.0.0 tag run accepted every artifact but stopped before
   # mutation because npm's owner-wide ACL endpoint rejected a least-privilege
@@ -1726,8 +1804,9 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.0.2' &&
+          github.ref == 'refs/tags/v2.1.0' &&
           needs.channel-preflight.result == 'success' &&
+          needs.release-tag-preflight.result == 'success' &&
           needs.accept-server-oci.result == 'success' &&
           needs.publish-node-npm.result == 'success'
         ) ||
@@ -1738,10 +1817,11 @@ jobs:
           inputs.recovery_mode == 'publish' &&
           inputs.recovery_run_id == '30612912483' &&
           needs.recovery-preflight.result == 'success' &&
+          needs.release-tag-preflight.result == 'success' &&
           needs.publish-node-npm.result == 'success'
         )
       )
-    needs: [channel-preflight, recovery-preflight, accept-server-oci, publish-node-npm]
+    needs: [channel-preflight, recovery-preflight, release-tag-preflight, accept-server-oci, publish-node-npm]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -1802,16 +1882,25 @@ jobs:
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
         with:
           version: v0.34.1
+          driver-opts: |
+            image=moby/buildkit@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
 
       - name: Install pinned Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.0.6
 
-      - name: Install Skopeo
+      - name: Select and verify pinned Skopeo runtime
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends skopeo
+          set -euo pipefail
+          runner=scripts/ci/run_pinned_skopeo.py
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            runner=tmp/recovery-controls/scripts/ci/run_pinned_skopeo.py
+          fi
+          test -f "$runner"
+          test ! -L "$runner"
+          python "$runner" -- --version
+          printf 'TYPE_BRIDGE_SKOPEO_RUNNER=%s\n' "$runner" >> "$GITHUB_ENV"
 
       - name: Authenticate GHCR
         uses: docker/login-action@e92390c5fb421da1463c202d546fed0ec5c39f20 # v3
@@ -1823,6 +1912,7 @@ jobs:
       - name: Revalidate immutable release tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_RELEASE_TAG_OBJECT: ${{ needs.release-tag-preflight.outputs.tag_object }}
         run: |
           set -euo pipefail
           tag_ref_json="$(
@@ -1830,10 +1920,7 @@ jobs:
           )"
           test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
           tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
-          if [[ "$RELEASE_CHANNEL" == "recovery" ]]; then
-            test "$tag_object" = \
-              "a4cec6478ad4e764f039e51eabcbb68d45efd45a"
-          fi
+          test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"
           tag_json="$(
             gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
           )"
@@ -1864,7 +1951,8 @@ jobs:
             )"
             raw="$RUNNER_TEMP/${architecture}-remote-manifest.json"
             error="$RUNNER_TEMP/${architecture}-remote-manifest.err"
-            if skopeo inspect --raw \
+            if python "$TYPE_BRIDGE_SKOPEO_RUNNER" --registry-auth -- \
+              inspect --raw \
               "docker://${image}:${version}-${architecture}" \
               > "$raw" 2> "$error"; then
               actual="sha256:$(sha256sum "$raw" | cut -d' ' -f1)"
@@ -1883,10 +1971,12 @@ jobs:
                 cat "$error" >&2
                 exit 1
               fi
-              skopeo copy --preserve-digests \
+              python "$TYPE_BRIDGE_SKOPEO_RUNNER" --registry-auth -- \
+                copy --preserve-digests \
                 "oci-archive:${archive}" \
                 "docker://${image}:${version}-${architecture}"
-              skopeo inspect --raw \
+              python "$TYPE_BRIDGE_SKOPEO_RUNNER" --registry-auth -- \
+                inspect --raw \
                 "docker://${image}:${version}-${architecture}" > "$raw"
             fi
             actual="sha256:$(sha256sum "$raw" | cut -d' ' -f1)"
@@ -1902,7 +1992,8 @@ jobs:
           version="$RELEASE_VERSION"
           stable_raw="$RUNNER_TEMP/stable-manifest.json"
           stable_error="$RUNNER_TEMP/stable-manifest.err"
-          if skopeo inspect --raw "docker://${image}:${version}" \
+          if python "$TYPE_BRIDGE_SKOPEO_RUNNER" --registry-auth -- \
+            inspect --raw "docker://${image}:${version}" \
             > "$stable_raw" 2> "$stable_error"; then
             echo "${version} already exists; validating before reuse."
           else
@@ -1916,7 +2007,8 @@ jobs:
               --tag "${image}:${version}" \
               "${image}@${SERVER_OCI_AMD64_DIGEST}" \
               "${image}@${SERVER_OCI_ARM64_DIGEST}"
-            skopeo inspect --raw "docker://${image}:${version}" > "$stable_raw"
+            python "$TYPE_BRIDGE_SKOPEO_RUNNER" --registry-auth -- \
+              inspect --raw "docker://${image}:${version}" > "$stable_raw"
           fi
           python - "$stable_raw" \
             "$SERVER_OCI_AMD64_DIGEST" "$SERVER_OCI_ARM64_DIGEST" <<'PY'
@@ -1948,10 +2040,11 @@ jobs:
               )
           PY
           digest="sha256:$(sha256sum "$stable_raw" | cut -d' ' -f1)"
-          for alias in 2.0 2 latest; do
+          for alias in "$SERVER_OCI_MINOR_ALIAS" 2 latest; do
             alias_raw="$RUNNER_TEMP/alias-${alias}.json"
             alias_error="$RUNNER_TEMP/alias-${alias}.err"
-            if skopeo inspect --raw "docker://${image}:${alias}" \
+            if python "$TYPE_BRIDGE_SKOPEO_RUNNER" --registry-auth -- \
+              inspect --raw "docker://${image}:${alias}" \
               > "$alias_raw" 2> "$alias_error"; then
               alias_digest="sha256:$(sha256sum "$alias_raw" | cut -d' ' -f1)"
               if [[ "$alias_digest" != "$digest" ]]; then
@@ -1964,7 +2057,8 @@ jobs:
                 fi
                 docker buildx imagetools create \
                   --tag "${image}:${alias}" "${image}@${digest}"
-                skopeo inspect --raw "docker://${image}:${alias}" > "$alias_raw"
+                python "$TYPE_BRIDGE_SKOPEO_RUNNER" --registry-auth -- \
+                  inspect --raw "docker://${image}:${alias}" > "$alias_raw"
               fi
             else
               if ! grep -Eiq \
@@ -1975,7 +2069,8 @@ jobs:
               fi
               docker buildx imagetools create \
                 --tag "${image}:${alias}" "${image}@${digest}"
-              skopeo inspect --raw "docker://${image}:${alias}" > "$alias_raw"
+              python "$TYPE_BRIDGE_SKOPEO_RUNNER" --registry-auth -- \
+                inspect --raw "docker://${image}:${alias}" > "$alias_raw"
             fi
             test "sha256:$(sha256sum "$alias_raw" | cut -d' ' -f1)" = "$digest"
           done
@@ -1984,7 +2079,7 @@ jobs:
 
       - name: Sign exact platform and multi-platform digests
         env:
-          COSIGN_CERTIFICATE_IDENTITY_REGEXP: ${{ github.event_name == 'workflow_dispatch' && '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/heads/master$' || '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2[.]0[.]2$' }}
+          COSIGN_CERTIFICATE_IDENTITY_REGEXP: ${{ github.event_name == 'workflow_dispatch' && '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/heads/master$' || '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2[.]1[.]0$' }}
         run: |
           cosign sign --yes \
             "${SERVER_OCI_IMAGE}@${SERVER_OCI_AMD64_DIGEST}" \
@@ -2189,7 +2284,7 @@ jobs:
               },
               "revision": os.environ["RELEASE_REVISION"],
               "tag": os.environ["RELEASE_TAG"],
-              "aliases": ["2.0", "2", "latest"],
+              "aliases": [os.environ["SERVER_OCI_MINOR_ALIAS"], "2", "latest"],
               "attestations": {
                   name: url for name, url in attestation_urls.items() if url
               },
@@ -2197,12 +2292,13 @@ jobs:
           output = Path("tmp/server-oci-release/server-oci-release.json")
           output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
           markdown = Path("tmp/server-oci-release/server-oci-release.md")
+          alias_markdown = ", ".join(f"`{alias}`" for alias in payload["aliases"])
           markdown.write_text(
               "## TypeBridge server OCI\n\n"
               f"`{payload['image']}@{payload['digest']}`\n\n"
               f"- linux/amd64: `{payload['platform_digests']['linux/amd64']}`\n"
               f"- linux/arm64: `{payload['platform_digests']['linux/arm64']}`\n"
-              "- aliases: `2.0`, `2`, `latest`\n"
+              f"- aliases: {alias_markdown}\n"
           )
           PY
 
@@ -2223,8 +2319,9 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.0.2' &&
-          needs.channel-preflight.result == 'success'
+          github.ref == 'refs/tags/v2.1.0' &&
+          needs.channel-preflight.result == 'success' &&
+          needs.release-tag-preflight.result == 'success'
         ) ||
         (
           github.event_name == 'workflow_dispatch' &&
@@ -2232,10 +2329,11 @@ jobs:
           inputs.release_channel == 'recovery' &&
           inputs.recovery_mode == 'publish' &&
           inputs.recovery_run_id == '30612912483' &&
-          needs.recovery-preflight.result == 'success'
+          needs.recovery-preflight.result == 'success' &&
+          needs.release-tag-preflight.result == 'success'
         )
       )
-    needs: [channel-preflight, recovery-preflight]
+    needs: [channel-preflight, recovery-preflight, release-tag-preflight]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -2307,6 +2405,7 @@ jobs:
       - name: Revalidate immutable release tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_RELEASE_TAG_OBJECT: ${{ needs.release-tag-preflight.outputs.tag_object }}
         run: |
           set -euo pipefail
           tag_ref_json="$(
@@ -2314,6 +2413,7 @@ jobs:
           )"
           test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
           tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
+          test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"
           tag_json="$(
             gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
           )"
@@ -2362,7 +2462,8 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.0.2' &&
+          github.ref == 'refs/tags/v2.1.0' &&
+          needs.release-tag-preflight.result == 'success' &&
           needs.build-core-wheels.result == 'success' &&
           needs.build-core-sdist.result == 'success' &&
           needs.publish-server-oci.result == 'success'
@@ -2374,10 +2475,11 @@ jobs:
           inputs.recovery_mode == 'publish' &&
           inputs.recovery_run_id == '30612912483' &&
           needs.recovery-preflight.result == 'success' &&
+          needs.release-tag-preflight.result == 'success' &&
           needs.publish-server-oci.result == 'success'
         )
       )
-    needs: [build-core-wheels, build-core-sdist, recovery-preflight, publish-server-oci]
+    needs: [build-core-wheels, build-core-sdist, recovery-preflight, release-tag-preflight, publish-server-oci]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -2456,6 +2558,7 @@ jobs:
       - name: Revalidate immutable release tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_RELEASE_TAG_OBJECT: ${{ needs.release-tag-preflight.outputs.tag_object }}
         run: |
           set -euo pipefail
           tag_ref_json="$(
@@ -2463,6 +2566,7 @@ jobs:
           )"
           test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
           tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
+          test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"
           tag_json="$(
             gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
           )"
@@ -2494,7 +2598,8 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.0.2' &&
+          github.ref == 'refs/tags/v2.1.0' &&
+          needs.release-tag-preflight.result == 'success' &&
           needs.build-python.result == 'success' &&
           needs.publish-core-pypi.result == 'success'
         ) ||
@@ -2505,10 +2610,11 @@ jobs:
           inputs.recovery_mode == 'publish' &&
           inputs.recovery_run_id == '30612912483' &&
           needs.recovery-preflight.result == 'success' &&
+          needs.release-tag-preflight.result == 'success' &&
           needs.publish-core-pypi.result == 'success'
         )
       )
-    needs: [build-python, recovery-preflight, publish-core-pypi]
+    needs: [build-python, recovery-preflight, release-tag-preflight, publish-core-pypi]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -2570,6 +2676,7 @@ jobs:
       - name: Revalidate immutable release tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_RELEASE_TAG_OBJECT: ${{ needs.release-tag-preflight.outputs.tag_object }}
         run: |
           set -euo pipefail
           tag_ref_json="$(
@@ -2577,6 +2684,7 @@ jobs:
           )"
           test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
           tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
+          test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"
           tag_json="$(
             gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
           )"
@@ -2608,7 +2716,8 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.0.2' &&
+          github.ref == 'refs/tags/v2.1.0' &&
+          needs.release-tag-preflight.result == 'success' &&
           needs.publish-server-oci.result == 'success' &&
           needs.publish-node-npm.result == 'success' &&
           needs.publish-core-pypi.result == 'success' &&
@@ -2622,13 +2731,14 @@ jobs:
           inputs.recovery_mode == 'publish' &&
           inputs.recovery_run_id == '30612912483' &&
           needs.recovery-preflight.result == 'success' &&
+          needs.release-tag-preflight.result == 'success' &&
           needs.publish-server-oci.result == 'success' &&
           needs.publish-node-npm.result == 'success' &&
           needs.publish-core-pypi.result == 'success' &&
           needs.publish-python-pypi.result == 'success'
         )
       )
-    needs: [recovery-preflight, publish-server-oci, publish-node-npm, publish-core-pypi, publish-python-pypi, publish-crates]
+    needs: [recovery-preflight, release-tag-preflight, publish-server-oci, publish-node-npm, publish-core-pypi, publish-python-pypi, publish-crates]
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -2713,6 +2823,7 @@ jobs:
       - name: Revalidate immutable release tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_RELEASE_TAG_OBJECT: ${{ needs.release-tag-preflight.outputs.tag_object }}
         run: |
           set -euo pipefail
           tag_ref_json="$(
@@ -2720,6 +2831,7 @@ jobs:
           )"
           test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
           tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
+          test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"
           tag_json="$(
             gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
           )"
@@ -2734,7 +2846,7 @@ jobs:
           name: TypeBridge ${{ env.RELEASE_VERSION }}
           draft: true
           generate_release_notes: true
-          body_path: ${{ github.event_name == 'push' && 'docs/guide/v2.0.2-notice.md' || 'dist/server-oci-release.md' }}
+          body_path: dist/server-oci-release.md
           files: dist/*
 
   # This lane promotes original stable-run bytes only. The control commit is

@@ -50,16 +50,19 @@ impl TypeqlDeclaredSchema {
         }
     }
 
+    /// Borrow the canonical declared-schema projection.
     #[must_use]
     pub const fn declared(&self) -> &DeclaredSchema {
         &self.declared
     }
 
+    /// Consume the adapter result and return its canonical declared schema.
     #[must_use]
     pub fn into_declared(self) -> DeclaredSchema {
         self.declared
     }
 
+    /// Borrow references indexed by the function that contains them.
     #[must_use]
     pub const fn function_body_references(&self) -> &BTreeMap<FunctionId, FunctionBodyReferences> {
         &self.function_body_references
@@ -126,6 +129,7 @@ pub struct FunctionBodyReferences {
 }
 
 impl FunctionBodyReferences {
+    /// Borrow the statically resolved schema identities used by the function body.
     #[must_use]
     pub const fn references(&self) -> &BTreeSet<SchemaReference> {
         &self.references
@@ -141,8 +145,16 @@ impl FunctionBodyReferences {
 /// A neutral, static schema identity referenced by a TypeQL function body.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum SchemaReference {
+    /// An unscoped type or schema label.
     Label(Label),
-    Scoped { scope: Label, name: Label },
+    /// A role or other identity qualified by its declaring scope.
+    Scoped {
+        /// The declaring type or namespace label.
+        scope: Label,
+        /// The label declared within `scope`.
+        name: Label,
+    },
+    /// A referenced schema function.
     Function(FunctionId),
 }
 

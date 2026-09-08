@@ -1,8 +1,8 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
-use type_bridge_orm::attribute::ValueType;
+use type_bridge_orm::_attribute::ValueType;
+use type_bridge_orm::_schema::info::*;
 use type_bridge_orm::expr::{Agg, Expr, SortDir};
-use type_bridge_orm::schema::info::*;
 use type_bridge_orm::value::AttributeValue;
 
 fn bench_attribute_value_roundtrip(c: &mut Criterion) {

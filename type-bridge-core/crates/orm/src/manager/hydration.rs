@@ -4,14 +4,14 @@
 //! This module flattens those results and invokes
 //! [`TypeBridgeEntity::from_document`] to produce typed entities.
 
-use crate::descriptor::{EntityDescriptor, RelationDescriptor};
-use crate::dynamic::{
+use crate::_descriptor::{EntityDescriptor, RelationDescriptor};
+use crate::_dynamic::{
     DynamicEntityIdentity, DynamicEntityRow, DynamicRelationIdentity, DynamicRelationRow,
     DynamicRolePlayer,
 };
-use crate::entity::TypeBridgeEntity;
+use crate::_entity::TypeBridgeEntity;
+use crate::_relation::TypeBridgeRelation;
 use crate::error::{OrmError, Result};
-use crate::relation::TypeBridgeRelation;
 use crate::session::backend::QueryResult;
 use crate::value::AttributeValue;
 
@@ -496,7 +496,7 @@ fn flatten_document_attributes(
 
 fn dynamic_attributes(
     type_name: &str,
-    descriptors: &[crate::descriptor::OwnedAttributeDescriptor],
+    descriptors: &[crate::_descriptor::OwnedAttributeDescriptor],
     flat: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Vec<(String, AttributeValue)>> {
     let mut attributes = Vec::new();
@@ -531,7 +531,7 @@ fn dynamic_attributes(
 
 fn dynamic_attributes_from_document(
     type_name: &str,
-    descriptors: &[crate::descriptor::OwnedAttributeDescriptor],
+    descriptors: &[crate::_descriptor::OwnedAttributeDescriptor],
     obj: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Vec<(String, AttributeValue)>> {
     let Some(attrs) = obj.get("attributes").and_then(|value| value.as_object()) else {
@@ -1191,11 +1191,11 @@ fn parse_count_value(v: &serde_json::Value) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::attribute::ValueType;
-    use crate::descriptor::{
+    use crate::_attribute::ValueType;
+    use crate::_descriptor::{
         EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor,
     };
-    use crate::entity::Annotation;
+    use crate::_entity::Annotation;
 
     #[test]
     fn flatten_nested_attributes() {

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from type_bridge import Database, Entity, String, TypeFlags
+from tests.utils.handwritten import Entity, String, TypeFlags
+from type_bridge.session import Database
 from type_bridge.typed import Query, QuerySession
 
 

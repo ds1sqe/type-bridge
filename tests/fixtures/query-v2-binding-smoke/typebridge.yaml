@@ -1,0 +1,17 @@
+format: typebridge.workspace/v1
+
+schema:
+  root: schema/schema.yaml
+  ownership: exclusive
+  managed-scope: binding-smoke
+
+compatibility:
+  semantic-profile: typedb-3.12.1/v1
+
+migrations:
+  directory: migrations/v2
+  app-label: bindingsmoke
+
+artifacts:
+  schema-authority:
+    output: generated/schema-authority.json

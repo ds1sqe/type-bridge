@@ -1,11 +1,13 @@
 """Cross-binding smoke: one publicly authored V2 plan, local and remote.
 
-The declared-schema bytes remain a canonical authority fixture. The plan and
-invocation are authored at runtime through ``type_bridge.query_v2``. Local
-execution runs through the native module against a fresh isolated database;
-remote execution travels the versioned envelope over HTTP (or verified HTTPS
-in the TLS lane) to the ``v2_smoke_server`` example serving the same database,
-and both paths must return byte-identical typed outcome JSON.
+The declared-schema bytes remain a canonical low-level client fixture. The
+server receives the matching authority generated from a Split YAML workspace.
+The plan and invocation are authored at runtime through
+``type_bridge.query_v2``. Local execution runs through the native module
+against a fresh isolated database; remote execution travels the versioned
+envelope over HTTP (or verified HTTPS in the TLS lane) to the
+``v2_smoke_server`` example serving the same database, and both paths must
+return byte-identical typed outcome JSON.
 """
 
 from __future__ import annotations
@@ -14,9 +16,11 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 import socket
 import ssl
 import subprocess
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -45,7 +49,9 @@ PROFILE = "typedb-3.12.1/v1"
 CROSS_BINDING_PLAN_FINGERPRINT = "d605b3bc6e8a9c59a03d2a79d7ec497dd637109b2cbf70ebaa5ac4b951f53502"
 CROSS_BINDING_INVOCATION_SHA256 = "ca5bc9a7657a21c5cf330e99a678a4c0fc25d803828f456c8b520625f54143b7"
 
-CORE_DIR = Path(__file__).resolve().parents[3] / "type-bridge-core"
+ROOT = Path(__file__).resolve().parents[3]
+CORE_DIR = ROOT / "type-bridge-core"
+AUTHORITY_WORKSPACE = ROOT / "tests/fixtures/query-v2-binding-smoke"
 
 
 def _free_port() -> int:
@@ -65,6 +71,37 @@ def _wait_for_port(port: int, process: subprocess.Popen, timeout: float) -> None
         except OSError:
             time.sleep(0.2)
     raise AssertionError("smoke server never became reachable")
+
+
+def _server_authority(declared: bytes) -> bytes:
+    with tempfile.TemporaryDirectory(prefix="type-bridge-v2-binding-authority-") as stage_text:
+        stage = Path(stage_text)
+        shutil.copytree(AUTHORITY_WORKSPACE, stage, dirs_exist_ok=True)
+        subprocess.run(
+            [
+                "cargo",
+                "run",
+                "--quiet",
+                "--locked",
+                "-p",
+                "type-bridge-cli",
+                "--bin",
+                "type-bridge",
+                "--",
+                "--manifest",
+                str(stage / "typebridge.yaml"),
+                "schema",
+                "generate",
+            ],
+            cwd=CORE_DIR,
+            check=True,
+        )
+        authority = (stage / "generated/schema-authority.json").read_bytes()
+    content = json.loads(authority)["content"]
+    assert content["managed_scope"]["id"] == SCOPE
+    assert content["semantic_profile"]["id"] == PROFILE
+    assert content["declared_schema"] == json.loads(declared)
+    return authority
 
 
 def _author_plan(authority: QueryV2Authority) -> tuple[bytes, str, str, str]:
@@ -204,6 +241,7 @@ def test_prepared_plan_executes_locally_and_remotely() -> None:
         assert '"ada"' in local
         assert '"bob"' in local
 
+        server_authority = _server_authority(declared)
         port = _free_port()
         server = subprocess.Popen(
             [
@@ -225,9 +263,7 @@ def test_prepared_plan_executes_locally_and_remotely() -> None:
                 "SMOKE_TYPEDB_PASSWORD": password,
                 "SMOKE_TYPEDB_HTTP_PORT": str(http_port),
                 "SMOKE_DATABASE": database,
-                "SMOKE_DECLARED_B64": DECLARED_B64,
-                "SMOKE_SCOPE": SCOPE,
-                "SMOKE_PROFILE": PROFILE,
+                "SMOKE_AUTHORITY_B64": base64.b64encode(server_authority).decode(),
                 "SMOKE_PORT": str(port),
                 **server_tls,
             },

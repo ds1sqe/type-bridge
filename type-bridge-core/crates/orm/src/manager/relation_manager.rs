@@ -6,11 +6,11 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use crate::_relation::TypeBridgeRelation;
 use crate::error::{OrmError, Result};
 use crate::filter::Filter;
 use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, TypeKind};
 use crate::query::RelationQuery;
-use crate::relation::TypeBridgeRelation;
 use crate::session::Database;
 use crate::session::backend::{QueryResult, TxType};
 
@@ -23,6 +23,9 @@ use super::query_builder;
 /// inserting, fetching, deleting, and counting relations.
 ///
 /// # Example
+///
+/// This example is ignored because it requires a live TypeDB service and a
+/// generated `Employment` relation from a consumer package.
 ///
 /// ```ignore
 /// let manager = RelationManager::<Employment>::new(&db);
@@ -200,6 +203,9 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
     /// Create a chainable query builder for this relation type.
     ///
     /// # Example
+    ///
+    /// This example is ignored because it requires a live TypeDB service and
+    /// a generated relation type bound by the surrounding manager.
     ///
     /// ```ignore
     /// let recent = manager.query()

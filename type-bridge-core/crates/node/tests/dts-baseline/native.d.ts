@@ -1,6 +1,5 @@
 import type { NativeModule, NativeRustDatabase, NativeRustTransactionContext } from "./index.js";
 import type { NativeProjectedManager } from "./runtime-projection.js";
-type NativeRegistryHandle = InstanceType<NativeModule["NodeDescriptorRegistry"]>;
 type NativeMatchComparison = "equal" | "not_equal" | "less_than" | "less_than_or_equal" | "greater_than" | "greater_than_or_equal" | "contains" | "starts_with" | "ends_with" | "regex";
 type NativeMatchDirection = "ascending" | "descending";
 type NativeMatchMissingOrder = "reject" | "first" | "last";
@@ -18,6 +17,8 @@ interface NativeMatchSessionHandle {
 }
 interface NativeMatchBindingHandle {
     readonly [nativeMatchHandleKind]: "binding";
+    iid(iid: string): NativeMatchPredicateHandle;
+    iidIn(iids: string[]): NativeMatchPredicateHandle;
     field(fieldName: string): NativeMatchFieldHandle;
     fieldOwnedBy(ownerType: string, fieldName: string): NativeMatchFieldHandle;
     role(roleName: string): NativeMatchRoleHandle;
@@ -27,6 +28,7 @@ interface NativeMatchBindingHandle {
 }
 interface NativeMatchFieldHandle {
     readonly [nativeMatchHandleKind]: "field";
+    presence(present: boolean): NativeMatchPredicateHandle;
     compareValueJson(comparison: NativeMatchComparison, valueJson: string): NativeMatchPredicateHandle;
     compareField(comparison: NativeMatchComparison, other: NativeMatchFieldHandle): NativeMatchPredicateHandle;
     order(direction: NativeMatchDirection, missing: NativeMatchMissingOrder): NativeMatchOrderHandle;
@@ -72,6 +74,12 @@ interface NativeMatchQueryHandle {
     reduceByDiagnostic(root: NativeMatchBindingHandle, group: NativeMatchBindingHandle | null, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): string;
     executeReduceByOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, group: NativeMatchBindingHandle | null, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativeValidatedMatchResultHandle;
     executeReduceByBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, group: NativeMatchBindingHandle | null, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativeValidatedMatchResultHandle;
+    reduceByFieldDiagnostic(root: NativeMatchBindingHandle, group: NativeMatchFieldHandle, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): string;
+    executeReduceByFieldOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, group: NativeMatchFieldHandle, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativeValidatedMatchResultHandle;
+    executeReduceByFieldBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, group: NativeMatchFieldHandle, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativeValidatedMatchResultHandle;
+    reduceByFieldsDiagnostic(root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): string;
+    executeReduceByFieldsOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativeValidatedMatchResultHandle;
+    executeReduceByFieldsBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativeValidatedMatchResultHandle;
 }
 interface NativeValidatedMatchResultHandle {
     readonly [nativeMatchHandleKind]: "validated-result";
@@ -97,6 +105,8 @@ interface NativeValidatedMatchResultHandle {
     reductionLongValue(query: NativeMatchQueryHandle, rowIndex: number, valueIndex: number): bigint | null;
     reductionDoubleValue(query: NativeMatchQueryHandle, rowIndex: number, valueIndex: number): number | null;
     reductionGroup(query: NativeMatchQueryHandle, rowIndex: number): NativeValidatedThingHandle;
+    reductionGroupValueJson(query: NativeMatchQueryHandle, rowIndex: number): string;
+    reductionGroupValuesJson(query: NativeMatchQueryHandle, rowIndex: number): string;
 }
 interface NativeValidatedThingHandle {
     readonly [nativeMatchHandleKind]: "validated-thing";
@@ -110,11 +120,6 @@ interface NativeValidatedThingHandle {
     rolePlayerCount(roleName: string): number;
     rolePlayer(roleName: string, playerIndex: number): NativeValidatedThingHandle;
 }
-interface NativeMatchModule {
-    NodeMatchSessionHandle: new (registry: NativeRegistryHandle) => NativeMatchSessionHandle;
-    revalidateMatchDiagnostic(registry: NativeRegistryHandle, diagnosticJson: string): string;
-    validateMatchOrderTermCount(actual: number): void;
-}
 interface NativeRemoteModelQueryContext {
 }
 interface NativePendingRemoteModelQuery {
@@ -127,15 +132,24 @@ interface NativeRemoteModelQueryModule {
     queryV2PrepareRemoteModelPage(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): NativePendingRemoteModelQuery;
     queryV2PrepareRemoteModelCount(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle): NativePendingRemoteModelQuery;
     queryV2PrepareRemoteModelExists(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle): NativePendingRemoteModelQuery;
+    queryV2PrepareRemoteModelReduce(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle, group: NativeMatchBindingHandle | null, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativePendingRemoteModelQuery;
+    queryV2PrepareRemoteModelReduceByField(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle, group: NativeMatchFieldHandle, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativePendingRemoteModelQuery;
+    queryV2PrepareRemoteModelReduceByFields(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativePendingRemoteModelQuery;
 }
 interface NativeRuntimeProjectionHandle {
     managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
     managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
+    matchSession(): NativeMatchSessionHandle;
+    matchModelType(typeKey: string): string;
+    validateAttributeValueJson(typeKey: string, valueJson: string): void;
+    validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
+    revalidateMatchDiagnostic(diagnostic: string): string;
+    materializeMatchThingJson(thing: NativeValidatedThingHandle): string;
 }
 interface NativeRuntimeProjectionModule {
     NodeRuntimeProjection: new (projectionJson: string, semanticFingerprintJson: string, projectionFingerprintJson: string, registrationsJson: string) => NativeRuntimeProjectionHandle;
 }
-type LoadedNativeModule = NativeModule & NativeMatchModule & NativeRemoteModelQueryModule & NativeRuntimeProjectionModule;
+type LoadedNativeModule = NativeModule & NativeRemoteModelQueryModule & NativeRuntimeProjectionModule;
 /**
  * Loads and returns the native .node module. The result is cached after the
  * first successful load; subsequent calls return the same object.

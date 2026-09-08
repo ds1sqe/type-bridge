@@ -430,7 +430,7 @@ fn writer_authority_presence_source(
         }
         prior_end = extent.end;
     }
-    WriterAuthorityPresenceSource::Projected(type_bridge_core_lib::parser::blank_source_extents(
+    WriterAuthorityPresenceSource::Projected(type_bridge_core_lib::_parser::blank_source_extents(
         export, &extents,
     ))
 }
@@ -447,7 +447,7 @@ fn absolute_span(
 }
 
 fn preceding_capability_separator(source: &str, start: usize, end: usize) -> Option<usize> {
-    use type_bridge_core_lib::parser::{SourceRegionKind, scan_source_regions};
+    use type_bridge_core_lib::_parser::{SourceRegionKind, scan_source_regions};
 
     if start > end || end > source.len() {
         return None;
@@ -553,7 +553,7 @@ fn authority_label_token_extents(
     source: &str,
     relevant_label: fn(&str) -> bool,
 ) -> Vec<std::ops::Range<usize>> {
-    use type_bridge_core_lib::parser::{SourceRegionKind, scan_source_regions};
+    use type_bridge_core_lib::_parser::{SourceRegionKind, scan_source_regions};
 
     let is_label_byte = |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-');
     let bytes = source.as_bytes();

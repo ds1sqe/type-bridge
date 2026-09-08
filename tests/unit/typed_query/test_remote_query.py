@@ -24,7 +24,7 @@ from tests.unit.query.test_query_v2_remote_runtime import (
     _signed_reply as _remote_signed_reply,
 )
 from tests.unit.typed_query._support import diagnostic_session, invoke_untyped
-from type_bridge import AttributeFlags, Entity, Flag, Key, String, TypeFlags
+from tests.utils.handwritten import AttributeFlags, Entity, Flag, Key, String, TypeFlags
 from type_bridge.typed import (
     BoundVar,
     Page,

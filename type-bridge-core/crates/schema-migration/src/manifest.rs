@@ -29,7 +29,8 @@ use type_bridge_query::{
 };
 use type_bridge_schema::{
     DeltaError, ManagedDeltaContext, RequiredSafetyCondition, SafetyClass, SafetyCondition,
-    SafetyDerivationProfile, apply_delta, classify_delta_safety, derive_safety_conditions,
+    SafetyConditionDomainIndex, SafetyDerivationProfile, apply_delta,
+    classify_schema_operation_safety, derive_safety_conditions_with_domain_index,
     managed_schema_state, plan_schema_operations, resolve,
 };
 
@@ -205,14 +206,17 @@ pub struct VerifiedSchemaMigrationManifest {
 }
 
 impl VerifiedSchemaMigrationManifest {
+    /// Return the closed migration manifest format identifier.
     pub const fn format(&self) -> &MigrationFormat {
         &self.format
     }
 
+    /// Return the content-derived migration identity.
     pub const fn id(&self) -> &MigrationId {
         &self.id
     }
 
+    /// Return canonical parent migration identities.
     pub fn parents(&self) -> &[MigrationId] {
         &self.parents
     }
@@ -232,38 +236,52 @@ impl VerifiedSchemaMigrationManifest {
         !self.legacy_parents.is_empty()
     }
 
+    /// Return the verified migration steps in execution order.
     pub fn steps(&self) -> &[MigrationStep] {
         &self.steps
     }
 
+    /// Return the managed-scope binding verified during replay.
     pub const fn managed_scope(&self) -> &ManagedScopeBinding {
         &self.managed_scope
     }
 
+    /// Return the semantic-profile binding verified during replay.
     pub const fn semantic_profile(&self) -> &SemanticProfileBinding {
         &self.semantic_profile
     }
 
+    /// Return the provider lowering-profile binding verified during replay.
     pub const fn lowering_profile(&self) -> &SchemaLoweringProfileBinding {
         &self.lowering_profile
     }
 
+    /// Return the capabilities required to execute every step.
     pub const fn required_capabilities(&self) -> &CapabilitySet {
         &self.required_capabilities
     }
 
+    /// Return the highest verifier-effective policy floor in the migration plan.
+    ///
+    /// Raw operation classifications remain visible on lowered statement
+    /// units. A normally backfill-required constraint over a provably empty
+    /// source domain carries a `Conditional` manifest floor after the verifier
+    /// discharges it; policy never receives a general backfill waiver.
     pub const fn safety(&self) -> SafetyClass {
         self.safety
     }
 
+    /// Return whether the verified migration has a complete inverse plan.
     pub const fn reversible(&self) -> bool {
         self.reversible
     }
 
+    /// Return the canonical execution-plan fingerprint.
     pub const fn plan_fingerprint(&self) -> &MigrationPlanFingerprint {
         &self.plan_fingerprint
     }
 
+    /// Return the exact managed schema state expected before execution.
     pub const fn source_state(&self) -> &ManagedSchemaState {
         &self.source_state
     }
@@ -276,10 +294,12 @@ impl VerifiedSchemaMigrationManifest {
         &self.source_schema
     }
 
+    /// Return the exact managed schema state expected after execution.
     pub const fn target_state(&self) -> &ManagedSchemaState {
         &self.target_state
     }
 
+    /// Return the replay-authoritative declared target schema.
     pub const fn target_schema(&self) -> &DeclaredSchema {
         &self.target_schema
     }
@@ -393,7 +413,7 @@ pub fn build_verified_manifest(
             ));
         }
 
-        verify_assertion_coverage(
+        let coverage = verify_assertion_coverage(
             &pending_assertions,
             delta,
             &current_schema,
@@ -407,12 +427,7 @@ pub fn build_verified_manifest(
         }
         pending_assertions.clear();
 
-        let report = classify_delta_safety(delta);
-        for reason in report.reasons() {
-            reject_forward_safety(reason.classification())?;
-        }
-        reject_forward_safety(report.classification())?;
-        safety = safety.max(report.classification());
+        safety = safety.max(coverage.effective_safety());
 
         for capability in delta.required_capabilities().iter().cloned() {
             required_capabilities.insert(capability);
@@ -554,13 +569,31 @@ pub fn verified_manifest_digest(
     )?))
 }
 
-fn reject_forward_safety(safety: SafetyClass) -> Result<(), Diagnostic> {
+fn verified_forward_safety(
+    safety: SafetyClass,
+    verifier_resolved: bool,
+) -> Result<SafetyClass, Diagnostic> {
+    if verifier_resolved {
+        return match safety {
+            SafetyClass::Conditional => Ok(SafetyClass::Conditional),
+            // An operation that normally needs backfill becomes executable
+            // only when exact source-domain proof shows its anchor has no
+            // possible instances. Retain a Conditional manifest floor rather
+            // than relabeling the transition as generally additive.
+            SafetyClass::BackfillRequired => Ok(SafetyClass::Conditional),
+            _ => Err(failure(
+                DiagnosticCategory::Integrity,
+                "migration_manifest_invalid_resolved_safety",
+                "verifier resolution targets an operation outside the resolvable safety classes",
+            )),
+        };
+    }
     match safety {
         SafetyClass::FormalOnly
         | SafetyClass::SchemaMetadata
         | SafetyClass::Additive
         | SafetyClass::Conditional
-        | SafetyClass::Destructive => Ok(()),
+        | SafetyClass::Destructive => Ok(safety),
         SafetyClass::BackfillRequired | SafetyClass::Opaque | SafetyClass::Unsupported => {
             Err(failure(
                 DiagnosticCategory::InvalidContract,
@@ -573,13 +606,18 @@ fn reject_forward_safety(safety: SafetyClass) -> Result<(), Diagnostic> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct VerifiedAssertionCoverage {
-    conditional_operation_indices: Vec<usize>,
+    discharged_operation_indices: Vec<usize>,
+    effective_safety: SafetyClass,
     validated: Vec<ValidatedMigrationAssertionPlan>,
 }
 
 impl VerifiedAssertionCoverage {
-    pub(crate) fn conditional_operation_indices(&self) -> &[usize] {
-        &self.conditional_operation_indices
+    pub(crate) fn discharged_operation_indices(&self) -> &[usize] {
+        &self.discharged_operation_indices
+    }
+
+    pub(crate) const fn effective_safety(&self) -> SafetyClass {
+        self.effective_safety
     }
 
     pub(crate) fn validated(&self) -> &[ValidatedMigrationAssertionPlan] {
@@ -596,11 +634,19 @@ pub(crate) fn verify_assertion_coverage(
 ) -> Result<VerifiedAssertionCoverage, Diagnostic> {
     let mut required = Vec::new();
     let mut with_destructive_guards = Vec::new();
-    let mut conditional_operation_indices = Vec::new();
+    let mut discharged_operation_indices = Vec::new();
+    let mut effective_safety = SafetyClass::FormalOnly;
+    let domain = SafetyConditionDomainIndex::new(source, target);
     for (operation_index, operation) in delta.operations().iter().enumerate() {
         let mut operation_requires_assertion = false;
-        let derived =
-            derive_safety_conditions(operation_index, operation, source, target, profile)?;
+        let derived = derive_safety_conditions_with_domain_index(
+            operation_index,
+            operation,
+            source,
+            target,
+            profile,
+            &domain,
+        )?;
         for condition in derived.conditions() {
             match condition.policy() {
                 SafetyClass::Conditional => {
@@ -624,9 +670,16 @@ pub(crate) fn verify_assertion_coverage(
         // A conditional operation is discharged either by assertion coverage
         // or by the verifier's condition-free proof (zero derived conditions
         // survive derivation only when the transition is proven safe).
-        if operation_requires_assertion || derived.policy() == SafetyClass::Conditional {
-            conditional_operation_indices.push(operation_index);
+        let discharged = operation_requires_assertion
+            || derived.policy() == SafetyClass::Conditional
+            || (derived.policy() == SafetyClass::BackfillRequired && derived.is_condition_free());
+        if discharged {
+            discharged_operation_indices.push(operation_index);
         }
+        effective_safety = effective_safety.max(verified_forward_safety(
+            classify_schema_operation_safety(operation),
+            discharged,
+        )?);
     }
 
     let expected: &[RequiredSafetyCondition] = if assertions.is_empty() {
@@ -710,7 +763,8 @@ pub(crate) fn verify_assertion_coverage(
         validated_plans.push(validated);
     }
     Ok(VerifiedAssertionCoverage {
-        conditional_operation_indices,
+        discharged_operation_indices,
+        effective_safety,
         validated: validated_plans,
     })
 }
@@ -721,29 +775,30 @@ fn reject_reverse_assertion_requirement(
     target: &DeclaredSchema,
     profile: &SafetyDerivationProfile,
 ) -> Result<(), Diagnostic> {
-    let report = classify_delta_safety(reverse);
-    match report.classification() {
-        SafetyClass::BackfillRequired | SafetyClass::Opaque | SafetyClass::Unsupported => {
-            return Err(failure(
-                DiagnosticCategory::InvalidContract,
-                "migration_manifest_reverse_unresolved_safety",
-                "claimed reverse has unresolved non-assertion migration work",
-            ));
-        }
-        _ => {}
-    }
-    for (operation_index, operation) in reverse.operations().iter().enumerate() {
-        let derived =
-            derive_safety_conditions(operation_index, operation, source, target, profile)?;
-        if derived.policy() == SafetyClass::Conditional && !derived.conditions().is_empty() {
-            return Err(failure(
+    match verify_assertion_coverage(&[], reverse, source, target, profile) {
+        Ok(_) => Ok(()),
+        Err(error)
+            if matches!(
+                error.code().as_str(),
+                "migration_manifest_missing_assertion"
+                    | "migration_manifest_unresolvable_conditional_assertion"
+            ) =>
+        {
+            Err(failure(
                 DiagnosticCategory::InvalidContract,
                 "migration_manifest_reverse_requires_assertions",
                 "claimed reverse requires assertions that are not represented",
-            ));
+            ))
         }
+        Err(error) if error.code().as_str() == "migration_manifest_unresolved_safety" => {
+            Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_manifest_reverse_unresolved_safety",
+                "claimed reverse has unresolved non-assertion migration work",
+            ))
+        }
+        Err(error) => Err(error),
     }
-    Ok(())
 }
 
 pub(crate) fn delta_diagnostic(error: DeltaError) -> Diagnostic {

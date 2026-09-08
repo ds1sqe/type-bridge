@@ -16,6 +16,8 @@ from tests.utils.typedb_lifecycle import (
     compose_project,
     discover_port,
 )
+from tests.utils.typeql import define_schema
+from type_bridge import Database
 from type_bridge.proxy import ProxyDatabase
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -23,17 +25,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 def _prepare_proxy_database() -> None:
     """Create the proxy test database and a minimal schema for raw query tests."""
-    from type_bridge import (
-        AttributeFlags,
-        Database,
-        Entity,
-        Flag,
-        Key,
-        SchemaManager,
-        String,
-        TypeFlags,
-    )
-
     # When running isolated, the TypeDB port exposed for the proxy stack is
     # engine-assigned.  Discover it the same way proxy_lifecycle does for the
     # proxy port; fall back to the legacy default if not isolated.
@@ -48,22 +39,19 @@ def _prepare_proxy_database() -> None:
             # was brought up outside this session with a pinned port.
             typedb_address = "localhost:1731"
 
-    class Name(String):
-        flags = AttributeFlags(name="name")
-
-    class Person(Entity):
-        flags = TypeFlags(name="person")
-        name: Name = Flag(Key)
-
     database = Database(address=typedb_address, database=PROXY_DB_NAME)
     database.connect()
     try:
         database.delete_database()
         database.create_database()
 
-        schema_manager = SchemaManager(database)
-        schema_manager.register(Person)
-        schema_manager.sync_schema(force=True)
+        define_schema(
+            database,
+            """
+            attribute name, value string;
+            entity person, owns name @key;
+            """,
+        )
     finally:
         database.close()
 

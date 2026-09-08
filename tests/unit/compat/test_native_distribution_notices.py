@@ -33,8 +33,6 @@ def test_notice_pins_namespaced_sources_and_complete_license_texts() -> None:
     normalized_notice = " ".join(notice.split())
 
     for identity in (
-        "type-bridge-typedb-driver-b7` 3.8.1",
-        "type-bridge-typedb-protocol-b7` 3.7.0",
         "type-bridge-typedb-driver-b8` 3.11.5",
         "type-bridge-typedb-protocol-b8` 3.11.0",
         "official `typedb-driver` 3.12.1",
@@ -45,8 +43,6 @@ def test_notice_pins_namespaced_sources_and_complete_license_texts() -> None:
         assert identity in notice
 
     for upstream_commit in (
-        "8e8d4a43da32adc1c56084f4d34174bebd0ce34a",
-        "3b75931f30f2b5cecf192515bb95071cd98a6e10",
         "7e669e41d9fee22fde8d5e60be7edbf00c6ec64b",
         "1db5bdd6579352d31343da28be41844ed07da1b5",
     ):
@@ -60,9 +56,12 @@ def test_notice_pins_namespaced_sources_and_complete_license_texts() -> None:
 
     assert "no active, consumed, or release-input TypeBridge band-9" in normalized_notice
     assert "no transaction terminal-close patch or other behavioral change" in normalized_notice
-    assert "driver `src/` trees and protocol generated source" in normalized_notice
+    assert "driver `src/` tree and protocol generated source" in normalized_notice
     assert "TypeDB remains the original upstream owner and source" in normalized_notice
     assert "immutable TypeBridge v2.0.0 source tag" in normalized_notice
+    assert "band-7" not in normalized_notice.lower()
+    assert "typedb-driver-b7" not in normalized_notice
+    assert "typedb-protocol-b7" not in normalized_notice
 
     assert "Permission is hereby granted, free of charge" in notice
     assert "Apache License\n                           Version 2.0" in notice

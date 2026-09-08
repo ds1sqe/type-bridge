@@ -6,9 +6,9 @@ from typing import Literal, TypeVar, overload
 
 from type_bridge_core import QueryV2Authority, query_v2_remote_model_context
 
-from type_bridge.fields.role import RoleRef
-from type_bridge.models.base import TypeDBType
-from type_bridge.models.relation import Relation
+from type_bridge.fields.role import _QueryRoleRef as RoleRef
+from type_bridge.models.base import _QueryTypeDBType as TypeDBType
+from type_bridge.models.relation import _QueryRelation as Relation
 from type_bridge.typed._remote_terminal import (
     RemoteQueryExchange,
     _RemoteRuntime,

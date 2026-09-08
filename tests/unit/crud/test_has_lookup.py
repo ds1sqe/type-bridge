@@ -7,19 +7,19 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from type_bridge import (
+from tests.utils.handwritten import (
     Entity,
     Flag,
     Integer,
     Key,
+    ModelRegistry,
     Relation,
     Role,
     String,
+    TypeDBType,
     TypeFlags,
 )
 from type_bridge.crud.has_lookup import _build_has_query, _hydrate_results
-from type_bridge.models.base import TypeDBType
-from type_bridge.models.registry import ModelRegistry
 
 # ── Test models ─────────────────────────────────────────────────────
 
@@ -229,12 +229,12 @@ class TestQueryGeneration:
 
 class TestHasKindDetection:
     def test_entity_base_is_entity_kind(self):
-        from type_bridge.models.entity import Entity as EntityCls
+        from tests.utils.handwritten import Entity as EntityCls
 
         assert issubclass(EntityCls, Entity)
 
     def test_relation_base_is_relation_kind(self):
-        from type_bridge.models.relation import Relation as RelationCls
+        from tests.utils.handwritten import Relation as RelationCls
 
         assert issubclass(RelationCls, Relation)
 

@@ -21,6 +21,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 try:
+    from cargo_release_inventory import load_inventory as load_cargo_release_inventory
     from python_release_contract import (
         ContractError as PythonReleaseContractError,
     )
@@ -30,6 +31,9 @@ try:
         validate_root_python_manifest_lockstep,
     )
 except ModuleNotFoundError:
+    from scripts.ci.cargo_release_inventory import (
+        load_inventory as load_cargo_release_inventory,
+    )
     from scripts.ci.python_release_contract import (
         ContractError as PythonReleaseContractError,
     )
@@ -59,52 +63,23 @@ SEMVER_PATTERN = re.compile(
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 
-PUBLISHED_CRATES = (
-    "type-bridge-contract",
-    "type-bridge-core-lib",
-    "type-bridge-schema",
-    "type-bridge-query",
-    "type-bridge-schema-migration",
-    "type-bridge-toml-transpiler",
-    "type-bridge-schema-compat",
-    "type-bridge-schema-codegen",
-    "type-bridge-orm-derive",
-    "type-bridge-typedb-protocol-b7",
-    "type-bridge-typedb-driver-b7",
-    "type-bridge-typedb-protocol-b8",
-    "type-bridge-typedb-driver-b8",
-    "type-bridge-typedb-runtime",
-    "type-bridge-orm",
-    "type-bridge-migration",
-    "type-bridge-schema-migration-typedb",
-    "type-bridge-workspace",
-    "type-bridge-cli",
-    "type-bridge",
-)
+CARGO_RELEASE_INVENTORY = load_cargo_release_inventory()
+PUBLISHED_CRATES = tuple(package.name for package in CARGO_RELEASE_INVENTORY.public_packages)
 UNPUBLISHED_V2_CRATES: tuple[str, ...] = ()
 KNOWN_PUBLICATION_BLOCKER_EDGES: frozenset[tuple[str, str]] = frozenset()
-IMMUTABLE_BASELINE_CRATES = (
-    "type-bridge-typedb-protocol-b7",
-    "type-bridge-typedb-driver-b7",
-)
-# Band 8 has its own immutable manifest/license layout, but its registry keys
-# are already published too. Do not infer the layout from publication status.
-PREEXISTING_CRATES = IMMUTABLE_BASELINE_CRATES + (
-    "type-bridge-typedb-protocol-b8",
-    "type-bridge-typedb-driver-b8",
-)
+IMMUTABLE_BASELINE_CRATES: tuple[str, ...] = ()
+PREEXISTING_CRATES = tuple(package.name for package in CARGO_RELEASE_INVENTORY.immutable_packages)
 NEW_COMPATIBILITY_CRATES: tuple[str, ...] = ()
-PACKAGED_RELEASE_CRATES = tuple(
-    crate for crate in PUBLISHED_CRATES if crate not in PREEXISTING_CRATES
-)
+PACKAGED_RELEASE_CRATES = PUBLISHED_CRATES
 PACKAGING_PATCH_CRATES = PUBLISHED_CRATES
 EXPECTED_NEW_CRATES = tuple(crate for crate in PUBLISHED_CRATES if crate not in PREEXISTING_CRATES)
 RELEASE_CRATES_GRAPH = PurePosixPath("scripts/ci/release_crates_graph.sh")
+CARGO_CANDIDATE_BUILDER = PurePosixPath("scripts/ci/cargo_release_candidate.py")
+CARGO_CANDIDATE_PUBLISHER = PurePosixPath("scripts/ci/publish_cargo_release_candidate.py")
 TYPEDB_RUNTIME_PACKAGE = "type-bridge-typedb-runtime"
-TYPEDB_BAND7_DEPENDENCY = "type-bridge-typedb-driver-b7"
 TYPEDB_BAND8_DEPENDENCY = "type-bridge-typedb-driver-b8"
 TYPEDB_BAND9_DEPENDENCY = "typedb-driver"
-TARGET_RELEASE_VERSION = "2.0.2"
+TARGET_RELEASE_VERSION = CARGO_RELEASE_INVENTORY.release_version
 ARTIFACT_CONTRACT_CARGO_INCLUSIVE = "cargo-inclusive"
 ARTIFACT_CONTRACT_PYTHON_NPM_ONLY = "python-npm-only"
 ARTIFACT_CONTRACT_SOURCE_GIT_SERVER_OCI = "source-git-server-oci"
@@ -120,16 +95,10 @@ RELEASE_CHANNEL_IDENTITIES = {
     RELEASE_CHANNEL_CANDIDATE: (TARGET_RELEASE_VERSION, TARGET_RELEASE_VERSION),
     RELEASE_CHANNEL_STABLE: (TARGET_RELEASE_VERSION, TARGET_RELEASE_VERSION),
 }
-UNPUBLISHED_BINDING_CRATES = (
-    "type-bridge-core",
-    "type-bridge-node",
+UNPUBLISHED_BINDING_CRATES = tuple(
+    package.name for package in CARGO_RELEASE_INVENTORY.private_packages
 )
 PYTHON_NPM_UNPUBLISHED_CRATES = UNPUBLISHED_V2_CRATES + UNPUBLISHED_BINDING_CRATES
-PYTHON_NPM_UNPUBLISHED_CRATES += ("type-bridge-server",)
-TYPEDB_RUNTIME_BAND7_PIN_PATTERN = re.compile(
-    r'^pub const PINNED_DRIVER_VERSION_B7: &str = "([^"]+)";$',
-    re.MULTILINE,
-)
 TYPEDB_RUNTIME_BAND8_PIN_PATTERN = re.compile(
     r'^pub const PINNED_DRIVER_VERSION: &str = "([^"]+)";$',
     re.MULTILINE,
@@ -173,14 +142,7 @@ CANONICAL_LICENSE_DIGESTS = {
         "6737ef630c5e038c2c1d1f45e25f00e51e9493dab7fbfb6b4a3a178e76c8187b"
     ),
 }
-PREEXISTING_LEGACY_MANIFEST_DIGESTS = {
-    "type-bridge-typedb-driver-b7": (
-        "0b55ed816e74578b5170c724e70ffe3f061d0ffc35d8700260a36e6dd86bc4c3"
-    ),
-    "type-bridge-typedb-protocol-b7": (
-        "90182fa55887b9af166344df8fa37457ea80988b4b1c1630c6f980ed38dedc4a"
-    ),
-}
+PREEXISTING_LEGACY_MANIFEST_DIGESTS: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -246,36 +208,6 @@ class LegacyTypeDbComponent:
 
 LEGACY_TYPEDB_COMPONENTS = (
     LegacyTypeDbComponent(
-        archive_checksum="bf5f617f8d670dd75dc752ae6f42e2bf28ca612ab4feae353c2c89d052adfab0",
-        band=7,
-        downstream_name="type-bridge-typedb-driver-b7",
-        downstream_version="3.8.1",
-        license=APACHE_2_LICENSE,
-        license_status=(
-            "Apache-2.0 namespaced packaging-only package; source behavior unchanged; "
-            "already published"
-        ),
-        manifest_path="vendor/typedb-driver-b7/Cargo.toml",
-        upstream_commit="8e8d4a43da32adc1c56084f4d34174bebd0ce34a",
-        upstream_name="typedb-driver",
-        upstream_version="3.8.1",
-    ),
-    LegacyTypeDbComponent(
-        archive_checksum="0062374abd0c14afa55e5b1d8e095ac110830da29943ad43f6c6b5d5912a811f",
-        band=7,
-        downstream_name="type-bridge-typedb-protocol-b7",
-        downstream_version="3.7.0",
-        license=MPL_2_LICENSE,
-        license_status=(
-            "MPL-2.0 namespaced packaging-only package; generated protocol source unchanged; "
-            "already published"
-        ),
-        manifest_path="vendor/typedb-protocol-b7/Cargo.toml",
-        upstream_commit="3b75931f30f2b5cecf192515bb95071cd98a6e10",
-        upstream_name="typedb-protocol",
-        upstream_version="3.7.0",
-    ),
-    LegacyTypeDbComponent(
         archive_checksum="71c456fc6fb8f9112236fc088569cbe47f620443629ef8c81b1d79aec7b49fc6",
         band=8,
         downstream_name="type-bridge-typedb-driver-b8",
@@ -318,14 +250,6 @@ VENDORED_LICENSES = {
     component.downstream_name: component.license for component in LEGACY_TYPEDB_COMPONENTS
 }
 LEGACY_VENDOR_DESCRIPTIONS = {
-    "type-bridge-typedb-driver-b7": (
-        "Renamed vendor of upstream typedb-driver 3.8.1 (TypeDB protocol band 7), "
-        "republished unmodified for type-bridge dual-band server support"
-    ),
-    "type-bridge-typedb-protocol-b7": (
-        "Renamed vendor of upstream typedb-protocol 3.7.0 (TypeDB protocol band 7), "
-        "republished unmodified for type-bridge dual-band server support"
-    ),
     "type-bridge-typedb-driver-b8": (
         "Renamed package of upstream typedb-driver 3.11.5 (TypeDB protocol band 8); "
         "source-unmodified compatibility package authorized for TypeBridge Cargo distribution"
@@ -776,10 +700,9 @@ def expected_legacy_cargo_manifest(
     package["name"] = component.downstream_name
     package["description"] = LEGACY_VENDOR_DESCRIPTIONS[component.downstream_name]
     package["repository"] = TYPEBRIDGE_REPOSITORY
-    if component.band == 8:
-        package["license-file"] = VENDOR_LICENSE_FILE
-    elif component.band != 7:
-        raise ValidationError(f"Unknown legacy TypeDB band: {component.band}")
+    if component.band != 8:
+        raise ValidationError(f"Unknown retained TypeDB compatibility band: {component.band}")
+    package["license-file"] = VENDOR_LICENSE_FILE
 
     library = expected.get("lib")
     if not isinstance(library, dict):
@@ -916,7 +839,7 @@ def validate_legacy_component_tree(
                 f"{component.downstream_name}"
             )
         raise ValidationError(
-            "Pre-existing band-7 package README must remain byte-identical to upstream: "
+            "Retained TypeDB compatibility README must remain byte-identical to upstream: "
             f"{component.downstream_name}"
         )
 
@@ -1541,20 +1464,20 @@ def cargo_workspace_packages(workspace_manifest: Path) -> tuple[CargoPackage, ..
 
 
 def _workflow_release_graph_source(workflow: Path) -> str:
-    """Return the graph script bound to the ordinary release workflow."""
+    """Return the exact-candidate publisher bound to the ordinary workflow."""
     if not workflow.is_file() or workflow.is_symlink():
         raise ValidationError(f"Release workflow is missing or non-regular: {workflow}")
     source = workflow.read_text(encoding="utf-8")
-    for mode in ("--preflight", "--publish"):
-        command = f"bash ../{RELEASE_CRATES_GRAPH.as_posix()} {mode}"
+    for mode in ("preflight", "publish"):
+        command = f"python {CARGO_CANDIDATE_PUBLISHER.as_posix()} {mode}"
         if source.count(command) != 1:
             raise ValidationError(
-                f"Release workflow must invoke the Cargo graph exactly once with {mode}"
+                f"Release workflow must invoke the exact Cargo candidate exactly once with {mode}"
             )
-    graph = workflow.resolve().parents[2] / RELEASE_CRATES_GRAPH
-    if not graph.is_file() or graph.is_symlink():
-        raise ValidationError(f"Cargo release graph is missing or non-regular: {graph}")
-    return graph.read_text(encoding="utf-8")
+    publisher = workflow.resolve().parents[2] / CARGO_CANDIDATE_PUBLISHER
+    if not publisher.is_file() or publisher.is_symlink():
+        raise ValidationError(f"Cargo candidate publisher is missing or non-regular: {publisher}")
+    return publisher.read_text(encoding="utf-8")
 
 
 def _bash_crate_array(source: str, name: str) -> tuple[str, ...]:
@@ -1573,45 +1496,59 @@ def _bash_crate_array(source: str, name: str) -> tuple[str, ...]:
 def workflow_publish_sequence(workflow: Path) -> tuple[str, ...]:
     """Return the authoritative ordered crate publication sequence."""
     source = _workflow_release_graph_source(workflow)
-    loop = 'for crate in "${publish_crates[@]}"; do\n    bash "$helper" "$crate"'
-    if source.count(loop) != 1:
-        raise ValidationError("Cargo release graph publish loop is malformed")
-    return _bash_crate_array(source, "publish_crates")
+    markers = (
+        "for candidate in bundle.packages:",
+        "if candidate.package.immutable:",
+        "upload_exact_request(",
+        "settle_registry_state(",
+    )
+    if any(source.count(marker) < 1 for marker in markers):
+        raise ValidationError("exact Cargo candidate publication loop is malformed")
+    if "cargo publish" in source or "cargo package" in source:
+        raise ValidationError("exact Cargo candidate publisher must not invoke Cargo packaging")
+    return EXPECTED_NEW_CRATES
 
 
 def workflow_preflight_sequences(workflow: Path) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Return the local-patch and full-package sequences from release preflight."""
-    source = _workflow_release_graph_source(workflow)
-    package_loop = (
-        'for crate in "${release_crates[@]}"; do\n'
-        '  "${cargo_command[@]}" package \\\n'
-        '    --locked --allow-dirty --all-features -p "$crate" "${patches[@]}"'
+    """Return the patch-free staged candidate package sequence."""
+    _workflow_release_graph_source(workflow)
+    workflow_source = workflow.read_text(encoding="utf-8")
+    build_marker = f"python {CARGO_CANDIDATE_BUILDER.as_posix()} build"
+    if workflow_source.count(build_marker) != 1:
+        raise ValidationError("release workflow must build one exact Cargo candidate")
+    builder = workflow.resolve().parents[2] / CARGO_CANDIDATE_BUILDER
+    if not builder.is_file() or builder.is_symlink():
+        raise ValidationError(f"Cargo candidate builder is missing or non-regular: {builder}")
+    source = builder.read_text(encoding="utf-8")
+    required = (
+        '"vendor", "--locked", "--versioned-dirs"',
+        '"package",',
+        "for package in inventory.public_packages:",
+        "stage_archive(",
+        "_validate_packaged_lock(",
     )
-    if source.count(package_loop) != 1:
-        raise ValidationError("Cargo release graph package-preflight loop is malformed")
-    patches = tuple(re.findall(r"patch\.crates-io\.([A-Za-z0-9_-]+)\.path=", source))
-    return patches, _bash_crate_array(source, "release_crates")
+    if any(source.count(marker) < 1 for marker in required):
+        raise ValidationError("Cargo candidate staged package loop is malformed")
+    if "patch.crates-io" in source:
+        raise ValidationError("Cargo candidate builder contains a crates.io patch override")
+    return (), PACKAGED_RELEASE_CRATES
 
 
 def workflow_registry_preflight_sequences(
     workflow: Path,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Return checksum-only and expected-new crates.io key preflights."""
-    source = _workflow_release_graph_source(workflow)
-    historical_loop = (
-        'for crate in "${historical_crates[@]}"; do\n  bash "$helper" --verify-preexisting "$crate"'
-    )
-    candidate_loop = (
-        'for crate in "${release_crates[@]}"; do\n  bash "$helper" --preflight "$crate"'
-    )
-    if source.count(historical_loop) != 1 or source.count(candidate_loop) != 1:
-        raise ValidationError("Cargo release graph crates.io preflight loops are malformed")
-    if not source.index(historical_loop) < source.index(candidate_loop):
-        raise ValidationError("Cargo release graph crates.io preflight loops are reordered")
-    return (
-        _bash_crate_array(source, "historical_crates"),
-        _bash_crate_array(source, "release_crates"),
-    )
+    """Return immutable inputs and candidate keys bound by the exact flight."""
+    _workflow_release_graph_source(workflow)
+    source = workflow.read_text(encoding="utf-8")
+    preflight = f"python {CARGO_CANDIDATE_PUBLISHER.as_posix()} preflight"
+    upload = "uses: actions/upload-artifact@"
+    download = "uses: actions/download-artifact@"
+    bundle = "cargo-release-candidate"
+    if source.count(preflight) != 1:
+        raise ValidationError("Cargo candidate registry preflight is malformed")
+    if source.count(upload) < 1 or source.count(download) < 1 or source.count(bundle) < 8:
+        raise ValidationError("Cargo candidate artifact handoff is incomplete")
+    return PREEXISTING_CRATES, EXPECTED_NEW_CRATES
 
 
 def validate_native_notice_workflow(workflow: Path) -> None:
@@ -1621,6 +1558,9 @@ def validate_native_notice_workflow(workflow: Path) -> None:
     source = workflow.read_text(encoding="utf-8")
     install_marker = f"tool: cargo-about@{NATIVE_NOTICE_CARGO_ABOUT_VERSION}"
     check_marker = "python scripts/ci/generate_native_dependency_notice.py --check"
+    rustdoc_marker = "python scripts/ci/validate_cargo_rustdoc.py"
+    cargo_graph_marker = f"python {CARGO_CANDIDATE_BUILDER.as_posix()} build"
+    rust_artifact_marker = "python scripts/ci/validate_rust_release_artifacts.py"
     identity_marker = "python scripts/ci/validate_release_identity.py"
     if source.count(install_marker) != 1:
         raise ValidationError(
@@ -1631,16 +1571,25 @@ def validate_native_notice_workflow(workflow: Path) -> None:
         raise ValidationError(
             "Release workflow must run exactly one native dependency-notice freshness gate"
         )
+    if source.count(rustdoc_marker) != 1:
+        raise ValidationError("Release workflow must run exactly one public Cargo rustdoc gate")
+    if source.count(cargo_graph_marker) != 1:
+        raise ValidationError("Release workflow must package the Cargo graph exactly once")
+    if source.count(rust_artifact_marker) != 1:
+        raise ValidationError("Release workflow must run exactly one Rust archive-content gate")
     if source.count(identity_marker) != 1:
         raise ValidationError("Release workflow identity-validator marker is malformed")
     if (
         not source.index(install_marker)
         < source.index(check_marker)
+        < source.index(rustdoc_marker)
+        < source.index(cargo_graph_marker)
+        < source.index(rust_artifact_marker)
         < source.index(identity_marker)
     ):
         raise ValidationError(
-            "Release workflow must install cargo-about and check the native notice before "
-            "release identity validation"
+            "Release workflow must check notices and rustdoc, package the Cargo graph, and "
+            "validate exact archives before release identity validation"
         )
     if f"toolchain: {NATIVE_NOTICE_RUST_TOOLCHAIN}" not in source[: source.index(check_marker)]:
         raise ValidationError(
@@ -1662,6 +1611,9 @@ def validate_python_npm_only_workflow(workflow: Path) -> None:
         "patch.crates-io": "crates.io package patch",
         "publish-crates": "Cargo publication job or dependency",
         "publish_crate_idempotently.sh": "Cargo publication helper",
+        "cargo_release_candidate.py": "Cargo release candidate builder",
+        "publish_cargo_release_candidate.py": "exact Cargo publication helper",
+        "cargo-release-candidate": "exact Cargo candidate artifact",
         "rust-crates": "Rust crate artifact upload",
         "target/package": "Cargo archive directory",
         "type-bridge-typedb-driver-b8": "owner-gated band-8 registry path",
@@ -1687,7 +1639,8 @@ def validate_source_git_server_oci_workflow(workflow: Path) -> None:
         "publish-server-oci": "stable-only server OCI publication job",
         "ghcr.io/ds1sqe/type-bridge-server": "public server image identity",
         "type=oci,dest=": "immutable OCI-layout output",
-        "skopeo copy --preserve-digests": "accepted-byte registry import",
+        "scripts/ci/run_pinned_skopeo.py": "pinned Skopeo runtime",
+        "copy --preserve-digests": "accepted-byte registry import",
         "TYPE_BRIDGE_SERVER_IMAGE": "exact-image V1/V2 runtime acceptance",
         "linux/amd64": "amd64 platform",
         "linux/arm64": "arm64 platform",
@@ -1701,6 +1654,152 @@ def validate_source_git_server_oci_workflow(workflow: Path) -> None:
     if missing:
         raise ValidationError(
             f"Source/Git plus server-OCI workflow is incomplete: {sorted(missing)!r}"
+        )
+
+
+def _release_workflow_job(source: str, name: str) -> str:
+    """Return one active top-level release job from workflow source."""
+    jobs_marker = "\njobs:\n"
+    if source.count(jobs_marker) != 1:
+        raise ValidationError("Release workflow jobs mapping is malformed")
+    jobs = source.split(jobs_marker, maxsplit=1)[1]
+    header = re.search(rf"^  {re.escape(name)}:\n", jobs, re.MULTILINE)
+    if header is None:
+        raise ValidationError(f"Release workflow is missing job {name!r}")
+    next_header = re.search(r"^  [a-z][a-z0-9-]*:\n", jobs[header.end() :], re.MULTILINE)
+    end = header.end() + next_header.start() if next_header is not None else len(jobs)
+    return jobs[header.start() : end]
+
+
+def _release_workflow_step(job: str, name: str) -> str:
+    """Return one active named step from a top-level release job."""
+    marker = f"      - name: {name}\n"
+    if job.count(marker) != 1:
+        raise ValidationError(f"Release workflow step {name!r} is missing or duplicated")
+    start = job.index(marker)
+    next_step = re.search(r"^      - name: .+$", job[start + len(marker) :], re.MULTILINE)
+    end = start + len(marker) + next_step.start() if next_step is not None else len(job)
+    return job[start:end]
+
+
+def validate_server_oci_release_channels(workflow: Path) -> None:
+    """Bind tag preflight, publishers, OCI aliases, and signatures to exact channels."""
+    if not workflow.is_file() or workflow.is_symlink():
+        raise ValidationError(f"Release workflow is missing or non-regular: {workflow}")
+    source = workflow.read_text(encoding="utf-8")
+    preamble = source.split("\njobs:\n", maxsplit=1)[0]
+    alias_selector = (
+        "  SERVER_OCI_MINOR_ALIAS: ${{ github.event_name == 'workflow_dispatch' && "
+        "inputs.release_channel == 'recovery' && '2.0' || '2.1' }}"
+    )
+    if preamble.count(alias_selector) != 1:
+        raise ValidationError("Release workflow has no exact OCI minor-alias selector")
+
+    tag_preflight = _release_workflow_job(source, "release-tag-preflight")
+    freeze_tag = _release_workflow_step(tag_preflight, "Freeze exact annotated tag object")
+    tag_requirements = {
+        "needs: [channel-preflight, recovery-preflight]": "both channel preflights",
+        "needs.channel-preflight.result == 'success'": "stable channel acceptance",
+        "needs.recovery-preflight.result == 'success'": "recovery acceptance",
+        "inputs.recovery_mode == 'publish'": "explicit recovery publication mode",
+        "outputs:\n      tag_object: ${{ steps.freeze-tag.outputs.tag_object }}": (
+            "frozen tag-object job output"
+        ),
+    }
+    malformed = [label for marker, label in tag_requirements.items() if marker not in tag_preflight]
+    freeze_requirements = {
+        'test "$(jq -r \'.object.type\' <<<"$tag_ref_json")" = tag': ("annotated-tag requirement"),
+        'if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then': ("recovery tag-object branch"),
+        '"a4cec6478ad4e764f039e51eabcbb68d45efd45a"': "exact v2.0.0 tag object",
+        'test "$(jq -r \'.object.type\' <<<"$tag_json")" = commit': ("tag target kind"),
+        'test "$(jq -r \'.object.sha\' <<<"$tag_json")" = "$RELEASE_REVISION"': (
+            "tag target revision"
+        ),
+        'printf \'tag_object=%s\\n\' "$tag_object" >> "$GITHUB_OUTPUT"': (
+            "frozen tag-object output"
+        ),
+    }
+    malformed.extend(
+        label for marker, label in freeze_requirements.items() if freeze_tag.count(marker) != 1
+    )
+
+    mutating_jobs = (
+        "publish-crates",
+        "publish-server-oci",
+        "publish-node-npm",
+        "publish-core-pypi",
+        "publish-python-pypi",
+        "github-release",
+    )
+    for name in mutating_jobs:
+        job = _release_workflow_job(source, name)
+        needs_match = re.search(r"^    needs: .+$", job, re.MULTILINE)
+        needs = needs_match.group(0) if needs_match is not None else ""
+        if "release-tag-preflight" not in needs:
+            malformed.append(f"{name} frozen-tag dependency")
+        if "needs.release-tag-preflight.result == 'success'" not in job:
+            malformed.append(f"{name} frozen-tag success guard")
+        step_name = (
+            "Revalidate frozen release tag"
+            if name == "publish-crates"
+            else "Revalidate immutable release tag"
+        )
+        step = _release_workflow_step(job, step_name)
+        for marker, label in {
+            "EXPECTED_RELEASE_TAG_OBJECT: "
+            "${{ needs.release-tag-preflight.outputs.tag_object }}": "expected tag object",
+            'test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"': "tag-object equality",
+            'test "$(jq -r \'.object.sha\' <<<"$tag_json")" = "$RELEASE_REVISION"': (
+                "tag target revision"
+            ),
+        }.items():
+            if step.count(marker) != 1:
+                malformed.append(f"{name} {label}")
+
+    crates = _release_workflow_job(source, "publish-crates")
+    crates_needs_match = re.search(r"^    needs: .+$", crates, re.MULTILINE)
+    crates_needs = crates_needs_match.group(0) if crates_needs_match is not None else ""
+    if "publish-node-npm" not in crates_needs:
+        malformed.append("npm-first Cargo publication dependency")
+    if "needs.publish-node-npm.result == 'success'" not in crates:
+        malformed.append("npm-first Cargo publication guard")
+
+    server = _release_workflow_job(source, "publish-server-oci")
+    alias_step = _release_workflow_step(server, "Create exact stable manifest and aliases")
+    metadata_step = _release_workflow_step(server, "Record immutable OCI release identity")
+    signature_step = _release_workflow_step(
+        server, "Sign exact platform and multi-platform digests"
+    )
+    scoped_requirements = (
+        (alias_step, 'for alias in "$SERVER_OCI_MINOR_ALIAS" 2 latest; do', "alias loop"),
+        (
+            metadata_step,
+            '"aliases": [os.environ["SERVER_OCI_MINOR_ALIAS"], "2", "latest"],',
+            "release metadata aliases",
+        ),
+        (metadata_step, 'alias_markdown = ", ".join(', "release-note aliases"),
+        (
+            signature_step,
+            "release.yml@refs/heads/master$' || "
+            "'^https://github.com/ds1sqe/type-bridge/.github/workflows/"
+            "release.yml@refs/tags/v2[.]1[.]0$'",
+            "closed recovery/stable Cosign identities",
+        ),
+    )
+    malformed.extend(
+        label for block, marker, label in scoped_requirements if block.count(marker) != 1
+    )
+    stale_stable_markers = (
+        "for alias in 2.0 2 latest; do",
+        '"aliases": ["2.0", "2", "latest"],',
+        "release.yml@refs/tags/v2[.]0[.]0$",
+    )
+    if any(marker in server for marker in stale_stable_markers):
+        malformed.append("stale v2.0 stable OCI identity")
+    if malformed:
+        raise ValidationError(
+            "Release workflow has malformed release/OCI channel identities: "
+            f"{sorted(set(malformed))!r}"
         )
 
 
@@ -1719,15 +1818,28 @@ def validate_manifest_version(path: Path, version: str, *, label: str) -> None:
         )
 
 
-def validate_typedb_runtime_driver_pins(package: CargoPackage) -> tuple[str, str, str]:
-    """Bind all three driver requirements to their runtime constants."""
+def validate_typedb_runtime_driver_pins(package: CargoPackage) -> tuple[str, str]:
+    """Bind both retained driver requirements to their runtime constants."""
     manifest = read_toml(package.manifest, label="TypeDB runtime Cargo manifest")
     dependencies = manifest.get("dependencies")
     if not isinstance(dependencies, dict):
         raise ValidationError("TypeDB runtime Cargo manifest has no [dependencies] table")
+    retired_dependencies = {
+        "type-bridge-typedb-driver-b7",
+        "type-bridge-typedb-protocol-b7",
+    }
+    present_retired_dependencies = sorted(retired_dependencies & dependencies.keys())
+    features = manifest.get("features")
+    if not isinstance(features, dict):
+        raise ValidationError("TypeDB runtime Cargo manifest has no [features] table")
+    if present_retired_dependencies or "band7" in features:
+        raise ValidationError(
+            "TypeDB runtime reintroduces retired band-7 support: "
+            f"dependencies={present_retired_dependencies!r}, "
+            f"feature_present={'band7' in features}"
+        )
     specifications: dict[str, tuple[dict[str, Any], re.Pattern[str], str]] = {}
     for dependency, pattern, label in (
-        (TYPEDB_BAND7_DEPENDENCY, TYPEDB_RUNTIME_BAND7_PIN_PATTERN, "band-7 package"),
         (TYPEDB_BAND8_DEPENDENCY, TYPEDB_RUNTIME_BAND8_PIN_PATTERN, "band-8 package"),
         (TYPEDB_BAND9_DEPENDENCY, TYPEDB_RUNTIME_BAND9_PIN_PATTERN, "band-9 upstream"),
     ):
@@ -1754,9 +1866,10 @@ def validate_typedb_runtime_driver_pins(package: CargoPackage) -> tuple[str, str
         source_text = source.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as error:
         raise ValidationError(f"Could not read TypeDB runtime source {source}: {error}") from error
+    if "PINNED_DRIVER_VERSION_B7" in source_text or "driver_b7" in source_text:
+        raise ValidationError("TypeDB runtime source reintroduces retired band-7 dispatch")
     pinned_versions: list[str] = []
     for dependency in (
-        TYPEDB_BAND7_DEPENDENCY,
         TYPEDB_BAND8_DEPENDENCY,
         TYPEDB_BAND9_DEPENDENCY,
     ):
@@ -1775,7 +1888,7 @@ def validate_typedb_runtime_driver_pins(package: CargoPackage) -> tuple[str, str
                 f"actual={requirement!r}, expected={expected_requirement!r}"
             )
         pinned_versions.append(pinned_version)
-    return pinned_versions[0], pinned_versions[1], pinned_versions[2]
+    return pinned_versions[0], pinned_versions[1]
 
 
 def resolved_official_band9_components(
@@ -1899,28 +2012,16 @@ def validate_native_license_bodies(
         license_id=MIT_LICENSE,
         label="root MIT LICENSE",
     )
-    driver_b7 = canonical_license_bytes(
-        workspace_root / "vendor/typedb-driver-b7/LICENSE",
-        license_id=APACHE_2_LICENSE,
-        label="band-7 driver Apache-2.0 LICENSE",
-    )
-    driver_b8 = read_bytes(
+    driver_b8 = canonical_license_bytes(
         workspace_root / "vendor/typedb-driver-b8/LICENSE",
+        license_id=APACHE_2_LICENSE,
         label="band-8 driver Apache-2.0 LICENSE",
     )
-    if driver_b8 != driver_b7:
-        raise ValidationError("Band-7 and band-8 driver LICENSE files must be byte-identical")
-    protocol_b7 = canonical_license_bytes(
-        workspace_root / "vendor/typedb-protocol-b7/LICENSE",
-        license_id=MPL_2_LICENSE,
-        label="band-7 protocol MPL-2.0 LICENSE",
-    )
-    protocol_b8 = read_bytes(
+    protocol_b8 = canonical_license_bytes(
         workspace_root / "vendor/typedb-protocol-b8/LICENSE",
+        license_id=MPL_2_LICENSE,
         label="band-8 protocol MPL-2.0 LICENSE",
     )
-    if protocol_b8 != protocol_b7:
-        raise ValidationError("Band-7 and band-8 protocol LICENSE files must be byte-identical")
 
     headings = (
         "## TypeBridge-authored portions — MIT License",
@@ -1929,7 +2030,7 @@ def validate_native_license_bodies(
         "## ed25519-dalek 2.2.0 — BSD 3-Clause License",
         "## curve25519-dalek 4.1.3 — BSD 3-Clause License",
     )
-    expected_bodies = (mit, driver_b7, protocol_b7, None, None)
+    expected_bodies = (mit, driver_b8, protocol_b8, None, None)
     embedded_license_ids = (
         MIT_LICENSE,
         APACHE_2_LICENSE,
@@ -1994,11 +2095,9 @@ def validate_native_crypto_notice_provenance(workspace_root: Path, notice: str) 
 
 
 def validate_legacy_notice_provenance(notice: str) -> None:
-    """Require every band-7/band-8 package and archive row to be exact."""
+    """Require every retained band-8 package and archive row to be exact."""
     compact_notice = " ".join(notice.split())
     required_disclosures = (
-        "The band-7 packages are unofficial namespaced, already-published packaging-only "
-        "republications.",
         "The band-8 compatibility copies are source-unmodified and owner-authorized "
         "for TypeBridge Cargo distribution.",
         "The TypeBridge owner authorized first publication of the band-8 packages on 2026-08-03.",
@@ -2010,13 +2109,6 @@ def validate_legacy_notice_provenance(notice: str) -> None:
             raise ValidationError(
                 f"Native notice band-8 registry disposition is missing: {disclosure!r}"
             )
-    forbidden_disclosure = (
-        "The renamed crates are also distributed as immutable crates.io source packages"
-    )
-    if forbidden_disclosure in compact_notice:
-        raise ValidationError(
-            "Native notice falsely describes unpublished band-8 keys as distributed"
-        )
     for transient_claim in (
         "band-8 namespaced registry keys are currently absent",
         "downstream package key is currently unpublished",
@@ -2042,14 +2134,14 @@ def validate_legacy_notice_provenance(notice: str) -> None:
     actual_component_rows = tuple(
         tuple(cell.strip() for cell in row)
         for row in re.findall(
-            r"^\| (7|8) \| ([^|]+) \| ([^|]+) \| ([^|]+) \|$",
+            r"^\| (8) \| ([^|]+) \| ([^|]+) \| ([^|]+) \|$",
             notice,
             re.MULTILINE,
         )
     )
     if actual_component_rows != expected_component_rows:
         raise ValidationError(
-            "Native notice band-7/band-8 component provenance drifted: "
+            "Native notice band-8 component provenance drifted: "
             f"actual={actual_component_rows!r}, expected={expected_component_rows!r}"
         )
 
@@ -2077,7 +2169,7 @@ def validate_legacy_notice_provenance(notice: str) -> None:
     )
     if actual_archive_rows != expected_archive_rows:
         raise ValidationError(
-            "Native notice band-7/band-8 archive provenance drifted: "
+            "Native notice band-8 archive provenance drifted: "
             f"actual={actual_archive_rows!r}, expected={expected_archive_rows!r}"
         )
 
@@ -2376,11 +2468,9 @@ def validate_release_identity(
     runtime_package = by_name.get(TYPEDB_RUNTIME_PACKAGE)
     if runtime_package is None:
         raise ValidationError(f"TypeDB runtime package is absent: {TYPEDB_RUNTIME_PACKAGE}")
-    (
-        typedb_runtime_band7_driver_pin,
-        typedb_runtime_driver_pin,
-        typedb_runtime_band9_driver_pin,
-    ) = validate_typedb_runtime_driver_pins(runtime_package)
+    typedb_runtime_driver_pin, typedb_runtime_band9_driver_pin = (
+        validate_typedb_runtime_driver_pins(runtime_package)
+    )
     locked_band9_components = validate_native_band9_provenance(
         workspace_manifest,
         expected_driver_version=typedb_runtime_band9_driver_pin,
@@ -2402,20 +2492,21 @@ def validate_release_identity(
             f"missing={missing!r}, unexpected={unexpected!r}"
         )
     validate_native_notice_workflow(release_workflow.resolve())
+    validate_server_oci_release_channels(release_workflow.resolve())
     if artifact_contract == ARTIFACT_CONTRACT_CARGO_INCLUSIVE:
         actual_publish_sequence = workflow_publish_sequence(release_workflow.resolve())
-        if actual_publish_sequence != PUBLISHED_CRATES:
+        if actual_publish_sequence != EXPECTED_NEW_CRATES:
             raise ValidationError(
                 "Cargo publish sequence is incomplete or reordered: "
-                f"actual={actual_publish_sequence!r}, expected={PUBLISHED_CRATES!r}"
+                f"actual={actual_publish_sequence!r}, expected={EXPECTED_NEW_CRATES!r}"
             )
         preflight_patches, preflight_packages = workflow_preflight_sequences(
             release_workflow.resolve()
         )
-        if preflight_patches != PACKAGING_PATCH_CRATES:
+        if preflight_patches:
             raise ValidationError(
-                "Cargo preflight patch sequence is incomplete or reordered: "
-                f"actual={preflight_patches!r}, expected={PACKAGING_PATCH_CRATES!r}"
+                "Cargo candidate preflight must not use crates.io patches: "
+                f"actual={preflight_patches!r}"
             )
         if preflight_packages != PACKAGED_RELEASE_CRATES:
             raise ValidationError(
@@ -2526,7 +2617,9 @@ def validate_release_identity(
         "cargo_manifest_publishable_crates": list(PUBLISHED_CRATES),
         "cargo_packages": {package.name: package.version for package in packages},
         "cargo_publication_plan": (
-            list(PUBLISHED_CRATES) if artifact_contract == ARTIFACT_CONTRACT_CARGO_INCLUSIVE else []
+            list(EXPECTED_NEW_CRATES)
+            if artifact_contract == ARTIFACT_CONTRACT_CARGO_INCLUSIVE
+            else []
         ),
         "crates_io_mutation": crates_io_mutation,
         "historical_band9_quarantine": list(quarantined_band9_packages),
@@ -2543,7 +2636,6 @@ def validate_release_identity(
         "node_package_lock_version": node_lock_version,
         "python_core_requirement": python_core_requirement,
         "python_package_version": python_package_version,
-        "typedb_runtime_band7_driver_pin": typedb_runtime_band7_driver_pin,
         "typedb_runtime_driver_pin": typedb_runtime_driver_pin,
         "typedb_runtime_band9_driver_pin": typedb_runtime_band9_driver_pin,
         "typedb_runtime_band9_components": {
@@ -2556,6 +2648,14 @@ def validate_release_identity(
         },
         "python_version": python_version,
         "release_channel": release_channel,
+        "server_oci_recovery_aliases": ["2.0", "2", "latest"],
+        "server_oci_recovery_signing_identity": (
+            "https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/heads/master"
+        ),
+        "server_oci_stable_aliases": ["2.1", "2", "latest"],
+        "server_oci_stable_signing_identity": (
+            "https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2.1.0"
+        ),
         "version": version,
     }
     if artifact_contract == ARTIFACT_CONTRACT_CARGO_INCLUSIVE:

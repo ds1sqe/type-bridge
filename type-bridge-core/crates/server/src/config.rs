@@ -24,7 +24,7 @@ use type_bridge_core_lib::version as core_version;
 const MAX_TLS_MATERIAL_BYTES: u64 = 1024 * 1024;
 const MAX_SERVER_CONFIG_BYTES: u64 = 1024 * 1024;
 #[cfg(feature = "v2-query")]
-const MAX_DECLARED_SCHEMA_BYTES: usize = type_bridge_contract::limits::MAX_CANONICAL_BYTES;
+const MAX_SCHEMA_AUTHORITY_BYTES: usize = type_bridge_schema::MAX_SCHEMA_AUTHORITY_BYTES;
 
 #[derive(Clone, Copy)]
 enum RuntimeConfigParseErrorKind {
@@ -96,13 +96,19 @@ fn source_line_column(content: &str, byte_offset: usize) -> Option<(usize, usize
 }
 
 #[derive(Debug, Deserialize)]
+/// Released server configuration projection.
 pub struct ServerConfig {
+    /// Listener address configuration.
     pub server: ServerSection,
+    /// TypeDB connection configuration.
     pub typedb: TypeDBSection,
+    /// Optional V1 TypeQL schema source.
     #[serde(default)]
     pub schema: SchemaSection,
+    /// Interceptors enabled for the request pipeline.
     #[serde(default)]
     pub interceptors: InterceptorsSection,
+    /// Process logging configuration.
     #[serde(default)]
     pub logging: LoggingSection,
 }
@@ -115,12 +121,19 @@ pub struct ServerConfig {
 /// accept the same TOML tables while keeping new fields out of the released
 /// structs.
 pub struct RuntimeServerConfig {
+    /// Listener address configuration.
     pub server: ServerSection,
+    /// Validated TypeDB connection and outbound TLS policy.
     pub typedb: SecureTypeDBSection,
+    /// Optional V1 TypeQL schema source.
     pub schema: SchemaSection,
+    /// Interceptors enabled for the request pipeline.
     pub interceptors: InterceptorsSection,
+    /// Process logging configuration.
     pub logging: LoggingSection,
+    /// Prepared inbound TLS identity, when HTTPS is enabled.
     pub inbound_tls: Option<InboundTlsSection>,
+    /// Generated-authority-backed V2 query configuration.
     pub v2: V2Section,
 }
 
@@ -149,7 +162,7 @@ pub struct SecureTypeDBSection {
     // Runtime-only storage avoids changing the public V2 configuration
     // projection while binding the declared schema to this exact load.
     #[cfg(feature = "v2-query")]
-    pub(crate) v2_declared_schema_snapshot: Option<CapturedConfiguredMaterial>,
+    pub(crate) v2_schema_authority_snapshot: Option<CapturedConfiguredMaterial>,
 }
 
 impl fmt::Debug for RuntimeServerConfig {
@@ -193,7 +206,7 @@ impl SecureTypeDBSection {
             tls_mode,
             custom_root_ca_snapshot: None,
             #[cfg(feature = "v2-query")]
-            v2_declared_schema_snapshot: None,
+            v2_schema_authority_snapshot: None,
         }
     }
 
@@ -225,25 +238,21 @@ pub struct V2Section {
     /// Serve `/v2/query` and `/v2/capabilities`.
     #[serde(default)]
     pub enabled: bool,
-    /// Path to canonical declared-schema bytes (a generated
-    /// `declared-schema.json`) V2 plans validate against.
+    /// Path to the source-free authority emitted by `schema generate`.
     #[serde(default)]
-    pub declared_schema_file: String,
-    /// Exclusive managed scope identity plans bind against.
-    #[serde(default)]
-    pub scope: String,
-    /// Semantic profile identifier, e.g. `typedb-3.12.1/v1`.
-    #[serde(default)]
-    pub profile: String,
+    pub schema_authority_file: String,
     /// Exact authority contract; defaults to `managed`.
     #[serde(default)]
     pub authority_mode: V2AuthorityMode,
 }
 
 #[derive(Debug, Deserialize)]
+/// HTTP listener address for the standalone server.
 pub struct ServerSection {
+    /// Interface or hostname on which the server listens.
     #[serde(default = "default_host")]
     pub host: String,
+    /// TCP port on which the server listens.
     #[serde(default = "default_port")]
     pub port: u16,
 }
@@ -252,8 +261,10 @@ pub struct ServerSection {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InboundTlsSection {
+    /// Path to the PEM-encoded certificate chain.
     #[serde(rename = "cert-path")]
     pub cert_path: PathBuf,
+    /// Path to the PEM-encoded private key.
     #[serde(rename = "key-path")]
     pub key_path: PathBuf,
     #[serde(skip)]
@@ -456,11 +467,16 @@ impl InboundTlsSection {
 }
 
 #[derive(Deserialize)]
+/// Released TypeDB connection settings.
 pub struct TypeDBSection {
+    /// TypeDB gRPC address.
     pub address: String,
+    /// Default TypeDB database name.
     pub database: String,
+    /// TypeDB username.
     #[serde(default = "default_username")]
     pub username: String,
+    /// TypeDB password.
     #[serde(default = "default_password")]
     pub password: String,
     /// Port of the TypeDB HTTP API on the same host as `address`; the
@@ -490,8 +506,11 @@ impl fmt::Debug for TypeDBSection {
 /// Validated outbound TLS policy independent of any driver implementation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OutboundTlsMode {
+    /// Connect without TLS.
     Disabled,
+    /// Validate the TypeDB identity with native platform roots.
     NativeRoots,
+    /// Validate the TypeDB identity with the PEM root at this path.
     CustomRootCa(PathBuf),
 }
 
@@ -598,11 +617,7 @@ struct RuntimeV2SectionWire {
     #[serde(default)]
     enabled: bool,
     #[serde(default)]
-    declared_schema_file: String,
-    #[serde(default)]
-    scope: String,
-    #[serde(default)]
-    profile: String,
+    schema_authority_file: String,
     #[serde(default)]
     authority_mode: V2AuthorityMode,
 }
@@ -646,40 +661,49 @@ impl From<RuntimeV2SectionWire> for V2Section {
     fn from(wire: RuntimeV2SectionWire) -> Self {
         Self {
             enabled: wire.enabled,
-            declared_schema_file: wire.declared_schema_file,
-            scope: wire.scope,
-            profile: wire.profile,
+            schema_authority_file: wire.schema_authority_file,
             authority_mode: wire.authority_mode,
         }
     }
 }
 
 #[derive(Debug, Default, Deserialize)]
+/// Optional V1 TypeQL schema source configuration.
 pub struct SchemaSection {
+    /// Path to a TypeQL schema file, or an empty string when unused.
     #[serde(default)]
     pub source_file: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
+/// Query-pipeline interceptor configuration.
 pub struct InterceptorsSection {
+    /// Interceptor names to install, in request order.
     #[serde(default)]
     pub enabled: Vec<String>,
+    /// Audit-log settings when the audit interceptor is enabled.
     #[serde(default, rename = "audit-log")]
     pub audit_log: Option<AuditLogConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+/// Audit-log destination configuration.
 pub struct AuditLogConfig {
+    /// Destination kind: `stdout` or `file`.
     #[serde(default = "default_audit_output")]
     pub output: String,
+    /// Append-only file path when `output` is `file`.
     #[serde(default)]
     pub file_path: String,
 }
 
 #[derive(Debug, Deserialize)]
+/// Process log formatting and verbosity configuration.
 pub struct LoggingSection {
+    /// Tracing filter level such as `info` or `debug`.
     #[serde(default = "default_log_level")]
     pub level: String,
+    /// Log encoding format, such as `pretty` or `json`.
     #[serde(default = "default_log_format")]
     pub format: String,
 }
@@ -778,19 +802,19 @@ impl RuntimeServerConfig {
         Self::from_file_with_env(path, |name| std::env::var(name).ok())
     }
 
-    /// Return the immutable V2 declared-schema bytes captured by [`Self::from_file`].
+    /// Return the immutable V2 schema-authority bytes captured by [`Self::from_file`].
     ///
     /// A caller that mutates the public diagnostic path after loading must
     /// reload the complete configuration instead of pairing it with stale
     /// schema authority.
     #[cfg(feature = "v2-query")]
-    pub fn v2_declared_schema_bytes(&self) -> Result<Option<&[u8]>, &'static str> {
-        let Some(material) = &self.typedb.v2_declared_schema_snapshot else {
+    pub fn v2_schema_authority_bytes(&self) -> Result<Option<&[u8]>, &'static str> {
+        let Some(material) = &self.typedb.v2_schema_authority_snapshot else {
             return Ok(None);
         };
-        if material.path != Path::new(&self.v2.declared_schema_file) {
+        if material.path != Path::new(&self.v2.schema_authority_file) {
             return Err(
-                "v2.declared_schema_file changed after its bytes were captured; reload the configuration",
+                "v2.schema_authority_file changed after its bytes were captured; reload the configuration",
             );
         }
         Ok(Some(material.bytes.as_ref()))
@@ -905,13 +929,13 @@ impl RuntimeServerConfig {
         }
 
         #[cfg(feature = "v2-query")]
-        let v2_declared_schema_snapshot = if wire.v2.enabled
-            && !wire.v2.declared_schema_file.is_empty()
+        let v2_schema_authority_snapshot = if wire.v2.enabled
+            && !wire.v2.schema_authority_file.is_empty()
         {
-            let configured_path = Path::new(&wire.v2.declared_schema_file);
+            let configured_path = Path::new(&wire.v2.schema_authority_file);
             Some(CapturedConfiguredMaterial {
                 path: configured_path.to_path_buf(),
-                bytes: capture_declared_schema_file(relative_authority.as_ref(), configured_path)?,
+                bytes: capture_schema_authority_file(relative_authority.as_ref(), configured_path)?,
             })
         } else {
             None
@@ -934,7 +958,7 @@ impl RuntimeServerConfig {
                 tls_mode,
                 custom_root_ca_snapshot,
                 #[cfg(feature = "v2-query")]
-                v2_declared_schema_snapshot,
+                v2_schema_authority_snapshot,
             },
             schema: wire.schema.into(),
             interceptors: wire.interceptors.into(),
@@ -1278,35 +1302,35 @@ impl RelativeConfigAuthority {
     }
 
     #[cfg(feature = "v2-query")]
-    fn capture_relative_declared_schema(
+    fn capture_relative_schema_authority(
         &self,
         path: &Path,
     ) -> Result<Arc<[u8]>, Box<dyn std::error::Error>> {
-        let file = self.open_relative_file_nofollow(path, "v2.declared_schema_file")?;
-        capture_declared_schema_handle(file)
+        let file = self.open_relative_file_nofollow(path, "v2.schema_authority_file")?;
+        capture_schema_authority_handle(file)
     }
 }
 
 #[cfg(feature = "v2-query")]
-fn capture_declared_schema_file(
+fn capture_schema_authority_file(
     relative_authority: Option<&RelativeConfigAuthority>,
     path: &Path,
 ) -> Result<Arc<[u8]>, Box<dyn std::error::Error>> {
     if path.is_absolute() {
-        return capture_absolute_declared_schema_file(path);
+        return capture_absolute_schema_authority_file(path);
     }
     relative_authority
         .ok_or(
-            "cannot resolve relative v2.declared_schema_file without the configuration directory",
+            "cannot resolve relative v2.schema_authority_file without the configuration directory",
         )?
-        .capture_relative_declared_schema(path)
+        .capture_relative_schema_authority(path)
 }
 
 #[cfg(feature = "v2-query")]
-fn capture_absolute_declared_schema_file(
+fn capture_absolute_schema_authority_file(
     path: &Path,
 ) -> Result<Arc<[u8]>, Box<dyn std::error::Error>> {
-    let field = "v2.declared_schema_file";
+    let field = "v2.schema_authority_file";
     let anchor = path
         .ancestors()
         .last()
@@ -1348,16 +1372,16 @@ fn capture_absolute_declared_schema_file(
         .open_with(name, &options)
         .map(cap_std::fs::File::into_std)
         .map_err(|error| format!("cannot resolve {field}: {error}"))?;
-    capture_declared_schema_handle(file)
+    capture_schema_authority_handle(file)
 }
 
 #[cfg(feature = "v2-query")]
-fn capture_declared_schema_handle(
+fn capture_schema_authority_handle(
     mut file: std::fs::File,
 ) -> Result<Arc<[u8]>, Box<dyn std::error::Error>> {
-    let field = "v2.declared_schema_file";
-    let ceiling = u64::try_from(MAX_DECLARED_SCHEMA_BYTES)
-        .map_err(|_| "canonical declared-schema byte ceiling is not representable")?;
+    let field = "v2.schema_authority_file";
+    let ceiling = u64::try_from(MAX_SCHEMA_AUTHORITY_BYTES)
+        .map_err(|_| "canonical schema-authority byte ceiling is not representable")?;
     let metadata = file
         .metadata()
         .map_err(|error| format!("cannot inspect {field}: {error}"))?;
@@ -1373,7 +1397,7 @@ fn capture_declared_schema_handle(
         .take(ceiling + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("cannot read {field}: {error}"))?;
-    if bytes.is_empty() || bytes.len() > MAX_DECLARED_SCHEMA_BYTES {
+    if bytes.is_empty() || bytes.len() > MAX_SCHEMA_AUTHORITY_BYTES {
         return Err(format!("{field} must be a non-empty file no larger than 16 MiB").into());
     }
     file.seek(SeekFrom::Start(0))
@@ -1426,8 +1450,8 @@ fn wire_uses_relative_runtime_paths(wire: &RuntimeServerConfigWire) -> bool {
     {
         uses_relative_tls_path
             || (wire.v2.enabled
-                && !wire.v2.declared_schema_file.is_empty()
-                && !Path::new(&wire.v2.declared_schema_file).is_absolute())
+                && !wire.v2.schema_authority_file.is_empty()
+                && !Path::new(&wire.v2.schema_authority_file).is_absolute())
     }
     #[cfg(not(feature = "v2-query"))]
     {
@@ -1709,7 +1733,7 @@ database = "mydb"
         let config =
             RuntimeServerConfig::from_file_with_env(path.to_str().unwrap(), |_| None).unwrap();
         assert!(!config.v2.enabled);
-        assert!(config.v2.declared_schema_file.is_empty());
+        assert!(config.v2.schema_authority_file.is_empty());
         assert_eq!(config.v2.authority_mode, V2AuthorityMode::Managed);
         assert_eq!(config.typedb.tls_mode, OutboundTlsMode::Disabled);
         assert!(config.inbound_tls.is_none());
@@ -1719,41 +1743,61 @@ database = "mydb"
     fn v2_section_parses_when_configured() {
         let config_text = format!(
             "{MINIMAL_CONFIG}\n[v2]\nenabled = true\n\
-             declared_schema_file = \"declared-schema.json\"\n\
-             scope = \"prod\"\nprofile = \"typedb-3.12.1/v1\"\n\
+             schema_authority_file = \"schema-authority.json\"\n\
              authority_mode = \"query_only\"\n"
         );
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("server.toml");
         std::fs::write(&path, config_text).unwrap();
         #[cfg(feature = "v2-query")]
-        std::fs::write(dir.path().join("declared-schema.json"), "captured schema").unwrap();
+        std::fs::write(
+            dir.path().join("schema-authority.json"),
+            "captured authority",
+        )
+        .unwrap();
 
         let config =
             RuntimeServerConfig::from_file_with_env(path.to_str().unwrap(), |_| None).unwrap();
         assert!(config.v2.enabled);
-        assert_eq!(config.v2.declared_schema_file, "declared-schema.json");
-        assert_eq!(config.v2.scope, "prod");
-        assert_eq!(config.v2.profile, "typedb-3.12.1/v1");
+        assert_eq!(config.v2.schema_authority_file, "schema-authority.json");
         assert_eq!(config.v2.authority_mode, V2AuthorityMode::QueryOnly);
+    }
+
+    #[test]
+    fn v2_section_rejects_removed_duplicate_authority_fields() {
+        for removed in [
+            "declared_schema_file = \"declared-schema.json\"",
+            "scope = \"prod\"",
+            "profile = \"typedb-3.12.1/v1\"",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("server.toml");
+            std::fs::write(
+                &path,
+                format!("{MINIMAL_CONFIG}\n[v2]\nenabled = false\n{removed}\n"),
+            )
+            .unwrap();
+
+            RuntimeServerConfig::from_file_with_env(path.to_str().unwrap(), |_| None)
+                .expect_err("removed V2 authority fields must fail closed");
+        }
     }
 
     #[cfg(feature = "v2-query")]
     #[test]
-    fn relative_v2_declared_schema_is_config_relative_and_snapshot_stable() {
+    fn relative_v2_schema_authority_is_config_relative_and_snapshot_stable() {
         let dir = tempfile::tempdir().unwrap();
         let schemas = dir.path().join("schemas");
         std::fs::create_dir(&schemas).unwrap();
-        let declared_path = schemas.join("declared-schema.json");
-        let original = b"captured declared schema";
-        std::fs::write(&declared_path, original).unwrap();
+        let authority_path = schemas.join("schema-authority.json");
+        let original = b"captured schema authority";
+        std::fs::write(&authority_path, original).unwrap();
         let config_path = dir.path().join("server.toml");
         std::fs::write(
             &config_path,
             format!(
                 "{MINIMAL_CONFIG}\n[schema]\nsource_file = \"released-schema.tql\"\n\
-                 [v2]\nenabled = true\ndeclared_schema_file = \"schemas/declared-schema.json\"\n\
-                 scope = \"prod\"\nprofile = \"typedb-3.12.1/v1\"\n"
+                 [v2]\nenabled = true\nschema_authority_file = \"schemas/schema-authority.json\"\n"
             ),
         )
         .unwrap();
@@ -1762,42 +1806,41 @@ database = "mydb"
             RuntimeServerConfig::from_file_with_env(config_path.to_str().unwrap(), |_| None)
                 .unwrap();
         assert_eq!(
-            config.v2.declared_schema_file,
-            "schemas/declared-schema.json"
+            config.v2.schema_authority_file,
+            "schemas/schema-authority.json"
         );
         assert_eq!(config.schema.source_file, "released-schema.tql");
         assert_eq!(
-            config.v2_declared_schema_bytes().unwrap(),
+            config.v2_schema_authority_bytes().unwrap(),
             Some(original.as_slice())
         );
 
-        std::fs::write(&declared_path, "ambient replacement").unwrap();
+        std::fs::write(&authority_path, "ambient replacement").unwrap();
         assert_eq!(
-            config.v2_declared_schema_bytes().unwrap(),
+            config.v2_schema_authority_bytes().unwrap(),
             Some(original.as_slice()),
             "post-load replacement must not change V2 schema authority"
         );
 
-        config.v2.declared_schema_file = "other.json".to_owned();
+        config.v2.schema_authority_file = "other.json".to_owned();
         let error = config
-            .v2_declared_schema_bytes()
+            .v2_schema_authority_bytes()
             .expect_err("a mutated public path must not detach the captured bytes");
         assert!(error.contains("changed after"), "{error}");
     }
 
     #[cfg(all(feature = "v2-query", unix))]
     #[test]
-    fn relative_v2_declared_schema_uses_retained_base_after_ambient_parent_swap() {
+    fn relative_v2_schema_authority_uses_retained_base_after_ambient_parent_swap() {
         let dir = tempfile::tempdir().unwrap();
         let active = dir.path().join("active");
         let retained = dir.path().join("retained");
         std::fs::create_dir_all(active.join("schemas")).unwrap();
-        let original = b"original declared schema";
-        std::fs::write(active.join("schemas/declared-schema.json"), original).unwrap();
+        let original = b"original schema authority";
+        std::fs::write(active.join("schemas/schema-authority.json"), original).unwrap();
         let config_text = format!(
             "{MINIMAL_CONFIG}\n[v2]\nenabled = true\n\
-             declared_schema_file = \"schemas/declared-schema.json\"\n\
-             scope = \"prod\"\nprofile = \"typedb-3.12.1/v1\"\n"
+             schema_authority_file = \"schemas/schema-authority.json\"\n"
         );
         let config_path = active.join("server.toml");
         std::fs::write(&config_path, &config_text).unwrap();
@@ -1812,8 +1855,8 @@ database = "mydb"
                 std::fs::rename(&active_for_swap, &retained_for_swap).unwrap();
                 std::fs::create_dir_all(active_for_swap.join("schemas")).unwrap();
                 std::fs::write(
-                    active_for_swap.join("schemas/declared-schema.json"),
-                    "replacement declared schema",
+                    active_for_swap.join("schemas/schema-authority.json"),
+                    "replacement schema authority",
                 )
                 .unwrap();
                 std::fs::write(active_for_swap.join("server.toml"), config_text).unwrap();
@@ -1822,33 +1865,32 @@ database = "mydb"
         .unwrap();
 
         assert_eq!(
-            config.v2_declared_schema_bytes().unwrap(),
+            config.v2_schema_authority_bytes().unwrap(),
             Some(original.as_slice()),
             "ambient parent replacement must not redirect the retained config authority"
         );
         assert_eq!(
-            std::fs::read(active.join("schemas/declared-schema.json")).unwrap(),
-            b"replacement declared schema"
+            std::fs::read(active.join("schemas/schema-authority.json")).unwrap(),
+            b"replacement schema authority"
         );
     }
 
     #[cfg(all(feature = "v2-query", unix))]
     #[test]
-    fn absolute_v2_declared_schema_symlink_is_rejected() {
+    fn absolute_v2_schema_authority_symlink_is_rejected() {
         use std::os::unix::fs::symlink;
 
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("target.json");
-        let declared_path = dir.path().join("declared-schema.json");
+        let authority_path = dir.path().join("schema-authority.json");
         std::fs::write(&target, "target schema").unwrap();
-        symlink(&target, &declared_path).unwrap();
+        symlink(&target, &authority_path).unwrap();
         let config_path = dir.path().join("server.toml");
         std::fs::write(
             &config_path,
             format!(
-                "{MINIMAL_CONFIG}\n[v2]\nenabled = true\ndeclared_schema_file = {:?}\n\
-                 scope = \"prod\"\nprofile = \"typedb-3.12.1/v1\"\n",
-                declared_path.to_str().unwrap()
+                "{MINIMAL_CONFIG}\n[v2]\nenabled = true\nschema_authority_file = {:?}\n",
+                authority_path.to_str().unwrap()
             ),
         )
         .unwrap();
@@ -1857,23 +1899,22 @@ database = "mydb"
             RuntimeServerConfig::from_file_with_env(config_path.to_str().unwrap(), |_| None)
                 .expect_err("the final V2 schema component must not follow symlinks");
         assert!(
-            error.to_string().contains("v2.declared_schema_file"),
+            error.to_string().contains("v2.schema_authority_file"),
             "{error}"
         );
     }
 
     #[cfg(feature = "v2-query")]
     #[test]
-    fn non_regular_v2_declared_schema_is_rejected() {
+    fn non_regular_v2_schema_authority_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("declared-schema.json")).unwrap();
+        std::fs::create_dir(dir.path().join("schema-authority.json")).unwrap();
         let config_path = dir.path().join("server.toml");
         std::fs::write(
             &config_path,
             format!(
                 "{MINIMAL_CONFIG}\n[v2]\nenabled = true\n\
-                 declared_schema_file = \"declared-schema.json\"\n\
-                 scope = \"prod\"\nprofile = \"typedb-3.12.1/v1\"\n"
+                 schema_authority_file = \"schema-authority.json\"\n"
             ),
         )
         .unwrap();
@@ -1886,11 +1927,11 @@ database = "mydb"
 
     #[cfg(feature = "v2-query")]
     #[test]
-    fn oversized_v2_declared_schema_is_rejected_at_the_canonical_ceiling() {
+    fn oversized_v2_schema_authority_is_rejected_at_the_canonical_ceiling() {
         let dir = tempfile::tempdir().unwrap();
-        let declared_path = dir.path().join("declared-schema.json");
-        let file = std::fs::File::create(&declared_path).unwrap();
-        file.set_len(u64::try_from(MAX_DECLARED_SCHEMA_BYTES).unwrap() + 1)
+        let authority_path = dir.path().join("schema-authority.json");
+        let file = std::fs::File::create(&authority_path).unwrap();
+        file.set_len(u64::try_from(MAX_SCHEMA_AUTHORITY_BYTES).unwrap() + 1)
             .unwrap();
         // Close the writable fixture handle before loading: the capture
         // opens the file denying concurrent writers, so a live writer
@@ -1901,8 +1942,7 @@ database = "mydb"
             &config_path,
             format!(
                 "{MINIMAL_CONFIG}\n[v2]\nenabled = true\n\
-                 declared_schema_file = \"declared-schema.json\"\n\
-                 scope = \"prod\"\nprofile = \"typedb-3.12.1/v1\"\n"
+                 schema_authority_file = \"schema-authority.json\"\n"
             ),
         )
         .unwrap();
@@ -2960,14 +3000,14 @@ database = "db"
 
     #[cfg(feature = "v2-query")]
     #[test]
-    fn non_regular_absolute_declared_schema_is_rejected() {
+    fn non_regular_absolute_schema_authority_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         // The capture walks parent components without following symlinks;
         // the ambient temp directory may sit behind symlinked components
         // (macOS /var), so hand it an already-physical path.
         let root = dir.path().canonicalize().unwrap();
-        let error = capture_absolute_declared_schema_file(&root)
-            .expect_err("a directory must not resolve as a declared schema");
+        let error = capture_absolute_schema_authority_file(&root)
+            .expect_err("a directory must not resolve as schema authority");
         assert!(error.to_string().contains("regular file"), "{error}");
     }
 

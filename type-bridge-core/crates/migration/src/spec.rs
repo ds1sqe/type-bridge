@@ -1,7 +1,7 @@
 //! Serde migration specification types.
 
 use serde::{Deserialize, Serialize};
-use type_bridge_orm::schema::info::{
+use type_bridge_orm::_schema::info::{
     AttributeSchemaEntry, EntitySchemaEntry, OwnedAttributeEntry, RelationSchemaEntry, RoleEntry,
     SchemaInfo,
 };
@@ -323,7 +323,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use type_bridge_orm::Annotation;
+    use type_bridge_orm::_entity::Annotation;
     use type_bridge_orm::ValueType;
 
     fn attribute(name: &str) -> AttributeSchemaEntry {

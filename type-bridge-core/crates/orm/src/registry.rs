@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 use sha2::{Digest, Sha256};
 use type_bridge_core_lib::compiler::is_valid_typeql_label;
 
-use crate::descriptor::{EntityDescriptor, RelationDescriptor, TypeDescriptor, TypeDescriptorRef};
+use crate::_descriptor::{EntityDescriptor, RelationDescriptor, TypeDescriptor, TypeDescriptorRef};
 use crate::error::{OrmError, Result};
 use crate::match_request::ids::{DescriptorId, FieldId, RoleId, SchemaFingerprint};
 
@@ -523,7 +523,7 @@ fn descriptor_id_for_owned(descriptor: &TypeDescriptor) -> DescriptorId {
 
 fn descriptor_attributes(
     descriptor: &TypeDescriptorRef,
-) -> &[crate::descriptor::OwnedAttributeDescriptor] {
+) -> &[crate::_descriptor::OwnedAttributeDescriptor] {
     match descriptor {
         TypeDescriptorRef::Entity(descriptor) => &descriptor.owned_attributes,
         TypeDescriptorRef::Relation(descriptor) => &descriptor.owned_attributes,
@@ -730,7 +730,7 @@ fn validate_relation_descriptor(descriptor: &RelationDescriptor) -> Result<()> {
 
 fn validate_attributes(
     type_name: &str,
-    attributes: &[crate::descriptor::OwnedAttributeDescriptor],
+    attributes: &[crate::_descriptor::OwnedAttributeDescriptor],
 ) -> Result<()> {
     let mut field_names = HashSet::new();
     let mut attr_names = HashSet::new();
