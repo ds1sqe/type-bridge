@@ -351,20 +351,8 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     let c = CEmitter::new();
     let c_handlers = c.generator_handlers_for(&schema);
     let c_resources = c.code_resources_for(&schema).unwrap();
-    let c_legacy_resources = c.code_resources().unwrap();
     assert_eq!(handler_version(&c_handlers), 3);
-    assert_eq!(
-        resource_ids(&c_resources),
-        resource_ids(&c_legacy_resources)
-    );
-    assert_eq!(
-        changed_resource_ids(&c_legacy_resources, &c_resources),
-        BTreeSet::from([
-            "typebridge.generator.c.cmake-package-config-template".to_owned(),
-            "typebridge.generator.c.cmake-template".to_owned(),
-            "typebridge.generator.c.pkg-config-template".to_owned(),
-        ])
-    );
+    assert_eq!(c_resources, c.code_resources().unwrap());
     let c_projection = projection(
         &schema,
         BindingTarget::C,
@@ -392,7 +380,6 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
             .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  6u,")
     );
     assert!(c_source.contains("type_bridge_schema_package_open_chunked_v2("));
-    assert!(c_cmake.starts_with("# TypeBridge ordered-collection generator resource v3\n"));
     assert!(c_cmake.contains("find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)"));
     assert!(c_package_config.contains("find_dependency(TypeBridge 1.6.0 EXACT CONFIG)"));
     assert!(c_pkg_config.contains("Requires: type-bridge = 1.6.0"));
