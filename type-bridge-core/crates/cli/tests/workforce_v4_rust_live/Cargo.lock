@@ -2351,7 +2351,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "type-bridge"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "regex",
  "serde_json",
@@ -2369,7 +2369,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-contract"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2379,7 +2379,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-core-lib"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -2408,7 +2408,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-migration"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anstream 0.6.21",
  "anstyle",
@@ -2433,7 +2433,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "ed25519-dalek",
  "rand_core 0.6.4",
@@ -2456,7 +2456,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm-derive"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2466,7 +2466,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-query"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "type-bridge-contract",
  "type-bridge-schema",
@@ -2474,7 +2474,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -2488,7 +2488,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-codegen"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "type-bridge-contract",
  "type-bridge-schema",
@@ -2497,7 +2497,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-compat"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2510,7 +2510,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-migration"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -2527,7 +2527,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-migration-typedb"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2543,7 +2543,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-toml-transpiler"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "indexmap 2.13.1",
  "serde",
@@ -2584,7 +2584,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-typedb-runtime"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "chrono",
  "chrono-tz",

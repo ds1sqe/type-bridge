@@ -20,7 +20,7 @@ executes against TypeDB, then runs response interceptors.
 ### As a standalone server
 
 ```bash
-cargo install type-bridge-server --version 2.1.0 --locked
+cargo install type-bridge-server --version 2.2.0 --locked
 type-bridge-server --config config.toml
 ```
 
@@ -32,7 +32,7 @@ the V2 routes; retained V1 routes remain available in either state.
 
 ```toml
 [dependencies]
-type-bridge-server = "2.1.0"
+type-bridge-server = "2.2.0"
 ```
 
 This sketch is ignored because the executor, interceptor, input, and schema
@@ -257,7 +257,7 @@ one-shot request handle that created the request.
 
 Implement the `Interceptor` trait to add cross-cutting concerns. Because the
 released trait names the shared AST, an application implementing it must also
-declare `type-bridge-core-lib = "2.1.0"` directly:
+declare `type-bridge-core-lib = "2.2.0"` directly:
 
 ```rust
 use type_bridge_server::interceptor::{Interceptor, InterceptError, RequestContext};
@@ -341,9 +341,9 @@ cargo test -p type-bridge-server
 ./scripts/coverage.sh mcdc --open
 ```
 
-The crate is released in lockstep with TypeBridge 2.1.0, requires Rust 1.88+,
+The crate is released in lockstep with TypeBridge 2.2.0, requires Rust 1.88+,
 and supports the retained TypeDB 3.11.x and 3.12.x provider bands.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
-[API documentation](https://docs.rs/type-bridge-server/2.1.0) ·
+[API documentation](https://docs.rs/type-bridge-server/2.2.0) ·
 [MIT license](https://github.com/ds1sqe/type-bridge/blob/master/LICENSE)

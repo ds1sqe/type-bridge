@@ -3,7 +3,7 @@
 The TypeBridge container product is the V2-capable standalone query server:
 
 ```text
-ghcr.io/ds1sqe/type-bridge-server:2.1.0
+ghcr.io/ds1sqe/type-bridge-server:2.2.0
 ```
 
 The image contains retained V1 routes and the public `v2-query` capability.
@@ -20,13 +20,13 @@ Release notes record the accepted multi-platform digest. Prefer it for
 deployments:
 
 ```bash
-export TYPE_BRIDGE_SERVER_IMAGE='ghcr.io/ds1sqe/type-bridge-server@sha256:<digest-from-v2.1.0-release>'
+export TYPE_BRIDGE_SERVER_IMAGE='ghcr.io/ds1sqe/type-bridge-server@sha256:<digest-from-v2.2.0-release>'
 docker pull "$TYPE_BRIDGE_SERVER_IMAGE"
 ```
 
-The stable `2.1.0` tag points to the same digest. After acceptance, `2.1`,
+The stable `2.2.0` tag points to the same digest. After acceptance, `2.2`,
 `2`, and `latest` are aliases of that exact stable manifest. Candidate
-workflows validate `2.1.0-rc.0` bytes without publishing them by default and
+workflows validate `2.2.0-rc.0` bytes without publishing them by default and
 never move `latest`.
 
 Published platforms are `linux/amd64` and `linux/arm64`.
@@ -149,7 +149,7 @@ docker run --rm "$TYPE_BRIDGE_SERVER_IMAGE" --version
 
 The image deliberately has no shell `HEALTHCHECK`. `/health.version` remains
 the frozen V1 compatibility value `1.5.11`, while `--version`, the exact tag,
-and the OCI version label report `2.1.0`.
+and the OCI version label report `2.2.0`.
 
 ## Verify supply-chain evidence
 
@@ -159,7 +159,7 @@ GitHub build-provenance attestations. With Cosign:
 ```bash
 cosign verify \
   --certificate-identity-regexp \
-    '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2[.]1[.]0$' \
+    '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2[.]2[.]0$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   "$TYPE_BRIDGE_SERVER_IMAGE"
 ```

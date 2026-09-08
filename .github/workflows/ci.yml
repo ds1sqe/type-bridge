@@ -14,7 +14,7 @@ env:
 jobs:
   standalone-cli-candidate:
     name: Standalone CLI candidate (Linux x86_64 GNU)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     services:
       typedb:
@@ -121,7 +121,7 @@ jobs:
 
   c-package-candidates:
     name: C runtime and generated package candidates (Linux x86_64 GNU)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - name: Checkout code
@@ -180,7 +180,7 @@ jobs:
   c-distribution-security:
     name: C distribution supply-chain candidate gate
     needs: [standalone-cli-candidate, c-package-candidates]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -243,7 +243,7 @@ jobs:
   c-artifact-clean-consumer:
     name: C artifact-only clean consumer (Linux x86_64 GNU)
     needs: [standalone-cli-candidate, c-package-candidates, c-distribution-security]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -305,7 +305,7 @@ jobs:
   c-artifact-live-consumer:
     name: C artifact-only live journey (Linux x86_64 GNU)
     needs: [standalone-cli-candidate, c-package-candidates, c-artifact-clean-consumer]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read

@@ -22,7 +22,7 @@ RECOVERY_VALIDATOR = REPO_ROOT / "scripts/ci/validate_release_recovery.py"
 RECOVERY_PAYLOAD_VALIDATOR = REPO_ROOT / "scripts/ci/validate_release_recovery_payloads.py"
 RECOVERY_MANIFEST = REPO_ROOT / ".github/release/v2.0.0-recovery.json"
 RECOVERY_MANIFEST_SHA256 = "f8d5b2d04ad01a45694aecdd171846443bfd511a9363ab771e5f182c6bd17d2d"
-STABLE_PUBLICATION_GUARD = "if: github.event_name == 'push' && github.ref == 'refs/tags/v2.1.0'"
+STABLE_PUBLICATION_GUARD = "if: github.event_name == 'push' && github.ref == 'refs/tags/v2.2.0'"
 QEMU_ACTION = "docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130"
 QEMU_BINFMT_IMAGE = (
     "docker.io/tonistiigi/binfmt@"
@@ -201,7 +201,7 @@ def assert_stable_only_release_mutations(workflow: str) -> None:
         assert block.count("    if: >-\n") == 1
         assert "      always() &&\n      !cancelled() &&\n" in block
         assert "github.event_name == 'push'" in block
-        assert "github.ref == 'refs/tags/v2.1.0'" in block
+        assert "github.ref == 'refs/tags/v2.2.0'" in block
         assert "github.event_name == 'workflow_dispatch'" in block
         assert "github.ref == 'refs/heads/master'" in block
         assert "inputs.release_channel == 'recovery'" in block
@@ -240,7 +240,7 @@ def assert_stable_only_release_mutations(workflow: str) -> None:
     assert cargo.count("    if: >-\n") == 1
     assert "      always() &&\n      !cancelled() &&\n" in cargo
     assert "github.event_name == 'push'" in cargo
-    assert "github.ref == 'refs/tags/v2.1.0'" in cargo
+    assert "github.ref == 'refs/tags/v2.2.0'" in cargo
     assert "github.event_name == 'workflow_dispatch'" not in cargo
     assert "needs.release-tag-preflight.result == 'success'" in cargo
     assert "needs.publish-node-npm.result == 'success'" in cargo
@@ -635,11 +635,11 @@ def test_release_channels_have_fixed_non_attacker_controlled_identities() -> Non
         "on:\n"
         "  push:\n"
         "    tags:\n"
-        "      - 'v2.1.0'\n"
+        "      - 'v2.2.0'\n"
         "  workflow_dispatch:\n"
         "    inputs:\n"
         "      release_channel:\n"
-        "        description: Validate the 2.1.0 release identity or recover "
+        "        description: Validate the 2.2.0 release identity or recover "
         "the accepted v2.0.0 tag run\n"
         "        required: true\n"
         "        type: choice\n"
@@ -687,19 +687,19 @@ def test_release_channels_have_fixed_non_attacker_controlled_identities() -> Non
     assert "'v*'" not in preamble
     assert (
         "RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && "
-        "inputs.release_channel == 'recovery' && 'v2.0.0' || 'v2.1.0' }}"
+        "inputs.release_channel == 'recovery' && 'v2.0.0' || 'v2.2.0' }}"
     ) in preamble
     assert (
         "RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && "
-        "inputs.release_channel == 'recovery' && '2.0.0' || '2.1.0' }}"
+        "inputs.release_channel == 'recovery' && '2.0.0' || '2.2.0' }}"
     ) in preamble
     assert (
         "PYTHON_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && "
-        "inputs.release_channel == 'recovery' && '2.0.0' || '2.1.0' }}"
+        "inputs.release_channel == 'recovery' && '2.0.0' || '2.2.0' }}"
     ) in preamble
     assert (
         "SERVER_OCI_MINOR_ALIAS: ${{ github.event_name == 'workflow_dispatch' && "
-        "inputs.release_channel == 'recovery' && '2.0' || '2.1' }}"
+        "inputs.release_channel == 'recovery' && '2.0' || '2.2' }}"
     ) in preamble
     assert (
         "RELEASE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' "
@@ -896,7 +896,7 @@ def test_recovery_metadata_preserves_release_source_and_exact_tag() -> None:
 
     assert '"revision": os.environ["RELEASE_REVISION"]' in server
     assert "release.yml@refs/heads/master$" in server
-    assert "release.yml@refs/tags/v2[.]1[.]0$" in server
+    assert "release.yml@refs/tags/v2[.]2[.]0$" in server
     assert "release.yml@refs/tags/v2[.]0[.]0$" not in server
     for name in (
         "Attest amd64 build provenance",
@@ -941,7 +941,7 @@ def test_candidate_guard_gate_rejects_an_unguarded_mutation_job(job: str) -> Non
 def test_cargo_publication_rejects_a_broadened_stable_tag_guard() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     block = job_block(workflow, "publish-crates")
-    guarded = "      github.ref == 'refs/tags/v2.1.0' &&\n"
+    guarded = "      github.ref == 'refs/tags/v2.2.0' &&\n"
     assert guarded in block
     hostile_workflow = workflow.replace(block, block.replace(guarded, "", 1), 1)
 
@@ -1040,7 +1040,7 @@ def test_python_npm_publication_is_serial_after_global_candidate_gates() -> None
     assert needs_line(cargo_publish) == (
         "    needs: [release-tag-preflight, publish-node-npm, validate-release-identity]"
     )
-    assert "github.ref == 'refs/tags/v2.1.0'" in cargo_publish
+    assert "github.ref == 'refs/tags/v2.2.0'" in cargo_publish
     assert "needs.publish-node-npm.result == 'success'" in cargo_publish
     assert "CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}" in cargo_publish
     assert "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}" in preflight
@@ -1701,7 +1701,7 @@ def test_npm_publication_uses_the_accepted_tarball() -> None:
     assert publish.count('--tag "$RELEASE_TAG"') == 2
     assert "--allow-prerelease" not in publish
     assert "environment: release" in publish
-    assert "github.ref == 'refs/tags/v2.1.0'" in publish
+    assert "github.ref == 'refs/tags/v2.2.0'" in publish
     assert "inputs.release_channel == 'recovery'" in publish
     assert "inputs.recovery_mode == 'publish'" in publish
     assert "name: Install pinned npm publisher" in publish

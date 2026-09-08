@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-orm-derive"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2024"
 description = "Generated-query derives for the TypeBridge Rust client"
 license.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 authors.workspace = true
 publish = ["crates-io"]
 readme = "README.md"
-documentation = "https://docs.rs/type-bridge-orm-derive/2.1.0"
+documentation = "https://docs.rs/type-bridge-orm-derive/2.2.0"
 rust-version = "1.88"
 
 [lib]
@@ -19,7 +19,7 @@ proc-macro = true
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full", "extra-traits"] }
-type-bridge-core-lib = { path = "../core", version = "2.1.0" }
+type-bridge-core-lib = { path = "../core", version = "2.2.0" }
 
 [lints]
 workspace = true

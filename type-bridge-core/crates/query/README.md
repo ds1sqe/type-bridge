@@ -11,17 +11,17 @@ the generated query API exposed through
 
 ```toml
 [dependencies]
-type-bridge-query = "2.1.0"
+type-bridge-query = "2.2.0"
 ```
 
-Begin with [`validate_query_plan`](https://docs.rs/type-bridge-query/2.1.0/type_bridge_query/fn.validate_query_plan.html)
+Begin with [`validate_query_plan`](https://docs.rs/type-bridge-query/2.2.0/type_bridge_query/fn.validate_query_plan.html)
 and carry the returned validated value into lowering or execution. Never send
 an unvalidated contract plan directly to a provider.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
-2.1.0 and requires Rust 1.88+. Its semantic contracts target TypeDB
+2.2.0 and requires Rust 1.88+. Its semantic contracts target TypeDB
 3.11.x–3.12.x, with 3.12.1 as the V2 conformance baseline.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
-[API documentation](https://docs.rs/type-bridge-query/2.1.0) ·
+[API documentation](https://docs.rs/type-bridge-query/2.2.0) ·
 [MIT license](https://github.com/ds1sqe/type-bridge/blob/master/LICENSE)

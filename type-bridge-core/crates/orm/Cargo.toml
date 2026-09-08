@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-orm"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Async ORM for TypeDB built on type-bridge-core-lib"
@@ -10,7 +10,7 @@ repository.workspace = true
 authors.workspace = true
 publish = ["crates-io"]
 readme = "README.md"
-documentation = "https://docs.rs/type-bridge-orm/2.1.0"
+documentation = "https://docs.rs/type-bridge-orm/2.2.0"
 
 [lib]
 name = "type_bridge_orm"
@@ -24,12 +24,12 @@ band9 = ["typedb", "type-bridge-typedb-runtime/band9"]
 integration-tests = ["band8", "band9"]
 
 [dependencies]
-type-bridge-contract = { path = "../contract", version = "2.1.0" }
-type-bridge-query = { path = "../query", version = "2.1.0" }
-type-bridge-schema = { path = "../schema", version = "2.1.0" }
-type-bridge-schema-compat = { path = "../schema-compat", version = "2.1.0" }
-type-bridge-core-lib = { path = "../core", version = "2.1.0" }
-type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "2.1.0", default-features = false, optional = true }
+type-bridge-contract = { path = "../contract", version = "2.2.0" }
+type-bridge-query = { path = "../query", version = "2.2.0" }
+type-bridge-schema = { path = "../schema", version = "2.2.0" }
+type-bridge-schema-compat = { path = "../schema-compat", version = "2.2.0" }
+type-bridge-core-lib = { path = "../core", version = "2.2.0" }
+type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "2.2.0", default-features = false, optional = true }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

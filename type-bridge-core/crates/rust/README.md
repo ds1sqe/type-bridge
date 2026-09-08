@@ -10,12 +10,12 @@ the application authority.
 
 ```toml
 [dependencies]
-type-bridge = "2.1.0"
+type-bridge = "2.2.0"
 ```
 
 Run `type-bridge schema generate`, import the generated package, and bind its
 `SchemaPackage` to a `Database` or `RemoteDatabase`. The
-[crate API](https://docs.rs/type-bridge/2.1.0) documents transactions, generated
+[crate API](https://docs.rs/type-bridge/2.2.0) documents transactions, generated
 entity/relation managers, typed queries, hooks, and remote transport.
 The generated crate embeds its verified authority and never reads the separate
 generic-server authority artifact.
@@ -29,9 +29,9 @@ generic-server authority artifact.
 | `band9` | yes | Enables TypeDB 3.12 provider support |
 | `test-harness` | no | Enables generated-package acceptance fixtures |
 
-The SDK is released in lockstep with the TypeBridge 2.1.0 crate graph, requires
+The SDK is released in lockstep with the TypeBridge 2.2.0 crate graph, requires
 Rust 1.88+, and supports TypeDB 3.11.x–3.12.x.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
-[API documentation](https://docs.rs/type-bridge/2.1.0) ·
+[API documentation](https://docs.rs/type-bridge/2.2.0) ·
 [MIT license](https://github.com/ds1sqe/type-bridge/blob/master/LICENSE)

@@ -172,6 +172,14 @@ package or container; it does not require changing local credential scopes.
 Python facade builds also run a network-disabled metadata check in the exact
 digest-verified publisher image before entering cross-registry publication.
 
+The separately selected C 2.2.0 path uses `c-release.yml`: read-only verification
+consumes successful same-source master CI artifacts and runs complete V1–V6
+and FULL-C acceptance. Protected promotion consumes that exact verification
+run, signs the unchanged bytes and adds only absent or identical assets to
+the ordinary GitHub draft. See the [C release procedure](docs/development/c-release.md)
+for the selected Ubuntu 24.04 shared-runtime matrix, provenance, partial-upload
+recovery and independent public acceptance required before claiming support.
+
 ## Documentation system
 
 The site uses MkDocs Material:

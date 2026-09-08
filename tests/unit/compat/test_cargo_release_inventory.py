@@ -43,7 +43,7 @@ def hostile_inventory(tmp_path: Path, old: str, new: str) -> Path:
 def test_repository_inventory_closes_every_cargo_product_class() -> None:
     inventory = inventory_module.load_inventory()
 
-    assert inventory.release_version == "2.1.0"
+    assert inventory.release_version == "2.2.0"
     assert inventory.first_party_msrv == "1.88"
     assert len(inventory.packages) == 22
     assert len(inventory.public_packages) == 19
@@ -59,7 +59,7 @@ def test_repository_inventory_closes_every_cargo_product_class() -> None:
     for package in inventory.private_packages:
         assert package.role == "binding"
         assert package.version_policy == "lockstep"
-        assert package.version == "2.1.0"
+        assert package.version == "2.2.0"
         assert package.docs_target == "none"
         assert package.public is False
         assert package.publish_order is None
@@ -71,8 +71,8 @@ def test_repository_inventory_closes_every_cargo_product_class() -> None:
         if package.name == "type-bridge-server"
     )
     assert server.public is True
-    assert server.version == "2.1.0"
-    assert server.documentation == "https://docs.rs/type-bridge-server/2.1.0"
+    assert server.version == "2.2.0"
+    assert server.documentation == "https://docs.rs/type-bridge-server/2.2.0"
 
 
 def test_public_cargo_package_index_is_inventory_closed_and_linked() -> None:

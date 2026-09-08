@@ -76,7 +76,7 @@ workspace generation is the only active model-generation path.
 The standalone V2 query server is published separately:
 
 ```bash
-docker pull ghcr.io/ds1sqe/type-bridge-server:2.1.0
+docker pull ghcr.io/ds1sqe/type-bridge-server:2.2.0
 ```
 
 Production deployments should use the immutable digest recorded in the release

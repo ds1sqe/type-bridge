@@ -363,7 +363,7 @@ def runtime_manifest(
         "source-tree": tree,
         "target": TARGET,
         "toolchain": toolchain_identity(),
-        "version": "2.1.0",
+        "version": shared.package_version(),
     }
 
 
@@ -684,6 +684,7 @@ endif()
     main = f"""#include <string.h>
 #include <{PACKAGE_NAME}/{PACKAGE_NAME}.h>
 int main(void) {{
+  const char expected_version[] = {json.dumps(shared.package_version())};
   type_bridge_byte_view_t version = {{0}};
   type_bridge_byte_view_t identifier_input = {{(const uint8_t *)"person-1", 8u}};
   type_bridge_byte_view_t identifier_output = {{0}};
@@ -691,7 +692,8 @@ int main(void) {{
   {PACKAGE_NAME}_identifier *identifier = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   if (type_bridge_runtime_version(&version) != TYPE_BRIDGE_STATUS_OK ||
-      version.length != 5u || memcmp(version.data, "2.1.0", 5u) != 0) return 10;
+      version.length != sizeof(expected_version) - 1u ||
+      memcmp(version.data, expected_version, sizeof(expected_version) - 1u) != 0) return 10;
   if ({PACKAGE_NAME}_schema_package_open_v2(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK ||
       package == NULL || diagnostics != NULL) return 11;
   if ({PACKAGE_NAME}_identifier_open(package, identifier_input, &identifier, &diagnostics) !=

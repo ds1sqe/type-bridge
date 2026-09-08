@@ -3307,7 +3307,31 @@ int main(void) {
     )
     .expect("runtime DLL is staged beside the clean consumer");
 
+    #[cfg(target_os = "linux")]
+    {
+        let unrelated_prefix = stage.path().join("unrelated-loader-prefix");
+        fs::create_dir(&unrelated_prefix).expect("unrelated loader prefix is created");
+        fs::write(
+            unrelated_prefix.join(library.file_name().expect("runtime library has a filename")),
+            b"not the installed TypeBridge runtime",
+        )
+        .expect("conflicting loader input is written");
+        let contaminated = Command::new(&executable)
+            .env("LD_LIBRARY_PATH", &unrelated_prefix)
+            .output()
+            .expect("contaminated loader negative control launches");
+        assert!(
+            !contaminated.status.success(),
+            "the negative control must detect a conflicting runtime search prefix"
+        );
+    }
+
+    // Cargo injects its build directories into the loader environment. This
+    // consumer must resolve the installed package through its own CMake RPATH.
     let output = Command::new(&executable)
+        .env_remove("LD_LIBRARY_PATH")
+        .env_remove("DYLD_LIBRARY_PATH")
+        .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
         .output()
         .expect("clean staged CMake consumer launches");
     assert!(

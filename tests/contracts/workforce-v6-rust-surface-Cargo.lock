@@ -1462,7 +1462,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "regex",
  "serde_json",
@@ -1479,7 +1479,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-contract"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1489,7 +1489,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-core-lib"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -1518,7 +1518,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "ed25519-dalek",
  "rand_core",
@@ -1540,7 +1540,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm-derive"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1550,7 +1550,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-query"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "type-bridge-contract",
  "type-bridge-schema",
@@ -1558,7 +1558,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -1572,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-codegen"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "type-bridge-contract",
  "type-bridge-schema",
@@ -1581,7 +1581,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-compat"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1594,7 +1594,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-migration"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -1611,7 +1611,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-toml-transpiler"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "indexmap",
  "serde",

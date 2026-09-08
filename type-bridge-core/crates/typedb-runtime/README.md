@@ -10,11 +10,11 @@ instead of depending on this runtime directly.
 
 ```toml
 [dependencies]
-type-bridge-typedb-runtime = "2.1.0"
+type-bridge-typedb-runtime = "2.2.0"
 ```
 
 Start with the secure connection types in the
-[crate API](https://docs.rs/type-bridge-typedb-runtime/2.1.0) and keep the
+[crate API](https://docs.rs/type-bridge-typedb-runtime/2.2.0) and keep the
 resulting prepared trust material alive for the connection lifetime. Use
 bounded answer limits for all provider reads.
 
@@ -26,8 +26,8 @@ bounded answer limits for all provider reads.
 | `band9` | yes | Official TypeDB driver 3.12.3; supports TypeDB 3.12 |
 
 At least one band must be enabled. The crate is released in lockstep with
-TypeBridge 2.1.0, requires Rust 1.88+, and supports TypeDB 3.11.x–3.12.x.
+TypeBridge 2.2.0, requires Rust 1.88+, and supports TypeDB 3.11.x–3.12.x.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
-[API documentation](https://docs.rs/type-bridge-typedb-runtime/2.1.0) ·
+[API documentation](https://docs.rs/type-bridge-typedb-runtime/2.2.0) ·
 [MIT license](https://github.com/ds1sqe/type-bridge/blob/master/LICENSE)

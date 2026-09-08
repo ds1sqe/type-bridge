@@ -47,8 +47,8 @@ def test_pruned_candidate_lock_contains_only_runtime_closure() -> None:
     lock = tomllib.loads(SECURITY.pruned_lock_payload(metadata, closure).decode())
     packages = {(item["name"], item["version"]) for item in lock["package"]}
 
-    assert ("type-bridge-cli", "2.1.0") in packages
-    assert ("type-bridge-c", "2.1.0") in packages
+    assert ("type-bridge-cli", "2.2.0") in packages
+    assert ("type-bridge-c", "2.2.0") in packages
     assert ("pyo3", "0.23.5") not in packages
     assert ("h2", "0.4.16") in packages
     assert ("rustls-webpki", "0.103.13") in packages
@@ -100,7 +100,7 @@ def test_signature_policy_is_candidate_only_and_identity_bound() -> None:
     assert policy["candidate-signatures"] == []
     assert policy["publication-disposition"] == SECURITY.DISPOSITION
     assert policy["protected-release"]["issuer"] == ("https://token.actions.githubusercontent.com")
-    assert "release\\.yml@refs/tags/v2\\.1\\.0" in policy["protected-release"]["identity-regexp"]
+    assert "c-release\\.yml@refs/tags/v2\\.2\\.0" in policy["protected-release"]["identity-regexp"]
 
     hostile = copy.deepcopy(policy)
     hostile["protected-release"]["issuer"] = "https://hostile.example"

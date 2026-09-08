@@ -1,5 +1,5 @@
 schema-version = 1
-release-version = "2.1.0"
+release-version = "2.2.0"
 first-party-msrv = "1.88"
 candidate-toolchain = "1.94.1"
 repository = "https://github.com/ds1sqe/type-bridge"

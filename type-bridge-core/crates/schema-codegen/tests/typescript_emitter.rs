@@ -95,7 +95,7 @@ fn emits_exact_deterministic_es_module_package() {
     );
     let package_json = String::from_utf8(first.get("package.json").unwrap().to_vec()).unwrap();
     assert!(package_json.contains("\"type\": \"module\""));
-    assert!(package_json.contains("\"@type-bridge/node\": \"^2.1.0\""));
+    assert!(package_json.contains("\"@type-bridge/node\": \"^2.2.0\""));
     assert!(
         String::from_utf8(first.get("tsconfig.json").unwrap().to_vec())
             .unwrap()

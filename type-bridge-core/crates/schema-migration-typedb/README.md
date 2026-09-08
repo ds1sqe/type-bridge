@@ -11,11 +11,11 @@ execution.
 
 ```toml
 [dependencies]
-type-bridge-schema-migration-typedb = "2.1.0"
+type-bridge-schema-migration-typedb = "2.2.0"
 ```
 
 Embedders should start with the fully bound `TypeDbMigrationRunner` from the
-[crate API](https://docs.rs/type-bridge-schema-migration-typedb/2.1.0). It
+[crate API](https://docs.rs/type-bridge-schema-migration-typedb/2.2.0). It
 constructs one execution binding and reuses it for every provider/store
 component it composes.
 
@@ -59,10 +59,10 @@ the active managed fence for the full mutation; never write the control schema
 or journal ad hoc.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
-2.1.0, requires Rust 1.88+, and executes migrations only against exactly TypeDB
+2.2.0, requires Rust 1.88+, and executes migrations only against exactly TypeDB
 3.12.1. The wider TypeDB driver-band support belongs to the runtime and server
 crates, not this migration provider.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
-[API documentation](https://docs.rs/type-bridge-schema-migration-typedb/2.1.0) ·
+[API documentation](https://docs.rs/type-bridge-schema-migration-typedb/2.2.0) ·
 [MIT license](https://github.com/ds1sqe/type-bridge/blob/master/LICENSE)

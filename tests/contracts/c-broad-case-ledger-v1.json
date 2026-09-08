@@ -14,7 +14,7 @@
     "plan05-data-model": {
       "source_commit": "4d74f2759612fe07fd7c6134d0e1976f951011c1",
       "authorities": [
-        {"path": "tests/contracts/sdk_conformance/workforce-v3/catalog-v3.json", "sha256": "5b9042a42366d93df4f696e2033e5b20d9e64917a2afb5eb1b7a8d6e0d7a17b0"},
+        {"path": "tests/contracts/sdk_conformance/workforce-v3/catalog-v3.json", "sha256": "e4f66ea93cd4c41330de0743e35e76457daf60f22be9bdce90167a18cc4d9499"},
         {"path": "tests/contracts/sdk_conformance/workforce-v3/journey-v3.json", "sha256": "912130753fe7938a38c054cff16e202b312551a6aa65265148628bfbd2abbbef"}
       ]
     },
@@ -36,7 +36,7 @@
       "source_commit": "177ce24ac182b94269561c8622e5533d29891a44",
       "authorities": [
         {"path": "tests/contracts/c-artifact-journey-v1.json", "sha256": "3da1077d7cc9a126722a20eebced007cbe491861c2649d41d11ff510c9057f5a"},
-        {"path": "tests/contracts/c-distribution-v1.json", "sha256": "ae33b9c0928ab008c35834e71415cc700c20c6ff52d207dad5e7c0f92672020e"}
+        {"path": "tests/contracts/c-distribution-v1.json", "sha256": "80f942f7f47fef51ff54a859d79ef41a7613cf9aca445657a962ed4fedcd1d40"}
       ]
     }
   },

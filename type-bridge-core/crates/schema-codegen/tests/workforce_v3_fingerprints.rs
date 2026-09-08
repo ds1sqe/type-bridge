@@ -249,17 +249,9 @@ fn exact_workforce_v3_fingerprint_inventory_is_reproducible() {
             .map(|(binding, projection)| (*binding, projection.projection_fingerprint()))
             .collect::<BTreeMap<_, _>>(),
     });
-    let catalog: serde_json::Value =
-        serde_json::from_str(CATALOG).expect("Workforce V3 catalog parses");
-    assert_eq!(catalog["authority_state"], "finalized");
-    assert_eq!(
-        catalog["expected_fingerprints"]["semantic"],
-        inventory["semantic"]
-    );
-    assert_eq!(
-        catalog["expected_fingerprints"]["projections"],
-        inventory["projections"]
-    );
+    // Preserve the generated observation when a versioned emitter resource
+    // changes. Catalog drift still fails acceptance below; the output permits
+    // reviewing a deliberate catalog refresh without copying assertion text.
     let bytes = to_canonical_json(&inventory).expect("fingerprint inventory encodes");
     if let Some(output) = env::var_os(OUTPUT_ENV) {
         let mut destination = OpenOptions::new()
@@ -274,4 +266,15 @@ fn exact_workforce_v3_fingerprint_inventory_is_reproducible() {
             .sync_all()
             .expect("fingerprint inventory flushes");
     }
+    let catalog: serde_json::Value =
+        serde_json::from_str(CATALOG).expect("Workforce V3 catalog parses");
+    assert_eq!(catalog["authority_state"], "finalized");
+    assert_eq!(
+        catalog["expected_fingerprints"]["semantic"],
+        inventory["semantic"]
+    );
+    assert_eq!(
+        catalog["expected_fingerprints"]["projections"],
+        inventory["projections"]
+    );
 }

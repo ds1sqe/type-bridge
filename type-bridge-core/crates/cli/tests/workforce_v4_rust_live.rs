@@ -80,7 +80,7 @@ fn generated_rust_observes_v4_administration_controls_and_lifecycle_on_3_12_3() 
     fs::write(
         &generated_manifest,
         manifest.replace(
-            "type-bridge = { version = \"=2.1.0\", default-features = false }",
+            "type-bridge = { version = \"=2.2.0\", default-features = false }",
             &format!(
                 "type-bridge = {{ path = {:?}, default-features = false, features = [\"typedb\"] }}",
                 runtime

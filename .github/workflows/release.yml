@@ -3,11 +3,11 @@ name: Release
 on:
   push:
     tags:
-      - 'v2.1.0'
+      - 'v2.2.0'
   workflow_dispatch:
     inputs:
       release_channel:
-        description: Validate the 2.1.0 release identity or recover the accepted v2.0.0 tag run
+        description: Validate the 2.2.0 release identity or recover the accepted v2.0.0 tag run
         required: true
         type: choice
         default: candidate
@@ -56,10 +56,10 @@ on:
 # before any publisher executed.
 env:
   # Candidate acceptance verifies the exact stable bytes before the stable tag exists.
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && 'v2.0.0' || 'v2.1.0' }}
-  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0.0' || '2.1.0' }}
-  PYTHON_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0.0' || '2.1.0' }}
-  SERVER_OCI_MINOR_ALIAS: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0' || '2.1' }}
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && 'v2.0.0' || 'v2.2.0' }}
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0.0' || '2.2.0' }}
+  PYTHON_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0.0' || '2.2.0' }}
+  SERVER_OCI_MINOR_ALIAS: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0' || '2.2' }}
   RELEASE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel || 'stable' }}
   RELEASE_REVISION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && 'aacf4d16486a3a3bae47c3b10c1d526c587dd7a7' || github.sha }}
   RELEASE_ARTIFACT_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && inputs.recovery_run_id || github.run_id }}
@@ -263,7 +263,7 @@ jobs:
       # may publish every candidate crate. Fail closed on the credential's
       # local shape before npm performs the first irreversible registry write.
       - name: Validate Cargo publication credential shape
-        if: github.event_name == 'push' && github.ref == 'refs/tags/v2.1.0'
+        if: github.event_name == 'push' && github.ref == 'refs/tags/v2.2.0'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
@@ -284,7 +284,7 @@ jobs:
       # granular token can publish. Authenticate here, then make npm's exact
       # package PUT the first registry mutation so it is authoritative.
       - name: Authenticate npm publication credential
-        if: github.event_name == 'push' && github.ref == 'refs/tags/v2.1.0'
+        if: github.event_name == 'push' && github.ref == 'refs/tags/v2.2.0'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -311,7 +311,7 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.1.0' &&
+          github.ref == 'refs/tags/v2.2.0' &&
           needs.channel-preflight.result == 'success'
         ) ||
         (
@@ -361,7 +361,7 @@ jobs:
       always() &&
       !cancelled() &&
       github.event_name == 'push' &&
-      github.ref == 'refs/tags/v2.1.0' &&
+      github.ref == 'refs/tags/v2.2.0' &&
       needs.release-tag-preflight.result == 'success' &&
       needs.validate-release-identity.result == 'success' &&
       needs.publish-node-npm.result == 'success'
@@ -1806,7 +1806,7 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.1.0' &&
+          github.ref == 'refs/tags/v2.2.0' &&
           needs.channel-preflight.result == 'success' &&
           needs.release-tag-preflight.result == 'success' &&
           needs.accept-server-oci.result == 'success' &&
@@ -2081,7 +2081,7 @@ jobs:
 
       - name: Sign exact platform and multi-platform digests
         env:
-          COSIGN_CERTIFICATE_IDENTITY_REGEXP: ${{ github.event_name == 'workflow_dispatch' && '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/heads/master$' || '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2[.]1[.]0$' }}
+          COSIGN_CERTIFICATE_IDENTITY_REGEXP: ${{ github.event_name == 'workflow_dispatch' && '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/heads/master$' || '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2[.]2[.]0$' }}
         run: |
           cosign sign --yes \
             "${SERVER_OCI_IMAGE}@${SERVER_OCI_AMD64_DIGEST}" \
@@ -2321,7 +2321,7 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.1.0' &&
+          github.ref == 'refs/tags/v2.2.0' &&
           needs.channel-preflight.result == 'success' &&
           needs.release-tag-preflight.result == 'success'
         ) ||
@@ -2464,7 +2464,7 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.1.0' &&
+          github.ref == 'refs/tags/v2.2.0' &&
           needs.release-tag-preflight.result == 'success' &&
           needs.build-core-wheels.result == 'success' &&
           needs.build-core-sdist.result == 'success' &&
@@ -2600,7 +2600,7 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.1.0' &&
+          github.ref == 'refs/tags/v2.2.0' &&
           needs.release-tag-preflight.result == 'success' &&
           needs.build-python.result == 'success' &&
           needs.publish-core-pypi.result == 'success'
@@ -2718,7 +2718,7 @@ jobs:
       (
         (
           github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.1.0' &&
+          github.ref == 'refs/tags/v2.2.0' &&
           needs.release-tag-preflight.result == 'success' &&
           needs.publish-server-oci.result == 'success' &&
           needs.publish-node-npm.result == 'success' &&

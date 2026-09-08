@@ -43,7 +43,14 @@ mkdir -p "$TYPESCRIPT_OUTPUT/node_modules/@type-bridge"
 if [[ ! -e "$TYPESCRIPT_OUTPUT/node_modules/@type-bridge/node" ]]; then
     ln -s "$NODE_CRATE" "$TYPESCRIPT_OUTPUT/node_modules/@type-bridge/node"
 fi
-rg -q '"@type-bridge/node": "\^2\.1\.0"' "$TYPESCRIPT_OUTPUT/package.json"
+node --input-type=module - "$NODE_CRATE/package.json" "$TYPESCRIPT_OUTPUT/package.json" <<'JS'
+import { readFileSync } from "node:fs";
+const runtime = JSON.parse(readFileSync(process.argv[2], "utf8"));
+const generated = JSON.parse(readFileSync(process.argv[3], "utf8"));
+if (generated.peerDependencies?.["@type-bridge/node"] !== `^${runtime.version}`) {
+  throw new Error("Generated example must require the current Node runtime version");
+}
+JS
 "$NODE_CRATE/node_modules/.bin/tsc" \
     --project "$TYPESCRIPT_OUTPUT/tsconfig.json" --noEmit
 

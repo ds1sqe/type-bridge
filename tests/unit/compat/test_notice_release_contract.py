@@ -40,8 +40,8 @@ def test_notice_is_nonretroactive_and_does_not_add_warning_behavior() -> None:
 def test_current_release_keeps_the_published_notice_separate() -> None:
     workflow = (ROOT / ".github/workflows/release.yml").read_text()
     parsed = yaml.load(workflow, Loader=yaml.BaseLoader)
-    assert parsed["on"]["push"]["tags"] == ["v2.1.0"]
-    assert "release.yml@refs/tags/v2[.]1[.]0$" in workflow
+    assert parsed["on"]["push"]["tags"] == ["v2.2.0"]
+    assert "release.yml@refs/tags/v2[.]2[.]0$" in workflow
     assert "release.yml@refs/tags/v2[.]0[.]0$" not in workflow
     jobs = parsed["jobs"]
     current = jobs["github-release"]
@@ -52,7 +52,7 @@ def test_current_release_keeps_the_published_notice_separate() -> None:
     notice = next(step for step in historical["steps"] if "softprops/" in step.get("uses", ""))
     assert notice["with"]["tag_name"] == "v2.0.2"
     assert notice["with"]["target_commitish"] == "f94703f4c9b44a965a089f85b47c17933f4d9be6"
-    assert "inputs.release_channel == 'recovery' && 'v2.0.0' || 'v2.1.0'" in workflow
+    assert "inputs.release_channel == 'recovery' && 'v2.0.0' || 'v2.2.0'" in workflow
 
 
 @pytest.mark.parametrize(
@@ -82,7 +82,7 @@ def test_oci_publisher_binds_current_tag_and_preserves_frozen_recovery(
     steps = workflow["jobs"]["publish-server-oci"]["steps"]
     guards = [step["run"] for step in steps if step["name"] == "Revalidate immutable release tag"]
     assert len(guards) == 1
-    release_tag = "v2.0.0" if channel == "recovery" else "v2.1.0"
+    release_tag = "v2.0.0" if channel == "recovery" else "v2.2.0"
     expected_tag = "a4cec6478ad4e764f039e51eabcbb68d45efd45a" if channel == "recovery" else "b" * 40
     ref_payload = json.dumps({"object": {"type": ref_type, "sha": tag_object}})
     tag_payload = json.dumps({"object": {"type": target_type, "sha": target_revision}})

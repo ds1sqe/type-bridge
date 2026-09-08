@@ -124,7 +124,7 @@ fn emits_exact_deterministic_single_dependency_crate() {
     assert!(tokens.contains("pub const plays_event_container_item"));
     let manifest = String::from_utf8(first.get("Cargo.toml").unwrap().to_vec()).unwrap();
     assert!(manifest.contains("[dependencies]"));
-    assert!(manifest.contains("type-bridge = { version = \"=2.1.0\", default-features = false }"));
+    assert!(manifest.contains("type-bridge = { version = \"=2.2.0\", default-features = false }"));
     let schema = String::from_utf8(first.get("src/schema.rs").unwrap().to_vec()).unwrap();
     assert!(schema.contains("pub(crate) const SCHEMA_AUTHORITY_JSON"));
     assert!(schema.contains("typebridge.schema-authority/v1"));

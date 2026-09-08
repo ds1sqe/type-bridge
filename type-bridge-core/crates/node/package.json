@@ -1,6 +1,6 @@
 {
   "name": "@type-bridge/node",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "TypeScript and Node SDK for the TypeBridge shared Rust semantic engine",
   "license": "MIT",
   "main": "dist/public.js",

@@ -49,7 +49,7 @@ compatibility boundaries.
 ## Rust publication boundary
 
 The 17 first-party Rust crates are published to crates.io in dependency order
-and share the repository release identity (currently `2.1.0`). Supporting
+and share the repository release identity (currently `2.2.0`). Supporting
 engine crates remain available for integrators, while most Rust applications
 should depend on the `type-bridge` SDK. `type-bridge-server` is distributed as
 both a Cargo crate and an OCI image. `type-bridge-core`, `type-bridge-node`, and
