@@ -165,6 +165,10 @@ precision = 2
 [tool.coverage.html]
 directory = "htmlcov"
 
+[tool.uv]
+# Keep mypy's wheel-only helper on a complete, verified release.
+constraint-dependencies = ["ast-serialize==0.10.0"]
+
 [tool.uv.workspace]
 members = [
     "type-bridge-core",
