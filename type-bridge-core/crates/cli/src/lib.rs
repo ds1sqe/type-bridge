@@ -805,9 +805,9 @@ mod schema_generation_atomicity_tests {
     use type_bridge_contract::codec::to_canonical_json;
     use type_bridge_contract::projection::BindingTarget;
 
-    const ARTIFACT_OUTPUT_ENV: &str = "TYPE_BRIDGE_WORKFORCE_V3_ATOMIC_GENERATION_OUTPUT";
+    const ARTIFACT_OUTPUT_ENV: &str = "TYPE_BRIDGE_SDK_V3_ATOMIC_GENERATION_OUTPUT";
     const ARTIFACT_SOURCE_PATH: &str = "type-bridge-core/crates/cli/src/lib.rs";
-    const ARTIFACT_FORMAT: &str = "typebridge.workforce-v3-artifact-observation/v1";
+    const ARTIFACT_FORMAT: &str = "typebridge.sdk-v3-artifact-observation/v1";
     const MAX_ARTIFACT_BYTES: usize = 64 * 1024;
 
     fn publish_atomic_generation_observation(observation: serde_json::Value) {

@@ -300,8 +300,8 @@ def capture(ci_run: int, output: Path) -> None:
 
 def seal(inputs: Path, reports: Path, output: Path) -> None:
     # The independent FULL-C audit is the acceptance authority. It reopens all
-    # archive, security, Phase-4, predecessor, and V6 inputs before sealing.
-    import audit_full_c_candidate as audit
+    # archive, security, Artifact acceptance, predecessor, and V6 inputs before sealing.
+    import audit_full_c_artifact as audit
 
     source, tree, _ = control()
     captured = load(inputs / "capture.json")
@@ -325,7 +325,7 @@ def seal(inputs: Path, reports: Path, output: Path) -> None:
         )
     result, summary = audit.audit(
         reports_root=reports,
-        phase4_path=paths["c-artifact-phase4-report.json"],
+        acceptance_path=paths["c-artifact-acceptance-report.json"],
         provider=paths["c-artifact-clean-consumer.json"],
         live=paths["c-artifact-live-journey.json"],
         cli=paths[policy.CLI],
@@ -334,7 +334,7 @@ def seal(inputs: Path, reports: Path, output: Path) -> None:
         security_evidence=inputs / "c-distribution-security-linux-x86_64-gnu",
     )
     require(
-        result["source_commit"] == source and result["authority_state"] == "accepted-candidate",
+        result["source_commit"] == source and result["authority_state"] == "accepted-artifact",
         "FULL-C source or acceptance mismatch",
     )
     output.mkdir(parents=True, exist_ok=False)
@@ -380,7 +380,7 @@ def seal(inputs: Path, reports: Path, output: Path) -> None:
             "verification_run": int(os.environ["GITHUB_RUN_ID"]),
             "verification_attempt": 1,
             "policy_sha256": digest(policy.POLICY),
-            "candidate_set_id": result["candidate_set_id"],
+            "artifact_set_id": result["artifact_set_id"],
             "full_c_audit_sha256": hashlib.sha256(evidence_files["full-c-audit.json"]).hexdigest(),
             "files": [record(path) for path in sorted(output.iterdir())],
             "public_name_mapping": policy.PUBLIC_FILES,
@@ -491,7 +491,7 @@ def stage(verify_run: int, output: Path) -> None:
             "ci_run": receipt["ci_run"],
             "verification_run": verify_run,
             "verification_attempt": 1,
-            "candidate_set_id": receipt["candidate_set_id"],
+            "artifact_set_id": receipt["artifact_set_id"],
             "abi": "1.6.0",
             "target": policy.TARGET,
             "runner": "ubuntu-24.04",

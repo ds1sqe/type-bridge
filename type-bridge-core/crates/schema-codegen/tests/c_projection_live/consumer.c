@@ -86,7 +86,7 @@ static int emit_v2_observationf(const char *observation_ref,
   return emit_v2_observation(observation_ref, proof_kind, canonical_json);
 }
 
-typedef struct workforce_person_rows_observation {
+typedef struct sdk_person_rows_observation {
   size_t count;
   char keys[4][64];
   int64_t scores[4];
@@ -94,11 +94,11 @@ typedef struct workforce_person_rows_observation {
   char first_nickname[64];
   char first_reference_key[64];
   uint32_t first_scalar_domain_mask;
-} workforce_person_rows_observation_t;
+} sdk_person_rows_observation_t;
 
-#define WORKFORCE_SCALAR_DOMAIN_MASK_ALL UINT32_C(0x1ff)
+#define SDK_SCALAR_DOMAIN_MASK_ALL UINT32_C(0x1ff)
 
-typedef struct workforce_reducer_observation {
+typedef struct sdk_reducer_observation {
   uint64_t count;
   int64_t sum;
   int64_t minimum;
@@ -112,9 +112,9 @@ typedef struct workforce_reducer_observation {
   uint64_t field_counts[2];
   int64_t tuple_keys[2][2];
   uint64_t tuple_counts[2];
-} workforce_reducer_observation_t;
+} sdk_reducer_observation_t;
 
-typedef struct workforce_not_unique_observation {
+typedef struct sdk_not_unique_observation {
   type_bridge_execution_diagnostic_category_t category;
   type_bridge_execution_diagnostic_path_kind_t path_kind;
   type_bridge_execution_diagnostic_detail_kind_t detail_kind;
@@ -123,17 +123,17 @@ typedef struct workforce_not_unique_observation {
   char code[64];
   char message[256];
   char detail_key[64];
-} workforce_not_unique_observation_t;
+} sdk_not_unique_observation_t;
 
-typedef struct workforce_topology_observation {
+typedef struct sdk_topology_observation {
   size_t cross_pair_count;
   char cross_pairs[4][2][64];
   char reachable_from[64];
   char reachable_to[64];
   size_t max_hops;
-} workforce_topology_observation_t;
+} sdk_topology_observation_t;
 
-typedef struct workforce_selection_shape_observation {
+typedef struct sdk_selection_shape_observation {
   char named_origin[64];
   char named_participants[2][64];
   char positional_origin[64];
@@ -142,9 +142,9 @@ typedef struct workforce_selection_shape_observation {
   size_t positional_participant_count;
   int collected_distinct;
   type_bridge_query_sort_direction_t collection_order;
-} workforce_selection_shape_observation_t;
+} sdk_selection_shape_observation_t;
 
-typedef struct workforce_query_lifecycle_observation {
+typedef struct sdk_query_lifecycle_observation {
   int direct_lane_observed;
   int remote_lane_observed;
   int ancestor_usable_after_descendant_close;
@@ -156,20 +156,20 @@ typedef struct workforce_query_lifecycle_observation {
   int session_usable_after_query_close;
   int sibling_usable;
   int result_usable_after_query_close;
-} workforce_query_lifecycle_observation_t;
+} sdk_query_lifecycle_observation_t;
 
-typedef struct workforce_resource_limit_observation {
+typedef struct sdk_resource_limit_observation {
   type_bridge_execution_diagnostic_category_t category;
   size_t zero_dimensions;
   size_t plus_one_dimensions;
   int no_partial_result;
   char code[64];
   char dimension[64];
-} workforce_resource_limit_observation_t;
+} sdk_resource_limit_observation_t;
 
 static int emit_model_values_observation(
     const char *proof_kind,
-    const workforce_person_rows_observation_t *observation) {
+    const sdk_person_rows_observation_t *observation) {
   if (observation == NULL || observation->count != 2u) {
     return 0;
   }
@@ -177,7 +177,7 @@ static int emit_model_values_observation(
       observation->first_nickname[0] == '\0' ||
       observation->first_reference_key[0] == '\0' ||
       observation->first_scalar_domain_mask !=
-          WORKFORCE_SCALAR_DOMAIN_MASK_ALL) {
+          SDK_SCALAR_DOMAIN_MASK_ALL) {
     return 0;
   }
   return emit_v2_observationf(
@@ -193,8 +193,8 @@ static int emit_model_values_observation(
 
 static int emit_owner_iid_observation(
     const char *proof_kind,
-    const workforce_person_rows_observation_t *owners,
-    const workforce_person_rows_observation_t *optional) {
+    const sdk_person_rows_observation_t *owners,
+    const sdk_person_rows_observation_t *optional) {
   if (owners == NULL || owners->count != 2u || optional == NULL ||
       optional->count != 1u) {
     return 0;
@@ -210,7 +210,7 @@ static int emit_owner_iid_observation(
 
 static int emit_scalar_domain_observation(
     const char *proof_kind,
-    const workforce_person_rows_observation_t *observation,
+    const sdk_person_rows_observation_t *observation,
     type_bridge_query_comparison_t comparison, int64_t operand) {
   if (observation == NULL || observation->count != 1u ||
       comparison != TYPE_BRIDGE_QUERY_COMPARE_GREATER_THAN_OR_EQUAL) {
@@ -225,8 +225,8 @@ static int emit_scalar_domain_observation(
 
 static int emit_schema_function_observation(
     const char *proof_kind, int64_t minimum,
-    const workforce_person_rows_observation_t *outer,
-    const workforce_person_rows_observation_t *nested) {
+    const sdk_person_rows_observation_t *outer,
+    const sdk_person_rows_observation_t *nested) {
   if (outer == NULL || outer->count != 2u || nested == NULL ||
       nested->count != 2u) {
     return 0;
@@ -240,7 +240,7 @@ static int emit_schema_function_observation(
 }
 
 static int emit_grouped_reducer_observation(
-    const char *proof_kind, const workforce_reducer_observation_t *value) {
+    const char *proof_kind, const sdk_reducer_observation_t *value) {
   if (value == NULL) {
     return 0;
   }
@@ -305,10 +305,10 @@ static int emit_roles_observation(const char *proof_kind,
 }
 
 static int emit_scalar_boolean_observation(
-    const char *proof_kind, const workforce_person_rows_observation_t *and_rows,
-    const workforce_person_rows_observation_t *field_rows,
-    const workforce_person_rows_observation_t *not_rows,
-    const workforce_person_rows_observation_t *or_rows) {
+    const char *proof_kind, const sdk_person_rows_observation_t *and_rows,
+    const sdk_person_rows_observation_t *field_rows,
+    const sdk_person_rows_observation_t *not_rows,
+    const sdk_person_rows_observation_t *or_rows) {
   if (and_rows == NULL || and_rows->count != 1u || field_rows == NULL ||
       field_rows->count != 1u || not_rows == NULL || not_rows->count != 1u ||
       or_rows == NULL || or_rows->count != 2u) {
@@ -324,7 +324,7 @@ static int emit_scalar_boolean_observation(
 
 static int emit_selection_shapes_observation(
     const char *proof_kind,
-    const workforce_selection_shape_observation_t *observation) {
+    const sdk_selection_shape_observation_t *observation) {
   if (observation == NULL || observation->named_participant_count != 2u ||
       observation->positional_participant_count != 2u ||
       !observation->collected_distinct ||
@@ -345,7 +345,7 @@ static int emit_selection_shapes_observation(
 
 static int emit_topology_observation(
     const char *proof_kind,
-    const workforce_topology_observation_t *observation) {
+    const sdk_topology_observation_t *observation) {
   if (observation == NULL || observation->cross_pair_count != 4u ||
       observation->max_hops == 0u) {
     return 0;
@@ -366,8 +366,8 @@ static int emit_topology_observation(
 static int emit_terminals_observation(
     const char *proof_kind, uint64_t count, int exists,
     const char *first_key, const char *one_key,
-    const workforce_person_rows_observation_t *page,
-    const workforce_person_rows_observation_t *rows, uint64_t offset,
+    const sdk_person_rows_observation_t *page,
+    const sdk_person_rows_observation_t *rows, uint64_t offset,
     uint64_t limit, uint64_t total) {
   if (page == NULL || page->count != 1u || rows == NULL || rows->count != 2u) {
     return 0;
@@ -383,7 +383,7 @@ static int emit_terminals_observation(
 }
 
 static int emit_structured_query_diagnostic_observation(
-    const workforce_not_unique_observation_t *observation) {
+    const sdk_not_unique_observation_t *observation) {
   if (observation == NULL ||
       observation->category != TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_INVALID_INPUT ||
       observation->path_kind !=
@@ -403,7 +403,7 @@ static int emit_structured_query_diagnostic_observation(
 }
 
 static int emit_query_lifecycle_observation(
-    const workforce_query_lifecycle_observation_t *observation) {
+    const sdk_query_lifecycle_observation_t *observation) {
   if (observation == NULL || !observation->direct_lane_observed ||
       !observation->remote_lane_observed) {
     return 0;
@@ -429,7 +429,7 @@ static int emit_query_lifecycle_observation(
 
 static int emit_resource_limits_observation(
     const char *proof_kind,
-    const workforce_resource_limit_observation_t *observation) {
+    const sdk_resource_limit_observation_t *observation) {
   if (observation == NULL ||
       observation->category != TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_RESOURCE_LIMIT ||
       observation->code[0] == '\0' || observation->dimension[0] == '\0') {
@@ -509,7 +509,7 @@ static int check_structured_execution_diagnostic(
 
 static int observe_resource_limit_diagnostic(
     const type_bridge_execution_diagnostics_t *diagnostics,
-    const char *dimension, workforce_resource_limit_observation_t *observation) {
+    const char *dimension, sdk_resource_limit_observation_t *observation) {
   type_bridge_execution_diagnostic_view_v1_t diagnostic = {0};
   CHECK(diagnostics != NULL && dimension != NULL && observation != NULL);
   memset(observation, 0, sizeof(*observation));
@@ -526,7 +526,7 @@ static int observe_resource_limit_diagnostic(
 
 static int check_not_unique_diagnostic(
     const type_bridge_execution_diagnostics_t *diagnostics,
-    workforce_not_unique_observation_t *observation) {
+    sdk_not_unique_observation_t *observation) {
   static const char expected_message[] =
       "The typed query result does not satisfy the requested cardinality";
   type_bridge_execution_diagnostic_view_v1_t diagnostic = {0};
@@ -756,7 +756,7 @@ static int open_person_create(
   const int is_query_ada = strcmp(identifier_text, "query-ada") == 0;
   const int is_query_dana = strcmp(identifier_text, "query-dana") == 0;
   const int is_v5_live = strcmp(identifier_text, "v5-live-person") == 0;
-  const int is_workforce = is_query_ada || is_query_dana || is_v5_live;
+  const int is_sdk = is_query_ada || is_query_dana || is_v5_live;
   const char *alias_value =
       is_query_ada ? "analyst" : (is_query_dana ? "engineer" : alias_text);
   const char *date_value = is_query_dana ? "2026-08-13" : "2026-08-12";
@@ -790,7 +790,7 @@ static int open_person_create(
         TYPE_BRIDGE_STATUS_OK);
   if (!is_v5_live) {
     CHECK(fixture_scorezuzugte_open(package,
-                                    is_workforce ? 40 : score_number - 1,
+                                    is_sdk ? 40 : score_number - 1,
                                     &score_gte,
                                     out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   }
@@ -800,7 +800,7 @@ static int open_person_create(
   CHECK(fixture_valzuconstrained_open(package,
                                       is_v5_live
                                           ? 55
-                                          : is_workforce
+                                          : is_sdk
                                           ? (is_query_dana ? 45 : 38)
                                           : 40,
                                       &constrained,
@@ -809,14 +809,14 @@ static int open_person_create(
   CHECK(fixture_valzudate_open(
             package,
             view_of(is_v5_live ? "2026-08-03"
-                               : (is_workforce ? date_value : "2026-08-11")),
+                               : (is_sdk ? date_value : "2026-08-11")),
             &date,
                                out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzudatetime_open(
             package,
             view_of(is_v5_live
                         ? "2026-08-03T03:55:00"
-                        : (is_workforce ? datetime_value
+                        : (is_sdk ? datetime_value
                                         : "2026-08-11T07:30:00.5")),
             &datetime,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -824,27 +824,27 @@ static int open_person_create(
             package,
             view_of(is_v5_live
                         ? "2026-08-03T03:55:00Z"
-                        : (is_workforce ? datetime_tz_value
+                        : (is_sdk ? datetime_tz_value
                                         : "2026-08-11T07:30:00Z")),
             &datetime_tz,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzudecimal_open(
             package,
             view_of(is_v5_live ? "128.45"
-                               : (is_workforce ? decimal_value_text : "12.5")),
+                               : (is_sdk ? decimal_value_text : "12.5")),
             &decimal,
                                   out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzudouble_open(
             package,
             is_v5_live ? UINT64_C(0x402047ae147ae148)
-                       : (is_workforce ? double_bits
+                       : (is_sdk ? double_bits
                                        : UINT64_C(0x3ff8000000000000)),
             &double_value,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzuduration_open(
             package,
             view_of(is_v5_live ? "P6D"
-                               : (is_workforce ? duration_value : "P1D")),
+                               : (is_sdk ? duration_value : "P1D")),
             &duration,
                                    out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
 
@@ -1080,7 +1080,7 @@ static int check_person(
   size_t aliases_count = 0u;
   const int is_query_ada = strcmp(expected_identifier, "query-ada") == 0;
   const int is_query_dana = strcmp(expected_identifier, "query-dana") == 0;
-  const int is_workforce = is_query_ada || is_query_dana;
+  const int is_sdk = is_query_ada || is_query_dana;
   const char *expected_alias_value =
       is_query_ada ? "analyst" : (is_query_dana ? "engineer" : expected_alias);
 
@@ -1129,7 +1129,7 @@ static int check_person(
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_scorezuzugte_value(score_gte, &long_value, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(long_value == (is_workforce ? 40 : expected_score - 1));
+  CHECK(long_value == (is_sdk ? 40 : expected_score - 1));
   CHECK(fixture_scorezuzugte_close(&score_gte) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_valzubool(person, &boolean_value, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
@@ -1143,13 +1143,13 @@ static int check_person(
   CHECK(fixture_valzuconstrained_value(constrained, &long_value,
                                        out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(long_value == (is_workforce ? (is_query_dana ? 45 : 38) : 40));
+  CHECK(long_value == (is_sdk ? (is_query_dana ? 45 : 38) : 40));
   CHECK(fixture_valzuconstrained_close(&constrained) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_valzudate(person, &date, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzudate_value(date, &text, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(same_text(text, is_workforce
+  CHECK(same_text(text, is_sdk
                             ? (is_query_dana ? "2026-08-13" : "2026-08-12")
                             : "2026-08-11"));
   CHECK(fixture_valzudate_close(&date) == TYPE_BRIDGE_STATUS_OK);
@@ -1158,7 +1158,7 @@ static int check_person(
   CHECK(fixture_valzudatetime_value(datetime, &text, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(same_text(text,
-                  is_workforce
+                  is_sdk
                       ? (is_query_dana ? "2026-08-13T10:45:00"
                                        : "2026-08-12T09:30:00")
                       : "2026-08-11T07:30:00.5"));
@@ -1170,7 +1170,7 @@ static int check_person(
                                          out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(same_text(text,
-                  is_workforce
+                  is_sdk
                       ? (is_query_dana ? "2026-08-13T10:45:00Z"
                                        : "2026-08-12T09:30:00Z")
                       : "2026-08-11T07:30:00Z"));
@@ -1180,7 +1180,7 @@ static int check_person(
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzudecimal_value(decimal, &text, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(same_text(text, is_workforce
+  CHECK(same_text(text, is_sdk
                             ? (is_query_dana ? "45.5" : "38.5")
                             : "12.5"));
   CHECK(fixture_valzudecimal_close(&decimal) == TYPE_BRIDGE_STATUS_OK);
@@ -1188,7 +1188,7 @@ static int check_person(
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzudouble_value(double_value, &bits, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(bits == (is_workforce
+  CHECK(bits == (is_sdk
                      ? (is_query_dana ? UINT64_C(0x4046800000000000)
                                       : UINT64_C(0x4043000000000000))
                      : UINT64_C(0x3ff8000000000000)));
@@ -1197,7 +1197,7 @@ static int check_person(
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzuduration_value(duration, &text, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(same_text(text, is_workforce
+  CHECK(same_text(text, is_sdk
                             ? (is_query_dana ? "PT45S" : "PT38S")
                             : "P1D"));
   CHECK(fixture_valzuduration_close(&duration) == TYPE_BRIDGE_STATUS_OK);
@@ -1432,7 +1432,7 @@ static int read_query_person_score(
 
 static int observe_query_person_model_values(
     const fixture_person *person,
-    workforce_person_rows_observation_t *observation,
+    sdk_person_rows_observation_t *observation,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
   fixture_aliases *alias = NULL;
   fixture_valzubool *boolean_value = NULL;
@@ -1548,7 +1548,7 @@ static int observe_query_person_model_values(
 
 static int observe_person_rows(
     fixture_query_rows_result *result,
-    workforce_person_rows_observation_t *observation,
+    sdk_person_rows_observation_t *observation,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
   size_t row_count = 0u;
   size_t row_index;
@@ -1818,7 +1818,7 @@ static int check_network_topology_result(
 
 static int check_reachable_result(
     fixture_query_rows_result *result,
-    workforce_topology_observation_t *observation, size_t max_hops,
+    sdk_topology_observation_t *observation, size_t max_hops,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
   fixture_person *source = NULL;
   fixture_person *target = NULL;
@@ -1852,7 +1852,7 @@ static int check_reachable_result(
 
 static int check_cross_join_result(
     fixture_query_rows_result *result,
-    workforce_topology_observation_t *observation,
+    sdk_topology_observation_t *observation,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
   int seen[4] = {0, 0, 0, 0};
   size_t row_count = 0u;
@@ -1963,9 +1963,9 @@ static int check_selection_shape_result(
   return 0;
 }
 
-static int check_workforce_reducers(
+static int check_sdk_reducers(
     fixture_query_reduction_result_ref_v1_t result,
-    workforce_reducer_observation_t *observation,
+    sdk_reducer_observation_t *observation,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
   const int64_t expected_longs[3] = {83, 38, 45};
   const uint64_t expected_doubles[3] = {
@@ -2031,9 +2031,9 @@ static int check_workforce_reducers(
   return 0;
 }
 
-static int check_workforce_binding_groups(
+static int check_sdk_binding_groups(
     fixture_query_reduction_result_ref_v1_t result,
-    workforce_reducer_observation_t *observation,
+    sdk_reducer_observation_t *observation,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
   size_t row_count = 0u;
   size_t row_index;
@@ -2085,9 +2085,9 @@ static int check_workforce_binding_groups(
   return 0;
 }
 
-static int check_workforce_field_groups(
+static int check_sdk_field_groups(
     fixture_query_reduction_result_ref_v1_t result,
-    workforce_reducer_observation_t *observation,
+    sdk_reducer_observation_t *observation,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
   size_t row_count = 0u;
   size_t row_index;
@@ -2133,9 +2133,9 @@ static int check_workforce_field_groups(
   return 0;
 }
 
-static int check_workforce_field_tuple_groups(
+static int check_sdk_field_tuple_groups(
     fixture_query_reduction_result_ref_v1_t result,
-    workforce_reducer_observation_t *observation,
+    sdk_reducer_observation_t *observation,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
   size_t row_count = 0u;
   size_t row_index;
@@ -2232,7 +2232,7 @@ static int run_typed_query_function_and_remote(
   fixture_query_predicate *owner_iid_predicate = NULL;
   fixture_query *query = NULL;
   fixture_query *filtered = NULL;
-  fixture_query *workforce_query = NULL;
+  fixture_query *sdk_query = NULL;
   fixture_query *dana_query = NULL;
   fixture_query *nickname_query = NULL;
   fixture_query_rows_terminal *terminal = NULL;
@@ -2260,7 +2260,7 @@ static int run_typed_query_function_and_remote(
   fixture_score *threshold = NULL;
   fixture_query_order *identifier_order = NULL;
   const fixture_query_order *orders[1];
-  const type_bridge_byte_view_t workforce_iids[2] = {ada_iid, dana_iid};
+  const type_bridge_byte_view_t sdk_iids[2] = {ada_iid, dana_iid};
   const char *const expected_rows[2] = {"query-ada", "query-dana"};
   const char *const expected_dana[1] = {"query-dana"};
   const char *const expected_ada[1] = {"query-ada"};
@@ -2285,25 +2285,25 @@ static int run_typed_query_function_and_remote(
   type_bridge_query_page_metadata_v1_t direct_page_metadata = {0};
   type_bridge_query_page_metadata_v1_t remote_page_metadata = {0};
   type_bridge_read_transaction_t *read_transaction = NULL;
-  workforce_person_rows_observation_t direct_function_rows = {0};
-  workforce_person_rows_observation_t remote_function_rows = {0};
-  workforce_person_rows_observation_t direct_nested_function_rows = {0};
-  workforce_person_rows_observation_t remote_nested_function_rows = {0};
-  workforce_person_rows_observation_t direct_workforce_rows = {0};
-  workforce_person_rows_observation_t remote_workforce_rows = {0};
-  workforce_person_rows_observation_t direct_nickname_rows = {0};
-  workforce_person_rows_observation_t remote_nickname_rows = {0};
-  workforce_person_rows_observation_t direct_first_rows = {0};
-  workforce_person_rows_observation_t remote_first_rows = {0};
-  workforce_person_rows_observation_t direct_one_rows = {0};
-  workforce_person_rows_observation_t remote_one_rows = {0};
-  workforce_person_rows_observation_t direct_page_rows = {0};
-  workforce_person_rows_observation_t remote_page_rows = {0};
-  workforce_reducer_observation_t direct_reducers = {0};
-  workforce_reducer_observation_t remote_reducers = {0};
-  workforce_resource_limit_observation_t resource_limit_observation = {0};
-  workforce_topology_observation_t direct_topology = {0};
-  workforce_topology_observation_t remote_topology = {0};
+  sdk_person_rows_observation_t direct_function_rows = {0};
+  sdk_person_rows_observation_t remote_function_rows = {0};
+  sdk_person_rows_observation_t direct_nested_function_rows = {0};
+  sdk_person_rows_observation_t remote_nested_function_rows = {0};
+  sdk_person_rows_observation_t direct_sdk_rows = {0};
+  sdk_person_rows_observation_t remote_sdk_rows = {0};
+  sdk_person_rows_observation_t direct_nickname_rows = {0};
+  sdk_person_rows_observation_t remote_nickname_rows = {0};
+  sdk_person_rows_observation_t direct_first_rows = {0};
+  sdk_person_rows_observation_t remote_first_rows = {0};
+  sdk_person_rows_observation_t direct_one_rows = {0};
+  sdk_person_rows_observation_t remote_one_rows = {0};
+  sdk_person_rows_observation_t direct_page_rows = {0};
+  sdk_person_rows_observation_t remote_page_rows = {0};
+  sdk_reducer_observation_t direct_reducers = {0};
+  sdk_reducer_observation_t remote_reducers = {0};
+  sdk_resource_limit_observation_t resource_limit_observation = {0};
+  sdk_topology_observation_t direct_topology = {0};
+  sdk_topology_observation_t remote_topology = {0};
   int remote_representative_zero_limit = 0;
   int remote_plus_one_clamped_all = 0;
   char direct_membership_member_key[64] = {0};
@@ -2367,7 +2367,7 @@ static int run_typed_query_function_and_remote(
             fixture_person_score_query_field_function_field(score_field),
             &predicate, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_query_exact_binding_iid_in(
-            person_binding, workforce_iids, 2u, &iid_predicate,
+            person_binding, sdk_iids, 2u, &iid_predicate,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_predicate_and(
             predicate, iid_predicate, &filtered_predicate,
@@ -2420,20 +2420,20 @@ static int run_typed_query_function_and_remote(
   CHECK(fixture_query_predicate_and(iid_predicate, score_present,
                                     &owner_iid_predicate, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_query_where(query, owner_iid_predicate, &workforce_query,
+  CHECK(fixture_query_where(query, owner_iid_predicate, &sdk_query,
                             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_where(query, dana_predicate, &dana_query,
                             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_one(dana_query, orders, 1u, &one_terminal,
                           out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_query_first(workforce_query, orders, 1u, &first_terminal,
+  CHECK(fixture_query_first(sdk_query, orders, 1u, &first_terminal,
                             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_query_rows(workforce_query, orders, 1u, 0u, 2u,
+  CHECK(fixture_query_rows(sdk_query, orders, 1u, 0u, 2u,
                            &rows_terminal, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   {
     fixture_query_root_v1_t root =
-        fixture_person_query_exact_binding_root(workforce_query,
+        fixture_person_query_exact_binding_root(sdk_query,
                                                 person_binding);
     CHECK(fixture_query_page(root, orders, 1u, 0u, 1u, 1u, &page_terminal,
                              out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -2461,7 +2461,7 @@ static int run_typed_query_function_and_remote(
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(check_rows_identifiers(rows_result, expected_rows, 2u,
                                out_diagnostics) == 0);
-  CHECK(observe_person_rows(rows_result, &direct_workforce_rows,
+  CHECK(observe_person_rows(rows_result, &direct_sdk_rows,
                             out_diagnostics) == 0);
   CHECK(fixture_database_query_execute_page(
             database, page_terminal, &limits, NULL, &page_result,
@@ -2650,7 +2650,7 @@ static int run_typed_query_function_and_remote(
   RUN_REMOTE_QUERY(rows, rows_terminal, rows_result);
   CHECK(check_rows_identifiers(rows_result, expected_rows, 2u,
                                out_diagnostics) == 0);
-  CHECK(observe_person_rows(rows_result, &remote_workforce_rows,
+  CHECK(observe_person_rows(rows_result, &remote_sdk_rows,
                             out_diagnostics) == 0);
   CHECK(fixture_query_rows_result_close(&rows_result) == TYPE_BRIDGE_STATUS_OK);
   RUN_REMOTE_QUERY(page, page_terminal, page_result);
@@ -2705,20 +2705,20 @@ static int run_typed_query_function_and_remote(
                                       &direct_function_rows));
   CHECK(emit_model_values_observation("remote_runtime",
                                       &remote_function_rows));
-  CHECK(emit_owner_iid_observation("direct_runtime", &direct_workforce_rows,
+  CHECK(emit_owner_iid_observation("direct_runtime", &direct_sdk_rows,
                                    &direct_nickname_rows));
-  CHECK(emit_owner_iid_observation("remote_runtime", &remote_workforce_rows,
+  CHECK(emit_owner_iid_observation("remote_runtime", &remote_sdk_rows,
                                    &remote_nickname_rows));
   CHECK(emit_terminals_observation(
       "direct_runtime", direct_terminal_count, direct_terminal_exists,
       direct_first_rows.keys[0],
-      direct_one_rows.keys[0], &direct_page_rows, &direct_workforce_rows,
+      direct_one_rows.keys[0], &direct_page_rows, &direct_sdk_rows,
       direct_page_metadata.offset, direct_page_metadata.limit,
       direct_page_metadata.total));
   CHECK(emit_terminals_observation(
       "remote_runtime", remote_terminal_count, remote_terminal_exists,
       remote_first_rows.keys[0],
-      remote_one_rows.keys[0], &remote_page_rows, &remote_workforce_rows,
+      remote_one_rows.keys[0], &remote_page_rows, &remote_sdk_rows,
       remote_page_metadata.offset, remote_page_metadata.limit,
       remote_page_metadata.total));
   CHECK(emit_v2_observationf(
@@ -2851,10 +2851,10 @@ static int run_typed_query_function_and_remote(
     fixture_query_rows_result *not_unique_result = NULL;
     fixture_query_rows_remote_pending *failure_pending = NULL;
     fixture_query_rows_remote_claim *failure_claim = NULL;
-    workforce_not_unique_observation_t direct_not_unique = {0};
-    workforce_not_unique_observation_t remote_not_unique = {0};
+    sdk_not_unique_observation_t direct_not_unique = {0};
+    sdk_not_unique_observation_t remote_not_unique = {0};
 
-    CHECK(fixture_query_one(workforce_query, orders, 1u,
+    CHECK(fixture_query_one(sdk_query, orders, 1u,
                             &not_unique_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
@@ -3145,7 +3145,7 @@ static int run_typed_query_function_and_remote(
     const size_t exchanges_before_closed_pending = remote_exchange_count;
     size_t exchanges_before_closed_query = 0u;
     size_t post_close_query_io_count = 0u;
-  workforce_query_lifecycle_observation_t lifecycle_observation = {0};
+  sdk_query_lifecycle_observation_t lifecycle_observation = {0};
 
     CHECK(fixture_query_where(query, iid_predicate, &lineage,
                               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -3482,7 +3482,7 @@ static int run_typed_query_function_and_remote(
     fixture_query_field_reduction_result *field_result = NULL;
     fixture_query_field_tuple_reduction_result *tuple_result = NULL;
     fixture_query_root_v1_t root =
-        fixture_person_query_exact_binding_root(workforce_query,
+        fixture_person_query_exact_binding_root(sdk_query,
                                                 person_binding);
     fixture_query_root_v1_t grouped_root;
 
@@ -3501,7 +3501,7 @@ static int run_typed_query_function_and_remote(
               &group_equal_predicate, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_add_hidden(
-              workforce_query,
+              sdk_query,
               fixture_person_query_exact_binding_ref(group_binding),
               &group_hidden, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_where(group_hidden, group_equal_predicate,
@@ -3535,13 +3535,13 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_database_query_execute_reduction(
               database, global_terminal, &limits, NULL, &global_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(check_workforce_reducers(
+    CHECK(check_sdk_reducers(
               fixture_query_reduction_result_ref(global_result),
               &direct_reducers, out_diagnostics) == 0);
     CHECK(fixture_query_reduction_result_close(&global_result) ==
           TYPE_BRIDGE_STATUS_OK);
     RUN_REMOTE_QUERY(reduction, global_terminal, global_result);
-    CHECK(check_workforce_reducers(
+    CHECK(check_sdk_reducers(
               fixture_query_reduction_result_ref(global_result),
               &remote_reducers, out_diagnostics) == 0);
     CHECK(fixture_query_reduction_result_close(&global_result) ==
@@ -3556,13 +3556,13 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_database_query_execute_reduction(
               database, binding_terminal, &limits, NULL, &binding_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(check_workforce_binding_groups(
+    CHECK(check_sdk_binding_groups(
               fixture_query_reduction_result_ref(binding_result),
               &direct_reducers, out_diagnostics) == 0);
     CHECK(fixture_query_reduction_result_close(&binding_result) ==
           TYPE_BRIDGE_STATUS_OK);
     RUN_REMOTE_QUERY(reduction, binding_terminal, binding_result);
-    CHECK(check_workforce_binding_groups(
+    CHECK(check_sdk_binding_groups(
               fixture_query_reduction_result_ref(binding_result),
               &remote_reducers, out_diagnostics) == 0);
     CHECK(fixture_query_reduction_result_close(&binding_result) ==
@@ -3577,13 +3577,13 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_database_query_execute_field_reduction(
               database, field_terminal, &limits, NULL, &field_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(check_workforce_field_groups(
+    CHECK(check_sdk_field_groups(
               fixture_query_field_reduction_result_ref(field_result),
               &direct_reducers, out_diagnostics) == 0);
     CHECK(fixture_query_field_reduction_result_close(&field_result) ==
           TYPE_BRIDGE_STATUS_OK);
     RUN_REMOTE_QUERY(field_reduction, field_terminal, field_result);
-    CHECK(check_workforce_field_groups(
+    CHECK(check_sdk_field_groups(
               fixture_query_field_reduction_result_ref(field_result),
               &remote_reducers, out_diagnostics) == 0);
     CHECK(fixture_query_field_reduction_result_close(&field_result) ==
@@ -3595,13 +3595,13 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_database_query_execute_field_tuple_reduction(
               database, tuple_terminal, &limits, NULL, &tuple_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(check_workforce_field_tuple_groups(
+    CHECK(check_sdk_field_tuple_groups(
               fixture_query_field_tuple_reduction_result_ref(tuple_result),
               &direct_reducers, out_diagnostics) == 0);
     CHECK(fixture_query_field_tuple_reduction_result_close(&tuple_result) ==
           TYPE_BRIDGE_STATUS_OK);
     RUN_REMOTE_QUERY(field_tuple_reduction, tuple_terminal, tuple_result);
-    CHECK(check_workforce_field_tuple_groups(
+    CHECK(check_sdk_field_tuple_groups(
               fixture_query_field_tuple_reduction_result_ref(tuple_result),
               &remote_reducers, out_diagnostics) == 0);
     CHECK(fixture_query_field_tuple_reduction_result_close(&tuple_result) ==
@@ -4179,12 +4179,12 @@ static int run_typed_query_function_and_remote(
     fixture_query_rows_result *cross_result = NULL;
     const type_bridge_byte_view_t iids[2] = {ada_iid, dana_iid};
     size_t row_count = 0u;
-    workforce_person_rows_observation_t direct_or_rows = {0};
-    workforce_person_rows_observation_t remote_or_rows = {0};
-    workforce_person_rows_observation_t direct_not_rows = {0};
-    workforce_person_rows_observation_t remote_not_rows = {0};
-    workforce_person_rows_observation_t direct_field_comparison_rows = {0};
-    workforce_person_rows_observation_t remote_field_comparison_rows = {0};
+    sdk_person_rows_observation_t direct_or_rows = {0};
+    sdk_person_rows_observation_t remote_or_rows = {0};
+    sdk_person_rows_observation_t direct_not_rows = {0};
+    sdk_person_rows_observation_t remote_not_rows = {0};
+    sdk_person_rows_observation_t direct_field_comparison_rows = {0};
+    sdk_person_rows_observation_t remote_field_comparison_rows = {0};
 
     CHECK(fixture_person_query_exact_binding_open(
               session, &left, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -4458,8 +4458,8 @@ static int run_typed_query_function_and_remote(
     const type_bridge_query_sort_direction_t collection_order =
         TYPE_BRIDGE_QUERY_SORT_ASCENDING;
     size_t row_count = 0u;
-    workforce_selection_shape_observation_t direct_selection_shape = {0};
-    workforce_selection_shape_observation_t remote_selection_shape = {0};
+    sdk_selection_shape_observation_t direct_selection_shape = {0};
+    sdk_selection_shape_observation_t remote_selection_shape = {0};
 
     direct_selection_shape.collected_distinct = collected_distinct;
     direct_selection_shape.collection_order = collection_order;
@@ -4717,7 +4717,7 @@ static int run_typed_query_function_and_remote(
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_rows_terminal_close(&terminal) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_close(&dana_query) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_query_close(&workforce_query) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_close(&sdk_query) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_close(&nickname_query) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_close(&filtered) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_close(&query) == TYPE_BRIDGE_STATUS_OK);
@@ -4767,7 +4767,7 @@ static int run_typed_query_function_and_remote(
   return 0;
 }
 
-#ifdef TYPE_BRIDGE_WORKFORCE_V5_C_CODEC
+#ifdef TYPE_BRIDGE_SDK_V5_C_CODEC
 static int write_canonical_view(const char *directory, const char *name,
                                 type_bridge_byte_view_t value) {
   char path[4096];
@@ -4782,11 +4782,11 @@ static int write_canonical_view(const char *directory, const char *name,
   return 1;
 }
 
-static int run_workforce_v5_live_codec(
+static int run_sdk_v5_live_codec(
     const type_bridge_schema_package_t *package,
     const type_bridge_database_t *database,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
-  const char *directory = getenv("TYPE_BRIDGE_WORKFORCE_V5_C_EVIDENCE_DIR");
+  const char *directory = getenv("TYPE_BRIDGE_SDK_V5_C_EVIDENCE_DIR");
   const uint16_t remote_port = required_remote_port();
   type_bridge_query_execution_limits_v1_t limits =
       TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
@@ -5096,7 +5096,7 @@ static int run_workforce_v5_live_codec(
   CHECK(fixture_person_ref_close(&inserted_person_ref) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_close(&inserted_person) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_create_close(&person_create) == TYPE_BRIDGE_STATUS_OK);
-  puts("Workforce V5 C live codec direct/remote parity: passed");
+  puts("Sdk V5 C live codec direct/remote parity: passed");
   return 0;
 }
 #endif
@@ -5202,8 +5202,8 @@ int main(void) {
   CHECK(type_bridge_database_server_version(database, &version) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(same_text(version, "3.12.3"));
-#ifdef TYPE_BRIDGE_WORKFORCE_V5_C_CODEC
-  CHECK(run_workforce_v5_live_codec(package, database, &diagnostics) == 0);
+#ifdef TYPE_BRIDGE_SDK_V5_C_CODEC
+  CHECK(run_sdk_v5_live_codec(package, database, &diagnostics) == 0);
   CHECK(type_bridge_database_close(&database, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(type_bridge_runtime_close(&runtime, &diagnostics) ==

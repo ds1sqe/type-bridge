@@ -13,7 +13,7 @@ RUST_BACKEND = "rust"
 def selected_backend() -> str:
     """Return the configured manager backend.
 
-    The Python ORM backend was retired in #125 Phase 4. The environment
+    The Python ORM backend was retired in #125. The environment
     variable is retained only to reject stale transition settings clearly.
     """
     value = os.environ.get(BACKEND_ENV_VAR, RUST_BACKEND).strip().lower()

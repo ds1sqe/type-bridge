@@ -128,7 +128,6 @@ const REDUCED_DOUBLE: u32 = 3;
 const FUNCTION_ARGUMENT_BINDING: u32 = 1;
 const FUNCTION_ARGUMENT_VALUE: u32 = 2;
 const FUNCTION_ARGUMENT_CALL: u32 = 3;
-const MANAGER_ABI_MINOR: u32 = 4;
 
 /// Version-1 descriptor for one stable order term.
 #[repr(C)]
@@ -3357,8 +3356,7 @@ fn manager_terminal_marker(
 }
 
 fn manager_terminal_package_allowed(state: &SchemaPackageState) -> bool {
-    state.abi_minor >= MANAGER_ABI_MINOR
-        && state._projection.generator_handlers() == [ProjectionHandler::c_v3()]
+    state._projection.generator_handlers() == [ProjectionHandler::c_v3()]
 }
 
 fn terminal_lanes_valid(value: &TypeBridgeQueryTerminalDescriptorV1) -> bool {
@@ -6946,9 +6944,9 @@ mod tests {
         })
     }
 
-    fn requested_workforce_v2_proof() -> Option<(PathBuf, String)> {
-        let path = env::var_os("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT");
-        let nonce = env::var_os("TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE");
+    fn requested_sdk_v2_proof() -> Option<(PathBuf, String)> {
+        let path = env::var_os("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT");
+        let nonce = env::var_os("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE");
         assert_eq!(
             path.is_some(),
             nonce.is_some(),
@@ -6986,28 +6984,22 @@ mod tests {
         Some((path, nonce))
     }
 
-    fn publish_workforce_v2_proof(
-        destination: &Path,
-        run_nonce: &str,
-        results: Vec<serde_json::Value>,
-    ) {
+    fn publish_sdk_v2_proof(destination: &Path, run_nonce: &str, results: Vec<serde_json::Value>) {
         let core = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(Path::parent)
             .expect("C crate has a workspace root");
         let repository = core.parent().expect("core workspace has a repository root");
-        let proof_schema =
-            "tests/contracts/sdk_conformance/workforce-v2/proof-fragment-schema-v1.json";
-        let allowlist =
-            "tests/contracts/sdk_conformance/workforce-v2/proof-fragment-allowlist-v1.json";
-        let journey = "tests/contracts/sdk_conformance/workforce-v2/journey-v2.json";
+        let proof_schema = "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-schema-v1.json";
+        let allowlist = "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-allowlist-v1.json";
+        let journey = "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json";
         let sources = [
             "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
             "type-bridge-core/crates/c/src/lib.rs",
             "type-bridge-core/crates/c/src/query.rs",
         ];
         let fragment = serde_json::json!({
-            "format": "typebridge.workforce-v2-proof-fragment/v1",
+            "format": "typebridge.sdk-v2-proof-fragment/v1",
             "binding": "c",
             "semantic_profile": "typedb-3.12.1/v1",
             "run_nonce": run_nonce,
@@ -7550,7 +7542,7 @@ mod tests {
         }
     }
 
-    fn observe_workforce_v2_direct_cancellation() -> serde_json::Value {
+    fn observe_sdk_v2_direct_cancellation() -> serde_json::Value {
         let package = package("queryproofdirectcancel");
         // SAFETY: fixture owns exact generated handles.
         let built = unsafe { BuiltQuery::open(&package, TERMINAL_FIRST, ROWS_BOUNDED_MANY) };
@@ -7653,7 +7645,7 @@ mod tests {
         })
     }
 
-    fn observe_workforce_v2_remote_cancellation() -> serde_json::Value {
+    fn observe_sdk_v2_remote_cancellation() -> serde_json::Value {
         let package = package("queryproofremotecancel");
         // SAFETY: fixture owns exact generated handles.
         let built = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
@@ -7795,7 +7787,7 @@ mod tests {
         })
     }
 
-    fn observe_workforce_v2_remote_structured_diagnostic() -> serde_json::Value {
+    fn observe_sdk_v2_remote_structured_diagnostic() -> serde_json::Value {
         let package = package("queryproofremotediagnostic");
         // SAFETY: fixture owns exact generated handles.
         let built = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
@@ -8359,7 +8351,7 @@ mod tests {
     }
 
     #[test]
-    fn manager_sentinels_are_disjoint_and_require_abi_1_4_exact_c_v3() {
+    fn manager_sentinels_are_disjoint_and_require_exact_c_v3() {
         let mut marker = terminal_descriptor(TERMINAL_ROWS, ROWS_BOUNDED_MANY);
         marker.root = std::ptr::NonNull::<TypeBridgeQueryBinding>::dangling().as_ptr();
         marker.expected_root_model =
@@ -8401,13 +8393,8 @@ mod tests {
             assert_eq!(filter.model().label().as_str(), "person");
         }
 
-        for rejected in [package("querymanagerlegacy"), {
-            let mut value = ordered_package("querymanagerminor");
-            Arc::get_mut(&mut value.state)
-                .expect("fresh package state is unique")
-                .abi_minor = MANAGER_ABI_MINOR - 1;
-            value
-        }] {
+        {
+            let rejected = package("querymanagerunordered");
             assert!(!manager_terminal_package_allowed(rejected.state()));
             // SAFETY: fixture owns the exact generated construction graph.
             let mut built =
@@ -8488,7 +8475,7 @@ mod tests {
         assert_eq!(values, ["Ada", "Bob", "Carol"]);
 
         let descriptor = manager_terminal_descriptor(&built, ManagerTerminalKind::Count);
-        // SAFETY: the ABI1.4 sentinel graph and all borrowed inputs remain live.
+        // SAFETY: the ABI 1.6 sentinel graph and all borrowed inputs remain live.
         unsafe { replace_terminal(&mut built, &descriptor) };
         let terminal = unsafe { &*built.terminal };
         let TerminalSpec::Manager { operation, filter } = &terminal.spec else {
@@ -13497,39 +13484,39 @@ mod tests {
 
     #[test]
     fn remote_structured_failure_is_redacted_and_semantically_consumes_claim() {
-        let observation = observe_workforce_v2_remote_structured_diagnostic();
+        let observation = observe_sdk_v2_remote_structured_diagnostic();
         assert_eq!(observation["code"], "remote_application_failure");
         assert_eq!(observation["redacted"], true);
         assert_eq!(observation["claim_consumed"], true);
     }
 
     #[test]
-    fn workforce_v2_c_deterministic_proof_fragment() {
+    fn sdk_v2_c_deterministic_proof_fragment() {
         let results = vec![
             serde_json::json!({
                 "observation_ref": "cancellation_direct",
                 "proof_kind": "direct_runtime",
-                "test_id": "query::tests::workforce_v2_c_deterministic_proof_fragment",
+                "test_id": "query::tests::sdk_v2_c_deterministic_proof_fragment",
                 "outcome": "passed",
-                "observation": observe_workforce_v2_direct_cancellation(),
+                "observation": observe_sdk_v2_direct_cancellation(),
             }),
             serde_json::json!({
                 "observation_ref": "cancellation_remote",
                 "proof_kind": "remote_runtime",
-                "test_id": "query::tests::workforce_v2_c_deterministic_proof_fragment",
+                "test_id": "query::tests::sdk_v2_c_deterministic_proof_fragment",
                 "outcome": "passed",
-                "observation": observe_workforce_v2_remote_cancellation(),
+                "observation": observe_sdk_v2_remote_cancellation(),
             }),
             serde_json::json!({
                 "observation_ref": "remote_structured_diagnostic",
                 "proof_kind": "diagnostic",
-                "test_id": "query::tests::workforce_v2_c_deterministic_proof_fragment",
+                "test_id": "query::tests::sdk_v2_c_deterministic_proof_fragment",
                 "outcome": "passed",
-                "observation": observe_workforce_v2_remote_structured_diagnostic(),
+                "observation": observe_sdk_v2_remote_structured_diagnostic(),
             }),
         ];
-        if let Some((destination, run_nonce)) = requested_workforce_v2_proof() {
-            publish_workforce_v2_proof(&destination, &run_nonce, results);
+        if let Some((destination, run_nonce)) = requested_sdk_v2_proof() {
+            publish_sdk_v2_proof(&destination, &run_nonce, results);
         }
     }
 }

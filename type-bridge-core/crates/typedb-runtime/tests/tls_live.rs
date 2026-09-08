@@ -446,6 +446,7 @@ async fn custom_root_raw_stop_requires_force_close_before_delete_live() {
     await_live_tls_stage("raw-stop/commit-schema", schema.commit())
         .await
         .expect("terminal-close schema commits over TLS");
+    drop(schema);
 
     let mut write = await_live_tls_stage(
         "raw-stop/open-write",
@@ -466,6 +467,7 @@ async fn custom_root_raw_stop_requires_force_close_before_delete_live() {
     await_live_tls_stage("raw-stop/commit-write", write.commit())
         .await
         .expect("terminal-close rows commit over TLS");
+    drop(write);
 
     let mut read = await_live_tls_stage(
         "raw-stop/open-read",
@@ -491,19 +493,21 @@ async fn custom_root_raw_stop_requires_force_close_before_delete_live() {
     .expect("bounded TLS query delivers its first row");
     assert_eq!(stats.processed_items, 1);
     assert!(stats.stopped_early);
-    // A raw `Stop` deliberately leaves a resumable driver stream. TypeDB
-    // 3.12.1 does not acknowledge transaction close, so this low-level test
-    // must not claim that close alone proves server-side release (issue #196).
-    // Make the shared driver terminal first. RuntimeTransaction::close then
-    // observes that shutdown has started and drops the driver transaction
-    // locally instead of waiting forever for that absent acknowledgement.
+    // Stopping leaves a resumable driver stream. The active transaction
+    // retains the connection, so shutdown must reject without invalidating it.
+    assert!(matches!(
+        runtime.force_close(),
+        Err(RuntimeError::ResourceLimit {
+            code: "resource_in_use",
+            ..
+        })
+    ));
+    // Release the child locally before terminating the driver. The server
+    // release check below still proves deletion and immediate name reuse.
+    drop(read);
     runtime
         .force_close()
-        .expect("raw-stop TLS runtime connection force-closes");
-    await_live_tls_stage("raw-stop/close-after-force-close", read.close())
-        .await
-        .expect("raw-stop transaction releases locally after force-close");
-    drop(read);
+        .expect("TLS connection closes after its transaction is released");
     drop(runtime);
 
     await_live_tls_stage(

@@ -85,9 +85,6 @@ endif()
 install(
   FILES
     "include/typebridge/type_bridge.h"
-    "include/typebridge/type_bridge_abi_1_4.h"
-    "include/typebridge/type_bridge_abi_1_5.h"
-    "include/typebridge/type_bridge_abi_1_6.h"
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/typebridge"
 )
 
@@ -99,7 +96,7 @@ configure_package_config_file(
 write_basic_package_version_file(
   "${CMAKE_CURRENT_BINARY_DIR}/TypeBridgeConfigVersion.cmake"
   VERSION "${PROJECT_VERSION}"
-  COMPATIBILITY SameMajorVersion
+  COMPATIBILITY ExactVersion
 )
 configure_file(
   "cmake/type-bridge.pc.in"

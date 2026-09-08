@@ -105,8 +105,7 @@ fn emits_exact_deterministic_es_module_package() {
 
 #[test]
 fn emits_canonical_struct_type_identity() {
-    let source =
-        include_str!("../../../../tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml");
+    let source = include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml");
     let emitter = TypeScriptEmitter::new();
     let documents =
         SchemaDocumentSet::parse([(DocumentId::new("typescript-struct.yaml").unwrap(), source)])

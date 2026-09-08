@@ -1,8 +1,4 @@
-//! Candidate additive ABI 1.5 administration and migration boundary.
-//!
-//! This module is compiled only with the non-default `abi-1-5` feature until
-//! its complete symbol, layout, compiler, and installed-consumer inventory is
-//! frozen and activated atomically.
+//! Administration and migration C boundary.
 
 use std::mem::size_of;
 use std::ptr;
@@ -81,7 +77,7 @@ pub struct TypeBridgeMigrationCancellation {
     state: type_bridge_schema_migration::MigrationCancellation,
 }
 
-/// Versioned candidate ABI 1.5 options for one migration execution.
+/// Options for one migration execution.
 #[repr(C)]
 pub struct TypeBridgeMigrationExecutionOptionsV1 {
     /// Must equal `sizeof(TypeBridgeMigrationExecutionOptionsV1)`.
@@ -300,7 +296,7 @@ pub unsafe extern "C" fn type_bridge_database_administration_exists(
     })
 }
 
-/// Controlled existence check using the shared ABI 1.5 execution options.
+/// Controlled existence check using the shared migration execution options.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_database_administration_exists_with_options(
     administration: *const TypeBridgeDatabaseAdministration,
@@ -366,7 +362,7 @@ pub unsafe extern "C" fn type_bridge_database_administration_create(
     })
 }
 
-/// Controlled create using the shared ABI 1.5 execution options.
+/// Controlled create using the shared migration execution options.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_database_administration_create_with_options(
     administration: *const TypeBridgeDatabaseAdministration,
@@ -423,7 +419,7 @@ pub unsafe extern "C" fn type_bridge_database_administration_inspect(
     })
 }
 
-/// Controlled pair inspection using the shared ABI 1.5 execution options.
+/// Controlled pair inspection using the shared migration execution options.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_database_administration_inspect_with_options(
     administration: *const TypeBridgeDatabaseAdministration,
@@ -484,7 +480,7 @@ pub unsafe extern "C" fn type_bridge_database_administration_plan_delete(
     })
 }
 
-/// Controlled destructive admission using the shared ABI 1.5 execution options.
+/// Controlled destructive admission using the shared migration execution options.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_database_administration_plan_delete_with_options(
     administration: *const TypeBridgeDatabaseAdministration,
@@ -571,7 +567,7 @@ pub unsafe extern "C" fn type_bridge_database_deletion_plan_execute(
     })
 }
 
-/// Controlled deletion execution using the shared ABI 1.5 execution options.
+/// Controlled deletion execution using the shared migration execution options.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_database_deletion_plan_execute_with_options(
     plan: *mut TypeBridgeDatabaseDeletionPlan,

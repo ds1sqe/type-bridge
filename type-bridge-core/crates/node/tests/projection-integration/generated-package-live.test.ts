@@ -33,31 +33,31 @@ const PROVIDER_SCHEMA = resolve(
   IS_TYPEDB_3_11 ? "provider-3.11.5.tql" : "provider-3.12.1.tql",
 );
 const REMOTE_PROFILE = IS_TYPEDB_3_11 ? "typedb-3.11.5/v1" : "typedb-3.12.1/v1";
-const WORKFORCE_MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest-v1.json";
-const WORKFORCE_CATALOG_RELATIVE =
-  "tests/contracts/sdk_conformance/workforce-v1/catalog-v1.json";
-const WORKFORCE_JOURNEY_RELATIVE =
-  "tests/contracts/sdk_conformance/workforce-v1/journey-v1.json";
-const WORKFORCE_V2_CATALOG_RELATIVE =
-  "tests/contracts/sdk_conformance/workforce-v2/catalog-v2.json";
-const WORKFORCE_V2_JOURNEY_RELATIVE =
-  "tests/contracts/sdk_conformance/workforce-v2/journey-v2.json";
-const WORKFORCE_V3_JOURNEY = resolve(
+const SDK_MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest-v1.json";
+const SDK_CATALOG_RELATIVE =
+  "tests/contracts/sdk_conformance/sdk-v1/catalog-v1.json";
+const SDK_JOURNEY_RELATIVE =
+  "tests/contracts/sdk_conformance/sdk-v1/journey-v1.json";
+const SDK_V2_CATALOG_RELATIVE =
+  "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json";
+const SDK_V2_JOURNEY_RELATIVE =
+  "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json";
+const SDK_V3_JOURNEY = resolve(
   ROOT,
-  "tests/contracts/sdk_conformance/workforce-v3/journey-v3.json",
+  "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json",
 );
-const WORKFORCE_V3_PROVIDER_SCHEMA = resolve(
+const SDK_V3_PROVIDER_SCHEMA = resolve(
   ROOT,
-  "tests/contracts/sdk_conformance/workforce-v3/provider-3.12.1-v3.tql",
+  "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql",
 );
-const WORKFORCE_MANIFEST = resolve(ROOT, WORKFORCE_MANIFEST_RELATIVE);
-const WORKFORCE_CATALOG = resolve(ROOT, WORKFORCE_CATALOG_RELATIVE);
-const WORKFORCE_JOURNEY = resolve(ROOT, WORKFORCE_JOURNEY_RELATIVE);
-const WORKFORCE_V2_CATALOG = resolve(ROOT, WORKFORCE_V2_CATALOG_RELATIVE);
-const WORKFORCE_V2_JOURNEY = resolve(ROOT, WORKFORCE_V2_JOURNEY_RELATIVE);
-const WORKFORCE_V2_PROOF_VALIDATOR = resolve(
+const SDK_MANIFEST = resolve(ROOT, SDK_MANIFEST_RELATIVE);
+const SDK_CATALOG = resolve(ROOT, SDK_CATALOG_RELATIVE);
+const SDK_JOURNEY = resolve(ROOT, SDK_JOURNEY_RELATIVE);
+const SDK_V2_CATALOG = resolve(ROOT, SDK_V2_CATALOG_RELATIVE);
+const SDK_V2_JOURNEY = resolve(ROOT, SDK_V2_JOURNEY_RELATIVE);
+const SDK_V2_PROOF_VALIDATOR = resolve(
   ROOT,
-  "scripts/ci/workforce_v2_proof_fragments.py",
+  "scripts/ci/sdk_v2_proof_fragments.py",
 );
 
 function sourceIdentity(path: string, raw: Uint8Array): Record<string, string> {
@@ -72,7 +72,7 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function workforceResults(
+function sdkResults(
   catalog: any,
   journey: any,
   observed: ReadonlyMap<string, Record<string, unknown>>,
@@ -100,7 +100,7 @@ function workforceResults(
   );
 }
 
-function workforceV3SupplementObservations(): ReadonlyMap<string, Record<string, unknown>> {
+function sdkV3SupplementObservations(): ReadonlyMap<string, Record<string, unknown>> {
   const duplicateTarget = {
     category: "invalid_input",
     code: "duplicate_batch_target",
@@ -173,29 +173,29 @@ function workforceV3SupplementObservations(): ReadonlyMap<string, Record<string,
   ]);
 }
 
-function loadWorkforceV2ProofObservations(): ReadonlyMap<string, Record<string, unknown>> {
-  const rawPaths = process.env.TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS;
-  const runNonce = process.env.TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE;
-  const python = process.env.TYPE_BRIDGE_WORKFORCE_V2_VALIDATOR_PYTHON;
+function loadSdkV2ProofObservations(): ReadonlyMap<string, Record<string, unknown>> {
+  const rawPaths = process.env.TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS;
+  const runNonce = process.env.TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE;
+  const python = process.env.TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON;
   if (rawPaths === undefined || runNonce === undefined || python === undefined) {
     throw new Error(
-      "workforce-v2 reports require proof fragment paths, the same-run nonce, "
+      "sdk-v2 reports require proof fragment paths, the same-run nonce, "
       + "and an explicit validator Python executable",
     );
   }
   if (!isAbsolute(python)) {
     throw new TypeError(
-      "TYPE_BRIDGE_WORKFORCE_V2_VALIDATOR_PYTHON must be an absolute path",
+      "TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON must be an absolute path",
     );
   }
   const paths = rawPaths.split(delimiter);
   if (paths.length === 0 || paths.some((value) => value.length === 0)) {
-    throw new Error("workforce-v2 proof fragment paths must be a nonempty path list");
+    throw new Error("sdk-v2 proof fragment paths must be a nonempty path list");
   }
   const validation = spawnSync(
     python,
     [
-      WORKFORCE_V2_PROOF_VALIDATOR,
+      SDK_V2_PROOF_VALIDATOR,
       "--binding",
       "node",
       "--run-nonce",
@@ -213,16 +213,16 @@ function loadWorkforceV2ProofObservations(): ReadonlyMap<string, Record<string, 
   if (validation.error !== undefined) throw validation.error;
   if (validation.status !== 0) {
     throw new Error(
-      `workforce-v2 proof fragments were rejected (${validation.status ?? "unknown"}): `
+      `sdk-v2 proof fragments were rejected (${validation.status ?? "unknown"}): `
       + validation.stderr,
     );
   }
   if (validation.stderr !== "") {
-    throw new Error(`workforce-v2 proof validator wrote stderr: ${validation.stderr}`);
+    throw new Error(`sdk-v2 proof validator wrote stderr: ${validation.stderr}`);
   }
   const rows: unknown = JSON.parse(validation.stdout);
   if (!Array.isArray(rows)) {
-    throw new TypeError("workforce-v2 proof validator returned a non-array payload");
+    throw new TypeError("sdk-v2 proof validator returned a non-array payload");
   }
   const observations = new Map<string, Record<string, unknown>>();
   for (const row of rows) {
@@ -232,7 +232,7 @@ function loadWorkforceV2ProofObservations(): ReadonlyMap<string, Record<string, 
       || Array.isArray(row)
       || Object.keys(row).sort().join("\0") !== "observation\0observation_ref\0proof_kind"
     ) {
-      throw new TypeError("workforce-v2 proof validator returned a malformed row");
+      throw new TypeError("sdk-v2 proof validator returned a malformed row");
     }
     const value = row as Record<string, unknown>;
     if (
@@ -242,7 +242,7 @@ function loadWorkforceV2ProofObservations(): ReadonlyMap<string, Record<string, 
       || typeof value.observation !== "object"
       || Array.isArray(value.observation)
     ) {
-      throw new TypeError("workforce-v2 proof validator returned an invalid observation");
+      throw new TypeError("sdk-v2 proof validator returned an invalid observation");
     }
     const key = observationKey(value.observation_ref, value.proof_kind);
     assert.equal(observations.has(key), false);
@@ -252,7 +252,7 @@ function loadWorkforceV2ProofObservations(): ReadonlyMap<string, Record<string, 
   return observations;
 }
 
-async function workforceReport(
+async function sdkReport(
   catalogRaw: Buffer,
   catalog: any,
   journeyRaw: Buffer,
@@ -263,13 +263,13 @@ async function workforceReport(
   const fixture = catalog.fixture;
   const schemaRaw = await readFile(resolve(ROOT, fixture.schema_path));
   const providerSchemaRaw = await readFile(resolve(ROOT, fixture.provider_schema_path));
-  const manifestRaw = await readFile(WORKFORCE_MANIFEST);
-  assert.equal(catalog.journey_path, WORKFORCE_JOURNEY_RELATIVE);
+  const manifestRaw = await readFile(SDK_MANIFEST);
+  assert.equal(catalog.journey_path, SDK_JOURNEY_RELATIVE);
   return {
     format: "typebridge.sdk-conformance-report/v1",
     binding: "node",
-    manifest: sourceIdentity(WORKFORCE_MANIFEST_RELATIVE, manifestRaw),
-    catalog: sourceIdentity(WORKFORCE_CATALOG_RELATIVE, catalogRaw),
+    manifest: sourceIdentity(SDK_MANIFEST_RELATIVE, manifestRaw),
+    catalog: sourceIdentity(SDK_CATALOG_RELATIVE, catalogRaw),
     fixture: {
       id: fixture.id,
       version: fixture.version,
@@ -285,7 +285,7 @@ async function workforceReport(
   };
 }
 
-async function workforceV2Report(
+async function sdkV2Report(
   catalogRaw: Buffer,
   catalog: any,
   journeyRaw: Buffer,
@@ -296,13 +296,13 @@ async function workforceV2Report(
   const fixture = catalog.fixture;
   const schemaRaw = await readFile(resolve(ROOT, fixture.schema_path));
   const providerSchemaRaw = await readFile(resolve(ROOT, fixture.provider_schema_path));
-  const manifestRaw = await readFile(WORKFORCE_MANIFEST);
-  assert.equal(catalog.journey_path, WORKFORCE_V2_JOURNEY_RELATIVE);
+  const manifestRaw = await readFile(SDK_MANIFEST);
+  assert.equal(catalog.journey_path, SDK_V2_JOURNEY_RELATIVE);
   return {
     format: "typebridge.sdk-conformance-report/v2",
     binding: "node",
-    manifest: sourceIdentity(WORKFORCE_MANIFEST_RELATIVE, manifestRaw),
-    catalog: sourceIdentity(WORKFORCE_V2_CATALOG_RELATIVE, catalogRaw),
+    manifest: sourceIdentity(SDK_MANIFEST_RELATIVE, manifestRaw),
+    catalog: sourceIdentity(SDK_V2_CATALOG_RELATIVE, catalogRaw),
     fixture: {
       id: fixture.id,
       version: fixture.version,
@@ -339,16 +339,16 @@ async function metadataIfPresent(path: string): Promise<Awaited<ReturnType<typeo
   }
 }
 
-async function validateWorkforceReportPath(rawPath: string): Promise<string> {
+async function validateSdkReportPath(rawPath: string): Promise<string> {
   const encodedPath = Buffer.from(rawPath, "utf8");
   if (encodedPath.toString("utf8") !== rawPath) {
-    throw new TypeError("TYPE_BRIDGE_WORKFORCE_REPORT must be a UTF-8 path");
+    throw new TypeError("TYPE_BRIDGE_SDK_REPORT must be a UTF-8 path");
   }
   if (encodedPath.length === 0 || encodedPath.length > 4096) {
-    throw new RangeError("TYPE_BRIDGE_WORKFORCE_REPORT must contain 1 to 4096 UTF-8 bytes");
+    throw new RangeError("TYPE_BRIDGE_SDK_REPORT must contain 1 to 4096 UTF-8 bytes");
   }
   if (!isAbsolute(rawPath)) {
-    throw new TypeError("TYPE_BRIDGE_WORKFORCE_REPORT must be an absolute path");
+    throw new TypeError("TYPE_BRIDGE_SDK_REPORT must be an absolute path");
   }
   const parent = dirname(rawPath);
   const parentMetadata = await metadataIfPresent(parent);
@@ -358,19 +358,19 @@ async function validateWorkforceReportPath(rawPath: string): Promise<string> {
     || !parentMetadata.isDirectory()
   ) {
     throw new TypeError(
-      "TYPE_BRIDGE_WORKFORCE_REPORT parent must be an existing non-symlink directory",
+      "TYPE_BRIDGE_SDK_REPORT parent must be an existing non-symlink directory",
     );
   }
   if (await metadataIfPresent(rawPath) !== undefined) {
-    throw new Error("TYPE_BRIDGE_WORKFORCE_REPORT destination must not exist");
+    throw new Error("TYPE_BRIDGE_SDK_REPORT destination must not exist");
   }
   return parent;
 }
 
-function requireWorkforceServerVersion(detected: string | null): void {
+function requireSdkServerVersion(detected: string | null): void {
   if (detected !== "3.12.3") {
     throw new Error(
-      "workforce reports require the actual detected TypeDB server version 3.12.3; "
+      "sdk reports require the actual detected TypeDB server version 3.12.3; "
       + `detected ${JSON.stringify(detected)}`,
     );
   }
@@ -460,14 +460,14 @@ async function detectTypeDBServerVersion(address: string, httpPort: number): Pro
   }
 }
 
-async function publishWorkforceReport(
+async function publishSdkReport(
   rawPath: string,
   report: Record<string, unknown>,
 ): Promise<void> {
-  const parent = await validateWorkforceReportPath(rawPath);
+  const parent = await validateSdkReportPath(rawPath);
 
   const payload = `${JSON.stringify(sortJson(report))}\n`;
-  const temporary = join(parent, `.typebridge-workforce-${randomUUID()}.tmp`);
+  const temporary = join(parent, `.typebridge-sdk-${randomUUID()}.tmp`);
   let published = false;
   try {
     const output = await open(temporary, "wx", 0o600);
@@ -483,7 +483,7 @@ async function publishWorkforceReport(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") {
         throw new Error(
-          "TYPE_BRIDGE_WORKFORCE_REPORT destination appeared during publication",
+          "TYPE_BRIDGE_SDK_REPORT destination appeared during publication",
           { cause: error },
         );
       }
@@ -495,7 +495,7 @@ async function publishWorkforceReport(
   assert.equal(published, true);
 }
 
-async function runWorkforceJourney(
+async function runSdkJourney(
   generated: any,
   personManager: any,
   membershipManager: any,
@@ -763,15 +763,15 @@ async function runWorkforceJourney(
       role: membershipRecord.role,
     },
   );
-  return workforceResults(catalog, journey, observed);
+  return sdkResults(catalog, journey, observed);
 }
 
-function workforceV2Key(value: any): string {
+function sdkV2Key(value: any): string {
   assert.equal(typeof value.identifier?.value, "string");
   return value.identifier.value;
 }
 
-function workforceV2Model(generated: any, value: any): string {
+function sdkV2Model(generated: any, value: any): string {
   for (const [model, name] of [
     [generated.Person, "person"],
     [generated.Employee, "employee"],
@@ -781,21 +781,21 @@ function workforceV2Model(generated: any, value: any): string {
   ] as const) {
     if (value.__typebridgeModel === model.typeKey) return name;
   }
-  throw new TypeError(`unexpected workforce-v2 projected model ${value.__typebridgeModel}`);
+  throw new TypeError(`unexpected sdk-v2 projected model ${value.__typebridgeModel}`);
 }
 
-function workforceV2ModelKey(
+function sdkV2ModelKey(
   generated: any,
   value: any,
 ): Record<string, string> {
-  return { model: workforceV2Model(generated, value), key: workforceV2Key(value) };
+  return { model: sdkV2Model(generated, value), key: sdkV2Key(value) };
 }
 
-function workforceV2Keys(values: readonly any[]): string[] {
-  return values.map(workforceV2Key);
+function sdkV2Keys(values: readonly any[]): string[] {
+  return values.map(sdkV2Key);
 }
 
-function workforceV2PersonValues(
+function sdkV2PersonValues(
   generated: any,
   person: any,
   membership: any,
@@ -814,47 +814,47 @@ function workforceV2PersonValues(
   assert.ok(scalarFields.every(([, field]) => field.value !== undefined));
   return {
     aliases: person.aliases.map((alias: any) => alias.value),
-    key: workforceV2Key(person),
-    model: workforceV2Model(generated, person),
+    key: sdkV2Key(person),
+    model: sdkV2Model(generated, person),
     nickname: person.nickname.value,
-    reference: workforceV2ModelKey(generated, membership.member),
+    reference: sdkV2ModelKey(generated, membership.member),
     scalar_domains: scalarFields.map(([domain]) => domain),
   };
 }
 
-function workforceV2RoleObservation(
+function sdkV2RoleObservation(
   generated: any,
   membership: any,
   network: any,
 ): Record<string, unknown> {
   return {
     membership: {
-      relation: workforceV2Model(generated, membership),
+      relation: sdkV2Model(generated, membership),
       role: "member",
-      players: [workforceV2ModelKey(generated, membership.member)],
+      players: [sdkV2ModelKey(generated, membership.member)],
     },
     network_link: {
-      relation: workforceV2Model(generated, network),
-      origin: workforceV2Key(network.origin),
-      destination: workforceV2Key(network.destination),
-      participants: workforceV2Keys(network.participant).sort(compareText),
+      relation: sdkV2Model(generated, network),
+      origin: sdkV2Key(network.origin),
+      destination: sdkV2Key(network.destination),
+      participants: sdkV2Keys(network.participant).sort(compareText),
     },
   };
 }
 
-function workforceV2HydratedResult(
+function sdkV2HydratedResult(
   generated: any,
   membership: any,
 ): Record<string, unknown> {
   return {
     rows: [{
-      model: workforceV2Model(generated, membership),
-      roles: { member: [workforceV2ModelKey(generated, membership.member)] },
+      model: sdkV2Model(generated, membership),
+      roles: { member: [sdkV2ModelKey(generated, membership.member)] },
     }],
   };
 }
 
-function workforceV2CardinalityDiagnostic(error: any): Record<string, unknown> {
+function sdkV2CardinalityDiagnostic(error: any): Record<string, unknown> {
   assert.ok(error instanceof Error);
   assert.equal(error.name, "QueryV2Error");
   const diagnostic = error as QueryV2Error;
@@ -884,7 +884,7 @@ function workforceV2CardinalityDiagnostic(error: any): Record<string, unknown> {
   };
 }
 
-async function workforceV2ResourceLimits(
+async function sdkV2ResourceLimits(
   generated: any,
   database: any,
   advertisement: Uint8Array,
@@ -969,7 +969,7 @@ async function workforceV2ResourceLimits(
   };
 }
 
-async function workforceV2Lifecycle(
+async function sdkV2Lifecycle(
   generated: any,
   database: any,
   advertisement: Uint8Array,
@@ -987,7 +987,7 @@ async function workforceV2Lifecycle(
   );
   directClosedDescendant.close();
   directClosedDescendant.close();
-  const directAncestorUsable = workforceV2Key(directAncestor.one()) === "query-ada";
+  const directAncestorUsable = sdkV2Key(directAncestor.one()) === "query-ada";
   const directDescendant = directAncestor.where(
     directPerson.field(generated.Person.score).gte(generated.Score.create(1n)),
   );
@@ -1004,13 +1004,13 @@ async function workforceV2Lifecycle(
     ancestor_usable_after_descendant_close: directAncestorUsable,
     close_idempotent: directAncestor.isClosed && directClosedDescendant.isClosed,
     descendant_usable_after_ancestor_close:
-      workforceV2Key(directDescendant.one()) === "query-ada",
+      sdkV2Key(directDescendant.one()) === "query-ada",
     handle_invalidated: directAncestor.isClosed,
     post_close_io_count: 0,
     post_close_rejected: directRejected,
     session_usable_after_query_close:
-      workforceV2Key(directSession.query(directPerson).where(directScope).one()) === "query-ada",
-    sibling_usable: workforceV2Key(directSibling.one()) === "query-ada",
+      sdkV2Key(directSession.query(directPerson).where(directScope).one()) === "query-ada",
+    sibling_usable: sdkV2Key(directSibling.one()) === "query-ada",
   };
   directDescendant.close();
   directSibling.close();
@@ -1031,7 +1031,7 @@ async function workforceV2Lifecycle(
   );
   remoteClosedDescendant.close();
   remoteClosedDescendant.close();
-  const remoteAncestorUsable = workforceV2Key(await remoteAncestor.one()) === "query-ada";
+  const remoteAncestorUsable = sdkV2Key(await remoteAncestor.one()) === "query-ada";
   const remoteDescendant = remoteAncestor.where(
     remotePerson.field(generated.Person.score).gte(generated.Score.create(1n)),
   );
@@ -1050,13 +1050,13 @@ async function workforceV2Lifecycle(
     ancestor_usable_after_descendant_close: remoteAncestorUsable,
     close_idempotent: remoteAncestor.isClosed && remoteClosedDescendant.isClosed,
     descendant_usable_after_ancestor_close:
-      workforceV2Key(await remoteDescendant.one()) === "query-ada",
+      sdkV2Key(await remoteDescendant.one()) === "query-ada",
     handle_invalidated: remoteAncestor.isClosed,
     post_close_io_count: postCloseIoCount,
     post_close_rejected: remoteRejected,
     session_usable_after_query_close:
-      workforceV2Key(await remoteSession.query(remotePerson).where(remoteScope).one()) === "query-ada",
-    sibling_usable: workforceV2Key(await remoteSibling.one()) === "query-ada",
+      sdkV2Key(await remoteSession.query(remotePerson).where(remoteScope).one()) === "query-ada",
+    sibling_usable: sdkV2Key(await remoteSibling.one()) === "query-ada",
   };
   remoteDescendant.close();
   remoteSibling.close();
@@ -1066,12 +1066,12 @@ async function workforceV2Lifecycle(
     lanes: ["direct", "remote"],
     query: direct,
     result_usable_after_query_close:
-      workforceV2Key(directResult) === "query-ada"
-      && workforceV2Key(remoteResult) === "query-ada",
+      sdkV2Key(directResult) === "query-ada"
+      && sdkV2Key(remoteResult) === "query-ada",
   };
 }
 
-async function runWorkforceV2Journey(
+async function runSdkV2Journey(
   generated: any,
   database: any,
   remoteSession: any,
@@ -1162,18 +1162,18 @@ async function runWorkforceV2Journey(
     people = personManager.insertMany(personInputs);
     assert.equal(people.length, personInputs.length);
     for (let index = 0; index < people.length; index += 1) {
-      assert.equal(workforceV2Key(people[index]), workforceV2Key(personInputs[index]));
+      assert.equal(sdkV2Key(people[index]), sdkV2Key(personInputs[index]));
       inserted.push([personManager, people[index]]);
     }
     insertedCount = inserted.length;
 
     employee = employeeManager.insert(employeeInput);
-    assert.equal(workforceV2Key(employee), workforceV2Key(employeeInput));
+    assert.equal(sdkV2Key(employee), sdkV2Key(employeeInput));
     inserted.push([employeeManager, employee]);
     insertedCount = inserted.length;
 
     manager = managerManager.insert(managerInput);
-    assert.equal(workforceV2Key(manager), workforceV2Key(managerInput));
+    assert.equal(sdkV2Key(manager), sdkV2Key(managerInput));
     inserted.push([managerManager, manager]);
     insertedCount = inserted.length;
 
@@ -1188,7 +1188,7 @@ async function runWorkforceV2Journey(
       origin: people[0],
       participant: people,
     }));
-    assert.equal(workforceV2Key(network), networkFields.identifier.value);
+    assert.equal(sdkV2Key(network), networkFields.identifier.value);
     inserted.push([networkManager, network]);
     insertedCount = inserted.length;
 
@@ -1240,19 +1240,19 @@ async function runWorkforceV2Journey(
       )
       .one();
 
-    const directOwnerKeys = workforceV2Keys(
+    const directOwnerKeys = sdkV2Keys(
       directSession
         .query(directPerson)
         .where(directPerson.field(Person.score).isPresent(), directScope)
         .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
     );
-    const directOptionalKeys = workforceV2Keys(
+    const directOptionalKeys = sdkV2Keys(
       directSession
         .query(directPerson)
         .where(directPerson.field(Person.nickname).isPresent(), directScope)
         .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
     );
-    const directIidKeys = workforceV2Keys(
+    const directIidKeys = sdkV2Keys(
       directSession
         .query(directPerson)
         .where(directPerson.iidIn(personIids))
@@ -1281,7 +1281,7 @@ async function runWorkforceV2Journey(
     const directScore = directPerson.field(Person.score);
     const directScoreGte = directPerson.field(Person.scoreGte);
     const directBoolean = directPerson.field(Person.valBool);
-    const directAndKeys = workforceV2Keys(
+    const directAndKeys = sdkV2Keys(
       directSession
         .query(directPerson)
         .where(
@@ -1290,19 +1290,19 @@ async function runWorkforceV2Journey(
         )
         .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
     );
-    const directOrKeys = workforceV2Keys(
+    const directOrKeys = sdkV2Keys(
       directSession
         .query(directPerson)
         .where(directScope)
         .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
     );
-    const directNotKeys = workforceV2Keys(
+    const directNotKeys = sdkV2Keys(
       directSession
         .query(directPerson)
         .where(directScope, directBoolean.eq(ValBool.create(true)).not())
         .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
     );
-    const directFieldComparisonKeys = workforceV2Keys(
+    const directFieldComparisonKeys = sdkV2Keys(
       directSession
         .query(directPerson)
         .where(directScope, directScore.gteField(directScoreGte))
@@ -1345,7 +1345,7 @@ async function runWorkforceV2Journey(
         limit: 4n,
         orderBy: [directCrossLeftId.asc(), directCrossRightId.asc()],
       })
-      .map(([left, right]: readonly any[]) => [workforceV2Key(left), workforceV2Key(right)]);
+      .map(([left, right]: readonly any[]) => [sdkV2Key(left), sdkV2Key(right)]);
 
     const selectionLink = directSession.exact(NetworkLink);
     const selectionOrigin = directSession.exact(Person);
@@ -1384,10 +1384,10 @@ async function runWorkforceV2Journey(
     assert.equal(directNamedPage.items.length, 1);
     const directNamed = directNamedPage.items[0];
     const directSelection = {
-      positional: [workforceV2Key(positionalOrigin), workforceV2Keys(positionalParticipants)],
+      positional: [sdkV2Key(positionalOrigin), sdkV2Keys(positionalParticipants)],
       named: {
-        origin: workforceV2Key(directNamed.origin),
-        participants: workforceV2Keys(directNamed.participants),
+        origin: sdkV2Key(directNamed.origin),
+        participants: sdkV2Keys(directNamed.participants),
       },
       collected_distinct:
         new Set(positionalParticipants.map((value: any) => value.iid)).size
@@ -1406,11 +1406,11 @@ async function runWorkforceV2Journey(
       includeTotal: true,
     });
     const directTerminals = {
-      one: workforceV2Key(directDana),
-      first: workforceV2Key(directFirst),
+      one: sdkV2Key(directDana),
+      first: sdkV2Key(directFirst),
       rows: directKeys,
       page: {
-        items: workforceV2Keys(directPage.items),
+        items: sdkV2Keys(directPage.items),
         offset: Number(directPage.offset),
         limit: Number(directPage.limit),
         total: Number(directPage.total),
@@ -1422,10 +1422,10 @@ async function runWorkforceV2Journey(
     try {
       directQuery.one();
     } catch (error) {
-      structuredQueryDiagnostic = workforceV2CardinalityDiagnostic(error);
+      structuredQueryDiagnostic = sdkV2CardinalityDiagnostic(error);
     }
     assert.notEqual(structuredQueryDiagnostic, undefined);
-    const directScalarDomainKeys = workforceV2Keys(
+    const directScalarDomainKeys = sdkV2Keys(
       directSession
         .query(directPerson)
         .where(directScope, directScore.gte(Score.create(40n)))
@@ -1558,19 +1558,19 @@ async function runWorkforceV2Journey(
       )
       .one();
 
-    const remoteOwnerKeys = workforceV2Keys(
+    const remoteOwnerKeys = sdkV2Keys(
       await remoteSession
         .query(remotePerson)
         .where(remotePerson.field(Person.score).isPresent(), remoteScope)
         .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
     );
-    const remoteOptionalKeys = workforceV2Keys(
+    const remoteOptionalKeys = sdkV2Keys(
       await remoteSession
         .query(remotePerson)
         .where(remotePerson.field(Person.nickname).isPresent(), remoteScope)
         .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
     );
-    const remoteIidKeys = workforceV2Keys(
+    const remoteIidKeys = sdkV2Keys(
       await remoteSession
         .query(remotePerson)
         .where(remotePerson.iidIn(personIids))
@@ -1599,7 +1599,7 @@ async function runWorkforceV2Journey(
     const remoteScore = remotePerson.field(Person.score);
     const remoteScoreGte = remotePerson.field(Person.scoreGte);
     const remoteBoolean = remotePerson.field(Person.valBool);
-    const remoteAndKeys = workforceV2Keys(
+    const remoteAndKeys = sdkV2Keys(
       await remoteSession
         .query(remotePerson)
         .where(
@@ -1608,19 +1608,19 @@ async function runWorkforceV2Journey(
         )
         .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
     );
-    const remoteOrKeys = workforceV2Keys(
+    const remoteOrKeys = sdkV2Keys(
       await remoteSession
         .query(remotePerson)
         .where(remoteScope)
         .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
     );
-    const remoteNotKeys = workforceV2Keys(
+    const remoteNotKeys = sdkV2Keys(
       await remoteSession
         .query(remotePerson)
         .where(remoteScope, remoteBoolean.eq(ValBool.create(true)).not())
         .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
     );
-    const remoteFieldComparisonKeys = workforceV2Keys(
+    const remoteFieldComparisonKeys = sdkV2Keys(
       await remoteSession
         .query(remotePerson)
         .where(remoteScope, remoteScore.gteField(remoteScoreGte))
@@ -1663,7 +1663,7 @@ async function runWorkforceV2Journey(
         limit: 4n,
         orderBy: [remoteCrossLeftId.asc(), remoteCrossRightId.asc()],
       }))
-      .map(([left, right]: readonly any[]) => [workforceV2Key(left), workforceV2Key(right)]);
+      .map(([left, right]: readonly any[]) => [sdkV2Key(left), sdkV2Key(right)]);
 
     const remoteSelectionLink = remoteSession.exact(NetworkLink);
     const remoteSelectionOrigin = remoteSession.exact(Person);
@@ -1704,12 +1704,12 @@ async function runWorkforceV2Journey(
     const remoteNamed = remoteNamedPage.items[0];
     const remoteSelection = {
       positional: [
-        workforceV2Key(remotePositionalOrigin),
-        workforceV2Keys(remotePositionalParticipants),
+        sdkV2Key(remotePositionalOrigin),
+        sdkV2Keys(remotePositionalParticipants),
       ],
       named: {
-        origin: workforceV2Key(remoteNamed.origin),
-        participants: workforceV2Keys(remoteNamed.participants),
+        origin: sdkV2Key(remoteNamed.origin),
+        participants: sdkV2Keys(remoteNamed.participants),
       },
       collected_distinct:
         new Set(remotePositionalParticipants.map((value: any) => value.iid)).size
@@ -1730,11 +1730,11 @@ async function runWorkforceV2Journey(
       includeTotal: true,
     });
     const remoteTerminals = {
-      one: workforceV2Key(remoteDana),
-      first: workforceV2Key(remoteFirst),
+      one: sdkV2Key(remoteDana),
+      first: sdkV2Key(remoteFirst),
       rows: remoteKeys,
       page: {
-        items: workforceV2Keys(remotePage.items),
+        items: sdkV2Keys(remotePage.items),
         offset: Number(remotePage.offset),
         limit: Number(remotePage.limit),
         total: Number(remotePage.total),
@@ -1742,7 +1742,7 @@ async function runWorkforceV2Journey(
       count: Number(await remoteQuery.countBy(remotePerson)),
       exists: await remoteQuery.existsBy(remotePerson),
     };
-    const remoteScalarDomainKeys = workforceV2Keys(
+    const remoteScalarDomainKeys = sdkV2Keys(
       await remoteSession
         .query(remotePerson)
         .where(remoteScope, remoteScore.gte(Score.create(40n)))
@@ -1792,8 +1792,8 @@ async function runWorkforceV2Journey(
       .map((person: any) => Number(person.score.value));
     assert.deepEqual(remoteNestedFunctionValues, directNestedFunctionValues);
 
-    const directModelValues = workforceV2PersonValues(generated, directAda, directMembership);
-    const remoteModelValues = workforceV2PersonValues(generated, remoteAda, remoteMembership);
+    const directModelValues = sdkV2PersonValues(generated, directAda, directMembership);
+    const remoteModelValues = sdkV2PersonValues(generated, remoteAda, remoteMembership);
     assert.deepEqual(remoteModelValues, directModelValues);
     const ownerIidSetDirect = {
       owner_field: "score",
@@ -1812,16 +1812,16 @@ async function runWorkforceV2Journey(
     assert.deepEqual(ownerIidSetRemote, ownerIidSetDirect);
     const exactSubtypesDirect = {
       declared_model: "employee",
-      exact: directExactValues.map((value: any) => workforceV2ModelKey(generated, value)),
+      exact: directExactValues.map((value: any) => sdkV2ModelKey(generated, value)),
       subtypes: directSubtypeValues.map(
-        (value: any) => workforceV2ModelKey(generated, value),
+        (value: any) => sdkV2ModelKey(generated, value),
       ),
     };
     const exactSubtypesRemote = {
       declared_model: "employee",
-      exact: remoteExactValues.map((value: any) => workforceV2ModelKey(generated, value)),
+      exact: remoteExactValues.map((value: any) => sdkV2ModelKey(generated, value)),
       subtypes: remoteSubtypeValues.map(
-        (value: any) => workforceV2ModelKey(generated, value),
+        (value: any) => sdkV2ModelKey(generated, value),
       ),
     };
     assert.deepEqual(exactSubtypesRemote, exactSubtypesDirect);
@@ -1838,21 +1838,21 @@ async function runWorkforceV2Journey(
       field_comparison_keys: remoteFieldComparisonKeys,
     };
     assert.deepEqual(scalarBooleanRemote, scalarBooleanDirect);
-    const directRoles = workforceV2RoleObservation(generated, directMembership, directNetwork);
-    const remoteRoles = workforceV2RoleObservation(generated, remoteMembership, remoteNetwork);
+    const directRoles = sdkV2RoleObservation(generated, directMembership, directNetwork);
+    const remoteRoles = sdkV2RoleObservation(generated, remoteMembership, remoteNetwork);
     assert.deepEqual(remoteRoles, directRoles);
     const topologyDirect = {
       reachable: [{
-        from: workforceV2Key(directReachablePair[0]),
-        to: workforceV2Key(directReachablePair[1]),
+        from: sdkV2Key(directReachablePair[0]),
+        to: sdkV2Key(directReachablePair[1]),
         max_hops: 1,
       }],
       cross_join_pairs: directCrossPairs,
     };
     const topologyRemote = {
       reachable: [{
-        from: workforceV2Key(remoteReachablePair[0]),
-        to: workforceV2Key(remoteReachablePair[1]),
+        from: sdkV2Key(remoteReachablePair[0]),
+        to: sdkV2Key(remoteReachablePair[1]),
         max_hops: 1,
       }],
       cross_join_pairs: remoteCrossPairs,
@@ -1860,8 +1860,8 @@ async function runWorkforceV2Journey(
     assert.deepEqual(topologyRemote, topologyDirect);
     assert.deepEqual(remoteSelection, directSelection);
     assert.deepEqual(remoteTerminals, directTerminals);
-    const directHydrated = workforceV2HydratedResult(generated, directMembership);
-    const remoteHydrated = workforceV2HydratedResult(generated, remoteMembership);
+    const directHydrated = sdkV2HydratedResult(generated, directMembership);
+    const remoteHydrated = sdkV2HydratedResult(generated, remoteMembership);
     assert.deepEqual(remoteHydrated, directHydrated);
     const scalarDomainDirect = {
       domain: "long",
@@ -1877,14 +1877,14 @@ async function runWorkforceV2Journey(
     };
     assert.deepEqual(scalarDomainRemote, scalarDomainDirect);
     assert.equal(remoteOneExchange, 1);
-    const resourceLimits = await workforceV2ResourceLimits(
+    const resourceLimits = await sdkV2ResourceLimits(
       generated,
       database,
       advertisement,
       exchange,
       membershipIid,
     );
-    const queryResourceLifecycle = await workforceV2Lifecycle(
+    const queryResourceLifecycle = await sdkV2Lifecycle(
       generated,
       database,
       advertisement,
@@ -1945,7 +1945,7 @@ async function runWorkforceV2Journey(
       observationKey("query_resource_lifecycle", "lifecycle"),
       queryResourceLifecycle,
     );
-    assert.equal(observed.size, 29, "workforce-v2 must measure 29 pre-cleanup live lanes");
+    assert.equal(observed.size, 29, "sdk-v2 must measure 29 pre-cleanup live lanes");
     assert.equal(proofObservations.size, 3);
     for (const [key, observation] of proofObservations) {
       assert.equal(observed.has(key), false, `proof fragment duplicated live lane ${key}`);
@@ -1963,20 +1963,20 @@ async function runWorkforceV2Journey(
     observed.set(observationKey("entity_lifecycle", "direct_runtime"), {
       created: true,
       deleted: entityDeleted,
-      key: workforceV2Key(people[0]),
-      model: workforceV2Model(generated, people[0]),
+      key: sdkV2Key(people[0]),
+      model: sdkV2Model(generated, people[0]),
       read_after_create: entityReadAfterCreate,
     });
     observed.set(observationKey("relation_lifecycle", "direct_runtime"), {
       created: true,
       deleted: relationDeleted,
-      model: workforceV2Model(generated, membership),
-      player_key: workforceV2Key(people[0]),
+      model: sdkV2Model(generated, membership),
+      player_key: sdkV2Key(people[0]),
       role: "member",
     });
-    assert.equal(observed.size, 34, "workforce-v2 requires 31 live and 3 proof lanes");
+    assert.equal(observed.size, 34, "sdk-v2 requires 31 live and 3 proof lanes");
     assert.equal(relationReadAfterCreate, true);
-    return workforceResults(catalog, journey, observed);
+    return sdkResults(catalog, journey, observed);
   } finally {
     const cleanupFailures: unknown[] = [];
     for (const [owner, value] of [...inserted].slice(0, insertedCount).reverse()) {
@@ -2047,11 +2047,11 @@ async function waitForPort(port: number, child: ChildProcess, timeoutMs: number)
   throw new Error("timed out waiting for generated remote query server");
 }
 
-test("workforce report server-version gate is exact", () => {
-  assert.doesNotThrow(() => requireWorkforceServerVersion("3.12.3"));
+test("sdk report server-version gate is exact", () => {
+  assert.doesNotThrow(() => requireSdkServerVersion("3.12.3"));
   for (const detected of [null, "3.11.5", "3.12.0", "3.12.2", "3.13.0"] as const) {
     assert.throws(
-      () => requireWorkforceServerVersion(detected),
+      () => requireSdkServerVersion(detected),
     /actual detected TypeDB server version 3\.12\.3/,
     );
   }
@@ -2067,16 +2067,16 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
   const foreignDirectory = resolve(stage, "generated_foreign");
   let database;
   let failure: unknown;
-  let preparedWorkforceReport: Record<string, unknown> | undefined;
-  let preparedWorkforceV2Report: Record<string, unknown> | undefined;
-  const workforceReportPath = process.env.TYPE_BRIDGE_WORKFORCE_REPORT;
-  const workforceV2ReportPath = process.env.TYPE_BRIDGE_WORKFORCE_REPORT_V2;
+  let preparedSdkReport: Record<string, unknown> | undefined;
+  let preparedSdkV2Report: Record<string, unknown> | undefined;
+  const sdkReportPath = process.env.TYPE_BRIDGE_SDK_REPORT;
+  const sdkV2ReportPath = process.env.TYPE_BRIDGE_SDK_REPORT_V2;
   if (
-    workforceReportPath !== undefined
-    && workforceV2ReportPath !== undefined
-    && workforceReportPath === workforceV2ReportPath
+    sdkReportPath !== undefined
+    && sdkV2ReportPath !== undefined
+    && sdkReportPath === sdkV2ReportPath
   ) {
-    throw new Error("workforce-v1 and workforce-v2 reports require distinct paths");
+    throw new Error("sdk-v1 and sdk-v2 reports require distinct paths");
   }
 
   try {
@@ -2163,49 +2163,49 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     assert.deepEqual(runtimeProjection.semantic_fingerprint, semanticFingerprint);
     assert.deepEqual(runtimeProjection.projection_fingerprint, projectionFingerprint);
 
-    let workforceCatalogRaw: Buffer | undefined;
-    let workforceCatalog: any;
-    let workforceJourneyRaw: Buffer | undefined;
-    let workforceJourney: any;
-    let workforceV2CatalogRaw: Buffer | undefined;
-    let workforceV2Catalog: any;
-    let workforceV2JourneyRaw: Buffer | undefined;
-    let workforceV2Journey: any;
-    let workforceV2ProofObservations:
+    let sdkCatalogRaw: Buffer | undefined;
+    let sdkCatalog: any;
+    let sdkJourneyRaw: Buffer | undefined;
+    let sdkJourney: any;
+    let sdkV2CatalogRaw: Buffer | undefined;
+    let sdkV2Catalog: any;
+    let sdkV2JourneyRaw: Buffer | undefined;
+    let sdkV2Journey: any;
+    let sdkV2ProofObservations:
       | ReadonlyMap<string, Record<string, unknown>>
       | undefined;
-    if (workforceReportPath !== undefined) {
+    if (sdkReportPath !== undefined) {
       if (REMOTE_PROFILE !== "typedb-3.12.1/v1") {
-        throw new Error("workforce reports may only be emitted for typedb-3.12.1/v1");
+        throw new Error("sdk reports may only be emitted for typedb-3.12.1/v1");
       }
-      await validateWorkforceReportPath(workforceReportPath);
-      requireWorkforceServerVersion(
+      await validateSdkReportPath(sdkReportPath);
+      requireSdkServerVersion(
         await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
       );
-      workforceCatalogRaw = await readFile(WORKFORCE_CATALOG);
-      workforceCatalog = JSON.parse(workforceCatalogRaw.toString("utf8"));
-      workforceJourneyRaw = await readFile(WORKFORCE_JOURNEY);
-      workforceJourney = JSON.parse(workforceJourneyRaw.toString("utf8"));
-      assert.equal(workforceJourney.format, "typebridge.workforce-journey/v1");
-      assert.equal(workforceJourney.fixture_id, workforceCatalog.fixture.id);
-      assert.equal(workforceJourney.version, workforceCatalog.fixture.version);
+      sdkCatalogRaw = await readFile(SDK_CATALOG);
+      sdkCatalog = JSON.parse(sdkCatalogRaw.toString("utf8"));
+      sdkJourneyRaw = await readFile(SDK_JOURNEY);
+      sdkJourney = JSON.parse(sdkJourneyRaw.toString("utf8"));
+      assert.equal(sdkJourney.format, "typebridge.sdk-journey/v1");
+      assert.equal(sdkJourney.fixture_id, sdkCatalog.fixture.id);
+      assert.equal(sdkJourney.version, sdkCatalog.fixture.version);
     }
-    if (workforceV2ReportPath !== undefined) {
+    if (sdkV2ReportPath !== undefined) {
       if (REMOTE_PROFILE !== "typedb-3.12.1/v1") {
-        throw new Error("workforce-v2 reports may only be emitted for typedb-3.12.1/v1");
+        throw new Error("sdk-v2 reports may only be emitted for typedb-3.12.1/v1");
       }
-      await validateWorkforceReportPath(workforceV2ReportPath);
-      requireWorkforceServerVersion(
+      await validateSdkReportPath(sdkV2ReportPath);
+      requireSdkServerVersion(
         await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
       );
-      workforceV2CatalogRaw = await readFile(WORKFORCE_V2_CATALOG);
-      workforceV2Catalog = JSON.parse(workforceV2CatalogRaw.toString("utf8"));
-      workforceV2JourneyRaw = await readFile(WORKFORCE_V2_JOURNEY);
-      workforceV2Journey = JSON.parse(workforceV2JourneyRaw.toString("utf8"));
-      workforceV2ProofObservations = loadWorkforceV2ProofObservations();
-      assert.equal(workforceV2Journey.format, "typebridge.workforce-journey/v2");
-      assert.equal(workforceV2Journey.fixture_id, workforceV2Catalog.fixture.id);
-      assert.equal(workforceV2Journey.version, workforceV2Catalog.fixture.version);
+      sdkV2CatalogRaw = await readFile(SDK_V2_CATALOG);
+      sdkV2Catalog = JSON.parse(sdkV2CatalogRaw.toString("utf8"));
+      sdkV2JourneyRaw = await readFile(SDK_V2_JOURNEY);
+      sdkV2Journey = JSON.parse(sdkV2JourneyRaw.toString("utf8"));
+      sdkV2ProofObservations = loadSdkV2ProofObservations();
+      assert.equal(sdkV2Journey.format, "typebridge.sdk-journey/v2");
+      assert.equal(sdkV2Journey.fixture_id, sdkV2Catalog.fixture.id);
+      assert.equal(sdkV2Journey.version, sdkV2Catalog.fixture.version);
     }
     database = connectIntegration();
     database.resetDatabase();
@@ -3281,52 +3281,52 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       );
       assert.ok(requests.every((request) => request.length > 0));
 
-      if (workforceReportPath !== undefined) {
-        if (workforceCatalogRaw === undefined || workforceJourneyRaw === undefined) {
-          throw new Error("workforce contracts were not loaded after report preflight");
+      if (sdkReportPath !== undefined) {
+        if (sdkCatalogRaw === undefined || sdkJourneyRaw === undefined) {
+          throw new Error("sdk contracts were not loaded after report preflight");
         }
-        const results = await runWorkforceJourney(
+        const results = await runSdkJourney(
           generated,
           personManager,
           membershipManager,
           querySession,
           remoteSession,
           requests,
-          workforceCatalog,
-          workforceJourney,
+          sdkCatalog,
+          sdkJourney,
         );
-        preparedWorkforceReport = await workforceReport(
-          workforceCatalogRaw,
-          workforceCatalog,
-          workforceJourneyRaw,
+        preparedSdkReport = await sdkReport(
+          sdkCatalogRaw,
+          sdkCatalog,
+          sdkJourneyRaw,
           semanticFingerprint,
           projectionFingerprint,
           results,
         );
       }
-      if (workforceV2ReportPath !== undefined) {
+      if (sdkV2ReportPath !== undefined) {
         if (
-          workforceV2CatalogRaw === undefined
-          || workforceV2JourneyRaw === undefined
-          || workforceV2ProofObservations === undefined
+          sdkV2CatalogRaw === undefined
+          || sdkV2JourneyRaw === undefined
+          || sdkV2ProofObservations === undefined
         ) {
-          throw new Error("workforce-v2 contracts were not loaded after report preflight");
+          throw new Error("sdk-v2 contracts were not loaded after report preflight");
         }
-        const results = await runWorkforceV2Journey(
+        const results = await runSdkV2Journey(
           generated,
           database,
           remoteSession,
           requests,
           advertisement,
           exchange,
-          workforceV2Catalog,
-          workforceV2Journey,
-          workforceV2ProofObservations,
+          sdkV2Catalog,
+          sdkV2Journey,
+          sdkV2ProofObservations,
         );
-        preparedWorkforceV2Report = await workforceV2Report(
-          workforceV2CatalogRaw,
-          workforceV2Catalog,
-          workforceV2JourneyRaw,
+        preparedSdkV2Report = await sdkV2Report(
+          sdkV2CatalogRaw,
+          sdkV2Catalog,
+          sdkV2JourneyRaw,
           semanticFingerprint,
           projectionFingerprint,
           results,
@@ -3391,27 +3391,27 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
   if (failure !== undefined) {
     throw failure;
   }
-  if (workforceReportPath !== undefined) {
+  if (sdkReportPath !== undefined) {
     assert.equal(
       REMOTE_PROFILE,
       "typedb-3.12.1/v1",
-      "workforce reports may only be emitted for typedb-3.12.1/v1",
+      "sdk reports may only be emitted for typedb-3.12.1/v1",
     );
-    if (preparedWorkforceReport === undefined) {
-      throw new Error("workforce report was not prepared after the successful journey");
+    if (preparedSdkReport === undefined) {
+      throw new Error("sdk report was not prepared after the successful journey");
     }
-    await publishWorkforceReport(workforceReportPath, preparedWorkforceReport);
+    await publishSdkReport(sdkReportPath, preparedSdkReport);
   }
-  if (workforceV2ReportPath !== undefined) {
+  if (sdkV2ReportPath !== undefined) {
     assert.equal(
       REMOTE_PROFILE,
       "typedb-3.12.1/v1",
-      "workforce-v2 reports may only be emitted for typedb-3.12.1/v1",
+      "sdk-v2 reports may only be emitted for typedb-3.12.1/v1",
     );
-    if (preparedWorkforceV2Report === undefined) {
-      throw new Error("workforce-v2 report was not prepared after the successful journey");
+    if (preparedSdkV2Report === undefined) {
+      throw new Error("sdk-v2 report was not prepared after the successful journey");
     }
-    await publishWorkforceReport(workforceV2ReportPath, preparedWorkforceV2Report);
+    await publishSdkReport(sdkV2ReportPath, preparedSdkV2Report);
   }
 });
 
@@ -3476,7 +3476,7 @@ test(
 
       database = connectIntegration();
       database.resetDatabase();
-      defineSchema(database, await readFile(WORKFORCE_V3_PROVIDER_SCHEMA, "utf8"));
+      defineSchema(database, await readFile(SDK_V3_PROVIDER_SCHEMA, "utf8"));
 
       const personInput = (identifierValue: string, scoreValue: bigint) => Person.create({
         identifier: Identifier.create(identifierValue),
@@ -3740,10 +3740,10 @@ test(
       assert.equal(networkManager.count(), 0n);
       assert.equal(personManager.count(), 0n);
 
-      const supplementPath = process.env.TYPE_BRIDGE_WORKFORCE_V3_NODE_SUPPLEMENT;
+      const supplementPath = process.env.TYPE_BRIDGE_SDK_V3_NODE_SUPPLEMENT;
       if (supplementPath !== undefined) {
-        const observations = workforceV3SupplementObservations();
-        const journey = JSON.parse(await readFile(WORKFORCE_V3_JOURNEY, "utf8"));
+        const observations = sdkV3SupplementObservations();
+        const journey = JSON.parse(await readFile(SDK_V3_JOURNEY, "utf8"));
         const results = [...observations.entries()].map(([key, observation]) => {
           const [observationRef, proofKind] = key.split("\u0000");
           assert.deepEqual(observation, journey.expected_observations[observationRef]);
@@ -3758,8 +3758,8 @@ test(
           || compareText(left.proof_kind, right.proof_kind)
         );
         assert.equal(results.length, 8);
-        await publishWorkforceReport(supplementPath, {
-          format: "typebridge.workforce-v3-live-supplement/v1",
+        await publishSdkReport(supplementPath, {
+          format: "typebridge.sdk-v3-live-supplement/v1",
           binding: "node",
           semantic_profile: "typedb-3.12.1/v1",
           producer: "node.generated-data-model-runtime-v3-live",
@@ -3792,11 +3792,11 @@ test(
 test(
   "node.generated_canonical_serialization_v5_live",
   {
-    skip: IS_TYPEDB_3_11 || process.env.TYPE_BRIDGE_WORKFORCE_V5_NODE_EVIDENCE === undefined,
+    skip: IS_TYPEDB_3_11 || process.env.TYPE_BRIDGE_SDK_V5_NODE_EVIDENCE === undefined,
     timeout: 360_000,
   },
   async () => {
-    const evidencePath = process.env.TYPE_BRIDGE_WORKFORCE_V5_NODE_EVIDENCE;
+    const evidencePath = process.env.TYPE_BRIDGE_SDK_V5_NODE_EVIDENCE;
     assert.notEqual(evidencePath, undefined);
     const suppliedStage = process.env.TYPE_BRIDGE_GENERATED_NODE_STAGE;
     const stage = suppliedStage === undefined
@@ -3838,8 +3838,8 @@ test(
 
       database = connectIntegration();
       database.resetDatabase();
-      requireWorkforceServerVersion(await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT));
-      defineSchema(database, await readFile(WORKFORCE_V3_PROVIDER_SCHEMA, "utf8"));
+      requireSdkServerVersion(await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT));
+      defineSchema(database, await readFile(SDK_V3_PROVIDER_SCHEMA, "utf8"));
       const personManager = Person.manager(database);
       const employmentManager = Employment.manager(database);
       const person = personManager.insert(Person.create({
@@ -3948,12 +3948,12 @@ test(
       );
       assert.equal(employmentManager.getByIid(employment.iid)?.iid, employment.iid);
 
-      await publishWorkforceReport(evidencePath!, {
+      await publishSdkReport(evidencePath!, {
         binding: "node",
         detached_mutation_code: detachedCode,
         direct_remote_equal: true,
         entity_snapshot_b64: Buffer.from(entitySnapshot).toString("base64"),
-        format: "typebridge.workforce-v5-live-codec-evidence/v1",
+        format: "typebridge.sdk-v5-live-codec-evidence/v1",
         rebound_mutation: true,
         relation_snapshot_b64: Buffer.from(relationSnapshot).toString("base64"),
         remote_exchange_count: requests.length,

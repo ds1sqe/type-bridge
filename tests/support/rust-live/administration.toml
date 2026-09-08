@@ -1,0 +1,9 @@
+name = "sdk-v4-rust-live"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "tokio",
+ "type-bridge",
+ "type-bridge-generated-schema",
+ "type-bridge-typedb-runtime",
+]

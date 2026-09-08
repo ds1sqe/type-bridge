@@ -33,9 +33,10 @@ def test_saved_consumer_locks_use_current_first_party_versions() -> None:
     versions = {package["name"]: package["version"] for package in packages}
     locks = [
         *ROOT.glob("tests/contracts/*Cargo.lock"),
+        *ROOT.glob("tests/support/*/Cargo.lock"),
         *ROOT.glob("type-bridge-core/crates/**/tests/**/*Cargo.lock"),
     ]
-    assert len(locks) == 14
+    assert len(locks) == 6
     for path in locks:
         for package in tomllib.loads(path.read_text())["package"]:
             if package["name"] in versions and "source" not in package:
@@ -67,13 +68,13 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
     assert selected["ci_jobs"]["Rust ubuntu-latest"]["Check C foundation on MSRV 1.88"] == "success"
     assert (
         selected["ci_jobs"]["Python Integration (schema, typedb/typedb:3.12.3)"][
-            "Upload Python workforce report"
+            "Upload Python sdk report"
         ]
         == "success"
     )
     assert (
         selected["ci_jobs"]["Python Integration (schema, typedb/typedb:3.11.5)"][
-            "Upload Python workforce report"
+            "Upload Python sdk report"
         ]
         == "skipped"
     )
@@ -333,7 +334,7 @@ def test_workflow_keeps_publish_protected_and_without_builders() -> None:
 def test_sealing_preserves_all_accepted_archive_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    audit = importlib.import_module("audit_full_c_candidate")
+    audit = importlib.import_module("audit_full_c_artifact")
     monkeypatch.setattr(promotion, "control", lambda: (SOURCE, TREE, policy.selected_policy()))
     monkeypatch.setenv("GITHUB_RUN_ID", "123")
     inputs = tmp_path / "inputs"
@@ -370,8 +371,8 @@ def test_sealing_preserves_all_accepted_archive_bytes(
         calls.append(arguments)
         return {
             "source_commit": SOURCE,
-            "authority_state": "accepted-candidate",
-            "candidate_set_id": "sha256:" + "d" * 64,
+            "authority_state": "accepted-artifact",
+            "artifact_set_id": "sha256:" + "d" * 64,
         }, "Accepted audit\n"
 
     monkeypatch.setattr(audit, "audit", accepted_audit)
@@ -380,7 +381,7 @@ def test_sealing_preserves_all_accepted_archive_bytes(
     assert len(calls) == 1
     assert set(calls[0]) == {
         "reports_root",
-        "phase4_path",
+        "acceptance_path",
         "provider",
         "live",
         "cli",

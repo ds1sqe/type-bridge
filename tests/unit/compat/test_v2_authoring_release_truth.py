@@ -37,10 +37,10 @@ FORBIDDEN_DEFERRAL_TEXT = (
     "binding authoring will ship after 2.0",
     "do not yet offer idiomatic plan-builder facades",
     "ship in a later `2.0.x` release",
-    "python/node ergonomic typed authoring remains the separate post-2.0 plan 08",
-    "python/node ergonomic typed plan authoring is the separate post-2.0 plan 08",
-    "do not yet expose the ergonomic typed builder facades tracked separately by plan 08",
-    "python/node typed authoring remains plan 08",
+    "python/node ergonomic typed authoring remains the separate post-2.0 C distribution",
+    "python/node ergonomic typed plan authoring is the separate post-2.0 C distribution",
+    "do not yet expose the ergonomic typed builder facades tracked separately by C distribution",
+    "python/node typed authoring remains C distribution",
     "does not yet provide a plan-builder facade",
 )
 

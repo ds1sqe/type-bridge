@@ -1,9 +1,8 @@
 use std::fs;
 use std::mem::{align_of, offset_of, size_of};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use type_bridge_c::{
     TypeBridgeCancellation, TypeBridgeDatabaseConfigV1, TypeBridgeExecutionDiagnostics,
@@ -39,31 +38,9 @@ unsafe extern "C" {
     ) -> TypeBridgeStatus;
 }
 
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-struct TempDirectory(PathBuf);
-
-impl TempDirectory {
-    fn new() -> Self {
-        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "typebridge-c-execution-abi-{}-{sequence}",
-            std::process::id()
-        ));
-        fs::create_dir(&path).expect("unique execution ABI directory is created");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDirectory {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).expect("execution ABI directory is removed");
-    }
-}
+#[path = "support/temp.rs"]
+mod temp;
+use temp::TempDirectory;
 
 fn compiler<'candidate>(candidates: &'candidate [&'candidate str]) -> Option<&'candidate str> {
     candidates
@@ -123,7 +100,7 @@ fn c17_and_cpp17_headers_match_runtime_layout_and_function_types() {
     let Some(cpp_compiler) = compiler(&["c++", "g++", "clang++"]) else {
         return;
     };
-    let stage = TempDirectory::new();
+    let stage = TempDirectory::new("execution_abi");
     let include = Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
     let source = stage.path().join("layout.c");
     fs::write(
@@ -512,7 +489,7 @@ fn read_and_write_transaction_handles_are_not_interchangeable_in_c() {
     let Some(compiler) = compiler(&["cc", "gcc", "clang"]) else {
         return;
     };
-    let stage = TempDirectory::new();
+    let stage = TempDirectory::new("execution_abi");
     let source = stage.path().join("wrong-transaction.c");
     fs::write(
         &source,

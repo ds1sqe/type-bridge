@@ -69,6 +69,7 @@ function verifyInstalledPackage(installedRoot) {
     "QueryExecutionResourceLimits",
     "installGeneratedSchemaAuthority",
     "installRuntimeProjection",
+    "projectedManagerNativeCall",
   ]);
 
   assert.equal(packageJson.main, "dist/public.js");

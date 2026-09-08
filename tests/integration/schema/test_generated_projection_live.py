@@ -40,22 +40,20 @@ ACCEPTANCE_SCHEMA = ACCEPTANCE_DIRECTORY / "schema.yaml"
 ACCEPTANCE_SCHEMA_3_11 = ACCEPTANCE_DIRECTORY / "schema-3.11.5.yaml"
 PROVIDER_SCHEMA = ACCEPTANCE_DIRECTORY / "provider-3.12.1.tql"
 PROVIDER_SCHEMA_3_11 = ACCEPTANCE_DIRECTORY / "provider-3.11.5.tql"
-WORKFORCE_MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest-v1.json"
-WORKFORCE_CATALOG_RELATIVE = "tests/contracts/sdk_conformance/workforce-v1/catalog-v1.json"
-WORKFORCE_JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/workforce-v1/journey-v1.json"
-WORKFORCE_V2_CATALOG_RELATIVE = "tests/contracts/sdk_conformance/workforce-v2/catalog-v2.json"
-WORKFORCE_V2_JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/workforce-v2/journey-v2.json"
-WORKFORCE_V3_JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/workforce-v3/journey-v3.json"
-WORKFORCE_MANIFEST = ROOT / WORKFORCE_MANIFEST_RELATIVE
-WORKFORCE_CATALOG = ROOT / WORKFORCE_CATALOG_RELATIVE
-WORKFORCE_JOURNEY = ROOT / WORKFORCE_JOURNEY_RELATIVE
-WORKFORCE_V2_CATALOG = ROOT / WORKFORCE_V2_CATALOG_RELATIVE
-WORKFORCE_V2_JOURNEY = ROOT / WORKFORCE_V2_JOURNEY_RELATIVE
-WORKFORCE_V3_JOURNEY = ROOT / WORKFORCE_V3_JOURNEY_RELATIVE
-WORKFORCE_V3_PROVIDER_SCHEMA = (
-    ROOT / "tests/contracts/sdk_conformance/workforce-v3/provider-3.12.1-v3.tql"
-)
-WORKFORCE_V2_PROOF_LOADER = ROOT / "scripts/ci/workforce_v2_proof_fragments.py"
+SDK_MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest-v1.json"
+SDK_CATALOG_RELATIVE = "tests/contracts/sdk_conformance/sdk-v1/catalog-v1.json"
+SDK_JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/sdk-v1/journey-v1.json"
+SDK_V2_CATALOG_RELATIVE = "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json"
+SDK_V2_JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json"
+SDK_V3_JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"
+SDK_MANIFEST = ROOT / SDK_MANIFEST_RELATIVE
+SDK_CATALOG = ROOT / SDK_CATALOG_RELATIVE
+SDK_JOURNEY = ROOT / SDK_JOURNEY_RELATIVE
+SDK_V2_CATALOG = ROOT / SDK_V2_CATALOG_RELATIVE
+SDK_V2_JOURNEY = ROOT / SDK_V2_JOURNEY_RELATIVE
+SDK_V3_JOURNEY = ROOT / SDK_V3_JOURNEY_RELATIVE
+SDK_V3_PROVIDER_SCHEMA = ROOT / "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql"
+SDK_V2_PROOF_LOADER = ROOT / "scripts/ci/sdk_v2_proof_fragments.py"
 
 
 class _StringValue(Protocol):
@@ -80,7 +78,7 @@ def _load_json_object(path: Path) -> tuple[bytes, dict[str, object]]:
     raw = path.read_bytes()
     document = json.loads(raw)
     if not isinstance(document, dict):
-        raise AssertionError(f"workforce contract is not an object: {path}")
+        raise AssertionError(f"sdk contract is not an object: {path}")
     return raw, document
 
 
@@ -88,15 +86,15 @@ def _source_identity(relative_path: str, raw: bytes) -> dict[str, str]:
     return {"path": relative_path, "sha256": hashlib.sha256(raw).hexdigest()}
 
 
-def _require_workforce_server_version(detected: str | None) -> None:
+def _require_sdk_server_version(detected: str | None) -> None:
     if detected != "3.12.3":
         raise AssertionError(
-            "workforce reports require the actual detected TypeDB server version 3.12.3; "
+            "sdk reports require the actual detected TypeDB server version 3.12.3; "
             f"detected {detected!r}"
         )
 
 
-def _workforce_results(
+def _sdk_results(
     catalog: dict[str, object],
     journey: dict[str, object],
     observed: dict[tuple[str, str], dict[str, object]],
@@ -134,22 +132,20 @@ def _workforce_results(
     return sorted(results, key=lambda result: (result["case_id"], result["proof_kind"]))
 
 
-def _load_workforce_v2_proof_observations() -> dict[tuple[str, str], dict[str, object]]:
-    raw_paths = os.environ.get("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS")
-    run_nonce = os.environ.get("TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE")
+def _load_sdk_v2_proof_observations() -> dict[tuple[str, str], dict[str, object]]:
+    raw_paths = os.environ.get("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS")
+    run_nonce = os.environ.get("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE")
     if raw_paths is None or run_nonce is None:
-        raise AssertionError(
-            "workforce-v2 reports require proof fragment paths and the same-run nonce"
-        )
+        raise AssertionError("sdk-v2 reports require proof fragment paths and the same-run nonce")
     path_values = raw_paths.split(os.pathsep)
     if not path_values or any(not value for value in path_values):
-        raise AssertionError("workforce-v2 proof fragment paths must be a nonempty path list")
+        raise AssertionError("sdk-v2 proof fragment paths must be a nonempty path list")
     spec = importlib.util.spec_from_file_location(
-        "_typebridge_workforce_v2_proof_fragments",
-        WORKFORCE_V2_PROOF_LOADER,
+        "_typebridge_sdk_v2_proof_fragments",
+        SDK_V2_PROOF_LOADER,
     )
     if spec is None or spec.loader is None:
-        raise AssertionError("workforce-v2 proof fragment validator is not importable")
+        raise AssertionError("sdk-v2 proof fragment validator is not importable")
     loader = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(loader)
     load_proof_fragments = getattr(loader, "load_proof_fragments")
@@ -160,7 +156,7 @@ def _load_workforce_v2_proof_observations() -> dict[tuple[str, str], dict[str, o
         root=ROOT,
     )
     if not isinstance(loaded, dict):
-        raise AssertionError("workforce-v2 proof fragment validator returned an invalid map")
+        raise AssertionError("sdk-v2 proof fragment validator returned an invalid map")
     observations: dict[tuple[str, str], dict[str, object]] = {}
     for lane, observation in loaded.items():
         if (
@@ -169,19 +165,19 @@ def _load_workforce_v2_proof_observations() -> dict[tuple[str, str], dict[str, o
             or not all(isinstance(value, str) for value in lane)
             or not isinstance(observation, dict)
         ):
-            raise AssertionError("workforce-v2 proof fragment observation is malformed")
+            raise AssertionError("sdk-v2 proof fragment observation is malformed")
         observations[(lane[0], lane[1])] = observation
     return observations
 
 
-def _workforce_report(
+def _sdk_report(
     generated: ModuleType,
     catalog_raw: bytes,
     catalog: dict[str, object],
     journey_raw: bytes,
     results: list[dict[str, object]],
 ) -> dict[str, object]:
-    manifest_raw = WORKFORCE_MANIFEST.read_bytes()
+    manifest_raw = SDK_MANIFEST.read_bytes()
     fixture = catalog["fixture"]
     projection_targets = catalog["projection_targets"]
     assert isinstance(fixture, dict)
@@ -192,12 +188,12 @@ def _workforce_report(
     assert isinstance(schema_relative, str)
     assert isinstance(provider_schema_relative, str)
     assert isinstance(journey_relative, str)
-    assert journey_relative == WORKFORCE_JOURNEY_RELATIVE
+    assert journey_relative == SDK_JOURNEY_RELATIVE
     return {
         "format": "typebridge.sdk-conformance-report/v1",
         "binding": "python",
-        "manifest": _source_identity(WORKFORCE_MANIFEST_RELATIVE, manifest_raw),
-        "catalog": _source_identity(WORKFORCE_CATALOG_RELATIVE, catalog_raw),
+        "manifest": _source_identity(SDK_MANIFEST_RELATIVE, manifest_raw),
+        "catalog": _source_identity(SDK_CATALOG_RELATIVE, catalog_raw),
         "fixture": {
             "id": fixture["id"],
             "version": fixture["version"],
@@ -216,14 +212,14 @@ def _workforce_report(
     }
 
 
-def _workforce_v2_report(
+def _sdk_v2_report(
     generated: ModuleType,
     catalog_raw: bytes,
     catalog: dict[str, object],
     journey_raw: bytes,
     results: list[dict[str, object]],
 ) -> dict[str, object]:
-    manifest_raw = WORKFORCE_MANIFEST.read_bytes()
+    manifest_raw = SDK_MANIFEST.read_bytes()
     fixture = catalog["fixture"]
     projection_targets = catalog["projection_targets"]
     assert isinstance(fixture, dict)
@@ -234,12 +230,12 @@ def _workforce_v2_report(
     assert isinstance(schema_relative, str)
     assert isinstance(provider_schema_relative, str)
     assert isinstance(journey_relative, str)
-    assert journey_relative == WORKFORCE_V2_JOURNEY_RELATIVE
+    assert journey_relative == SDK_V2_JOURNEY_RELATIVE
     return {
         "format": "typebridge.sdk-conformance-report/v2",
         "binding": "python",
-        "manifest": _source_identity(WORKFORCE_MANIFEST_RELATIVE, manifest_raw),
-        "catalog": _source_identity(WORKFORCE_V2_CATALOG_RELATIVE, catalog_raw),
+        "manifest": _source_identity(SDK_MANIFEST_RELATIVE, manifest_raw),
+        "catalog": _source_identity(SDK_V2_CATALOG_RELATIVE, catalog_raw),
         "fixture": {
             "id": fixture["id"],
             "version": fixture["version"],
@@ -258,40 +254,40 @@ def _workforce_v2_report(
     }
 
 
-def _validate_workforce_report_path(raw_path: str) -> Path:
+def _validate_sdk_report_path(raw_path: str) -> Path:
     try:
         encoded_path = raw_path.encode("utf-8")
     except UnicodeEncodeError as error:
-        raise AssertionError("TYPE_BRIDGE_WORKFORCE_REPORT must be a UTF-8 path") from error
+        raise AssertionError("TYPE_BRIDGE_SDK_REPORT must be a UTF-8 path") from error
     if not encoded_path or len(encoded_path) > 4096:
-        raise AssertionError("TYPE_BRIDGE_WORKFORCE_REPORT must contain 1 to 4096 UTF-8 bytes")
+        raise AssertionError("TYPE_BRIDGE_SDK_REPORT must contain 1 to 4096 UTF-8 bytes")
     destination = Path(raw_path)
     if not destination.is_absolute():
-        raise AssertionError("TYPE_BRIDGE_WORKFORCE_REPORT must be an absolute path")
+        raise AssertionError("TYPE_BRIDGE_SDK_REPORT must be an absolute path")
     try:
         parent_metadata = destination.parent.lstat()
     except FileNotFoundError as error:
-        raise AssertionError("TYPE_BRIDGE_WORKFORCE_REPORT parent must exist") from error
+        raise AssertionError("TYPE_BRIDGE_SDK_REPORT parent must exist") from error
     if stat.S_ISLNK(parent_metadata.st_mode) or not stat.S_ISDIR(parent_metadata.st_mode):
-        raise AssertionError("TYPE_BRIDGE_WORKFORCE_REPORT parent must be a non-symlink directory")
+        raise AssertionError("TYPE_BRIDGE_SDK_REPORT parent must be a non-symlink directory")
     try:
         destination.lstat()
     except FileNotFoundError:
         pass
     else:
-        raise AssertionError("TYPE_BRIDGE_WORKFORCE_REPORT destination must not exist")
+        raise AssertionError("TYPE_BRIDGE_SDK_REPORT destination must not exist")
     return destination
 
 
-def _publish_workforce_report(raw_path: str, report: dict[str, object]) -> None:
-    destination = _validate_workforce_report_path(raw_path)
+def _publish_sdk_report(raw_path: str, report: dict[str, object]) -> None:
+    destination = _validate_sdk_report_path(raw_path)
 
     payload = (
         json.dumps(report, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
     ).encode()
     descriptor, temporary_name = tempfile.mkstemp(
         dir=destination.parent,
-        prefix=".typebridge-workforce-",
+        prefix=".typebridge-sdk-",
         suffix=".tmp",
     )
     temporary = Path(temporary_name)
@@ -304,20 +300,20 @@ def _publish_workforce_report(raw_path: str, report: dict[str, object]) -> None:
             os.link(temporary, destination)
         except FileExistsError as error:
             raise AssertionError(
-                "TYPE_BRIDGE_WORKFORCE_REPORT destination appeared during publication"
+                "TYPE_BRIDGE_SDK_REPORT destination appeared during publication"
             ) from error
     finally:
         temporary.unlink(missing_ok=True)
 
 
-def _publish_workforce_v3_python_supplement(
+def _publish_sdk_v3_python_supplement(
     generated: ModuleType,
     observations: dict[tuple[str, str], dict[str, object]],
 ) -> None:
-    raw_path = os.environ.get("TYPE_BRIDGE_WORKFORCE_V3_PYTHON_SUPPLEMENT")
+    raw_path = os.environ.get("TYPE_BRIDGE_SDK_V3_PYTHON_SUPPLEMENT")
     if raw_path is None:
         return
-    _, journey = _load_json_object(WORKFORCE_V3_JOURNEY)
+    _, journey = _load_json_object(SDK_V3_JOURNEY)
     expected = journey["expected_observations"]
     assert isinstance(expected, dict)
     for (observation_ref, _), observation in observations.items():
@@ -333,7 +329,7 @@ def _publish_workforce_v3_python_supplement(
     ]
     assert len(results) == 8
     supplement = {
-        "format": "typebridge.workforce-v3-live-supplement/v1",
+        "format": "typebridge.sdk-v3-live-supplement/v1",
         "binding": "python",
         "semantic_profile": "typedb-3.12.1/v1",
         "producer": "python.generated-data-model-runtime-v3-live",
@@ -341,10 +337,10 @@ def _publish_workforce_v3_python_supplement(
         "projection_fingerprint": json.loads(generated.PROJECTION_FINGERPRINT_JSON),
         "results": results,
     }
-    _publish_workforce_report(raw_path, supplement)
+    _publish_sdk_report(raw_path, supplement)
 
 
-def _workforce_datetime(field: dict[str, object], *, timezone: bool) -> datetime:
+def _sdk_datetime(field: dict[str, object], *, timezone: bool) -> datetime:
     value = field["value"]
     assert isinstance(value, str)
     if timezone:
@@ -353,7 +349,7 @@ def _workforce_datetime(field: dict[str, object], *, timezone: bool) -> datetime
     return datetime.fromisoformat(value)
 
 
-def _normalize_workforce_person(
+def _normalize_sdk_person(
     generated: ModuleType,
     candidate: Any,
     person_record: dict[str, object],
@@ -384,11 +380,9 @@ def _normalize_workforce_person(
     assert type(candidate.val_date) is generated.ValDate
     assert candidate.val_date.value == date.fromisoformat(fields["val_date"]["value"])
     assert type(candidate.val_datetime) is generated.ValDatetime
-    assert candidate.val_datetime.value == _workforce_datetime(
-        fields["val_datetime"], timezone=False
-    )
+    assert candidate.val_datetime.value == _sdk_datetime(fields["val_datetime"], timezone=False)
     assert type(candidate.val_datetime_tz) is generated.ValDatetimeTz
-    assert candidate.val_datetime_tz.value == _workforce_datetime(
+    assert candidate.val_datetime_tz.value == _sdk_datetime(
         fields["val_datetime_tz"], timezone=True
     )
     assert type(candidate.val_decimal) is generated.ValDecimal
@@ -417,7 +411,7 @@ def _normalize_workforce_person(
     }
 
 
-def _normalize_workforce_role(
+def _normalize_sdk_role(
     generated: ModuleType,
     relation: Any,
     player: Any,
@@ -454,7 +448,7 @@ def _normalize_workforce_role(
     return hydrated, traversal, player_identity
 
 
-def _run_workforce_journey(
+def _run_sdk_journey(
     generated: ModuleType,
     clean_db: Database,
     person_manager: Any,
@@ -491,11 +485,9 @@ def _run_workforce_journey(
         val_bool=generated.ValBool(fields["val_bool"]["value"]),
         val_constrained=generated.ValConstrained(int(fields["val_constrained"]["value"])),
         val_date=generated.ValDate(date.fromisoformat(fields["val_date"]["value"])),
-        val_datetime=generated.ValDatetime(
-            _workforce_datetime(fields["val_datetime"], timezone=False)
-        ),
+        val_datetime=generated.ValDatetime(_sdk_datetime(fields["val_datetime"], timezone=False)),
         val_datetime_tz=generated.ValDatetimeTz(
-            _workforce_datetime(fields["val_datetime_tz"], timezone=True)
+            _sdk_datetime(fields["val_datetime_tz"], timezone=True)
         ),
         val_decimal=generated.ValDecimal(Decimal(fields["val_decimal"]["value"])),
         val_double=generated.ValDouble(struct.unpack(">d", bytes.fromhex(double_bits))[0]),
@@ -514,13 +506,13 @@ def _run_workforce_journey(
         person_created = True
         inserted_person = person_manager.get_by_iid(person.iid)
         assert inserted_person is not None
-        _normalize_workforce_person(generated, inserted_person, person_record, fields["nickname"])
+        _normalize_sdk_person(generated, inserted_person, person_record, fields["nickname"])
 
         person.nickname = generated.Nickname(update["nickname"]["value"])
         assert person_manager.update(person) is person
         updated_person = person_manager.get_by_iid(person.iid)
         assert updated_person is not None
-        _normalize_workforce_person(generated, updated_person, person_record, update["nickname"])
+        _normalize_sdk_person(generated, updated_person, person_record, update["nickname"])
         read_after_update = True
 
         membership = generated.Membership(member=updated_person)
@@ -544,13 +536,13 @@ def _run_workforce_journey(
             )
             .one()
         )
-        direct_hydrated, direct_traversal, direct_reference = _normalize_workforce_role(
+        direct_hydrated, direct_traversal, direct_reference = _normalize_sdk_role(
             generated,
             direct_relation,
             direct_person,
             membership_record,
         )
-        direct_person_observation = _normalize_workforce_person(
+        direct_person_observation = _normalize_sdk_person(
             generated,
             direct_person,
             person_record,
@@ -577,13 +569,13 @@ def _run_workforce_journey(
         exchange_count = len(remote_requests) - requests_before
         assert exchange_count == 1
         assert all(remote_requests[index] for index in range(requests_before, len(remote_requests)))
-        remote_hydrated, remote_traversal, remote_reference = _normalize_workforce_role(
+        remote_hydrated, remote_traversal, remote_reference = _normalize_sdk_role(
             generated,
             remote_relation,
             remote_person,
             membership_record,
         )
-        remote_person_observation = _normalize_workforce_person(
+        remote_person_observation = _normalize_sdk_person(
             generated,
             remote_person,
             person_record,
@@ -629,10 +621,10 @@ def _run_workforce_journey(
         "player_key": membership_record["player"]["key"],
         "role": membership_record["role"],
     }
-    return _workforce_results(catalog, journey, observed)
+    return _sdk_results(catalog, journey, observed)
 
 
-def _workforce_v2_person(generated: ModuleType, record: dict[str, object]) -> Any:
+def _sdk_v2_person(generated: ModuleType, record: dict[str, object]) -> Any:
     fields = record["fields"]
     assert isinstance(fields, dict)
     aliases = fields["aliases"]
@@ -651,11 +643,9 @@ def _workforce_v2_person(generated: ModuleType, record: dict[str, object]) -> An
         val_bool=generated.ValBool(fields["val_bool"]["value"]),
         val_constrained=generated.ValConstrained(int(fields["val_constrained"]["value"])),
         val_date=generated.ValDate(date.fromisoformat(fields["val_date"]["value"])),
-        val_datetime=generated.ValDatetime(
-            _workforce_datetime(fields["val_datetime"], timezone=False)
-        ),
+        val_datetime=generated.ValDatetime(_sdk_datetime(fields["val_datetime"], timezone=False)),
         val_datetime_tz=generated.ValDatetimeTz(
-            _workforce_datetime(fields["val_datetime_tz"], timezone=True)
+            _sdk_datetime(fields["val_datetime_tz"], timezone=True)
         ),
         val_decimal=generated.ValDecimal(Decimal(fields["val_decimal"]["value"])),
         val_double=generated.ValDouble(struct.unpack(">d", bytes.fromhex(double_bits))[0]),
@@ -663,7 +653,7 @@ def _workforce_v2_person(generated: ModuleType, record: dict[str, object]) -> An
     )
 
 
-def _workforce_v2_reducers(
+def _sdk_v2_reducers(
     generated: ModuleType,
     session: Any,
     query: Any,
@@ -729,7 +719,7 @@ def _workforce_v2_reducers(
     }
 
 
-async def _workforce_v2_remote_reducers(
+async def _sdk_v2_remote_reducers(
     generated: ModuleType,
     session: Any,
     query: Any,
@@ -797,14 +787,14 @@ async def _workforce_v2_remote_reducers(
     }
 
 
-def _workforce_v2_key(value: object) -> str:
+def _sdk_v2_key(value: object) -> str:
     identifier = getattr(value, "identifier")
     key = getattr(identifier, "value")
     assert isinstance(key, str)
     return key
 
 
-def _workforce_v2_model(generated: ModuleType, value: object) -> str:
+def _sdk_v2_model(generated: ModuleType, value: object) -> str:
     for model, name in (
         (generated.Person, "person"),
         (generated.Employee, "employee"),
@@ -814,18 +804,18 @@ def _workforce_v2_model(generated: ModuleType, value: object) -> str:
     ):
         if type(value) is model:
             return name
-    raise AssertionError(f"unexpected workforce-v2 projected model: {type(value)!r}")
+    raise AssertionError(f"unexpected sdk-v2 projected model: {type(value)!r}")
 
 
-def _workforce_v2_model_key(generated: ModuleType, value: object) -> dict[str, str]:
-    return {"model": _workforce_v2_model(generated, value), "key": _workforce_v2_key(value)}
+def _sdk_v2_model_key(generated: ModuleType, value: object) -> dict[str, str]:
+    return {"model": _sdk_v2_model(generated, value), "key": _sdk_v2_key(value)}
 
 
-def _workforce_v2_keys(values: Iterator[object] | list[object] | tuple[object, ...]) -> list[str]:
-    return [_workforce_v2_key(value) for value in values]
+def _sdk_v2_keys(values: Iterator[object] | list[object] | tuple[object, ...]) -> list[str]:
+    return [_sdk_v2_key(value) for value in values]
 
 
-def _workforce_v2_person_values(
+def _sdk_v2_person_values(
     generated: ModuleType,
     person: object,
     membership: object,
@@ -846,15 +836,15 @@ def _workforce_v2_person_values(
     member = getattr(membership, "member")
     return {
         "aliases": [alias.value for alias in getattr(person, "aliases")],
-        "key": _workforce_v2_key(person),
-        "model": _workforce_v2_model(generated, person),
+        "key": _sdk_v2_key(person),
+        "model": _sdk_v2_model(generated, person),
         "nickname": getattr(person, "nickname").value,
-        "reference": _workforce_v2_model_key(generated, member),
+        "reference": _sdk_v2_model_key(generated, member),
         "scalar_domains": [domain for domain, _ in scalar_fields],
     }
 
 
-def _workforce_v2_role_observation(
+def _sdk_v2_role_observation(
     generated: ModuleType,
     membership: object,
     network: object,
@@ -863,32 +853,32 @@ def _workforce_v2_role_observation(
     participants = getattr(network, "participant")
     return {
         "membership": {
-            "relation": _workforce_v2_model(generated, membership),
+            "relation": _sdk_v2_model(generated, membership),
             "role": "member",
-            "players": [_workforce_v2_model_key(generated, member)],
+            "players": [_sdk_v2_model_key(generated, member)],
         },
         "network_link": {
-            "relation": _workforce_v2_model(generated, network),
-            "origin": _workforce_v2_key(getattr(network, "origin")),
-            "destination": _workforce_v2_key(getattr(network, "destination")),
-            "participants": sorted(_workforce_v2_keys(tuple(participants))),
+            "relation": _sdk_v2_model(generated, network),
+            "origin": _sdk_v2_key(getattr(network, "origin")),
+            "destination": _sdk_v2_key(getattr(network, "destination")),
+            "participants": sorted(_sdk_v2_keys(tuple(participants))),
         },
     }
 
 
-def _workforce_v2_hydrated_result(generated: ModuleType, membership: object) -> dict[str, object]:
+def _sdk_v2_hydrated_result(generated: ModuleType, membership: object) -> dict[str, object]:
     member = getattr(membership, "member")
     return {
         "rows": [
             {
-                "model": _workforce_v2_model(generated, membership),
-                "roles": {"member": [_workforce_v2_model_key(generated, member)]},
+                "model": _sdk_v2_model(generated, membership),
+                "roles": {"member": [_sdk_v2_model_key(generated, member)]},
             }
         ]
     }
 
 
-def _workforce_v2_error_category(error: BaseException) -> tuple[str, str, str]:
+def _sdk_v2_error_category(error: BaseException) -> tuple[str, str, str]:
     category = getattr(error, "sdk_category")
     query_category = getattr(error, "query_category")
     code = getattr(error, "code")
@@ -898,8 +888,8 @@ def _workforce_v2_error_category(error: BaseException) -> tuple[str, str, str]:
     return category, query_category, code
 
 
-def _workforce_v2_cardinality_diagnostic(error: BaseException) -> dict[str, object]:
-    category, query_category, code = _workforce_v2_error_category(error)
+def _sdk_v2_cardinality_diagnostic(error: BaseException) -> dict[str, object]:
+    category, query_category, code = _sdk_v2_error_category(error)
     message = getattr(error, "message")
     path = getattr(error, "path")
     details = getattr(error, "details")
@@ -929,7 +919,7 @@ def _workforce_v2_cardinality_diagnostic(error: BaseException) -> dict[str, obje
     }
 
 
-def _workforce_v2_resource_limits(
+def _sdk_v2_resource_limits(
     generated: ModuleType,
     clean_db: Database,
     remote_advertisement: bytes,
@@ -976,7 +966,7 @@ def _workforce_v2_resource_limits(
             else:
                 query.one()
         except MatchRequestError as error:
-            errors.append(_workforce_v2_error_category(error))
+            errors.append(_sdk_v2_error_category(error))
         else:
             raise AssertionError("zero role-player budget accepted a hydrated relation")
         finally:
@@ -996,7 +986,7 @@ def _workforce_v2_resource_limits(
     }
 
 
-def _workforce_v2_lifecycle(
+def _sdk_v2_lifecycle(
     generated: ModuleType,
     clean_db: Database,
     remote_advertisement: bytes,
@@ -1015,7 +1005,7 @@ def _workforce_v2_lifecycle(
         )
         closed_descendant.close()
         closed_descendant.close()
-        ancestor_usable = _workforce_v2_key(ancestor.one()) == "query-ada"
+        ancestor_usable = _sdk_v2_key(ancestor.one()) == "query-ada"
         descendant = ancestor.where(person.field(generated.Person.score).gte(generated.Score(1)))
         result = descendant.one()
         ancestor.close()
@@ -1025,9 +1015,9 @@ def _workforce_v2_lifecycle(
             ancestor.one()
         except MatchRequestError as error:
             rejected = error.code == "query_resource_closed"
-        descendant_usable = _workforce_v2_key(descendant.one()) == "query-ada"
-        sibling_usable = _workforce_v2_key(sibling.one()) == "query-ada"
-        session_usable = _workforce_v2_key(session.query(person).where(scope).one()) == "query-ada"
+        descendant_usable = _sdk_v2_key(descendant.one()) == "query-ada"
+        sibling_usable = _sdk_v2_key(sibling.one()) == "query-ada"
+        session_usable = _sdk_v2_key(session.query(person).where(scope).one()) == "query-ada"
         descendant.close()
         sibling.close()
         session.close()
@@ -1061,7 +1051,7 @@ def _workforce_v2_lifecycle(
         )
         closed_descendant.close()
         closed_descendant.close()
-        ancestor_usable = _workforce_v2_key(await ancestor.one()) == "query-ada"
+        ancestor_usable = _sdk_v2_key(await ancestor.one()) == "query-ada"
         descendant = ancestor.where(person.field(generated.Person.score).gte(generated.Score(1)))
         result = await descendant.one()
         ancestor.close()
@@ -1073,11 +1063,9 @@ def _workforce_v2_lifecycle(
         except MatchRequestError as error:
             rejected = error.code == "query_resource_closed"
         post_close_io_count = len(remote_requests) - requests_before_rejection
-        descendant_usable = _workforce_v2_key(await descendant.one()) == "query-ada"
-        sibling_usable = _workforce_v2_key(await sibling.one()) == "query-ada"
-        session_usable = (
-            _workforce_v2_key(await session.query(person).where(scope).one()) == "query-ada"
-        )
+        descendant_usable = _sdk_v2_key(await descendant.one()) == "query-ada"
+        sibling_usable = _sdk_v2_key(await sibling.one()) == "query-ada"
+        session_usable = _sdk_v2_key(await session.query(person).where(scope).one()) == "query-ada"
         descendant.close()
         sibling.close()
         session.close()
@@ -1103,13 +1091,12 @@ def _workforce_v2_lifecycle(
         "lanes": ["direct", "remote"],
         "query": direct,
         "result_usable_after_query_close": (
-            _workforce_v2_key(direct_result) == "query-ada"
-            and _workforce_v2_key(remote_result) == "query-ada"
+            _sdk_v2_key(direct_result) == "query-ada" and _sdk_v2_key(remote_result) == "query-ada"
         ),
     }
 
 
-def _run_workforce_v2_journey(
+def _run_sdk_v2_journey(
     generated: ModuleType,
     clean_db: Database,
     remote_session: Any,
@@ -1126,7 +1113,7 @@ def _run_workforce_v2_journey(
     assert isinstance(expected, dict)
     people_records = records["people"]
     assert isinstance(people_records, list) and len(people_records) == 2
-    people = [_workforce_v2_person(generated, record) for record in people_records]
+    people = [_sdk_v2_person(generated, record) for record in people_records]
     employee_record = records["employee"]
     manager_record = records["manager"]
     assert isinstance(employee_record, dict)
@@ -1240,17 +1227,17 @@ def _run_workforce_v2_journey(
             .one()
         )
 
-        direct_owner_keys = _workforce_v2_keys(
+        direct_owner_keys = _sdk_v2_keys(
             direct_session.query(direct_person)
             .where(direct_person.field(generated.Person.score).is_present(), scoped)
             .rows(limit=2, order_by=(direct_identifier.asc(),))
         )
-        direct_optional_keys = _workforce_v2_keys(
+        direct_optional_keys = _sdk_v2_keys(
             direct_session.query(direct_person)
             .where(direct_person.field(generated.Person.nickname).is_present(), scoped)
             .rows(limit=2, order_by=(direct_identifier.asc(),))
         )
-        direct_iid_keys = _workforce_v2_keys(
+        direct_iid_keys = _sdk_v2_keys(
             direct_session.query(direct_person)
             .where(direct_person.iid_in(person_iids))
             .rows(limit=2, order_by=(direct_identifier.asc(),))
@@ -1280,7 +1267,7 @@ def _run_workforce_v2_journey(
         direct_score = direct_person.field(generated.Person.score)
         direct_score_gte = direct_person.field(generated.Person.score__gte)
         direct_boolean = direct_person.field(generated.Person.val_bool)
-        direct_and_keys = _workforce_v2_keys(
+        direct_and_keys = _sdk_v2_keys(
             direct_session.query(direct_person)
             .where(
                 scoped,
@@ -1288,17 +1275,17 @@ def _run_workforce_v2_journey(
             )
             .rows(limit=2, order_by=(direct_identifier.asc(),))
         )
-        direct_or_keys = _workforce_v2_keys(
+        direct_or_keys = _sdk_v2_keys(
             direct_session.query(direct_person)
             .where(scoped)
             .rows(limit=2, order_by=(direct_identifier.asc(),))
         )
-        direct_not_keys = _workforce_v2_keys(
+        direct_not_keys = _sdk_v2_keys(
             direct_session.query(direct_person)
             .where(scoped, ~direct_boolean.eq(generated.ValBool(True)))
             .rows(limit=2, order_by=(direct_identifier.asc(),))
         )
-        direct_field_comparison_keys = _workforce_v2_keys(
+        direct_field_comparison_keys = _sdk_v2_keys(
             direct_session.query(direct_person)
             .where(scoped, direct_score.gte_field(direct_score_gte))
             .rows(limit=2, order_by=(direct_identifier.asc(),))
@@ -1340,7 +1327,7 @@ def _run_workforce_v2_journey(
             | direct_cross_right_id.eq(generated.Identifier("query-dana"))
         )
         direct_cross_pairs = [
-            [_workforce_v2_key(left), _workforce_v2_key(right)]
+            [_sdk_v2_key(left), _sdk_v2_key(right)]
             for left, right in (
                 direct_session.query(direct_cross_left, direct_cross_right)
                 .allow_cross_join(direct_cross_left, direct_cross_right)
@@ -1380,7 +1367,7 @@ def _run_workforce_v2_journey(
         assert len(direct_positional_page.items) == 1
         positional_origin, positional_participants = direct_positional_page.items[0]
         selection_row = make_dataclass(
-            "WorkforceV2SelectionRow",
+            "SdkV2SelectionRow",
             [
                 ("origin", generated.Person),
                 ("participants", tuple[generated.Person, ...]),
@@ -1410,12 +1397,12 @@ def _run_workforce_v2_journey(
         direct_named = direct_named_page.items[0]
         direct_selection = {
             "positional": [
-                _workforce_v2_key(positional_origin),
-                _workforce_v2_keys(tuple(positional_participants)),
+                _sdk_v2_key(positional_origin),
+                _sdk_v2_keys(tuple(positional_participants)),
             ],
             "named": {
-                "origin": _workforce_v2_key(direct_named.origin),
-                "participants": _workforce_v2_keys(tuple(direct_named.participants)),
+                "origin": _sdk_v2_key(direct_named.origin),
+                "participants": _sdk_v2_keys(tuple(direct_named.participants)),
             },
             "collected_distinct": len({value.iid for value in positional_participants})
             == len(positional_participants),
@@ -1435,11 +1422,11 @@ def _run_workforce_v2_journey(
             include_total=True,
         )
         direct_terminals = {
-            "one": _workforce_v2_key(direct_dana),
-            "first": _workforce_v2_key(direct_first),
+            "one": _sdk_v2_key(direct_dana),
+            "first": _sdk_v2_key(direct_first),
             "rows": direct_keys,
             "page": {
-                "items": _workforce_v2_keys(tuple(direct_page.items)),
+                "items": _sdk_v2_keys(tuple(direct_page.items)),
                 "offset": direct_page.offset,
                 "limit": direct_page.limit,
                 "total": direct_page.total,
@@ -1450,16 +1437,16 @@ def _run_workforce_v2_journey(
         try:
             direct_query.one()
         except MatchRequestError as error:
-            structured_query_diagnostic = _workforce_v2_cardinality_diagnostic(error)
+            structured_query_diagnostic = _sdk_v2_cardinality_diagnostic(error)
         else:
-            raise AssertionError("workforce-v2 exactly-one query accepted two selected rows")
+            raise AssertionError("sdk-v2 exactly-one query accepted two selected rows")
 
-        direct_scalar_domain_keys = _workforce_v2_keys(
+        direct_scalar_domain_keys = _sdk_v2_keys(
             direct_session.query(direct_person)
             .where(scoped, direct_score.gte(generated.Score(40)))
             .rows(limit=2, order_by=(direct_identifier.asc(),))
         )
-        direct_reducers = _workforce_v2_reducers(
+        direct_reducers = _sdk_v2_reducers(
             generated,
             direct_session,
             direct_query,
@@ -1547,21 +1534,21 @@ def _run_workforce_v2_journey(
             .one()
         )
 
-        remote_owner_keys = _workforce_v2_keys(
+        remote_owner_keys = _sdk_v2_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_person.field(generated.Person.score).is_present(), remote_scoped)
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
-        remote_optional_keys = _workforce_v2_keys(
+        remote_optional_keys = _sdk_v2_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_person.field(generated.Person.nickname).is_present(), remote_scoped)
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
-        remote_iid_keys = _workforce_v2_keys(
+        remote_iid_keys = _sdk_v2_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_person.iid_in(person_iids))
@@ -1593,7 +1580,7 @@ def _run_workforce_v2_journey(
         remote_score = remote_person.field(generated.Person.score)
         remote_score_gte = remote_person.field(generated.Person.score__gte)
         remote_boolean = remote_person.field(generated.Person.val_bool)
-        remote_and_keys = _workforce_v2_keys(
+        remote_and_keys = _sdk_v2_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(
@@ -1604,21 +1591,21 @@ def _run_workforce_v2_journey(
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
-        remote_or_keys = _workforce_v2_keys(
+        remote_or_keys = _sdk_v2_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_scoped)
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
-        remote_not_keys = _workforce_v2_keys(
+        remote_not_keys = _sdk_v2_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_scoped, ~remote_boolean.eq(generated.ValBool(True)))
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
-        remote_field_comparison_keys = _workforce_v2_keys(
+        remote_field_comparison_keys = _sdk_v2_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_scoped, remote_score.gte_field(remote_score_gte))
@@ -1662,7 +1649,7 @@ def _run_workforce_v2_journey(
             | remote_cross_right_id.eq(generated.Identifier("query-dana"))
         )
         remote_cross_pairs = [
-            [_workforce_v2_key(left), _workforce_v2_key(right)]
+            [_sdk_v2_key(left), _sdk_v2_key(right)]
             for left, right in asyncio.run(
                 remote_session.query(remote_cross_left, remote_cross_right)
                 .allow_cross_join(remote_cross_left, remote_cross_right)
@@ -1727,12 +1714,12 @@ def _run_workforce_v2_journey(
         remote_named = remote_named_page.items[0]
         remote_selection = {
             "positional": [
-                _workforce_v2_key(remote_positional_origin),
-                _workforce_v2_keys(tuple(remote_positional_participants)),
+                _sdk_v2_key(remote_positional_origin),
+                _sdk_v2_keys(tuple(remote_positional_participants)),
             ],
             "named": {
-                "origin": _workforce_v2_key(remote_named.origin),
-                "participants": _workforce_v2_keys(tuple(remote_named.participants)),
+                "origin": _sdk_v2_key(remote_named.origin),
+                "participants": _sdk_v2_keys(tuple(remote_named.participants)),
             },
             "collected_distinct": len({value.iid for value in remote_positional_participants})
             == len(remote_positional_participants),
@@ -1756,11 +1743,11 @@ def _run_workforce_v2_journey(
             )
         )
         remote_terminals = {
-            "one": _workforce_v2_key(remote_dana),
-            "first": _workforce_v2_key(remote_first),
+            "one": _sdk_v2_key(remote_dana),
+            "first": _sdk_v2_key(remote_first),
             "rows": remote_keys,
             "page": {
-                "items": _workforce_v2_keys(tuple(remote_page.items)),
+                "items": _sdk_v2_keys(tuple(remote_page.items)),
                 "offset": remote_page.offset,
                 "limit": remote_page.limit,
                 "total": remote_page.total,
@@ -1769,7 +1756,7 @@ def _run_workforce_v2_journey(
             "exists": asyncio.run(remote_query.exists_by(remote_person)),
         }
 
-        remote_scalar_domain_keys = _workforce_v2_keys(
+        remote_scalar_domain_keys = _sdk_v2_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_scoped, remote_score.gte(generated.Score(40)))
@@ -1777,7 +1764,7 @@ def _run_workforce_v2_journey(
             )
         )
         remote_reducers = asyncio.run(
-            _workforce_v2_remote_reducers(
+            _sdk_v2_remote_reducers(
                 generated,
                 remote_session,
                 remote_query,
@@ -1818,8 +1805,8 @@ def _run_workforce_v2_journey(
         ]
         assert remote_nested_function_values == direct_nested_function_values
 
-        direct_model_values = _workforce_v2_person_values(generated, direct_ada, direct_membership)
-        remote_model_values = _workforce_v2_person_values(generated, remote_ada, remote_membership)
+        direct_model_values = _sdk_v2_person_values(generated, direct_ada, direct_membership)
+        remote_model_values = _sdk_v2_person_values(generated, remote_ada, remote_membership)
         assert remote_model_values == direct_model_values
         owner_iid_set_direct = {
             "owner_field": "score",
@@ -1838,17 +1825,13 @@ def _run_workforce_v2_journey(
         assert owner_iid_set_remote == owner_iid_set_direct
         exact_subtypes_direct: dict[str, object] = {
             "declared_model": "employee",
-            "exact": [_workforce_v2_model_key(generated, value) for value in direct_exact_values],
-            "subtypes": [
-                _workforce_v2_model_key(generated, value) for value in direct_subtype_values
-            ],
+            "exact": [_sdk_v2_model_key(generated, value) for value in direct_exact_values],
+            "subtypes": [_sdk_v2_model_key(generated, value) for value in direct_subtype_values],
         }
         exact_subtypes_remote: dict[str, object] = {
             "declared_model": "employee",
-            "exact": [_workforce_v2_model_key(generated, value) for value in remote_exact_values],
-            "subtypes": [
-                _workforce_v2_model_key(generated, value) for value in remote_subtype_values
-            ],
+            "exact": [_sdk_v2_model_key(generated, value) for value in remote_exact_values],
+            "subtypes": [_sdk_v2_model_key(generated, value) for value in remote_subtype_values],
         }
         assert exact_subtypes_remote == exact_subtypes_direct
         scalar_boolean_direct: dict[str, object] = {
@@ -1864,14 +1847,14 @@ def _run_workforce_v2_journey(
             "field_comparison_keys": remote_field_comparison_keys,
         }
         assert scalar_boolean_remote == scalar_boolean_direct
-        direct_roles = _workforce_v2_role_observation(generated, direct_membership, direct_network)
-        remote_roles = _workforce_v2_role_observation(generated, remote_membership, remote_network)
+        direct_roles = _sdk_v2_role_observation(generated, direct_membership, direct_network)
+        remote_roles = _sdk_v2_role_observation(generated, remote_membership, remote_network)
         assert remote_roles == direct_roles
         topology_direct = {
             "reachable": [
                 {
-                    "from": _workforce_v2_key(direct_reachable_pair[0]),
-                    "to": _workforce_v2_key(direct_reachable_pair[1]),
+                    "from": _sdk_v2_key(direct_reachable_pair[0]),
+                    "to": _sdk_v2_key(direct_reachable_pair[1]),
                     "max_hops": 1,
                 }
             ],
@@ -1880,8 +1863,8 @@ def _run_workforce_v2_journey(
         topology_remote = {
             "reachable": [
                 {
-                    "from": _workforce_v2_key(remote_reachable_pair[0]),
-                    "to": _workforce_v2_key(remote_reachable_pair[1]),
+                    "from": _sdk_v2_key(remote_reachable_pair[0]),
+                    "to": _sdk_v2_key(remote_reachable_pair[1]),
                     "max_hops": 1,
                 }
             ],
@@ -1890,8 +1873,8 @@ def _run_workforce_v2_journey(
         assert topology_remote == topology_direct
         assert remote_selection == direct_selection
         assert remote_terminals == direct_terminals
-        direct_hydrated = _workforce_v2_hydrated_result(generated, direct_membership)
-        remote_hydrated = _workforce_v2_hydrated_result(generated, remote_membership)
+        direct_hydrated = _sdk_v2_hydrated_result(generated, direct_membership)
+        remote_hydrated = _sdk_v2_hydrated_result(generated, remote_membership)
         assert remote_hydrated == direct_hydrated
         scalar_domain_direct = {
             "domain": "long",
@@ -1907,14 +1890,14 @@ def _run_workforce_v2_journey(
         }
         assert scalar_domain_remote == scalar_domain_direct
         assert remote_one_exchange == 1
-        resource_limits = _workforce_v2_resource_limits(
+        resource_limits = _sdk_v2_resource_limits(
             generated,
             clean_db,
             remote_advertisement,
             remote_exchange,
             membership_iid,
         )
-        query_resource_lifecycle = _workforce_v2_lifecycle(
+        query_resource_lifecycle = _sdk_v2_lifecycle(
             generated,
             clean_db,
             remote_advertisement,
@@ -1963,12 +1946,10 @@ def _run_workforce_v2_journey(
         observed[("resource_limits", "direct_runtime")] = resource_limits
         observed[("resource_limits", "remote_runtime")] = resource_limits
         observed[("query_resource_lifecycle", "lifecycle")] = query_resource_lifecycle
-        assert len(observed) == 29, "workforce-v2 must measure exactly 29 pre-cleanup live lanes"
+        assert len(observed) == 29, "sdk-v2 must measure exactly 29 pre-cleanup live lanes"
         assert len(proof_observations) == 3
         overlap = set(observed).intersection(proof_observations)
-        assert not overlap, (
-            f"workforce-v2 proof fragments duplicate live lanes: {sorted(overlap)!r}"
-        )
+        assert not overlap, f"sdk-v2 proof fragments duplicate live lanes: {sorted(overlap)!r}"
         observed.update(proof_observations)
         assert len(observed) == 32
     finally:
@@ -1986,19 +1967,19 @@ def _run_workforce_v2_journey(
     observed[("entity_lifecycle", "direct_runtime")] = {
         "created": True,
         "deleted": entity_deleted,
-        "key": _workforce_v2_key(people[0]),
-        "model": _workforce_v2_model(generated, people[0]),
+        "key": _sdk_v2_key(people[0]),
+        "model": _sdk_v2_model(generated, people[0]),
         "read_after_create": entity_read_after_create,
     }
     observed[("relation_lifecycle", "direct_runtime")] = {
         "created": True,
         "deleted": relation_deleted,
-        "model": _workforce_v2_model(generated, membership),
-        "player_key": _workforce_v2_key(people[0]),
+        "model": _sdk_v2_model(generated, membership),
+        "player_key": _sdk_v2_key(people[0]),
         "role": "member",
     }
-    assert len(observed) == 34, "workforce-v2 requires 31 live and 3 proof lanes"
-    return _workforce_results(catalog, journey, observed)
+    assert len(observed) == 34, "sdk-v2 requires 31 live and 3 proof lanes"
+    return _sdk_results(catalog, journey, observed)
 
 
 def _free_port() -> int:
@@ -2020,11 +2001,11 @@ def _wait_for_port(port: int, process: subprocess.Popen[bytes], timeout: float) 
     raise AssertionError("generated remote server never became reachable")
 
 
-def test_workforce_report_server_version_gate_is_exact() -> None:
-    _require_workforce_server_version("3.12.3")
+def test_sdk_report_server_version_gate_is_exact() -> None:
+    _require_sdk_server_version("3.12.3")
     for detected in (None, "3.11.5", "3.12.0", "3.12.2", "3.13.0"):
         with pytest.raises(AssertionError, match="actual detected TypeDB server version 3.12.3"):
-            _require_workforce_server_version(detected)
+            _require_sdk_server_version(detected)
 
 
 def _make_generated_person(
@@ -2108,10 +2089,10 @@ def generated_v3_package(
     monkeypatch: pytest.MonkeyPatch,
     clean_db: Database,
 ) -> Iterator[ModuleType]:
-    """Import the exact Workforce V3 Python projection generated for this run."""
+    """Import the exact Sdk V3 Python projection generated for this run."""
     _, _, semantic_profile = _acceptance_contract(clean_db)
     if semantic_profile != "typedb-3.12.1/v1":
-        pytest.skip("Workforce V3 requires the 3.12 semantic profile")
+        pytest.skip("Sdk V3 requires the 3.12 semantic profile")
     supplied_stage = os.environ.get("TYPE_BRIDGE_GENERATED_PYTHON_STAGE")
     if supplied_stage is None:
         stage = tmp_path / "generated-v3-projection"
@@ -2155,9 +2136,9 @@ def generated_data_model_runtime_v3_live(
     generated_v3_package: ModuleType,
 ) -> None:
     generated = generated_v3_package
-    _require_workforce_server_version(clean_db.detected_server_version())
+    _require_sdk_server_version(clean_db.detected_server_version())
     clean_db.execute_query(
-        WORKFORCE_V3_PROVIDER_SCHEMA.read_text(encoding="utf-8"),
+        SDK_V3_PROVIDER_SCHEMA.read_text(encoding="utf-8"),
         transaction_type="schema",
     )
 
@@ -2603,7 +2584,7 @@ def generated_data_model_runtime_v3_live(
             },
         },
     }
-    _publish_workforce_v3_python_supplement(generated, observations)
+    _publish_sdk_v3_python_supplement(generated, observations)
 
     for value in put_links:
         network_manager.delete(value)
@@ -2625,13 +2606,13 @@ def test_generated_canonical_serialization_v5_live(
     clean_db: Database,
     generated_v3_package: ModuleType,
 ) -> None:
-    raw_evidence = os.environ.get("TYPE_BRIDGE_WORKFORCE_V5_PYTHON_EVIDENCE")
+    raw_evidence = os.environ.get("TYPE_BRIDGE_SDK_V5_PYTHON_EVIDENCE")
     if raw_evidence is None:
-        pytest.skip("Workforce V5 Python live evidence was not requested")
+        pytest.skip("Sdk V5 Python live evidence was not requested")
     generated = generated_v3_package
-    _require_workforce_server_version(clean_db.detected_server_version())
+    _require_sdk_server_version(clean_db.detected_server_version())
     clean_db.execute_query(
-        WORKFORCE_V3_PROVIDER_SCHEMA.read_text(encoding="utf-8"),
+        SDK_V3_PROVIDER_SCHEMA.read_text(encoding="utf-8"),
         transaction_type="schema",
     )
     person_manager = generated.Person.manager(clean_db)
@@ -2773,14 +2754,14 @@ def test_generated_canonical_serialization_v5_live(
     employment_manager.update(employment)
     assert employment_manager.get_by_iid(employment.iid).iid == employment.iid
 
-    _publish_workforce_report(
+    _publish_sdk_report(
         raw_evidence,
         {
             "binding": "python",
             "detached_mutation_code": detached_rejection.value.code,
             "direct_remote_equal": True,
             "entity_snapshot_b64": base64.b64encode(direct_person_bytes).decode(),
-            "format": "typebridge.workforce-v5-live-codec-evidence/v1",
+            "format": "typebridge.sdk-v5-live-codec-evidence/v1",
             "rebound_mutation": True,
             "relation_snapshot_b64": base64.b64encode(direct_employment_bytes).decode(),
             "remote_exchange_count": len(requests),
@@ -3259,50 +3240,50 @@ def test_generated_projection_round_trips_live_models(
 ) -> None:
     generated = generated_package
     _, provider_schema, semantic_profile = _acceptance_contract(clean_db)
-    workforce_report_path = os.environ.get("TYPE_BRIDGE_WORKFORCE_REPORT")
-    workforce_v2_report_path = os.environ.get("TYPE_BRIDGE_WORKFORCE_REPORT_V2")
+    sdk_report_path = os.environ.get("TYPE_BRIDGE_SDK_REPORT")
+    sdk_v2_report_path = os.environ.get("TYPE_BRIDGE_SDK_REPORT_V2")
     catalog_raw: bytes | None = None
-    workforce_catalog: dict[str, object] | None = None
+    sdk_catalog: dict[str, object] | None = None
     journey_raw: bytes | None = None
-    workforce_journey: dict[str, object] | None = None
-    workforce_results: list[dict[str, object]] | None = None
-    workforce_v2_catalog_raw: bytes | None = None
-    workforce_v2_catalog: dict[str, object] | None = None
-    workforce_v2_journey_raw: bytes | None = None
-    workforce_v2_journey: dict[str, object] | None = None
-    workforce_v2_results: list[dict[str, object]] | None = None
-    workforce_v2_proof_observations: dict[tuple[str, str], dict[str, object]] | None = None
+    sdk_journey: dict[str, object] | None = None
+    sdk_results: list[dict[str, object]] | None = None
+    sdk_v2_catalog_raw: bytes | None = None
+    sdk_v2_catalog: dict[str, object] | None = None
+    sdk_v2_journey_raw: bytes | None = None
+    sdk_v2_journey: dict[str, object] | None = None
+    sdk_v2_results: list[dict[str, object]] | None = None
+    sdk_v2_proof_observations: dict[tuple[str, str], dict[str, object]] | None = None
     if (
-        workforce_report_path is not None
-        and workforce_v2_report_path is not None
-        and workforce_report_path == workforce_v2_report_path
+        sdk_report_path is not None
+        and sdk_v2_report_path is not None
+        and sdk_report_path == sdk_v2_report_path
     ):
-        raise AssertionError("workforce-v1 and workforce-v2 reports require distinct paths")
-    if workforce_report_path is not None:
+        raise AssertionError("sdk-v1 and sdk-v2 reports require distinct paths")
+    if sdk_report_path is not None:
         if semantic_profile != "typedb-3.12.1/v1":
-            raise AssertionError("workforce reports may only be emitted for typedb-3.12.1/v1")
-        _require_workforce_server_version(clean_db.detected_server_version())
-        _validate_workforce_report_path(workforce_report_path)
-        catalog_raw, workforce_catalog = _load_json_object(WORKFORCE_CATALOG)
-        journey_raw, workforce_journey = _load_json_object(WORKFORCE_JOURNEY)
-        assert workforce_journey["format"] == "typebridge.workforce-journey/v1"
-        workforce_fixture = workforce_catalog["fixture"]
-        assert isinstance(workforce_fixture, dict)
-        assert workforce_journey["fixture_id"] == workforce_fixture["id"]
-        assert workforce_journey["version"] == workforce_fixture["version"]
-    if workforce_v2_report_path is not None:
+            raise AssertionError("sdk reports may only be emitted for typedb-3.12.1/v1")
+        _require_sdk_server_version(clean_db.detected_server_version())
+        _validate_sdk_report_path(sdk_report_path)
+        catalog_raw, sdk_catalog = _load_json_object(SDK_CATALOG)
+        journey_raw, sdk_journey = _load_json_object(SDK_JOURNEY)
+        assert sdk_journey["format"] == "typebridge.sdk-journey/v1"
+        sdk_fixture = sdk_catalog["fixture"]
+        assert isinstance(sdk_fixture, dict)
+        assert sdk_journey["fixture_id"] == sdk_fixture["id"]
+        assert sdk_journey["version"] == sdk_fixture["version"]
+    if sdk_v2_report_path is not None:
         if semantic_profile != "typedb-3.12.1/v1":
-            raise AssertionError("workforce-v2 reports require typedb-3.12.1/v1")
-        _require_workforce_server_version(clean_db.detected_server_version())
-        _validate_workforce_report_path(workforce_v2_report_path)
-        workforce_v2_catalog_raw, workforce_v2_catalog = _load_json_object(WORKFORCE_V2_CATALOG)
-        workforce_v2_journey_raw, workforce_v2_journey = _load_json_object(WORKFORCE_V2_JOURNEY)
-        workforce_v2_proof_observations = _load_workforce_v2_proof_observations()
-        assert workforce_v2_journey["format"] == "typebridge.workforce-journey/v2"
-        workforce_v2_fixture = workforce_v2_catalog["fixture"]
-        assert isinstance(workforce_v2_fixture, dict)
-        assert workforce_v2_journey["fixture_id"] == workforce_v2_fixture["id"]
-        assert workforce_v2_journey["version"] == workforce_v2_fixture["version"]
+            raise AssertionError("sdk-v2 reports require typedb-3.12.1/v1")
+        _require_sdk_server_version(clean_db.detected_server_version())
+        _validate_sdk_report_path(sdk_v2_report_path)
+        sdk_v2_catalog_raw, sdk_v2_catalog = _load_json_object(SDK_V2_CATALOG)
+        sdk_v2_journey_raw, sdk_v2_journey = _load_json_object(SDK_V2_JOURNEY)
+        sdk_v2_proof_observations = _load_sdk_v2_proof_observations()
+        assert sdk_v2_journey["format"] == "typebridge.sdk-journey/v2"
+        sdk_v2_fixture = sdk_v2_catalog["fixture"]
+        assert isinstance(sdk_v2_fixture, dict)
+        assert sdk_v2_journey["fixture_id"] == sdk_v2_fixture["id"]
+        assert sdk_v2_journey["version"] == sdk_v2_fixture["version"]
     clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
 
     runtime_projection = json.loads(generated.RUNTIME_PROJECTION_JSON)
@@ -4445,29 +4426,29 @@ def test_generated_projection_round_trips_live_models(
             candidate.iid for candidate in cross_pair
         )
 
-        if workforce_catalog is not None and workforce_journey is not None:
-            workforce_results = _run_workforce_journey(
+        if sdk_catalog is not None and sdk_journey is not None:
+            sdk_results = _run_sdk_journey(
                 generated,
                 clean_db,
                 person_manager,
                 membership_manager,
                 remote_session,
                 remote_requests,
-                workforce_catalog,
-                workforce_journey,
+                sdk_catalog,
+                sdk_journey,
             )
-        if workforce_v2_catalog is not None and workforce_v2_journey is not None:
-            assert workforce_v2_proof_observations is not None
-            workforce_v2_results = _run_workforce_v2_journey(
+        if sdk_v2_catalog is not None and sdk_v2_journey is not None:
+            assert sdk_v2_proof_observations is not None
+            sdk_v2_results = _run_sdk_v2_journey(
                 generated,
                 clean_db,
                 remote_session,
                 remote_requests,
                 advertisement,
                 exchange,
-                workforce_v2_catalog,
-                workforce_v2_journey,
-                workforce_v2_proof_observations,
+                sdk_v2_catalog,
+                sdk_v2_journey,
+                sdk_v2_proof_observations,
             )
     finally:
         server.terminate()
@@ -4508,34 +4489,34 @@ def test_generated_projection_round_trips_live_models(
     person_manager.delete(transaction_person)
     assert person_manager.get_by_iid(transaction_person.iid) is None
 
-    if workforce_report_path is not None:
+    if sdk_report_path is not None:
         assert catalog_raw is not None
-        assert workforce_catalog is not None
+        assert sdk_catalog is not None
         assert journey_raw is not None
-        assert workforce_journey is not None
-        assert workforce_results is not None
-        _publish_workforce_report(
-            workforce_report_path,
-            _workforce_report(
+        assert sdk_journey is not None
+        assert sdk_results is not None
+        _publish_sdk_report(
+            sdk_report_path,
+            _sdk_report(
                 generated,
                 catalog_raw,
-                workforce_catalog,
+                sdk_catalog,
                 journey_raw,
-                workforce_results,
+                sdk_results,
             ),
         )
-    if workforce_v2_report_path is not None:
-        assert workforce_v2_catalog_raw is not None
-        assert workforce_v2_catalog is not None
-        assert workforce_v2_journey_raw is not None
-        assert workforce_v2_results is not None
-        _publish_workforce_report(
-            workforce_v2_report_path,
-            _workforce_v2_report(
+    if sdk_v2_report_path is not None:
+        assert sdk_v2_catalog_raw is not None
+        assert sdk_v2_catalog is not None
+        assert sdk_v2_journey_raw is not None
+        assert sdk_v2_results is not None
+        _publish_sdk_report(
+            sdk_v2_report_path,
+            _sdk_v2_report(
                 generated,
-                workforce_v2_catalog_raw,
-                workforce_v2_catalog,
-                workforce_v2_journey_raw,
-                workforce_v2_results,
+                sdk_v2_catalog_raw,
+                sdk_v2_catalog,
+                sdk_v2_journey_raw,
+                sdk_v2_results,
             ),
         )

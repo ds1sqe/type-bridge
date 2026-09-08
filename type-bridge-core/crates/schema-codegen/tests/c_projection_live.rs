@@ -26,173 +26,163 @@ mod support;
 const SCHEMA: &str = include_str!("acceptance/schema.yaml");
 const PROVIDER_SCHEMA: &str = include_str!("acceptance/provider-3.12.1.tql");
 const SETUP: &str = include_str!("c_projection_live/setup.rs");
-const SETUP_LOCK: &[u8] = include_bytes!("c_projection_live/setup-Cargo.lock");
-const PHASE4_SETUP_LOCK: &[u8] = include_bytes!("c_projection_live/phase4-setup-Cargo.lock");
+const SETUP_LOCK: &[u8] = include_bytes!("../../../../tests/support/provider/Cargo.lock");
+const QUERY_SETUP_LOCK: &[u8] = include_bytes!("../../../../tests/support/provider/Cargo.lock");
 const CONSUMER: &str = include_str!("c_projection_live/consumer.c");
-const PHASE4_SCHEMA: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml");
-const PHASE4_PROVIDER_SCHEMA: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/workforce-v3/provider-3.12.1-v3.tql");
-const PHASE4_PACKAGE: &str = include_str!("c_projection_live/phase4_package.c");
-const PHASE4_CONSUMER: &str = include_str!("c_projection_live/phase4_consumer.c");
+const QUERY_SCHEMA: &str =
+    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml");
+const QUERY_PROVIDER_SCHEMA: &str =
+    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql");
+const QUERY_PACKAGE: &str = include_str!("c_projection_live/query_package.c");
+const QUERY_CONSUMER: &str = include_str!("c_projection_live/query_consumer.c");
 const DATABASE_CREATED_MARKER: &str = "generated C isolated database created";
-const WORKFORCE_V2_FACT_PREFIX: &str = "TYPE_BRIDGE_C_V2_FACT\t";
-const WORKFORCE_MANIFEST_PATH: &str = "tests/contracts/sdk_conformance/manifest-v1.json";
-const WORKFORCE_V2_CATALOG_PATH: &str =
-    "tests/contracts/sdk_conformance/workforce-v2/catalog-v2.json";
-const WORKFORCE_SCHEMA_PATH: &str =
-    "type-bridge-core/crates/schema-codegen/tests/acceptance/schema.yaml";
-const WORKFORCE_PROVIDER_SCHEMA_PATH: &str =
+const SDK_V2_FACT_PREFIX: &str = "TYPE_BRIDGE_C_V2_FACT\t";
+const SDK_MANIFEST_PATH: &str = "tests/contracts/sdk_conformance/manifest-v1.json";
+const SDK_V2_CATALOG_PATH: &str = "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json";
+const SDK_SCHEMA_PATH: &str = "type-bridge-core/crates/schema-codegen/tests/acceptance/schema.yaml";
+const SDK_PROVIDER_SCHEMA_PATH: &str =
     "type-bridge-core/crates/schema-codegen/tests/acceptance/provider-3.12.1.tql";
-const WORKFORCE_V2_SELECTED_PROOFS: [(&str, &str, &str); 34] = [
+const SDK_V2_SELECTED_PROOFS: [(&str, &str, &str); 34] = [
     (
-        "workforce.crud.entity-single",
+        "sdk.crud.entity-single",
         "direct_runtime",
         "entity_lifecycle",
     ),
     (
-        "workforce.crud.relation-single",
+        "sdk.crud.relation-single",
         "direct_runtime",
         "relation_lifecycle",
     ),
     (
-        "workforce.diagnostic.all-workflows",
+        "sdk.diagnostic.all-workflows",
         "diagnostic",
         "structured_query_diagnostic",
     ),
     (
-        "workforce.diagnostic.remote-structured",
+        "sdk.diagnostic.remote-structured",
         "diagnostic",
         "remote_structured_diagnostic",
     ),
     (
-        "workforce.model.values-and-references",
+        "sdk.model.values-and-references",
         "direct_runtime",
         "model_values_and_references",
     ),
     (
-        "workforce.model.values-and-references",
+        "sdk.model.values-and-references",
         "remote_runtime",
         "model_values_and_references",
     ),
     (
-        "workforce.query.exact-subtypes",
+        "sdk.query.exact-subtypes",
         "direct_runtime",
         "exact_subtypes",
     ),
     (
-        "workforce.query.exact-subtypes",
+        "sdk.query.exact-subtypes",
         "remote_runtime",
         "exact_subtypes",
     ),
+    ("sdk.query.owner-iid-set", "direct_runtime", "owner_iid_set"),
+    ("sdk.query.owner-iid-set", "remote_runtime", "owner_iid_set"),
     (
-        "workforce.query.owner-iid-set",
-        "direct_runtime",
-        "owner_iid_set",
-    ),
-    (
-        "workforce.query.owner-iid-set",
-        "remote_runtime",
-        "owner_iid_set",
-    ),
-    (
-        "workforce.query.reducers-direct",
+        "sdk.query.reducers-direct",
         "direct_runtime",
         "grouped_reducer",
     ),
     (
-        "workforce.query.reducers-remote",
+        "sdk.query.reducers-remote",
         "remote_runtime",
         "grouped_reducer",
     ),
     (
-        "workforce.query.remote-hydration",
+        "sdk.query.remote-hydration",
         "direct_runtime",
         "hydrated_result",
     ),
     (
-        "workforce.query.remote-hydration",
+        "sdk.query.remote-hydration",
         "remote_runtime",
         "hydrated_result",
     ),
     (
-        "workforce.query.remote-one-exchange",
+        "sdk.query.remote-one-exchange",
         "remote_runtime",
         "remote_one_exchange",
     ),
-    ("workforce.query.roles", "direct_runtime", "roles"),
-    ("workforce.query.roles", "remote_runtime", "roles"),
+    ("sdk.query.roles", "direct_runtime", "roles"),
+    ("sdk.query.roles", "remote_runtime", "roles"),
     (
-        "workforce.query.scalar-boolean-predicates",
+        "sdk.query.scalar-boolean-predicates",
         "direct_runtime",
         "scalar_boolean",
     ),
     (
-        "workforce.query.scalar-boolean-predicates",
+        "sdk.query.scalar-boolean-predicates",
         "remote_runtime",
         "scalar_boolean",
     ),
     (
-        "workforce.query.schema-function",
+        "sdk.query.schema-function",
         "direct_runtime",
         "schema_function",
     ),
     (
-        "workforce.query.schema-function",
+        "sdk.query.schema-function",
         "remote_runtime",
         "schema_function",
     ),
     (
-        "workforce.query.selection-shapes",
+        "sdk.query.selection-shapes",
         "direct_runtime",
         "selection_shapes",
     ),
     (
-        "workforce.query.selection-shapes",
+        "sdk.query.selection-shapes",
         "remote_runtime",
         "selection_shapes",
     ),
-    ("workforce.query.terminals", "direct_runtime", "terminals"),
-    ("workforce.query.terminals", "remote_runtime", "terminals"),
-    ("workforce.query.topology", "direct_runtime", "topology"),
-    ("workforce.query.topology", "remote_runtime", "topology"),
+    ("sdk.query.terminals", "direct_runtime", "terminals"),
+    ("sdk.query.terminals", "remote_runtime", "terminals"),
+    ("sdk.query.topology", "direct_runtime", "topology"),
+    ("sdk.query.topology", "remote_runtime", "topology"),
     (
-        "workforce.runtime.cancellation",
+        "sdk.runtime.cancellation",
         "direct_runtime",
         "cancellation_direct",
     ),
     (
-        "workforce.runtime.cancellation",
+        "sdk.runtime.cancellation",
         "remote_runtime",
         "cancellation_remote",
     ),
     (
-        "workforce.runtime.explicit-close",
+        "sdk.runtime.explicit-close",
         "lifecycle",
         "query_resource_lifecycle",
     ),
     (
-        "workforce.runtime.timeout-resource-limits",
+        "sdk.runtime.timeout-resource-limits",
         "direct_runtime",
         "resource_limits",
     ),
     (
-        "workforce.runtime.timeout-resource-limits",
+        "sdk.runtime.timeout-resource-limits",
         "remote_runtime",
         "resource_limits",
     ),
     (
-        "workforce.value.scalar-domain-comparison",
+        "sdk.value.scalar-domain-comparison",
         "direct_runtime",
         "scalar_domain",
     ),
     (
-        "workforce.value.scalar-domain-comparison",
+        "sdk.value.scalar-domain-comparison",
         "remote_runtime",
         "scalar_domain",
     ),
 ];
-const WORKFORCE_V2_LIVE_LANES: [(&str, &str); 31] = [
+const SDK_V2_LIVE_LANES: [(&str, &str); 31] = [
     ("entity_lifecycle", "direct_runtime"),
     ("relation_lifecycle", "direct_runtime"),
     ("structured_query_diagnostic", "diagnostic"),
@@ -225,24 +215,24 @@ const WORKFORCE_V2_LIVE_LANES: [(&str, &str); 31] = [
     ("scalar_domain", "direct_runtime"),
     ("scalar_domain", "remote_runtime"),
 ];
-const WORKFORCE_V2_MANIFEST_TRANSITION_CASES: [&str; 17] = [
-    "workforce.model.values-and-references",
-    "workforce.crud.entity-single",
-    "workforce.crud.relation-single",
-    "workforce.query.owner-iid-set",
-    "workforce.query.exact-subtypes",
-    "workforce.query.scalar-boolean-predicates",
-    "workforce.query.roles",
-    "workforce.query.topology",
-    "workforce.query.selection-shapes",
-    "workforce.query.terminals",
-    "workforce.query.reducers-direct",
-    "workforce.query.remote-one-exchange",
-    "workforce.query.remote-hydration",
-    "workforce.diagnostic.remote-structured",
-    "workforce.value.scalar-domain-comparison",
-    "workforce.query.reducers-remote",
-    "workforce.query.schema-function",
+const SDK_V2_MANIFEST_TRANSITION_CASES: [&str; 17] = [
+    "sdk.model.values-and-references",
+    "sdk.crud.entity-single",
+    "sdk.crud.relation-single",
+    "sdk.query.owner-iid-set",
+    "sdk.query.exact-subtypes",
+    "sdk.query.scalar-boolean-predicates",
+    "sdk.query.roles",
+    "sdk.query.topology",
+    "sdk.query.selection-shapes",
+    "sdk.query.terminals",
+    "sdk.query.reducers-direct",
+    "sdk.query.remote-one-exchange",
+    "sdk.query.remote-hydration",
+    "sdk.diagnostic.remote-structured",
+    "sdk.value.scalar-domain-comparison",
+    "sdk.query.reducers-remote",
+    "sdk.query.schema-function",
 ];
 
 static TEMP_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -314,20 +304,20 @@ fn emitted_package_authority_and_fingerprints() -> (GeneratedPackage, Vec<u8>, V
     )
 }
 
-fn emitted_phase4_package() -> GeneratedPackage {
-    emitted_phase4_package_and_authority().0
+fn emitted_query_package() -> GeneratedPackage {
+    emitted_query_package_and_authority().0
 }
 
-fn emitted_phase4_package_and_authority() -> (GeneratedPackage, Vec<u8>) {
+fn emitted_query_package_and_authority() -> (GeneratedPackage, Vec<u8>) {
     let emitter = CEmitter::new();
     let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("workforce-v3.yaml").expect("Workforce V3 document ID is valid"),
-        PHASE4_SCHEMA,
+        DocumentId::new("sdk-v3.yaml").expect("Sdk V3 document ID is valid"),
+        QUERY_SCHEMA,
     )])
-    .expect("exact Workforce V3 schema parses");
-    let declared = normalize_documents(&documents).expect("exact Workforce V3 schema normalizes");
+    .expect("exact Sdk V3 schema parses");
+    let declared = normalize_documents(&documents).expect("exact Sdk V3 schema normalizes");
     let profile = SemanticProfileId::new(support::TEST_PROFILE).expect("test profile is valid");
-    let resolved = resolve(&declared, &profile).expect("exact Workforce V3 schema resolves");
+    let resolved = resolve(&declared, &profile).expect("exact Sdk V3 schema resolves");
     let resources = emitter
         .code_resources_for(&resolved)
         .expect("ordered C resources hash");
@@ -338,26 +328,26 @@ fn emitted_phase4_package_and_authority() -> (GeneratedPackage, Vec<u8>) {
         &emitter.generator_handlers_for(&resolved),
         &resources,
     )
-    .expect("exact Workforce V3 schema projects to ordered C");
+    .expect("exact Sdk V3 schema projects to ordered C");
     let authority =
-        support::authority_for_declared(&declared, "workforce-v3-c-phase4", support::TEST_PROFILE);
+        support::authority_for_declared(&declared, "sdk-v3-c-query", support::TEST_PROFILE);
     let authority_bytes = encode_schema_authority(&authority);
     let package = emitter
         .emit(&projection, &authority)
-        .expect("exact Workforce V3 ordered C package emits");
+        .expect("exact Sdk V3 ordered C package emits");
     (package, authority_bytes)
 }
 
-fn workforce_v3_fingerprints() -> (Value, Value) {
+fn sdk_v3_fingerprints() -> (Value, Value) {
     let emitter = CEmitter::new();
     let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("workforce-v3.yaml").expect("Workforce V3 document ID is valid"),
-        PHASE4_SCHEMA,
+        DocumentId::new("sdk-v3.yaml").expect("Sdk V3 document ID is valid"),
+        QUERY_SCHEMA,
     )])
-    .expect("exact Workforce V3 schema parses");
-    let declared = normalize_documents(&documents).expect("exact Workforce V3 schema normalizes");
+    .expect("exact Sdk V3 schema parses");
+    let declared = normalize_documents(&documents).expect("exact Sdk V3 schema normalizes");
     let profile = SemanticProfileId::new(support::TEST_PROFILE).expect("test profile is valid");
-    let resolved = resolve(&declared, &profile).expect("exact Workforce V3 schema resolves");
+    let resolved = resolve(&declared, &profile).expect("exact Sdk V3 schema resolves");
     let resources = emitter
         .code_resources_for(&resolved)
         .expect("ordered C resources hash");
@@ -368,7 +358,7 @@ fn workforce_v3_fingerprints() -> (Value, Value) {
         &emitter.generator_handlers_for(&resolved),
         &resources,
     )
-    .expect("exact Workforce V3 schema projects to ordered C");
+    .expect("exact Sdk V3 schema projects to ordered C");
     (
         serde_json::to_value(projection.semantic_fingerprint())
             .expect("V3 semantic fingerprint serializes"),
@@ -377,15 +367,15 @@ fn workforce_v3_fingerprints() -> (Value, Value) {
     )
 }
 
-fn publish_workforce_v3_c_live_supplement() {
-    let Some(destination) = env::var_os("TYPE_BRIDGE_WORKFORCE_V3_C_SUPPLEMENT") else {
+fn publish_sdk_v3_c_live_supplement() {
+    let Some(destination) = env::var_os("TYPE_BRIDGE_SDK_V3_C_SUPPLEMENT") else {
         return;
     };
     let destination = PathBuf::from(destination);
     assert!(destination.is_absolute() && !destination.exists());
     let root = repository_root();
     let journey: Value = serde_json::from_slice(
-        &fs::read(root.join("tests/contracts/sdk_conformance/workforce-v3/journey-v3.json"))
+        &fs::read(root.join("tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"))
             .expect("V3 journey reads"),
     )
     .expect("V3 journey parses");
@@ -402,10 +392,10 @@ fn publish_workforce_v3_c_live_supplement() {
         ("unkeyed_entity_iid_lifecycle", "direct_runtime"),
         ("unkeyed_relation_iid_lifecycle", "direct_runtime"),
     ];
-    let (semantic_fingerprint, projection_fingerprint) = workforce_v3_fingerprints();
+    let (semantic_fingerprint, projection_fingerprint) = sdk_v3_fingerprints();
     let supplement = json!({
         "binding": "c",
-        "format": "typebridge.workforce-v3-live-supplement/v1",
+        "format": "typebridge.sdk-v3-live-supplement/v1",
         "producer": "type-bridge-c.generated-data-model-runtime-v3-live",
         "projection_fingerprint": projection_fingerprint,
         "results": lanes.into_iter().map(|(observation_ref, proof_kind)| json!({
@@ -506,7 +496,7 @@ fn exact_live_consumer_is_strict_c17_against_the_shared_generated_schema() {
 
 #[cfg(unix)]
 #[test]
-fn phase4_successor_consumers_compile_as_strict_c17_and_cpp17() {
+fn query_successor_consumers_compile_as_strict_c17_and_cpp17() {
     let c_compilers = c_compilers();
     let cpp_compilers = cpp_compilers();
     assert!(!c_compilers.is_empty(), "GCC or Clang is required");
@@ -515,7 +505,7 @@ fn phase4_successor_consumers_compile_as_strict_c17_and_cpp17() {
         "G++ or Clang++ is required for generated C++17 checks"
     );
     let stage = TempDirectory::new();
-    write_package(&emitted_phase4_package(), stage.path());
+    write_package(&emitted_query_package(), stage.path());
     let full_consumer = stage.path().join("full_consumer.c");
     fs::write(&full_consumer, CONSUMER).expect("full ordered C consumer is staged");
     for compiler in &c_compilers {
@@ -527,7 +517,7 @@ fn phase4_successor_consumers_compile_as_strict_c17_and_cpp17() {
                 "-Wextra",
                 "-Werror",
                 "-pedantic-errors",
-                "-DTYPE_BRIDGE_WORKFORCE_V5_C_CODEC",
+                "-DTYPE_BRIDGE_SDK_V5_C_CODEC",
                 "-fsyntax-only",
             ])
             .arg("-I")
@@ -545,22 +535,22 @@ fn phase4_successor_consumers_compile_as_strict_c17_and_cpp17() {
             String::from_utf8_lossy(&output.stderr),
         );
     }
-    let package_source = stage.path().join("phase4_package.c");
-    let c_source = stage.path().join("phase4_consumer.c");
-    let cpp_source = stage.path().join("phase4_consumer.cpp");
-    fs::write(&package_source, PHASE4_PACKAGE).expect("Phase4 package shim is staged");
-    fs::write(&c_source, PHASE4_CONSUMER).expect("Phase4 C17 consumer is staged");
-    fs::write(&cpp_source, PHASE4_CONSUMER).expect("Phase4 C++17 consumer is staged");
+    let package_source = stage.path().join("query_package.c");
+    let c_source = stage.path().join("query_consumer.c");
+    let cpp_source = stage.path().join("query_consumer.cpp");
+    fs::write(&package_source, QUERY_PACKAGE).expect("Query package shim is staged");
+    fs::write(&c_source, QUERY_CONSUMER).expect("Query C17 consumer is staged");
+    fs::write(&cpp_source, QUERY_CONSUMER).expect("Query C++17 consumer is staged");
 
     for compiler in c_compilers {
         for (source, output) in [
             (
                 &package_source,
-                stage.path().join(format!("phase4-package-{compiler}.o")),
+                stage.path().join(format!("query-package-{compiler}.o")),
             ),
             (
                 &c_source,
-                stage.path().join(format!("phase4-consumer-{compiler}.o")),
+                stage.path().join(format!("query-consumer-{compiler}.o")),
             ),
         ] {
             let compiled = Command::new(compiler)
@@ -586,7 +576,7 @@ fn phase4_successor_consumers_compile_as_strict_c17_and_cpp17() {
                 .unwrap_or_else(|error| panic!("failed to launch {compiler}: {error}"));
             assert!(
                 compiled.status.success(),
-                "{compiler} rejected a strict Phase4 C17 source:\nstdout:\n{}\nstderr:\n{}",
+                "{compiler} rejected a strict Query C17 source:\nstdout:\n{}\nstderr:\n{}",
                 String::from_utf8_lossy(&compiled.stdout),
                 String::from_utf8_lossy(&compiled.stderr),
             );
@@ -609,12 +599,12 @@ fn phase4_successor_consumers_compile_as_strict_c17_and_cpp17() {
             .arg(stage.path().join("include"))
             .arg(&cpp_source)
             .arg("-o")
-            .arg(stage.path().join(format!("phase4-consumer-{compiler}.o")))
+            .arg(stage.path().join(format!("query-consumer-{compiler}.o")))
             .output()
             .unwrap_or_else(|error| panic!("failed to launch {compiler}: {error}"));
         assert!(
             compiled.status.success(),
-            "{compiler} rejected the strict Phase4 C++17 consumer:\nstdout:\n{}\nstderr:\n{}",
+            "{compiler} rejected the strict Query C++17 consumer:\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&compiled.stdout),
             String::from_utf8_lossy(&compiled.stderr),
         );
@@ -673,115 +663,112 @@ fn repository_root() -> PathBuf {
 }
 
 #[cfg(unix)]
-fn requested_workforce_v2_report() -> Option<PathBuf> {
-    let raw = env::var_os("TYPE_BRIDGE_WORKFORCE_REPORT_V2")?;
+fn requested_sdk_v2_report() -> Option<PathBuf> {
+    let raw = env::var_os("TYPE_BRIDGE_SDK_REPORT_V2")?;
     let raw = raw
         .into_string()
-        .expect("TYPE_BRIDGE_WORKFORCE_REPORT_V2 must be UTF-8");
+        .expect("TYPE_BRIDGE_SDK_REPORT_V2 must be UTF-8");
     assert!(
         raw.len() <= 4096,
-        "TYPE_BRIDGE_WORKFORCE_REPORT_V2 exceeds 4096 UTF-8 bytes"
+        "TYPE_BRIDGE_SDK_REPORT_V2 exceeds 4096 UTF-8 bytes"
     );
     let path = PathBuf::from(raw);
     assert!(
         path.is_absolute(),
-        "TYPE_BRIDGE_WORKFORCE_REPORT_V2 must be an absolute path"
+        "TYPE_BRIDGE_SDK_REPORT_V2 must be an absolute path"
     );
     let parent = path
         .parent()
-        .expect("TYPE_BRIDGE_WORKFORCE_REPORT_V2 must have a parent directory");
-    let metadata = fs::symlink_metadata(parent)
-        .expect("TYPE_BRIDGE_WORKFORCE_REPORT_V2 parent must already exist");
+        .expect("TYPE_BRIDGE_SDK_REPORT_V2 must have a parent directory");
+    let metadata =
+        fs::symlink_metadata(parent).expect("TYPE_BRIDGE_SDK_REPORT_V2 parent must already exist");
     assert!(
         metadata.is_dir() && !metadata.file_type().is_symlink(),
-        "TYPE_BRIDGE_WORKFORCE_REPORT_V2 parent must be a non-symlink directory"
+        "TYPE_BRIDGE_SDK_REPORT_V2 parent must be a non-symlink directory"
     );
     match fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Ok(_) => panic!("TYPE_BRIDGE_WORKFORCE_REPORT_V2 target must not already exist"),
+        Ok(_) => panic!("TYPE_BRIDGE_SDK_REPORT_V2 target must not already exist"),
         Err(error) => {
-            panic!("TYPE_BRIDGE_WORKFORCE_REPORT_V2 target is not inspectable: {error}")
+            panic!("TYPE_BRIDGE_SDK_REPORT_V2 target is not inspectable: {error}")
         }
     }
     Some(path)
 }
 
 #[cfg(unix)]
-fn requested_workforce_v5_evidence() -> Option<PathBuf> {
-    let raw = env::var_os("TYPE_BRIDGE_WORKFORCE_V5_C_EVIDENCE")?;
+fn requested_sdk_v5_evidence() -> Option<PathBuf> {
+    let raw = env::var_os("TYPE_BRIDGE_SDK_V5_C_EVIDENCE")?;
     let text = raw
         .to_str()
-        .expect("TYPE_BRIDGE_WORKFORCE_V5_C_EVIDENCE must be UTF-8");
+        .expect("TYPE_BRIDGE_SDK_V5_C_EVIDENCE must be UTF-8");
     assert!(
         !text.is_empty() && text.len() <= 4096,
-        "TYPE_BRIDGE_WORKFORCE_V5_C_EVIDENCE exceeds its path bound"
+        "TYPE_BRIDGE_SDK_V5_C_EVIDENCE exceeds its path bound"
     );
     let path = PathBuf::from(text);
     assert!(
         path.is_absolute(),
-        "TYPE_BRIDGE_WORKFORCE_V5_C_EVIDENCE must be absolute"
+        "TYPE_BRIDGE_SDK_V5_C_EVIDENCE must be absolute"
     );
     let parent = path
         .parent()
-        .expect("TYPE_BRIDGE_WORKFORCE_V5_C_EVIDENCE must have a parent");
-    let metadata = fs::symlink_metadata(parent)
-        .expect("TYPE_BRIDGE_WORKFORCE_V5_C_EVIDENCE parent must exist");
+        .expect("TYPE_BRIDGE_SDK_V5_C_EVIDENCE must have a parent");
+    let metadata =
+        fs::symlink_metadata(parent).expect("TYPE_BRIDGE_SDK_V5_C_EVIDENCE parent must exist");
     assert!(
         metadata.is_dir() && !metadata.file_type().is_symlink(),
-        "TYPE_BRIDGE_WORKFORCE_V5_C_EVIDENCE parent must be a non-symlink directory"
+        "TYPE_BRIDGE_SDK_V5_C_EVIDENCE parent must be a non-symlink directory"
     );
     match fs::symlink_metadata(&path) {
         Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Ok(_) => panic!("TYPE_BRIDGE_WORKFORCE_V5_C_EVIDENCE target must not exist"),
-        Err(error) => panic!("TYPE_BRIDGE_WORKFORCE_V5_C_EVIDENCE is not inspectable: {error}"),
+        Ok(_) => panic!("TYPE_BRIDGE_SDK_V5_C_EVIDENCE target must not exist"),
+        Err(error) => panic!("TYPE_BRIDGE_SDK_V5_C_EVIDENCE is not inspectable: {error}"),
     }
     Some(path)
 }
 
 #[cfg(unix)]
-fn validated_workforce_v2_proofs(
+fn validated_sdk_v2_proofs(
     root: &Path,
     report: Option<&Path>,
-) -> BTreeMap<support::WorkforceV2ProofLane, Value> {
-    let fragments = env::var_os("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS");
-    let nonce = env::var_os("TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE");
+) -> BTreeMap<support::SdkV2ProofLane, Value> {
+    let fragments = env::var_os("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS");
+    let nonce = env::var_os("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE");
     match (report, fragments, nonce) {
         (None, None, None) => BTreeMap::new(),
-        (None, _, _) => panic!(
-            "workforce-v2 proof inputs are valid only when TYPE_BRIDGE_WORKFORCE_REPORT_V2 is requested"
-        ),
+        (None, _, _) => {
+            panic!("sdk-v2 proof inputs are valid only when TYPE_BRIDGE_SDK_REPORT_V2 is requested")
+        }
         (Some(_), Some(fragments), Some(nonce)) => {
             let nonce = nonce
                 .into_string()
-                .expect("TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE must be UTF-8");
-            let paths = support::workforce_v2_proof_paths(&fragments)
-                .expect("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS must be a valid path list");
-            support::validate_workforce_v2_proof_fragments(root, "c", &nonce, &paths)
-                .expect("C workforce-v2 proof fragments must validate")
+                .expect("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE must be UTF-8");
+            let paths = support::sdk_v2_proof_paths(&fragments)
+                .expect("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS must be a valid path list");
+            support::validate_sdk_v2_proof_fragments(root, "c", &nonce, &paths)
+                .expect("C sdk-v2 proof fragments must validate")
         }
         (Some(_), _, _) => panic!(
-            "TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS and TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE are both required for a V2 report"
+            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS and TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE are both required for a V2 report"
         ),
     }
 }
 
 #[cfg(unix)]
-fn parse_workforce_v2_live_facts(
-    root: &Path,
-    stdout: &str,
-) -> BTreeMap<support::WorkforceV2ProofLane, Value> {
-    let expected = WORKFORCE_V2_LIVE_LANES
+fn parse_sdk_v2_live_facts(root: &Path, stdout: &str) -> BTreeMap<support::SdkV2ProofLane, Value> {
+    let expected = SDK_V2_LIVE_LANES
         .into_iter()
         .map(|(observation_ref, proof_kind)| (observation_ref.to_owned(), proof_kind.to_owned()))
         .collect::<BTreeSet<_>>();
     assert_eq!(
         expected.len(),
-        WORKFORCE_V2_LIVE_LANES.len(),
-        "C workforce-v2 live lane inventory contains a duplicate"
+        SDK_V2_LIVE_LANES.len(),
+        "C sdk-v2 live lane inventory contains a duplicate"
     );
     let mut observations = BTreeMap::new();
     for line in stdout.lines() {
-        let Some(payload) = line.strip_prefix(WORKFORCE_V2_FACT_PREFIX) else {
+        let Some(payload) = line.strip_prefix(SDK_V2_FACT_PREFIX) else {
             continue;
         };
         let mut fields = payload.split('\t');
@@ -793,91 +780,91 @@ fn parse_workforce_v2_live_facts(
                 && !observation_ref.is_empty()
                 && !proof_kind.is_empty()
                 && !raw_observation.is_empty(),
-            "C workforce-v2 fact is malformed: {line:?}"
+            "C sdk-v2 fact is malformed: {line:?}"
         );
         let lane = (observation_ref.to_owned(), proof_kind.to_owned());
         assert!(
             expected.contains(&lane),
-            "C workforce-v2 consumer emitted an unexpected lane: {lane:?}"
+            "C sdk-v2 consumer emitted an unexpected lane: {lane:?}"
         );
         let observation: Value = serde_json::from_str(raw_observation)
-            .unwrap_or_else(|error| panic!("C workforce-v2 fact is invalid JSON: {error}"));
+            .unwrap_or_else(|error| panic!("C sdk-v2 fact is invalid JSON: {error}"));
         assert!(
             observation.is_object(),
-            "C workforce-v2 fact must be an object: {lane:?}"
+            "C sdk-v2 fact must be an object: {lane:?}"
         );
         let canonical =
-            to_canonical_json(&observation).expect("C workforce-v2 fact observation canonicalizes");
+            to_canonical_json(&observation).expect("C sdk-v2 fact observation canonicalizes");
         assert_eq!(
             canonical,
             raw_observation.as_bytes(),
-            "C workforce-v2 fact must be compact canonical JSON: {lane:?}"
+            "C sdk-v2 fact must be compact canonical JSON: {lane:?}"
         );
         assert!(
             observations.insert(lane.clone(), observation).is_none(),
-            "C workforce-v2 consumer duplicated a lane: {lane:?}"
+            "C sdk-v2 consumer duplicated a lane: {lane:?}"
         );
     }
     assert_eq!(
         observations.keys().cloned().collect::<BTreeSet<_>>(),
         expected,
-        "C workforce-v2 live fact coverage differs from the frozen lane inventory"
+        "C sdk-v2 live fact coverage differs from the frozen lane inventory"
     );
 
-    assert_workforce_v2_observations_match_journey(root, &observations);
+    assert_sdk_v2_observations_match_journey(root, &observations);
     observations
 }
 
 #[cfg(unix)]
-fn assert_workforce_v2_observations_match_journey(
+fn assert_sdk_v2_observations_match_journey(
     root: &Path,
-    observations: &BTreeMap<support::WorkforceV2ProofLane, Value>,
+    observations: &BTreeMap<support::SdkV2ProofLane, Value>,
 ) {
-    let journey_bytes = fs::read(root.join(support::WORKFORCE_V2_JOURNEY))
-        .expect("workforce-v2 journey is readable");
+    let journey_bytes =
+        fs::read(root.join(support::SDK_V2_JOURNEY)).expect("sdk-v2 journey is readable");
     let journey: Value =
-        serde_json::from_slice(&journey_bytes).expect("workforce-v2 journey is valid JSON");
+        serde_json::from_slice(&journey_bytes).expect("sdk-v2 journey is valid JSON");
     let expected_observations = journey["expected_observations"]
         .as_object()
-        .expect("workforce-v2 expected observations are an object");
+        .expect("sdk-v2 expected observations are an object");
     for ((observation_ref, proof_kind), observation) in observations {
         assert_eq!(
             observation,
             expected_observations
                 .get(observation_ref)
-                .unwrap_or_else(|| panic!("workforce-v2 observation is absent: {observation_ref}")),
-            "C workforce-v2 observation diverged: {observation_ref}/{proof_kind}"
+                .unwrap_or_else(|| panic!("sdk-v2 observation is absent: {observation_ref}")),
+            "C sdk-v2 observation diverged: {observation_ref}/{proof_kind}"
         );
     }
 }
 
 #[cfg(unix)]
-fn workforce_v2_report_results(
+fn sdk_v2_report_results(
     catalog: &Value,
-    observations: &BTreeMap<support::WorkforceV2ProofLane, Value>,
+    observations: &BTreeMap<support::SdkV2ProofLane, Value>,
 ) -> Vec<Value> {
     let mut capabilities = BTreeMap::new();
     for case in catalog["cases"]
         .as_array()
-        .expect("workforce-v2 catalog cases must be an array")
+        .expect("sdk-v2 catalog cases must be an array")
     {
         let case_id = case["id"]
             .as_str()
-            .expect("workforce-v2 case ID must be text")
+            .expect("sdk-v2 case ID must be text")
             .to_owned();
         let capability_id = case["capability_id"]
             .as_str()
-            .expect("workforce-v2 capability ID must be text")
+            .expect("sdk-v2 capability ID must be text")
             .to_owned();
         assert!(
             capabilities.insert(case_id, capability_id).is_none(),
-            "workforce-v2 catalog contains a duplicate case"
+            "sdk-v2 catalog contains a duplicate case"
         );
     }
     let selected = catalog["selected_proofs"]
         .as_array()
-        .expect("workforce-v2 selected proofs must be an array");
-    assert_eq!(selected.len(), 34, "workforce-v2 report requires 34 proofs");
+        .expect("sdk-v2 selected proofs must be an array");
+    assert_eq!(selected.len(), 34, "sdk-v2 report requires 34 proofs");
     let selected_contract = selected
         .iter()
         .map(|proof| {
@@ -893,32 +880,32 @@ fn workforce_v2_report_results(
         })
         .collect::<Vec<_>>();
     assert_eq!(
-        selected_contract, WORKFORCE_V2_SELECTED_PROOFS,
-        "workforce-v2 catalog selected proof ledger drifted"
+        selected_contract, SDK_V2_SELECTED_PROOFS,
+        "sdk-v2 catalog selected proof ledger drifted"
     );
     let mut required = BTreeSet::new();
     let mut rows = Vec::with_capacity(selected.len());
     for proof in selected {
         let case_id = proof["case_id"]
             .as_str()
-            .expect("workforce-v2 selected case ID must be text")
+            .expect("sdk-v2 selected case ID must be text")
             .to_owned();
         let proof_kind = proof["proof_kind"]
             .as_str()
-            .expect("workforce-v2 selected proof kind must be text")
+            .expect("sdk-v2 selected proof kind must be text")
             .to_owned();
         let observation_ref = proof["observation_ref"]
             .as_str()
-            .expect("workforce-v2 selected observation ref must be text")
+            .expect("sdk-v2 selected observation ref must be text")
             .to_owned();
         let lane = (observation_ref.clone(), proof_kind.clone());
         assert!(
             required.insert(lane.clone()),
-            "workforce-v2 catalog duplicated a selected lane: {lane:?}"
+            "sdk-v2 catalog duplicated a selected lane: {lane:?}"
         );
         let capability_id = capabilities
             .get(&case_id)
-            .unwrap_or_else(|| panic!("selected workforce-v2 case is unknown: {case_id}"));
+            .unwrap_or_else(|| panic!("selected sdk-v2 case is unknown: {case_id}"));
         let observation = observations
             .get(&lane)
             .unwrap_or_else(|| panic!("C observation is absent: {lane:?}"));
@@ -933,7 +920,7 @@ fn workforce_v2_report_results(
     assert_eq!(
         observations.keys().cloned().collect::<BTreeSet<_>>(),
         required,
-        "C workforce-v2 observations differ from the catalog selected lanes"
+        "C sdk-v2 observations differ from the catalog selected lanes"
     );
     assert!(
         rows.windows(2).all(|pair| {
@@ -947,40 +934,40 @@ fn workforce_v2_report_results(
             );
             left < right
         }),
-        "workforce-v2 selected proofs must be sorted by case and proof kind"
+        "sdk-v2 selected proofs must be sorted by case and proof kind"
     );
     rows
 }
 
 #[cfg(unix)]
-fn build_workforce_v2_report(
+fn build_sdk_v2_report(
     root: &Path,
     semantic_fingerprint: Value,
     projection_fingerprint: Value,
-    observations: &BTreeMap<support::WorkforceV2ProofLane, Value>,
+    observations: &BTreeMap<support::SdkV2ProofLane, Value>,
 ) -> Value {
     let catalog_bytes =
-        fs::read(root.join(WORKFORCE_V2_CATALOG_PATH)).expect("workforce-v2 catalog is readable");
+        fs::read(root.join(SDK_V2_CATALOG_PATH)).expect("sdk-v2 catalog is readable");
     let catalog: Value =
-        serde_json::from_slice(&catalog_bytes).expect("workforce-v2 catalog is valid JSON");
-    assert_eq!(catalog["format"], "typebridge.workforce-catalog/v2");
-    assert_eq!(catalog["fixture"]["id"], "workforce-v2");
+        serde_json::from_slice(&catalog_bytes).expect("sdk-v2 catalog is valid JSON");
+    assert_eq!(catalog["format"], "typebridge.sdk-catalog/v2");
+    assert_eq!(catalog["fixture"]["id"], "sdk-v2");
     assert_eq!(catalog["fixture"]["version"], 2);
     assert_eq!(
         catalog["fixture"]["semantic_profile"],
         support::TEST_PROFILE
     );
-    assert_eq!(catalog["fixture"]["schema_path"], WORKFORCE_SCHEMA_PATH);
+    assert_eq!(catalog["fixture"]["schema_path"], SDK_SCHEMA_PATH);
     assert_eq!(
         catalog["fixture"]["provider_schema_path"],
-        WORKFORCE_PROVIDER_SCHEMA_PATH
+        SDK_PROVIDER_SCHEMA_PATH
     );
-    assert_eq!(catalog["journey_path"], support::WORKFORCE_V2_JOURNEY);
+    assert_eq!(catalog["journey_path"], support::SDK_V2_JOURNEY);
     assert_eq!(catalog["projection_targets"]["c"], "c");
     assert_eq!(
         catalog["manifest_transition_cases"],
-        serde_json::json!(WORKFORCE_V2_MANIFEST_TRANSITION_CASES),
-        "workforce-v2 manifest transition ledger drifted"
+        serde_json::json!(SDK_V2_MANIFEST_TRANSITION_CASES),
+        "sdk-v2 manifest transition ledger drifted"
     );
     assert_eq!(
         catalog["expected_fingerprints"]["semantic"], semantic_fingerprint,
@@ -992,49 +979,49 @@ fn build_workforce_v2_report(
     );
     serde_json::json!({
         "binding": "c",
-        "catalog": support::workforce_v2_source_identity(root, WORKFORCE_V2_CATALOG_PATH)
-            .expect("workforce-v2 catalog identity is valid"),
+        "catalog": support::sdk_v2_source_identity(root, SDK_V2_CATALOG_PATH)
+            .expect("sdk-v2 catalog identity is valid"),
         "fixture": {
-            "id": "workforce-v2",
-            "journey": support::workforce_v2_source_identity(root, support::WORKFORCE_V2_JOURNEY)
-                .expect("workforce-v2 journey identity is valid"),
+            "id": "sdk-v2",
+            "journey": support::sdk_v2_source_identity(root, support::SDK_V2_JOURNEY)
+                .expect("sdk-v2 journey identity is valid"),
             "projection_fingerprint": projection_fingerprint,
             "projection_target": "c",
-            "provider_schema": support::workforce_v2_source_identity(root, WORKFORCE_PROVIDER_SCHEMA_PATH)
-                .expect("workforce-v2 provider schema identity is valid"),
-            "schema": support::workforce_v2_source_identity(root, WORKFORCE_SCHEMA_PATH)
-                .expect("workforce-v2 schema identity is valid"),
+            "provider_schema": support::sdk_v2_source_identity(root, SDK_PROVIDER_SCHEMA_PATH)
+                .expect("sdk-v2 provider schema identity is valid"),
+            "schema": support::sdk_v2_source_identity(root, SDK_SCHEMA_PATH)
+                .expect("sdk-v2 schema identity is valid"),
             "semantic_fingerprint": semantic_fingerprint,
             "semantic_profile": support::TEST_PROFILE,
             "version": 2,
         },
         "format": "typebridge.sdk-conformance-report/v2",
-        "manifest": support::workforce_v2_source_identity(root, WORKFORCE_MANIFEST_PATH)
-            .expect("workforce manifest identity is valid"),
-        "results": workforce_v2_report_results(&catalog, observations),
+        "manifest": support::sdk_v2_source_identity(root, SDK_MANIFEST_PATH)
+            .expect("sdk manifest identity is valid"),
+        "results": sdk_v2_report_results(&catalog, observations),
     })
 }
 
 #[cfg(unix)]
-fn publish_workforce_v2_report(
+fn publish_sdk_v2_report(
     path: &Path,
     root: &Path,
     semantic_fingerprint: Value,
     projection_fingerprint: Value,
-    observations: &BTreeMap<support::WorkforceV2ProofLane, Value>,
+    observations: &BTreeMap<support::SdkV2ProofLane, Value>,
 ) {
-    let report = build_workforce_v2_report(
+    let report = build_sdk_v2_report(
         root,
         semantic_fingerprint,
         projection_fingerprint,
         observations,
     );
-    let mut bytes = to_canonical_json(&report).expect("C workforce-v2 report canonicalizes");
+    let mut bytes = to_canonical_json(&report).expect("C sdk-v2 report canonicalizes");
     bytes.push(b'\n');
     let file_name = path
         .file_name()
         .and_then(|value| value.to_str())
-        .expect("TYPE_BRIDGE_WORKFORCE_REPORT_V2 must name a UTF-8 file");
+        .expect("TYPE_BRIDGE_SDK_REPORT_V2 must name a UTF-8 file");
     let temporary = path.with_file_name(format!(
         ".{file_name}.{}.{}.tmp",
         std::process::id(),
@@ -1051,31 +1038,31 @@ fn publish_workforce_v2_report(
         .write(true)
         .create_new(true)
         .open(&temporary)
-        .expect("C workforce-v2 temporary report is created without replacement");
+        .expect("C sdk-v2 temporary report is created without replacement");
     file.write_all(&bytes)
-        .expect("C workforce-v2 temporary report is written");
+        .expect("C sdk-v2 temporary report is written");
     file.sync_all()
-        .expect("C workforce-v2 temporary report is synchronized");
+        .expect("C sdk-v2 temporary report is synchronized");
     drop(file);
     fs::hard_link(&temporary, path)
-        .expect("C workforce-v2 report is atomically published without replacement");
-    fs::remove_file(&temporary).expect("C workforce-v2 temporary link is removed");
+        .expect("C sdk-v2 report is atomically published without replacement");
+    fs::remove_file(&temporary).expect("C sdk-v2 temporary link is removed");
     drop(temporary_guard);
-    let metadata = fs::symlink_metadata(path).expect("C workforce-v2 report is inspectable");
+    let metadata = fs::symlink_metadata(path).expect("C sdk-v2 report is inspectable");
     assert!(
         metadata.is_file() && !metadata.file_type().is_symlink(),
-        "C workforce-v2 report must be a regular non-symlink file"
+        "C sdk-v2 report must be a regular non-symlink file"
     );
 }
 
 #[cfg(unix)]
-fn publish_workforce_v5_evidence(path: &Path, report: &Value) {
-    let mut bytes = to_canonical_json(report).expect("C workforce-v5 evidence canonicalizes");
+fn publish_sdk_v5_evidence(path: &Path, report: &Value) {
+    let mut bytes = to_canonical_json(report).expect("C sdk-v5 evidence canonicalizes");
     bytes.push(b'\n');
     let file_name = path
         .file_name()
         .and_then(|value| value.to_str())
-        .expect("C workforce-v5 evidence path has a UTF-8 file name");
+        .expect("C sdk-v5 evidence path has a UTF-8 file name");
     let temporary = path.with_file_name(format!(
         ".{file_name}.{}.{}.tmp",
         std::process::id(),
@@ -1092,37 +1079,37 @@ fn publish_workforce_v5_evidence(path: &Path, report: &Value) {
         .write(true)
         .create_new(true)
         .open(&temporary)
-        .expect("C workforce-v5 temporary evidence is create-new");
+        .expect("C sdk-v5 temporary evidence is create-new");
     output
         .write_all(&bytes)
-        .expect("C workforce-v5 temporary evidence is written completely");
+        .expect("C sdk-v5 temporary evidence is written completely");
     output
         .sync_all()
-        .expect("C workforce-v5 temporary evidence is synchronized");
+        .expect("C sdk-v5 temporary evidence is synchronized");
     drop(output);
     fs::hard_link(&temporary, path)
-        .expect("C workforce-v5 evidence is atomically published without replacement");
-    fs::remove_file(&temporary).expect("C workforce-v5 temporary link is removed");
+        .expect("C sdk-v5 evidence is atomically published without replacement");
+    fs::remove_file(&temporary).expect("C sdk-v5 temporary link is removed");
     drop(guard);
 }
 
 #[cfg(unix)]
 #[test]
-fn workforce_v2_c_fact_fan_in_is_exact_canonical_and_closed() {
+fn sdk_v2_c_fact_fan_in_is_exact_canonical_and_closed() {
     use std::fmt::Write as _;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     let root = repository_root();
     let fragment_lanes =
-        support::workforce_v2_proof_lanes(&root, "c").expect("C proof allowlist validates");
-    let selected_live_lanes = WORKFORCE_V2_SELECTED_PROOFS
+        support::sdk_v2_proof_lanes(&root, "c").expect("C proof allowlist validates");
+    let selected_live_lanes = SDK_V2_SELECTED_PROOFS
         .into_iter()
         .map(|(_, proof_kind, observation_ref)| (observation_ref.to_owned(), proof_kind.to_owned()))
         .filter(|lane| !fragment_lanes.contains(lane))
         .collect::<Vec<_>>();
     assert_eq!(
         selected_live_lanes,
-        WORKFORCE_V2_LIVE_LANES
+        SDK_V2_LIVE_LANES
             .into_iter()
             .map(|(observation_ref, proof_kind)| {
                 (observation_ref.to_owned(), proof_kind.to_owned())
@@ -1131,15 +1118,14 @@ fn workforce_v2_c_fact_fan_in_is_exact_canonical_and_closed() {
         "C live facts plus committed fragments must partition the selected ledger"
     );
     let journey: Value = serde_json::from_slice(
-        &fs::read(root.join(support::WORKFORCE_V2_JOURNEY))
-            .expect("workforce-v2 journey is readable"),
+        &fs::read(root.join(support::SDK_V2_JOURNEY)).expect("sdk-v2 journey is readable"),
     )
-    .expect("workforce-v2 journey is valid JSON");
+    .expect("sdk-v2 journey is valid JSON");
     let expected = journey["expected_observations"]
         .as_object()
-        .expect("workforce-v2 expected observations are an object");
+        .expect("sdk-v2 expected observations are an object");
     let mut stdout = String::new();
-    for (observation_ref, proof_kind) in WORKFORCE_V2_LIVE_LANES {
+    for (observation_ref, proof_kind) in SDK_V2_LIVE_LANES {
         let observation = expected
             .get(observation_ref)
             .unwrap_or_else(|| panic!("expected observation is absent: {observation_ref}"));
@@ -1149,13 +1135,13 @@ fn workforce_v2_c_fact_fan_in_is_exact_canonical_and_closed() {
         .expect("canonical observation is UTF-8");
         writeln!(
             stdout,
-            "{WORKFORCE_V2_FACT_PREFIX}{observation_ref}\t{proof_kind}\t{canonical}"
+            "{SDK_V2_FACT_PREFIX}{observation_ref}\t{proof_kind}\t{canonical}"
         )
         .expect("fact line formats");
     }
     assert_eq!(
-        parse_workforce_v2_live_facts(&root, &stdout).len(),
-        WORKFORCE_V2_LIVE_LANES.len()
+        parse_sdk_v2_live_facts(&root, &stdout).len(),
+        SDK_V2_LIVE_LANES.len()
     );
 
     let duplicated = format!(
@@ -1163,7 +1149,7 @@ fn workforce_v2_c_fact_fan_in_is_exact_canonical_and_closed() {
         stdout.lines().next().expect("one fact line exists")
     );
     assert!(
-        catch_unwind(AssertUnwindSafe(|| parse_workforce_v2_live_facts(
+        catch_unwind(AssertUnwindSafe(|| parse_sdk_v2_live_facts(
             &root,
             &duplicated
         )))
@@ -1171,10 +1157,9 @@ fn workforce_v2_c_fact_fan_in_is_exact_canonical_and_closed() {
         "duplicate fact lanes must fail closed"
     );
 
-    let unexpected =
-        format!("{stdout}{WORKFORCE_V2_FACT_PREFIX}not_allowed\tdirect_runtime\t{{}}\n");
+    let unexpected = format!("{stdout}{SDK_V2_FACT_PREFIX}not_allowed\tdirect_runtime\t{{}}\n");
     assert!(
-        catch_unwind(AssertUnwindSafe(|| parse_workforce_v2_live_facts(
+        catch_unwind(AssertUnwindSafe(|| parse_sdk_v2_live_facts(
             &root,
             &unexpected
         )))
@@ -1194,7 +1179,7 @@ fn workforce_v2_c_fact_fan_in_is_exact_canonical_and_closed() {
     assert_ne!(canonical_entity, noncanonical_entity);
     let noncanonical = stdout.replacen(&canonical_entity, &noncanonical_entity, 1);
     assert!(
-        catch_unwind(AssertUnwindSafe(|| parse_workforce_v2_live_facts(
+        catch_unwind(AssertUnwindSafe(|| parse_sdk_v2_live_facts(
             &root,
             &noncanonical
         )))
@@ -1206,30 +1191,30 @@ fn workforce_v2_c_fact_fan_in_is_exact_canonical_and_closed() {
 #[cfg(unix)]
 #[test]
 #[ignore = "requires a same-run deterministic C proof fragment"]
-fn emitted_workforce_v2_c_proof_fragment_validates() {
+fn emitted_sdk_v2_c_proof_fragment_validates() {
     let root = repository_root();
-    let fragments = env::var_os("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS")
-        .expect("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS is required");
-    let nonce = env::var("TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE")
-        .expect("TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE is required");
-    let paths = support::workforce_v2_proof_paths(&fragments)
-        .expect("C workforce-v2 proof paths must be valid");
-    let observations = support::validate_workforce_v2_proof_fragments(&root, "c", &nonce, &paths)
-        .expect("emitted C workforce-v2 proof fragment must validate");
+    let fragments = env::var_os("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS")
+        .expect("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS is required");
+    let nonce = env::var("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE")
+        .expect("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE is required");
+    let paths =
+        support::sdk_v2_proof_paths(&fragments).expect("C sdk-v2 proof paths must be valid");
+    let observations = support::validate_sdk_v2_proof_fragments(&root, "c", &nonce, &paths)
+        .expect("emitted C sdk-v2 proof fragment must validate");
     assert_eq!(
         observations.keys().cloned().collect::<BTreeSet<_>>(),
-        support::workforce_v2_proof_lanes(&root, "c").expect("C proof allowlist validates"),
+        support::sdk_v2_proof_lanes(&root, "c").expect("C proof allowlist validates"),
     );
 }
 
 #[cfg(unix)]
 #[test]
 #[ignore = "requires a same-run deterministic C proof fragment"]
-fn workforce_v2_c_catalog_report_builder_preflight_is_exact_and_nonpublishing() {
+fn sdk_v2_c_catalog_report_builder_preflight_is_exact_and_nonpublishing() {
     use std::fmt::Write as _;
 
     assert!(
-        env::var_os("TYPE_BRIDGE_WORKFORCE_REPORT_V2").is_none(),
+        env::var_os("TYPE_BRIDGE_SDK_REPORT_V2").is_none(),
         "provider-free report-builder preflight must not request publication"
     );
     let root = repository_root();
@@ -1237,27 +1222,26 @@ fn workforce_v2_c_catalog_report_builder_preflight_is_exact_and_nonpublishing() 
     let report_path = stage.path().join("c.json");
     assert!(!report_path.exists());
 
-    let fragments = env::var_os("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS")
-        .expect("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS is required");
-    let nonce = env::var("TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE")
-        .expect("TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE is required");
-    let paths = support::workforce_v2_proof_paths(&fragments)
-        .expect("C workforce-v2 proof paths must be valid");
+    let fragments = env::var_os("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS")
+        .expect("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS is required");
+    let nonce = env::var("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE")
+        .expect("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE is required");
+    let paths =
+        support::sdk_v2_proof_paths(&fragments).expect("C sdk-v2 proof paths must be valid");
     let fragment_observations =
-        support::validate_workforce_v2_proof_fragments(&root, "c", &nonce, &paths)
-            .expect("emitted C workforce-v2 proof fragment must validate");
+        support::validate_sdk_v2_proof_fragments(&root, "c", &nonce, &paths)
+            .expect("emitted C sdk-v2 proof fragment must validate");
     assert_eq!(fragment_observations.len(), 3);
 
     let journey: Value = serde_json::from_slice(
-        &fs::read(root.join(support::WORKFORCE_V2_JOURNEY))
-            .expect("workforce-v2 journey is readable"),
+        &fs::read(root.join(support::SDK_V2_JOURNEY)).expect("sdk-v2 journey is readable"),
     )
-    .expect("workforce-v2 journey is valid JSON");
+    .expect("sdk-v2 journey is valid JSON");
     let expected = journey["expected_observations"]
         .as_object()
-        .expect("workforce-v2 expected observations are an object");
+        .expect("sdk-v2 expected observations are an object");
     let mut stdout = String::new();
-    for (observation_ref, proof_kind) in WORKFORCE_V2_LIVE_LANES {
+    for (observation_ref, proof_kind) in SDK_V2_LIVE_LANES {
         let observation = expected
             .get(observation_ref)
             .unwrap_or_else(|| panic!("expected observation is absent: {observation_ref}"));
@@ -1267,11 +1251,11 @@ fn workforce_v2_c_catalog_report_builder_preflight_is_exact_and_nonpublishing() 
         .expect("canonical observation is UTF-8");
         writeln!(
             stdout,
-            "{WORKFORCE_V2_FACT_PREFIX}{observation_ref}\t{proof_kind}\t{canonical}"
+            "{SDK_V2_FACT_PREFIX}{observation_ref}\t{proof_kind}\t{canonical}"
         )
         .expect("fact line formats");
     }
-    let mut observations = parse_workforce_v2_live_facts(&root, &stdout);
+    let mut observations = parse_sdk_v2_live_facts(&root, &stdout);
     assert_eq!(observations.len(), 31);
     for (lane, observation) in fragment_observations {
         assert!(
@@ -1280,11 +1264,11 @@ fn workforce_v2_c_catalog_report_builder_preflight_is_exact_and_nonpublishing() 
         );
     }
     assert_eq!(observations.len(), 34);
-    assert_workforce_v2_observations_match_journey(&root, &observations);
+    assert_sdk_v2_observations_match_journey(&root, &observations);
 
     let (_, _, semantic_fingerprint, projection_fingerprint) =
         emitted_package_authority_and_fingerprints();
-    let report = build_workforce_v2_report(
+    let report = build_sdk_v2_report(
         &root,
         semantic_fingerprint.clone(),
         projection_fingerprint.clone(),
@@ -1302,17 +1286,17 @@ fn workforce_v2_c_catalog_report_builder_preflight_is_exact_and_nonpublishing() 
     );
     assert_eq!(
         report["catalog"],
-        support::workforce_v2_source_identity(&root, WORKFORCE_V2_CATALOG_PATH)
-            .expect("workforce-v2 catalog identity is valid")
+        support::sdk_v2_source_identity(&root, SDK_V2_CATALOG_PATH)
+            .expect("sdk-v2 catalog identity is valid")
     );
     assert_eq!(
         report["results"]
             .as_array()
-            .expect("C workforce-v2 report results are an array")
+            .expect("C sdk-v2 report results are an array")
             .len(),
         34
     );
-    to_canonical_json(&report).expect("provider-free C workforce-v2 report canonicalizes");
+    to_canonical_json(&report).expect("provider-free C sdk-v2 report canonicalizes");
     assert!(
         !report_path.exists(),
         "provider-free report-builder preflight must not publish a report"
@@ -1588,14 +1572,13 @@ fn failed_live_setup_still_runs_idempotent_database_cleanup() {
 #[ignore = "requires an isolated exact TypeDB 3.12.3 server and C shared library"]
 fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
     let repository_root = repository_root();
-    let workforce_v2_report = requested_workforce_v2_report();
-    let workforce_v5_evidence = requested_workforce_v5_evidence();
+    let sdk_v2_report = requested_sdk_v2_report();
+    let sdk_v5_evidence = requested_sdk_v5_evidence();
     assert!(
-        workforce_v2_report.is_none() || workforce_v5_evidence.is_none(),
+        sdk_v2_report.is_none() || sdk_v5_evidence.is_none(),
         "C V2 and V5 publication lanes require separate isolated runs"
     );
-    let workforce_v2_proofs =
-        validated_workforce_v2_proofs(&repository_root, workforce_v2_report.as_deref());
+    let sdk_v2_proofs = validated_sdk_v2_proofs(&repository_root, sdk_v2_report.as_deref());
     let compiler = c_compilers()
         .into_iter()
         .next()
@@ -1614,9 +1597,9 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
 
     let stage = TempDirectory::new();
     let (package, authority_bytes, semantic_fingerprint, projection_fingerprint) =
-        if workforce_v5_evidence.is_some() {
-            let (package, authority) = emitted_phase4_package_and_authority();
-            let (semantic, projection) = workforce_v3_fingerprints();
+        if sdk_v5_evidence.is_some() {
+            let (package, authority) = emitted_query_package_and_authority();
+            let (semantic, projection) = sdk_v3_fingerprints();
             (package, authority, semantic, projection)
         } else {
             emitted_package_authority_and_fingerprints()
@@ -1637,8 +1620,8 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
         "-Werror",
         "-pedantic-errors",
     ]);
-    if workforce_v5_evidence.is_some() {
-        compile_command.arg("-DTYPE_BRIDGE_WORKFORCE_V5_C_CODEC");
+    if sdk_v5_evidence.is_some() {
+        compile_command.arg("-DTYPE_BRIDGE_SDK_V5_C_CODEC");
     }
     let compile = compile_command
         .arg("-I")
@@ -1671,8 +1654,8 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
         .expect("Rust-only database setup source is staged");
     fs::write(
         setup_root.join("acceptance/provider-3.12.1.tql"),
-        if workforce_v5_evidence.is_some() {
-            PHASE4_PROVIDER_SCHEMA
+        if sdk_v5_evidence.is_some() {
+            QUERY_PROVIDER_SCHEMA
         } else {
             PROVIDER_SCHEMA
         },
@@ -1683,7 +1666,7 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
     fs::write(
         &manifest,
         format!(
-            "[package]\nname = \"type-bridge-c-projection-live-setup\"\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n[[bin]]\nname = \"setup\"\npath = \"c_projection_live/setup.rs\"\n\n[dependencies]\ntype-bridge-orm = {{ path = \"{}\" }}\ntokio = {{ version = \"1\", features = [\"macros\", \"rt-multi-thread\"] }}\n\n[workspace]\n",
+            "[package]\nname = \"type-bridge-test-provider\"\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n[[bin]]\nname = \"setup\"\npath = \"c_projection_live/setup.rs\"\n\n[dependencies]\ntype-bridge-orm = {{ path = \"{}\" }}\ntokio = {{ version = \"1\", features = [\"macros\", \"rt-multi-thread\"] }}\n\n[workspace]\n",
             manifest_path(&orm),
         ),
     )
@@ -1774,20 +1757,17 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
     for (name, value) in &environment {
         run.env(name, value);
     }
-    run.env_remove("TYPE_BRIDGE_WORKFORCE_REPORT_V2")
-        .env_remove("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT")
-        .env_remove("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS")
-        .env_remove("TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE");
+    run.env_remove("TYPE_BRIDGE_SDK_REPORT_V2")
+        .env_remove("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT")
+        .env_remove("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS")
+        .env_remove("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE");
     run.env("TYPE_BRIDGE_C_REMOTE_PORT", remote_port.to_string());
     let v5_evidence_directory = stage.path().join("v5-live-evidence");
-    if workforce_v5_evidence.is_some() {
+    if sdk_v5_evidence.is_some() {
         fs::create_dir(&v5_evidence_directory).expect("C V5 evidence directory is created");
-        run.env(
-            "TYPE_BRIDGE_WORKFORCE_V5_C_EVIDENCE_DIR",
-            &v5_evidence_directory,
-        );
+        run.env("TYPE_BRIDGE_SDK_V5_C_EVIDENCE_DIR", &v5_evidence_directory);
     } else {
-        run.env_remove("TYPE_BRIDGE_WORKFORCE_V5_C_EVIDENCE_DIR");
+        run.env_remove("TYPE_BRIDGE_SDK_V5_C_EVIDENCE_DIR");
     }
     let output = run
         .output()
@@ -1809,20 +1789,16 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
                 .filter(|value| value.ends_with(": passed"))
         })
         .filter(|value| {
-            if workforce_v5_evidence.is_some() {
-                *value == "Workforce V5 C live codec direct/remote parity: passed"
+            if sdk_v5_evidence.is_some() {
+                *value == "Sdk V5 C live codec direct/remote parity: passed"
             } else {
-                *value != "Workforce V5 C live codec direct/remote parity: passed"
+                *value != "Sdk V5 C live codec direct/remote parity: passed"
             }
         })
         .collect::<Vec<_>>();
     assert_eq!(
         markers.len(),
-        if workforce_v5_evidence.is_some() {
-            1
-        } else {
-            61
-        },
+        if sdk_v5_evidence.is_some() { 1 } else { 61 },
         "live C marker inventory drifted"
     );
     assert_eq!(
@@ -1837,32 +1813,29 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
     for marker in markers {
         assert!(stdout.contains(marker), "consumer output omitted {marker}");
     }
-    let mut workforce_v2_observations = if workforce_v5_evidence.is_some() {
+    let mut sdk_v2_observations = if sdk_v5_evidence.is_some() {
         BTreeMap::new()
     } else {
-        parse_workforce_v2_live_facts(&repository_root, &stdout)
+        parse_sdk_v2_live_facts(&repository_root, &stdout)
     };
-    if workforce_v2_report.is_some() {
-        for (lane, observation) in workforce_v2_proofs {
+    if sdk_v2_report.is_some() {
+        for (lane, observation) in sdk_v2_proofs {
             assert!(
-                workforce_v2_observations
+                sdk_v2_observations
                     .insert(lane.clone(), observation)
                     .is_none(),
                 "validated proof lane collides with a live lane: {lane:?}"
             );
         }
         assert_eq!(
-            workforce_v2_observations.len(),
+            sdk_v2_observations.len(),
             34,
-            "C workforce-v2 producer requires exactly 34 observation lanes"
+            "C sdk-v2 producer requires exactly 34 observation lanes"
         );
-        assert_workforce_v2_observations_match_journey(
-            &repository_root,
-            &workforce_v2_observations,
-        );
+        assert_sdk_v2_observations_match_journey(&repository_root, &sdk_v2_observations);
     } else {
         assert!(
-            workforce_v2_proofs.is_empty(),
+            sdk_v2_proofs.is_empty(),
             "proof observations are forbidden without a report request"
         );
     }
@@ -1877,16 +1850,16 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
         String::from_utf8_lossy(&cleanup.stderr),
     );
     remote_server.shutdown();
-    if let Some(report) = workforce_v2_report {
-        publish_workforce_v2_report(
+    if let Some(report) = sdk_v2_report {
+        publish_sdk_v2_report(
             &report,
             &repository_root,
             semantic_fingerprint,
             projection_fingerprint,
-            &workforce_v2_observations,
+            &sdk_v2_observations,
         );
     }
-    if let Some(evidence) = workforce_v5_evidence {
+    if let Some(evidence) = sdk_v5_evidence {
         let entity = fs::read(v5_evidence_directory.join("entity.bin"))
             .expect("C V5 entity evidence is present");
         let relation = fs::read(v5_evidence_directory.join("relation.bin"))
@@ -1896,16 +1869,16 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
             "detached_mutation_code": "projected_snapshot_detached",
             "direct_remote_equal": true,
             "entity_snapshot_b64": base64(&entity),
-            "format": "typebridge.workforce-v5-live-codec-evidence/v1",
+            "format": "typebridge.sdk-v5-live-codec-evidence/v1",
             "rebound_mutation": true,
             "relation_snapshot_b64": base64(&relation),
             "remote_exchange_count": 1,
         });
-        publish_workforce_v5_evidence(&evidence, &report);
+        publish_sdk_v5_evidence(&evidence, &report);
     }
 }
 
-/// Phase4 activation gate for the ordered C-v3/ABI-1.4 surface. The same
+/// Query activation gate for the ordered C-v3/ABI-1.6 surface. The same
 /// source is compiled and executed as strict C17 and C++17. It deliberately
 /// leaves ordered attributes and ordered role-player lists empty because exact
 /// TypeDB 3.12.3 cannot supply list-instance evidence.
@@ -1929,21 +1902,21 @@ fn generated_data_model_runtime_v3_live() {
         .ok()
         .filter(|port| *port != 0)
         .expect("TYPEDB_HTTP_PORT must be an integer from 1 through 65535");
-    let database = required_live_environment("TYPE_BRIDGE_C_PHASE4_INTG_DATABASE");
+    let database = required_live_environment("TYPE_BRIDGE_C_QUERY_INTG_DATABASE");
     let username = env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned());
     let password = env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned());
 
     let stage = TempDirectory::new();
-    write_package(&emitted_phase4_package(), stage.path());
-    let package_source = stage.path().join("phase4_package.c");
-    let package_object = stage.path().join("phase4_package.o");
-    let c_source = stage.path().join("phase4_consumer.c");
-    let cpp_source = stage.path().join("phase4_consumer.cpp");
-    let c_executable = stage.path().join("generated-phase4-c17-live");
-    let cpp_executable = stage.path().join("generated-phase4-cpp17-live");
-    fs::write(&package_source, PHASE4_PACKAGE).expect("Phase4 package shim is staged");
-    fs::write(&c_source, PHASE4_CONSUMER).expect("Phase4 C17 consumer is staged");
-    fs::write(&cpp_source, PHASE4_CONSUMER).expect("Phase4 C++17 consumer is staged");
+    write_package(&emitted_query_package(), stage.path());
+    let package_source = stage.path().join("query_package.c");
+    let package_object = stage.path().join("query_package.o");
+    let c_source = stage.path().join("query_consumer.c");
+    let cpp_source = stage.path().join("query_consumer.cpp");
+    let c_executable = stage.path().join("generated-query-c17-live");
+    let cpp_executable = stage.path().join("generated-query-cpp17-live");
+    fs::write(&package_source, QUERY_PACKAGE).expect("Query package shim is staged");
+    fs::write(&c_source, QUERY_CONSUMER).expect("Query C17 consumer is staged");
+    fs::write(&cpp_source, QUERY_CONSUMER).expect("Query C++17 consumer is staged");
     let include_arguments = [runtime_include(), stage.path().join("include")];
     let native_directory = native_library
         .parent()
@@ -1972,7 +1945,7 @@ fn generated_data_model_runtime_v3_live() {
         .unwrap_or_else(|error| panic!("failed to launch {c_compiler}: {error}"));
     assert!(
         package_compile.status.success(),
-        "{c_compiler} rejected the exact generated Phase4 package:\nstdout:\n{}\nstderr:\n{}",
+        "{c_compiler} rejected the exact generated Query package:\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&package_compile.stdout),
         String::from_utf8_lossy(&package_compile.stderr),
     );
@@ -2012,36 +1985,36 @@ fn generated_data_model_runtime_v3_live() {
             .unwrap_or_else(|error| panic!("failed to launch {compiler}: {error}"));
         assert!(
             compiled.status.success(),
-            "{compiler} rejected the exact generated {language} Phase4 consumer:\nstdout:\n{}\nstderr:\n{}",
+            "{compiler} rejected the exact generated {language} Query consumer:\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&compiled.stdout),
             String::from_utf8_lossy(&compiled.stderr),
         );
     }
 
-    let setup_root = stage.path().join("phase4-setup");
+    let setup_root = stage.path().join("query-setup");
     fs::create_dir_all(setup_root.join("c_projection_live"))
-        .expect("Phase4 setup source directory is created");
+        .expect("Query setup source directory is created");
     fs::create_dir_all(setup_root.join("acceptance"))
-        .expect("Phase4 provider fixture directory is created");
+        .expect("Query provider fixture directory is created");
     fs::write(setup_root.join("c_projection_live/setup.rs"), SETUP)
-        .expect("Phase4 database setup source is staged");
+        .expect("Query database setup source is staged");
     fs::write(
         setup_root.join("acceptance/provider-3.12.1.tql"),
-        PHASE4_PROVIDER_SCHEMA,
+        QUERY_PROVIDER_SCHEMA,
     )
-    .expect("exact Workforce V3 provider fixture is staged byte-for-byte");
+    .expect("exact Sdk V3 provider fixture is staged byte-for-byte");
     let orm = Path::new(env!("CARGO_MANIFEST_DIR")).join("../orm");
     let manifest = setup_root.join("Cargo.toml");
     fs::write(
         &manifest,
         format!(
-            "[package]\nname = \"type-bridge-c-phase4-live-setup\"\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n[[bin]]\nname = \"setup\"\npath = \"c_projection_live/setup.rs\"\n\n[dependencies]\ntype-bridge-orm = {{ path = \"{}\" }}\ntokio = {{ version = \"1\", features = [\"macros\", \"rt-multi-thread\"] }}\n\n[workspace]\n",
+            "[package]\nname = \"type-bridge-test-provider\"\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n[[bin]]\nname = \"setup\"\npath = \"c_projection_live/setup.rs\"\n\n[dependencies]\ntype-bridge-orm = {{ path = \"{}\" }}\ntokio = {{ version = \"1\", features = [\"macros\", \"rt-multi-thread\"] }}\n\n[workspace]\n",
             manifest_path(&orm),
         ),
     )
-    .expect("Phase4 database setup manifest is staged");
-    fs::write(setup_root.join("Cargo.lock"), PHASE4_SETUP_LOCK)
-        .expect("Phase4 database setup lockfile is staged");
+    .expect("Query database setup manifest is staged");
+    fs::write(setup_root.join("Cargo.lock"), QUERY_SETUP_LOCK)
+        .expect("Query database setup lockfile is staged");
     let environment = vec![
         ("TYPEDB_ADDRESS".to_owned(), address),
         ("TYPEDB_HTTP_PORT".to_owned(), http_port),
@@ -2061,7 +2034,7 @@ fn generated_data_model_runtime_v3_live() {
         manifest,
         target: env::var_os("ACCEPTANCE_TARGET_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|| stage.path().join("phase4-target")),
+            .unwrap_or_else(|| stage.path().join("query-target")),
         environment: environment.clone(),
         active: false,
     };
@@ -2074,7 +2047,7 @@ fn generated_data_model_runtime_v3_live() {
         }
         command
             .output()
-            .expect("exact generated Phase4 consumer launches")
+            .expect("exact generated Query consumer launches")
     };
     let c_output = run(&c_executable);
     let cpp_output = run(&cpp_executable);
@@ -2086,12 +2059,12 @@ fn generated_data_model_runtime_v3_live() {
         cleanup.status.success()
             && String::from_utf8_lossy(&cleanup.stdout)
                 .contains("generated C isolated database cleanup: passed"),
-        "generated Phase4 database cleanup failed:\nstdout:\n{}\nstderr:\n{}",
+        "generated Query database cleanup failed:\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&cleanup.stdout),
         String::from_utf8_lossy(&cleanup.stderr),
     );
 
-    let markers = PHASE4_CONSUMER
+    let markers = QUERY_CONSUMER
         .lines()
         .filter_map(|line| {
             line.trim()
@@ -2100,12 +2073,12 @@ fn generated_data_model_runtime_v3_live() {
                 .filter(|value| value.ends_with(": passed"))
         })
         .collect::<Vec<_>>();
-    assert_eq!(markers.len(), 8, "Phase4 live marker inventory drifted");
+    assert_eq!(markers.len(), 8, "Query live marker inventory drifted");
     for (language, output) in [("C17", c_output), ("C++17", cpp_output)] {
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
             output.status.success(),
-            "exact generated {language} Phase4 consumer failed with {}:\nstdout:\n{}\nstderr:\n{}",
+            "exact generated {language} Query consumer failed with {}:\nstdout:\n{}\nstderr:\n{}",
             output.status,
             stdout,
             String::from_utf8_lossy(&output.stderr),
@@ -2113,11 +2086,11 @@ fn generated_data_model_runtime_v3_live() {
         for marker in &markers {
             assert!(
                 stdout.contains(marker),
-                "{language} Phase4 consumer omitted {marker}"
+                "{language} Query consumer omitted {marker}"
             );
         }
     }
-    publish_workforce_v3_c_live_supplement();
+    publish_sdk_v3_c_live_supplement();
 }
 
 #[test]
@@ -2125,20 +2098,20 @@ fn generated_c_live_setup_dependency_graphs_are_frozen() {
     let setup = std::str::from_utf8(SETUP_LOCK).expect("setup lockfile is UTF-8");
     assert_eq!(
         setup
-            .matches("name = \"type-bridge-c-projection-live-setup\"")
+            .matches("name = \"type-bridge-test-provider\"")
             .count(),
         1
     );
     assert!(setup.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
     assert!(!setup.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
 
-    let phase4 = std::str::from_utf8(PHASE4_SETUP_LOCK).expect("Phase4 lockfile is UTF-8");
+    let query = std::str::from_utf8(QUERY_SETUP_LOCK).expect("Query lockfile is UTF-8");
     assert_eq!(
-        phase4
-            .matches("name = \"type-bridge-c-phase4-live-setup\"")
+        query
+            .matches("name = \"type-bridge-test-provider\"")
             .count(),
         1
     );
-    assert!(phase4.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
-    assert!(!phase4.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
+    assert!(query.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
+    assert!(!query.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
 }

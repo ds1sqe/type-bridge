@@ -14,17 +14,12 @@ use crate::{
 const CMAKE_TEMPLATE: &[u8] = include_bytes!("CMakeLists.txt.in");
 const CMAKE_PACKAGE_CONFIG_TEMPLATE: &[u8] = include_bytes!("SchemaConfig.cmake.in");
 const PKG_CONFIG_TEMPLATE: &[u8] = include_bytes!("schema.pc.in");
-const ORDERED_CMAKE_TEMPLATE: &[u8] = include_bytes!("CMakeLists.abi-1-4.txt.in");
-const ORDERED_CMAKE_PACKAGE_CONFIG_TEMPLATE: &[u8] =
-    include_bytes!("SchemaConfig.abi-1-4.cmake.in");
-const ORDERED_PKG_CONFIG_TEMPLATE: &[u8] = include_bytes!("schema.abi-1-4.pc.in");
-
 const CMAKE_TEMPLATE_ID: &str = "typebridge.generator.c.cmake-template";
 const CMAKE_PACKAGE_CONFIG_TEMPLATE_ID: &str =
     "typebridge.generator.c.cmake-package-config-template";
 const PKG_CONFIG_TEMPLATE_ID: &str = "typebridge.generator.c.pkg-config-template";
 
-/// C schema-package emitter with feature-selected legacy and ordered evidence ledgers.
+/// C schema-package emitter with schema-selected projection evidence.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CEmitter;
 
@@ -35,7 +30,7 @@ impl CEmitter {
         Self
     }
 
-    /// Return its exact legacy unordered projection-handler evidence.
+    /// Return its unordered projection-handler evidence.
     #[must_use]
     pub fn generator_handlers(&self) -> Vec<ProjectionHandler> {
         vec![ProjectionHandler::c_v2()]
@@ -47,17 +42,17 @@ impl CEmitter {
         self.handlers_for_ordered(resolved_schema_uses_ordered_collections(schema))
     }
 
-    /// Hash every legacy unordered fixed byte resource consumed by emission.
+    /// Hash every fixed byte resource consumed by emission.
     pub fn code_resources(&self) -> Result<Vec<CodeResourceDigest>, Diagnostic> {
-        self.resources_for_ordered(false)
+        self.resources()
     }
 
     /// Hash every fixed byte resource selected for the resolved schema features.
     pub fn code_resources_for(
         &self,
-        schema: &ResolvedSchema,
+        _schema: &ResolvedSchema,
     ) -> Result<Vec<CodeResourceDigest>, Diagnostic> {
-        self.resources_for_ordered(resolved_schema_uses_ordered_collections(schema))
+        self.resources()
     }
 
     fn handlers_for_ordered(&self, ordered: bool) -> Vec<ProjectionHandler> {
@@ -68,16 +63,14 @@ impl CEmitter {
         }
     }
 
-    fn resources_for_ordered(&self, ordered: bool) -> Result<Vec<CodeResourceDigest>, Diagnostic> {
-        let (cmake_template, cmake_package_config_template, pkg_config_template) =
-            selected_templates(ordered);
+    fn resources(&self) -> Result<Vec<CodeResourceDigest>, Diagnostic> {
         let mut resources = vec![
-            CodeResourceDigest::from_bytes(CMAKE_TEMPLATE_ID, cmake_template)?,
+            CodeResourceDigest::from_bytes(CMAKE_TEMPLATE_ID, CMAKE_TEMPLATE)?,
             CodeResourceDigest::from_bytes(
                 CMAKE_PACKAGE_CONFIG_TEMPLATE_ID,
-                cmake_package_config_template,
+                CMAKE_PACKAGE_CONFIG_TEMPLATE,
             )?,
-            CodeResourceDigest::from_bytes(PKG_CONFIG_TEMPLATE_ID, pkg_config_template)?,
+            CodeResourceDigest::from_bytes(PKG_CONFIG_TEMPLATE_ID, PKG_CONFIG_TEMPLATE)?,
         ];
         resources.sort_by(|left, right| left.id().cmp(right.id()));
         Ok(resources)
@@ -91,7 +84,7 @@ impl CEmitter {
     ) -> Result<GeneratedPackage, Diagnostic> {
         let ordered = projection_uses_ordered_collections(projection);
         let handlers = self.handlers_for_ordered(ordered);
-        let resources = self.resources_for_ordered(ordered)?;
+        let resources = self.resources()?;
         if projection.target() != BindingTarget::C
             || projection.config().c_naming_policy() != Some(CNamingPolicy::TypeBridgeV1)
             || projection.config().c_symbol_prefix().is_none()
@@ -123,27 +116,9 @@ impl CEmitter {
                 "C projection is not the exact shipped projection of the verified schema authority",
             ));
         }
-        let (cmake_template, cmake_package_config_template, pkg_config_template) =
-            selected_templates(ordered);
         render::render(
             projection,
             &embedded,
-            cmake_template,
-            cmake_package_config_template,
-            pkg_config_template,
-        )
-    }
-}
-
-fn selected_templates(ordered: bool) -> (&'static [u8], &'static [u8], &'static [u8]) {
-    if ordered {
-        (
-            ORDERED_CMAKE_TEMPLATE,
-            ORDERED_CMAKE_PACKAGE_CONFIG_TEMPLATE,
-            ORDERED_PKG_CONFIG_TEMPLATE,
-        )
-    } else {
-        (
             CMAKE_TEMPLATE,
             CMAKE_PACKAGE_CONFIG_TEMPLATE,
             PKG_CONFIG_TEMPLATE,

@@ -8,9 +8,9 @@ inventory.
 ## Parity Authority and Retained Inventory
 
 `tests/contracts/sdk_conformance/manifest-v1.json` and the versioned
-`tests/contracts/sdk_conformance/workforce-v*/` contracts are the executable
+`tests/contracts/sdk_conformance/sdk-v*/` contracts are the executable
 acceptance authority. The manifest owns canonical capabilities, proof profiles,
-binding states, and transitions; workforce catalogs, journeys, report schemas,
+binding states, and transitions; sdk catalogs, journeys, report schemas,
 and comparators own the executable conformance checkpoints.
 
 `tests/fixtures/generated-only-operation-parity-inventory.json` is the old

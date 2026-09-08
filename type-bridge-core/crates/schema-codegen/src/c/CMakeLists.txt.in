@@ -26,7 +26,7 @@ file(
   "${CMAKE_INSTALL_PREFIX}"
 )
 
-find_package(TypeBridge 1.3 CONFIG REQUIRED)
+find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)
 
 add_library(@TYPE_BRIDGE_C_SYMBOL_PREFIX@_schema STATIC src/models.c)
 add_library(@TYPE_BRIDGE_C_SYMBOL_PREFIX@::schema ALIAS @TYPE_BRIDGE_C_SYMBOL_PREFIX@_schema)

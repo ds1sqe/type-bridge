@@ -1,0 +1,1669 @@
+{
+  "format": "typebridge.sdk-journey/v3",
+  "fixture_id": "sdk-v3",
+  "version": 3,
+  "semantic_profile": "typedb-3.12.1/v1",
+  "records": {
+    "people": [
+      {
+        "ref": "data-ada",
+        "model": "person",
+        "fields": {
+          "identifier": {
+            "kind": "string",
+            "value": "data-ada"
+          },
+          "nickname": {
+            "kind": "string",
+            "value": "Ada"
+          },
+          "aliases": [
+            {
+              "kind": "string",
+              "value": "analyst"
+            },
+            {
+              "kind": "string",
+              "value": "mathematician"
+            }
+          ],
+          "score": {
+            "kind": "long",
+            "value": "38"
+          },
+          "foo__bar": {
+            "kind": "long",
+            "value": "7"
+          },
+          "score__gte": {
+            "kind": "long",
+            "value": "40"
+          },
+          "val_double": {
+            "kind": "double",
+            "bits": "4043000000000000"
+          },
+          "val_decimal": {
+            "kind": "decimal",
+            "value": "38.5"
+          },
+          "val_bool": {
+            "kind": "boolean",
+            "value": false
+          },
+          "val_date": {
+            "kind": "date",
+            "value": "2026-08-12"
+          },
+          "val_datetime": {
+            "kind": "datetime",
+            "value": "2026-08-12T09:30:00"
+          },
+          "val_datetime_tz": {
+            "kind": "datetime_tz",
+            "value": "2026-08-12T09:30:00Z"
+          },
+          "val_duration": {
+            "kind": "duration",
+            "value": "PT38S"
+          },
+          "val_constrained": {
+            "kind": "long",
+            "value": "38"
+          }
+        }
+      },
+      {
+        "ref": "data-dana",
+        "model": "person",
+        "fields": {
+          "identifier": {
+            "kind": "string",
+            "value": "data-dana"
+          },
+          "aliases": [
+            {
+              "kind": "string",
+              "value": "engineer"
+            },
+            {
+              "kind": "string",
+              "value": "mentor"
+            }
+          ],
+          "score": {
+            "kind": "long",
+            "value": "45"
+          },
+          "foo__bar": {
+            "kind": "long",
+            "value": "9"
+          },
+          "score__gte": {
+            "kind": "long",
+            "value": "40"
+          },
+          "val_double": {
+            "kind": "double",
+            "bits": "4046800000000000"
+          },
+          "val_decimal": {
+            "kind": "decimal",
+            "value": "45.5"
+          },
+          "val_bool": {
+            "kind": "boolean",
+            "value": true
+          },
+          "val_date": {
+            "kind": "date",
+            "value": "2026-08-13"
+          },
+          "val_datetime": {
+            "kind": "datetime",
+            "value": "2026-08-13T10:45:00"
+          },
+          "val_datetime_tz": {
+            "kind": "datetime_tz",
+            "value": "2026-08-13T10:45:00Z"
+          },
+          "val_duration": {
+            "kind": "duration",
+            "value": "PT45S"
+          },
+          "val_constrained": {
+            "kind": "long",
+            "value": "45"
+          }
+        }
+      }
+    ],
+    "robots": [
+      {
+        "ref": "robot-7",
+        "model": "robot",
+        "fields": {
+          "robot_id": {
+            "kind": "long",
+            "value": "7"
+          },
+          "val_constrained": {
+            "kind": "long",
+            "value": "12"
+          }
+        }
+      },
+      {
+        "ref": "robot-negative-7",
+        "model": "robot",
+        "fields": {
+          "robot_id": {
+            "kind": "long",
+            "value": "-7"
+          },
+          "val_constrained": {
+            "kind": "long",
+            "value": "13"
+          }
+        }
+      }
+    ],
+    "counters": [
+      {
+        "ref": "counter-left",
+        "model": "counter",
+        "fields": {
+          "counter_value": {
+            "kind": "long",
+            "value": "1"
+          }
+        }
+      },
+      {
+        "ref": "counter-right",
+        "model": "counter",
+        "fields": {
+          "counter_value": {
+            "kind": "long",
+            "value": "2"
+          }
+        }
+      }
+    ],
+    "memberships": [
+      {
+        "ref": "membership-ada",
+        "model": "membership",
+        "roles": {
+          "member": [
+            {
+              "model": "person",
+              "key": "data-ada"
+            }
+          ]
+        }
+      },
+      {
+        "ref": "membership-robot",
+        "model": "membership",
+        "roles": {
+          "member": [
+            {
+              "model": "robot",
+              "key": 7
+            }
+          ]
+        }
+      }
+    ],
+    "network_links": [
+      {
+        "ref": "link-forward",
+        "model": "network-link",
+        "fields": {
+          "identifier": {
+            "kind": "string",
+            "value": "data-link-forward"
+          }
+        },
+        "roles": {
+          "origin": [
+            {
+              "model": "person",
+              "key": "data-ada"
+            }
+          ],
+          "destination": [
+            {
+              "model": "person",
+              "key": "data-dana"
+            }
+          ],
+          "participant": [
+            {
+              "model": "person",
+              "key": "data-ada"
+            },
+            {
+              "model": "person",
+              "key": "data-dana"
+            }
+          ]
+        }
+      },
+      {
+        "ref": "link-return",
+        "model": "network-link",
+        "fields": {
+          "identifier": {
+            "kind": "string",
+            "value": "data-link-return"
+          }
+        },
+        "roles": {
+          "origin": [
+            {
+              "model": "person",
+              "key": "data-dana"
+            }
+          ],
+          "destination": [
+            {
+              "model": "person",
+              "key": "data-ada"
+            }
+          ],
+          "participant": [
+            {
+              "model": "person",
+              "key": "data-dana"
+            },
+            {
+              "model": "person",
+              "key": "data-ada"
+            }
+          ]
+        }
+      }
+    ],
+    "interactions": [
+      {
+        "ref": "interaction-robot",
+        "model": "interaction",
+        "fields": {
+          "identifier": {
+            "kind": "string",
+            "value": "data-interaction-robot"
+          }
+        },
+        "roles": {
+          "actor": [
+            {
+              "model": "robot",
+              "key": 7
+            }
+          ],
+          "target": [
+            {
+              "model": "person",
+              "key": "data-ada"
+            }
+          ]
+        }
+      },
+      {
+        "ref": "interaction-absent",
+        "model": "interaction",
+        "fields": {
+          "identifier": {
+            "kind": "string",
+            "value": "data-interaction-absent"
+          }
+        },
+        "roles": {
+          "target": [
+            {
+              "model": "person",
+              "key": "data-dana"
+            }
+          ]
+        }
+      },
+      {
+        "ref": "interaction-person",
+        "model": "interaction",
+        "fields": {
+          "identifier": {
+            "kind": "string",
+            "value": "data-interaction-person"
+          }
+        },
+        "roles": {
+          "actor": [
+            {
+              "model": "person",
+              "key": "data-ada"
+            }
+          ],
+          "target": [
+            {
+              "model": "person",
+              "key": "data-dana"
+            }
+          ]
+        }
+      }
+    ],
+    "plain_activity": {
+      "ref": "plain-activity-ada",
+      "model": "plain-activity",
+      "roles": {
+        "participant": [
+          {
+            "model": "person",
+            "key": "data-ada"
+          }
+        ]
+      }
+    },
+    "event": {
+      "ref": "event-ada",
+      "model": "event",
+      "roles": {
+        "subject": [
+          {
+            "model": "person",
+            "key": "data-ada"
+          }
+        ]
+      }
+    },
+    "container": {
+      "ref": "container-event",
+      "model": "container",
+      "roles": {
+        "item": [
+          {
+            "model": "event",
+            "ref": "event-ada"
+          }
+        ]
+      }
+    }
+  },
+  "create_order": [
+    "data-ada",
+    "data-dana",
+    "robot-7",
+    "robot-negative-7",
+    "counter-left",
+    "counter-right",
+    "membership-ada",
+    "membership-robot",
+    "link-forward",
+    "link-return",
+    "interaction-robot",
+    "interaction-absent",
+    "interaction-person",
+    "plain-activity-ada",
+    "event-ada",
+    "container-event"
+  ],
+  "cleanup_order": [
+    "container-event",
+    "event-ada",
+    "plain-activity-ada",
+    "interaction-person",
+    "interaction-absent",
+    "interaction-robot",
+    "link-return",
+    "link-forward",
+    "membership-robot",
+    "membership-ada",
+    "counter-right",
+    "counter-left",
+    "robot-negative-7",
+    "robot-7",
+    "data-dana",
+    "data-ada"
+  ],
+  "expected_observations": {
+    "atomic_multibinding_generation": {
+      "targets": [
+        "python",
+        "typescript",
+        "rust",
+        "c"
+      ],
+      "common_authority_identity": {
+        "schema_source_equal": true,
+        "semantic_profile": "typedb-3.12.1/v1",
+        "semantic_fingerprint_equal": true,
+        "resource_ledger_equal": true
+      },
+      "package_identities_distinct": true,
+      "generated_sidecars": [],
+      "no_sidecar_runtime_dependency": true,
+      "deterministic_rerun": {
+        "byte_identical": true,
+        "published_targets": 4
+      },
+      "injected_failure": {
+        "failed_target": "c",
+        "published_targets": 0,
+        "previous_outputs_unchanged": true,
+        "staging_artifacts_remaining": 0
+      }
+    },
+    "borrowed_transaction_lifecycle": {
+      "read": {
+        "reusable_after_success": true,
+        "sibling_filter_usable": true,
+        "terminal_sequence": [
+          "all",
+          "count",
+          "exists",
+          "first"
+        ],
+        "state_after_terminals": "active",
+        "close_idempotent": true
+      },
+      "commit_visibility": {
+        "before_commit": {
+          "same_transaction_visible": true,
+          "outside_transaction_visible": false
+        },
+        "after_commit": {
+          "outside_transaction_visible": true,
+          "state": "committed"
+        }
+      },
+      "rollback_visibility": {
+        "before_rollback": {
+          "same_transaction_visible": true,
+          "outside_transaction_visible": false
+        },
+        "after_rollback": {
+          "outside_transaction_visible": false,
+          "state": "rolled_back"
+        }
+      },
+      "poison": {
+        "state": "rollback_only",
+        "first_cause": {
+          "category": "provider",
+          "code": "provider_operation_failed"
+        },
+        "later_cause": {
+          "category": "resource_limit",
+          "code": "batch_item_limit"
+        },
+        "retained_cause": {
+          "category": "provider",
+          "code": "provider_operation_failed"
+        },
+        "commit_rejection": {
+          "category": "transaction",
+          "code": "transaction_rollback_only",
+          "provider_commit_calls": 0
+        }
+      },
+      "post_rollback": {
+        "state": "rolled_back",
+        "rollback_idempotent": true,
+        "commit_rejected": true,
+        "mutation_rejected": true,
+        "close_state": "closed",
+        "close_idempotent": true
+      }
+    },
+    "complete_connection_policy": {
+      "endpoint_input": {
+        "canonical_single_endpoint": true,
+        "credential_free": true,
+        "copied": true,
+        "max_bytes": 4096
+      },
+      "database_input": {
+        "nonempty": true,
+        "copied": true,
+        "max_bytes": 256
+      },
+      "credentials": {
+        "username_nonempty": true,
+        "username_max_bytes": 4096,
+        "password_may_be_empty": true,
+        "password_max_bytes": 65536,
+        "copied_after_configuration_validation": true
+      },
+      "http_probe": {
+        "authoritative": true,
+        "probe_port_source": "connection_policy",
+        "provider_version": "3.12.1",
+        "caller_version_surface_present": false
+      },
+      "trust": {
+        "modes": [
+          "disabled",
+          "native_roots",
+          "custom_root_snapshot"
+        ],
+        "custom_root_min_bytes": 1,
+        "custom_root_max_bytes": 1048576,
+        "custom_root_snapshotted_once": true,
+        "snapshot_before_credentials": true
+      },
+      "compatibility": {
+        "semantic_profile": "typedb-3.12.1/v1",
+        "policy_source": "generated_package",
+        "detected_provider_required": "3.12.1"
+      },
+      "deadline_clock": "monotonic_absolute",
+      "resources_tighten_only": true,
+      "configuration_rejections": {
+        "families": [
+          "credentials_bounds",
+          "database_input",
+          "endpoint_input",
+          "package_profile",
+          "policy_relaxation",
+          "trust_material",
+          "tls_mode"
+        ],
+        "before_credentials": true,
+        "before_network_io": true
+      },
+      "version_rejection": {
+        "category": "unsupported_capability",
+        "code": "provider_version_unsupported",
+        "probe_requests": 1,
+        "database_provider_calls": 0,
+        "credentials_used": false
+      },
+      "diagnostics_redacted": true,
+      "close_idempotent": true
+    },
+    "data_operation_cancellation": {
+      "pre_dispatch": {
+        "category": "cancelled",
+        "code": "provider_cancelled",
+        "provider_calls": 0,
+        "partial_result": false
+      },
+      "owned_in_flight": {
+        "category": "cancelled",
+        "code": "provider_cancelled",
+        "provider_await_woken": true,
+        "rollback_completed": true,
+        "committed_prefix": false,
+        "published_results": 0
+      },
+      "borrowed_in_flight": {
+        "category": "cancelled",
+        "code": "provider_cancelled",
+        "provider_await_woken": true,
+        "state": "rollback_only",
+        "first_cause_retained": true,
+        "commit_rejected": "transaction_rollback_only",
+        "rollback_available": true
+      },
+      "after_commit": {
+        "committed_outcome_preserved": true,
+        "relabeled_cancelled": false
+      }
+    },
+    "data_operation_resource_limits": {
+      "dimensions": [
+        {
+          "dimension": "timeout_milliseconds",
+          "hard_max": 30000,
+          "hard_boundary": "accepted",
+          "zero_tightening": "first_charge_rejected",
+          "hard_plus_one": "clamped_to_hard_max"
+        },
+        {
+          "dimension": "items",
+          "hard_max": 65536,
+          "hard_boundary": "accepted",
+          "zero_tightening": "first_charge_rejected",
+          "hard_plus_one": "clamped_to_hard_max"
+        },
+        {
+          "dimension": "bytes",
+          "hard_max": 33554432,
+          "hard_boundary": "accepted",
+          "zero_tightening": "first_charge_rejected",
+          "hard_plus_one": "clamped_to_hard_max"
+        },
+        {
+          "dimension": "graph_nodes",
+          "hard_max": 65536,
+          "hard_boundary": "accepted",
+          "zero_tightening": "first_charge_rejected",
+          "hard_plus_one": "clamped_to_hard_max"
+        },
+        {
+          "dimension": "attribute_values",
+          "hard_max": 65536,
+          "hard_boundary": "accepted",
+          "zero_tightening": "first_charge_rejected",
+          "hard_plus_one": "clamped_to_hard_max"
+        },
+        {
+          "dimension": "collection_members",
+          "hard_max": 65536,
+          "hard_boundary": "accepted",
+          "zero_tightening": "first_charge_rejected",
+          "hard_plus_one": "clamped_to_hard_max"
+        },
+        {
+          "dimension": "role_players",
+          "hard_max": 65536,
+          "hard_boundary": "accepted",
+          "zero_tightening": "first_charge_rejected",
+          "hard_plus_one": "clamped_to_hard_max"
+        },
+        {
+          "dimension": "statements",
+          "hard_max": 3,
+          "hard_boundary": "accepted",
+          "zero_tightening": "first_charge_rejected",
+          "hard_plus_one": "clamped_to_hard_max"
+        }
+      ],
+      "absolute_deadline_reused": true,
+      "connection_ceiling_inherited": true,
+      "operation_policy_tightens_only": true,
+      "representative_crossing": {
+        "phase": "batch_prevalidation",
+        "dimension": "items",
+        "category": "resource_limit",
+        "code": "batch_item_limit",
+        "constrained_by": "operation",
+        "provider_calls": 0,
+        "partial_result": false
+      },
+      "owned_failure": {
+        "rollback_completed": true,
+        "committed_prefix": false,
+        "published_results": 0
+      },
+      "borrowed_failure": {
+        "state": "rollback_only",
+        "first_limit_cause_retained": true,
+        "rollback_available": true
+      }
+    },
+    "data_operation_structured_diagnostic": {
+      "version": 1,
+      "representative": {
+        "input": {
+          "category": "invalid_input",
+          "code": "range_constraint_violation",
+          "path": [
+            {
+              "kind": "type",
+              "value": "attribute:val_constrained"
+            }
+          ],
+          "details": {
+            "actual": {
+              "kind": "signed",
+              "value": "81"
+            },
+            "maximum": {
+              "kind": "signed",
+              "value": "80"
+            }
+          }
+        },
+        "provider": {
+          "category": "provider",
+          "code": "provider_operation_failed",
+          "path": [
+            {
+              "kind": "argument",
+              "value": "batch"
+            }
+          ],
+          "details": {
+            "operation": {
+              "kind": "provider_operation",
+              "value": "write"
+            }
+          }
+        },
+        "hydration": {
+          "category": "integrity",
+          "code": "provider_hydration_failed",
+          "path": [
+            {
+              "kind": "type",
+              "value": "entity:person"
+            },
+            {
+              "kind": "field",
+              "value": "person:identifier"
+            }
+          ],
+          "details": {
+            "expected": {
+              "kind": "value_type",
+              "value": "string"
+            },
+            "actual": {
+              "kind": "value_type",
+              "value": "long"
+            }
+          }
+        },
+        "commit_unknown": {
+          "category": "transaction",
+          "code": "commit_outcome_unknown",
+          "path": [
+            {
+              "kind": "argument",
+              "value": "transaction"
+            }
+          ],
+          "details": {
+            "outcome": {
+              "kind": "commit_outcome",
+              "value": "unknown"
+            }
+          },
+          "rollback_attempted": false
+        },
+        "close": {
+          "category": "provider",
+          "code": "provider_operation_failed",
+          "path": [
+            {
+              "kind": "argument",
+              "value": "resource"
+            }
+          ],
+          "details": {
+            "operation": {
+              "kind": "provider_operation",
+              "value": "close"
+            }
+          },
+          "handle_retained_for_retry": true
+        }
+      },
+      "provider_text_exposed": false,
+      "secrets_exposed": false,
+      "deterministic_field_order": true
+    },
+    "data_resource_lifecycle": {
+      "resources": [
+        "database",
+        "read_transaction",
+        "write_transaction",
+        "cancellation",
+        "batch_builder",
+        "batch_input",
+        "filter",
+        "result",
+        "projected_value",
+        "projected_thing",
+        "diagnostic"
+      ],
+      "close_contract": {
+        "idempotent": true,
+        "post_close_rejected": true,
+        "post_close_provider_calls": 0
+      },
+      "parent_child": {
+        "runtime_close_with_database": "in_use",
+        "database_close_with_transaction": "in_use",
+        "parent_handle_retained_on_rejection": true,
+        "child_remains_usable": true,
+        "parent_closes_after_children": true
+      },
+      "session_rules": {
+        "borrowed_read_not_consumed": true,
+        "sibling_filter_usable": true,
+        "write_recovery_after_cancellation": true
+      },
+      "result_survival": {
+        "result_survives_filter_close": true,
+        "result_survives_transaction_close": true,
+        "owned_thing_survives_result_close": true
+      },
+      "cancellation_close_idempotent": true,
+      "projected_value_close_idempotent": true,
+      "projected_thing_close_idempotent": true
+    },
+    "entity_batch_insert_put": {
+      "empty": {
+        "result_count": 0,
+        "transaction_opened": false,
+        "provider_calls": 0
+      },
+      "insert": {
+        "input_order": [
+          "data-ada",
+          "data-dana"
+        ],
+        "result_order": [
+          "data-ada",
+          "data-dana"
+        ],
+        "persisted_keys": [
+          "data-ada",
+          "data-dana"
+        ]
+      },
+      "duplicate_key": {
+        "key": "data-ada",
+        "category": "invalid_input",
+        "code": "duplicate_batch_key",
+        "path": [
+          {
+            "kind": "argument",
+            "value": "rows"
+          },
+          {
+            "kind": "index",
+            "value": 1
+          },
+          {
+            "kind": "field",
+            "value": "person:identifier"
+          }
+        ],
+        "details": {
+          "first_conflicting_index": {
+            "kind": "count",
+            "value": "0"
+          }
+        },
+        "rejected_before_provider_io": true
+      },
+      "put": {
+        "input_order": [
+          "data-ada",
+          "data-dana"
+        ],
+        "result_order": [
+          "data-ada",
+          "data-dana"
+        ],
+        "replaced_keys": [
+          "data-ada"
+        ],
+        "inserted_keys": [
+          "data-dana"
+        ]
+      },
+      "late_failure": {
+        "rollback_completed": true,
+        "committed_prefix": false,
+        "persisted_keys": [],
+        "published_results": 0
+      }
+    },
+    "entity_batch_update_delete_atomic": {
+      "update": {
+        "identity_kind": "iid",
+        "input_order": [
+          "counter-left",
+          "counter-right"
+        ],
+        "result_order": [
+          "counter-left",
+          "counter-right"
+        ],
+        "identity_preserved": [
+          true,
+          true
+        ],
+        "replacement_complete": true
+      },
+      "duplicate_target": {
+        "category": "invalid_input",
+        "code": "duplicate_batch_target",
+        "path": [
+          {
+            "kind": "argument",
+            "value": "rows"
+          },
+          {
+            "kind": "index",
+            "value": 1
+          },
+          {
+            "kind": "argument",
+            "value": "iid"
+          }
+        ],
+        "details": {
+          "first_conflicting_index": {
+            "kind": "count",
+            "value": "0"
+          }
+        },
+        "rejected_before_provider_io": true
+      },
+      "delete_failure": {
+        "requested": [
+          "counter-left",
+          "counter-right"
+        ],
+        "outcome_published": false,
+        "all_targets_remain": true,
+        "rollback_completed": true,
+        "committed_prefix": false
+      },
+      "delete_success": {
+        "requested": [
+          "counter-left",
+          "counter-right"
+        ],
+        "outcome": "unit",
+        "affected_count_exposed": false,
+        "all_targets_absent": true,
+        "missing_identity_noop": true
+      }
+    },
+    "field_name_identity": {
+      "generated_tokens": [
+        {
+          "binding_name": "foo__bar",
+          "canonical_owner": "entity:person",
+          "canonical_attribute": "attribute:foo__bar",
+          "owns_fact": "person:foo__bar"
+        },
+        {
+          "binding_name": "score__gte",
+          "canonical_owner": "entity:person",
+          "canonical_attribute": "attribute:score__gte",
+          "owns_fact": "person:score__gte"
+        }
+      ],
+      "token_identities_distinct": true,
+      "package_branded": true,
+      "compatibility_lookup": [
+        {
+          "input": "foo__bar",
+          "resolved_attribute": "foo__bar",
+          "operator": "eq",
+          "literal_double_underscore": true
+        },
+        {
+          "input": "score__gte",
+          "resolved_attribute": "score",
+          "operator": "gte",
+          "operator_suffix": true
+        },
+        {
+          "input": "score__gte__eq",
+          "resolved_attribute": "score__gte",
+          "operator": "eq",
+          "literal_double_underscore": true
+        }
+      ],
+      "generated_token_string_parser_used": false
+    },
+    "inherited_relation_role_lifecycle": {
+      "model": "plain-activity",
+      "inherited_relation": "base-activity",
+      "inherited_role": "participant",
+      "player_model": "person",
+      "created": true,
+      "read_after_create": true,
+      "role_identity_preserved": true,
+      "deleted": true,
+      "read_after_delete": false,
+      "count_after_delete": 0
+    },
+    "integer_key_polymorphic_role": {
+      "integer_keys": [
+        {
+          "model": "robot",
+          "value": "-7",
+          "sign": "negative",
+          "round_trip_exact": true
+        },
+        {
+          "model": "robot",
+          "value": "7",
+          "sign": "positive",
+          "round_trip_exact": true
+        }
+      ],
+      "relation": "interaction",
+      "optional_role": "actor",
+      "polymorphic_players_observed": [
+        "person",
+        "robot"
+      ],
+      "present": [
+        {
+          "relation_ref": "interaction-person",
+          "player": {
+            "model": "person",
+            "key": "data-ada"
+          }
+        },
+        {
+          "relation_ref": "interaction-robot",
+          "player": {
+            "model": "robot",
+            "key": "7"
+          }
+        }
+      ],
+      "absent": {
+        "relation_ref": "interaction-absent",
+        "role_present": false,
+        "round_trip_exact": true
+      },
+      "relation_as_player": {
+        "player_model": "event",
+        "owner_model": "container",
+        "role": "item",
+        "preserved": true
+      }
+    },
+    "manager_field_token_filter": {
+      "model": "person",
+      "field_token": {
+        "owner": "entity:person",
+        "attribute": "attribute:foo__bar",
+        "binding_name": "foo__bar"
+      },
+      "operator_literal": {
+        "kind": "long",
+        "value": "7"
+      },
+      "operator_outcomes": [
+        {
+          "operator": "eq",
+          "normalized_keys": [
+            "data-ada"
+          ]
+        },
+        {
+          "operator": "ne",
+          "normalized_keys": [
+            "data-dana"
+          ]
+        },
+        {
+          "operator": "gt",
+          "normalized_keys": [
+            "data-dana"
+          ]
+        },
+        {
+          "operator": "gte",
+          "normalized_keys": [
+            "data-ada",
+            "data-dana"
+          ]
+        },
+        {
+          "operator": "lt",
+          "normalized_keys": []
+        },
+        {
+          "operator": "lte",
+          "normalized_keys": [
+            "data-ada"
+          ]
+        }
+      ],
+      "conjunction": {
+        "authored_order": [
+          "foo__bar:gte:7",
+          "score:gt:40"
+        ],
+        "normalized_keys": [
+          "data-dana"
+        ]
+      },
+      "terminals": {
+        "all_normalization": "reference_key_ascending",
+        "count": 2,
+        "exists": true
+      },
+      "first": {
+        "identity_predicate": "identifier:eq:data-ada",
+        "strict_singular": true,
+        "result": "data-ada",
+        "nonsingular_rejection": {
+          "category": "invalid_input",
+          "code": "manager_first_requires_identity",
+          "rejected_before_provider_io": true
+        }
+      },
+      "rejections": [
+        {
+          "kind": "wrong_field_owner",
+          "category": "integrity",
+          "code": "field_owner_mismatch",
+          "rejected_before_provider_io": true
+        },
+        {
+          "kind": "wrong_scalar_domain",
+          "category": "invalid_input",
+          "code": "wrong_scalar_domain",
+          "rejected_before_provider_io": true
+        },
+        {
+          "kind": "wrong_package",
+          "category": "integrity",
+          "code": "generated_token_package_mismatch",
+          "rejected_before_provider_io": true
+        },
+        {
+          "kind": "boolean_ordering",
+          "category": "invalid_input",
+          "code": "invalid_operator_for_type",
+          "rejected_before_provider_io": true
+        }
+      ],
+      "borrowed_read": {
+        "reusable_after_each_terminal": true,
+        "sibling_filter_usable": true,
+        "final_state": "active"
+      }
+    },
+    "ordered_distinct_collections": {
+      "owns": {
+        "field": "aliases",
+        "mode": "ordered_list",
+        "distinct": true,
+        "authored": [
+          "analyst",
+          "mathematician"
+        ],
+        "constructed": [
+          "analyst",
+          "mathematician"
+        ],
+        "hydrated": [
+          "analyst",
+          "mathematician"
+        ]
+      },
+      "relates": {
+        "role": "participant",
+        "mode": "ordered_list",
+        "distinct": true,
+        "authored": [
+          "data-ada",
+          "data-dana"
+        ],
+        "constructed": [
+          "data-ada",
+          "data-dana"
+        ],
+        "hydrated": [
+          "data-ada",
+          "data-dana"
+        ]
+      },
+      "scalar_duplicate": {
+        "canonical_value": "analyst",
+        "first_index": 0,
+        "duplicate_index": 1,
+        "category": "invalid_input",
+        "code": "ordered_distinct_duplicate",
+        "rejected_before_provider_io": true
+      },
+      "player_duplicate": {
+        "canonical_player": {
+          "model": "person",
+          "key": "data-ada"
+        },
+        "first_index": 0,
+        "duplicate_index": 1,
+        "category": "invalid_input",
+        "code": "ordered_distinct_duplicate",
+        "rejected_before_provider_io": true
+      },
+      "unordered_compatibility_default": true
+    },
+    "projected_constraint_validation": {
+      "scalar_domains": [
+        "boolean",
+        "date",
+        "datetime",
+        "datetime_tz",
+        "decimal",
+        "double",
+        "duration",
+        "long",
+        "string"
+      ],
+      "rejection_families": [
+        {
+          "family": "abstract_constructibility",
+          "rejected": true,
+          "rejected_before_provider_io": true
+        },
+        {
+          "family": "allowed_values",
+          "rejected": true,
+          "rejected_before_provider_io": true
+        },
+        {
+          "family": "field_constructibility",
+          "rejected": true,
+          "rejected_before_provider_io": true
+        },
+        {
+          "family": "inherited_owns",
+          "rejected": true,
+          "rejected_before_provider_io": true
+        },
+        {
+          "family": "inherited_plays",
+          "rejected": true,
+          "rejected_before_provider_io": true
+        },
+        {
+          "family": "inherited_relates",
+          "rejected": true,
+          "rejected_before_provider_io": true
+        },
+        {
+          "family": "invalid_player_type",
+          "rejected": true,
+          "rejected_before_provider_io": true
+        },
+        {
+          "family": "key",
+          "rejected": true,
+          "rejected_before_provider_io": true
+        },
+        {
+          "family": "maximum_cardinality",
+          "rejected": true,
+          "rejected_before_provider_io": true
+        },
+        {
+          "family": "ordered_distinct_player",
+          "rejected": true,
+          "rejected_before_provider_io": true
+        },
+        {
+          "family": "ordered_distinct_scalar",
+          "rejected": true,
+          "rejected_before_provider_io": true
+        },
+        {
+          "family": "ownership_cardinality",
+          "rejected": true,
+          "rejected_before_provider_io": true
+        },
+        {
+          "family": "range",
+          "rejected": true,
+          "rejected_before_provider_io": true
+        },
+        {
+          "family": "regex",
+          "rejected": true,
+          "rejected_before_provider_io": true
+        },
+        {
+          "family": "required_cardinality",
+          "rejected": true,
+          "rejected_before_provider_io": true
+        },
+        {
+          "family": "role_cardinality",
+          "rejected": true,
+          "rejected_before_provider_io": true
+        },
+        {
+          "family": "role_constructibility",
+          "rejected": true,
+          "rejected_before_provider_io": true
+        },
+        {
+          "family": "scalar_domain",
+          "rejected": true,
+          "rejected_before_provider_io": true
+        }
+      ],
+      "provider_enforced_families": [
+        {
+          "family": "unique",
+          "projection_fact_retained": true,
+          "local_preflight": "not_applicable",
+          "provider_enforced": true
+        }
+      ],
+      "representative_diagnostic": {
+        "category": "invalid_input",
+        "code": "range_constraint_violation",
+        "path": [
+          {
+            "kind": "type",
+            "value": "attribute:val_constrained"
+          }
+        ],
+        "details": {
+          "actual": {
+            "kind": "signed",
+            "value": "81"
+          },
+          "maximum": {
+            "kind": "signed",
+            "value": "80"
+          }
+        },
+        "provider_calls": 0
+      }
+    },
+    "projection_evidence_integrity": {
+      "rejected_mutations": [
+        "duplicated",
+        "extra",
+        "foreign",
+        "forged",
+        "missing",
+        "reordered",
+        "stale"
+      ],
+      "representative_mutation": {
+        "evidence": "semantic_schema_fingerprint",
+        "kind": "missing"
+      },
+      "diagnostic": {
+        "category": "integrity",
+        "code": "projection_evidence_mismatch",
+        "path": [
+          {
+            "kind": "argument",
+            "value": "projection_evidence"
+          },
+          {
+            "kind": "index",
+            "value": 0
+          },
+          {
+            "kind": "contract_identity",
+            "value": "semantic_schema_fingerprint"
+          }
+        ],
+        "details": {
+          "expected_occurrence_count": {
+            "kind": "count",
+            "value": "1"
+          },
+          "actual_occurrence_count": {
+            "kind": "count",
+            "value": "0"
+          },
+          "foreign_package": {
+            "kind": "boolean",
+            "value": false
+          }
+        }
+      },
+      "rejected_before_provider_io": true
+    },
+    "relation_batch_insert_put": {
+      "empty": {
+        "result_count": 0,
+        "transaction_opened": false,
+        "provider_calls": 0
+      },
+      "insert": {
+        "input_order": [
+          "link-forward",
+          "link-return"
+        ],
+        "result_order": [
+          "link-forward",
+          "link-return"
+        ],
+        "persisted_keys": [
+          "data-link-forward",
+          "data-link-return"
+        ]
+      },
+      "duplicate_key": {
+        "key": "data-link-forward",
+        "category": "invalid_input",
+        "code": "duplicate_batch_key",
+        "path": [
+          {
+            "kind": "argument",
+            "value": "rows"
+          },
+          {
+            "kind": "index",
+            "value": 1
+          },
+          {
+            "kind": "field",
+            "value": "network-link:identifier"
+          }
+        ],
+        "details": {
+          "first_conflicting_index": {
+            "kind": "count",
+            "value": "0"
+          }
+        },
+        "rejected_before_provider_io": true
+      },
+      "put": {
+        "input_order": [
+          "link-forward",
+          "link-return"
+        ],
+        "result_order": [
+          "link-forward",
+          "link-return"
+        ],
+        "replaced_keys": [
+          "data-link-forward"
+        ],
+        "inserted_keys": [
+          "data-link-return"
+        ],
+        "roles_preserved": true
+      },
+      "late_failure": {
+        "rollback_completed": true,
+        "committed_prefix": false,
+        "persisted_keys": [],
+        "published_results": 0
+      }
+    },
+    "relation_batch_update_delete_atomic": {
+      "update": {
+        "identity_kind": "iid",
+        "input_order": [
+          "membership-ada",
+          "membership-robot"
+        ],
+        "result_order": [
+          "membership-ada",
+          "membership-robot"
+        ],
+        "identity_preserved": [
+          true,
+          true
+        ],
+        "roles_preserved": true,
+        "replacement_complete": true
+      },
+      "duplicate_target": {
+        "category": "invalid_input",
+        "code": "duplicate_batch_target",
+        "path": [
+          {
+            "kind": "argument",
+            "value": "rows"
+          },
+          {
+            "kind": "index",
+            "value": 1
+          },
+          {
+            "kind": "argument",
+            "value": "iid"
+          }
+        ],
+        "details": {
+          "first_conflicting_index": {
+            "kind": "count",
+            "value": "0"
+          }
+        },
+        "rejected_before_provider_io": true
+      },
+      "delete_failure": {
+        "requested": [
+          "membership-ada",
+          "membership-robot"
+        ],
+        "outcome_published": false,
+        "all_targets_remain": true,
+        "rollback_completed": true,
+        "committed_prefix": false
+      },
+      "delete_success": {
+        "requested": [
+          "membership-ada",
+          "membership-robot"
+        ],
+        "outcome": "unit",
+        "affected_count_exposed": false,
+        "all_targets_absent": true,
+        "missing_identity_noop": true
+      }
+    },
+    "token_package_fencing": {
+      "accepted_local": {
+        "construction": true,
+        "batch": true,
+        "filter": true,
+        "hydration": true
+      },
+      "rejections": {
+        "construction": {
+          "category": "integrity",
+          "code": "generated_token_package_mismatch",
+          "rejected_before_provider_io": true
+        },
+        "batch": {
+          "category": "integrity",
+          "code": "generated_token_package_mismatch",
+          "rejected_before_provider_io": true
+        },
+        "filter": {
+          "category": "integrity",
+          "code": "generated_token_package_mismatch",
+          "rejected_before_provider_io": true
+        },
+        "hydration": {
+          "category": "integrity",
+          "code": "generated_token_package_mismatch",
+          "public_result_published": false
+        }
+      },
+      "rejected_token_states": [
+        "foreign",
+        "forged",
+        "reordered",
+        "stale"
+      ],
+      "provider_text_exposed": false
+    },
+    "unkeyed_entity_iid_lifecycle": {
+      "model": "counter",
+      "identity_kind": "iid",
+      "surface": {
+        "key_present": false,
+        "put_present": false
+      },
+      "insert": {
+        "refs": [
+          "counter-left",
+          "counter-right"
+        ],
+        "count_after": 2,
+        "canonical_identity_retained": true
+      },
+      "get_by_identity": {
+        "ref": "counter-left",
+        "found": true,
+        "value": "1"
+      },
+      "update_by_identity": {
+        "ref": "counter-left",
+        "value_before": "1",
+        "value_after": "11",
+        "identity_preserved": true,
+        "count_after": 2
+      },
+      "delete_by_identity": {
+        "ref": "counter-left",
+        "deleted": true,
+        "read_after_delete": false,
+        "count_after": 1,
+        "missing_identity_noop": true
+      },
+      "count_after_cleanup": 0
+    },
+    "unkeyed_relation_iid_lifecycle": {
+      "model": "membership",
+      "identity_kind": "iid",
+      "surface": {
+        "key_present": false,
+        "put_present": false
+      },
+      "insert": {
+        "refs": [
+          "membership-ada",
+          "membership-robot"
+        ],
+        "count_after": 2,
+        "canonical_identity_retained": true
+      },
+      "get_by_identity": {
+        "ref": "membership-ada",
+        "found": true,
+        "roles": {
+          "member": [
+            "data-ada"
+          ]
+        }
+      },
+      "update_by_identity": {
+        "ref": "membership-ada",
+        "roles_before": {
+          "member": [
+            "data-ada"
+          ]
+        },
+        "roles_after": {
+          "member": [
+            "data-dana"
+          ]
+        },
+        "identity_preserved": true,
+        "count_after": 2
+      },
+      "delete_by_identity": {
+        "ref": "membership-ada",
+        "deleted": true,
+        "read_after_delete": false,
+        "count_after": 1,
+        "missing_identity_noop": true
+      },
+      "count_after_cleanup": 0
+    }
+  }
+}

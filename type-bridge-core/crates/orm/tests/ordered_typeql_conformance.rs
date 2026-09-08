@@ -38,10 +38,10 @@ relations:
         distinct: true
 "#;
 
-const WORKFORCE_V3_SCHEMA: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml");
-const WORKFORCE_V3_PROVIDER_SCHEMA: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/workforce-v3/provider-3.12.1-v3.tql");
+const SDK_V3_SCHEMA: &str =
+    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml");
+const SDK_V3_PROVIDER_SCHEMA: &str =
+    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql");
 
 #[test]
 fn canonical_ordered_projection_renders_exact_typeql_3_12_list_interfaces() {
@@ -84,12 +84,10 @@ fn canonical_ordered_projection_renders_exact_typeql_3_12_list_interfaces() {
 }
 
 #[test]
-fn workforce_v3_fixture_projects_the_exact_ordered_provider_interfaces() {
-    let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("workforce-v3.yaml").unwrap(),
-        WORKFORCE_V3_SCHEMA,
-    )])
-    .unwrap();
+fn sdk_v3_fixture_projects_the_exact_ordered_provider_interfaces() {
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("sdk-v3.yaml").unwrap(), SDK_V3_SCHEMA)])
+            .unwrap();
     let declared = normalize_documents(&documents).unwrap();
     let resolved = resolve(
         &declared,
@@ -140,6 +138,6 @@ fn workforce_v3_fixture_projects_the_exact_ordered_provider_interfaces() {
         .unwrap();
     assert!(emitted.contains("owns aliases[] @unique @distinct @card(0..3)"));
     assert!(emitted.contains("relates participant[] @distinct @card(0..3)"));
-    typeql::parse_query(WORKFORCE_V3_PROVIDER_SCHEMA)
-        .expect("TypeQL 3.12 accepts the complete Workforce V3 provider schema");
+    typeql::parse_query(SDK_V3_PROVIDER_SCHEMA)
+        .expect("TypeQL 3.12 accepts the complete Sdk V3 provider schema");
 }

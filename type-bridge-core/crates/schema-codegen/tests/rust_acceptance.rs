@@ -20,16 +20,14 @@ mod support;
 
 const POSITIVE: &str = include_str!("rust_acceptance/positive.rs");
 const NEGATIVE: &str = include_str!("rust_acceptance/negative.rs");
-const PHASE2_PARITY: &str = include_str!("rust_acceptance/phase2_parity.rs");
-const PHASE2_FOREIGN_NEGATIVE: &str = include_str!("rust_acceptance/phase2_foreign_negative.rs");
-const WORKFORCE_V5_CODEC: &str = include_str!("rust_acceptance/workforce_v5_codec.rs");
-const PHASE2_CONSUMER_LOCK: &[u8] = include_bytes!("rust_acceptance/phase2-Cargo.lock");
-const WORKFORCE_V5_CODEC_LOCK: &[u8] =
-    include_bytes!("rust_acceptance/workforce-v5-codec-Cargo.lock");
+const PROJECTED_PARITY: &str = include_str!("rust_acceptance/projected_parity.rs");
+const PROJECTED_FOREIGN_NEGATIVE: &str =
+    include_str!("rust_acceptance/projected_foreign_negative.rs");
+const SDK_V5_CODEC: &str = include_str!("rust_acceptance/sdk_v5_codec.rs");
 static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-const WORKFORCE_V3_PROOF_FRAGMENT_ENV: &str = "TYPE_BRIDGE_WORKFORCE_V3_PROOF_FRAGMENT";
-const WORKFORCE_V3_PROOF_NONCE_ENV: &str = "TYPE_BRIDGE_WORKFORCE_V3_PROOF_RUN_NONCE";
+const SDK_V3_PROOF_FRAGMENT_ENV: &str = "TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT";
+const SDK_V3_PROOF_NONCE_ENV: &str = "TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE";
 
 fn repository_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -49,8 +47,8 @@ fn v3_source_identity(root: &Path, relative: &str) -> Value {
 }
 
 fn publish_v3_package_fragment(results: Vec<Value>) {
-    let destination = env::var_os(WORKFORCE_V3_PROOF_FRAGMENT_ENV);
-    let nonce = env::var_os(WORKFORCE_V3_PROOF_NONCE_ENV);
+    let destination = env::var_os(SDK_V3_PROOF_FRAGMENT_ENV);
+    let nonce = env::var_os(SDK_V3_PROOF_NONCE_ENV);
     assert_eq!(
         destination.is_some(),
         nonce.is_some(),
@@ -78,11 +76,11 @@ fn publish_v3_package_fragment(results: Vec<Value>) {
     let fragment = json!({
         "binding": "rust",
         "contract": {
-            "allowlist": v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-allowlist-v1.json"),
-            "journey": v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/journey-v3.json"),
-            "proof_schema": v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-schema-v1.json"),
+            "allowlist": v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-allowlist-v1.json"),
+            "journey": v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"),
+            "proof_schema": v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-schema-v1.json"),
         },
-        "format": "typebridge.workforce-v3-proof-fragment/v1",
+        "format": "typebridge.sdk-v3-proof-fragment/v1",
         "producer": {
             "id": "type-bridge-rust.generated-package-v3-proof",
             "sources": sources.iter().map(|path| v3_source_identity(&root, path)).collect::<Vec<_>>(),
@@ -3526,7 +3524,7 @@ fn rename_generated_package(root: &Path, package_name: &str) {
     fs::write(manifest, replaced).unwrap();
 }
 
-fn write_phase2_consumer(root: &Path, source: &str) {
+fn write_projected_consumer(root: &Path, source: &str) {
     let crates = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -3546,7 +3544,7 @@ fn write_phase2_consumer(root: &Path, source: &str) {
         root.join("Cargo.toml"),
         format!(
             r#"[package]
-name = "rust-phase2-projection-parity"
+name = "rust-projected-projection-parity"
 version = "0.0.0"
 edition = "2024"
 
@@ -3573,7 +3571,11 @@ type-bridge-schema = {{ path = "{schema_path}" }}
     )
     .unwrap();
     fs::write(root.join("src/main.rs"), source).unwrap();
-    fs::write(root.join("Cargo.lock"), PHASE2_CONSUMER_LOCK).unwrap();
+    fs::write(
+        root.join("Cargo.lock"),
+        support::locks::Consumer::Projected.lock(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -3586,7 +3588,7 @@ fn generated_manager_filter_rejects_a_foreign_nominal_field_token() {
     write_package(&package, &generated);
     write_package(&package, &foreign);
     rename_generated_package(&foreign, "type-bridge-generated-schema-foreign");
-    write_phase2_consumer(
+    write_projected_consumer(
         &consumer,
         r#"use generated::{AppSchema, Person};
 use type_bridge::{Database, ProjectedManagerComparison};
@@ -3630,11 +3632,11 @@ fn main() {}"#,
 }
 
 #[test]
-fn workforce_v3_generated_package_integrity() {
+fn sdk_v3_generated_package_integrity() {
     let source = fs::read_to_string(
-        repository_root().join("tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml"),
+        repository_root().join("tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"),
     )
-    .expect("Workforce V3 schema reads");
+    .expect("Sdk V3 schema reads");
     let projection = project_from_source(&source);
     assert!(
         !projection.models().is_empty(),
@@ -3732,22 +3734,22 @@ fn workforce_v3_generated_package_integrity() {
         "provider_text_exposed": false
     });
     publish_v3_package_fragment(vec![
-        json!({"observation": constraint, "observation_ref": "projected_constraint_validation", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::workforce_v3_generated_package_integrity"}),
-        json!({"observation": evidence, "observation_ref": "projection_evidence_integrity", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::workforce_v3_generated_package_integrity"}),
-        json!({"observation": fencing, "observation_ref": "token_package_fencing", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::workforce_v3_generated_package_integrity"}),
+        json!({"observation": constraint, "observation_ref": "projected_constraint_validation", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::sdk_v3_generated_package_integrity"}),
+        json!({"observation": evidence, "observation_ref": "projection_evidence_integrity", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::sdk_v3_generated_package_integrity"}),
+        json!({"observation": fencing, "observation_ref": "token_package_fencing", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::sdk_v3_generated_package_integrity"}),
     ]);
 }
 
 #[test]
-fn generated_rust_workforce_v5_canonical_codec() {
+fn generated_rust_sdk_v5_canonical_codec() {
     let stage = Stage::new();
     let generated = stage.path().join("generated");
     let generated_foreign = stage.path().join("generated-foreign");
-    let consumer = stage.path().join("workforce-v5-codec");
+    let consumer = stage.path().join("sdk-v5-codec");
     let source = fs::read_to_string(
-        repository_root().join("tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml"),
+        repository_root().join("tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"),
     )
-    .expect("Workforce V3 schema reads");
+    .expect("Sdk V3 schema reads");
     write_package(&emit_from_source(&source), &generated);
     let foreign_source = source.replacen("max: 80", "max: 79", 1);
     assert_ne!(foreign_source, source, "foreign V5 authority must differ");
@@ -3762,24 +3764,23 @@ fn generated_rust_workforce_v5_canonical_codec() {
     fs::write(&foreign_manifest, manifest).expect("foreign manifest is uniquely named");
     write_consumer_with_features_and_dependencies(
         &consumer,
-        "rust-workforce-v5-codec",
-        WORKFORCE_V5_CODEC,
+        "rust-sdk-v5-codec",
+        SDK_V5_CODEC,
         &["test-harness"],
         "generated_foreign = { package = \"type-bridge-generated-schema-foreign\", path = \"../generated-foreign\" }\n",
     );
-    fs::write(consumer.join("Cargo.lock"), WORKFORCE_V5_CODEC_LOCK)
-        .expect("Workforce V5 codec lockfile is staged");
+    fs::write(
+        consumer.join("Cargo.lock"),
+        support::locks::Consumer::Codec.lock(),
+    )
+    .expect("Sdk V5 codec lockfile is staged");
 
-    let corpus = env::var_os("TYPE_BRIDGE_WORKFORCE_V5_RUST_CORPUS")
+    let corpus = env::var_os("TYPE_BRIDGE_SDK_V5_RUST_CORPUS")
         .map(PathBuf::from)
-        .unwrap_or_else(|| stage.path().join("rust-workforce-v5-corpus.json"));
-    let operational = env::var_os("TYPE_BRIDGE_WORKFORCE_V5_RUST_OPERATIONAL_EVIDENCE")
+        .unwrap_or_else(|| stage.path().join("rust-sdk-v5-corpus.json"));
+    let operational = env::var_os("TYPE_BRIDGE_SDK_V5_RUST_OPERATIONAL_EVIDENCE")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            stage
-                .path()
-                .join("rust-workforce-v5-operational-evidence.json")
-        });
+        .unwrap_or_else(|| stage.path().join("rust-sdk-v5-operational-evidence.json"));
     let output = cargo_with_env(
         &[
             "run",
@@ -3790,24 +3791,24 @@ fn generated_rust_workforce_v5_canonical_codec() {
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
         &[
-            ("TYPE_BRIDGE_WORKFORCE_V5_CORPUS", corpus.as_os_str()),
+            ("TYPE_BRIDGE_SDK_V5_CORPUS", corpus.as_os_str()),
             (
-                "TYPE_BRIDGE_WORKFORCE_V5_OPERATIONAL_EVIDENCE",
+                "TYPE_BRIDGE_SDK_V5_OPERATIONAL_EVIDENCE",
                 operational.as_os_str(),
             ),
         ],
     );
     assert!(
         output.status.success(),
-        "generated Rust Workforce V5 codec consumer failed\nstdout:\n{}\nstderr:\n{}",
+        "generated Rust Sdk V5 codec consumer failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    let corpus_bytes = fs::read(&corpus).expect("Rust Workforce V5 corpus was published");
+    let corpus_bytes = fs::read(&corpus).expect("Rust Sdk V5 corpus was published");
     let corpus: Value = serde_json::from_slice(&corpus_bytes).expect("corpus JSON parses");
     assert_eq!(
         corpus["format"],
-        "typebridge.workforce-v5-provider-free-corpus/v1"
+        "typebridge.sdk-v5-provider-free-corpus/v1"
     );
     assert_eq!(corpus["binding"], "rust");
     assert_eq!(corpus["record_b64"].as_array().unwrap().len(), 9);
@@ -3817,12 +3818,12 @@ fn generated_rust_workforce_v5_canonical_codec() {
             .is_some_and(|value| !value.is_empty())
     );
     let operational_bytes =
-        fs::read(&operational).expect("Rust Workforce V5 operational evidence was published");
+        fs::read(&operational).expect("Rust Sdk V5 operational evidence was published");
     let operational: Value =
         serde_json::from_slice(&operational_bytes).expect("operational evidence JSON parses");
     assert_eq!(
         operational["format"],
-        "typebridge.workforce-v5-operational-evidence/v1"
+        "typebridge.sdk-v5-operational-evidence/v1"
     );
     assert_eq!(operational["binding"], "rust");
     assert_eq!(
@@ -3835,10 +3836,10 @@ fn generated_rust_workforce_v5_canonical_codec() {
         })
     );
     assert_eq!(operational["lifecycle"]["sibling_usable"], true);
-    let repeated_corpus = stage.path().join("rust-workforce-v5-corpus-repeat.json");
+    let repeated_corpus = stage.path().join("rust-sdk-v5-corpus-repeat.json");
     let repeated_operational = stage
         .path()
-        .join("rust-workforce-v5-operational-evidence-repeat.json");
+        .join("rust-sdk-v5-operational-evidence-repeat.json");
     let repeated = cargo_with_env(
         &[
             "run",
@@ -3849,31 +3850,28 @@ fn generated_rust_workforce_v5_canonical_codec() {
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
         &[
+            ("TYPE_BRIDGE_SDK_V5_CORPUS", repeated_corpus.as_os_str()),
             (
-                "TYPE_BRIDGE_WORKFORCE_V5_CORPUS",
-                repeated_corpus.as_os_str(),
-            ),
-            (
-                "TYPE_BRIDGE_WORKFORCE_V5_OPERATIONAL_EVIDENCE",
+                "TYPE_BRIDGE_SDK_V5_OPERATIONAL_EVIDENCE",
                 repeated_operational.as_os_str(),
             ),
         ],
     );
     assert!(
         repeated.status.success(),
-        "repeated Rust Workforce V5 corpus run failed\nstdout:\n{}\nstderr:\n{}",
+        "repeated Rust Sdk V5 corpus run failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&repeated.stdout),
         String::from_utf8_lossy(&repeated.stderr),
     );
     assert_eq!(
         corpus_bytes,
-        fs::read(repeated_corpus).expect("repeated Rust Workforce V5 corpus was published"),
+        fs::read(repeated_corpus).expect("repeated Rust Sdk V5 corpus was published"),
         "provider-free generated Rust V5 bytes must be deterministic across fresh processes",
     );
     assert_eq!(
         operational_bytes,
         fs::read(repeated_operational)
-            .expect("repeated Rust Workforce V5 operational evidence was published"),
+            .expect("repeated Rust Sdk V5 operational evidence was published"),
         "generated Rust V5 operational evidence must be deterministic across fresh processes",
     );
 }
@@ -3881,17 +3879,19 @@ fn generated_rust_workforce_v5_canonical_codec() {
 #[test]
 fn provider_free_rust_dependency_graphs_are_frozen() {
     for (lock, package) in [
-        (PHASE2_CONSUMER_LOCK, "rust-phase2-projection-parity"),
-        (WORKFORCE_V5_CODEC_LOCK, "rust-workforce-v5-codec"),
+        (
+            support::locks::Consumer::Projected.lock(),
+            "rust-projected-projection-parity",
+        ),
+        (support::locks::Consumer::Codec.lock(), "rust-sdk-v5-codec"),
     ] {
-        let lock = std::str::from_utf8(lock).expect("consumer lockfile is UTF-8");
         assert_eq!(lock.matches(&format!("name = \"{package}\"")).count(), 1);
         assert!(lock.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
         assert!(!lock.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
     }
 }
 
-fn run_phase2_consumer(
+fn run_projected_consumer(
     manifest: &Path,
     target_dir: &std::ffi::OsStr,
     report: &Path,
@@ -3908,14 +3908,14 @@ fn run_phase2_consumer(
             manifest.to_str().unwrap(),
         ])
         .env("CARGO_TARGET_DIR", target_dir)
-        .env("TYPE_BRIDGE_PHASE2_RUST_REPORT", report)
-        .env("TYPE_BRIDGE_PHASE2_REPOSITORY_ROOT", repository)
+        .env("TYPE_BRIDGE_PROJECTED_RUST_REPORT", report)
+        .env("TYPE_BRIDGE_PROJECTED_REPOSITORY_ROOT", repository)
         .output()
         .unwrap()
 }
 
 #[test]
-fn generated_rust_phase2_projection_parity_producer() {
+fn generated_rust_projected_parity_producer() {
     let stage = Stage::new();
     let generated = stage.path().join("generated");
     let foreign = stage.path().join("foreign");
@@ -3931,7 +3931,7 @@ fn generated_rust_phase2_projection_parity_producer() {
         .canonicalize()
         .unwrap();
     let schema = fs::read_to_string(
-        repository.join("tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml"),
+        repository.join("tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"),
     )
     .unwrap();
     let foreign_schema = schema.replacen(
@@ -3946,8 +3946,8 @@ fn generated_rust_phase2_projection_parity_producer() {
     write_package(&emit_from_source(&schema), &generated);
     write_package(&emit_from_source(&foreign_schema), &foreign);
     rename_generated_package(&foreign, "type-bridge-generated-schema-foreign");
-    write_phase2_consumer(&producer, PHASE2_PARITY);
-    write_phase2_consumer(&negative, PHASE2_FOREIGN_NEGATIVE);
+    write_projected_consumer(&producer, PROJECTED_PARITY);
+    write_projected_consumer(&negative, PROJECTED_FOREIGN_NEGATIVE);
 
     let negative_output = cargo(
         &[
@@ -3973,19 +3973,19 @@ fn generated_rust_phase2_projection_parity_producer() {
         "foreign nominal-fence diagnostics were incomplete:\n{stderr}"
     );
 
-    let report = if let Some(path) = env::var_os("TYPE_BRIDGE_PHASE2_RUST_REPORT") {
+    let report = if let Some(path) = env::var_os("TYPE_BRIDGE_PROJECTED_RUST_REPORT") {
         let path = PathBuf::from(path);
         assert!(
             path.is_absolute(),
-            "external Rust Phase-2 report path must be absolute"
+            "external Rust Projected report path must be absolute"
         );
         assert!(
             !path.exists(),
-            "external Rust Phase-2 report path must not exist"
+            "external Rust Projected report path must not exist"
         );
         path
     } else {
-        stage.path().join("rust-phase2-parity.json")
+        stage.path().join("rust-projected-parity.json")
     };
     let _guard = CARGO_MUTEX.lock().unwrap();
     let workspace_target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -3997,7 +3997,7 @@ fn generated_rust_phase2_projection_parity_producer() {
     let target_dir = env::var_os("ACCEPTANCE_TARGET_DIR")
         .unwrap_or_else(|| workspace_target.as_os_str().to_os_string());
     let producer_manifest = producer.join("Cargo.toml");
-    let output = run_phase2_consumer(
+    let output = run_projected_consumer(
         &producer_manifest,
         target_dir.as_os_str(),
         &report,
@@ -4005,7 +4005,7 @@ fn generated_rust_phase2_projection_parity_producer() {
     );
     assert!(
         output.status.success(),
-        "Rust Phase-2 parity producer failed\nstdout:\n{}\nstderr:\n{}",
+        "Rust Projected parity producer failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
@@ -4014,7 +4014,7 @@ fn generated_rust_phase2_projection_parity_producer() {
     assert!(metadata.len() <= 256 * 1024);
     let payload = fs::read(&report).unwrap();
     assert_eq!(payload.last(), Some(&b'\n'));
-    let duplicate = run_phase2_consumer(
+    let duplicate = run_projected_consumer(
         &producer_manifest,
         target_dir.as_os_str(),
         &report,
@@ -4023,7 +4023,7 @@ fn generated_rust_phase2_projection_parity_producer() {
     drop(_guard);
     assert!(
         !duplicate.status.success(),
-        "Rust Phase-2 publisher unexpectedly replaced an existing report"
+        "Rust Projected publisher unexpectedly replaced an existing report"
     );
     assert_eq!(
         fs::read(&report).unwrap(),
@@ -4031,11 +4031,11 @@ fn generated_rust_phase2_projection_parity_producer() {
         "failed create-new publication must preserve the existing report"
     );
 
-    let comparator = repository.join("scripts/ci/compare_phase2_projection_parity.py");
+    let comparator = repository.join("scripts/ci/compare_projected_parity.py");
     let verify = Command::new("python3")
         .arg("-c")
         .arg(
-            "import importlib.util,pathlib,sys; p=pathlib.Path(sys.argv[1]); s=importlib.util.spec_from_file_location('phase2_compare',p); m=importlib.util.module_from_spec(s); sys.modules[s.name]=m; s.loader.exec_module(m); binding,_=m._load_report(pathlib.Path(sys.argv[2]),m.load_contract()); assert binding=='rust'",
+            "import importlib.util,pathlib,sys; p=pathlib.Path(sys.argv[1]); s=importlib.util.spec_from_file_location('projected_compare',p); m=importlib.util.module_from_spec(s); sys.modules[s.name]=m; s.loader.exec_module(m); binding,_=m._load_report(pathlib.Path(sys.argv[2]),m.load_contract()); assert binding=='rust'",
         )
         .arg(comparator)
         .arg(&report)
@@ -4043,7 +4043,7 @@ fn generated_rust_phase2_projection_parity_producer() {
         .unwrap();
     assert!(
         verify.status.success(),
-        "Rust Phase-2 report failed canonical comparator validation:\n{}\nreport:\n{}",
+        "Rust Projected report failed canonical comparator validation:\n{}\nreport:\n{}",
         String::from_utf8_lossy(&verify.stderr),
         String::from_utf8_lossy(&payload),
     );

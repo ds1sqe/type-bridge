@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://type-bridge.dev/contracts/sdk-conformance/sdk-report-v2.schema.json",
+  "title": "TypeBridge sdk conformance report v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "binding", "manifest", "catalog", "fixture", "results"],
+  "properties": {
+    "format": {"const": "typebridge.sdk-conformance-report/v2"},
+    "binding": {"enum": ["python", "node", "rust", "c"]},
+    "manifest": {"$ref": "#/$defs/sourceIdentity"},
+    "catalog": {"$ref": "#/$defs/sourceIdentity"},
+    "fixture": {"$ref": "#/$defs/fixture"},
+    "results": {
+      "type": "array",
+      "minItems": 34,
+      "maxItems": 34,
+      "items": {"$ref": "#/$defs/result"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "sourceIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "fingerprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["domain", "algorithm", "canonicalization", "semantic_profile", "digest"],
+      "properties": {
+        "domain": {"type": "string", "minLength": 1},
+        "algorithm": {"const": "sha256"},
+        "canonicalization": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*/v[0-9]+$"},
+        "semantic_profile": {"const": "typedb-3.12.1/v1"},
+        "digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "semantic_profile",
+        "schema",
+        "provider_schema",
+        "journey",
+        "semantic_fingerprint",
+        "projection_target",
+        "projection_fingerprint"
+      ],
+      "properties": {
+        "id": {"const": "sdk-v2"},
+        "version": {"const": 2},
+        "semantic_profile": {"const": "typedb-3.12.1/v1"},
+        "schema": {"$ref": "#/$defs/sourceIdentity"},
+        "provider_schema": {"$ref": "#/$defs/sourceIdentity"},
+        "journey": {"$ref": "#/$defs/sourceIdentity"},
+        "semantic_fingerprint": {"$ref": "#/$defs/fingerprint"},
+        "projection_target": {"enum": ["python", "typescript", "rust", "c"]},
+        "projection_fingerprint": {"$ref": "#/$defs/fingerprint"}
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["case_id", "capability_id", "proof_kind", "outcome", "observation"],
+      "properties": {
+        "case_id": {"type": "string", "pattern": "^sdk\\.[a-z0-9.-]+$"},
+        "capability_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]+$"},
+        "proof_kind": {
+          "enum": [
+            "compile_positive",
+            "compile_negative",
+            "direct_runtime",
+            "remote_runtime",
+            "diagnostic",
+            "lifecycle",
+            "artifact"
+          ]
+        },
+        "outcome": {"const": "passed"},
+        "observation": {"type": "object"}
+      }
+    }
+  }
+}

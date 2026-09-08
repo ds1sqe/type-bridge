@@ -1,0 +1,63 @@
+{
+  "format": "typebridge.sdk-catalog/v6",
+  "authority_state": "frozen",
+  "fixture": {
+    "id": "sdk-v6",
+    "version": 6,
+    "semantic_profile": "typedb-3.12.1/v1",
+    "live_server_version": "3.12.3",
+    "distribution_contract_path": "tests/contracts/c-distribution-v1.json",
+    "predecessor_catalog_path": "tests/contracts/sdk_conformance/sdk-v5/catalog-v5.json"
+  },
+  "broad_case_ledger_path": "tests/contracts/c-broad-case-ledger-v1.json",
+  "journey_path": "tests/contracts/sdk_conformance/sdk-v6/journey-v6.json",
+  "report_schema_path": "tests/contracts/sdk_conformance/sdk-v6/report-schema-v6.json",
+  "producer_evidence_schema_path": "tests/contracts/sdk_conformance/sdk-v6/producer-evidence-schema-v6.json",
+  "report_bindings": ["python", "node", "rust", "c"],
+  "manifest_transition_cases": [
+    "sdk.runtime.cancellation",
+    "sdk.runtime.timeout-resource-limits",
+    "sdk.diagnostic.all-workflows",
+    "sdk.distribution.standalone-cli",
+    "sdk.runtime.explicit-close"
+  ],
+  "required_cross_slice_ledgers": [
+    "cancellation",
+    "timeout-resource-limits",
+    "structured-diagnostics",
+    "explicit-close"
+  ],
+  "required_artifact_artifacts": [
+    "standalone-cli",
+    "native-c-runtime",
+    "generated-c-schema-package"
+  ],
+  "required_non_selected_proof_count_per_binding": 25,
+  "artifact_report_producers": {
+    "python": "python.generated-clean-artifact-v6",
+    "node": "node.generated-clean-artifact-v6",
+    "rust": "type-bridge-rust.generated-clean-artifact-v6",
+    "c": "type-bridge-c.generated-clean-artifact-v6"
+  },
+  "selected_proofs": [
+    {"case_id": "sdk.runtime.cancellation", "proof_kind": "direct_runtime", "observation_ref": "terminal-cancellation"},
+    {"case_id": "sdk.runtime.timeout-resource-limits", "proof_kind": "direct_runtime", "observation_ref": "terminal-resource-policy"},
+    {"case_id": "sdk.diagnostic.all-workflows", "proof_kind": "diagnostic", "observation_ref": "terminal-structured-diagnostic"},
+    {"case_id": "sdk.distribution.standalone-cli", "proof_kind": "artifact", "observation_ref": "shared-standalone-cli"},
+    {"case_id": "sdk.runtime.explicit-close", "proof_kind": "lifecycle", "observation_ref": "terminal-resource-lifecycle"}
+  ],
+  "cases": [
+    {"id": "sdk.runtime.cancellation", "capability_id": "runtime.cancellation", "disposition": "terminal-transition"},
+    {"id": "sdk.runtime.timeout-resource-limits", "capability_id": "runtime.timeout-and-resource-limits", "disposition": "terminal-transition"},
+    {"id": "sdk.diagnostic.all-workflows", "capability_id": "diagnostic.all-workflows-structured", "disposition": "terminal-transition"},
+    {"id": "sdk.distribution.standalone-cli", "capability_id": "distribution.standalone-cli", "disposition": "terminal-transition"},
+    {"id": "sdk.runtime.explicit-close", "capability_id": "runtime.explicit-close", "disposition": "terminal-transition"}
+  ],
+  "full_c": {
+    "capability_count": 44,
+    "required_predecessor_reports": [1, 2, 3, 4, 5, 6],
+    "manual_badge": false,
+    "fails_on_gap_or_planned_c_cell": true,
+    "publication_authority": false
+  }
+}

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Local source-tree CI checks. Release-artifact acceptance is workflow-only:
 # this script neither builds/installs Python wheels nor claims publication parity.
-# Run from repo root: ./scripts/check.sh [rust|python|node|c|phase2-parity|phase2-live|all]
+# Run from repo root: ./scripts/check.sh [rust|python|node|c|projected-parity|projected-live|all]
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -140,36 +140,36 @@ run_node() {
 run_c() {
     printf "${BOLD}━━━ C foundation (internal) ━━━${RESET}\n\n"
 
-    run_step "frozen Plan 08 C distribution contract" \
+    run_step "C distribution contract" \
         python scripts/ci/validate_c_distribution_contract.py
 
-    run_step "Plan 08 cross-slice broad-case ledger" \
+    run_step "C distribution cross-slice broad-case ledger" \
         uv run pytest tests/unit/compat/test_c_broad_case_ledger.py -q
 
-    run_step "artifact-bound Workforce V6 fan-in contract" \
+    run_step "artifact-bound Sdk V6 fan-in contract" \
         uv run pytest \
-        tests/unit/compat/test_workforce_conformance_v6.py \
-        tests/unit/compat/test_workforce_conformance_v6_assembler.py \
+        tests/unit/compat/test_sdk_conformance_v6.py \
+        tests/unit/compat/test_sdk_conformance_v6_assembler.py \
         tests/unit/compat/test_persist_binding_reports.py \
-        tests/unit/compat/test_workforce_v1_v2_candidate_runner.py \
-        tests/unit/compat/test_workforce_v3_candidate_runner.py \
-        tests/unit/compat/test_workforce_v4_live_runner.py \
-        tests/unit/compat/test_workforce_v5_candidate_runner.py \
-        tests/unit/compat/test_workforce_v6_candidate_runner.py \
-        tests/unit/compat/test_workforce_v6_evidence_composer.py \
-        tests/unit/compat/test_workforce_v6_surfaces.py \
-        tests/unit/compat/test_workforce_v6_surface_consumer.py -q
+        tests/unit/compat/test_sdk_v1_v2_artifact_runner.py \
+        tests/unit/compat/test_sdk_v3_artifact_runner.py \
+        tests/unit/compat/test_sdk_v4_live_runner.py \
+        tests/unit/compat/test_sdk_v5_artifact_runner.py \
+        tests/unit/compat/test_sdk_v6_artifact_runner.py \
+        tests/unit/compat/test_sdk_v6_evidence_composer.py \
+        tests/unit/compat/test_sdk_v6_surfaces.py \
+        tests/unit/compat/test_sdk_v6_surface_consumer.py -q
 
-    run_step "independent FULL-C candidate auditor" \
-        uv run pytest tests/unit/compat/test_full_c_candidate_auditor.py -q
+    run_step "independent FULL-C artifact auditor" \
+        uv run pytest tests/unit/compat/test_full_c_artifact_auditor.py -q
 
-    run_step "standalone CLI candidate and hostile archive contracts" \
-        uv run pytest tests/unit/compat/test_standalone_cli_candidate.py -q
+    run_step "standalone CLI artifact and hostile archive contracts" \
+        uv run pytest tests/unit/compat/test_standalone_cli_artifact.py -q
 
-    run_step "C runtime/generated-package candidate and hostile archive contracts" \
-        uv run pytest tests/unit/compat/test_c_package_candidates.py -q
+    run_step "C runtime/generated-package artifact and hostile archive contracts" \
+        uv run pytest tests/unit/compat/test_c_package_artifacts.py -q
 
-    run_step "C candidate supply-chain and hostile evidence contracts" \
+    run_step "C artifact supply-chain and hostile evidence contracts" \
         uv run pytest tests/unit/compat/test_c_distribution_security.py -q
 
     run_step "C artifact-only clean-consumer and hostile report contracts" \
@@ -188,10 +188,10 @@ run_c() {
         cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
         -p type-bridge-schema-codegen --test c_emitter
 
-    run_step "generated ABI 1.4 successor C17 and C++17 consumers" \
+    run_step "generated ordered C17 and C++17 consumers" \
         cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
         -p type-bridge-schema-codegen --test c_projection_live \
-        phase4_successor_consumers_compile_as_strict_c17_and_cpp17 -- --exact
+        query_successor_consumers_compile_as_strict_c17_and_cpp17 -- --exact
 
     run_step "C runtime, transaction, and cancellation ABI" \
         cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
@@ -210,17 +210,17 @@ run_c() {
         cargo build --locked --manifest-path type-bridge-core/Cargo.toml \
         -p type-bridge-c --lib
 
-    run_step "C ABI 1.4 additive header, export, and package ledger" \
+    run_step "C ABI header, exports, and package" \
         env TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
         TYPE_BRIDGE_C_SHARED_LIBRARY="$c_shared_library" \
         cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
-        -p type-bridge-c --test abi_1_4
+        -p type-bridge-c --test abi
 
-    run_step "C provider-free Phase-2 parity producer" \
+    run_step "C provider-free Projected parity producer" \
         env TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
         TYPE_BRIDGE_C_SHARED_LIBRARY="$c_shared_library" \
         cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
-        -p type-bridge-c --test phase2_projection_parity
+        -p type-bridge-c --test projected_parity
 
     run_step "C schema-package ABI and standalone consumer" \
         env TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
@@ -242,16 +242,16 @@ run_generated_examples() {
         scripts/ci/validate_generated_examples.sh
 }
 
-run_phase2_parity() {
-    printf "${BOLD}━━━ Provider-free Phase-2 projection parity ━━━${RESET}\n\n"
-    run_step "four-binding provider-free Phase-2 parity fan-in" \
-        uv run python scripts/ci/run_phase2_projection_parity.py
+run_projected_parity() {
+    printf "${BOLD}━━━ Provider-free Projected value parity ━━━${RESET}\n\n"
+    run_step "four-binding provider-free Projected parity fan-in" \
+        uv run python scripts/ci/run_projected_parity.py
 }
 
-run_phase2_live() {
-    printf "${BOLD}━━━ Exact-TypeDB-3.12.3 Phase-2 live parity ━━━${RESET}\n\n"
-    run_step "four-binding exact-TypeDB-3.12.3 Phase-2 live fan-in" \
-        uv run python scripts/ci/run_phase2_projection_live.py
+run_projected_live() {
+    printf "${BOLD}━━━ Exact-TypeDB-3.12.3 Projected live parity ━━━${RESET}\n\n"
+    run_step "four-binding exact-TypeDB-3.12.3 Projected live fan-in" \
+        uv run python scripts/ci/run_projected_live.py
 }
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────
@@ -261,11 +261,11 @@ case "$target" in
     python) run_python ;;
     node)   run_node   ;;
     c)      run_c      ;;
-    phase2-parity) run_phase2_parity ;;
-    phase2-live) run_phase2_live ;;
-    all)    run_rust; run_python; run_node; run_c; run_phase2_parity; run_generated_examples ;;
+    projected-parity) run_projected_parity ;;
+    projected-live) run_projected_live ;;
+    all)    run_rust; run_python; run_node; run_c; run_projected_parity; run_generated_examples ;;
     *)
-        echo "Usage: $0 [rust|python|node|c|phase2-parity|phase2-live|all]"
+        echo "Usage: $0 [rust|python|node|c|projected-parity|projected-live|all]"
         exit 1
         ;;
 esac

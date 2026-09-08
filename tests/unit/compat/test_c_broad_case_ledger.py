@@ -1,4 +1,4 @@
-"""Fail-closed tests for the Plan 08 cross-slice broad-case ledger."""
+"""Fail-closed tests for the C distribution cross-slice broad-case ledger."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def test_accepts_exact_digest_bound_five_slice_ledger() -> None:
 def test_rejects_stale_authority_digest(tmp_path: Path) -> None:
     path, root = _stage(tmp_path)
     ledger = json.loads(path.read_text(encoding="utf-8"))
-    ledger["source_slices"]["plan04-query-remote"]["authorities"][0]["sha256"] = "0" * 64
+    ledger["source_slices"]["query-remote"]["authorities"][0]["sha256"] = "0" * 64
     _rewrite(path, ledger)
     with pytest.raises(VALIDATOR.LedgerError) as raised:
         VALIDATOR.validate(path, root)

@@ -383,7 +383,7 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
         std::str::from_utf8(c_package.get("ordered_codegen.pc.in").unwrap()).unwrap();
     assert!(c_header.contains("ordered_codegen_person_tag_count"));
     assert!(c_header.contains("ordered_codegen_membership_member_count"));
-    assert!(c_header.contains("#include <typebridge/type_bridge_abi_1_6.h>"));
+    assert!(c_header.contains("#include <typebridge/type_bridge.h>"));
     assert!(c_header.contains("ordered_codegen_schema_package_open_v2("));
     assert!(contains_hex_bytes(c_source, b"ordered_list"));
     assert!(contains_hex_bytes(c_source, b"distinct"));
@@ -393,9 +393,9 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     );
     assert!(c_source.contains("type_bridge_schema_package_open_chunked_v2("));
     assert!(c_cmake.starts_with("# TypeBridge ordered-collection generator resource v3\n"));
-    assert!(c_cmake.contains("find_package(TypeBridge 1.6 CONFIG REQUIRED)"));
-    assert!(c_package_config.contains("find_dependency(TypeBridge 1.6 CONFIG)"));
-    assert!(c_pkg_config.contains("Requires: type-bridge >= 1.6.0, type-bridge < 2.0.0"));
+    assert!(c_cmake.contains("find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)"));
+    assert!(c_package_config.contains("find_dependency(TypeBridge 1.6.0 EXACT CONFIG)"));
+    assert!(c_pkg_config.contains("Requires: type-bridge = 1.6.0"));
 }
 
 #[test]
@@ -2332,7 +2332,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .parent()
                     .unwrap()
-                    .join("target/ordered-rust-phase2"),
+                    .join("target/ordered-rust-projected"),
             ),
         "ordered generated Rust common-validation consumer",
     );
@@ -2379,7 +2379,7 @@ fn main() {}
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .parent()
                 .unwrap()
-                .join("target/ordered-rust-phase2"),
+                .join("target/ordered-rust-projected"),
         )
         .output()
         .unwrap();

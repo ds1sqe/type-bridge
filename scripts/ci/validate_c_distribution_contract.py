@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the frozen, non-publishing Plan 08 C distribution contract."""
+"""Validate the C distribution contract."""
 
 from __future__ import annotations
 
@@ -12,15 +12,15 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONTRACT = ROOT / "tests/contracts/c-distribution-v1.json"
-V6_CATALOG = ROOT / "tests/contracts/sdk_conformance/workforce-v6/catalog-v6.json"
+V6_CATALOG = ROOT / "tests/contracts/sdk_conformance/sdk-v6/catalog-v6.json"
 MANIFEST = ROOT / "tests/contracts/sdk_conformance/manifest-v1.json"
 FULL_C_AUDIT = ROOT / "tests/contracts/c-full-sdk-audit-v1.json"
 TRANSITION_CASES = [
-    "workforce.runtime.cancellation",
-    "workforce.runtime.timeout-resource-limits",
-    "workforce.diagnostic.all-workflows",
-    "workforce.distribution.standalone-cli",
-    "workforce.runtime.explicit-close",
+    "sdk.runtime.cancellation",
+    "sdk.runtime.timeout-resource-limits",
+    "sdk.diagnostic.all-workflows",
+    "sdk.distribution.standalone-cli",
+    "sdk.runtime.explicit-close",
 ]
 
 
@@ -57,7 +57,7 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
     _require(contract.get("format") == "typebridge.c-distribution/v1", "format drifted")
     _require(contract.get("authority_state") == "frozen", "authority is not frozen")
     _require(
-        contract.get("publication_disposition") == "candidate-only-unpublished-unsupported",
+        contract.get("publication_disposition") == "artifact-only-unpublished-unsupported",
         "publication disposition widened",
     )
 
@@ -71,13 +71,12 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
     _require(isinstance(abi, dict) and abi.get("decision") == "no-change", "ABI decision drifted")
     _require(abi.get("version") == "1.6.0", "distribution must retain ABI 1.6")
     _require(abi.get("static_linkage") == "unsupported", "static linkage was not selected")
-    _require(abi.get("shared_linkage") == "candidate", "shared candidate linkage is missing")
+    _require(abi.get("shared_linkage") == "artifact", "shared artifact linkage is missing")
 
     compatibility = contract.get("compatibility")
     _require(isinstance(compatibility, dict), "compatibility contract is missing")
     _require(
-        compatibility.get("runtime_abi")
-        == {"minimum_inclusive": "1.6.0", "maximum_exclusive": "2.0.0"},
+        compatibility.get("runtime_abi") == {"exact": "1.6.0"},
         "runtime ABI range drifted",
     )
     _require(
@@ -89,8 +88,8 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
 
     matrix = contract.get("matrix")
     _require(isinstance(matrix, dict), "platform matrix is missing")
-    supported = matrix.get("candidate_supported")
-    _require(isinstance(supported, list) and len(supported) == 1, "candidate matrix widened")
+    supported = matrix.get("artifact_supported")
+    _require(isinstance(supported, list) and len(supported) == 1, "artifact matrix widened")
     _require(
         supported[0].get("target") == "x86_64-unknown-linux-gnu", "native prototype target drifted"
     )
@@ -146,8 +145,8 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
         "signature issuer drifted",
     )
     _require(
-        signature.get("candidate_signatures") == "forbidden-before-authorization",
-        "candidate signing boundary widened",
+        signature.get("artifact_signatures") == "forbidden-before-authorization",
+        "artifact signing boundary widened",
     )
 
     authorities = contract.get("source_authorities")
@@ -175,18 +174,18 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
     )
     cmake = (root / "type-bridge-core/crates/c/CMakeLists.txt").read_text(encoding="utf-8")
     generated_cmake = (
-        root / "type-bridge-core/crates/schema-codegen/src/c/CMakeLists.abi-1-4.txt.in"
+        root / "type-bridge-core/crates/schema-codegen/src/c/CMakeLists.txt.in"
     ).read_text(encoding="utf-8")
-    generated_pc = (
-        root / "type-bridge-core/crates/schema-codegen/src/c/schema.abi-1-4.pc.in"
-    ).read_text(encoding="utf-8")
+    generated_pc = (root / "type-bridge-core/crates/schema-codegen/src/c/schema.pc.in").read_text(
+        encoding="utf-8"
+    )
     _require("project(TypeBridge VERSION 1.6.0" in cmake, "runtime CMake ABI version drifted")
     _require(
-        "find_package(TypeBridge 1.6 CONFIG REQUIRED)" in generated_cmake,
+        "find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)" in generated_cmake,
         "generated CMake range drifted",
     )
     _require(
-        "type-bridge >= 1.6.0, type-bridge < 2.0.0" in generated_pc,
+        "type-bridge = 1.6.0" in generated_pc,
         "generated pkg-config range drifted",
     )
 
@@ -255,7 +254,7 @@ def main() -> int:
     print(
         "validated frozen C distribution contract: "
         f"abi={contract['abi']['version']} "
-        f"targets={len(contract['matrix']['candidate_supported'])} "
+        f"targets={len(contract['matrix']['artifact_supported'])} "
         "publication=false"
     )
     return 0

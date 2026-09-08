@@ -541,7 +541,7 @@ functions:
             Box::new(FakeBackend {
                 state: Arc::clone(&state),
             }),
-            "workforce",
+            "sdk",
         );
         let database = Box::new(TypeBridgeDatabase::from_test_database_with_answer_ceiling(
             Arc::clone(&package.state),
@@ -638,7 +638,7 @@ functions:
             Box::new(FakeBackend {
                 state: Arc::clone(&state),
             }),
-            "workforce",
+            "sdk",
         );
         let database = Box::new(TypeBridgeDatabase::from_test_database_with_answer_ceiling(
             Arc::clone(&package.state),

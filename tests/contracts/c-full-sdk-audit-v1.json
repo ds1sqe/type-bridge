@@ -11,9 +11,9 @@
   "report_versions": [1, 2, 3, 4, 5, 6],
   "required_inputs": [
     "final-capability-manifest",
-    "final-workforce-v1-v6-reports",
+    "final-sdk-v1-v6-reports",
     "non-selected-proof-ledgers",
-    "candidate-artifact-manifest",
+    "artifact-manifest",
     "native-platform-matrix",
     "clean-consumer-reports",
     "cross-slice-broad-case-ledgers",
@@ -22,8 +22,8 @@
     "current-python-node-rust-regressions"
   ],
   "broad_case_slices": {
-    "G05": ["plan04-query-remote", "plan05-data-transactions", "plan06-admin-migration", "plan07-codec-archive", "plan08-artifact-cleanup"],
-    "G06": ["plan04-answer-budgets", "plan05-data-limits", "plan06-migration-limits", "plan07-codec-limits", "plan08-artifact-limits"],
+    "G05": ["query-remote", "data-transactions", "admin-migration", "codec-archive", "artifact-cleanup"],
+    "G06": ["answer-budgets", "data-limits", "migration-limits", "codec-limits", "artifact-limits"],
     "G08": ["schema-generation", "connection-provider", "data-query-remote", "admin-migration-recovery", "serialization-archive", "artifact-security"],
     "G13": ["connection-transaction", "query-result-remote", "model-batch", "admin-migration", "codec-archive", "process-package-teardown"]
   },

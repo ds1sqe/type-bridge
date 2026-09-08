@@ -1139,7 +1139,9 @@ fn typed_sdk_path(segment: &SdkDiagnosticPathSegment) -> ErrorPathSegment {
             value.declaring_relation().as_str(),
             value.label().as_str()
         )),
-        SdkDiagnosticPathSegment::Query(value) => ErrorPathSegment::Query(query_path_kind(*value)),
+        SdkDiagnosticPathSegment::Query(value) => {
+            ErrorPathSegment::Query(acceptance_path_kind(*value))
+        }
         SdkDiagnosticPathSegment::QueryBinding(value) => ErrorPathSegment::QueryBinding(*value),
         SdkDiagnosticPathSegment::QueryField { owner, name } => ErrorPathSegment::QueryField {
             owner: owner.as_str().to_owned(),
@@ -1273,7 +1275,7 @@ const fn query_category(value: SdkQueryDiagnosticCategory) -> QueryDiagnosticCat
     }
 }
 
-const fn query_path_kind(value: SdkQueryDiagnosticPathKind) -> QueryDiagnosticPathKind {
+const fn acceptance_path_kind(value: SdkQueryDiagnosticPathKind) -> QueryDiagnosticPathKind {
     match value {
         SdkQueryDiagnosticPathKind::Request => QueryDiagnosticPathKind::Request,
         SdkQueryDiagnosticPathKind::Plan => QueryDiagnosticPathKind::Plan,

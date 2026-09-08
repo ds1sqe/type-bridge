@@ -571,7 +571,7 @@ fn open_fixture(source: &str, prefix: &str, scope: &str) -> Fixture {
         struct_size: u32::try_from(size_of::<TypeBridgeSchemaPackageDescriptorV1>())
             .expect("descriptor size fits u32"),
         abi_major: 1,
-        abi_minor: 1,
+        abi_minor: 6,
         schema_authority_json: bytes(&authority_json),
         declared_schema_json: bytes(&declared_json),
         runtime_projection_json: bytes(&projection_json),

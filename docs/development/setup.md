@@ -99,14 +99,14 @@ only when intentionally targeting an existing server.
 | `type-bridge-core/crates/rust/` | Public generated Rust client |
 | `type-bridge-core/crates/c/` | Private C projected-value and provider-lifecycle ABI foundation under development |
 | `tests/contracts/sdk_conformance/manifest-v1.json` | Capability, proof-profile, binding-state, and transition authority |
-| `tests/contracts/sdk_conformance/workforce-v*/` | Versioned executable conformance catalogs, journeys, report schemas, and evidence contracts |
+| `tests/contracts/sdk_conformance/sdk-v*/` | Versioned executable conformance catalogs, journeys, report schemas, and evidence contracts |
 | `tests/fixtures/generated-only-operation-parity-inventory.json` | Retained generated-only cutover evidence and manifest seed, not current acceptance authority |
 
 Do not add target-language schema declarations or a facade-local semantic
 implementation. Split-YAML is the only active authoring authority, and the Rust
 engine owns lowering and validation.
 
-The generated C package and ABI 1.4 currently carry verified flat/chunked
+The generated C package and ABI 1.6 currently carry verified flat/chunked
 schema/projection evidence, projected values/models, synchronous runtime,
 exact-3.12.3 policy-aware database/read/write transaction and cancellation
 handles, plus generated nominal exact single-entity and single-relation

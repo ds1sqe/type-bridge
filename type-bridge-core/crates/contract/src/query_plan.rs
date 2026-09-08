@@ -9,7 +9,7 @@
 //! reductions, documents, reachability — stays reserved behind independent
 //! capabilities and is absent from this format, not defaulted.
 //!
-//! The persisted Phase 4 assertion algebra keeps its exact meaning: this
+//! The persisted assertion algebra keeps its exact meaning: this
 //! module defines its own pattern vocabulary rather than widening
 //! [`AssertionPattern`](crate::migration_assertion::AssertionPattern).
 

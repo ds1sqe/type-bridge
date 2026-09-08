@@ -1,4 +1,4 @@
-//! Private policy-aware C CRUD implementations activated atomically by ABI 1.4.
+//! Policy-aware C CRUD implementations.
 
 use std::{mem::size_of, ptr};
 
@@ -2140,7 +2140,7 @@ mod tests {
             TypeBridgeStatus::Ok
         );
         let requester = request_after_dispatch(Arc::clone(&legacy.state), cancellation);
-        // SAFETY: ABI 1.3 cancellation remains a pre-dispatch-only contract.
+        // SAFETY: Cancellation is checked before dispatch.
         assert_eq!(
             unsafe {
                 type_bridge_database_entity_insert(
@@ -2180,7 +2180,7 @@ mod tests {
                 u32::MAX,
             )),
         );
-        // SAFETY: ABI 1.3 inherits the enclosing V2 answer ceiling without a new argument.
+        // SAFETY: The enclosing V2 answer ceiling applies without a new argument.
         assert_eq!(
             unsafe {
                 type_bridge_database_entity_insert(

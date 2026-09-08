@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the digest-bound Plan 04-08 broad-case closure ledger."""
+"""Validate the digest-bound C behavioral coverage ledger."""
 
 from __future__ import annotations
 
@@ -14,11 +14,11 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LEDGER = ROOT / "tests/contracts/c-broad-case-ledger-v1.json"
 CAPABILITIES = ("G05", "G06", "G08", "G13")
 SLICES = (
-    "plan04-query-remote",
-    "plan05-data-model",
-    "plan06-admin-migration",
-    "plan07-codec-archive",
-    "plan08-artifact-cleanup",
+    "query-remote",
+    "data-model",
+    "admin-migration",
+    "codec-archive",
+    "artifact-cleanup",
 )
 
 

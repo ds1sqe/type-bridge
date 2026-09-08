@@ -1,4 +1,4 @@
-"""Executable Phase-0 FULL-SDK capability and proof baseline for #110."""
+"""Executable FULL-SDK capability and proof baseline for #110."""
 
 from __future__ import annotations
 
@@ -157,11 +157,11 @@ def test_full_sdk_manifest_has_closed_profiles_and_real_rust_owners() -> None:
     manifest = _load(MANIFEST)
 
     assert manifest["format"] == "typebridge.sdk-conformance/v1"
-    assert manifest["phase"] == "phase-1-shared-workforce-baseline"
+    assert manifest["baseline"] == "shared-sdk"
     assert manifest["seed_inventory"] == SEED_INVENTORY.relative_to(ROOT).as_posix()
     assert manifest["canonical_case_catalog"] == {
         "state": "accepted_shared_runtime_baseline",
-        "path": "tests/contracts/sdk_conformance/workforce-v1",
+        "path": "tests/contracts/sdk_conformance/sdk-v1",
     }
     assert manifest["bindings"] == BINDINGS
     assert manifest["implementation_order"] == IMPLEMENTATION_ORDER
@@ -241,7 +241,7 @@ def test_full_sdk_capability_catalog_is_granular_and_fail_closed() -> None:
 
     case_ids = [case for item in capabilities for case in item["case_ids"]]
     assert len(case_ids) == len(set(case_ids))
-    assert all(case.startswith("workforce.") for case in case_ids)
+    assert all(case.startswith("sdk.") for case in case_ids)
 
     for capability in capabilities:
         expanded = _expanded_binding_profile(manifest, capability["binding_profile"])
@@ -259,7 +259,7 @@ def test_full_sdk_capability_catalog_is_granular_and_fail_closed() -> None:
             assert capability["seed_operations"], capability["code"]
         else:
             assert capability["code"].startswith("G")
-            assert capability["origin"] == "phase0_gap_audit"
+            assert capability["origin"] == "capability_audit"
             assert capability["seed_operations"] == []
             if capability["code"] not in (
                 FOUR_LIVE_CAPABILITY_CODES | FINAL_DISTRIBUTION_CAPABILITY_CODES

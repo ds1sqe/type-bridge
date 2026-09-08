@@ -31,10 +31,10 @@ def _expected_diagnostics() -> dict[int, str]:
 
 
 def _pyright(explicit: str | None) -> str:
-    candidate = explicit or os.environ.get("PYRIGHT_BIN") or shutil.which("pyright")
-    if candidate is None:
+    artifact = explicit or os.environ.get("PYRIGHT_BIN") or shutil.which("pyright")
+    if artifact is None:
         raise SystemExit("pyright not found; pass --pyright PATH or set PYRIGHT_BIN")
-    return str(Path(candidate).expanduser().absolute())
+    return str(Path(artifact).expanduser().absolute())
 
 
 def _error_diagnostics(payload: dict[str, Any]) -> list[dict[str, Any]]:

@@ -1,7 +1,7 @@
 # Testing TypeBridge
 
 Current FULL-SDK acceptance is governed by the machine-readable capability
-manifest and versioned workforce contracts. A clean Split-YAML workspace must
+manifest and versioned sdk contracts. A clean Split-YAML workspace must
 generate Python, TypeScript/Node, and Rust packages that perform every accepted
 operation for that binding. The old operation inventory is retained cutover
 evidence and a manifest seed, not current acceptance authority. Handwritten
@@ -37,7 +37,7 @@ Key evidence:
   and strict installed-compiler checks
 - `tests/contracts/sdk_conformance/manifest-v1.json` — capability,
   proof-profile, binding-state, and transition authority
-- `tests/contracts/sdk_conformance/workforce-v*/` — executable catalogs,
+- `tests/contracts/sdk_conformance/sdk-v*/` — executable catalogs,
   journeys, report schemas, and evidence contracts
 - `tests/fixtures/generated-only-operation-parity-inventory.json` — retained
   generated-only cutover evidence and manifest seed
@@ -85,7 +85,7 @@ Clang/clang++ are available on macOS, or both MSVC and clang-cl are available
 on Windows. Current accepted evidence covers the native-host run; the
 configured hosted macOS and Windows lanes remain unverified and cannot support
 platform claims. Linux additionally runs address/undefined-behavior sanitizers
-and checks the Rust-owned C boundary on MSRV 1.88. ABI 1.4 coverage includes
+and checks the Rust-owned C boundary on MSRV 1.88. ABI 1.6 coverage includes
 verified flat and chunked schema packages, projected values/models, synchronous
 runtime, policy-aware database and distinct read/write transactions,
 cancellation, classified commit outcomes, parent/child ownership, generated
@@ -98,7 +98,7 @@ siblings, strict identity-first validation, and reusable borrowed reads without
 adding C runtime exports.
 
 The full integration suite runs the ordinary generated C17 CRUD and typed-query
-consumer and strict generated C17/C++17 ABI-1.4 successor consumers against
+consumer and strict generated C17/C++17 ABI-1.6 successor consumers against
 exact TypeDB 3.12.3. A focused four-binding lane compares the same generated
 Python, Node, Rust, and C manager-filter observation. The successor lane leaves
 ordered attributes and ordered role-player lists empty and therefore does not
@@ -108,7 +108,7 @@ or release artifact.
 Run the focused generated manager-filter parity lane with:
 
 ```bash
-uv run python scripts/ci/run_phase5_manager_filter_live.py
+uv run python scripts/ci/run_manager_filter_live.py
 ```
 
 ### Live integration
@@ -129,7 +129,7 @@ C17 consumer exercises the exact Person and Membership database/read/write
 CRUD paths, immutable typed queries, reductions and grouping, schema-function
 calls, caller-owned remote transport, structured diagnostics, cancellation,
 limits, and explicit query-resource close; it ends with every created resource
-deleted. The ABI-1.4 successor lane compiles one generated consumer as both C17
+deleted. The ABI-1.6 successor lane compiles one generated consumer as both C17
 and C++17, exercises both package-admission forms, policy entries, keyed entity
 and relation batches, unkeyed IID lifecycles, and later-row rollback, then
 removes its isolated database before evaluating process assertions. These
@@ -158,7 +158,7 @@ For an application operation:
 1. Add the schema fact to a Split-YAML fixture.
 2. Generate or use immutable generated evidence.
 3. Exercise exact generated classes/tokens through the public binding.
-4. Update the capability manifest and the applicable workforce catalog,
+4. Update the capability manifest and the applicable sdk catalog,
    journey, report schema, and evidence producers when the accepted contract
    expands; do not treat the retained operation inventory as mutable authority.
 5. Run the equivalent bindings that advertise the operation.
@@ -199,5 +199,5 @@ uv run --extra docs mkdocs build --strict
 
 When a generated API changes, update the generated acceptance evidence,
 declaration baselines, user guide, capability manifest, and applicable
-workforce contracts together. Keep the old operation inventory as retained
+sdk contracts together. Keep the old operation inventory as retained
 cutover evidence.

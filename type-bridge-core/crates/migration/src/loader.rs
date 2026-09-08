@@ -54,7 +54,7 @@ pub fn load_sidecar(py_path: &Path) -> Result<Option<MigrationSpec>> {
 /// [`MigrationGraph`] is sorted by file stem (lexicographic / discovery
 /// order), which matches Python's `discover()` sort.
 ///
-/// This is the dir-native loader consumed by the Rust CLI (sub-plan 08).
+/// This is the dir-native loader consumed by the Rust CLI (sub-C distribution).
 /// It does not invoke Python, does not `exec_module`, and opens no
 /// transaction.
 ///

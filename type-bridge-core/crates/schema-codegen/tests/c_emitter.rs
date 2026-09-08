@@ -125,11 +125,11 @@ functions:
     body: { typeql: "match $event isa event; return { $event };" }
 "#;
 
-const ORDERED_SUCCESSOR_SOURCE: &str = include_str!("c_abi_1_4/schema.yaml");
-const WORKFORCE_V3_SOURCE: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml");
+const ORDERED_SUCCESSOR_SOURCE: &str = include_str!("c_crud/schema.yaml");
+const SDK_V3_SOURCE: &str =
+    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml");
 
-fn workforce_v3_repository_root() -> PathBuf {
+fn sdk_v3_repository_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -141,14 +141,14 @@ fn workforce_v3_repository_root() -> PathBuf {
         .unwrap()
 }
 
-fn workforce_v3_source_identity(root: &Path, relative: &str) -> Value {
+fn sdk_v3_source_identity(root: &Path, relative: &str) -> Value {
     let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
     json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
 }
 
-fn publish_workforce_v3_package_fragment(results: Vec<Value>) {
-    let destination = env::var_os("TYPE_BRIDGE_WORKFORCE_V3_PROOF_FRAGMENT");
-    let nonce = env::var_os("TYPE_BRIDGE_WORKFORCE_V3_PROOF_RUN_NONCE");
+fn publish_sdk_v3_package_fragment(results: Vec<Value>) {
+    let destination = env::var_os("TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT");
+    let nonce = env::var_os("TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE");
     assert_eq!(destination.is_some(), nonce.is_some());
     let (Some(destination), Some(nonce)) = (destination, nonce) else {
         return;
@@ -162,7 +162,7 @@ fn publish_workforce_v3_package_fragment(results: Vec<Value>) {
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
     );
-    let root = workforce_v3_repository_root();
+    let root = sdk_v3_repository_root();
     let sources = [
         "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
         "type-bridge-core/crates/c/src/projected_model.rs",
@@ -175,12 +175,12 @@ fn publish_workforce_v3_package_fragment(results: Vec<Value>) {
     let fragment = json!({
         "binding": "c",
         "contract": {
-            "allowlist": workforce_v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-allowlist-v1.json"),
-            "journey": workforce_v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/journey-v3.json"),
-            "proof_schema": workforce_v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-schema-v1.json"),
+            "allowlist": sdk_v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-allowlist-v1.json"),
+            "journey": sdk_v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"),
+            "proof_schema": sdk_v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-schema-v1.json"),
         },
-        "format": "typebridge.workforce-v3-proof-fragment/v1",
-        "producer": {"id": "type-bridge-c.generated-package-v3-proof", "sources": sources.iter().map(|path| workforce_v3_source_identity(&root, path)).collect::<Vec<_>>()},
+        "format": "typebridge.sdk-v3-proof-fragment/v1",
+        "producer": {"id": "type-bridge-c.generated-package-v3-proof", "sources": sources.iter().map(|path| sdk_v3_source_identity(&root, path)).collect::<Vec<_>>()},
         "results": results,
         "run_nonce": nonce,
         "semantic_profile": "typedb-3.12.1/v1",
@@ -405,47 +405,7 @@ fn emitted_function_model_token<'header>(header: &'header str, name: &str) -> &'
 }
 
 #[test]
-fn unordered_c_v2_five_file_package_remains_byte_exact() {
-    let emitter = CEmitter::new();
-    let resources = emitter.code_resources().expect("C resources hash");
-    let (projection, authority) = projected(&resources);
-    let package = emitter
-        .emit(&projection, &authority)
-        .expect("C package emits");
-    let actual = package
-        .files()
-        .iter()
-        .map(|(path, bytes)| format!("{path} {:x}", Sha256::digest(bytes)))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        actual,
-        [
-            "CMakeLists.txt 04af839fb3caa4234c17af6c2820da09c2cf1e32d4ab38b6e7dda906e6eec30a",
-            "acme.pc.in 69a197ee74e47e9181184c214944227fad207cda5da286b5d51543414614e9a7",
-            "acmeConfig.cmake.in dcf6298f6ea3427c9c4976d5e8deb3ad2a27fd9ce4405a6dc5a78b21a9235ce7",
-            "include/acme/models.h 01ab3f24a6f05768294a63a3c87d73ce077f66d2a95606d8088b23096ebcfd33",
-            "src/models.c 12c81896dbb83925de4dc51b3e6f3a76d2fa01f63b1c2d4235585e4470675a7d",
-        ],
-        "unordered C-v2 generated resources and embedded ABI 1.3 metadata changed",
-    );
-    for forbidden in [
-        "type_bridge_abi_1_4.h",
-        "_schema_package_open_v2",
-        "_batch_builder_open",
-        "_database_insert_v2",
-    ] {
-        assert!(
-            package
-                .files()
-                .values()
-                .all(|bytes| !String::from_utf8_lossy(bytes).contains(forbidden)),
-            "unordered C-v2 package gained successor surface {forbidden}",
-        );
-    }
-}
-
-#[test]
-fn ordered_c_v3_emits_exact_abi_1_5_admission_crud_batch_and_package_metadata() {
+fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     let emitter = CEmitter::new();
     let (projection, authority) = ordered_successor_projected();
     let package = emitter
@@ -473,10 +433,9 @@ fn ordered_c_v3_emits_exact_abi_1_5_admission_crud_batch_and_package_metadata() 
         std::str::from_utf8(package.get("acme_v3Config.cmake.in").unwrap()).unwrap();
     let pkg_config = std::str::from_utf8(package.get("acme_v3.pc.in").unwrap()).unwrap();
 
-    assert!(header.contains("#include <typebridge/type_bridge_abi_1_6.h>"));
+    assert!(header.contains("#include <typebridge/type_bridge.h>"));
     assert!(header.contains("ACME_V3_MIGRATION_HISTORY_RESOURCE"));
     assert!(header.contains("acme_v3_migration_catalog_open("));
-    assert!(!header.contains("#include <typebridge/type_bridge.h>"));
     assert!(
         source
             .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  6u,"),
@@ -489,9 +448,9 @@ fn ordered_c_v3_emits_exact_abi_1_5_admission_crud_batch_and_package_metadata() 
     assert!(header.contains("acme_v3_schema_package_open("));
     assert!(header.contains("acme_v3_schema_package_open_v2("));
     assert!(header.contains("type_bridge_execution_diagnostics_t **out_diagnostics"));
-    assert!(cmake.contains("find_package(TypeBridge 1.6 CONFIG REQUIRED)"));
-    assert!(package_config.contains("find_dependency(TypeBridge 1.6 CONFIG)"));
-    assert!(pkg_config.contains("Requires: type-bridge >= 1.6.0, type-bridge < 2.0.0"));
+    assert!(cmake.contains("find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)"));
+    assert!(package_config.contains("find_dependency(TypeBridge 1.6.0 EXACT CONFIG)"));
+    assert!(pkg_config.contains("Requires: type-bridge = 1.6.0"));
     assert!(!cmake.contains("TypeBridge 1.3"));
     assert!(!package_config.contains("TypeBridge 1.3"));
     assert!(!pkg_config.contains("type-bridge >= 1.3.0"));
@@ -757,10 +716,10 @@ fn ordered_c_v3_nominal_successors_compile_strictly_and_reject_cross_model_or_om
         .unwrap()
         .join("c/include");
 
-    let positive = include_str!("c_abi_1_4/positive.c");
-    let wrong_model = include_str!("c_abi_1_4/wrong_model.c");
-    let keyless_put = include_str!("c_abi_1_4/keyless_put.c");
-    let delete_thing = include_str!("c_abi_1_4/delete_thing.c");
+    let positive = include_str!("c_crud/positive.c");
+    let wrong_model = include_str!("c_crud/wrong_model.c");
+    let keyless_put = include_str!("c_crud/keyless_put.c");
+    let delete_thing = include_str!("c_crud/delete_thing.c");
     for (name, contents) in [
         ("positive.c", positive),
         ("positive.cpp", positive),
@@ -899,7 +858,7 @@ fn ordered_c_v3_nominal_alias_and_recovery_wrappers_execute_provider_free() {
         .join("c/include");
     let header = std::str::from_utf8(package.get("include/acme_v3/models.h").unwrap()).unwrap();
     let model_token = emitted_function_model_token(header, "acme_v3_keyed_database_insert_v2");
-    let probe = include_str!("c_abi_1_4/recovery.c").replace("@MODEL_TOKEN@", model_token);
+    let probe = include_str!("c_crud/recovery.c").replace("@MODEL_TOKEN@", model_token);
     assert!(!probe.contains("@MODEL_TOKEN@"));
     fs::write(stage.path().join("recovery.c"), probe).expect("recovery probe is written");
 
@@ -974,26 +933,26 @@ fn emits_one_deterministic_package_with_exact_canonical_evidence_and_nominal_nam
     );
 
     let cmake = std::str::from_utf8(first.get("CMakeLists.txt").unwrap()).unwrap();
-    assert!(cmake.contains("find_package(TypeBridge 1.3 CONFIG REQUIRED)"));
+    assert!(cmake.contains("find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)"));
     assert!(cmake.contains("RELATIVE_PATH TYPE_BRIDGE_PC_PREFIX_FROM_PCDIR"));
     assert!(cmake.contains("CMAKE_INSTALL_LIBDIR must be a non-empty relative path"));
     assert!(cmake.contains("PROPERTIES EXPORT_NAME schema POSITION_INDEPENDENT_CODE ON"));
     assert!(cmake.contains("configure_package_config_file("));
     assert!(cmake.contains("install(\n  EXPORT acmeTargets"));
     let package_config = std::str::from_utf8(first.get("acmeConfig.cmake.in").unwrap()).unwrap();
-    assert!(package_config.contains("find_dependency(TypeBridge 1.3 CONFIG)"));
+    assert!(package_config.contains("find_dependency(TypeBridge 1.6.0 EXACT CONFIG)"));
     assert!(package_config.contains("acmeTargets.cmake"));
     let pkg_config = std::str::from_utf8(first.get("acme.pc.in").unwrap()).unwrap();
     assert!(pkg_config.contains("prefix=${pcfiledir}/@TYPE_BRIDGE_PC_PREFIX_FROM_PCDIR@"));
     assert!(pkg_config.contains("includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@"));
-    assert!(pkg_config.contains("Requires: type-bridge >= 1.3.0, type-bridge < 2.0.0"));
+    assert!(pkg_config.contains("Requires: type-bridge = 1.6.0"));
     assert!(pkg_config.contains("Libs: -L${libdir} -lacme_schema"));
 
     let source = std::str::from_utf8(first.get("src/models.c").expect("C source is emitted"))
         .expect("generated C source is UTF-8");
     assert!(
         source
-            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  3u,")
+            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  6u,")
     );
     assert!(!source.contains("TYPE_BRIDGE_C_ABI_MAJOR"));
     assert!(!source.contains("TYPE_BRIDGE_C_ABI_MINOR"));
@@ -1867,7 +1826,8 @@ fn large_embedded_resources_are_byte_exact_portable_chunks() {
 
 #[test]
 fn high_variant_role_union_keeps_constant_alias_stack() {
-    const PLAYER_COUNT: usize = 150;
+    // Keep the wide union within the identifier budget of the complete ABI header.
+    const PLAYER_COUNT: usize = 144;
 
     let mut source = String::from("format: typebridge.schema/v2\nentities:\n");
     for index in 0..PLAYER_COUNT {
@@ -1916,7 +1876,7 @@ fn high_variant_role_union_keeps_constant_alias_stack() {
         PLAYER_COUNT + 2,
         "player, role, and every accepted model token are fenced sequentially",
     );
-    assert!(!kind.contains("alias_inputs[152]"));
+    assert!(!kind.contains(&format!("alias_inputs[{}]", PLAYER_COUNT + 2)));
 
     let stage = TempDirectory::new();
     write_package(&package, stage.path());
@@ -2570,7 +2530,7 @@ fn supported_c_preprocessors_fit_the_frozen_implementation_macro_reserve() {
     let runtime_macros = runtime_header_macro_names();
     assert_eq!(
         runtime_macros.len(),
-        205,
+        262,
         "runtime-header macro reserve drifted"
     );
     let mut invocations = 0;
@@ -3039,6 +2999,9 @@ fn assert_generated_cmake_runtime_floor(package: &GeneratedPackage, cases: &[(&s
                    set(PACKAGE_VERSION_UNSUITABLE TRUE)\n\
                  elseif(PACKAGE_FIND_VERSION_MAJOR STREQUAL \"1\")\n\
                    set(PACKAGE_VERSION_COMPATIBLE TRUE)\n\
+                 if(PACKAGE_FIND_VERSION VERSION_EQUAL PACKAGE_VERSION)\n\
+                   set(PACKAGE_VERSION_EXACT TRUE)\n\
+                 endif()\n\
                  else()\n\
                    set(PACKAGE_VERSION_COMPATIBLE FALSE)\n\
                  endif()\n"
@@ -3066,7 +3029,7 @@ fn assert_generated_cmake_runtime_floor(package: &GeneratedPackage, cases: &[(&s
 
 #[cfg(unix)]
 #[test]
-fn generated_cmake_requires_runtime_abi_1_3_or_newer_within_major_one() {
+fn generated_cmake_requires_the_current_abi() {
     assert!(
         command_exists("cmake"),
         "CMake is required for C emitter acceptance"
@@ -3077,12 +3040,15 @@ fn generated_cmake_requires_runtime_abi_1_3_or_newer_within_major_one() {
     let package = emitter
         .emit(&projection, &authority)
         .expect("C package emits");
-    assert_generated_cmake_runtime_floor(&package, &[("1.2.0", false), ("1.3.0", true)]);
+    assert_generated_cmake_runtime_floor(
+        &package,
+        &[("1.5.0", false), ("1.6.0", true), ("1.7.0", false)],
+    );
 }
 
 #[cfg(unix)]
 #[test]
-fn ordered_generated_cmake_requires_runtime_abi_1_5_or_newer_within_major_one() {
+fn ordered_generated_cmake_requires_the_current_abi() {
     assert!(
         command_exists("cmake"),
         "CMake is required for C emitter acceptance"
@@ -3094,7 +3060,7 @@ fn ordered_generated_cmake_requires_runtime_abi_1_5_or_newer_within_major_one() 
         .expect("ordered C-v3 package emits");
     assert_generated_cmake_runtime_floor(
         &package,
-        &[("1.5.0", false), ("1.6.0", true), ("1.9.0", true)],
+        &[("1.5.0", false), ("1.6.0", true), ("1.9.0", false)],
     );
 }
 
@@ -5771,10 +5737,10 @@ int main(void) {
 }
 
 #[test]
-fn workforce_v3_generated_package_integrity() {
+fn sdk_v3_generated_package_integrity() {
     let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("workforce-v3.yaml").expect("V3 document ID is valid"),
-        WORKFORCE_V3_SOURCE,
+        DocumentId::new("sdk-v3.yaml").expect("V3 document ID is valid"),
+        SDK_V3_SOURCE,
     )])
     .expect("V3 schema parses");
     let declared = normalize_documents(&documents).expect("V3 schema normalizes");
@@ -5792,8 +5758,7 @@ fn workforce_v3_generated_package_integrity() {
         &resources,
     )
     .expect("V3 schema projects to C");
-    let authority =
-        support::authority_for_declared(&declared, "workforce-v3-c", support::TEST_PROFILE);
+    let authority = support::authority_for_declared(&declared, "sdk-v3-c", support::TEST_PROFILE);
     let package = emitter
         .emit(&projection, &authority)
         .expect("V3 C package emits");
@@ -5810,17 +5775,17 @@ fn workforce_v3_generated_package_integrity() {
         "generated C package has the requested namespace"
     );
 
-    let root = workforce_v3_repository_root();
+    let root = sdk_v3_repository_root();
     let journey: Value = serde_json::from_slice(
-        &fs::read(root.join("tests/contracts/sdk_conformance/workforce-v3/journey-v3.json"))
+        &fs::read(root.join("tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"))
             .expect("V3 journey reads"),
     )
     .expect("V3 journey parses");
     let expected = journey["expected_observations"]
         .as_object()
         .expect("V3 expected observations are an object");
-    let test_id = "c_emitter::workforce_v3_generated_package_integrity";
-    publish_workforce_v3_package_fragment(vec![
+    let test_id = "c_emitter::sdk_v3_generated_package_integrity";
+    publish_sdk_v3_package_fragment(vec![
         json!({"observation": expected["projected_constraint_validation"], "observation_ref": "projected_constraint_validation", "outcome": "passed", "proof_kind": "diagnostic", "test_id": test_id}),
         json!({"observation": expected["projection_evidence_integrity"], "observation_ref": "projection_evidence_integrity", "outcome": "passed", "proof_kind": "diagnostic", "test_id": test_id}),
         json!({"observation": expected["token_package_fencing"], "observation_ref": "token_package_fencing", "outcome": "passed", "proof_kind": "diagnostic", "test_id": test_id}),

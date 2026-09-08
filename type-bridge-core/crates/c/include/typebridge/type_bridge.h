@@ -2024,6 +2024,848 @@ type_bridge_projected_create_close(type_bridge_projected_create_t **create);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_projected_thing_close(type_bridge_projected_thing_t **thing);
 
+
+#define TYPE_BRIDGE_DATABASE_CONFIG_V2_VERSION 2u
+#define TYPE_BRIDGE_DATABASE_CUSTOM_ROOT_CA_BYTES_MAX 1048576u
+#define TYPE_BRIDGE_TLS_CUSTOM_ROOT_CA 2u
+
+typedef int32_t type_bridge_projected_batch_operation_t;
+#define TYPE_BRIDGE_PROJECTED_BATCH_OPERATION_INSERT                         \
+  ((type_bridge_projected_batch_operation_t)1)
+#define TYPE_BRIDGE_PROJECTED_BATCH_OPERATION_PUT                            \
+  ((type_bridge_projected_batch_operation_t)2)
+#define TYPE_BRIDGE_PROJECTED_BATCH_OPERATION_UPDATE                         \
+  ((type_bridge_projected_batch_operation_t)3)
+#define TYPE_BRIDGE_PROJECTED_BATCH_OPERATION_DELETE                         \
+  ((type_bridge_projected_batch_operation_t)4)
+
+#define TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_BUILDER                  \
+  ((type_bridge_generated_opaque_input_kind_t)34)
+#define TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH                          \
+  ((type_bridge_generated_opaque_input_kind_t)35)
+#define TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_RESULT                   \
+  ((type_bridge_generated_opaque_input_kind_t)36)
+
+/*
+ * Version-2 direct database policy. Every byte view is copied during the
+ * call. Connection and answer limits are tighten-only common ceilings.
+ * Reserved words must be zero.
+ */
+typedef struct type_bridge_database_config_v2 {
+  uint32_t struct_size;
+  uint32_t version;
+  type_bridge_byte_view_t address;
+  type_bridge_byte_view_t database;
+  type_bridge_byte_view_t username;
+  type_bridge_byte_view_t password;
+  uint32_t http_port;
+  uint32_t tls_mode;
+  type_bridge_byte_view_t custom_root_ca_pem;
+  type_bridge_query_execution_limits_v1_t connection_limits;
+  type_bridge_query_execution_limits_v1_t answer_limits;
+  uint64_t reserved[4];
+} type_bridge_database_config_v2_t;
+
+typedef struct type_bridge_projected_batch_builder
+    type_bridge_projected_batch_builder_t;
+typedef struct type_bridge_projected_batch type_bridge_projected_batch_t;
+typedef struct type_bridge_projected_batch_result
+    type_bridge_projected_batch_result_t;
+
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_schema_package_open_v2(
+    const type_bridge_schema_package_descriptor_v1_t *descriptor,
+    type_bridge_schema_package_t **out_package,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_schema_package_open_chunked_v2(
+    const type_bridge_schema_package_chunked_descriptor_v1_t *descriptor,
+    type_bridge_schema_package_t **out_package,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_config_validate_v2(
+    const type_bridge_database_config_v2_t *config,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_open_v2(
+    const type_bridge_runtime_t *runtime,
+    const type_bridge_schema_package_t *package,
+    const type_bridge_database_config_v2_t *config,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_database_t **out_database,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_read_transaction_open_v2(
+    const type_bridge_database_t *database,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_read_transaction_t **out_transaction,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_open_v2(
+    const type_bridge_database_t *database,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_write_transaction_t **out_transaction,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_commit_v2(
+    type_bridge_write_transaction_t **transaction,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+
+/* Policy-aware exact entity CRUD. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_entity_insert_v2(
+    const type_bridge_database_t *database,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_projected_create_t *create,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_entity_put_v2(
+    const type_bridge_database_t *database,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_projected_create_t *create,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_entity_get_by_iid_v2(
+    const type_bridge_database_t *database,
+    const type_bridge_projected_token_v1_t *model,
+    type_bridge_byte_view_t iid,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_entity_update_v2(
+    const type_bridge_database_t *database,
+    const type_bridge_projected_token_v1_t *model,
+    type_bridge_byte_view_t iid,
+    const type_bridge_projected_create_t *create,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_entity_delete_by_iid_v2(
+    const type_bridge_database_t *database,
+    const type_bridge_projected_token_v1_t *model,
+    type_bridge_byte_view_t iid,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_entity_count_v2(
+    const type_bridge_database_t *database,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    uint64_t *out_count,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_read_transaction_entity_get_by_iid_v2(
+    const type_bridge_read_transaction_t *transaction,
+    const type_bridge_projected_token_v1_t *model,
+    type_bridge_byte_view_t iid,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_read_transaction_entity_count_v2(
+    const type_bridge_read_transaction_t *transaction,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    uint64_t *out_count,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_entity_insert_v2(
+    const type_bridge_write_transaction_t *transaction,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_projected_create_t *create,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_entity_put_v2(
+    const type_bridge_write_transaction_t *transaction,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_projected_create_t *create,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_entity_get_by_iid_v2(
+    const type_bridge_write_transaction_t *transaction,
+    const type_bridge_projected_token_v1_t *model,
+    type_bridge_byte_view_t iid,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_entity_update_v2(
+    const type_bridge_write_transaction_t *transaction,
+    const type_bridge_projected_token_v1_t *model,
+    type_bridge_byte_view_t iid,
+    const type_bridge_projected_create_t *create,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_entity_delete_by_iid_v2(
+    const type_bridge_write_transaction_t *transaction,
+    const type_bridge_projected_token_v1_t *model,
+    type_bridge_byte_view_t iid,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_entity_count_v2(
+    const type_bridge_write_transaction_t *transaction,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    uint64_t *out_count,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+
+/* Policy-aware exact relation CRUD. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_relation_insert_v2(
+    const type_bridge_database_t *database,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_projected_create_t *create,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_relation_put_v2(
+    const type_bridge_database_t *database,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_projected_create_t *create,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_relation_get_by_iid_v2(
+    const type_bridge_database_t *database,
+    const type_bridge_projected_token_v1_t *model,
+    type_bridge_byte_view_t iid,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_relation_update_v2(
+    const type_bridge_database_t *database,
+    const type_bridge_projected_token_v1_t *model,
+    type_bridge_byte_view_t iid,
+    const type_bridge_projected_create_t *create,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_relation_delete_by_iid_v2(
+    const type_bridge_database_t *database,
+    const type_bridge_projected_token_v1_t *model,
+    type_bridge_byte_view_t iid,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_relation_count_v2(
+    const type_bridge_database_t *database,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    uint64_t *out_count,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_read_transaction_relation_get_by_iid_v2(
+    const type_bridge_read_transaction_t *transaction,
+    const type_bridge_projected_token_v1_t *model,
+    type_bridge_byte_view_t iid,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_read_transaction_relation_count_v2(
+    const type_bridge_read_transaction_t *transaction,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    uint64_t *out_count,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_relation_insert_v2(
+    const type_bridge_write_transaction_t *transaction,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_projected_create_t *create,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_relation_put_v2(
+    const type_bridge_write_transaction_t *transaction,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_projected_create_t *create,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_relation_get_by_iid_v2(
+    const type_bridge_write_transaction_t *transaction,
+    const type_bridge_projected_token_v1_t *model,
+    type_bridge_byte_view_t iid,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_relation_update_v2(
+    const type_bridge_write_transaction_t *transaction,
+    const type_bridge_projected_token_v1_t *model,
+    type_bridge_byte_view_t iid,
+    const type_bridge_projected_create_t *create,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_relation_delete_by_iid_v2(
+    const type_bridge_write_transaction_t *transaction,
+    const type_bridge_projected_token_v1_t *model,
+    type_bridge_byte_view_t iid,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_relation_count_v2(
+    const type_bridge_write_transaction_t *transaction,
+    const type_bridge_projected_token_v1_t *model,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    uint64_t *out_count,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+
+/* Bounded homogeneous projected mutation batches. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_batch_builder_open_v1(
+    const type_bridge_schema_package_t *package,
+    const type_bridge_projected_token_v1_t *model,
+    type_bridge_projected_batch_operation_t operation,
+    const type_bridge_query_execution_limits_v1_t *construction_limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_batch_builder_t **out_builder,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_batch_builder_add_v1(
+    type_bridge_projected_batch_builder_t *builder,
+    type_bridge_byte_view_t iid,
+    const type_bridge_projected_create_t *create,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_batch_builder_finish(
+    type_bridge_projected_batch_builder_t **builder,
+    type_bridge_projected_batch_t **out_batch,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_batch_builder_close(
+    type_bridge_projected_batch_builder_t **builder);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_batch_close(type_bridge_projected_batch_t **batch);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_projected_batch_execute_v1(
+    const type_bridge_database_t *database,
+    const type_bridge_projected_batch_t *batch,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_batch_result_t **out_result,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_projected_batch_execute_v1(
+    const type_bridge_write_transaction_t *transaction,
+    const type_bridge_projected_batch_t *batch,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_projected_batch_result_t **out_result,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_batch_result_count(
+    const type_bridge_projected_batch_result_t *result,
+    const type_bridge_projected_token_v1_t *expected_model,
+    type_bridge_projected_batch_operation_t expected_operation,
+    size_t *out_count,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_batch_result_thing_at(
+    const type_bridge_projected_batch_result_t *result,
+    const type_bridge_projected_token_v1_t *expected_model,
+    type_bridge_projected_batch_operation_t expected_operation,
+    size_t index,
+    type_bridge_projected_thing_t **out_thing,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_batch_result_close(
+    type_bridge_projected_batch_result_t **result);
+
+#define TYPE_BRIDGE_MIGRATION_EXECUTION_OPTIONS_V1 1u
+#define TYPE_BRIDGE_MIGRATION_EXECUTION_HAS_TIMEOUT 1u
+#define TYPE_BRIDGE_MIGRATION_DIGEST_LENGTH 32u
+
+typedef int32_t type_bridge_database_pair_state_t;
+#define TYPE_BRIDGE_DATABASE_PAIR_ABSENT ((type_bridge_database_pair_state_t)1)
+#define TYPE_BRIDGE_DATABASE_PAIR_STANDALONE_MANAGED ((type_bridge_database_pair_state_t)2)
+#define TYPE_BRIDGE_DATABASE_PAIR_OWNED ((type_bridge_database_pair_state_t)3)
+#define TYPE_BRIDGE_DATABASE_PAIR_OWNED_JOURNAL_ORPHAN ((type_bridge_database_pair_state_t)4)
+typedef int32_t type_bridge_database_create_outcome_t;
+#define TYPE_BRIDGE_DATABASE_CREATE_CREATED ((type_bridge_database_create_outcome_t)1)
+#define TYPE_BRIDGE_DATABASE_CREATE_ALREADY_EXISTS ((type_bridge_database_create_outcome_t)2)
+typedef int32_t type_bridge_database_delete_outcome_t;
+#define TYPE_BRIDGE_DATABASE_DELETE_ALREADY_ABSENT ((type_bridge_database_delete_outcome_t)1)
+#define TYPE_BRIDGE_DATABASE_DELETE_STANDALONE_MANAGED ((type_bridge_database_delete_outcome_t)2)
+#define TYPE_BRIDGE_DATABASE_DELETE_OWNED_PAIR ((type_bridge_database_delete_outcome_t)3)
+#define TYPE_BRIDGE_DATABASE_DELETE_OWNED_JOURNAL_ORPHAN ((type_bridge_database_delete_outcome_t)4)
+typedef int32_t type_bridge_migration_safety_t;
+#define TYPE_BRIDGE_MIGRATION_SAFETY_FORMAL_ONLY ((type_bridge_migration_safety_t)1)
+#define TYPE_BRIDGE_MIGRATION_SAFETY_SCHEMA_METADATA ((type_bridge_migration_safety_t)2)
+#define TYPE_BRIDGE_MIGRATION_SAFETY_ADDITIVE ((type_bridge_migration_safety_t)3)
+#define TYPE_BRIDGE_MIGRATION_SAFETY_CONDITIONAL ((type_bridge_migration_safety_t)4)
+#define TYPE_BRIDGE_MIGRATION_SAFETY_BACKFILL_REQUIRED ((type_bridge_migration_safety_t)5)
+#define TYPE_BRIDGE_MIGRATION_SAFETY_DESTRUCTIVE ((type_bridge_migration_safety_t)6)
+#define TYPE_BRIDGE_MIGRATION_SAFETY_OPAQUE ((type_bridge_migration_safety_t)7)
+#define TYPE_BRIDGE_MIGRATION_SAFETY_UNSUPPORTED ((type_bridge_migration_safety_t)8)
+typedef int32_t type_bridge_migration_direction_t;
+#define TYPE_BRIDGE_MIGRATION_DIRECTION_APPLY ((type_bridge_migration_direction_t)1)
+#define TYPE_BRIDGE_MIGRATION_DIRECTION_ROLLBACK ((type_bridge_migration_direction_t)2)
+typedef int32_t type_bridge_migration_execution_status_t;
+#define TYPE_BRIDGE_MIGRATION_EXECUTION_APPLIED ((type_bridge_migration_execution_status_t)1)
+#define TYPE_BRIDGE_MIGRATION_EXECUTION_ROLLED_BACK ((type_bridge_migration_execution_status_t)2)
+#define TYPE_BRIDGE_MIGRATION_EXECUTION_RETRY_SAFE ((type_bridge_migration_execution_status_t)3)
+#define TYPE_BRIDGE_MIGRATION_EXECUTION_REQUIRES_RECOVERY ((type_bridge_migration_execution_status_t)4)
+typedef int32_t type_bridge_migration_position_kind_t;
+#define TYPE_BRIDGE_MIGRATION_POSITION_NONE ((type_bridge_migration_position_kind_t)0)
+#define TYPE_BRIDGE_MIGRATION_POSITION_TRANSACTION_GROUP ((type_bridge_migration_position_kind_t)1)
+#define TYPE_BRIDGE_MIGRATION_POSITION_BACKFILL_STEP ((type_bridge_migration_position_kind_t)2)
+#define TYPE_BRIDGE_MIGRATION_POSITION_MANIFEST_CHECKPOINT ((type_bridge_migration_position_kind_t)3)
+#define TYPE_BRIDGE_MIGRATION_POSITION_ROLLBACK_STEP ((type_bridge_migration_position_kind_t)4)
+typedef int32_t type_bridge_migration_backfill_direction_t;
+#define TYPE_BRIDGE_MIGRATION_BACKFILL_FORWARD ((type_bridge_migration_backfill_direction_t)1)
+#define TYPE_BRIDGE_MIGRATION_BACKFILL_REVERSE ((type_bridge_migration_backfill_direction_t)2)
+typedef int32_t type_bridge_migration_verification_finding_kind_t;
+#define TYPE_BRIDGE_MIGRATION_FINDING_APPLIED_LEDGER ((type_bridge_migration_verification_finding_kind_t)1)
+#define TYPE_BRIDGE_MIGRATION_FINDING_LIVE_SEMANTICS ((type_bridge_migration_verification_finding_kind_t)2)
+#define TYPE_BRIDGE_MIGRATION_FINDING_DESIRED_DIVERGENCE ((type_bridge_migration_verification_finding_kind_t)3)
+#define TYPE_BRIDGE_MIGRATION_FINDING_PENDING_MIGRATIONS ((type_bridge_migration_verification_finding_kind_t)4)
+#define TYPE_BRIDGE_MIGRATION_FINDING_CAPABILITIES ((type_bridge_migration_verification_finding_kind_t)5)
+
+typedef struct type_bridge_database_administration type_bridge_database_administration_t;
+typedef struct type_bridge_database_deletion_plan type_bridge_database_deletion_plan_t;
+typedef struct type_bridge_migration_catalog type_bridge_migration_catalog_t;
+typedef struct type_bridge_migration_history_entry type_bridge_migration_history_entry_t;
+typedef struct type_bridge_migration_identity type_bridge_migration_identity_t;
+typedef struct type_bridge_migration_plan type_bridge_migration_plan_t;
+typedef struct type_bridge_migration_plan_entry type_bridge_migration_plan_entry_t;
+typedef struct type_bridge_migration_approval_builder type_bridge_migration_approval_builder_t;
+typedef struct type_bridge_migration_approval_set type_bridge_migration_approval_set_t;
+typedef struct type_bridge_migration_execution_outcome type_bridge_migration_execution_outcome_t;
+typedef struct type_bridge_migration_cancellation type_bridge_migration_cancellation_t;
+typedef struct type_bridge_migration_backfill_observation type_bridge_migration_backfill_observation_t;
+typedef struct type_bridge_migration_verification_report type_bridge_migration_verification_report_t;
+typedef struct type_bridge_migration_verification_finding type_bridge_migration_verification_finding_t;
+
+typedef struct type_bridge_migration_execution_options_v1 {
+  uint64_t struct_size;
+  uint32_t version;
+  uint32_t flags;
+  uint64_t timeout_milliseconds;
+  uint64_t max_transaction_groups;
+  uint64_t max_backfill_observations;
+  const type_bridge_migration_cancellation_t *cancellation;
+} type_bridge_migration_execution_options_v1_t;
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_administration_open(const type_bridge_database_t *, type_bridge_database_administration_t **, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_administration_exists(const type_bridge_database_administration_t *, uint8_t *, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_administration_exists_with_options(const type_bridge_database_administration_t *, const type_bridge_migration_execution_options_v1_t *, uint8_t *, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_administration_create(const type_bridge_database_administration_t *, uint32_t *, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_administration_create_with_options(const type_bridge_database_administration_t *, const type_bridge_migration_execution_options_v1_t *, uint32_t *, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_administration_inspect(const type_bridge_database_administration_t *, uint32_t *, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_administration_inspect_with_options(const type_bridge_database_administration_t *, const type_bridge_migration_execution_options_v1_t *, uint32_t *, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_administration_plan_delete(const type_bridge_database_administration_t *, type_bridge_database_deletion_plan_t **, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_administration_plan_delete_with_options(const type_bridge_database_administration_t *, const type_bridge_migration_execution_options_v1_t *, type_bridge_database_deletion_plan_t **, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_deletion_plan_inspected_state(const type_bridge_database_deletion_plan_t *, uint32_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_deletion_plan_execute(type_bridge_database_deletion_plan_t *, uint32_t *, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_deletion_plan_execute_with_options(type_bridge_database_deletion_plan_t *, const type_bridge_migration_execution_options_v1_t *, uint32_t *, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_deletion_plan_close(type_bridge_database_deletion_plan_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_administration_close(type_bridge_database_administration_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_catalog_open(const type_bridge_schema_package_t *, type_bridge_byte_view_t, type_bridge_migration_catalog_t **, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_catalog_fingerprint(const type_bridge_migration_catalog_t *, type_bridge_byte_view_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_catalog_count(const type_bridge_migration_catalog_t *, size_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_catalog_entry_at(const type_bridge_migration_catalog_t *, size_t, type_bridge_migration_history_entry_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_catalog_head_count(const type_bridge_migration_catalog_t *, size_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_catalog_head_at(const type_bridge_migration_catalog_t *, size_t, type_bridge_migration_identity_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_catalog_close(type_bridge_migration_catalog_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_history_entry_identity(const type_bridge_migration_history_entry_t *, type_bridge_migration_identity_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_history_entry_parent_count(const type_bridge_migration_history_entry_t *, size_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_history_entry_parent_at(const type_bridge_migration_history_entry_t *, size_t, type_bridge_migration_identity_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_history_entry_manifest_digest(const type_bridge_migration_history_entry_t *, uint8_t *, size_t);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_history_entry_step_count(const type_bridge_migration_history_entry_t *, size_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_history_entry_safety(const type_bridge_migration_history_entry_t *, uint32_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_history_entry_reversible(const type_bridge_migration_history_entry_t *, uint8_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_history_entry_close(type_bridge_migration_history_entry_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_identity_app_label(const type_bridge_migration_identity_t *, type_bridge_byte_view_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_identity_name(const type_bridge_migration_identity_t *, type_bridge_byte_view_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_identity_new(type_bridge_byte_view_t, type_bridge_byte_view_t, type_bridge_migration_identity_t **, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_identity_close(type_bridge_migration_identity_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_catalog_preview_apply(const type_bridge_migration_catalog_t *, const type_bridge_migration_identity_t *const *, size_t, const type_bridge_migration_identity_t *const *, size_t, uint8_t, type_bridge_migration_plan_t **, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_catalog_preview_rollback(const type_bridge_migration_catalog_t *, const type_bridge_migration_identity_t *const *, size_t, const type_bridge_migration_identity_t *const *, size_t, type_bridge_migration_plan_t **, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_plan_direction(const type_bridge_migration_plan_t *, uint32_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_plan_execution_authorized(const type_bridge_migration_plan_t *, uint8_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_plan_count(const type_bridge_migration_plan_t *, size_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_plan_entry_at(const type_bridge_migration_plan_t *, size_t, type_bridge_migration_plan_entry_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_plan_approval_builder(const type_bridge_migration_plan_t *, type_bridge_migration_approval_builder_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_plan_authorize(const type_bridge_migration_plan_t *, const type_bridge_migration_approval_set_t *, type_bridge_migration_plan_t **, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_plan_execute(const type_bridge_migration_plan_t *, const type_bridge_database_t *, type_bridge_byte_view_t, type_bridge_migration_execution_outcome_t **, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_cancellation_new(type_bridge_migration_cancellation_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_cancellation_cancel(const type_bridge_migration_cancellation_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_cancellation_is_cancelled(const type_bridge_migration_cancellation_t *, uint8_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_cancellation_close(type_bridge_migration_cancellation_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_plan_execute_with_options(const type_bridge_migration_plan_t *, const type_bridge_database_t *, type_bridge_byte_view_t, const type_bridge_migration_execution_options_v1_t *, type_bridge_migration_execution_outcome_t **, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_plan_close(type_bridge_migration_plan_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_plan_entry_identity(const type_bridge_migration_plan_entry_t *, type_bridge_migration_identity_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_plan_entry_safety(const type_bridge_migration_plan_entry_t *, uint32_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_plan_entry_operation_count(const type_bridge_migration_plan_entry_t *, size_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_plan_entry_transaction_group_count(const type_bridge_migration_plan_entry_t *, size_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_plan_entry_backfill_count(const type_bridge_migration_plan_entry_t *, size_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_plan_entry_close(type_bridge_migration_plan_entry_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_approval_builder_approve(type_bridge_migration_approval_builder_t *, size_t, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_approval_builder_finish(type_bridge_migration_approval_builder_t *, type_bridge_migration_approval_set_t **, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_approval_builder_close(type_bridge_migration_approval_builder_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_approval_set_count(const type_bridge_migration_approval_set_t *, size_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_approval_set_close(type_bridge_migration_approval_set_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_execution_outcome_direction(const type_bridge_migration_execution_outcome_t *, uint32_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_execution_outcome_status(const type_bridge_migration_execution_outcome_t *, uint32_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_execution_outcome_migration_identity(const type_bridge_migration_execution_outcome_t *, type_bridge_migration_identity_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_execution_outcome_position_kind(const type_bridge_migration_execution_outcome_t *, uint32_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_execution_outcome_position_ordinal(const type_bridge_migration_execution_outcome_t *, size_t *, uint8_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_execution_outcome_diagnostics(const type_bridge_migration_execution_outcome_t *, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_execution_outcome_backfill_count(const type_bridge_migration_execution_outcome_t *, size_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_execution_outcome_backfill_at(const type_bridge_migration_execution_outcome_t *, size_t, type_bridge_migration_backfill_observation_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_execution_outcome_close(type_bridge_migration_execution_outcome_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_backfill_observation_identity(const type_bridge_migration_backfill_observation_t *, type_bridge_migration_identity_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_backfill_observation_operation_ordinal(const type_bridge_migration_backfill_observation_t *, size_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_backfill_observation_manifest_step_index(const type_bridge_migration_backfill_observation_t *, size_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_backfill_observation_plan_digest(const type_bridge_migration_backfill_observation_t *, uint8_t *, size_t);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_backfill_observation_direction(const type_bridge_migration_backfill_observation_t *, uint32_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_backfill_observation_counts(const type_bridge_migration_backfill_observation_t *, uint64_t *, uint64_t *, uint64_t *, uint32_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_backfill_observation_close(type_bridge_migration_backfill_observation_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_catalog_verify(const type_bridge_migration_catalog_t *, const type_bridge_database_t *, type_bridge_migration_verification_report_t **, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_verification_report_is_clean(const type_bridge_migration_verification_report_t *, uint8_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_verification_report_finding_count(const type_bridge_migration_verification_report_t *, size_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_verification_report_finding_at(const type_bridge_migration_verification_report_t *, size_t, type_bridge_migration_verification_finding_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_verification_report_frontier_count(const type_bridge_migration_verification_report_t *, size_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_verification_report_frontier_at(const type_bridge_migration_verification_report_t *, size_t, type_bridge_migration_identity_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_verification_report_close(type_bridge_migration_verification_report_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_verification_finding_kind(const type_bridge_migration_verification_finding_t *, uint32_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_verification_finding_pending_count(const type_bridge_migration_verification_finding_t *, size_t *);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_verification_finding_pending_at(const type_bridge_migration_verification_finding_t *, size_t, type_bridge_migration_identity_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_verification_finding_diagnostics(const type_bridge_migration_verification_finding_t *, type_bridge_diagnostics_t **);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_migration_verification_finding_close(type_bridge_migration_verification_finding_t **);
+
+#define TYPE_BRIDGE_PROJECTED_CODEC_OPTIONS_V1 1u
+#define TYPE_BRIDGE_PROJECTED_CODEC_HAS_TIMEOUT 1u
+
+#define TYPE_BRIDGE_GENERATED_INPUT_CANONICAL_BYTES                         \
+  ((type_bridge_generated_opaque_input_kind_t)37u)
+#define TYPE_BRIDGE_GENERATED_INPUT_CANONICAL_ARCHIVE_BUILDER               \
+  ((type_bridge_generated_opaque_input_kind_t)38u)
+#define TYPE_BRIDGE_GENERATED_INPUT_CANONICAL_ARCHIVE                       \
+  ((type_bridge_generated_opaque_input_kind_t)39u)
+#define TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_STRUCT                        \
+  ((type_bridge_generated_opaque_input_kind_t)40u)
+#define TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_STRUCT_MEMBER                 \
+  ((type_bridge_generated_opaque_input_kind_t)41u)
+#define TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_CODEC_OPTIONS                 \
+  ((type_bridge_generated_opaque_input_kind_t)42u)
+
+typedef struct type_bridge_canonical_bytes type_bridge_canonical_bytes_t;
+typedef struct type_bridge_canonical_archive_builder
+    type_bridge_canonical_archive_builder_t;
+typedef struct type_bridge_canonical_archive type_bridge_canonical_archive_t;
+typedef struct type_bridge_projected_struct type_bridge_projected_struct_t;
+typedef struct type_bridge_projected_struct_member
+    type_bridge_projected_struct_member_t;
+
+typedef struct type_bridge_projected_codec_options_v1 {
+  uint64_t struct_size;
+  uint32_t version;
+  uint32_t flags;
+  uint64_t timeout_milliseconds;
+  uint64_t max_input_bytes;
+  uint64_t max_output_bytes;
+  uint64_t max_depth;
+  uint64_t max_records;
+  uint64_t max_members;
+  const type_bridge_cancellation_t *cancellation;
+} type_bridge_projected_codec_options_v1_t;
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_record_encode_attribute_v1(
+    const type_bridge_projected_value_t *value,
+    const type_bridge_projected_codec_options_v1_t *options,
+    type_bridge_canonical_bytes_t **out_bytes,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_record_encode_create_v1(
+    const type_bridge_projected_create_t *value,
+    const type_bridge_projected_codec_options_v1_t *options,
+    type_bridge_canonical_bytes_t **out_bytes,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_record_encode_reference_v1(
+    const type_bridge_projected_reference_t *value,
+    const type_bridge_projected_codec_options_v1_t *options,
+    type_bridge_canonical_bytes_t **out_bytes,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_record_encode_snapshot_v1(
+    const type_bridge_projected_thing_t *value,
+    const type_bridge_projected_codec_options_v1_t *options,
+    type_bridge_canonical_bytes_t **out_bytes,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_record_encode_struct_v1(
+    const type_bridge_projected_struct_t *value,
+    const type_bridge_projected_codec_options_v1_t *options,
+    type_bridge_canonical_bytes_t **out_bytes,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_record_decode_attribute_v1(
+    const type_bridge_schema_package_t *package,
+    type_bridge_byte_view_t bytes,
+    const type_bridge_projected_token_v1_t *expected_attribute,
+    const type_bridge_projected_codec_options_v1_t *options,
+    type_bridge_projected_value_t **out_value,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_record_decode_create_v1(
+    const type_bridge_schema_package_t *package,
+    type_bridge_byte_view_t bytes,
+    const type_bridge_projected_token_v1_t *expected_model,
+    const type_bridge_projected_codec_options_v1_t *options,
+    type_bridge_projected_create_t **out_value,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_record_decode_reference_v1(
+    const type_bridge_schema_package_t *package,
+    type_bridge_byte_view_t bytes,
+    const type_bridge_projected_token_v1_t *expected_model,
+    const type_bridge_projected_codec_options_v1_t *options,
+    type_bridge_projected_reference_t **out_value,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_record_decode_snapshot_v1(
+    const type_bridge_schema_package_t *package,
+    type_bridge_byte_view_t bytes,
+    const type_bridge_projected_token_v1_t *expected_model,
+    const type_bridge_projected_codec_options_v1_t *options,
+    type_bridge_projected_thing_t **out_value,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_record_decode_struct_v1(
+    const type_bridge_schema_package_t *package,
+    type_bridge_byte_view_t bytes,
+    const type_bridge_projected_token_v1_t *expected_struct,
+    const type_bridge_projected_codec_options_v1_t *options,
+    type_bridge_projected_struct_t **out_value,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_struct_close(type_bridge_projected_struct_t **value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_struct_member_at_v1(
+    const type_bridge_projected_struct_t *value,
+    const type_bridge_projected_token_v1_t *expected_struct,
+    size_t index,
+    type_bridge_projected_struct_member_t **out_member,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_struct_member_kind(
+    const type_bridge_projected_struct_member_t *value,
+    type_bridge_projected_value_kind_t *out_kind);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_struct_member_text(
+    const type_bridge_projected_struct_member_t *value,
+    type_bridge_byte_view_t *out_text);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_struct_member_long(
+    const type_bridge_projected_struct_member_t *value,
+    int64_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_struct_member_double_bits(
+    const type_bridge_projected_struct_member_t *value,
+    uint64_t *out_bits);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_struct_member_boolean(
+    const type_bridge_projected_struct_member_t *value,
+    uint8_t *out_boolean);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_projected_struct_member_close(
+    type_bridge_projected_struct_member_t **value);
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_archive_builder_open_v1(
+    const type_bridge_schema_package_t *package,
+    const type_bridge_projected_codec_options_v1_t *options,
+    type_bridge_canonical_archive_builder_t **out_builder,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_archive_builder_append_record_v1(
+    type_bridge_canonical_archive_builder_t *builder,
+    type_bridge_byte_view_t record,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_archive_builder_finish_v1(
+    type_bridge_canonical_archive_builder_t **builder,
+    type_bridge_canonical_bytes_t **out_bytes,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_archive_builder_close(
+    type_bridge_canonical_archive_builder_t **builder);
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_archive_open_v1(
+    const type_bridge_schema_package_t *package,
+    type_bridge_byte_view_t bytes,
+    const type_bridge_projected_codec_options_v1_t *options,
+    type_bridge_canonical_archive_t **out_archive,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_archive_count(
+    const type_bridge_canonical_archive_t *archive,
+    size_t *out_count,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_archive_record_at(
+    const type_bridge_canonical_archive_t *archive,
+    size_t index,
+    type_bridge_canonical_bytes_t **out_bytes,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_archive_close(type_bridge_canonical_archive_t **archive);
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_bytes_view(
+    const type_bridge_canonical_bytes_t *bytes,
+    type_bridge_byte_view_t *out_view);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_canonical_bytes_close(type_bridge_canonical_bytes_t **bytes);
 #ifdef __cplusplus
 }
 #endif

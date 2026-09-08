@@ -1,7 +1,7 @@
 {
   "format": "typebridge.c-distribution/v1",
   "authority_state": "frozen",
-  "publication_disposition": "candidate-only-unpublished-unsupported",
+  "publication_disposition": "artifact-only-unpublished-unsupported",
   "release_gate": {
     "issue": 189,
     "state": "awaiting-release-authorization",
@@ -12,15 +12,15 @@
   "abi": {
     "decision": "no-change",
     "version": "1.6.0",
-    "contract_path": "tests/contracts/c-abi-1-6.json",
-    "contract_sha256": "e07daea88be44ea4f37acc363b1406285a96d53ad8f475c3fcaefd82cfb52495",
+    "contract_path": "tests/contracts/c-abi.json",
+    "contract_sha256": "28cd6cfcb848d6141b1ad4b1594bf35ac5424a05702433367e824ccda0a383fd",
     "static_linkage": "unsupported",
-    "shared_linkage": "candidate"
+    "shared_linkage": "artifact"
   },
   "identities": {
     "cli": {
       "name": "type-bridge",
-      "archive_stem": "type-bridge-cli-candidate-{target}",
+      "archive_stem": "type-bridge-cli-artifact-{target}",
       "version_authority": "type-bridge-core/crates/cli/Cargo.toml",
       "version_authority_sha256": "145bcbec999bb8c7d7dc33334f965b280fe55766f8bc7a0d71ff3fcbdf75f9e4",
       "compiler_free_installation": true
@@ -42,7 +42,9 @@
     }
   },
   "compatibility": {
-    "runtime_abi": {"minimum_inclusive": "1.6.0", "maximum_exclusive": "2.0.0"},
+    "runtime_abi": {
+      "exact": "1.6.0"
+    },
     "required_pre_io_checks": [
       "product-version",
       "abi-major-minor",
@@ -56,12 +58,14 @@
     "provider_io_on_failure": false
   },
   "archive_layouts": {
-    "cli": ["bin/type-bridge", "LICENSE", "THIRD_PARTY_NOTICES.md", "artifact-manifest.json"],
+    "cli": [
+      "bin/type-bridge",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md",
+      "artifact-manifest.json"
+    ],
     "runtime": [
       "include/typebridge/type_bridge.h",
-      "include/typebridge/type_bridge_abi_1_4.h",
-      "include/typebridge/type_bridge_abi_1_5.h",
-      "include/typebridge/type_bridge_abi_1_6.h",
       "lib/{shared-library}",
       "lib/cmake/TypeBridge/TypeBridgeConfig.cmake",
       "lib/cmake/TypeBridge/TypeBridgeConfigVersion.cmake",
@@ -81,7 +85,7 @@
     ]
   },
   "matrix": {
-    "candidate_supported": [
+    "artifact_supported": [
       {
         "target": "x86_64-unknown-linux-gnu",
         "runner": "ubuntu-24.04",
@@ -89,10 +93,15 @@
         "runtime_family": "glibc",
         "c_standard": "C17",
         "cpp_standard": "C++17",
-        "c_compilers": ["gcc", "clang"],
+        "c_compilers": [
+          "gcc",
+          "clang"
+        ],
         "cmake_minimum": "3.20",
         "pkg_config": true,
-        "linkage": ["shared"]
+        "linkage": [
+          "shared"
+        ]
       }
     ],
     "configured_unverified": [
@@ -102,14 +111,14 @@
     ],
     "public_supported": []
   },
-  "candidate": {
+  "artifact": {
     "identity": "source-commit-and-tree-plus-target-and-artifact-digest",
     "mutable_aliases": false,
     "registry_mutation": false,
     "exact_manifest_fields": [
       "source-commit",
       "source-tree",
-      "candidate-id",
+      "artifact-id",
       "abi",
       "target",
       "filename",
@@ -163,18 +172,41 @@
       "cosign_version": "3.0.6",
       "issuer": "https://token.actions.githubusercontent.com",
       "identity_regexp": "^https://github\\.com/ds1sqe/type-bridge/\\.github/workflows/c-release\\.yml@refs/tags/v2\\.2\\.0$",
-      "candidate_signatures": "forbidden-before-authorization"
+      "artifact_signatures": "forbidden-before-authorization"
     }
   },
   "source_authorities": [
-    {"path": "type-bridge-core/crates/c/Cargo.toml", "sha256": "d2caaa810b21996d9fd14c837f16219fc7908a5c5a924ca43550b11ac54b664b"},
-    {"path": "type-bridge-core/crates/c/CMakeLists.txt", "sha256": "d67604d4509460adf1ba5d9ade344d81f08097113f0e251df11e7f8c08ea8f96"},
-    {"path": "type-bridge-core/crates/c/cmake/TypeBridgeConfig.cmake.in", "sha256": "4e8e9f5740b0892625f58f86cb16f849bd31453d16ff500c1fb8b40ed07ee897"},
-    {"path": "type-bridge-core/crates/c/cmake/type-bridge.pc.in", "sha256": "46ff15b1455eaa70bcec61510e3b3ea2c598f906a2ffac09b35e87375b2e12d4"},
-    {"path": "type-bridge-core/crates/c/include/typebridge/type_bridge.h", "sha256": "f4805c6c202a0c0550f11d00152325f0d7d35137147947559ddcdde41e2528d7"},
-    {"path": "type-bridge-core/crates/c/include/typebridge/type_bridge_abi_1_6.h", "sha256": "1d52bb7d3aa0b65fc0c8d9fde631725433abb8307e735e2545201f9944b52cd1"},
-    {"path": "type-bridge-core/crates/schema-codegen/src/c/CMakeLists.abi-1-4.txt.in", "sha256": "3e7d1bcd6b0f15a9f4dbe2d5f3dd98bd650c2f65d0d73bb3b8ab7f9eccafaecd"},
-    {"path": "type-bridge-core/crates/schema-codegen/src/c/SchemaConfig.abi-1-4.cmake.in", "sha256": "d5a86870b0a8460ccad060233ce1ccb104865231b3fd50338c34831550ca9b7c"},
-    {"path": "type-bridge-core/crates/schema-codegen/src/c/schema.abi-1-4.pc.in", "sha256": "924ffe293eb96fca547e5d25692b2f362402042e8267ce8827e0afd5fdcc409f"}
+    {
+      "path": "type-bridge-core/crates/c/Cargo.toml",
+      "sha256": "0aa235125346a452d2315d0aa9624069b69079e72e3a252f6eb742645f04315b"
+    },
+    {
+      "path": "type-bridge-core/crates/c/CMakeLists.txt",
+      "sha256": "1d49298c8d57f079b4df902c650697154a383e4085a3d8d41f18d1e3f4859b8b"
+    },
+    {
+      "path": "type-bridge-core/crates/c/cmake/TypeBridgeConfig.cmake.in",
+      "sha256": "4e8e9f5740b0892625f58f86cb16f849bd31453d16ff500c1fb8b40ed07ee897"
+    },
+    {
+      "path": "type-bridge-core/crates/c/cmake/type-bridge.pc.in",
+      "sha256": "46ff15b1455eaa70bcec61510e3b3ea2c598f906a2ffac09b35e87375b2e12d4"
+    },
+    {
+      "path": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
+      "sha256": "fa990bf4e896948f104645e343131ac81be958069b3741a2691672aebd888fbb"
+    },
+    {
+      "path": "type-bridge-core/crates/schema-codegen/src/c/CMakeLists.txt.in",
+      "sha256": "08d7f47d1ec93496f1a66090daf41d1b775bfccdb1a9a864904dd7d63a7d2324"
+    },
+    {
+      "path": "type-bridge-core/crates/schema-codegen/src/c/SchemaConfig.cmake.in",
+      "sha256": "02aeb269001903341031ebc0371baa9872ee7813c8d3d5031d3b459c643f114b"
+    },
+    {
+      "path": "type-bridge-core/crates/schema-codegen/src/c/schema.pc.in",
+      "sha256": "4c8856278d69889c4dea80aab7eeb2bf9b047a137056ed7222032c64eb611f38"
+    }
   ]
 }

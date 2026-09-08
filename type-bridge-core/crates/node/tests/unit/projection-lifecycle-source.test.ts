@@ -10,8 +10,8 @@ const sourcePath = path.resolve(
 
 test("remote close I/O is measured before later usable-lineage terminals", () => {
   const source = fs.readFileSync(sourcePath, "utf8");
-  const start = source.indexOf("async function workforceV2Lifecycle(");
-  const end = source.indexOf("async function runWorkforceV2Journey(", start);
+  const start = source.indexOf("async function sdkV2Lifecycle(");
+  const end = source.indexOf("async function runSdkV2Journey(", start);
   assert.notEqual(start, -1);
   assert.notEqual(end, -1);
   const lifecycle = source.slice(start, end);
@@ -28,7 +28,7 @@ test("remote close I/O is measured before later usable-lineage terminals", () =>
     rejectedTerminal,
   );
   const descendantTerminal = lifecycle.indexOf(
-    "workforceV2Key(await remoteDescendant.one())",
+    "sdkV2Key(await remoteDescendant.one())",
     measured,
   );
   assert.notEqual(snapshot, -1);

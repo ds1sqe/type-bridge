@@ -15,13 +15,11 @@ POLICY = ROOT / ".github/release/c-2.2.0.json"
 CI = ROOT / ".github/workflows/ci.yml"
 VERSION = "2.2.0"
 TARGET = "x86_64-unknown-linux-gnu"
-CLI = f"type-bridge-cli-candidate-{TARGET}.tar.gz"
+CLI = f"type-bridge-cli-artifact-{TARGET}.tar.gz"
 RUNTIME = f"type-bridge-c-runtime-abi-1.6-{TARGET}.tar.gz"
-GENERATED = (
-    "tb_workforcev3-c-5c1c8cabf97c28913fc45d3e724e251501a57e2ca87eed9372474b5c7a51405e.tar.gz"
-)
+GENERATED = "tb_sdkv3-c-de6ec4acca4cfc7ba35cfbbd969dce49c7bf3b709532fca43ac41ed482606264.tar.gz"
 SECURITY_FILES = [
-    "candidate-manifest.json",
+    "artifact-manifest.json",
     "cli.spdx.json",
     "runtime.spdx.json",
     "generated.spdx.json",
@@ -31,19 +29,19 @@ SECURITY_FILES = [
     "signature-policy.json",
 ]
 ARTIFACTS = {
-    "standalone-cli-candidate-linux-x86_64-gnu": [CLI],
-    "c-package-candidates-linux-x86_64-gnu": [RUNTIME, GENERATED],
+    "standalone-cli-artifact-linux-x86_64-gnu": [CLI],
+    "c-package-artifacts-linux-x86_64-gnu": [RUNTIME, GENERATED],
     "c-distribution-security-linux-x86_64-gnu": SECURITY_FILES,
     "c-artifact-clean-consumer-linux-x86_64-gnu": ["c-artifact-clean-consumer.json"],
     "c-artifact-live-consumer-linux-x86_64-gnu": [
         "c-artifact-live-journey.json",
-        "c-artifact-phase4-report.json",
+        "c-artifact-acceptance-report.json",
     ],
 }
 PUBLIC_FILES = {
     CLI: f"type-bridge-cli-{VERSION}-{TARGET}.tar.gz",
     RUNTIME: f"type-bridge-c-runtime-{VERSION}-abi-1.6-{TARGET}.tar.gz",
-    GENERATED: f"type-bridge-c-workforce-example-{VERSION}.tar.gz",
+    GENERATED: f"type-bridge-c-sdk-example-{VERSION}.tar.gz",
 }
 EVIDENCE = f"type-bridge-c-evidence-{VERSION}.tar.gz"
 RECEIPT = f"type-bridge-c-verification-{VERSION}.json"
@@ -147,7 +145,7 @@ def selected_policy() -> dict[str, Any]:
         "certificate_identity": IDENTITY,
         "certificate_issuer": "https://token.actions.githubusercontent.com",
         "cosign_version": "3.0.6",
-        "candidate_disposition": "unchanged; promotion is a separate signed record",
+        "artifact_disposition": "unchanged; promotion is a separate signed record",
         "ci_workflow_sha256": hashlib.sha256(CI.read_bytes()).hexdigest(),
         "ci_jobs": workflow_jobs(),
         "ci_artifacts": ARTIFACTS,

@@ -1932,29 +1932,29 @@ mod tests {
     }
 
     fn emit_direct_cancellation_proof(observation: Value) {
-        let Ok(destination) = std::env::var("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT") else {
+        let Ok(destination) = std::env::var("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT") else {
             return;
         };
-        let nonce = std::env::var("TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE")
-            .expect("workforce-v2 proof fragment requires the same-run nonce");
+        let nonce = std::env::var("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE")
+            .expect("sdk-v2 proof fragment requires the same-run nonce");
         assert!(
             nonce.len() == 64
                 && nonce
                     .bytes()
                     .all(|value| value.is_ascii_digit() || (b'a'..=b'f').contains(&value)),
-            "workforce-v2 proof run nonce must be 64 lowercase hex characters"
+            "sdk-v2 proof run nonce must be 64 lowercase hex characters"
         );
         let destination = PathBuf::from(destination);
         assert!(
             destination.is_absolute(),
-            "workforce-v2 proof fragment path must be absolute"
+            "sdk-v2 proof fragment path must be absolute"
         );
         let parent = destination
             .parent()
             .expect("proof fragment path has no parent");
         let parent_metadata = parent
             .symlink_metadata()
-            .expect("workforce-v2 proof fragment parent is not inspectable");
+            .expect("sdk-v2 proof fragment parent is not inspectable");
         assert!(parent_metadata.is_dir() && !parent_metadata.file_type().is_symlink());
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let root = manifest
@@ -1964,15 +1964,15 @@ mod tests {
         let contract = json!({
             "allowlist": source_identity(
                 root,
-                "tests/contracts/sdk_conformance/workforce-v2/proof-fragment-allowlist-v1.json",
+                "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-allowlist-v1.json",
             ),
             "journey": source_identity(
                 root,
-                "tests/contracts/sdk_conformance/workforce-v2/journey-v2.json",
+                "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json",
             ),
             "proof_schema": source_identity(
                 root,
-                "tests/contracts/sdk_conformance/workforce-v2/proof-fragment-schema-v1.json",
+                "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-schema-v1.json",
             ),
         });
         let sources = [
@@ -1982,7 +1982,7 @@ mod tests {
         let fragment = json!({
             "binding": "python",
             "contract": contract,
-            "format": "typebridge.workforce-v2-proof-fragment/v1",
+            "format": "typebridge.sdk-v2-proof-fragment/v1",
             "producer": {
                 "id": "python.native_direct_cancellation",
                 "sources": sources.map(|relative| source_identity(root, relative)),
@@ -2004,7 +2004,7 @@ mod tests {
             .write(true)
             .create_new(true)
             .open(destination)
-            .expect("workforce-v2 proof fragment destination must not exist");
+            .expect("sdk-v2 proof fragment destination must not exist");
         output.write_all(&payload).unwrap();
         output.sync_all().unwrap();
     }

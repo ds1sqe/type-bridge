@@ -64,22 +64,15 @@ duplicated directory snapshot here.
 - Python and Node bindings marshal typed values and expose language-native
   facades; they do not reimplement schema, query, migration, or ORM rules.
 - The generated C package and native C ABI are an internal foundation under
-  development. ABI 1.4 verifies flat and chunked schema-package evidence and provides opaque
-  projected values/models plus synchronous runtime, exact-3.12.3 database,
-  policy-aware read/write transaction, and pre-dispatch cancellation handles,
-  together with generated nominal exact single-entity and single-relation
-  CRUD/count, homogeneous atomic mutation batches, and closed typed role-player
-  unions. The same internal boundary includes a
-  generated nominal typed-query facade, reductions, schema-function calls, and
-  caller-owned remote transport over Rust-owned query semantics. Ordered C-v3
-  packages also compose those frozen query entries into generated nominal
-  field-token manager filters with database and borrowed-read terminals; this
-  adds no native exports. Its chunked
-  package resources and streaming create builder keep generated objects within
-  the hosted C11 portability floors. Ordered C-v3 packages select this successor
-  surface, but exact TypeDB 3.12.3 live acceptance leaves ordered attributes and
-  ordered role-player lists empty and makes no list-instance evidence claim. C
-  is not yet a supported SDK or release artifact.
+  development. ABI 1.6 is the single supported build target, with one header
+  and exact runtime dependencies. Rust owns schema admission, projected
+  values, transactions, CRUD, queries, migration, canonical serialization,
+  diagnostics, resource limits, and cancellation. Generated nominal models
+  enforce package and role boundaries. Ordered schema packages expose typed
+  manager filters; live TypeDB 3.12.3 checks keep ordered attributes and role
+  lists empty because the provider does not accept those instances. C becomes
+  a public SDK only after its release artifacts pass the complete acceptance
+  checks.
 - Generated files are projections of canonical schema authority and must not be
   edited by hand.
 - Separately retained V1 query surfaces stay available unless an exact future

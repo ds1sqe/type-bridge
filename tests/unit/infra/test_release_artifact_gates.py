@@ -1384,7 +1384,7 @@ def test_generated_and_low_level_queries_are_required_in_the_tls_lane() -> None:
     assert tls_lane.count("TYPEDB_TLS_ROOT_CA") >= 4
     assert 'NODE_EXTRA_CA_CERTS="$fixture_root_ca"' in tls_lane
     assert "NODE_TLS_REJECT_UNAUTHORIZED" not in tls_lane
-    assert "scripts/ci/run_phase5_manager_filter_tls.py" in tls_lane
+    assert "scripts/ci/run_manager_filter_tls.py" in tls_lane
     assert "TLS ordered generated Python + Node manager parity" in tls_lane
 
 

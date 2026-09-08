@@ -80,7 +80,7 @@ type DynamicManagerLike<Row> = {
  * and pagination accumulate into a `DynamicQuerySpec`; terminal methods
  * (`all`/`first`/`count`/`exists`/`aggregate`/`groupBy`) execute through the Rust
  * dynamic query seam. Reads hydrate through the manager's `hydrate` callback,
- * preserving Plan 08 typed instances and `_iid`.
+ * preserving C distribution typed instances and `_iid`.
  */
 export declare class TypedQuery<T, Row> {
     #private;

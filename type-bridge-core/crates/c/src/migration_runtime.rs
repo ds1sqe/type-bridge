@@ -1,9 +1,4 @@
-//! Rust-owned migration runtime resources prepared for the additive C ABI.
-
-// The complete owner graph is intentionally assembled before any symbol is
-// exported: ABI 1.4's exact export ledger must remain frozen until the whole
-// ABI 1.5 migration surface can be activated atomically.
-#![allow(dead_code)]
+//! Rust-owned migration runtime resources for the C ABI.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -197,10 +192,7 @@ impl DatabaseDeletionPlanState {
         runtime.block_on(plan.execute_controlled(control))
     }
 
-    pub(crate) fn close(&mut self) {
-        self.plan = None;
-    }
-
+    #[cfg(test)]
     pub(crate) fn retains_administration(&self, owner: &Arc<DatabaseAdministrationState>) -> bool {
         Arc::ptr_eq(&self.administration, owner)
     }
@@ -339,7 +331,7 @@ impl MigrationCatalogState {
     }
 }
 
-/// Owned read-only verification report prepared for ABI 1.5 handles.
+/// Owned read-only migration verification report.
 #[derive(Clone, Debug)]
 pub(crate) struct MigrationVerificationState {
     report: type_bridge_schema_migration::MigrationVerifyReport,
@@ -506,6 +498,7 @@ impl MigrationPlanState {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn catalog_fingerprint_json(&self) -> &[u8] {
         self.catalog.fingerprint_json()
     }
@@ -567,18 +560,6 @@ impl MigrationPlanState {
     }
 
     /// Execute an authorized plan through the database's exact provider runtime.
-    pub(crate) fn execute(
-        &self,
-        database: &TypeBridgeDatabase,
-        holder: &str,
-    ) -> Result<MigrationPlanExecutionState, Diagnostic> {
-        self.execute_controlled(
-            database,
-            holder,
-            &type_bridge_schema_migration::MigrationExecutionControl::default(),
-        )
-    }
-
     pub(crate) fn execute_controlled(
         &self,
         database: &TypeBridgeDatabase,
@@ -624,7 +605,7 @@ impl MigrationPlanState {
     }
 }
 
-/// Owned terminal result prepared for the additive ABI 1.5 outcome handles.
+/// Owned terminal migration result.
 #[derive(Clone, Debug)]
 pub(crate) struct MigrationPlanExecutionState {
     report: MigrationExecutionReport,

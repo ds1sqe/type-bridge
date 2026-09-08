@@ -1632,7 +1632,7 @@
         "getByIid round-trips inherited and child fields with brands and _iid preserved",
         "update does not throw and re-read returns the entity",
         "delete removes the entity; getByIid returns null afterward",
-        "scalar-only (non-inherited) model still hydrates correctly (Plan 08 regression guard)"
+        "scalar-only (non-inherited) model still hydrates correctly (C distribution regression guard)"
       ]
     },
     {
@@ -1644,7 +1644,7 @@
         "insert with 3 tags; read back yields Tag[] with set-semantics equality",
         "insert without tags (absent optional list); read back yields undefined",
         "insert with empty tags array; read back yields undefined (no wire tuples emitted)",
-        "scalar field alongside list field hydrates without corruption (Plan 08 regression guard)"
+        "scalar field alongside list field hydrates without corruption (C distribution regression guard)"
       ]
     },
     {
@@ -2042,7 +2042,7 @@
       "family_id": "python_node_handwritten_parity_harness",
       "source_sha256": "49bda4eea7d2122a8dcc933c45e7fd373d0760f4bfdc90381abacf1908dea2d4",
       "test_cases": [
-        "test_phase5_fixture_contract_loads_and_validates_without_typedb",
+        "test_manager_fixture_contract_loads_and_validates_without_typedb",
         "test_canonical_json_output_is_stable",
         "test_npm_pack_manifest_accepts_array_and_workspace_object_shapes"
       ]

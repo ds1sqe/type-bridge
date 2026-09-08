@@ -4,7 +4,6 @@ use std::mem::{align_of, offset_of, size_of};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
 
@@ -114,7 +113,7 @@ plays:
     membership: [member]
 "#;
 
-const ORDERED_PHASE2_SOURCE: &str = r#"format: typebridge.schema/v2
+const ORDERED_PROJECTED_SOURCE: &str = r#"format: typebridge.schema/v2
 attributes:
   aliases: { value: string }
 entities:
@@ -140,352 +139,6 @@ plays:
     base-activity:
       participant: { card: { min: 0, max: 3 } }
 "#;
-const ABI_1_3_EXPORTED_SYMBOLS: [&str; 180] = [
-    "type_bridge_c_abi_major",
-    "type_bridge_c_abi_minor",
-    "type_bridge_cancellation_close",
-    "type_bridge_cancellation_is_requested",
-    "type_bridge_cancellation_open",
-    "type_bridge_cancellation_request",
-    "type_bridge_database_close",
-    "type_bridge_database_entity_count",
-    "type_bridge_database_entity_delete_by_iid",
-    "type_bridge_database_entity_get_by_iid",
-    "type_bridge_database_entity_insert",
-    "type_bridge_database_entity_put",
-    "type_bridge_database_entity_update",
-    "type_bridge_database_relation_count",
-    "type_bridge_database_relation_delete_by_iid",
-    "type_bridge_database_relation_get_by_iid",
-    "type_bridge_database_relation_insert",
-    "type_bridge_database_relation_put",
-    "type_bridge_database_relation_update",
-    "type_bridge_database_open_v1",
-    "type_bridge_database_query_execute_v1",
-    "type_bridge_database_server_version",
-    "type_bridge_diagnostics_close",
-    "type_bridge_diagnostics_json",
-    "type_bridge_execution_diagnostics_close",
-    "type_bridge_execution_diagnostics_count",
-    "type_bridge_execution_diagnostics_detail_get_v1",
-    "type_bridge_execution_diagnostics_detail_list_count",
-    "type_bridge_execution_diagnostics_detail_list_get",
-    "type_bridge_execution_diagnostics_detail_signed",
-    "type_bridge_execution_diagnostics_get_v1",
-    "type_bridge_execution_diagnostics_path_get_v1",
-    "type_bridge_generated_opaque_alias_preflight_v1",
-    "type_bridge_projected_collection_limit_diagnostics",
-    "type_bridge_projected_create_builder_add_v1",
-    "type_bridge_projected_create_builder_close",
-    "type_bridge_projected_create_builder_finish",
-    "type_bridge_projected_create_builder_open_v1",
-    "type_bridge_projected_create_close",
-    "type_bridge_projected_create_field_count",
-    "type_bridge_projected_create_field_value_at",
-    "type_bridge_projected_create_open_v1",
-    "type_bridge_projected_create_role_count",
-    "type_bridge_projected_create_role_reference_at",
-    "type_bridge_projected_reference_clone",
-    "type_bridge_projected_reference_close",
-    "type_bridge_projected_reference_iid",
-    "type_bridge_projected_reference_key",
-    "type_bridge_projected_reference_model_ordinal",
-    "type_bridge_projected_reference_open_v1",
-    "type_bridge_projected_reference_validate_model",
-    "type_bridge_projected_reference_validate_role",
-    "type_bridge_projected_thing_clone",
-    "type_bridge_projected_thing_close",
-    "type_bridge_projected_thing_field_count",
-    "type_bridge_projected_thing_field_value_at",
-    "type_bridge_projected_thing_iid",
-    "type_bridge_projected_thing_model_ordinal",
-    "type_bridge_projected_thing_open_v1",
-    "type_bridge_projected_thing_reference",
-    "type_bridge_projected_thing_role_count",
-    "type_bridge_projected_thing_role_reference_at",
-    "type_bridge_projected_thing_scalar_field_value",
-    "type_bridge_projected_thing_scalar_role_reference",
-    "type_bridge_projected_thing_validate_model",
-    "type_bridge_projected_value_boolean",
-    "type_bridge_projected_value_boolean_open",
-    "type_bridge_projected_value_close",
-    "type_bridge_projected_value_date_open",
-    "type_bridge_projected_value_datetime_open",
-    "type_bridge_projected_value_datetime_tz_open",
-    "type_bridge_projected_value_decimal_open",
-    "type_bridge_projected_value_double_bits",
-    "type_bridge_projected_value_double_open",
-    "type_bridge_projected_value_duration_open",
-    "type_bridge_projected_value_kind",
-    "type_bridge_projected_value_long",
-    "type_bridge_projected_value_long_open",
-    "type_bridge_projected_value_string_open",
-    "type_bridge_projected_value_text",
-    "type_bridge_projected_value_validate_model",
-    "type_bridge_query_add_hidden",
-    "type_bridge_query_allow_cross_join",
-    "type_bridge_query_binding_close",
-    "type_bridge_query_binding_iid_in_v1",
-    "type_bridge_query_binding_iid_v1",
-    "type_bridge_query_binding_open_v1",
-    "type_bridge_query_close",
-    "type_bridge_query_field_close",
-    "type_bridge_query_field_compare_field",
-    "type_bridge_query_field_compare_function",
-    "type_bridge_query_field_compare_value",
-    "type_bridge_query_field_open",
-    "type_bridge_query_field_presence",
-    "type_bridge_query_function_call_close",
-    "type_bridge_query_function_call_compare_call",
-    "type_bridge_query_function_call_compare_field",
-    "type_bridge_query_function_call_compare_value",
-    "type_bridge_query_function_call_open_v1",
-    "type_bridge_query_function_close",
-    "type_bridge_query_function_open",
-    "type_bridge_query_function_value_close",
-    "type_bridge_query_function_value_open",
-    "type_bridge_query_open_v1",
-    "type_bridge_query_order_close",
-    "type_bridge_query_order_open_v1",
-    "type_bridge_query_predicate_close",
-    "type_bridge_query_predicate_combine",
-    "type_bridge_query_remote_claim_close",
-    "type_bridge_query_remote_claim_decode_v1",
-    "type_bridge_query_remote_pending_response_snapshot_limit",
-    "type_bridge_query_remote_context_close",
-    "type_bridge_query_remote_context_open_v1",
-    "type_bridge_query_remote_pending_claim",
-    "type_bridge_query_remote_pending_close",
-    "type_bridge_query_remote_pending_request_bytes",
-    "type_bridge_query_remote_prepare_v1",
-    "type_bridge_query_result_close",
-    "type_bridge_query_result_count",
-    "type_bridge_query_result_exists",
-    "type_bridge_query_result_kind",
-    "type_bridge_query_result_page_metadata_v1",
-    "type_bridge_query_result_reduction_group_field_at",
-    "type_bridge_query_result_reduction_group_field_count",
-    "type_bridge_query_result_reduction_group_kind",
-    "type_bridge_query_result_reduction_group_thing",
-    "type_bridge_query_result_reduction_row_count",
-    "type_bridge_query_result_reduction_value_count",
-    "type_bridge_query_result_reduction_value_double_bits",
-    "type_bridge_query_result_reduction_value_long",
-    "type_bridge_query_result_reduction_value_metadata_v1",
-    "type_bridge_query_result_row_count",
-    "type_bridge_query_result_row_slot_count",
-    "type_bridge_query_result_row_slot_thing_at",
-    "type_bridge_query_role_close",
-    "type_bridge_query_role_connects",
-    "type_bridge_query_role_open",
-    "type_bridge_query_selection_close",
-    "type_bridge_query_selection_open_v1",
-    "type_bridge_query_session_close",
-    "type_bridge_query_session_open",
-    "type_bridge_query_session_reachable",
-    "type_bridge_query_terminal_close",
-    "type_bridge_query_terminal_open_v1",
-    "type_bridge_query_where",
-    "type_bridge_read_transaction_close",
-    "type_bridge_read_transaction_entity_count",
-    "type_bridge_read_transaction_entity_get_by_iid",
-    "type_bridge_read_transaction_relation_count",
-    "type_bridge_read_transaction_relation_get_by_iid",
-    "type_bridge_read_transaction_open",
-    "type_bridge_read_transaction_query_execute_v1",
-    "type_bridge_runtime_close",
-    "type_bridge_runtime_open_v1",
-    "type_bridge_runtime_version",
-    "type_bridge_schema_package_authority_json",
-    "type_bridge_schema_package_binding_fingerprint_json",
-    "type_bridge_schema_package_close",
-    "type_bridge_schema_package_managed_scope",
-    "type_bridge_schema_package_open_chunked_v1",
-    "type_bridge_schema_package_open_v1",
-    "type_bridge_schema_package_projection_json",
-    "type_bridge_schema_package_semantic_fingerprint_json",
-    "type_bridge_schema_package_semantic_profile",
-    "type_bridge_write_transaction_close",
-    "type_bridge_write_transaction_commit",
-    "type_bridge_write_transaction_entity_count",
-    "type_bridge_write_transaction_entity_delete_by_iid",
-    "type_bridge_write_transaction_entity_get_by_iid",
-    "type_bridge_write_transaction_entity_insert",
-    "type_bridge_write_transaction_entity_put",
-    "type_bridge_write_transaction_entity_update",
-    "type_bridge_write_transaction_relation_count",
-    "type_bridge_write_transaction_relation_delete_by_iid",
-    "type_bridge_write_transaction_relation_get_by_iid",
-    "type_bridge_write_transaction_relation_insert",
-    "type_bridge_write_transaction_relation_put",
-    "type_bridge_write_transaction_relation_update",
-    "type_bridge_write_transaction_open",
-    "type_bridge_write_transaction_rollback",
-];
-
-const ABI_1_4_ADDED_EXPORTED_SYMBOLS: [&str; 45] = [
-    "type_bridge_database_config_validate_v2",
-    "type_bridge_database_entity_count_v2",
-    "type_bridge_database_entity_delete_by_iid_v2",
-    "type_bridge_database_entity_get_by_iid_v2",
-    "type_bridge_database_entity_insert_v2",
-    "type_bridge_database_entity_put_v2",
-    "type_bridge_database_entity_update_v2",
-    "type_bridge_database_open_v2",
-    "type_bridge_database_projected_batch_execute_v1",
-    "type_bridge_database_relation_count_v2",
-    "type_bridge_database_relation_delete_by_iid_v2",
-    "type_bridge_database_relation_get_by_iid_v2",
-    "type_bridge_database_relation_insert_v2",
-    "type_bridge_database_relation_put_v2",
-    "type_bridge_database_relation_update_v2",
-    "type_bridge_projected_batch_builder_add_v1",
-    "type_bridge_projected_batch_builder_close",
-    "type_bridge_projected_batch_builder_finish",
-    "type_bridge_projected_batch_builder_open_v1",
-    "type_bridge_projected_batch_close",
-    "type_bridge_projected_batch_result_close",
-    "type_bridge_projected_batch_result_count",
-    "type_bridge_projected_batch_result_thing_at",
-    "type_bridge_read_transaction_entity_count_v2",
-    "type_bridge_read_transaction_entity_get_by_iid_v2",
-    "type_bridge_read_transaction_open_v2",
-    "type_bridge_read_transaction_relation_count_v2",
-    "type_bridge_read_transaction_relation_get_by_iid_v2",
-    "type_bridge_schema_package_open_chunked_v2",
-    "type_bridge_schema_package_open_v2",
-    "type_bridge_write_transaction_commit_v2",
-    "type_bridge_write_transaction_entity_count_v2",
-    "type_bridge_write_transaction_entity_delete_by_iid_v2",
-    "type_bridge_write_transaction_entity_get_by_iid_v2",
-    "type_bridge_write_transaction_entity_insert_v2",
-    "type_bridge_write_transaction_entity_put_v2",
-    "type_bridge_write_transaction_entity_update_v2",
-    "type_bridge_write_transaction_open_v2",
-    "type_bridge_write_transaction_projected_batch_execute_v1",
-    "type_bridge_write_transaction_relation_count_v2",
-    "type_bridge_write_transaction_relation_delete_by_iid_v2",
-    "type_bridge_write_transaction_relation_get_by_iid_v2",
-    "type_bridge_write_transaction_relation_insert_v2",
-    "type_bridge_write_transaction_relation_put_v2",
-    "type_bridge_write_transaction_relation_update_v2",
-];
-
-// ABI 1.3 is append-only over this exact ABI 1.2 surface. Keep this ledger
-// independent of the current export list so a removal or rename cannot be
-// hidden by merely updating the latest-version inventory.
-const ABI_1_2_EXPORTED_SYMBOLS: [&str; 109] = [
-    "type_bridge_c_abi_major",
-    "type_bridge_c_abi_minor",
-    "type_bridge_cancellation_close",
-    "type_bridge_cancellation_is_requested",
-    "type_bridge_cancellation_open",
-    "type_bridge_cancellation_request",
-    "type_bridge_database_close",
-    "type_bridge_database_entity_count",
-    "type_bridge_database_entity_delete_by_iid",
-    "type_bridge_database_entity_get_by_iid",
-    "type_bridge_database_entity_insert",
-    "type_bridge_database_entity_put",
-    "type_bridge_database_entity_update",
-    "type_bridge_database_relation_count",
-    "type_bridge_database_relation_delete_by_iid",
-    "type_bridge_database_relation_get_by_iid",
-    "type_bridge_database_relation_insert",
-    "type_bridge_database_relation_put",
-    "type_bridge_database_relation_update",
-    "type_bridge_database_open_v1",
-    "type_bridge_database_server_version",
-    "type_bridge_diagnostics_close",
-    "type_bridge_diagnostics_json",
-    "type_bridge_execution_diagnostics_close",
-    "type_bridge_execution_diagnostics_count",
-    "type_bridge_execution_diagnostics_detail_get_v1",
-    "type_bridge_execution_diagnostics_get_v1",
-    "type_bridge_execution_diagnostics_path_get_v1",
-    "type_bridge_generated_opaque_alias_preflight_v1",
-    "type_bridge_projected_collection_limit_diagnostics",
-    "type_bridge_projected_create_builder_add_v1",
-    "type_bridge_projected_create_builder_close",
-    "type_bridge_projected_create_builder_finish",
-    "type_bridge_projected_create_builder_open_v1",
-    "type_bridge_projected_create_close",
-    "type_bridge_projected_create_field_count",
-    "type_bridge_projected_create_field_value_at",
-    "type_bridge_projected_create_open_v1",
-    "type_bridge_projected_create_role_count",
-    "type_bridge_projected_create_role_reference_at",
-    "type_bridge_projected_reference_clone",
-    "type_bridge_projected_reference_close",
-    "type_bridge_projected_reference_iid",
-    "type_bridge_projected_reference_key",
-    "type_bridge_projected_reference_model_ordinal",
-    "type_bridge_projected_reference_open_v1",
-    "type_bridge_projected_reference_validate_model",
-    "type_bridge_projected_reference_validate_role",
-    "type_bridge_projected_thing_close",
-    "type_bridge_projected_thing_field_count",
-    "type_bridge_projected_thing_field_value_at",
-    "type_bridge_projected_thing_iid",
-    "type_bridge_projected_thing_open_v1",
-    "type_bridge_projected_thing_reference",
-    "type_bridge_projected_thing_role_count",
-    "type_bridge_projected_thing_role_reference_at",
-    "type_bridge_projected_thing_scalar_field_value",
-    "type_bridge_projected_thing_scalar_role_reference",
-    "type_bridge_projected_thing_validate_model",
-    "type_bridge_projected_value_boolean",
-    "type_bridge_projected_value_boolean_open",
-    "type_bridge_projected_value_close",
-    "type_bridge_projected_value_date_open",
-    "type_bridge_projected_value_datetime_open",
-    "type_bridge_projected_value_datetime_tz_open",
-    "type_bridge_projected_value_decimal_open",
-    "type_bridge_projected_value_double_bits",
-    "type_bridge_projected_value_double_open",
-    "type_bridge_projected_value_duration_open",
-    "type_bridge_projected_value_kind",
-    "type_bridge_projected_value_long",
-    "type_bridge_projected_value_long_open",
-    "type_bridge_projected_value_string_open",
-    "type_bridge_projected_value_text",
-    "type_bridge_projected_value_validate_model",
-    "type_bridge_read_transaction_close",
-    "type_bridge_read_transaction_entity_count",
-    "type_bridge_read_transaction_entity_get_by_iid",
-    "type_bridge_read_transaction_relation_count",
-    "type_bridge_read_transaction_relation_get_by_iid",
-    "type_bridge_read_transaction_open",
-    "type_bridge_runtime_close",
-    "type_bridge_runtime_open_v1",
-    "type_bridge_runtime_version",
-    "type_bridge_schema_package_authority_json",
-    "type_bridge_schema_package_binding_fingerprint_json",
-    "type_bridge_schema_package_close",
-    "type_bridge_schema_package_managed_scope",
-    "type_bridge_schema_package_open_chunked_v1",
-    "type_bridge_schema_package_open_v1",
-    "type_bridge_schema_package_projection_json",
-    "type_bridge_schema_package_semantic_fingerprint_json",
-    "type_bridge_schema_package_semantic_profile",
-    "type_bridge_write_transaction_close",
-    "type_bridge_write_transaction_commit",
-    "type_bridge_write_transaction_entity_count",
-    "type_bridge_write_transaction_entity_delete_by_iid",
-    "type_bridge_write_transaction_entity_get_by_iid",
-    "type_bridge_write_transaction_entity_insert",
-    "type_bridge_write_transaction_entity_put",
-    "type_bridge_write_transaction_entity_update",
-    "type_bridge_write_transaction_relation_count",
-    "type_bridge_write_transaction_relation_delete_by_iid",
-    "type_bridge_write_transaction_relation_get_by_iid",
-    "type_bridge_write_transaction_relation_insert",
-    "type_bridge_write_transaction_relation_put",
-    "type_bridge_write_transaction_relation_update",
-    "type_bridge_write_transaction_open",
-    "type_bridge_write_transaction_rollback",
-];
-
 #[allow(improper_ctypes)]
 unsafe extern "C" {
     fn type_bridge_c_abi_major() -> u32;
@@ -598,7 +251,7 @@ struct RelationEmittedFixture {
 }
 
 #[derive(Debug)]
-struct OrderedPhase2EmittedFixture {
+struct OrderedProjectedEmittedFixture {
     package: GeneratedPackage,
     foreign_package: GeneratedPackage,
     person_model_ordinal: u32,
@@ -614,7 +267,7 @@ impl EmittedDescriptorBytes {
                 .try_into()
                 .expect("C descriptor size fits u32"),
             abi_major: 1,
-            abi_minor: 1,
+            abi_minor: 6,
             schema_authority_json: view(&self.authority),
             declared_schema_json: view(&self.declared),
             runtime_projection_json: view(&self.projection),
@@ -667,7 +320,7 @@ impl ChunkedDescriptorParts {
         TypeBridgeSchemaPackageChunkedDescriptorV1 {
             struct_size: size_of::<TypeBridgeSchemaPackageChunkedDescriptorV1>() as u32,
             abi_major: 1,
-            abi_minor: 2,
+            abi_minor: 6,
             reserved0: 0,
             schema_authority_json: scatter(&self.authority),
             declared_schema_json: scatter(&self.declared),
@@ -849,33 +502,33 @@ fn emitted_relation_fixture() -> RelationEmittedFixture {
     }
 }
 
-fn emitted_ordered_phase2_fixture() -> OrderedPhase2EmittedFixture {
+fn emitted_ordered_projected_fixture() -> OrderedProjectedEmittedFixture {
     let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("c-ordered-phase2-schema-package-abi.yaml")
-            .expect("ordered Phase-2 fixture document ID is valid"),
-        ORDERED_PHASE2_SOURCE,
+        DocumentId::new("c-ordered-projected-schema-package-abi.yaml")
+            .expect("ordered Projected fixture document ID is valid"),
+        ORDERED_PROJECTED_SOURCE,
     )])
-    .expect("ordered Phase-2 C ABI fixture parses");
+    .expect("ordered Projected C ABI fixture parses");
     let declared =
-        normalize_documents(&documents).expect("ordered Phase-2 C ABI fixture normalizes");
+        normalize_documents(&documents).expect("ordered Projected C ABI fixture normalizes");
     let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile is valid");
-    let resolved = resolve(&declared, &profile).expect("ordered Phase-2 C ABI fixture resolves");
+    let resolved = resolve(&declared, &profile).expect("ordered Projected C ABI fixture resolves");
     let available: CapabilitySet = BUILTIN_SCHEMA_CAPABILITY_IDS
         .iter()
         .map(|id| CapabilityId::new(*id).expect("built-in capability ID is valid"))
         .collect();
     let context = ManagedDeltaContext::new(
-        ManagedScopeId::new("c-ordered-phase2-schema-package-abi").expect("scope is valid"),
+        ManagedScopeId::new("c-ordered-projected-schema-package-abi").expect("scope is valid"),
         profile,
         available,
     );
     let authority = build_schema_authority(&declared, declared.required_capabilities(), &context)
-        .expect("ordered Phase-2 C ABI fixture authority builds");
+        .expect("ordered Projected C ABI fixture authority builds");
     let emitter = CEmitter::new();
     let handlers = emitter.generator_handlers_for(&resolved);
     let resources = emitter
         .code_resources_for(&resolved)
-        .expect("ordered Phase-2 C emitter resources hash");
+        .expect("ordered Projected C emitter resources hash");
     let emit = |prefix: &str| {
         let projection = project(
             &resolved,
@@ -884,10 +537,10 @@ fn emitted_ordered_phase2_fixture() -> OrderedPhase2EmittedFixture {
             &handlers,
             &resources,
         )
-        .expect("ordered Phase-2 C ABI fixture projects");
+        .expect("ordered Projected C ABI fixture projects");
         let package = emitter
             .emit(&projection, &authority)
-            .expect("ordered Phase-2 C ABI fixture emits");
+            .expect("ordered Projected C ABI fixture emits");
         (projection, package)
     };
     let (projection, package) = emit("orderedphase");
@@ -898,7 +551,7 @@ fn emitted_ordered_phase2_fixture() -> OrderedPhase2EmittedFixture {
             .models()
             .values()
             .find(|model| model.id().label().as_str() == "person")
-            .expect("ordered Phase-2 fixture projects person");
+            .expect("ordered Projected fixture projects person");
         let aliases = person
             .create()
             .fields()
@@ -909,7 +562,7 @@ fn emitted_ordered_phase2_fixture() -> OrderedPhase2EmittedFixture {
             .models()
             .values()
             .find(|model| model.id().label().as_str() == "plain-activity")
-            .expect("ordered Phase-2 fixture projects plain-activity");
+            .expect("ordered Projected fixture projects plain-activity");
         let participant = plain_activity
             .create()
             .roles()
@@ -946,7 +599,7 @@ fn emitted_ordered_phase2_fixture() -> OrderedPhase2EmittedFixture {
         "symbol-prefix changes must not reorder canonical generated tokens",
     );
 
-    OrderedPhase2EmittedFixture {
+    OrderedProjectedEmittedFixture {
         package,
         foreign_package,
         person_model_ordinal: ordinals.0,
@@ -956,31 +609,9 @@ fn emitted_ordered_phase2_fixture() -> OrderedPhase2EmittedFixture {
     }
 }
 
-static TEMP_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-struct TempDirectory(PathBuf);
-
-impl TempDirectory {
-    fn new() -> Self {
-        let sequence = TEMP_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let directory = std::env::temp_dir().join(format!(
-            "typebridge-c-abi-{}-{sequence}",
-            std::process::id()
-        ));
-        fs::create_dir(&directory).expect("unique C ABI test directory is created");
-        Self(directory)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDirectory {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).expect("C ABI test directory is removed");
-    }
-}
+#[path = "support/temp.rs"]
+mod temp;
+use temp::TempDirectory;
 
 fn write_package(package: &GeneratedPackage, root: &Path) {
     for (relative, contents) in package.files() {
@@ -1637,64 +1268,15 @@ fn parse_layout(output: &[u8], compiler: &str) -> Vec<usize> {
 }
 
 fn expected_exported_symbols() -> BTreeSet<String> {
-    ABI_1_3_EXPORTED_SYMBOLS
-        .into_iter()
-        .chain(ABI_1_4_ADDED_EXPORTED_SYMBOLS)
-        .map(str::to_owned)
+    let contract: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../tests/contracts/c-abi.json"))
+            .expect("C ABI inventory parses");
+    contract["exports"]
+        .as_array()
+        .expect("C exports form an array")
+        .iter()
+        .map(|value| value.as_str().expect("export name is text").to_owned())
         .collect()
-}
-
-#[test]
-fn abi_1_4_preserves_the_exact_frozen_abi_1_2_and_abi_1_3_export_subsets() {
-    let current = expected_exported_symbols();
-    let abi_1_3 = ABI_1_3_EXPORTED_SYMBOLS
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>();
-    let abi_1_2 = ABI_1_2_EXPORTED_SYMBOLS
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>();
-    let additions = ABI_1_4_ADDED_EXPORTED_SYMBOLS
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>();
-    assert_eq!(abi_1_2.len(), 109, "ABI 1.2 export ledger has duplicates");
-    assert_eq!(abi_1_3.len(), 180, "ABI 1.3 export ledger has duplicates");
-    assert_eq!(
-        additions.len(),
-        45,
-        "ABI 1.4 addition ledger has duplicates"
-    );
-    assert_eq!(current.len(), 225, "ABI 1.4 export ledger has duplicates");
-
-    let missing = abi_1_2.difference(&abi_1_3).cloned().collect::<Vec<_>>();
-    assert!(
-        missing.is_empty(),
-        "ABI 1.3 removed or renamed ABI 1.2 exports: {missing:?}",
-    );
-    assert_eq!(
-        abi_1_3.difference(&abi_1_2).count(),
-        71,
-        "ABI 1.3 must remain exactly 71 additive exports over ABI 1.2",
-    );
-    let missing = abi_1_3.difference(&current).cloned().collect::<Vec<_>>();
-    assert!(
-        missing.is_empty(),
-        "ABI 1.4 removed or renamed ABI 1.3 exports: {missing:?}",
-    );
-    assert!(
-        additions.is_disjoint(&abi_1_3),
-        "ABI 1.4 additions must not rename predecessor exports",
-    );
-    assert_eq!(
-        current
-            .difference(&abi_1_3)
-            .cloned()
-            .collect::<BTreeSet<_>>(),
-        additions,
-        "ABI 1.4 must remain exactly the frozen 45-function addition",
-    );
 }
 
 #[cfg(windows)]
@@ -2010,7 +1592,7 @@ fn public_c_header_matches_the_rust_abi_layout_and_constants() {
         return;
     }
 
-    let stage = TempDirectory::new();
+    let stage = TempDirectory::new("schema_package_abi");
     let source = stage.path().join("abi-layout.c");
     let executable = stage.path().join(if cfg!(windows) {
         "abi-layout.exe"
@@ -2634,10 +2216,8 @@ int main(void) {
 }
 
 #[test]
-fn shared_library_preserves_the_frozen_abi_1_4_exports() {
-    let Some(library) =
-        native_library_or_skip("shared_library_preserves_the_frozen_abi_1_4_exports")
-    else {
+fn shared_library_exports_the_current_abi() {
+    let Some(library) = native_library_or_skip("shared_library_exports_the_current_abi") else {
         return;
     };
 
@@ -2704,10 +2284,9 @@ fn shared_library_preserves_the_frozen_abi_1_4_exports() {
     let actual = expected_exported_symbols();
 
     let expected = expected_exported_symbols();
-    assert!(
-        expected.is_subset(&actual),
-        "the active shared library omitted frozen ABI 1.4 exports: {:?}",
-        expected.difference(&actual).collect::<Vec<_>>(),
+    assert_eq!(
+        actual, expected,
+        "shared-library exports must match the C ABI inventory"
     );
 }
 
@@ -2854,7 +2433,7 @@ fn clean_staged_cmake_consumer_finds_links_and_runs_generated_package() {
     );
 
     let fixture = emitted_fixture();
-    let stage = TempDirectory::new();
+    let stage = TempDirectory::new("schema_package_abi");
     let runtime_build = stage.path().join("runtime-build");
     let install = stage.path().join("install");
     let generated_source = stage.path().join("generated-source");
@@ -2915,7 +2494,23 @@ fn clean_staged_cmake_consumer_finds_links_and_runs_generated_package() {
     let installed_pkg_config = install.join("lib/pkgconfig/type-bridge.pc");
     assert!(installed_config.is_file());
     assert!(installed_pkg_config.is_file());
-    assert!(install.join("include/typebridge/type_bridge.h").is_file());
+    assert_eq!(
+        fs::read(install.join("include/typebridge/type_bridge.h"))
+            .expect("installed header is readable"),
+        fs::read(runtime_source.join("include/typebridge/type_bridge.h"))
+            .expect("source header is readable"),
+        "installed header differs from its source",
+    );
+    assert!(
+        fs::read_to_string(&installed_config)
+            .expect("CMake metadata is UTF-8")
+            .contains("set(TypeBridge_C_ABI_VERSION \"1.6.0\")")
+    );
+    assert!(
+        fs::read_to_string(&installed_pkg_config)
+            .expect("pkg-config metadata is UTF-8")
+            .contains("\nVersion: 1.6.0\n")
+    );
     for metadata in [&installed_config, &installed_pkg_config] {
         let contents = fs::read_to_string(metadata).expect("installed metadata is UTF-8");
         assert!(
@@ -2947,7 +2542,7 @@ find_package(TypeBridge 1.2.0 EXACT CONFIG REQUIRED)
         .expect("old-ABI rejection configure launches");
     assert!(
         !output.status.success(),
-        "the installed ABI 1.4 package incorrectly satisfied an exact ABI 1.2 request"
+        "the installed package incorrectly satisfied an incompatible ABI request"
     );
 
     let output = Command::new("cmake")
@@ -3034,7 +2629,7 @@ project(type_bridge_clean_consumer LANGUAGES C CXX)
 find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)
 find_package(fixture 1.0.0 EXACT CONFIG REQUIRED)
 
-add_executable(type_bridge_clean_consumer main.c)
+add_executable(type_bridge_clean_consumer main.c migration_smoke.c)
 add_library(type_bridge_header_compat OBJECT header_compat.cpp)
 set_target_properties(
   type_bridge_clean_consumer
@@ -3116,7 +2711,9 @@ void type_bridge_header_compatibility_probe() {
 
 #include <fixture/models.h>
 
+int migration_smoke(void);
 int main(void) {
+  if (migration_smoke() != 0) return 20;
   type_bridge_byte_view_t view = {0};
   type_bridge_schema_package_t *package = NULL;
   type_bridge_diagnostics_t *diagnostics = NULL;
@@ -3196,6 +2793,12 @@ int main(void) {
 "#,
     )
     .expect("clean consumer source is written");
+
+    fs::write(
+        consumer_source.join("migration_smoke.c"),
+        include_str!("support/migration_smoke.c"),
+    )
+    .expect("migration consumer source is written");
 
     let output = Command::new("cmake")
         .args(["-S"])
@@ -3353,7 +2956,7 @@ fn runtime_cmake_package_rejects_unconfined_install_directories() {
         command_exists("cmake"),
         "cmake is required for the runtime package confinement audit"
     );
-    let stage = TempDirectory::new();
+    let stage = TempDirectory::new("schema_package_abi");
     let runtime_source = Path::new(env!("CARGO_MANIFEST_DIR"));
     for (sequence, setting, expected) in [
         (
@@ -3412,7 +3015,7 @@ fn clean_staged_pkg_config_consumer_supports_nested_library_directories() {
         .find(|compiler| command_exists(compiler))
         .expect("GCC or Clang is required for the pkg-config consumer");
     let fixture = emitted_fixture();
-    let stage = TempDirectory::new();
+    let stage = TempDirectory::new("schema_package_abi");
     let runtime_build = stage.path().join("runtime-build");
     let generated_source = stage.path().join("generated-source");
     let generated_build = stage.path().join("generated-build");
@@ -3663,7 +3266,7 @@ fn standalone_c17_consumer_links_and_runs_the_generated_schema_package() {
         return;
     };
     let fixture = emitted_fixture();
-    let stage = TempDirectory::new();
+    let stage = TempDirectory::new("schema_package_abi");
     write_package(&fixture.package, stage.path());
     let consumer = stage.path().join("consumer.c");
     fs::write(
@@ -4302,7 +3905,7 @@ fn standalone_generated_relation_facade_preserves_nominal_role_boundaries() {
     };
     let fixture = emitted_fixture();
     let relation = emitted_relation_fixture();
-    let stage = TempDirectory::new();
+    let stage = TempDirectory::new("schema_package_abi");
     let fixture_stage = stage.path().join("fixture-package");
     let relation_stage = stage.path().join("relation-package");
     write_package(&fixture.package, &fixture_stage);
@@ -4710,13 +4313,13 @@ fn standalone_ordered_generated_facade_enforces_construction_hydration_and_packa
     ) else {
         return;
     };
-    let fixture = emitted_ordered_phase2_fixture();
-    let stage = TempDirectory::new();
+    let fixture = emitted_ordered_projected_fixture();
+    let stage = TempDirectory::new("schema_package_abi");
     let package_stage = stage.path().join("ordered-package");
     let foreign_stage = stage.path().join("ordered-foreign-package");
     write_package(&fixture.package, &package_stage);
     write_package(&fixture.foreign_package, &foreign_stage);
-    let consumer = stage.path().join("ordered-phase2-consumer.c");
+    let consumer = stage.path().join("ordered-projected-consumer.c");
     let source = r#"#include <stdint.h>
 #include <string.h>
 
@@ -5233,7 +4836,7 @@ int main(void) {
             fixture.person_aliases_field_ordinal
         ),
     );
-    fs::write(&consumer, source).expect("ordered Phase-2 C17 consumer is written");
+    fs::write(&consumer, source).expect("ordered Projected C17 consumer is written");
 
     let runtime_include = Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
     let native_directory = native_library
@@ -5273,7 +4876,7 @@ int main(void) {
             .unwrap_or_else(|error| panic!("failed to launch {compiler}: {error}"));
         assert!(
             output.status.success(),
-            "{compiler} failed to link the ordered Phase-2 C17 consumer:\nstdout:\n{}\nstderr:\n{}",
+            "{compiler} failed to link the ordered Projected C17 consumer:\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
@@ -5282,7 +4885,7 @@ int main(void) {
             .unwrap_or_else(|error| panic!("failed to run {}: {error}", executable.display()));
         assert!(
             output.status.success(),
-            "{compiler}'s ordered Phase-2 C17 consumer failed with {}:\nstdout:\n{}\nstderr:\n{}",
+            "{compiler}'s ordered Projected C17 consumer failed with {}:\nstdout:\n{}\nstderr:\n{}",
             output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
@@ -5307,7 +4910,7 @@ fn standalone_generated_consumer_is_clean_under_address_and_undefined_sanitizers
         .find(|compiler| command_exists(compiler))
         .expect("Clang or GCC is required for the sanitizer probe");
     let fixture = emitted_fixture();
-    let stage = TempDirectory::new();
+    let stage = TempDirectory::new("schema_package_abi");
     write_package(&fixture.package, stage.path());
     let consumer = stage.path().join("sanitized-consumer.c");
     fs::write(
@@ -5315,7 +4918,7 @@ fn standalone_generated_consumer_is_clean_under_address_and_undefined_sanitizers
         r#"#include <stddef.h>
 
 #include <typebridge/type_bridge.h>
-#include <typebridge/type_bridge_abi_1_5.h>
+#include <typebridge/type_bridge.h>
 #include <fixture/models.h>
 
 int main(void) {
@@ -5495,8 +5098,7 @@ fn hostile_descriptors_fail_closed_with_initialized_outputs_and_diagnostics() {
 fn schema_package_open_v2_accepts_exact_flat_and_chunked_v1_descriptor_layouts() {
     let fixture = emitted_fixture();
 
-    let mut flat = fixture.bytes.descriptor();
-    flat.abi_minor = 4;
+    let flat = fixture.bytes.descriptor();
     let mut package = ptr::dangling_mut();
     let mut diagnostics = ptr::dangling_mut();
     assert_eq!(
@@ -5518,8 +5120,7 @@ fn schema_package_open_v2_accepts_exact_flat_and_chunked_v1_descriptor_layouts()
     );
 
     let parts = fixture.bytes.chunked_parts(17);
-    let mut chunked = parts.descriptor();
-    chunked.abi_minor = 4;
+    let chunked = parts.descriptor();
     package = ptr::dangling_mut();
     diagnostics = ptr::dangling_mut();
     assert_eq!(
@@ -5559,8 +5160,7 @@ fn schema_package_open_v2_classifies_all_seven_nonempty_hostile_evidence_slots()
     for mutate in mutations {
         let mut hostile = fixture.clone();
         mutate(&mut hostile);
-        let mut descriptor = hostile.descriptor();
-        descriptor.abi_minor = 4;
+        let descriptor = hostile.descriptor();
         assert_v2_flat_rejected(
             &descriptor,
             TypeBridgeStatus::ExecutionFailed,
@@ -5576,7 +5176,6 @@ fn schema_package_open_v2_classifies_all_seven_nonempty_hostile_evidence_slots()
 fn schema_package_open_v2_retains_the_exact_missing_semantic_evidence_representative() {
     let fixture = emitted_fixture();
     let mut flat = fixture.bytes.descriptor();
-    flat.abi_minor = 4;
     flat.semantic_fingerprint_json = TypeBridgeByteView {
         data: ptr::null(),
         length: 0,
@@ -5597,7 +5196,6 @@ fn schema_package_open_v2_retains_the_exact_missing_semantic_evidence_representa
 
     let parts = fixture.bytes.chunked_parts(19);
     let mut chunked = parts.descriptor();
-    chunked.abi_minor = 4;
     chunked.semantic_fingerprint_json = TypeBridgeChunkedByteViewV1 {
         struct_size: size_of::<TypeBridgeChunkedByteViewV1>() as u32,
         version: 1,
@@ -5624,11 +5222,38 @@ fn schema_package_open_v2_retains_the_exact_missing_semantic_evidence_representa
 }
 
 #[test]
+fn schema_package_admission_requires_the_current_abi() {
+    let fixture = emitted_fixture();
+    let parts = fixture.bytes.chunked_parts(23);
+    for minor in (0..6).chain([7, u32::MAX]) {
+        let mut flat = fixture.bytes.descriptor();
+        flat.abi_minor = minor;
+        assert_v2_flat_rejected(
+            &flat,
+            TypeBridgeStatus::Unsupported,
+            TypeBridgeExecutionDiagnosticCategory::UnsupportedCapability,
+            "c_schema_descriptor_abi_unsupported",
+            0,
+            0,
+        );
+        let mut chunked = parts.descriptor();
+        chunked.abi_minor = minor;
+        assert_v2_chunked_rejected(
+            &chunked,
+            TypeBridgeStatus::Unsupported,
+            TypeBridgeExecutionDiagnosticCategory::UnsupportedCapability,
+            "c_schema_descriptor_abi_unsupported",
+            0,
+            0,
+        );
+    }
+}
+
+#[test]
 fn schema_package_open_v2_preserves_narrow_structural_statuses() {
     let fixture = emitted_fixture();
 
     let mut flat_layout = fixture.bytes.descriptor();
-    flat_layout.abi_minor = 4;
     flat_layout.struct_size -= 1;
     assert_v2_flat_rejected(
         &flat_layout,
@@ -5640,7 +5265,6 @@ fn schema_package_open_v2_preserves_narrow_structural_statuses() {
     );
 
     let mut flat_abi = fixture.bytes.descriptor();
-    flat_abi.abi_minor = 4;
     flat_abi.abi_major += 1;
     assert_v2_flat_rejected(
         &flat_abi,
@@ -5652,7 +5276,6 @@ fn schema_package_open_v2_preserves_narrow_structural_statuses() {
     );
 
     let mut flat_view = fixture.bytes.descriptor();
-    flat_view.abi_minor = 4;
     flat_view.declared_schema_json.data = ptr::null();
     assert_v2_flat_rejected(
         &flat_view,
@@ -5664,7 +5287,6 @@ fn schema_package_open_v2_preserves_narrow_structural_statuses() {
     );
 
     let mut flat_resource = fixture.bytes.descriptor();
-    flat_resource.abi_minor = 4;
     flat_resource.runtime_projection_json = TypeBridgeByteView {
         data: NonNull::<u8>::dangling().as_ptr(),
         length: MAX_CANONICAL_BYTES + 1,
@@ -5680,7 +5302,6 @@ fn schema_package_open_v2_preserves_narrow_structural_statuses() {
 
     let parts = fixture.bytes.chunked_parts(23);
     let mut chunked_layout = parts.descriptor();
-    chunked_layout.abi_minor = 4;
     chunked_layout.reserved0 = 1;
     assert_v2_chunked_rejected(
         &chunked_layout,
@@ -5692,7 +5313,6 @@ fn schema_package_open_v2_preserves_narrow_structural_statuses() {
     );
 
     let mut chunked_view = parts.descriptor();
-    chunked_view.abi_minor = 4;
     chunked_view.declared_schema_json.version += 1;
     assert_v2_chunked_rejected(
         &chunked_view,
@@ -5704,7 +5324,6 @@ fn schema_package_open_v2_preserves_narrow_structural_statuses() {
     );
 
     let mut chunked_resource = parts.descriptor();
-    chunked_resource.abi_minor = 4;
     chunked_resource.runtime_projection_json.total_length = MAX_CANONICAL_BYTES + 1;
     assert_v2_chunked_rejected(
         &chunked_resource,
@@ -5720,7 +5339,6 @@ fn schema_package_open_v2_preserves_narrow_structural_statuses() {
 fn schema_package_open_v2_rejects_aliases_before_writes_and_initializes_valid_outputs() {
     let fixture = emitted_fixture();
     let mut flat = fixture.bytes.descriptor();
-    flat.abi_minor = 4;
     let flat_before = unsafe {
         std::slice::from_raw_parts(
             (&flat as *const TypeBridgeSchemaPackageDescriptorV1).cast::<u8>(),
@@ -5757,7 +5375,6 @@ fn schema_package_open_v2_rejects_aliases_before_writes_and_initializes_valid_ou
 
     let parts = fixture.bytes.chunked_parts(29);
     let mut chunked = parts.descriptor();
-    chunked.abi_minor = 4;
     let chunked_before = unsafe {
         std::slice::from_raw_parts(
             (&chunked as *const TypeBridgeSchemaPackageChunkedDescriptorV1).cast::<u8>(),
@@ -6503,7 +6120,7 @@ impl Drop for IsolatedLiveDatabase<'_> {
     }
 }
 
-/// Exact Phase-3 acceptance: a compiled C17 consumer owns the complete
+/// Live transaction acceptance: a compiled C17 consumer owns the complete
 /// runtime/database/transaction lifecycle against an isolated TypeDB 3.12.3.
 ///
 /// Run through the repository integration lane, or directly after building
@@ -6540,7 +6157,7 @@ fn live_c17_consumer_exercises_exact_3_12_3_transaction_lifecycle() {
         .expect("TYPEDB_HTTP_PORT must be an integer from 1 through 65535");
 
     let fixture = emitted_fixture();
-    let stage = TempDirectory::new();
+    let stage = TempDirectory::new("schema_package_abi");
     write_package(&fixture.package, stage.path());
     let consumer = stage.path().join("runtime-live.c");
     fs::write(

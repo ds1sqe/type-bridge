@@ -6,7 +6,7 @@ Ubuntu 24.04. C17 and C++17 applications use the installed runtime through
 CMake or pkg-config. This preparation does not establish public C support;
 that requires the public verification below.
 
-The standalone CLI, native runtime and generated workforce example are
+The standalone CLI, native runtime and generated sdk example are
 separate archives. Application owners generate and distribute their own
 schema packages. Static libraries, macOS, Windows and other architectures
 are outside this release's selected C distribution matrix.
@@ -25,7 +25,7 @@ regenerate its policy with `uv run python scripts/ci/c_release_policy.py`
 and review the resulting diff before committing.
 
 First require the complete CI run on the exact master commit to pass. The
-five C distribution jobs build deterministic candidate archives, validate
+five C distribution jobs build deterministic artifact archives, validate
 their dependency closure, notices, SBOMs and provenance, and exercise clean
 compiler-free installation plus compiled provider-free and live consumers.
 The live journey includes direct and caller-transport queries, custom-root
@@ -35,7 +35,7 @@ Dispatch `c-release.yml` with `mode=verify` and that run's `ci_run_id` on
 the same source. Verification has read-only GitHub permissions. It checks
 every CI job and step, downloads exact Actions artifact IDs, verifies API
 archive digests and sizes, and rejects unexpected, linked or unsafe members.
-It then runs the real Workforce V1–V6 producers and independent comparators.
+It then runs the real Sdk V1–V6 producers and independent comparators.
 The terminal FULL-C audit must accept all 44 C capabilities and every
 predecessor and current-SDK obligation.
 
@@ -43,8 +43,8 @@ The successful attempt-one verification run produces
 `c-verified-release-2.2.0`. It contains the three accepted archives, a complete
 evidence archive and a verification receipt binding their hashes to the
 source, CI run and policy. Public filenames are assigned by copying the
-accepted archive bytes; archive members and embedded candidate provenance
-remain unchanged. The candidate's nonpublishing disposition is preserved.
+accepted archive bytes; archive members and embedded artifact provenance
+remain unchanged. The artifact's nonpublishing disposition is preserved.
 
 ## Protected promotion
 
@@ -69,9 +69,9 @@ https://github.com/ds1sqe/type-bridge/.github/workflows/c-release.yml@refs/tags/
 
 The issuer is `https://token.actions.githubusercontent.com`; the certificate's
 workflow SHA must equal the accepted source commit. The signed promotion
-record binds the tag object, source tree, original candidate set, CI and
+record binds the tag object, source tree, original artifact set, CI and
 verification runs, public names and payload hashes. It is the separate release
-authorization record for the previously nonpublishing candidate bytes.
+authorization record for the previously nonpublishing artifact bytes.
 
 Promotion adds twelve C assets to the existing GitHub draft and downloads
 them again for byte and signature verification. It cannot create a release,

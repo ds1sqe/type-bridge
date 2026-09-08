@@ -119,7 +119,7 @@ fn declared_facts(facts: Vec<SchemaFact>) -> DeclaredSchema {
         .expect("declared schema")
 }
 
-fn workforce_backfill_schema() -> DeclaredSchema {
+fn sdk_backfill_schema() -> DeclaredSchema {
     let owner = TypeId::new(TypeKind::Entity, "person").expect("person type");
     let person_id = AttributeId::new("person-id").expect("person ID attribute");
     let legacy_name = AttributeId::new("legacy-name").expect("legacy name attribute");
@@ -421,7 +421,7 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
     let (managed, journal_database) = databases().await;
     let context = context();
     let genesis = declared_facts(Vec::new());
-    let expanded = workforce_backfill_schema();
+    let expanded = sdk_backfill_schema();
     let expand = additive_manifest(
         "0001_expand_names",
         Vec::new(),

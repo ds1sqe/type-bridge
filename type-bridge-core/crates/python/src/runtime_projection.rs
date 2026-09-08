@@ -5137,7 +5137,8 @@ impl ProjectedScalarHydration {
             }
             CanonicalValue::Boolean(value) => {
                 // SAFETY: Stable-ABI primitive constructor under the GIL.
-                let value = unsafe { pyo3::ffi::PyBool_FromLong(i64::from(*value)) };
+                let value =
+                    unsafe { pyo3::ffi::PyBool_FromLong(std::os::raw::c_long::from(*value)) };
                 // SAFETY: non-null is one owned exact-bool reference.
                 unsafe { Bound::<PyAny>::from_owned_ptr_or_err(py, value) }.map(Bound::unbind)
             }
@@ -9012,8 +9013,8 @@ mod tests {
     }
 
     fn publish_v3_python_data_fragment(results: Vec<Value>) {
-        let destination = std::env::var_os("TYPE_BRIDGE_WORKFORCE_V3_PROOF_FRAGMENT");
-        let nonce = std::env::var_os("TYPE_BRIDGE_WORKFORCE_V3_PROOF_RUN_NONCE");
+        let destination = std::env::var_os("TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT");
+        let nonce = std::env::var_os("TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE");
         assert_eq!(destination.is_some(), nonce.is_some());
         let (Some(destination), Some(nonce)) = (destination, nonce) else {
             return;
@@ -9044,11 +9045,11 @@ mod tests {
         let fragment = json!({
             "binding": "python",
             "contract": {
-                "allowlist": v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-allowlist-v1.json"),
-                "journey": v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/journey-v3.json"),
-                "proof_schema": v3_source_identity(&root, "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-schema-v1.json"),
+                "allowlist": v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-allowlist-v1.json"),
+                "journey": v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"),
+                "proof_schema": v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-schema-v1.json"),
             },
-            "format": "typebridge.workforce-v3-proof-fragment/v1",
+            "format": "typebridge.sdk-v3-proof-fragment/v1",
             "producer": {"id": "python.generated-data-v3-proof", "sources": sources.iter().map(|path| v3_source_identity(&root, path)).collect::<Vec<_>>()},
             "results": results,
             "run_nonce": nonce,
@@ -9066,7 +9067,7 @@ mod tests {
     }
 
     #[test]
-    fn workforce_v3_python_data_plane_fragment() {
+    fn sdk_v3_python_data_plane_fragment() {
         use type_bridge_orm::{
             DirectConnectionPolicy, MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES,
             MAX_QUERY_COLLECTION_MEMBERS, MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS,
@@ -9088,7 +9089,7 @@ mod tests {
             MAX_QUERY_STATEMENTS + 1,
         );
         assert_eq!(effective, QueryExecutionResourceLimits::default());
-        let policy = DirectConnectionPolicy::new("localhost:1729", "workforce", "admin", "secret")
+        let policy = DirectConnectionPolicy::new("localhost:1729", "sdk", "admin", "secret")
             .connection_limits(effective)
             .answer_limits(effective);
         assert_eq!(format!("{policy:?}"), "DirectConnectionPolicy([REDACTED])");
@@ -9147,7 +9148,7 @@ mod tests {
             },
             "provider_text_exposed": false, "secrets_exposed": false, "deterministic_field_order": true
         });
-        let test_id = "runtime_projection::tests::workforce_v3_python_data_plane_fragment";
+        let test_id = "runtime_projection::tests::sdk_v3_python_data_plane_fragment";
         publish_v3_python_data_fragment(vec![
             json!({"observation": connection, "observation_ref": "complete_connection_policy", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": test_id}),
             json!({"observation": cancellation_observation, "observation_ref": "data_operation_cancellation", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": test_id}),

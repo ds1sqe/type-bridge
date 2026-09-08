@@ -102,27 +102,27 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-for runner_owned_workforce_variable in \
-    TYPE_BRIDGE_WORKFORCE_REPORT \
-    TYPE_BRIDGE_WORKFORCE_REPORT_V2 \
-    TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT \
-    TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS \
-    TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE \
-    TYPE_BRIDGE_WORKFORCE_V2_VALIDATED_OBSERVATIONS \
-    TYPE_BRIDGE_WORKFORCE_V2_VALIDATOR_PYTHON \
-    TYPE_BRIDGE_PHASE2_LIVE_REPORT \
-    TYPE_BRIDGE_PHASE2_LIVE_DATABASE \
-    TYPE_BRIDGE_PHASE2_PYTHON_PACKAGE_ROOT \
-    TYPE_BRIDGE_PHASE2_NODE_PACKAGE_ROOT \
-    TYPE_BRIDGE_PHASE2_REPOSITORY_ROOT \
+for runner_owned_sdk_variable in \
+    TYPE_BRIDGE_SDK_REPORT \
+    TYPE_BRIDGE_SDK_REPORT_V2 \
+    TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT \
+    TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS \
+    TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE \
+    TYPE_BRIDGE_SDK_V2_VALIDATED_OBSERVATIONS \
+    TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON \
+    TYPE_BRIDGE_PROJECTED_LIVE_REPORT \
+    TYPE_BRIDGE_PROJECTED_LIVE_DATABASE \
+    TYPE_BRIDGE_PROJECTED_PYTHON_PACKAGE_ROOT \
+    TYPE_BRIDGE_PROJECTED_NODE_PACKAGE_ROOT \
+    TYPE_BRIDGE_PROJECTED_REPOSITORY_ROOT \
     ACCEPTANCE_TARGET_DIR; do
-    if [[ ${!runner_owned_workforce_variable+x} == x ]]; then
+    if [[ ${!runner_owned_sdk_variable+x} == x ]]; then
         printf "${RED}%s is runner-owned; unset it before invoking test.sh.${RESET}\n" \
-            "$runner_owned_workforce_variable" >&2
+            "$runner_owned_sdk_variable" >&2
         exit 2
     fi
 done
-unset runner_owned_workforce_variable
+unset runner_owned_sdk_variable
 
 NODE_DIR=type-bridge-core/crates/node
 # TYPEDB_PORT and TYPEDB_HTTP_PORT are intentionally NOT defaulted here.
@@ -191,13 +191,13 @@ for raw_path in sys.argv[1:]:
 ' "$@"
 }
 
-write_workforce_summary() {
+write_sdk_summary() {
     local summary="$1"
     local validator_python="$2"
     local staged
     shift 2
     if [[ "$summary" != /* || -e "$summary" ]]; then
-        printf "${RED}Workforce summary must be an absent absolute path: %s${RESET}\n" \
+        printf "${RED}Sdk summary must be an absent absolute path: %s${RESET}\n" \
             "$summary" >&2
         return 1
     fi
@@ -217,7 +217,7 @@ write_workforce_summary() {
     unlink -- "$staged"
 }
 
-log_workforce_evidence_sha256() {
+log_sdk_evidence_sha256() {
     local validator_python="$1"
     local v2_summary="$2"
     shift 2
@@ -230,9 +230,9 @@ from pathlib import Path
 summary = json.loads(Path(sys.argv[1]).read_bytes())
 pending = summary.get("pending_manifest_promotions")
 if not isinstance(pending, list):
-    raise SystemExit("workforce-v2 summary has no pending_manifest_promotions list")
+    raise SystemExit("sdk-v2 summary has no pending_manifest_promotions list")
 print(
-    "workforce-v2 pending_manifest_promotions="
+    "sdk-v2 pending_manifest_promotions="
     + json.dumps(pending, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 )
 ' "$v2_summary"
@@ -248,10 +248,10 @@ print(
 # reproduced locally. The proxy tier (--proxy) owns its own stack via proxy_lifecycle.py.
 compose=""
 typedb_started=0
-workforce_report_dir=""
-preserve_workforce_evidence="${TYPE_BRIDGE_PRESERVE_WORKFORCE_EVIDENCE:-0}"
-if [[ "$preserve_workforce_evidence" != 0 && "$preserve_workforce_evidence" != 1 ]]; then
-    printf "${RED}TYPE_BRIDGE_PRESERVE_WORKFORCE_EVIDENCE must be 0 or 1.${RESET}\n" >&2
+sdk_report_dir=""
+preserve_sdk_evidence="${TYPE_BRIDGE_PRESERVE_SDK_EVIDENCE:-0}"
+if [[ "$preserve_sdk_evidence" != 0 && "$preserve_sdk_evidence" != 1 ]]; then
+    printf "${RED}TYPE_BRIDGE_PRESERVE_SDK_EVIDENCE must be 0 or 1.${RESET}\n" >&2
     exit 2
 fi
 
@@ -482,103 +482,103 @@ if [[ "$integration" == 1 ]]; then
     )"
     printf "${CYAN}Detected TypeDB %s${RESET}\n\n" "$typedb_server_version"
 
-    workforce_rust_env=()
-    workforce_python_env=()
-    workforce_node_env=()
-    workforce_c_env=()
+    sdk_rust_env=()
+    sdk_python_env=()
+    sdk_node_env=()
+    sdk_c_env=()
     # Forwarded pytest arguments may change collection and exclude the sole
     # Python report producer. Keep targeted Python runs useful instead of
     # allocating a fan-in that can never become complete; the unfiltered full
     # suite remains the local conformance gate.
     if [[ "$typedb_server_version" == "3.12.3" && ${#pytest_args[@]} -eq 0 ]]; then
-        workforce_report_dir="$(
-            mktemp -d "${TMPDIR:-/tmp}/typebridge-workforce.XXXXXXXXXX"
+        sdk_report_dir="$(
+            mktemp -d "${TMPDIR:-/tmp}/typebridge-sdk.XXXXXXXXXX"
         )"
-        workforce_report_dir="$(cd "$workforce_report_dir" && pwd -P)"
-        mkdir -p "$workforce_report_dir/v2"
-        workforce_validator_python="$(
+        sdk_report_dir="$(cd "$sdk_report_dir" && pwd -P)"
+        mkdir -p "$sdk_report_dir/v2"
+        sdk_validator_python="$(
             uv run python -c 'import os, sys; print(os.path.realpath(sys.executable))'
         )"
-        if [[ "$workforce_validator_python" != /* \
-            || ! -x "$workforce_validator_python" ]]; then
-            printf "${RED}Workforce validator Python must be an absolute executable path: %s${RESET}\n" \
-                "$workforce_validator_python" >&2
+        if [[ "$sdk_validator_python" != /* \
+            || ! -x "$sdk_validator_python" ]]; then
+            printf "${RED}Sdk validator Python must be an absolute executable path: %s${RESET}\n" \
+                "$sdk_validator_python" >&2
             exit 2
         fi
-        workforce_python_nonce="$(
-            "$workforce_validator_python" -c 'import secrets; print(secrets.token_hex(32))'
+        sdk_python_nonce="$(
+            "$sdk_validator_python" -c 'import secrets; print(secrets.token_hex(32))'
         )"
-        workforce_node_nonce="$(
-            "$workforce_validator_python" -c 'import secrets; print(secrets.token_hex(32))'
+        sdk_node_nonce="$(
+            "$sdk_validator_python" -c 'import secrets; print(secrets.token_hex(32))'
         )"
-        workforce_rust_nonce="$(
-            "$workforce_validator_python" -c 'import secrets; print(secrets.token_hex(32))'
+        sdk_rust_nonce="$(
+            "$sdk_validator_python" -c 'import secrets; print(secrets.token_hex(32))'
         )"
-        workforce_c_nonce="$(
-            "$workforce_validator_python" -c 'import secrets; print(secrets.token_hex(32))'
+        sdk_c_nonce="$(
+            "$sdk_validator_python" -c 'import secrets; print(secrets.token_hex(32))'
         )"
-        declare -A workforce_nonce_set=()
-        for workforce_nonce in \
-            "$workforce_python_nonce" \
-            "$workforce_node_nonce" \
-            "$workforce_rust_nonce" \
-            "$workforce_c_nonce"; do
-            if [[ ! "$workforce_nonce" =~ ^[0-9a-f]{64}$ \
-                || ${workforce_nonce_set[$workforce_nonce]+x} == x ]]; then
-                printf "${RED}Workforce-v2 binding nonces must be distinct lowercase 64-hex values.${RESET}\n" >&2
+        declare -A sdk_nonce_set=()
+        for sdk_nonce in \
+            "$sdk_python_nonce" \
+            "$sdk_node_nonce" \
+            "$sdk_rust_nonce" \
+            "$sdk_c_nonce"; do
+            if [[ ! "$sdk_nonce" =~ ^[0-9a-f]{64}$ \
+                || ${sdk_nonce_set[$sdk_nonce]+x} == x ]]; then
+                printf "${RED}Sdk-v2 binding nonces must be distinct lowercase 64-hex values.${RESET}\n" >&2
                 exit 2
             fi
-            workforce_nonce_set[$workforce_nonce]=1
+            sdk_nonce_set[$sdk_nonce]=1
         done
-        unset workforce_nonce workforce_nonce_set
+        unset sdk_nonce sdk_nonce_set
 
-        workforce_python_direct_fragment="$workforce_report_dir/v2/python-direct-proof.json"
-        workforce_python_remote_fragment="$workforce_report_dir/v2/python-remote-proof.json"
-        workforce_node_direct_fragment="$workforce_report_dir/v2/node-direct-proof.json"
-        workforce_node_remote_fragment="$workforce_report_dir/v2/node-remote-proof.json"
-        workforce_rust_fragment="$workforce_report_dir/v2/rust-proof.json"
-        workforce_c_fragment="$workforce_report_dir/v2/c-proof.json"
-        workforce_v1_summary="$workforce_report_dir/summary-v1.json"
-        workforce_v2_summary="$workforce_report_dir/summary-v2.json"
-        workforce_rust_env=(
-            "TYPE_BRIDGE_WORKFORCE_REPORT=$workforce_report_dir/rust.json"
-            "TYPE_BRIDGE_WORKFORCE_REPORT_V2=$workforce_report_dir/v2/rust.json"
-            "TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS=$workforce_rust_fragment"
-            "TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE=$workforce_rust_nonce"
+        sdk_python_direct_fragment="$sdk_report_dir/v2/python-direct-proof.json"
+        sdk_python_remote_fragment="$sdk_report_dir/v2/python-remote-proof.json"
+        sdk_node_direct_fragment="$sdk_report_dir/v2/node-direct-proof.json"
+        sdk_node_remote_fragment="$sdk_report_dir/v2/node-remote-proof.json"
+        sdk_rust_fragment="$sdk_report_dir/v2/rust-proof.json"
+        sdk_c_fragment="$sdk_report_dir/v2/c-proof.json"
+        sdk_v1_summary="$sdk_report_dir/summary-v1.json"
+        sdk_v2_summary="$sdk_report_dir/summary-v2.json"
+        sdk_rust_env=(
+            "TYPE_BRIDGE_SDK_REPORT=$sdk_report_dir/rust.json"
+            "TYPE_BRIDGE_SDK_REPORT_V2=$sdk_report_dir/v2/rust.json"
+            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$sdk_rust_fragment"
+            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$sdk_rust_nonce"
             "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE=typedb-3.12.1/v1"
         )
-        workforce_python_env=(
-            "TYPE_BRIDGE_WORKFORCE_REPORT=$workforce_report_dir/python.json"
-            "TYPE_BRIDGE_WORKFORCE_REPORT_V2=$workforce_report_dir/v2/python.json"
-            "TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS=$workforce_python_direct_fragment:$workforce_python_remote_fragment"
-            "TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE=$workforce_python_nonce"
+        sdk_python_env=(
+            "TYPE_BRIDGE_SDK_REPORT=$sdk_report_dir/python.json"
+            "TYPE_BRIDGE_SDK_REPORT_V2=$sdk_report_dir/v2/python.json"
+            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$sdk_python_direct_fragment:$sdk_python_remote_fragment"
+            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$sdk_python_nonce"
         )
-        workforce_node_env=(
-            "TYPE_BRIDGE_WORKFORCE_REPORT=$workforce_report_dir/node.json"
-            "TYPE_BRIDGE_WORKFORCE_REPORT_V2=$workforce_report_dir/v2/node.json"
-            "TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS=$workforce_node_direct_fragment:$workforce_node_remote_fragment"
-            "TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE=$workforce_node_nonce"
-            "TYPE_BRIDGE_WORKFORCE_V2_VALIDATOR_PYTHON=$workforce_validator_python"
+        sdk_node_env=(
+            "TYPE_BRIDGE_SDK_REPORT=$sdk_report_dir/node.json"
+            "TYPE_BRIDGE_SDK_REPORT_V2=$sdk_report_dir/v2/node.json"
+            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$sdk_node_direct_fragment:$sdk_node_remote_fragment"
+            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$sdk_node_nonce"
+            "TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON=$sdk_validator_python"
             "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE=typedb-3.12.1/v1"
         )
-        workforce_c_env=(
-            "TYPE_BRIDGE_WORKFORCE_REPORT_V2=$workforce_report_dir/v2/c.json"
-            "TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS=$workforce_c_fragment"
-            "TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE=$workforce_c_nonce"
+        sdk_c_env=(
+            "TYPE_BRIDGE_SDK_REPORT_V2=$sdk_report_dir/v2/c.json"
+            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$sdk_c_fragment"
+            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$sdk_c_nonce"
         )
-        printf "${CYAN}Workforce reports: %s${RESET}\n\n" "$workforce_report_dir"
+        printf "${CYAN}Sdk reports: %s${RESET}\n\n" "$sdk_report_dir"
     elif [[ "$typedb_server_version" == "3.12.3" ]]; then
-        printf "${CYAN}Workforce report fan-in skipped because forwarded pytest arguments may change collection.${RESET}\n\n"
+        printf "${CYAN}Sdk report fan-in skipped because forwarded pytest arguments may change collection.${RESET}\n\n"
     fi
 
     if [[ "$typedb_server_version" == "3.12.3" ]]; then
-        printf "${BOLD}━━━ Phase-2 exact-live parity (integration) ━━━${RESET}\n\n"
-        run_step "four-binding exact-TypeDB-3.12.3 Phase-2 live fan-in" \
-            env TYPE_BRIDGE_PHASE2_LIVE_ADDRESS="$TYPEDB_ADDRESS" \
-                TYPE_BRIDGE_PHASE2_LIVE_HTTP_PORT="$TYPEDB_HTTP_PORT" \
-            uv run python scripts/ci/run_phase2_projection_live.py
+        printf "${BOLD}━━━ Projected exact-live parity (integration) ━━━${RESET}\n\n"
+        run_step "four-binding exact-TypeDB-3.12.3 Projected live fan-in" \
+            env TYPE_BRIDGE_PROJECTED_LIVE_ADDRESS="$TYPEDB_ADDRESS" \
+                TYPE_BRIDGE_PROJECTED_LIVE_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            uv run python scripts/ci/run_projected_live.py
     else
-        printf "${CYAN}Phase-2 exact-live fan-in requires TypeDB 3.12.3; skipping %s.${RESET}\n\n" \
+        printf "${CYAN}Projected exact-live fan-in requires TypeDB 3.12.3; skipping %s.${RESET}\n\n" \
             "$typedb_server_version"
     fi
 
@@ -601,13 +601,13 @@ if [[ "$integration" == 1 ]]; then
             --test v2_query_integration_tests
 
     printf "${BOLD}━━━ Generated Rust projection (integration) ━━━${RESET}\n\n"
-    if [[ -n "$workforce_report_dir" ]]; then
-        run_step "emit Rust workforce-v2 deterministic proof fragment" \
-            env TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT="$workforce_rust_fragment" \
-                TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE="$workforce_rust_nonce" \
+    if [[ -n "$sdk_report_dir" ]]; then
+        run_step "emit Rust sdk-v2 deterministic proof fragment" \
+            env TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT="$sdk_rust_fragment" \
+                TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE="$sdk_rust_nonce" \
             cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
                 -p type-bridge --lib \
-                remote::tests::workforce_v2_rust_deterministic_proof_fragment \
+                remote::tests::sdk_v2_rust_deterministic_proof_fragment \
                 -- --exact
     fi
     run_step "generated Rust application parity" \
@@ -615,7 +615,7 @@ if [[ "$integration" == 1 ]]; then
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE="type_bridge_rust_projection_live_${$}" \
             ACCEPTANCE_TARGET_DIR="$ROOT/type-bridge-core/target/tmp_projection_live_target" \
-            "${workforce_rust_env[@]}" \
+            "${sdk_rust_env[@]}" \
         bash scripts/ci/run_exact_ignored_rust_test.sh \
             generated_rust_projection_round_trips_exact_live_models \
             --manifest-path type-bridge-core/Cargo.toml \
@@ -634,13 +634,13 @@ if [[ "$integration" == 1 ]]; then
                 -p type-bridge-c --test schema_package_abi
 
         printf "${BOLD}━━━ Generated C entity and relation CRUD (integration) ━━━${RESET}\n\n"
-        if [[ -n "$workforce_report_dir" ]]; then
-            run_step "emit C workforce-v2 deterministic proof fragment" \
-                env TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT="$workforce_c_fragment" \
-                    TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE="$workforce_c_nonce" \
+        if [[ -n "$sdk_report_dir" ]]; then
+            run_step "emit C sdk-v2 deterministic proof fragment" \
+                env TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT="$sdk_c_fragment" \
+                    TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE="$sdk_c_nonce" \
                 cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
                     -p type-bridge-c --lib \
-                    query::tests::workforce_v2_c_deterministic_proof_fragment \
+                    query::tests::sdk_v2_c_deterministic_proof_fragment \
                     -- --exact
         fi
         run_step "compiled generated C17 Person and Membership CRUD lifecycle" \
@@ -648,7 +648,7 @@ if [[ "$integration" == 1 ]]; then
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
                 TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE="type_bridge_c_projection_live_${$}" \
                 ACCEPTANCE_TARGET_DIR="$ROOT/type-bridge-core/target/tmp_c_projection_live_target" \
-                "${workforce_c_env[@]}" \
+                "${sdk_c_env[@]}" \
             bash scripts/ci/run_exact_ignored_rust_test.sh \
                 live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3 \
                 --manifest-path type-bridge-core/Cargo.toml --locked \
@@ -693,24 +693,24 @@ if [[ "$integration" == 1 ]]; then
             -p type-bridge-schema-migration-typedb --test live_store
 
     printf "${BOLD}━━━ Python (integration) ━━━${RESET}\n\n"
-    if [[ -n "$workforce_report_dir" ]]; then
-        run_step "emit Python direct-cancellation workforce-v2 proof fragment" \
-            env TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT="$workforce_python_direct_fragment" \
-                TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE="$workforce_python_nonce" \
+    if [[ -n "$sdk_report_dir" ]]; then
+        run_step "emit Python direct-cancellation sdk-v2 proof fragment" \
+            env TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT="$sdk_python_direct_fragment" \
+                TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE="$sdk_python_nonce" \
             cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
                 -p type-bridge-core --lib \
                 match_runtime::tests::python_direct_cancellation_fragment_is_measured_from_owned_execution \
                 -- --exact
-        run_step "emit Python generated-remote workforce-v2 proof fragment" \
-            env TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT="$workforce_python_remote_fragment" \
-                TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE="$workforce_python_nonce" \
+        run_step "emit Python generated-remote sdk-v2 proof fragment" \
+            env TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT="$sdk_python_remote_fragment" \
+                TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE="$sdk_python_nonce" \
             uv run python \
                 type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
     fi
     run_step "pytest -m integration" \
         timeout --foreground 20m \
         env USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
-            "${workforce_python_env[@]}" \
+            "${sdk_python_env[@]}" \
         uv run pytest -m integration --tb=short "${pytest_args[@]}"
 
     printf "${BOLD}━━━ Node (integration) ━━━${RESET}\n\n"
@@ -725,17 +725,17 @@ if [[ "$integration" == 1 ]]; then
             USE_DOCKER=false TYPEDB_ADDRESS='$TYPEDB_ADDRESS' TYPEDB_HTTP_PORT='$TYPEDB_HTTP_PORT' \
             TYPEDB_VERSION='$typedb_server_version' \
             npm run test:integration"
-    if [[ -n "$workforce_report_dir" ]]; then
-        run_step "emit Node direct-cancellation workforce-v2 proof fragment" \
-            env TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT="$workforce_node_direct_fragment" \
-                TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE="$workforce_node_nonce" \
+    if [[ -n "$sdk_report_dir" ]]; then
+        run_step "emit Node direct-cancellation sdk-v2 proof fragment" \
+            env TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT="$sdk_node_direct_fragment" \
+                TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE="$sdk_node_nonce" \
             cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
                 -p type-bridge-node --lib \
                 match_runtime::tests::node_direct_cancellation_fragment_is_measured_from_owned_execution \
                 -- --exact
-        run_step "emit Node generated-remote workforce-v2 proof fragment" \
-            env TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT="$workforce_node_remote_fragment" \
-                TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE="$workforce_node_nonce" \
+        run_step "emit Node generated-remote sdk-v2 proof fragment" \
+            env TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT="$sdk_node_remote_fragment" \
+                TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE="$sdk_node_nonce" \
             node type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/check.mjs
     fi
     run_step "npm run test:projection-integration" \
@@ -745,41 +745,41 @@ if [[ "$integration" == 1 ]]; then
             TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             TYPEDB_VERSION="$typedb_server_version" \
             TYPE_BRIDGE_NODE_INTG_DATABASE="type_bridge_projection_live_${$}" \
-            "${workforce_node_env[@]}" \
+            "${sdk_node_env[@]}" \
         npm --prefix "$NODE_DIR" run test:projection-integration
 
-    if [[ -n "$workforce_report_dir" ]]; then
-        run_step "compare generated SDK workforce reports" \
-            write_workforce_summary \
-                "$workforce_v1_summary" \
-                "$workforce_validator_python" \
-                uv run python scripts/ci/compare_workforce_conformance.py \
-                "$workforce_report_dir/python.json" \
-                "$workforce_report_dir/node.json" \
-                "$workforce_report_dir/rust.json"
-        run_step "compare generated SDK workforce-v2 reports" \
-            write_workforce_summary \
-                "$workforce_v2_summary" \
-                "$workforce_validator_python" \
-                "$workforce_validator_python" \
-                scripts/ci/compare_workforce_conformance_v2.py \
-                "$workforce_report_dir/v2/python.json" \
-                "$workforce_report_dir/v2/node.json" \
-                "$workforce_report_dir/v2/rust.json" \
-                "$workforce_report_dir/v2/c.json"
-        run_step "validate and log workforce report and summary SHA-256 evidence" \
-            log_workforce_evidence_sha256 \
-                "$workforce_validator_python" \
-                "$workforce_v2_summary" \
-                "$workforce_report_dir/python.json" \
-                "$workforce_report_dir/node.json" \
-                "$workforce_report_dir/rust.json" \
-                "$workforce_v1_summary" \
-                "$workforce_report_dir/v2/python.json" \
-                "$workforce_report_dir/v2/node.json" \
-                "$workforce_report_dir/v2/rust.json" \
-                "$workforce_report_dir/v2/c.json" \
-                "$workforce_v2_summary"
+    if [[ -n "$sdk_report_dir" ]]; then
+        run_step "compare generated SDK v1 reports" \
+            write_sdk_summary \
+                "$sdk_v1_summary" \
+                "$sdk_validator_python" \
+                uv run python scripts/ci/compare_sdk_conformance.py \
+                "$sdk_report_dir/python.json" \
+                "$sdk_report_dir/node.json" \
+                "$sdk_report_dir/rust.json"
+        run_step "compare generated SDK v2 reports" \
+            write_sdk_summary \
+                "$sdk_v2_summary" \
+                "$sdk_validator_python" \
+                "$sdk_validator_python" \
+                scripts/ci/compare_sdk_conformance_v2.py \
+                "$sdk_report_dir/v2/python.json" \
+                "$sdk_report_dir/v2/node.json" \
+                "$sdk_report_dir/v2/rust.json" \
+                "$sdk_report_dir/v2/c.json"
+        run_step "validate and log sdk report and summary SHA-256 evidence" \
+            log_sdk_evidence_sha256 \
+                "$sdk_validator_python" \
+                "$sdk_v2_summary" \
+                "$sdk_report_dir/python.json" \
+                "$sdk_report_dir/node.json" \
+                "$sdk_report_dir/rust.json" \
+                "$sdk_v1_summary" \
+                "$sdk_report_dir/v2/python.json" \
+                "$sdk_report_dir/v2/node.json" \
+                "$sdk_report_dir/v2/rust.json" \
+                "$sdk_report_dir/v2/c.json" \
+                "$sdk_v2_summary"
     fi
 fi
 
@@ -836,7 +836,7 @@ run_tls_transport_steps() {
                 TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
                 TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
                 RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-stable}" \
-            uv run python scripts/ci/run_phase5_manager_filter_tls.py
+            uv run python scripts/ci/run_manager_filter_tls.py
     else
         printf "${CYAN}External TLS runtime proof is custom-root only; native-root and exact-topology assertions require the isolated 3.12.3 lane.${RESET}\n\n"
         run_step "TLS runtime HTTP + gRPC lifecycle (external custom-root)" \
@@ -948,45 +948,45 @@ if [[ "$proxy" == 1 ]]; then
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
-if [[ -n "$workforce_report_dir" ]]; then
-    if ((fail == 0)) && [[ "$preserve_workforce_evidence" == 0 ]]; then
+if [[ -n "$sdk_report_dir" ]]; then
+    if ((fail == 0)) && [[ "$preserve_sdk_evidence" == 0 ]]; then
         rm -f -- \
-            "$workforce_report_dir/python.json" \
-            "$workforce_report_dir/node.json" \
-            "$workforce_report_dir/rust.json" \
-            "$workforce_report_dir/v2/python.json" \
-            "$workforce_report_dir/v2/node.json" \
-            "$workforce_report_dir/v2/rust.json" \
-            "$workforce_report_dir/v2/c.json" \
-            "$workforce_report_dir/v2/python-direct-proof.json" \
-            "$workforce_report_dir/v2/python-remote-proof.json" \
-            "$workforce_report_dir/v2/node-direct-proof.json" \
-            "$workforce_report_dir/v2/node-remote-proof.json" \
-            "$workforce_report_dir/v2/rust-proof.json" \
-            "$workforce_report_dir/v2/c-proof.json" \
-            "$workforce_report_dir/summary-v1.json" \
-            "$workforce_report_dir/summary-v2.json"
-        if ! rmdir -- "$workforce_report_dir/v2"; then
-            printf "${RED}Could not remove accepted workforce-v2 report directory: %s${RESET}\n\n" \
-                "$workforce_report_dir/v2" >&2
+            "$sdk_report_dir/python.json" \
+            "$sdk_report_dir/node.json" \
+            "$sdk_report_dir/rust.json" \
+            "$sdk_report_dir/v2/python.json" \
+            "$sdk_report_dir/v2/node.json" \
+            "$sdk_report_dir/v2/rust.json" \
+            "$sdk_report_dir/v2/c.json" \
+            "$sdk_report_dir/v2/python-direct-proof.json" \
+            "$sdk_report_dir/v2/python-remote-proof.json" \
+            "$sdk_report_dir/v2/node-direct-proof.json" \
+            "$sdk_report_dir/v2/node-remote-proof.json" \
+            "$sdk_report_dir/v2/rust-proof.json" \
+            "$sdk_report_dir/v2/c-proof.json" \
+            "$sdk_report_dir/summary-v1.json" \
+            "$sdk_report_dir/summary-v2.json"
+        if ! rmdir -- "$sdk_report_dir/v2"; then
+            printf "${RED}Could not remove accepted sdk-v2 report directory: %s${RESET}\n\n" \
+                "$sdk_report_dir/v2" >&2
             fail=$((fail + 1))
-            failures+=("remove accepted workforce-v2 report directory")
+            failures+=("remove accepted sdk-v2 report directory")
         fi
-        if rmdir -- "$workforce_report_dir"; then
-            printf "${GREEN}Removed accepted workforce reports: %s${RESET}\n\n" \
-                "$workforce_report_dir"
+        if rmdir -- "$sdk_report_dir"; then
+            printf "${GREEN}Removed accepted sdk reports: %s${RESET}\n\n" \
+                "$sdk_report_dir"
         else
-            printf "${RED}Could not remove accepted workforce report directory: %s${RESET}\n\n" \
-                "$workforce_report_dir" >&2
+            printf "${RED}Could not remove accepted sdk report directory: %s${RESET}\n\n" \
+                "$sdk_report_dir" >&2
             fail=$((fail + 1))
-            failures+=("remove accepted workforce report directory")
+            failures+=("remove accepted sdk report directory")
         fi
     elif ((fail > 0)); then
-        printf "${CYAN}Preserved workforce reports for diagnosis: %s${RESET}\n\n" \
-            "$workforce_report_dir"
+        printf "${CYAN}Preserved sdk reports for diagnosis: %s${RESET}\n\n" \
+            "$sdk_report_dir"
     else
-        printf "${CYAN}Preserved accepted workforce evidence by request: %s${RESET}\n\n" \
-            "$workforce_report_dir"
+        printf "${CYAN}Preserved accepted sdk evidence by request: %s${RESET}\n\n" \
+            "$sdk_report_dir"
     fi
 fi
 

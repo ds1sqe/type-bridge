@@ -920,7 +920,7 @@ mod tests {
             FingerprintDomain::new("typebridge.schema.declared-identity").unwrap(),
             CanonicalizationVersion::new("typebridge.schema-canonical-json/v1").unwrap(),
             None,
-            b"workforce-v5",
+            b"sdk-v5",
         );
         (
             profile,

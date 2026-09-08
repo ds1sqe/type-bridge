@@ -1196,7 +1196,7 @@ mod tests {
     }
 
     #[test]
-    fn additive_query_path_and_detail_numeric_values_are_frozen() {
+    fn additive_acceptance_path_and_detail_numeric_values_are_frozen() {
         assert_eq!(TypeBridgeExecutionDiagnosticPathKind::Argument as i32, 1);
         assert_eq!(TypeBridgeExecutionDiagnosticPathKind::Role as i32, 5);
         assert_eq!(

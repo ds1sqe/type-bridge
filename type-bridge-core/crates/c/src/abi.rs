@@ -215,7 +215,6 @@ pub struct TypeBridgeSchemaPackage {
 
 /// Immutable verified package state retained by projected handles.
 pub(crate) struct SchemaPackageState {
-    pub(crate) abi_minor: u32,
     pub(crate) authority_json: Vec<u8>,
     pub(crate) projection_json: Vec<u8>,
     pub(crate) semantic_fingerprint_json: Vec<u8>,
@@ -329,7 +328,7 @@ fn flat_descriptor_layout_is_valid(descriptor: &TypeBridgeSchemaPackageDescripto
 }
 
 fn descriptor_abi_is_supported(abi_major: u32, abi_minor: u32) -> bool {
-    abi_major == ABI_MAJOR && abi_minor <= ABI_MINOR
+    abi_major == ABI_MAJOR && abi_minor == ABI_MINOR
 }
 
 fn check_consumed_byte_view(

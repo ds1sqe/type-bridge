@@ -1,37 +1,14 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-struct TempDirectory(PathBuf);
-
-impl TempDirectory {
-    fn new() -> Self {
-        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "typebridge-c-query-abi-{}-{sequence}",
-            std::process::id()
-        ));
-        fs::create_dir(&path).expect("unique query ABI directory is created");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDirectory {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).expect("query ABI directory is removed");
-    }
-}
+#[path = "support/temp.rs"]
+mod temp;
+use temp::TempDirectory;
 
 #[test]
 fn public_query_abi_compiles_under_strict_c_and_cpp() {
-    let stage = TempDirectory::new();
+    let stage = TempDirectory::new("query_abi");
     let include = Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
     let source = stage.path().join("query-abi.c");
     fs::write(

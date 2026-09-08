@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run and validate the Plan 08 clean C consumer journey from candidate archives."""
+"""Run and validate the C distribution clean C consumer journey from artifact archives."""
 
 from __future__ import annotations
 
@@ -16,30 +16,30 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-import c_package_candidates as packages
-import standalone_cli_candidate as cli
+import c_package_artifacts as packages
+import standalone_cli_artifact as cli
 
 ROOT = Path(__file__).resolve().parents[2]
 FORMAT = "typebridge.c-artifact-clean-consumer/v1"
-DISPOSITION = "candidate-only-unpublished-unsupported"
+DISPOSITION = "artifact-only-unpublished-unsupported"
 FULL_CONSUMER = ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection_live/consumer.c"
-PHASE4_CONSUMER = (
-    ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection_live/phase4_consumer.c"
+QUERY_CONSUMER = (
+    ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection_live/query_consumer.c"
 )
-PHASE4_PACKAGE = (
-    ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection_live/phase4_package.c"
+QUERY_PACKAGE = (
+    ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection_live/query_package.c"
 )
 SETUP_SOURCE = ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection_live/setup.rs"
-SETUP_LOCK = ROOT / "tests/contracts/c-artifact-live-helper-Cargo.lock"
-PROVIDER_SCHEMA = ROOT / "tests/contracts/sdk_conformance/workforce-v3/provider-3.12.1-v3.tql"
+SETUP_LOCK = ROOT / "tests/support/provider/Cargo.lock"
+PROVIDER_SCHEMA = ROOT / "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql"
 JOURNEY_CONTRACT = ROOT / "tests/contracts/c-artifact-journey-v1.json"
 PREDECESSOR_CATALOGS = tuple(
-    ROOT / f"tests/contracts/sdk_conformance/workforce-v{version}/catalog-v{version}.json"
+    ROOT / f"tests/contracts/sdk_conformance/sdk-v{version}/catalog-v{version}.json"
     for version in range(1, 6)
 )
 FULL_MARKER_COUNT = 61
-PHASE4_MARKER_COUNT = 8
-CODEC_MARKER = "Workforce V5 C live codec direct/remote parity: passed"
+QUERY_MARKER_COUNT = 8
+CODEC_MARKER = "Sdk V5 C live codec direct/remote parity: passed"
 
 
 class JourneyError(RuntimeError):
@@ -74,7 +74,7 @@ def run(
 
 
 def adapted_fixture(path: Path) -> bytes:
-    """Adapt frozen acceptance source to the independently packaged Workforce V3."""
+    """Adapt frozen acceptance source to the independently packaged Sdk V3."""
     source = path.read_text(encoding="utf-8")
     if source.count("#include <fixture/models.h>") != 1:
         raise JourneyError(f"fixture include authority drifted: {path.name}")
@@ -82,13 +82,13 @@ def adapted_fixture(path: Path) -> bytes:
         raise JourneyError(f"fixture symbol authority drifted: {path.name}")
     source = source.replace(
         "#include <fixture/models.h>",
-        "#include <tb_workforcev3/tb_workforcev3.h>",
+        "#include <tb_sdkv3/tb_sdkv3.h>",
     )
-    source = source.replace("fixture_", "tb_workforcev3_")
-    source = source.replace("FIXTURE_", "TB_WORKFORCEV3_")
+    source = source.replace("fixture_", "tb_sdkv3_")
+    source = source.replace("FIXTURE_", "TB_SDKV3_")
     if path == FULL_CONSUMER:
         # The predecessor query fixture allowed arbitrary nickname strings.
-        # Workforce V3 freezes the field to Ada/Dana. Preserve the one
+        # Sdk V3 freezes the field to Ada/Dana. Preserve the one
         # optional-field query row and omit the field from all other people;
         # this changes fixture data only, never generated/runtime semantics.
         old_open = "if (!is_query_dana && !is_v5_live) {"
@@ -98,18 +98,18 @@ def adapted_fixture(path: Path) -> bytes:
         old_check = """if (is_query_dana) {
     CHECK(nickname == NULL);
   } else {
-    CHECK(tb_workforcev3_nickname_value(nickname, &text, out_diagnostics) ==
+    CHECK(tb_sdkv3_nickname_value(nickname, &text, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(same_text(text, is_query_ada ? "Ada" : expected_identifier));
-    CHECK(tb_workforcev3_nickname_close(&nickname) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(tb_sdkv3_nickname_close(&nickname) == TYPE_BRIDGE_STATUS_OK);
   }"""
         new_check = """if (!is_query_ada) {
     CHECK(nickname == NULL);
   } else {
-    CHECK(tb_workforcev3_nickname_value(nickname, &text, out_diagnostics) ==
+    CHECK(tb_sdkv3_nickname_value(nickname, &text, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(same_text(text, "Ada"));
-    CHECK(tb_workforcev3_nickname_close(&nickname) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(tb_sdkv3_nickname_close(&nickname) == TYPE_BRIDGE_STATUS_OK);
   }"""
         if source.count(old_check) != 1:
             raise JourneyError("full consumer nickname-check seam drifted")
@@ -121,41 +121,41 @@ def adapted_fixture(path: Path) -> bytes:
         if source.count(old_alias_input) != 1:
             raise JourneyError("full consumer ordered-alias input seam drifted")
         source = source.replace(old_alias_input, "args.field_aliases_chunks = NULL;", 1)
-        old_alias_check = """CHECK(tb_workforcev3_person_aliases_count(person, &aliases_count,
+        old_alias_check = """CHECK(tb_sdkv3_person_aliases_count(person, &aliases_count,
                                      out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(aliases_count == 1u);
-  CHECK(tb_workforcev3_person_aliases_at(person, 0u, &alias, out_diagnostics) ==
+  CHECK(tb_sdkv3_person_aliases_at(person, 0u, &alias, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(tb_workforcev3_aliases_value(alias, &text, out_diagnostics) ==
+  CHECK(tb_sdkv3_aliases_value(alias, &text, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(same_text(text, expected_alias_value));
-  CHECK(tb_workforcev3_aliases_close(&alias) == TYPE_BRIDGE_STATUS_OK);"""
-        new_alias_check = """CHECK(tb_workforcev3_person_aliases_count(person, &aliases_count,
+  CHECK(tb_sdkv3_aliases_close(&alias) == TYPE_BRIDGE_STATUS_OK);"""
+        new_alias_check = """CHECK(tb_sdkv3_person_aliases_count(person, &aliases_count,
                                      out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(aliases_count == 0u);
-  CHECK(tb_workforcev3_aliases_close(&alias) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(tb_sdkv3_aliases_close(&alias) == TYPE_BRIDGE_STATUS_OK);
   (void)expected_alias_value;"""
         if source.count(old_alias_check) != 1:
             raise JourneyError("full consumer ordered-alias check seam drifted")
         source = source.replace(old_alias_check, new_alias_check, 1)
-        old_alias_observation = """CHECK(tb_workforcev3_person_aliases_count(person, &alias_count, out_diagnostics) ==
+        old_alias_observation = """CHECK(tb_sdkv3_person_aliases_count(person, &alias_count, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(alias_count != 0u);
-  CHECK(tb_workforcev3_person_aliases_at(person, 0u, &alias, out_diagnostics) ==
+  CHECK(tb_sdkv3_person_aliases_at(person, 0u, &alias, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(tb_workforcev3_aliases_value(alias, &value, out_diagnostics) ==
+  CHECK(tb_sdkv3_aliases_value(alias, &value, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(copy_stable_text(value, observation->first_alias,
                          sizeof(observation->first_alias)));
-  CHECK(tb_workforcev3_aliases_close(&alias) == TYPE_BRIDGE_STATUS_OK);"""
-        new_alias_observation = """CHECK(tb_workforcev3_person_aliases_count(person, &alias_count, out_diagnostics) ==
+  CHECK(tb_sdkv3_aliases_close(&alias) == TYPE_BRIDGE_STATUS_OK);"""
+        new_alias_observation = """CHECK(tb_sdkv3_person_aliases_count(person, &alias_count, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(alias_count == 0u);
   CHECK(snprintf(observation->first_alias, sizeof(observation->first_alias),
                  "%s", "ordered-omitted") > 0);
-  CHECK(tb_workforcev3_aliases_close(&alias) == TYPE_BRIDGE_STATUS_OK);"""
+  CHECK(tb_sdkv3_aliases_close(&alias) == TYPE_BRIDGE_STATUS_OK);"""
         if source.count(old_alias_observation) != 1:
             raise JourneyError("full consumer ordered-alias observation seam drifted")
         source = source.replace(old_alias_observation, new_alias_observation, 1)
@@ -163,11 +163,11 @@ def adapted_fixture(path: Path) -> bytes:
 
 
 def adapted_flat_package() -> bytes:
-    source = PHASE4_PACKAGE.read_text(encoding="utf-8")
+    source = QUERY_PACKAGE.read_text(encoding="utf-8")
     if source.count('#include "src/models.c"') != 1:
         raise JourneyError("flat package source include authority drifted")
-    source = source.replace('#include "src/models.c"', '#include "src/tb_workforcev3.c"')
-    source = source.replace("fixture_", "tb_workforcev3_")
+    source = source.replace('#include "src/models.c"', '#include "src/tb_sdkv3.c"')
+    source = source.replace("fixture_", "tb_sdkv3_")
     return source.encode()
 
 
@@ -209,11 +209,11 @@ def _compile(
 
 
 def lifecycle_source() -> bytes:
-    return b"""#include <string.h>\n#include <tb_workforcev3/tb_workforcev3.h>\nint main(void) {\n  type_bridge_schema_package_t *package = NULL;\n  type_bridge_execution_diagnostics_t *diagnostics = NULL;\n  type_bridge_cancellation_t *cancellation = NULL;\n  tb_workforcev3_identifier *identifier = NULL;\n  type_bridge_byte_view_t input = {(const uint8_t *)"artifact", 8u};\n  type_bridge_byte_view_t output = {0};\n  uint8_t requested = 0u;\n  if (tb_workforcev3_schema_package_open_v2(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 10;\n  if (tb_workforcev3_identifier_open(package, input, &identifier, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 11;\n  if (tb_workforcev3_identifier_value(identifier, &output, &diagnostics) != TYPE_BRIDGE_STATUS_OK || output.length != 8u || memcmp(output.data, "artifact", 8u) != 0) return 12;\n  if (tb_workforcev3_identifier_close(&identifier) != TYPE_BRIDGE_STATUS_OK || identifier != NULL) return 13;\n  if (tb_workforcev3_identifier_close(&identifier) != TYPE_BRIDGE_STATUS_OK) return 14;\n  if (type_bridge_cancellation_open(&cancellation) != TYPE_BRIDGE_STATUS_OK) return 15;\n  if (type_bridge_cancellation_request(cancellation) != TYPE_BRIDGE_STATUS_OK || type_bridge_cancellation_is_requested(cancellation, &requested) != TYPE_BRIDGE_STATUS_OK || requested != 1u) return 16;\n  if (type_bridge_cancellation_close(&cancellation) != TYPE_BRIDGE_STATUS_OK || cancellation != NULL) return 17;\n  if (type_bridge_cancellation_close(&cancellation) != TYPE_BRIDGE_STATUS_OK) return 18;\n  if (type_bridge_schema_package_close(&package) != TYPE_BRIDGE_STATUS_OK || package != NULL) return 19;\n  return diagnostics == NULL ? 0 : 20;\n}\n"""
+    return b"""#include <string.h>\n#include <tb_sdkv3/tb_sdkv3.h>\nint main(void) {\n  type_bridge_schema_package_t *package = NULL;\n  type_bridge_execution_diagnostics_t *diagnostics = NULL;\n  type_bridge_cancellation_t *cancellation = NULL;\n  tb_sdkv3_identifier *identifier = NULL;\n  type_bridge_byte_view_t input = {(const uint8_t *)"artifact", 8u};\n  type_bridge_byte_view_t output = {0};\n  uint8_t requested = 0u;\n  if (tb_sdkv3_schema_package_open_v2(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 10;\n  if (tb_sdkv3_identifier_open(package, input, &identifier, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 11;\n  if (tb_sdkv3_identifier_value(identifier, &output, &diagnostics) != TYPE_BRIDGE_STATUS_OK || output.length != 8u || memcmp(output.data, "artifact", 8u) != 0) return 12;\n  if (tb_sdkv3_identifier_close(&identifier) != TYPE_BRIDGE_STATUS_OK || identifier != NULL) return 13;\n  if (tb_sdkv3_identifier_close(&identifier) != TYPE_BRIDGE_STATUS_OK) return 14;\n  if (type_bridge_cancellation_open(&cancellation) != TYPE_BRIDGE_STATUS_OK) return 15;\n  if (type_bridge_cancellation_request(cancellation) != TYPE_BRIDGE_STATUS_OK || type_bridge_cancellation_is_requested(cancellation, &requested) != TYPE_BRIDGE_STATUS_OK || requested != 1u) return 16;\n  if (type_bridge_cancellation_close(&cancellation) != TYPE_BRIDGE_STATUS_OK || cancellation != NULL) return 17;\n  if (type_bridge_cancellation_close(&cancellation) != TYPE_BRIDGE_STATUS_OK) return 18;\n  if (type_bridge_schema_package_close(&package) != TYPE_BRIDGE_STATUS_OK || package != NULL) return 19;\n  return diagnostics == NULL ? 0 : 20;\n}\n"""
 
 
 def negative_source() -> bytes:
-    return b"""#include <tb_workforcev3/tb_workforcev3.h>\nvoid rejected(tb_workforcev3_person *person) {\n  tb_workforcev3_membership *relation = person;\n  (void)relation;\n}\n"""
+    return b"""#include <tb_sdkv3/tb_sdkv3.h>\nvoid rejected(tb_sdkv3_person *person) {\n  tb_sdkv3_membership *relation = person;\n  (void)relation;\n}\n"""
 
 
 def loader_source() -> bytes:
@@ -223,7 +223,7 @@ def loader_source() -> bytes:
 
 
 def _tls_source_template() -> bytes:
-    return b"""#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <tb_workforcev3/tb_workforcev3.h>\n+static type_bridge_byte_view_t view(const char *text) { type_bridge_byte_view_t value = {(const uint8_t *)text, strlen(text)}; return value; }\n+int main(int argc, char **argv) {\n+  FILE *stream; long length; uint8_t *pem = NULL; type_bridge_schema_package_t *package = NULL;\n+  type_bridge_execution_diagnostics_t *diagnostics = NULL; type_bridge_runtime_t *runtime = NULL; type_bridge_database_t *database = NULL;\n+  type_bridge_byte_view_t version = {0}; type_bridge_runtime_config_v1_t runtime_config = {0}; type_bridge_database_config_v2_t config = {0};\n+  type_bridge_query_execution_limits_v1_t limits = TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;\n+  if (argc != 7) return 10; stream = fopen(argv[6], \"rb\"); if (stream == NULL) return 11;\n+  if (fseek(stream, 0, SEEK_END) != 0 || (length = ftell(stream)) <= 0 || length > TYPE_BRIDGE_DATABASE_CUSTOM_ROOT_CA_BYTES_MAX || fseek(stream, 0, SEEK_SET) != 0) return 12;\n+  pem = (uint8_t *)malloc((size_t)length); if (pem == NULL || fread(pem, 1u, (size_t)length, stream) != (size_t)length || fclose(stream) != 0) return 13;\n+  if (tb_workforcev3_schema_package_open_v2(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 14;\n+  runtime_config.struct_size = sizeof(runtime_config); runtime_config.version = TYPE_BRIDGE_RUNTIME_CONFIG_VERSION; runtime_config.worker_threads = TYPE_BRIDGE_RUNTIME_WORKER_THREADS_MIN;\n+  if (type_bridge_runtime_open_v1(&runtime_config, &runtime, &diagnostics) != TYPE_BRIDGE_STATUS_OK) return 15;\n+  config.struct_size = sizeof(config); config.version = TYPE_BRIDGE_DATABASE_CONFIG_V2_VERSION; config.address = view(argv[1]); config.http_port = (uint32_t)strtoul(argv[2], NULL, 10);\n+  config.database = view(argv[3]); config.username = view(argv[4]); config.password = view(argv[5]); config.tls_mode = TYPE_BRIDGE_TLS_CUSTOM_ROOT_CA;\n+  config.custom_root_ca_pem.data = pem; config.custom_root_ca_pem.length = (size_t)length; config.connection_limits = limits; config.answer_limits = limits;\n+  if (type_bridge_database_open_v2(runtime, package, &config, NULL, &database, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 16;\n+  memset(pem, 0xa5, (size_t)length); free(pem); pem = NULL;\n+  if (type_bridge_database_server_version(database, &version) != TYPE_BRIDGE_STATUS_OK || version.length != 6u || memcmp(version.data, \"3.12.3\", 6u) != 0) return 17;\n+  if (type_bridge_database_close(&database, &diagnostics) != TYPE_BRIDGE_STATUS_OK || database != NULL) return 18;\n+  if (type_bridge_runtime_close(&runtime, &diagnostics) != TYPE_BRIDGE_STATUS_OK || runtime != NULL) return 19;\n+  if (type_bridge_schema_package_close(&package) != TYPE_BRIDGE_STATUS_OK || package != NULL || diagnostics != NULL) return 20;\n+  puts(\"custom-root TLS direct artifact connection: passed\"); return 0;\n+}\n"""
+    return b"""#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <tb_sdkv3/tb_sdkv3.h>\n+static type_bridge_byte_view_t view(const char *text) { type_bridge_byte_view_t value = {(const uint8_t *)text, strlen(text)}; return value; }\n+int main(int argc, char **argv) {\n+  FILE *stream; long length; uint8_t *pem = NULL; type_bridge_schema_package_t *package = NULL;\n+  type_bridge_execution_diagnostics_t *diagnostics = NULL; type_bridge_runtime_t *runtime = NULL; type_bridge_database_t *database = NULL;\n+  type_bridge_byte_view_t version = {0}; type_bridge_runtime_config_v1_t runtime_config = {0}; type_bridge_database_config_v2_t config = {0};\n+  type_bridge_query_execution_limits_v1_t limits = TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;\n+  if (argc != 7) return 10; stream = fopen(argv[6], \"rb\"); if (stream == NULL) return 11;\n+  if (fseek(stream, 0, SEEK_END) != 0 || (length = ftell(stream)) <= 0 || length > TYPE_BRIDGE_DATABASE_CUSTOM_ROOT_CA_BYTES_MAX || fseek(stream, 0, SEEK_SET) != 0) return 12;\n+  pem = (uint8_t *)malloc((size_t)length); if (pem == NULL || fread(pem, 1u, (size_t)length, stream) != (size_t)length || fclose(stream) != 0) return 13;\n+  if (tb_sdkv3_schema_package_open_v2(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 14;\n+  runtime_config.struct_size = sizeof(runtime_config); runtime_config.version = TYPE_BRIDGE_RUNTIME_CONFIG_VERSION; runtime_config.worker_threads = TYPE_BRIDGE_RUNTIME_WORKER_THREADS_MIN;\n+  if (type_bridge_runtime_open_v1(&runtime_config, &runtime, &diagnostics) != TYPE_BRIDGE_STATUS_OK) return 15;\n+  config.struct_size = sizeof(config); config.version = TYPE_BRIDGE_DATABASE_CONFIG_V2_VERSION; config.address = view(argv[1]); config.http_port = (uint32_t)strtoul(argv[2], NULL, 10);\n+  config.database = view(argv[3]); config.username = view(argv[4]); config.password = view(argv[5]); config.tls_mode = TYPE_BRIDGE_TLS_CUSTOM_ROOT_CA;\n+  config.custom_root_ca_pem.data = pem; config.custom_root_ca_pem.length = (size_t)length; config.connection_limits = limits; config.answer_limits = limits;\n+  if (type_bridge_database_open_v2(runtime, package, &config, NULL, &database, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 16;\n+  memset(pem, 0xa5, (size_t)length); free(pem); pem = NULL;\n+  if (type_bridge_database_server_version(database, &version) != TYPE_BRIDGE_STATUS_OK || version.length != 6u || memcmp(version.data, \"3.12.3\", 6u) != 0) return 17;\n+  if (type_bridge_database_close(&database, &diagnostics) != TYPE_BRIDGE_STATUS_OK || database != NULL) return 18;\n+  if (type_bridge_runtime_close(&runtime, &diagnostics) != TYPE_BRIDGE_STATUS_OK || runtime != NULL) return 19;\n+  if (type_bridge_schema_package_close(&package) != TYPE_BRIDGE_STATUS_OK || package != NULL || diagnostics != NULL) return 20;\n+  puts(\"custom-root TLS direct artifact connection: passed\"); return 0;\n+}\n"""
 
 
 def tls_source() -> bytes:
@@ -238,9 +238,7 @@ def passed_markers(path: Path, *, exclude_codec: bool = False) -> list[str]:
         )
     ]
     if exclude_codec:
-        markers = [
-            marker for marker in markers if not marker.startswith("Workforce V5 C live codec")
-        ]
+        markers = [marker for marker in markers if not marker.startswith("Sdk V5 C live codec")]
     if len(markers) != len(set(markers)):
         raise JourneyError(f"duplicate connected marker authority: {path.name}")
     return markers
@@ -277,7 +275,7 @@ def tls_probe(
     _compile(
         "cc",
         "-std=c17",
-        [generated / "src/tb_workforcev3.c", source],
+        [generated / "src/tb_sdkv3.c", source],
         executable,
         runtime,
         generated,
@@ -323,8 +321,8 @@ def connected(
     runtime_files = packages.safe_archive_files(runtime_archive, packages.RUNTIME_MEMBERS)
     generated_files = packages.safe_archive_files(generated_archive, packages.PACKAGE_MEMBERS)
     full_markers = passed_markers(FULL_CONSUMER, exclude_codec=True)
-    phase4_markers = passed_markers(PHASE4_CONSUMER)
-    if len(full_markers) != FULL_MARKER_COUNT or len(phase4_markers) != PHASE4_MARKER_COUNT:
+    query_markers = passed_markers(QUERY_CONSUMER)
+    if len(full_markers) != FULL_MARKER_COUNT or len(query_markers) != QUERY_MARKER_COUNT:
         raise JourneyError("connected marker inventory drifted")
     environment = {
         **os.environ,
@@ -344,7 +342,7 @@ def connected(
         _write(runtime_files, runtime)
         _write(generated_files, generated)
         environment["LD_LIBRARY_PATH"] = str(runtime / "lib")
-        generated_source = generated / "src/tb_workforcev3.c"
+        generated_source = generated / "src/tb_sdkv3.c"
         tls_values = (tls_address, tls_http_port, tls_root_ca)
         if any(value is not None for value in tls_values) and not all(
             value is not None for value in tls_values
@@ -388,7 +386,7 @@ def connected(
             codec_executable,
             runtime,
             generated,
-            extra=("-DTYPE_BRIDGE_WORKFORCE_V5_C_CODEC",),
+            extra=("-DTYPE_BRIDGE_SDK_V5_C_CODEC",),
         )
         codec_evidence = root / "codec-evidence"
         codec_evidence.mkdir()
@@ -396,20 +394,20 @@ def connected(
             [str(codec_executable)],
             env={
                 **environment,
-                "TYPE_BRIDGE_WORKFORCE_V5_C_EVIDENCE_DIR": str(codec_evidence),
+                "TYPE_BRIDGE_SDK_V5_C_EVIDENCE_DIR": str(codec_evidence),
             },
         )
-        require_markers(codec_stdout, [CODEC_MARKER], "Workforce V5 codec consumer")
+        require_markers(codec_stdout, [CODEC_MARKER], "Sdk V5 codec consumer")
         codec_files = {}
         for name in ("entity.bin", "relation.bin"):
             body = packages.read_regular(codec_evidence / name)
             if not body:
-                raise JourneyError(f"Workforce V5 codec evidence is empty: {name}")
+                raise JourneyError(f"Sdk V5 codec evidence is empty: {name}")
             codec_files[name] = {"sha256": packages.sha256(body), "size": len(body)}
 
-        package_source = root / "phase4-package.c"
+        package_source = root / "query-package.c"
         package_source.write_bytes(adapted_flat_package())
-        package_object = root / "phase4-package.o"
+        package_object = root / "query-package.o"
         run(
             [
                 "cc",
@@ -429,15 +427,15 @@ def connected(
                 str(package_object),
             ]
         )
-        phase4_source = adapted_fixture(PHASE4_CONSUMER)
-        phase4_outputs: dict[str, str] = {}
+        query_source = adapted_fixture(QUERY_CONSUMER)
+        query_outputs: dict[str, str] = {}
         for compiler, standard, language in (
             ("cc", "-std=c17", "c17"),
             ("c++", "-std=c++17", "cpp17"),
         ):
-            source = root / f"phase4-{language}.c"
-            source.write_bytes(phase4_source)
-            executable = root / f"phase4-{language}"
+            source = root / f"query-{language}.c"
+            source.write_bytes(query_source)
+            executable = root / f"query-{language}"
             _compile(
                 compiler,
                 standard,
@@ -447,13 +445,13 @@ def connected(
                 generated,
             )
             stdout = run([str(executable)], env=environment)
-            require_markers(stdout, phase4_markers, f"Phase4 {language} consumer")
-            phase4_outputs[language] = packages.sha256(stdout.encode())
+            require_markers(stdout, query_markers, f"Query {language} consumer")
+            query_outputs[language] = packages.sha256(stdout.encode())
 
     return {
         "artifacts": {
-            "generated-package": generated_manifest["candidate-id"],
-            "runtime": runtime_manifest["candidate-id"],
+            "generated-package": generated_manifest["artifact-id"],
+            "runtime": runtime_manifest["artifact-id"],
         },
         "format": "typebridge.c-artifact-connected-observation/v1",
         "full-c17-marker-count": len(full_markers),
@@ -462,10 +460,10 @@ def connected(
             "files": codec_files,
             "marker": CODEC_MARKER,
         },
-        "phase4": {
-            "c17-marker-count": len(phase4_markers),
-            "cpp17-marker-count": len(phase4_markers),
-            "stdout-sha256": phase4_outputs,
+        "query": {
+            "c17-marker-count": len(query_markers),
+            "cpp17-marker-count": len(query_markers),
+            "stdout-sha256": query_outputs,
         },
         "plaintext-direct": True,
         "remote": {"caller-transport": True},
@@ -487,9 +485,9 @@ def embedded_resource(source: bytes, label: str) -> bytes:
 
 
 def free_port() -> int:
-    with socket.socket() as candidate:
-        candidate.bind(("127.0.0.1", 0))
-        return int(candidate.getsockname()[1])
+    with socket.socket() as artifact:
+        artifact.bind(("127.0.0.1", 0))
+        return int(artifact.getsockname()[1])
 
 
 def setup_workspace(root: Path) -> Path:
@@ -502,7 +500,7 @@ def setup_workspace(root: Path) -> Path:
     setup.write_text(source, encoding="utf-8")
     manifest = root / "Cargo.toml"
     manifest.write_text(
-        '[package]\nname = "type-bridge-c-artifact-live-setup"\n'
+        '[package]\nname = "type-bridge-test-provider"\n'
         'version = "0.0.0"\nedition = "2024"\npublish = false\n\n'
         '[[bin]]\nname = "setup"\npath = "setup.rs"\n\n'
         f'[dependencies]\ntype-bridge-orm = {{ path = "{ROOT / "type-bridge-core/crates/orm"}" }}\n'
@@ -684,15 +682,15 @@ def live_journey(
         report = {
             "artifacts": {
                 "cli": {
-                    "candidate-id": cli.validate(cli_archive)["candidate-id"],
+                    "artifact-id": cli.validate(cli_archive)["artifact-id"],
                     "sha256": cli.sha256(cli_archive.read_bytes()),
                 },
                 "generated-package": {
-                    "candidate-id": packages.validate_generated(generated_archive)["candidate-id"],
+                    "artifact-id": packages.validate_generated(generated_archive)["artifact-id"],
                     "sha256": packages.sha256(generated_archive.read_bytes()),
                 },
                 "runtime": {
-                    "candidate-id": packages.validate_runtime(runtime_archive)["candidate-id"],
+                    "artifact-id": packages.validate_runtime(runtime_archive)["artifact-id"],
                     "sha256": packages.sha256(runtime_archive.read_bytes()),
                 },
             },
@@ -731,7 +729,7 @@ def provider_free(
         _write(generated_files, generated)
         source = root / "consumer"
         source.mkdir()
-        generated_source = generated / "src/tb_workforcev3.c"
+        generated_source = generated / "src/tb_sdkv3.c"
 
         lifecycle = source / "lifecycle.c"
         lifecycle.write_bytes(lifecycle_source())
@@ -808,15 +806,15 @@ def provider_free(
                 "-Wextra",
                 "-Werror",
                 "-pedantic-errors",
-                "-DTYPE_BRIDGE_WORKFORCE_V5_C_CODEC",
+                "-DTYPE_BRIDGE_SDK_V5_C_CODEC",
                 f"-I{runtime / 'include'}",
                 f"-I{generated / 'include'}",
                 "-fsyntax-only",
                 str(full),
             ]
         )
-        phase4 = source / "phase4.c"
-        phase4.write_bytes(adapted_fixture(PHASE4_CONSUMER))
+        query = source / "query.c"
+        query.write_bytes(adapted_fixture(QUERY_CONSUMER))
         for compiler, standard in (("cc", "-std=c17"), ("c++", "-std=c++17")):
             run(
                 [
@@ -829,22 +827,22 @@ def provider_free(
                     f"-I{runtime / 'include'}",
                     f"-I{generated / 'include'}",
                     "-fsyntax-only",
-                    str(phase4),
+                    str(query),
                 ]
             )
 
     report = {
         "artifacts": {
             "cli": {
-                "candidate-id": cli_manifest["candidate-id"],
+                "artifact-id": cli_manifest["artifact-id"],
                 "sha256": cli.sha256(cli_archive.read_bytes()),
             },
             "generated-package": {
-                "candidate-id": generated_manifest["candidate-id"],
+                "artifact-id": generated_manifest["artifact-id"],
                 "sha256": packages.sha256(generated_archive.read_bytes()),
             },
             "runtime": {
-                "candidate-id": runtime_manifest["candidate-id"],
+                "artifact-id": runtime_manifest["artifact-id"],
                 "sha256": packages.sha256(runtime_archive.read_bytes()),
             },
         },
@@ -882,21 +880,21 @@ def validate_report(
     if report["publication-disposition"] != DISPOSITION:
         raise JourneyError("clean-consumer report widened publication authority")
     expected = {
-        "cli": (cli.validate(cli_archive)["candidate-id"], cli.sha256(cli_archive.read_bytes())),
+        "cli": (cli.validate(cli_archive)["artifact-id"], cli.sha256(cli_archive.read_bytes())),
         "runtime": (
-            packages.validate_runtime(runtime_archive)["candidate-id"],
+            packages.validate_runtime(runtime_archive)["artifact-id"],
             packages.sha256(runtime_archive.read_bytes()),
         ),
         "generated-package": (
-            packages.validate_generated(generated_archive)["candidate-id"],
+            packages.validate_generated(generated_archive)["artifact-id"],
             packages.sha256(generated_archive.read_bytes()),
         ),
     }
     artifacts = report.get("artifacts")
     if not isinstance(artifacts, dict) or set(artifacts) != set(expected):
         raise JourneyError("clean-consumer artifact inventory drifted")
-    for name, (candidate_id, digest) in expected.items():
-        if artifacts[name] != {"candidate-id": candidate_id, "sha256": digest}:
+    for name, (artifact_id, digest) in expected.items():
+        if artifacts[name] != {"artifact-id": artifact_id, "sha256": digest}:
             raise JourneyError(f"clean-consumer artifact binding drifted: {name}")
     provider = report.get("provider-free")
     if not isinstance(provider, dict) or provider.get("loader-unload") != "unmapped-after-dlclose":
@@ -928,15 +926,15 @@ def validate_live_report(
         raise JourneyError("live artifact report identity drifted")
     expected_artifacts = {
         "cli": {
-            "candidate-id": cli.validate(cli_archive)["candidate-id"],
+            "artifact-id": cli.validate(cli_archive)["artifact-id"],
             "sha256": cli.sha256(cli_archive.read_bytes()),
         },
         "generated-package": {
-            "candidate-id": packages.validate_generated(generated_archive)["candidate-id"],
+            "artifact-id": packages.validate_generated(generated_archive)["artifact-id"],
             "sha256": packages.sha256(generated_archive.read_bytes()),
         },
         "runtime": {
-            "candidate-id": packages.validate_runtime(runtime_archive)["candidate-id"],
+            "artifact-id": packages.validate_runtime(runtime_archive)["artifact-id"],
             "sha256": packages.sha256(runtime_archive.read_bytes()),
         },
     }
@@ -981,24 +979,24 @@ def validate_live_report(
         "mode": "custom-root",
     }:
         raise JourneyError("live artifact TLS lane is incomplete")
-    phase4 = connected_value.get("phase4")
-    if not isinstance(phase4, dict) or phase4.get("c17-marker-count") != PHASE4_MARKER_COUNT:
+    query = connected_value.get("query")
+    if not isinstance(query, dict) or query.get("c17-marker-count") != QUERY_MARKER_COUNT:
         raise JourneyError("live artifact C17 successor markers are incomplete")
-    if phase4.get("cpp17-marker-count") != PHASE4_MARKER_COUNT:
+    if query.get("cpp17-marker-count") != QUERY_MARKER_COUNT:
         raise JourneyError("live artifact C++17 successor markers are incomplete")
-    hashes = phase4.get("stdout-sha256")
+    hashes = query.get("stdout-sha256")
     if not isinstance(hashes, dict) or set(hashes) != {"c17", "cpp17"}:
         raise JourneyError("live artifact successor output identities are incomplete")
     if hashes["c17"] != hashes["cpp17"] or re.fullmatch(r"[0-9a-f]{64}", hashes["c17"]) is None:
         raise JourneyError("live artifact C/C++ successor outcomes disagree")
     if connected_value.get("artifacts") != {
-        "generated-package": expected_artifacts["generated-package"]["candidate-id"],
-        "runtime": expected_artifacts["runtime"]["candidate-id"],
+        "generated-package": expected_artifacts["generated-package"]["artifact-id"],
+        "runtime": expected_artifacts["runtime"]["artifact-id"],
     }:
         raise JourneyError("live connected observation artifact identity drifted")
     migration = report.get("migration")
     if not isinstance(migration, dict) or migration != {
-        "candidate-id": expected_artifacts["cli"]["candidate-id"],
+        "artifact-id": expected_artifacts["cli"]["artifact-id"],
         "explicit-credentials": True,
         "history-length": 4,
         "operations": ["apply", "verify", "rollback", "reapply", "verify"],
@@ -1030,14 +1028,14 @@ def evidence_value(root: Mapping[str, Any], reference: str) -> Any:
     value: Any = root
     for member in reference.split("."):
         if not isinstance(value, Mapping) or member not in value:
-            raise JourneyError(f"Phase 4 evidence reference is missing: {reference}")
+            raise JourneyError(f"Artifact acceptance evidence reference is missing: {reference}")
         value = value[member]
     if value is None or value is False or value == "" or value == [] or value == {}:
-        raise JourneyError(f"Phase 4 evidence reference is empty: {reference}")
+        raise JourneyError(f"Artifact acceptance evidence reference is empty: {reference}")
     return value
 
 
-def assemble_phase4(
+def assemble_acceptance(
     provider_path: Path,
     live_path: Path,
     cli_archive: Path,
@@ -1049,7 +1047,7 @@ def assemble_phase4(
     validate_report(provider, cli_archive, runtime_archive, generated_archive)
     validate_live_report(live, cli_archive, runtime_archive, generated_archive)
     if provider["artifacts"] != live["artifacts"]:
-        raise JourneyError("Phase 4 input reports bind different artifacts")
+        raise JourneyError("Artifact acceptance input reports bind different artifacts")
     contract = json.loads(
         JOURNEY_CONTRACT.read_text(encoding="utf-8"), object_pairs_hook=packages.unique_object
     )
@@ -1060,24 +1058,26 @@ def assemble_phase4(
         or contract.get("publication_authority") is not False
         or contract.get("platform") != packages.TARGET
     ):
-        raise JourneyError("Phase 4 journey contract authority drifted")
+        raise JourneyError("Artifact acceptance journey contract authority drifted")
     steps = contract.get("steps")
     if not isinstance(steps, list) or len(steps) != 14:
-        raise JourneyError("Phase 4 journey contract must contain exactly 14 steps")
+        raise JourneyError("Artifact acceptance journey contract must contain exactly 14 steps")
     root = {"live": live, "provider-free": provider["provider-free"]}
     output_steps = []
     for index, step in enumerate(steps, 1):
         if not isinstance(step, dict) or set(step) != {"evidence", "id"}:
-            raise JourneyError("Phase 4 journey step layout drifted")
+            raise JourneyError("Artifact acceptance journey step layout drifted")
         identifier = step["id"]
         references = step["evidence"]
         if not isinstance(identifier, str) or not identifier.startswith(f"{index:02d}-"):
-            raise JourneyError("Phase 4 journey step order drifted")
+            raise JourneyError("Artifact acceptance journey step order drifted")
         if not isinstance(references, list) or not references:
-            raise JourneyError(f"Phase 4 journey step has no evidence: {identifier}")
+            raise JourneyError(f"Artifact acceptance journey step has no evidence: {identifier}")
         for reference in references:
             if not isinstance(reference, str):
-                raise JourneyError(f"Phase 4 evidence reference is malformed: {identifier}")
+                raise JourneyError(
+                    f"Artifact acceptance evidence reference is malformed: {identifier}"
+                )
             evidence_value(root, reference)
         output_steps.append({"evidence": references, "id": identifier, "status": "passed"})
     catalogs = [
@@ -1093,7 +1093,7 @@ def assemble_phase4(
             "path": JOURNEY_CONTRACT.relative_to(ROOT).as_posix(),
             "sha256": packages.sha256(packages.read_regular(JOURNEY_CONTRACT)),
         },
-        "format": "typebridge.c-artifact-phase4-report/v1",
+        "format": "typebridge.c-artifact-acceptance-report/v1",
         "input-reports": {
             "live-sha256": packages.sha256(live_path.read_bytes()),
             "provider-free-sha256": packages.sha256(provider_path.read_bytes()),
@@ -1109,7 +1109,7 @@ def assemble_phase4(
     }
 
 
-def validate_phase4_report(
+def validate_acceptance_report(
     report: dict[str, Any],
     provider_path: Path,
     live_path: Path,
@@ -1117,11 +1117,11 @@ def validate_phase4_report(
     runtime_archive: Path,
     generated_archive: Path,
 ) -> None:
-    expected = assemble_phase4(
+    expected = assemble_acceptance(
         provider_path, live_path, cli_archive, runtime_archive, generated_archive
     )
     if report != expected:
-        raise JourneyError("Phase 4 aggregate report does not reconstruct exactly")
+        raise JourneyError("Artifact acceptance aggregate report does not reconstruct exactly")
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -1164,19 +1164,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     validate_live.add_argument("cli", type=Path)
     validate_live.add_argument("runtime", type=Path)
     validate_live.add_argument("generated", type=Path)
-    assemble = commands.add_parser("assemble-phase4")
+    assemble = commands.add_parser("assemble-acceptance")
     assemble.add_argument("provider", type=Path)
     assemble.add_argument("live", type=Path)
     assemble.add_argument("cli", type=Path)
     assemble.add_argument("runtime", type=Path)
     assemble.add_argument("generated", type=Path)
-    validate_phase4 = commands.add_parser("validate-phase4")
-    validate_phase4.add_argument("report", type=Path)
-    validate_phase4.add_argument("provider", type=Path)
-    validate_phase4.add_argument("live", type=Path)
-    validate_phase4.add_argument("cli", type=Path)
-    validate_phase4.add_argument("runtime", type=Path)
-    validate_phase4.add_argument("generated", type=Path)
+    validate_query = commands.add_parser("validate-acceptance")
+    validate_query.add_argument("report", type=Path)
+    validate_query.add_argument("provider", type=Path)
+    validate_query.add_argument("live", type=Path)
+    validate_query.add_argument("cli", type=Path)
+    validate_query.add_argument("runtime", type=Path)
+    validate_query.add_argument("generated", type=Path)
     return parser.parse_args(argv)
 
 
@@ -1215,8 +1215,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 tls_root_ca=arguments.tls_root_ca,
             )
             print(packages.canonical_json(result).decode(), end="")
-        elif arguments.command == "assemble-phase4":
-            result = assemble_phase4(
+        elif arguments.command == "assemble-acceptance":
+            result = assemble_acceptance(
                 arguments.provider,
                 arguments.live,
                 arguments.cli,
@@ -1224,9 +1224,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 arguments.generated,
             )
             print(packages.canonical_json(result).decode(), end="")
-        elif arguments.command == "validate-phase4":
+        elif arguments.command == "validate-acceptance":
             value = load_canonical_report(arguments.report)
-            validate_phase4_report(
+            validate_acceptance_report(
                 value,
                 arguments.provider,
                 arguments.live,
@@ -1234,7 +1234,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 arguments.runtime,
                 arguments.generated,
             )
-            print("validated complete 14-step artifact-only Phase 4 report")
+            print("validated complete 14-step artifact-only Artifact acceptance report")
         elif arguments.command in {"validate-report", "validate-live"}:
             value = json.loads(
                 arguments.report.read_text(encoding="utf-8"),
@@ -1253,8 +1253,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print("validated artifact-only live journey report")
     except (
         JourneyError,
-        packages.CandidateError,
-        cli.CandidateError,
+        packages.ArtifactError,
+        cli.ArtifactError,
         OSError,
         json.JSONDecodeError,
     ) as error:

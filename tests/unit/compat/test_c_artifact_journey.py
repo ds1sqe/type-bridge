@@ -1,4 +1,4 @@
-"""Fail-closed tests for the Plan 08 artifact-only C journey."""
+"""Fail-closed tests for the C distribution artifact-only C journey."""
 
 from __future__ import annotations
 
@@ -25,16 +25,16 @@ SPEC.loader.exec_module(JOURNEY)
 def _report() -> dict[str, Any]:
     return {
         "artifacts": {
-            "cli": {"candidate-id": "cli-id", "sha256": "cli-sha"},
-            "generated-package": {"candidate-id": "generated-id", "sha256": "generated-sha"},
-            "runtime": {"candidate-id": "runtime-id", "sha256": "runtime-sha"},
+            "cli": {"artifact-id": "cli-id", "sha256": "cli-sha"},
+            "generated-package": {"artifact-id": "generated-id", "sha256": "generated-sha"},
+            "runtime": {"artifact-id": "runtime-id", "sha256": "runtime-sha"},
         },
         "connected": None,
         "format": JOURNEY.FORMAT,
         "platform": JOURNEY.packages.TARGET,
         "provider-free": {
             "archive-package-smoke": {
-                "generated-candidate-id": "generated-id",
+                "generated-artifact-id": "generated-id",
                 "relocation": True,
             },
             "canonical-live-sources-compile": {"c17": True, "cpp17": True},
@@ -55,9 +55,9 @@ def _report() -> dict[str, Any]:
 def _live_report() -> dict[str, Any]:
     return {
         "artifacts": {
-            "cli": {"candidate-id": "cli-id", "sha256": "cli-sha"},
-            "generated-package": {"candidate-id": "generated-id", "sha256": "generated-sha"},
-            "runtime": {"candidate-id": "runtime-id", "sha256": "runtime-sha"},
+            "cli": {"artifact-id": "cli-id", "sha256": "cli-sha"},
+            "generated-package": {"artifact-id": "generated-id", "sha256": "generated-sha"},
+            "runtime": {"artifact-id": "runtime-id", "sha256": "runtime-sha"},
         },
         "cleanup": {"data-database": "removed", "migration-database": "removed"},
         "data-query-remote": {
@@ -75,7 +75,7 @@ def _live_report() -> dict[str, Any]:
                 },
                 "marker": JOURNEY.CODEC_MARKER,
             },
-            "phase4": {
+            "query": {
                 "c17-marker-count": 8,
                 "cpp17-marker-count": 8,
                 "stdout-sha256": {"c17": "a" * 64, "cpp17": "a" * 64},
@@ -91,7 +91,7 @@ def _live_report() -> dict[str, Any]:
         },
         "format": "typebridge.c-artifact-live-journey/v1",
         "migration": {
-            "candidate-id": "cli-id",
+            "artifact-id": "cli-id",
             "explicit-credentials": True,
             "history-length": 4,
             "operations": ["apply", "verify", "rollback", "reapply", "verify"],
@@ -112,17 +112,17 @@ def _stub_artifacts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Pa
         path = tmp_path / name
         path.write_bytes(body)
         archives.append(path)
-    monkeypatch.setattr(JOURNEY.cli, "validate", lambda _path: {"candidate-id": "cli-id"})
+    monkeypatch.setattr(JOURNEY.cli, "validate", lambda _path: {"artifact-id": "cli-id"})
     monkeypatch.setattr(JOURNEY.cli, "sha256", lambda _body: "cli-sha")
     monkeypatch.setattr(
         JOURNEY.packages,
         "validate_runtime",
-        lambda _path: {"candidate-id": "runtime-id"},
+        lambda _path: {"artifact-id": "runtime-id"},
     )
     monkeypatch.setattr(
         JOURNEY.packages,
         "validate_generated",
-        lambda _path: {"candidate-id": "generated-id"},
+        lambda _path: {"artifact-id": "generated-id"},
     )
     monkeypatch.setattr(
         JOURNEY.packages,
@@ -135,18 +135,18 @@ def _stub_artifacts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Pa
 
 
 def test_canonical_consumers_adapt_only_package_identity() -> None:
-    for fixture in (JOURNEY.FULL_CONSUMER, JOURNEY.PHASE4_CONSUMER):
+    for fixture in (JOURNEY.FULL_CONSUMER, JOURNEY.QUERY_CONSUMER):
         source = JOURNEY.adapted_fixture(fixture).decode()
         assert "fixture_" not in source
         assert "FIXTURE_" not in source
-        assert "#include <tb_workforcev3/tb_workforcev3.h>" in source
-        assert "tb_workforcev3_schema_package_open" in source
+        assert "#include <tb_sdkv3/tb_sdkv3.h>" in source
+        assert "tb_sdkv3_schema_package_open" in source
         if fixture == JOURNEY.FULL_CONSUMER:
             assert "ordered-omitted" in source
             assert "args.field_aliases_chunks = NULL;" in source
     flat = JOURNEY.adapted_flat_package().decode()
-    assert '#include "src/tb_workforcev3.c"' in flat
-    assert "tb_workforcev3_schema_package_chunks_v1" in flat
+    assert '#include "src/tb_sdkv3.c"' in flat
+    assert "tb_sdkv3_schema_package_chunks_v1" in flat
 
 
 def test_tls_consumer_captures_custom_root_without_template_markers() -> None:
@@ -158,10 +158,10 @@ def test_tls_consumer_captures_custom_root_without_template_markers() -> None:
 
 def test_connected_marker_authority_is_exact_and_duplicate_free() -> None:
     full = JOURNEY.passed_markers(JOURNEY.FULL_CONSUMER, exclude_codec=True)
-    phase4 = JOURNEY.passed_markers(JOURNEY.PHASE4_CONSUMER)
+    query = JOURNEY.passed_markers(JOURNEY.QUERY_CONSUMER)
     assert len(full) == JOURNEY.FULL_MARKER_COUNT == 61
-    assert len(phase4) == JOURNEY.PHASE4_MARKER_COUNT == 8
-    JOURNEY.require_markers("\n".join([*full, *phase4]), [*full, *phase4], "test")
+    assert len(query) == JOURNEY.QUERY_MARKER_COUNT == 8
+    JOURNEY.require_markers("\n".join([*full, *query]), [*full, *query], "test")
     with pytest.raises(JOURNEY.JourneyError, match="omitted connected markers"):
         JOURNEY.require_markers("", full, "test")
 
@@ -172,7 +172,7 @@ def test_live_setup_uses_the_authoritative_locked_dependency_graph(
     manifest = JOURNEY.setup_workspace(tmp_path)
     lock = (tmp_path / "Cargo.lock").read_bytes()
     assert lock == JOURNEY.SETUP_LOCK.read_bytes()
-    assert lock.count(b'name = "type-bridge-c-artifact-live-setup"') == 1
+    assert lock.count(b'name = "type-bridge-test-provider"') == 1
 
     commands: list[list[str]] = []
     monkeypatch.setattr(
@@ -209,7 +209,7 @@ def test_live_report_revalidates_artifacts_journeys_and_cleanup(
     JOURNEY.validate_live_report(_live_report(), *archives)
 
 
-def test_phase4_assembler_resolves_exactly_fourteen_steps(
+def test_query_assembler_resolves_exactly_fourteen_steps(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     archives = _stub_artifacts(monkeypatch, tmp_path)
@@ -217,13 +217,13 @@ def test_phase4_assembler_resolves_exactly_fourteen_steps(
     live = tmp_path / "live.json"
     provider.write_bytes(JOURNEY.packages.canonical_json(_report()))
     live.write_bytes(JOURNEY.packages.canonical_json(_live_report()))
-    report = JOURNEY.assemble_phase4(provider, live, *archives)
+    report = JOURNEY.assemble_acceptance(provider, live, *archives)
     assert len(report["steps"]) == 14
     assert all(step["status"] == "passed" for step in report["steps"])
-    JOURNEY.validate_phase4_report(report, provider, live, *archives)
+    JOURNEY.validate_acceptance_report(report, provider, live, *archives)
     report["steps"][12]["status"] = "skipped"
     with pytest.raises(JOURNEY.JourneyError, match="does not reconstruct"):
-        JOURNEY.validate_phase4_report(report, provider, live, *archives)
+        JOURNEY.validate_acceptance_report(report, provider, live, *archives)
 
 
 @pytest.mark.parametrize(
@@ -238,7 +238,7 @@ def test_phase4_assembler_resolves_exactly_fourteen_steps(
             "codec lanes disagree",
         ),
         (
-            ("data-query-remote", "phase4", "stdout-sha256", "cpp17"),
+            ("data-query-remote", "query", "stdout-sha256", "cpp17"),
             "b" * 64,
             "outcomes disagree",
         ),

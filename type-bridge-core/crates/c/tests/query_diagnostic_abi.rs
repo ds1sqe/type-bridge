@@ -1,8 +1,7 @@
 use std::fs;
 use std::mem::{align_of, offset_of, size_of};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use type_bridge_c::{
     TypeBridgeExecutionDiagnosticDetailKind, TypeBridgeExecutionDiagnosticDetailViewV1,
@@ -10,31 +9,9 @@ use type_bridge_c::{
     TypeBridgeExecutionDiagnosticViewV1, TypeBridgeQueryExecutionLimitsV1,
 };
 
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-struct TempDirectory(PathBuf);
-
-impl TempDirectory {
-    fn new() -> Self {
-        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "typebridge-c-query-diagnostic-abi-{}-{sequence}",
-            std::process::id()
-        ));
-        fs::create_dir(&path).expect("unique query diagnostic ABI directory is created");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDirectory {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).expect("query diagnostic ABI directory is removed");
-    }
-}
+#[path = "support/temp.rs"]
+mod temp;
+use temp::TempDirectory;
 
 fn parse_layout(output: &[u8]) -> Vec<usize> {
     std::str::from_utf8(output)
@@ -238,7 +215,7 @@ fn verify_compiler(
 
 #[test]
 fn strict_c17_and_cpp17_match_query_diagnostic_numeric_and_layout_contracts() {
-    let stage = TempDirectory::new();
+    let stage = TempDirectory::new("query_diagnostic_abi");
     let include = Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
     let source = stage.path().join("query-diagnostic-layout.c");
     fs::write(

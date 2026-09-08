@@ -1449,8 +1449,10 @@ impl TypeDBRuntime {
     /// Make the selected driver terminal and dispatch upstream shutdown.
     ///
     /// Bindings call this at their public connection-close boundary instead of
-    /// relying on field drop ordering. The first call atomically prevents new
-    /// operations, invalidates in-flight work through upstream shutdown, and
+    /// relying on field drop ordering. While any transaction handle is retained,
+    /// close returns `resource_in_use` and leaves the connection available.
+    /// After those handles are released, the first call prevents new operations,
+    /// invalidates in-flight work through upstream shutdown, and
     /// leaves the runtime permanently unavailable even if shutdown reports an
     /// error. A later call retries incomplete upstream dispatch without
     /// reopening the connection; calls after successful dispatch are harmless.

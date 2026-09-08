@@ -12,8 +12,8 @@ env:
   RUST_STABLE_TOOLCHAIN: "1.94.1"
 
 jobs:
-  standalone-cli-candidate:
-    name: Standalone CLI candidate (Linux x86_64 GNU)
+  standalone-cli-artifact:
+    name: Standalone CLI artifact (Linux x86_64 GNU)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     services:
@@ -31,7 +31,7 @@ jobs:
         with:
           python-version: "3.13.5"
 
-      - name: Install exact candidate Rust toolchain
+      - name: Install exact artifact Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
@@ -42,8 +42,8 @@ jobs:
           path: |
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
-            tmp/standalone-cli-candidate/build
-          key: linux-cli-candidate-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+            tmp/standalone-cli-artifact/build
+          key: linux-cli-artifact-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: Require native archive and binary inspectors
         run: |
@@ -51,30 +51,30 @@ jobs:
           readelf --version
           sha256sum --version
 
-      - name: Build and validate the deterministic standalone CLI candidate
+      - name: Build and validate the deterministic standalone CLI artifact
         run: >-
-          python scripts/ci/standalone_cli_candidate.py build
-          --output tmp/standalone-cli-candidate
+          python scripts/ci/standalone_cli_artifact.py build
+          --output tmp/standalone-cli-artifact
 
-      - name: Consume the relocated candidate without language toolchains
+      - name: Consume the relocated artifact without language toolchains
         run: >-
-          python scripts/ci/standalone_cli_candidate.py smoke
-          tmp/standalone-cli-candidate/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz
+          python scripts/ci/standalone_cli_artifact.py smoke
+          tmp/standalone-cli-artifact/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
 
       - name: Generate reproducible Python, Node, and Rust V6 surfaces
         run: |
           set -euo pipefail
-          candidate=tmp/standalone-cli-candidate/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz
-          python scripts/ci/workforce_v6_surfaces.py build "$candidate" \
-            --output tmp/workforce-v6-surfaces
-          python scripts/ci/workforce_v6_surfaces.py build "$candidate" \
-            --output tmp/workforce-v6-surfaces-repeat
+          artifact=tmp/standalone-cli-artifact/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
+          python scripts/ci/sdk_v6_surfaces.py build "$artifact" \
+            --output tmp/sdk-v6-surfaces
+          python scripts/ci/sdk_v6_surfaces.py build "$artifact" \
+            --output tmp/sdk-v6-surfaces-repeat
           for binding in python node rust; do
-            archive="type-bridge-$binding-generated-workforce-v6.tar.gz"
-            cmp "tmp/workforce-v6-surfaces/$archive" \
-              "tmp/workforce-v6-surfaces-repeat/$archive"
-            python scripts/ci/workforce_v6_surfaces.py validate \
-              "tmp/workforce-v6-surfaces/$archive" --binding "$binding"
+            archive="type-bridge-$binding-generated-sdk-v6.tar.gz"
+            cmp "tmp/sdk-v6-surfaces/$archive" \
+              "tmp/sdk-v6-surfaces-repeat/$archive"
+            python scripts/ci/sdk_v6_surfaces.py validate \
+              "tmp/sdk-v6-surfaces/$archive" --binding "$binding"
           done
 
       - name: Wait for exact TypeDB fixture
@@ -93,25 +93,25 @@ jobs:
           docker logs ${{ job.services.typedb.id }} 2>&1 || true
           exit 1
 
-      - name: Apply, verify, roll back, and reapply exact workforce history
+      - name: Apply, verify, roll back, and reapply exact sdk history
         run: >-
-          python scripts/ci/standalone_cli_candidate.py connected-smoke
-          tmp/standalone-cli-candidate/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz
-          --database workforce_cli_${{ github.run_id }}_${{ github.run_attempt }}
+          python scripts/ci/standalone_cli_artifact.py connected-smoke
+          tmp/standalone-cli-artifact/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
+          --database sdk_cli_${{ github.run_id }}_${{ github.run_attempt }}
 
-      - name: Upload immutable non-publishing candidate evidence
+      - name: Upload immutable non-publishing artifact evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: standalone-cli-candidate-linux-x86_64-gnu
-          path: tmp/standalone-cli-candidate/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz
+          name: standalone-cli-artifact-linux-x86_64-gnu
+          path: tmp/standalone-cli-artifact/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
           if-no-files-found: error
           retention-days: 7
 
-      - name: Upload candidate-generated V6 language surfaces
+      - name: Upload artifact-generated V6 language surfaces
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: workforce-v6-generated-surfaces
-          path: tmp/workforce-v6-surfaces/*.tar.gz
+          name: sdk-v6-generated-surfaces
+          path: tmp/sdk-v6-surfaces/*.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -119,8 +119,8 @@ jobs:
         if: failure()
         run: docker logs ${{ job.services.typedb.id }} 2>&1 || true
 
-  c-package-candidates:
-    name: C runtime and generated package candidates (Linux x86_64 GNU)
+  c-package-artifacts:
+    name: C runtime and generated package artifacts (Linux x86_64 GNU)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -132,7 +132,7 @@ jobs:
         with:
           python-version: "3.13.5"
 
-      - name: Install exact candidate Rust toolchain
+      - name: Install exact artifact Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
@@ -143,8 +143,8 @@ jobs:
           path: |
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
-            tmp/c-package-candidates/build/cargo
-          key: linux-c-package-candidates-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+            tmp/c-package-artifacts/build/cargo
+          key: linux-c-package-artifacts-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: Require native packaging and consumer tools
         run: |
@@ -156,36 +156,36 @@ jobs:
           readelf --version
           nm --version
 
-      - name: Build and validate separate deterministic C candidates
+      - name: Build and validate separate deterministic C artifacts
         run: >-
-          python scripts/ci/c_package_candidates.py build
-          --output tmp/c-package-candidates
+          python scripts/ci/c_package_artifacts.py build
+          --output tmp/c-package-artifacts
 
       - name: Consume relocated CMake and pkg-config packages
         run: >-
-          python scripts/ci/c_package_candidates.py smoke
-          tmp/c-package-candidates/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-package-candidates/tb_workforcev3-c-5c1c8cabf97c28913fc45d3e724e251501a57e2ca87eed9372474b5c7a51405e.tar.gz
+          python scripts/ci/c_package_artifacts.py smoke
+          tmp/c-package-artifacts/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-package-artifacts/tb_sdkv3-c-de6ec4acca4cfc7ba35cfbbd969dce49c7bf3b709532fca43ac41ed482606264.tar.gz
 
-      - name: Upload immutable non-publishing C candidate evidence
+      - name: Upload immutable non-publishing C artifact evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: c-package-candidates-linux-x86_64-gnu
+          name: c-package-artifacts-linux-x86_64-gnu
           path: |
-            tmp/c-package-candidates/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-            tmp/c-package-candidates/tb_workforcev3-c-5c1c8cabf97c28913fc45d3e724e251501a57e2ca87eed9372474b5c7a51405e.tar.gz
+            tmp/c-package-artifacts/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
+            tmp/c-package-artifacts/tb_sdkv3-c-de6ec4acca4cfc7ba35cfbbd969dce49c7bf3b709532fca43ac41ed482606264.tar.gz
           if-no-files-found: error
           retention-days: 7
 
   c-distribution-security:
-    name: C distribution supply-chain candidate gate
-    needs: [standalone-cli-candidate, c-package-candidates]
+    name: C distribution supply-chain artifact gate
+    needs: [standalone-cli-artifact, c-package-artifacts]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
     steps:
-      - name: Checkout exact candidate source
+      - name: Checkout exact artifact source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
@@ -193,7 +193,7 @@ jobs:
         with:
           python-version: "3.13.5"
 
-      - name: Install exact candidate Rust toolchain
+      - name: Install exact artifact Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
@@ -203,16 +203,16 @@ jobs:
         with:
           tool: cargo-audit@0.22.2
 
-      - name: Download immutable standalone CLI candidate
+      - name: Download immutable standalone CLI artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: standalone-cli-candidate-linux-x86_64-gnu
+          name: standalone-cli-artifact-linux-x86_64-gnu
           path: tmp/c-distribution-input/cli
 
-      - name: Download immutable C package candidates
+      - name: Download immutable C package artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: c-package-candidates-linux-x86_64-gnu
+          name: c-package-artifacts-linux-x86_64-gnu
           path: tmp/c-distribution-input/c
 
       - name: Scan only the shipped CLI and C runtime dependency closure
@@ -226,9 +226,9 @@ jobs:
       - name: Assemble and hostile-validate exact supply-chain evidence
         run: >-
           python scripts/ci/c_distribution_security.py assemble
-          --cli tmp/c-distribution-input/cli/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz
+          --cli tmp/c-distribution-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
           --runtime tmp/c-distribution-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          --generated tmp/c-distribution-input/c/tb_workforcev3-c-5c1c8cabf97c28913fc45d3e724e251501a57e2ca87eed9372474b5c7a51405e.tar.gz
+          --generated tmp/c-distribution-input/c/tb_sdkv3-c-de6ec4acca4cfc7ba35cfbbd969dce49c7bf3b709532fca43ac41ed482606264.tar.gz
           --audit-report tmp/c-distribution-input/rustsec-report.json
           --output tmp/c-distribution-evidence
 
@@ -242,13 +242,13 @@ jobs:
 
   c-artifact-clean-consumer:
     name: C artifact-only clean consumer (Linux x86_64 GNU)
-    needs: [standalone-cli-candidate, c-package-candidates, c-distribution-security]
+    needs: [standalone-cli-artifact, c-package-artifacts, c-distribution-security]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
     steps:
-      - name: Checkout exact candidate source
+      - name: Checkout exact artifact source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
@@ -266,33 +266,33 @@ jobs:
           cmake --version
           pkg-config --version
 
-      - name: Download immutable standalone CLI candidate
+      - name: Download immutable standalone CLI artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: standalone-cli-candidate-linux-x86_64-gnu
+          name: standalone-cli-artifact-linux-x86_64-gnu
           path: tmp/c-artifact-input/cli
 
-      - name: Download immutable C package candidates
+      - name: Download immutable C package artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: c-package-candidates-linux-x86_64-gnu
+          name: c-package-artifacts-linux-x86_64-gnu
           path: tmp/c-artifact-input/c
 
       - name: Run provider-free, negative, sanitizer, and unload journey
         run: >-
           python scripts/ci/c_artifact_journey.py provider-free
-          tmp/c-artifact-input/cli/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
           tmp/c-artifact-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-input/c/tb_workforcev3-c-5c1c8cabf97c28913fc45d3e724e251501a57e2ca87eed9372474b5c7a51405e.tar.gz
+          tmp/c-artifact-input/c/tb_sdkv3-c-de6ec4acca4cfc7ba35cfbbd969dce49c7bf3b709532fca43ac41ed482606264.tar.gz
           > tmp/c-artifact-clean-consumer.json
 
       - name: Independently revalidate the exact artifact-bound report
         run: >-
           python scripts/ci/c_artifact_journey.py validate-report
           tmp/c-artifact-clean-consumer.json
-          tmp/c-artifact-input/cli/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
           tmp/c-artifact-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-input/c/tb_workforcev3-c-5c1c8cabf97c28913fc45d3e724e251501a57e2ca87eed9372474b5c7a51405e.tar.gz
+          tmp/c-artifact-input/c/tb_sdkv3-c-de6ec4acca4cfc7ba35cfbbd969dce49c7bf3b709532fca43ac41ed482606264.tar.gz
 
       - name: Upload immutable non-publishing clean-consumer evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -304,7 +304,7 @@ jobs:
 
   c-artifact-live-consumer:
     name: C artifact-only live journey (Linux x86_64 GNU)
-    needs: [standalone-cli-candidate, c-package-candidates, c-artifact-clean-consumer]
+    needs: [standalone-cli-artifact, c-package-artifacts, c-artifact-clean-consumer]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -316,7 +316,7 @@ jobs:
           - 1729:1729
           - 8000:8000
     steps:
-      - name: Checkout exact candidate source
+      - name: Checkout exact artifact source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
@@ -338,16 +338,16 @@ jobs:
             ${{ runner.temp }}/typebridge-c-artifact-infra
           key: linux-c-artifact-live-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
-      - name: Download immutable standalone CLI candidate
+      - name: Download immutable standalone CLI artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: standalone-cli-candidate-linux-x86_64-gnu
+          name: standalone-cli-artifact-linux-x86_64-gnu
           path: tmp/c-artifact-live-input/cli
 
-      - name: Download immutable C package candidates
+      - name: Download immutable C package artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: c-package-candidates-linux-x86_64-gnu
+          name: c-package-artifacts-linux-x86_64-gnu
           path: tmp/c-artifact-live-input/c
 
       - name: Download provider-free clean-consumer evidence
@@ -386,9 +386,9 @@ jobs:
       - name: Run artifact-only direct, remote, migration, and cleanup journey
         run: >-
           python scripts/ci/c_artifact_journey.py live
-          tmp/c-artifact-live-input/cli/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
           tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-live-input/c/tb_workforcev3-c-5c1c8cabf97c28913fc45d3e724e251501a57e2ca87eed9372474b5c7a51405e.tar.gz
+          tmp/c-artifact-live-input/c/tb_sdkv3-c-de6ec4acca4cfc7ba35cfbbd969dce49c7bf3b709532fca43ac41ed482606264.tar.gz
           --database c_artifact_data_${{ github.run_id }}_${{ github.run_attempt }}
           --migration-database c_artifact_migration_${{ github.run_id }}_${{ github.run_attempt }}
           --infra-target ${{ runner.temp }}/typebridge-c-artifact-infra
@@ -401,26 +401,26 @@ jobs:
         run: >-
           python scripts/ci/c_artifact_journey.py validate-live
           tmp/c-artifact-live-journey.json
-          tmp/c-artifact-live-input/cli/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
           tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-live-input/c/tb_workforcev3-c-5c1c8cabf97c28913fc45d3e724e251501a57e2ca87eed9372474b5c7a51405e.tar.gz
+          tmp/c-artifact-live-input/c/tb_sdkv3-c-de6ec4acca4cfc7ba35cfbbd969dce49c7bf3b709532fca43ac41ed482606264.tar.gz
 
       - name: Assemble and independently validate all 14 canonical steps
         run: |
-          python scripts/ci/c_artifact_journey.py assemble-phase4 \
+          python scripts/ci/c_artifact_journey.py assemble-acceptance \
             tmp/c-artifact-live-input/provider-free/c-artifact-clean-consumer.json \
             tmp/c-artifact-live-journey.json \
-            tmp/c-artifact-live-input/cli/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz \
+            tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz \
             tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz \
-            tmp/c-artifact-live-input/c/tb_workforcev3-c-5c1c8cabf97c28913fc45d3e724e251501a57e2ca87eed9372474b5c7a51405e.tar.gz \
-            > tmp/c-artifact-phase4-report.json
-          python scripts/ci/c_artifact_journey.py validate-phase4 \
-            tmp/c-artifact-phase4-report.json \
+            tmp/c-artifact-live-input/c/tb_sdkv3-c-de6ec4acca4cfc7ba35cfbbd969dce49c7bf3b709532fca43ac41ed482606264.tar.gz \
+            > tmp/c-artifact-acceptance-report.json
+          python scripts/ci/c_artifact_journey.py validate-acceptance \
+            tmp/c-artifact-acceptance-report.json \
             tmp/c-artifact-live-input/provider-free/c-artifact-clean-consumer.json \
             tmp/c-artifact-live-journey.json \
-            tmp/c-artifact-live-input/cli/type-bridge-cli-candidate-x86_64-unknown-linux-gnu.tar.gz \
+            tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz \
             tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz \
-            tmp/c-artifact-live-input/c/tb_workforcev3-c-5c1c8cabf97c28913fc45d3e724e251501a57e2ca87eed9372474b5c7a51405e.tar.gz
+            tmp/c-artifact-live-input/c/tb_sdkv3-c-de6ec4acca4cfc7ba35cfbbd969dce49c7bf3b709532fca43ac41ed482606264.tar.gz
 
       - name: Upload immutable non-publishing live artifact evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -428,7 +428,7 @@ jobs:
           name: c-artifact-live-consumer-linux-x86_64-gnu
           path: |
             tmp/c-artifact-live-journey.json
-            tmp/c-artifact-phase4-report.json
+            tmp/c-artifact-acceptance-report.json
           if-no-files-found: error
           retention-days: 7
 
@@ -479,7 +479,7 @@ jobs:
               "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             }
           }
-          & cmd /D /S /C "`"$devcmd`" -arch=x64 -host_arch=x64 >nul && where cl && cl /Bv && where clang-cl && clang-cl --version"
+          & cmd /D /S /C "`"$devcmd`" -arch=x64 -host_arch=x64 >nul && where cl && where clang-cl && clang-cl --version"
           if ($LASTEXITCODE -ne 0) { throw 'MSVC cl or clang-cl is unavailable after VsDevCmd' }
 
       - name: Install pinned cargo-about
@@ -574,13 +574,13 @@ jobs:
           exact_live_consumer_is_strict_c17_against_the_shared_generated_schema
           -- --exact
 
-      - name: Check generated ABI 1.4 successor C17 and C++17 consumers
+      - name: Check generated ordered C17 and C++17 consumers
         if: runner.os != 'Windows'
         working-directory: type-bridge-core
         run: >-
           cargo test --locked -p type-bridge-schema-codegen
           --test c_projection_live
-          phase4_successor_consumers_compile_as_strict_c17_and_cpp17
+          query_successor_consumers_compile_as_strict_c17_and_cpp17
           -- --exact
 
       - name: Check C runtime, transaction, and cancellation ABI
@@ -601,19 +601,19 @@ jobs:
         working-directory: type-bridge-core
         run: cargo build --locked -p type-bridge-c --lib
 
-      - name: Check C provider-free Phase-2 parity producer
+      - name: Check C provider-free Projected parity producer
         if: runner.os != 'Windows'
         working-directory: type-bridge-core
         env:
           TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER: "1"
-        run: cargo test --locked -p type-bridge-c --test phase2_projection_parity
+        run: cargo test --locked -p type-bridge-c --test projected_parity
 
-      - name: Check additive C ABI 1.4 header, export, and package ledger
+      - name: Check C ABI header, exports, and package
         if: runner.os != 'Windows'
         working-directory: type-bridge-core
         env:
           TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER: "1"
-        run: cargo test --locked -p type-bridge-c --test abi_1_4
+        run: cargo test --locked -p type-bridge-c --test abi
 
       - name: Check C ABI and standalone consumer
         if: runner.os != 'Windows'
@@ -640,7 +640,7 @@ jobs:
           cargo build --locked -p type-bridge-c --lib
           if errorlevel 1 exit /b 1
           set "TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1"
-          cargo test --locked -p type-bridge-c --test abi_1_4
+          cargo test --locked -p type-bridge-c --test abi
           if errorlevel 1 exit /b 1
           cargo test --locked -p type-bridge-c --test schema_package_abi
 
@@ -669,8 +669,8 @@ jobs:
         working-directory: type-bridge-core
         run: cargo clippy --all-targets -- -D warnings
 
-  phase2-parity:
-    name: Provider-free Phase-2 projection parity
+  projected-parity:
+    name: Provider-free Projected value parity
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -698,7 +698,7 @@ jobs:
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
-          key: ${{ runner.os }}-cargo-phase2-parity-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-projected-parity-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -718,11 +718,11 @@ jobs:
           gcc --version
           clang --version
 
-      - name: Compare all four provider-free Phase-2 reports
-        run: uv run python scripts/ci/run_phase2_projection_parity.py
+      - name: Compare all four provider-free Projected reports
+        run: uv run python scripts/ci/run_projected_parity.py
 
-  phase2-live:
-    name: Exact-TypeDB-3.12.3 Phase-2 live parity
+  projected-live:
+    name: Exact-TypeDB-3.12.3 Projected live parity
     runs-on: ubuntu-latest
     timeout-minutes: 60
     services:
@@ -757,7 +757,7 @@ jobs:
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
-          key: ${{ runner.os }}-cargo-phase2-live-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-projected-live-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -793,11 +793,11 @@ jobs:
           docker logs ${{ job.services.typedb.id }} 2>&1 || true
           exit 1
 
-      - name: Compare all four exact-live Phase-2 reports
+      - name: Compare all four exact-live Projected reports
         env:
-          TYPE_BRIDGE_PHASE2_LIVE_ADDRESS: localhost:1729
-          TYPE_BRIDGE_PHASE2_LIVE_HTTP_PORT: "8000"
-        run: ./scripts/check.sh phase2-live
+          TYPE_BRIDGE_PROJECTED_LIVE_ADDRESS: localhost:1729
+          TYPE_BRIDGE_PROJECTED_LIVE_HTTP_PORT: "8000"
+        run: ./scripts/check.sh projected-live
 
       - name: Show TypeDB logs after failure
         if: failure()
@@ -976,6 +976,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
@@ -1090,7 +1095,7 @@ jobs:
           npm run smoke:packed-package -- --artifact-directory tmp/packed-node
 
   # Compile and execute a clean generated package against the exact wheel pair
-  # on every supported Python line. The consumer extracts candidates outside
+  # on every supported Python line. The consumer extracts artifacts outside
   # the checkout and rejects source leakage or handwritten root exports.
   python-generated-package-compat:
     name: Python ${{ matrix.python-version }} generated wheel compatibility
@@ -1405,26 +1410,26 @@ jobs:
             exit 1
           fi
 
-      - name: Prepare Python workforce report output
-        id: prepare-python-workforce-v1
+      - name: Prepare Python sdk report output
+        id: prepare-python-sdk-v1
         if: >-
           matrix.test-group == 'schema' &&
           matrix.typedb-server == 'typedb/typedb:3.12.3'
         run: |
           set -euo pipefail
-          report_dir="$RUNNER_TEMP/typebridge-workforce"
+          report_dir="$RUNNER_TEMP/typebridge-sdk"
           mkdir -p "$report_dir"
           test ! -e "$report_dir/python.json"
           printf 'report=%s\n' "$report_dir/python.json" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare Python workforce-v2 evidence outputs
-        id: prepare-python-workforce-v2
+      - name: Prepare Python sdk-v2 evidence outputs
+        id: prepare-python-sdk-v2
         if: >-
           matrix.test-group == 'schema' &&
           matrix.typedb-server == 'typedb/typedb:3.12.3'
         run: |
           set -euo pipefail
-          evidence_dir="$RUNNER_TEMP/typebridge-workforce-v2"
+          evidence_dir="$RUNNER_TEMP/typebridge-sdk-v2"
           mkdir -p "$evidence_dir"
           report="$evidence_dir/python.json"
           direct_fragment="$evidence_dir/python-direct-proof.json"
@@ -1442,80 +1447,79 @@ jobs:
             printf 'run_nonce=%s\n' "$run_nonce"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Emit Python direct-cancellation workforce-v2 proof fragment
+      - name: Emit Python direct-cancellation sdk-v2 proof fragment
         if: >-
           matrix.test-group == 'schema' &&
           matrix.typedb-server == 'typedb/typedb:3.12.3'
         env:
-          TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT: ${{ steps.prepare-python-workforce-v2.outputs.direct_fragment }}
-          TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE: ${{ steps.prepare-python-workforce-v2.outputs.run_nonce }}
+          TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT: ${{ steps.prepare-python-sdk-v2.outputs.direct_fragment }}
+          TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE: ${{ steps.prepare-python-sdk-v2.outputs.run_nonce }}
         run: >-
           cargo test --locked --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-core --lib
           match_runtime::tests::python_direct_cancellation_fragment_is_measured_from_owned_execution
           -- --exact
 
-      - name: Emit Python generated-remote workforce-v2 proof fragment
+      - name: Emit Python generated-remote sdk-v2 proof fragment
         if: >-
           matrix.test-group == 'schema' &&
           matrix.typedb-server == 'typedb/typedb:3.12.3'
         env:
-          TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT: ${{ steps.prepare-python-workforce-v2.outputs.remote_fragment }}
-          TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE: ${{ steps.prepare-python-workforce-v2.outputs.run_nonce }}
+          TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT: ${{ steps.prepare-python-sdk-v2.outputs.remote_fragment }}
+          TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE: ${{ steps.prepare-python-sdk-v2.outputs.run_nonce }}
         run: uv run python type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
 
       - name: Run integration tests for ${{ matrix.test-group }}
         env:
           USE_DOCKER: false
           TYPEDB_ADDRESS: localhost:1729
-          WORKFORCE_V1_REPORT_OUTPUT: ${{ steps.prepare-python-workforce-v1.outputs.report }}
-          WORKFORCE_V2_REPORT_OUTPUT: ${{ steps.prepare-python-workforce-v2.outputs.report }}
-          WORKFORCE_V2_FRAGMENT_OUTPUTS: ${{ steps.prepare-python-workforce-v2.outputs.fragments }}
-          WORKFORCE_V2_RUN_NONCE_OUTPUT: ${{ steps.prepare-python-workforce-v2.outputs.run_nonce }}
+          SDK_V1_REPORT_OUTPUT: ${{ steps.prepare-python-sdk-v1.outputs.report }}
+          SDK_V2_REPORT_OUTPUT: ${{ steps.prepare-python-sdk-v2.outputs.report }}
+          SDK_V2_FRAGMENT_OUTPUTS: ${{ steps.prepare-python-sdk-v2.outputs.fragments }}
+          SDK_V2_RUN_NONCE_OUTPUT: ${{ steps.prepare-python-sdk-v2.outputs.run_nonce }}
         run: |
           set -euo pipefail
-          workforce_env=()
-          if [[ -n "$WORKFORCE_V1_REPORT_OUTPUT" ]]; then
-            workforce_env+=("TYPE_BRIDGE_WORKFORCE_REPORT=$WORKFORCE_V1_REPORT_OUTPUT")
+          sdk_env=()
+          if [[ -n "$SDK_V1_REPORT_OUTPUT" ]]; then
+            sdk_env+=("TYPE_BRIDGE_SDK_REPORT=$SDK_V1_REPORT_OUTPUT")
           fi
-          if [[ -n "$WORKFORCE_V2_REPORT_OUTPUT" ]]; then
-            workforce_env+=(
-              "TYPE_BRIDGE_WORKFORCE_REPORT_V2=$WORKFORCE_V2_REPORT_OUTPUT"
-              "TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS=$WORKFORCE_V2_FRAGMENT_OUTPUTS"
-              "TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE=$WORKFORCE_V2_RUN_NONCE_OUTPUT"
+          if [[ -n "$SDK_V2_REPORT_OUTPUT" ]]; then
+            sdk_env+=(
+              "TYPE_BRIDGE_SDK_REPORT_V2=$SDK_V2_REPORT_OUTPUT"
+              "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$SDK_V2_FRAGMENT_OUTPUTS"
+              "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$SDK_V2_RUN_NONCE_OUTPUT"
             )
           fi
-          env "${workforce_env[@]}" \
+          env "${sdk_env[@]}" \
             uv run pytest tests/integration/${{ matrix.test-group }} \
               -m integration -v --tb=short
 
-      - name: Upload Python workforce report
+      - name: Upload Python sdk report
         if: >-
           matrix.test-group == 'schema' &&
           matrix.typedb-server == 'typedb/typedb:3.12.3'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: workforce-conformance-python
-          path: ${{ runner.temp }}/typebridge-workforce/python.json
+          name: sdk-conformance-python
+          path: ${{ runner.temp }}/typebridge-sdk/python.json
           if-no-files-found: error
           retention-days: 7
 
-      - name: Upload Python workforce-v2 report
+      - name: Upload Python sdk-v2 report
         if: >-
           matrix.test-group == 'schema' &&
           matrix.typedb-server == 'typedb/typedb:3.12.3'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: workforce-conformance-v2-python
-          path: ${{ runner.temp }}/typebridge-workforce-v2/python.json
+          name: sdk-conformance-v2-python
+          path: ${{ runner.temp }}/typebridge-sdk-v2/python.json
           if-no-files-found: error
           retention-days: 7
 
   # Rust ORM live-TypeDB integration. The ordinary rust-check job deliberately
   # leaves `integration-tests` disabled so it remains an offline gate. This job
   # selects the non-ignored real-provider target explicitly. The 3.12 leg pins
-  # Phase 0's current
-  # provider baseline rather than inheriting an older patch from another job.
+  # current provider baseline.
   rust-integration:
     name: Rust integration (${{ matrix.typedb-server }})
     runs-on: ubuntu-latest
@@ -1628,22 +1632,22 @@ jobs:
               --test v2_query_integration_tests "$test_name" \
               -- --ignored --exact --nocapture
 
-      - name: Prepare Rust workforce report output
-        id: prepare-rust-workforce-v1
+      - name: Prepare Rust sdk report output
+        id: prepare-rust-sdk-v1
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         run: |
           set -euo pipefail
-          report_dir="$RUNNER_TEMP/typebridge-workforce"
+          report_dir="$RUNNER_TEMP/typebridge-sdk"
           mkdir -p "$report_dir"
           test ! -e "$report_dir/rust.json"
           printf 'report=%s\n' "$report_dir/rust.json" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare Rust workforce-v2 evidence outputs
-        id: prepare-rust-workforce-v2
+      - name: Prepare Rust sdk-v2 evidence outputs
+        id: prepare-rust-sdk-v2
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         run: |
           set -euo pipefail
-          evidence_dir="$RUNNER_TEMP/typebridge-workforce-v2"
+          evidence_dir="$RUNNER_TEMP/typebridge-sdk-v2"
           mkdir -p "$evidence_dir"
           report="$evidence_dir/rust.json"
           fragment="$evidence_dir/rust-proof.json"
@@ -1657,15 +1661,15 @@ jobs:
             printf 'run_nonce=%s\n' "$run_nonce"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Emit Rust workforce-v2 deterministic proof fragment
+      - name: Emit Rust sdk-v2 deterministic proof fragment
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         env:
-          TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT: ${{ steps.prepare-rust-workforce-v2.outputs.fragment }}
-          TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE: ${{ steps.prepare-rust-workforce-v2.outputs.run_nonce }}
+          TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT: ${{ steps.prepare-rust-sdk-v2.outputs.fragment }}
+          TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE: ${{ steps.prepare-rust-sdk-v2.outputs.run_nonce }}
         run: >-
           cargo test --locked --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge --lib
-          remote::tests::workforce_v2_rust_deterministic_proof_fragment
+          remote::tests::sdk_v2_rust_deterministic_proof_fragment
           -- --exact
 
       - name: Run generated Rust projection live smoke
@@ -1674,24 +1678,24 @@ jobs:
           TYPEDB_HTTP_PORT: "8000"
           TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE: type_bridge_rust_projection_live
           TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: ${{ matrix.semantic-profile }}
-          WORKFORCE_V1_REPORT_OUTPUT: ${{ steps.prepare-rust-workforce-v1.outputs.report }}
-          WORKFORCE_V2_REPORT_OUTPUT: ${{ steps.prepare-rust-workforce-v2.outputs.report }}
-          WORKFORCE_V2_FRAGMENT_OUTPUT: ${{ steps.prepare-rust-workforce-v2.outputs.fragment }}
-          WORKFORCE_V2_RUN_NONCE_OUTPUT: ${{ steps.prepare-rust-workforce-v2.outputs.run_nonce }}
+          SDK_V1_REPORT_OUTPUT: ${{ steps.prepare-rust-sdk-v1.outputs.report }}
+          SDK_V2_REPORT_OUTPUT: ${{ steps.prepare-rust-sdk-v2.outputs.report }}
+          SDK_V2_FRAGMENT_OUTPUT: ${{ steps.prepare-rust-sdk-v2.outputs.fragment }}
+          SDK_V2_RUN_NONCE_OUTPUT: ${{ steps.prepare-rust-sdk-v2.outputs.run_nonce }}
         run: |
           set -euo pipefail
-          workforce_env=()
-          if [[ -n "$WORKFORCE_V1_REPORT_OUTPUT" ]]; then
-            workforce_env+=("TYPE_BRIDGE_WORKFORCE_REPORT=$WORKFORCE_V1_REPORT_OUTPUT")
+          sdk_env=()
+          if [[ -n "$SDK_V1_REPORT_OUTPUT" ]]; then
+            sdk_env+=("TYPE_BRIDGE_SDK_REPORT=$SDK_V1_REPORT_OUTPUT")
           fi
-          if [[ -n "$WORKFORCE_V2_REPORT_OUTPUT" ]]; then
-            workforce_env+=(
-              "TYPE_BRIDGE_WORKFORCE_REPORT_V2=$WORKFORCE_V2_REPORT_OUTPUT"
-              "TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS=$WORKFORCE_V2_FRAGMENT_OUTPUT"
-              "TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE=$WORKFORCE_V2_RUN_NONCE_OUTPUT"
+          if [[ -n "$SDK_V2_REPORT_OUTPUT" ]]; then
+            sdk_env+=(
+              "TYPE_BRIDGE_SDK_REPORT_V2=$SDK_V2_REPORT_OUTPUT"
+              "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$SDK_V2_FRAGMENT_OUTPUT"
+              "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$SDK_V2_RUN_NONCE_OUTPUT"
             )
           fi
-          env "${workforce_env[@]}" \
+          env "${sdk_env[@]}" \
             bash scripts/ci/run_exact_ignored_rust_test.sh \
               generated_rust_projection_round_trips_exact_live_models \
               --manifest-path type-bridge-core/Cargo.toml \
@@ -1712,12 +1716,12 @@ jobs:
             --locked --manifest-path type-bridge-core/Cargo.toml \
             -p type-bridge-c --test schema_package_abi
 
-      - name: Prepare C workforce-v2 evidence outputs
-        id: prepare-c-workforce-v2
+      - name: Prepare C sdk-v2 evidence outputs
+        id: prepare-c-sdk-v2
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         run: |
           set -euo pipefail
-          evidence_dir="$RUNNER_TEMP/typebridge-workforce-v2"
+          evidence_dir="$RUNNER_TEMP/typebridge-sdk-v2"
           mkdir -p "$evidence_dir"
           report="$evidence_dir/c.json"
           fragment="$evidence_dir/c-proof.json"
@@ -1725,22 +1729,22 @@ jobs:
           test ! -e "$fragment"
           run_nonce="$(python -c 'import secrets; print(secrets.token_hex(32))')"
           [[ "$run_nonce" =~ ^[0-9a-f]{64}$ ]]
-          test "$run_nonce" != '${{ steps.prepare-rust-workforce-v2.outputs.run_nonce }}'
+          test "$run_nonce" != '${{ steps.prepare-rust-sdk-v2.outputs.run_nonce }}'
           {
             printf 'report=%s\n' "$report"
             printf 'fragment=%s\n' "$fragment"
             printf 'run_nonce=%s\n' "$run_nonce"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Emit C workforce-v2 deterministic proof fragment
+      - name: Emit C sdk-v2 deterministic proof fragment
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         env:
-          TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT: ${{ steps.prepare-c-workforce-v2.outputs.fragment }}
-          TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE: ${{ steps.prepare-c-workforce-v2.outputs.run_nonce }}
+          TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT: ${{ steps.prepare-c-sdk-v2.outputs.fragment }}
+          TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE: ${{ steps.prepare-c-sdk-v2.outputs.run_nonce }}
         run: >-
           cargo test --locked --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-c --lib
-          query::tests::workforce_v2_c_deterministic_proof_fragment
+          query::tests::sdk_v2_c_deterministic_proof_fragment
           -- --exact
 
       - name: Run generated C entity and relation CRUD live smoke
@@ -1750,52 +1754,52 @@ jobs:
           TYPEDB_HTTP_PORT: "8000"
           TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE: type_bridge_c_projection_live_${{ github.run_id }}_${{ github.run_attempt }}
           ACCEPTANCE_TARGET_DIR: ${{ runner.temp }}/typebridge-c-projection-live-target
-          TYPE_BRIDGE_WORKFORCE_REPORT_V2: ${{ steps.prepare-c-workforce-v2.outputs.report }}
-          TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS: ${{ steps.prepare-c-workforce-v2.outputs.fragment }}
-          TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE: ${{ steps.prepare-c-workforce-v2.outputs.run_nonce }}
+          TYPE_BRIDGE_SDK_REPORT_V2: ${{ steps.prepare-c-sdk-v2.outputs.report }}
+          TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS: ${{ steps.prepare-c-sdk-v2.outputs.fragment }}
+          TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE: ${{ steps.prepare-c-sdk-v2.outputs.run_nonce }}
         run: >-
           bash scripts/ci/run_exact_ignored_rust_test.sh
           live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_1
           --locked --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-schema-codegen --test c_projection_live
 
-      - name: Run generated C17 and C++17 ABI 1.4 successor live smoke
+      - name: Run generated C17 and C++17 ordered live smoke
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         env:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
-          TYPE_BRIDGE_C_PHASE4_INTG_DATABASE: type_bridge_c_phase4_live_${{ github.run_id }}_${{ github.run_attempt }}
-          ACCEPTANCE_TARGET_DIR: ${{ runner.temp }}/typebridge-c-phase4-live-target
+          TYPE_BRIDGE_C_QUERY_INTG_DATABASE: type_bridge_c_query_live_${{ github.run_id }}_${{ github.run_attempt }}
+          ACCEPTANCE_TARGET_DIR: ${{ runner.temp }}/typebridge-c-query-live-target
         run: >-
           bash scripts/ci/run_exact_ignored_rust_test.sh
           live_c17_and_cpp17_generated_successor_batches_round_trip_exact_3_12_1
           --locked --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-schema-codegen --test c_projection_live
 
-      - name: Upload Rust workforce report
+      - name: Upload Rust sdk report
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: workforce-conformance-rust
-          path: ${{ runner.temp }}/typebridge-workforce/rust.json
+          name: sdk-conformance-rust
+          path: ${{ runner.temp }}/typebridge-sdk/rust.json
           if-no-files-found: error
           retention-days: 7
 
-      - name: Upload Rust workforce-v2 report
+      - name: Upload Rust sdk-v2 report
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: workforce-conformance-v2-rust
-          path: ${{ runner.temp }}/typebridge-workforce-v2/rust.json
+          name: sdk-conformance-v2-rust
+          path: ${{ runner.temp }}/typebridge-sdk-v2/rust.json
           if-no-files-found: error
           retention-days: 7
 
-      - name: Upload C workforce-v2 report
+      - name: Upload C sdk-v2 report
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: workforce-conformance-v2-c
-          path: ${{ runner.temp }}/typebridge-workforce-v2/c.json
+          name: sdk-conformance-v2-c
+          path: ${{ runner.temp }}/typebridge-sdk-v2/c.json
           if-no-files-found: error
           retention-days: 7
 
@@ -2133,7 +2137,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Set up Python for the Node workforce-v2 validator
+      - name: Set up Python for the Node sdk-v2 validator
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -2195,22 +2199,22 @@ jobs:
           TYPEDB_VERSION: ${{ matrix.typedb-version }}
         run: npm run test:integration
 
-      - name: Prepare Node workforce report output
-        id: prepare-node-workforce-v1
+      - name: Prepare Node sdk report output
+        id: prepare-node-sdk-v1
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         run: |
           set -euo pipefail
-          report_dir="$RUNNER_TEMP/typebridge-workforce"
+          report_dir="$RUNNER_TEMP/typebridge-sdk"
           mkdir -p "$report_dir"
           test ! -e "$report_dir/node.json"
           printf 'report=%s\n' "$report_dir/node.json" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare Node workforce-v2 evidence outputs
-        id: prepare-node-workforce-v2
+      - name: Prepare Node sdk-v2 evidence outputs
+        id: prepare-node-sdk-v2
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         run: |
           set -euo pipefail
-          evidence_dir="$RUNNER_TEMP/typebridge-workforce-v2"
+          evidence_dir="$RUNNER_TEMP/typebridge-sdk-v2"
           mkdir -p "$evidence_dir"
           report="$evidence_dir/node.json"
           direct_fragment="$evidence_dir/node-direct-proof.json"
@@ -2232,24 +2236,24 @@ jobs:
             printf 'validator_python=%s\n' "$validator_python"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Emit Node direct-cancellation workforce-v2 proof fragment
+      - name: Emit Node direct-cancellation sdk-v2 proof fragment
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         working-directory: ${{ github.workspace }}
         env:
-          TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT: ${{ steps.prepare-node-workforce-v2.outputs.direct_fragment }}
-          TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE: ${{ steps.prepare-node-workforce-v2.outputs.run_nonce }}
+          TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT: ${{ steps.prepare-node-sdk-v2.outputs.direct_fragment }}
+          TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE: ${{ steps.prepare-node-sdk-v2.outputs.run_nonce }}
         run: >-
           cargo test --locked --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-node --lib
           match_runtime::tests::node_direct_cancellation_fragment_is_measured_from_owned_execution
           -- --exact
 
-      - name: Emit Node generated-remote workforce-v2 proof fragment
+      - name: Emit Node generated-remote sdk-v2 proof fragment
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         working-directory: ${{ github.workspace }}
         env:
-          TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT: ${{ steps.prepare-node-workforce-v2.outputs.remote_fragment }}
-          TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE: ${{ steps.prepare-node-workforce-v2.outputs.run_nonce }}
+          TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT: ${{ steps.prepare-node-sdk-v2.outputs.remote_fragment }}
+          TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE: ${{ steps.prepare-node-sdk-v2.outputs.run_nonce }}
         run: node type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/check.mjs
 
       - name: Run generated projection live smoke
@@ -2260,50 +2264,50 @@ jobs:
           TYPEDB_VERSION: ${{ matrix.typedb-version }}
           TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: ${{ matrix.semantic-profile }}
           TYPE_BRIDGE_NODE_INTG_DATABASE: type_bridge_projection_live
-          WORKFORCE_V1_REPORT_OUTPUT: ${{ steps.prepare-node-workforce-v1.outputs.report }}
-          WORKFORCE_V2_REPORT_OUTPUT: ${{ steps.prepare-node-workforce-v2.outputs.report }}
-          WORKFORCE_V2_FRAGMENT_OUTPUTS: ${{ steps.prepare-node-workforce-v2.outputs.fragments }}
-          WORKFORCE_V2_RUN_NONCE_OUTPUT: ${{ steps.prepare-node-workforce-v2.outputs.run_nonce }}
-          WORKFORCE_V2_VALIDATOR_PYTHON_OUTPUT: ${{ steps.prepare-node-workforce-v2.outputs.validator_python }}
+          SDK_V1_REPORT_OUTPUT: ${{ steps.prepare-node-sdk-v1.outputs.report }}
+          SDK_V2_REPORT_OUTPUT: ${{ steps.prepare-node-sdk-v2.outputs.report }}
+          SDK_V2_FRAGMENT_OUTPUTS: ${{ steps.prepare-node-sdk-v2.outputs.fragments }}
+          SDK_V2_RUN_NONCE_OUTPUT: ${{ steps.prepare-node-sdk-v2.outputs.run_nonce }}
+          SDK_V2_VALIDATOR_PYTHON_OUTPUT: ${{ steps.prepare-node-sdk-v2.outputs.validator_python }}
         run: |
           set -euo pipefail
-          workforce_env=()
-          if [[ -n "$WORKFORCE_V1_REPORT_OUTPUT" ]]; then
-            workforce_env+=("TYPE_BRIDGE_WORKFORCE_REPORT=$WORKFORCE_V1_REPORT_OUTPUT")
+          sdk_env=()
+          if [[ -n "$SDK_V1_REPORT_OUTPUT" ]]; then
+            sdk_env+=("TYPE_BRIDGE_SDK_REPORT=$SDK_V1_REPORT_OUTPUT")
           fi
-          if [[ -n "$WORKFORCE_V2_REPORT_OUTPUT" ]]; then
-            workforce_env+=(
-              "TYPE_BRIDGE_WORKFORCE_REPORT_V2=$WORKFORCE_V2_REPORT_OUTPUT"
-              "TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENTS=$WORKFORCE_V2_FRAGMENT_OUTPUTS"
-              "TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE=$WORKFORCE_V2_RUN_NONCE_OUTPUT"
-              "TYPE_BRIDGE_WORKFORCE_V2_VALIDATOR_PYTHON=$WORKFORCE_V2_VALIDATOR_PYTHON_OUTPUT"
+          if [[ -n "$SDK_V2_REPORT_OUTPUT" ]]; then
+            sdk_env+=(
+              "TYPE_BRIDGE_SDK_REPORT_V2=$SDK_V2_REPORT_OUTPUT"
+              "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$SDK_V2_FRAGMENT_OUTPUTS"
+              "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$SDK_V2_RUN_NONCE_OUTPUT"
+              "TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON=$SDK_V2_VALIDATOR_PYTHON_OUTPUT"
             )
           fi
-          env "${workforce_env[@]}" npm run test:projection-integration
+          env "${sdk_env[@]}" npm run test:projection-integration
 
-      - name: Upload Node workforce report
+      - name: Upload Node sdk report
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: workforce-conformance-node
-          path: ${{ runner.temp }}/typebridge-workforce/node.json
+          name: sdk-conformance-node
+          path: ${{ runner.temp }}/typebridge-sdk/node.json
           if-no-files-found: error
           retention-days: 7
 
-      - name: Upload Node workforce-v2 report
+      - name: Upload Node sdk-v2 report
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: workforce-conformance-v2-node
-          path: ${{ runner.temp }}/typebridge-workforce-v2/node.json
+          name: sdk-conformance-v2-node
+          path: ${{ runner.temp }}/typebridge-sdk-v2/node.json
           if-no-files-found: error
           retention-days: 7
 
   # Fan in the three exact 3.12.3 generated-application reports. The producer
   # jobs already own their live TypeDB journeys; this job performs no provider
   # I/O and cannot turn uncovered or known-gap proofs into accepted support.
-  workforce-conformance:
-    name: Shared workforce conformance
+  sdk-conformance:
+    name: Shared sdk conformance
     runs-on: ubuntu-latest
     needs: [test-integration, rust-integration, node-integration]
     steps:
@@ -2315,36 +2319,36 @@ jobs:
         with:
           python-version: "3.13.5"
 
-      - name: Download Python workforce report
+      - name: Download Python sdk report
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: workforce-conformance-python
-          path: ${{ runner.temp }}/typebridge-workforce
+          name: sdk-conformance-python
+          path: ${{ runner.temp }}/typebridge-sdk
 
-      - name: Download Node workforce report
+      - name: Download Node sdk report
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: workforce-conformance-node
-          path: ${{ runner.temp }}/typebridge-workforce
+          name: sdk-conformance-node
+          path: ${{ runner.temp }}/typebridge-sdk
 
-      - name: Download Rust workforce report
+      - name: Download Rust sdk report
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: workforce-conformance-rust
-          path: ${{ runner.temp }}/typebridge-workforce
+          name: sdk-conformance-rust
+          path: ${{ runner.temp }}/typebridge-sdk
 
-      - name: Compare generated SDK workforce reports
+      - name: Compare generated SDK v1 reports
         run: >-
-          python scripts/ci/compare_workforce_conformance.py
-          "$RUNNER_TEMP/typebridge-workforce/python.json"
-          "$RUNNER_TEMP/typebridge-workforce/node.json"
-          "$RUNNER_TEMP/typebridge-workforce/rust.json"
+          python scripts/ci/compare_sdk_conformance.py
+          "$RUNNER_TEMP/typebridge-sdk/python.json"
+          "$RUNNER_TEMP/typebridge-sdk/node.json"
+          "$RUNNER_TEMP/typebridge-sdk/rust.json"
 
   # Fan in the additive four-binding typed-query reports without provider I/O.
   # The live jobs publish only after their same-run deterministic fragments
   # validate; this job neither generates catalogs nor infers missing evidence.
-  workforce-conformance-v2:
-    name: Shared workforce-v2 conformance
+  sdk-conformance-v2:
+    name: Shared sdk-v2 conformance
     runs-on: ubuntu-latest
     needs: [test-integration, rust-integration, node-integration]
     steps:
@@ -2356,37 +2360,37 @@ jobs:
         with:
           python-version: "3.13.5"
 
-      - name: Download Python workforce-v2 report
+      - name: Download Python sdk-v2 report
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: workforce-conformance-v2-python
-          path: ${{ runner.temp }}/typebridge-workforce-v2
+          name: sdk-conformance-v2-python
+          path: ${{ runner.temp }}/typebridge-sdk-v2
 
-      - name: Download Node workforce-v2 report
+      - name: Download Node sdk-v2 report
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: workforce-conformance-v2-node
-          path: ${{ runner.temp }}/typebridge-workforce-v2
+          name: sdk-conformance-v2-node
+          path: ${{ runner.temp }}/typebridge-sdk-v2
 
-      - name: Download Rust workforce-v2 report
+      - name: Download Rust sdk-v2 report
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: workforce-conformance-v2-rust
-          path: ${{ runner.temp }}/typebridge-workforce-v2
+          name: sdk-conformance-v2-rust
+          path: ${{ runner.temp }}/typebridge-sdk-v2
 
-      - name: Download C workforce-v2 report
+      - name: Download C sdk-v2 report
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: workforce-conformance-v2-c
-          path: ${{ runner.temp }}/typebridge-workforce-v2
+          name: sdk-conformance-v2-c
+          path: ${{ runner.temp }}/typebridge-sdk-v2
 
-      - name: Compare generated SDK workforce-v2 reports
+      - name: Compare generated SDK v2 reports
         run: >-
-          python scripts/ci/compare_workforce_conformance_v2.py
-          "$RUNNER_TEMP/typebridge-workforce-v2/python.json"
-          "$RUNNER_TEMP/typebridge-workforce-v2/node.json"
-          "$RUNNER_TEMP/typebridge-workforce-v2/rust.json"
-          "$RUNNER_TEMP/typebridge-workforce-v2/c.json"
+          python scripts/ci/compare_sdk_conformance_v2.py
+          "$RUNNER_TEMP/typebridge-sdk-v2/python.json"
+          "$RUNNER_TEMP/typebridge-sdk-v2/node.json"
+          "$RUNNER_TEMP/typebridge-sdk-v2/rust.json"
+          "$RUNNER_TEMP/typebridge-sdk-v2/c.json"
 
   # Version-gate cells: each cell boots a server and checks either a positive
   # connect path or the expected rejection class.

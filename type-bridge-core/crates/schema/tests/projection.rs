@@ -444,7 +444,7 @@ functions:
     returns: { stream: [person] }
     body: { typeql: "match $person isa person; return { $person };" }
 "#,
-        "workforce",
+        "sdk",
     );
 
     assert_eq!(TYPE_BRIDGE_PROJECTED_TOKEN_VERSION, 1);

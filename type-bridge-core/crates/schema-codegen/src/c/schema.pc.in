@@ -6,6 +6,6 @@ includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
 Name: @TYPE_BRIDGE_C_SYMBOL_PREFIX@ schema
 Description: Generated TypeBridge C schema package
 Version: @PROJECT_VERSION@
-Requires: type-bridge >= 1.3.0, type-bridge < 2.0.0
+Requires: type-bridge = 1.6.0
 Libs: -L${libdir} -l@TYPE_BRIDGE_C_SYMBOL_PREFIX@_schema
 Cflags: -I${includedir}

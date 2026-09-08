@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://type-bridge.dev/contracts/sdk-conformance/sdk-live-evidence-v5.schema.json",
+  "title": "TypeBridge Sdk V5 exact-live codec evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["binding", "detached_mutation_code", "direct_remote_equal", "entity_snapshot_b64", "format", "relation_snapshot_b64", "remote_exchange_count", "rebound_mutation"],
+  "properties": {
+    "binding": {"enum": ["python", "node", "rust", "c"]},
+    "detached_mutation_code": {"const": "projected_snapshot_detached"},
+    "direct_remote_equal": {"const": true},
+    "entity_snapshot_b64": {"type": "string", "minLength": 1, "maxLength": 1398104, "pattern": "^[A-Za-z0-9+/]*={0,2}$"},
+    "format": {"const": "typebridge.sdk-v5-live-codec-evidence/v1"},
+    "relation_snapshot_b64": {"type": "string", "minLength": 1, "maxLength": 1398104, "pattern": "^[A-Za-z0-9+/]*={0,2}$"},
+    "remote_exchange_count": {"const": 1},
+    "rebound_mutation": {"const": true}
+  }
+}

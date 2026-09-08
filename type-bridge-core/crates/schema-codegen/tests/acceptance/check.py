@@ -93,7 +93,7 @@ def main() -> None:
         HERE / "negative.py",
         HERE / "runtime_check.py",
         HERE / "fingerprint_check.py",
-        HERE / "phase2_parity_check.py",
+        HERE / "projected_parity_check.py",
         DOCUMENTED_EXAMPLES,
     ]
     for fixture in fixtures:
@@ -117,7 +117,7 @@ def main() -> None:
         "runtime_check.py",
         "fingerprint_check.py",
         "authority_rejection_check.py",
-        "phase2_parity_check.py",
+        "projected_parity_check.py",
         "pyrightconfig.json",
     ):
         shutil.copy2(HERE / fixture, STAGE / fixture)
@@ -191,7 +191,7 @@ def main() -> None:
         ]
     )
 
-    phase2_schema = ROOT / "tests/contracts/sdk_conformance/workforce-v3/schema-v3.yaml"
+    projected_schema = ROOT / "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"
     command(
         [
             "cargo",
@@ -204,19 +204,19 @@ def main() -> None:
             "--example",
             "emit_python_acceptance",
             "--",
-            str(phase2_schema),
-            str(STAGE / "generated_phase2"),
+            str(projected_schema),
+            str(STAGE / "generated_projected"),
         ]
     )
-    phase2_source = phase2_schema.read_text()
-    phase2_foreign_source = phase2_source.replace(
+    projected_source = projected_schema.read_text()
+    projected_foreign_source = projected_source.replace(
         "member: { card: { min: 0, max: 2 }, doc: membership player }",
         "member: { card: { min: 0, max: 3 }, doc: membership player }",
     )
-    if phase2_foreign_source == phase2_source:
-        raise AssertionError("Phase-2 foreign package variant did not modify one playing fact")
-    phase2_foreign_schema = STAGE / "phase2-foreign-schema.yaml"
-    phase2_foreign_schema.write_text(phase2_foreign_source)
+    if projected_foreign_source == projected_source:
+        raise AssertionError("Projected foreign package variant did not modify one playing fact")
+    projected_foreign_schema = STAGE / "projected-foreign-schema.yaml"
+    projected_foreign_schema.write_text(projected_foreign_source)
     command(
         [
             "cargo",
@@ -229,30 +229,30 @@ def main() -> None:
             "--example",
             "emit_python_acceptance",
             "--",
-            str(phase2_foreign_schema),
-            str(STAGE / "generated_phase2_foreign"),
+            str(projected_foreign_schema),
+            str(STAGE / "generated_projected_foreign"),
         ]
     )
-    external_phase2_report = os.environ.get("TYPE_BRIDGE_PHASE2_PARITY_REPORT")
-    phase2_report = (
-        Path(external_phase2_report)
-        if external_phase2_report is not None
-        else STAGE / "phase2-python-report.json"
+    external_projected_report = os.environ.get("TYPE_BRIDGE_PROJECTED_PARITY_REPORT")
+    projected_report = (
+        Path(external_projected_report)
+        if external_projected_report is not None
+        else STAGE / "projected-python-report.json"
     )
-    if external_phase2_report is not None:
-        if not phase2_report.is_absolute() or phase2_report.exists():
-            raise AssertionError("external Phase-2 parity report must be absent and absolute")
-    phase2_environment = os.environ.copy()
-    phase2_environment.update(
+    if external_projected_report is not None:
+        if not projected_report.is_absolute() or projected_report.exists():
+            raise AssertionError("external Projected parity report must be absent and absolute")
+    projected_environment = os.environ.copy()
+    projected_environment.update(
         {
-            "TYPE_BRIDGE_PHASE2_PARITY_REPORT": str(phase2_report.resolve()),
-            "TYPE_BRIDGE_PHASE2_PYTHON_PACKAGE_ROOT": str(STAGE.resolve()),
-            "TYPE_BRIDGE_PHASE2_REPOSITORY_ROOT": str(ROOT.resolve()),
+            "TYPE_BRIDGE_PROJECTED_PARITY_REPORT": str(projected_report.resolve()),
+            "TYPE_BRIDGE_PROJECTED_PYTHON_PACKAGE_ROOT": str(STAGE.resolve()),
+            "TYPE_BRIDGE_PROJECTED_REPOSITORY_ROOT": str(ROOT.resolve()),
         }
     )
     command(
-        [sys.executable, str(STAGE / "phase2_parity_check.py")],
-        env=phase2_environment,
+        [sys.executable, str(STAGE / "projected_parity_check.py")],
+        env=projected_environment,
     )
     command(
         [
@@ -261,13 +261,13 @@ def main() -> None:
             (
                 "import importlib.util, pathlib, sys; "
                 "path = pathlib.Path(sys.argv[1]); "
-                "spec = importlib.util.spec_from_file_location('phase2_comparator', path); "
+                "spec = importlib.util.spec_from_file_location('projected_comparator', path); "
                 "module = importlib.util.module_from_spec(spec); "
                 "sys.modules[spec.name] = module; spec.loader.exec_module(module); "
                 "module._load_report(pathlib.Path(sys.argv[2]), module.load_contract())"
             ),
-            str(ROOT / "scripts/ci/compare_phase2_projection_parity.py"),
-            str(phase2_report),
+            str(ROOT / "scripts/ci/compare_projected_parity.py"),
+            str(projected_report),
         ]
     )
     command([sys.executable, str(STAGE / "fingerprint_check.py")])

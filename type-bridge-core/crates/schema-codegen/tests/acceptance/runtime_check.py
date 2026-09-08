@@ -1179,39 +1179,35 @@ remote_cancellation_observation = {
 def _proof_source_identity(root: Path, relative: str) -> dict[str, str]:
     source = root / relative
     if source.is_symlink() or not source.is_file():
-        raise AssertionError(f"workforce-v2 proof source is not a regular file: {relative}")
+        raise AssertionError(f"sdk-v2 proof source is not a regular file: {relative}")
     with source.open("rb") as source_file:
         digest = hashlib.sha256(source_file.read()).hexdigest()
     return {"path": relative, "sha256": digest}
 
 
-def _emit_workforce_v2_remote_proof_fragment() -> None:
-    raw_destination = os.environ.get("TYPE_BRIDGE_WORKFORCE_V2_PROOF_FRAGMENT")
+def _emit_sdk_v2_remote_proof_fragment() -> None:
+    raw_destination = os.environ.get("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT")
     if raw_destination is None:
         return
-    run_nonce = os.environ.get("TYPE_BRIDGE_WORKFORCE_V2_PROOF_RUN_NONCE")
+    run_nonce = os.environ.get("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE")
     if (
         run_nonce is None
         or len(run_nonce) != 64
         or any(character not in "0123456789abcdef" for character in run_nonce)
     ):
-        raise AssertionError("workforce-v2 proof run nonce must be 64 lowercase hex characters")
+        raise AssertionError("sdk-v2 proof run nonce must be 64 lowercase hex characters")
     destination = Path(raw_destination)
     if not destination.is_absolute():
-        raise AssertionError("workforce-v2 proof fragment path must be absolute")
+        raise AssertionError("sdk-v2 proof fragment path must be absolute")
     if destination.parent.is_symlink() or not destination.parent.is_dir():
-        raise AssertionError("workforce-v2 proof fragment parent must be a regular directory")
+        raise AssertionError("sdk-v2 proof fragment parent must be a regular directory")
     root = Path.cwd()
     if not (root / "type-bridge-core").is_dir():
-        raise AssertionError("workforce-v2 proof fragment emitter requires the repository root")
+        raise AssertionError("sdk-v2 proof fragment emitter requires the repository root")
     contract_paths = {
-        "proof_schema": (
-            "tests/contracts/sdk_conformance/workforce-v2/proof-fragment-schema-v1.json"
-        ),
-        "allowlist": (
-            "tests/contracts/sdk_conformance/workforce-v2/proof-fragment-allowlist-v1.json"
-        ),
-        "journey": "tests/contracts/sdk_conformance/workforce-v2/journey-v2.json",
+        "proof_schema": ("tests/contracts/sdk_conformance/sdk-v2/proof-fragment-schema-v1.json"),
+        "allowlist": ("tests/contracts/sdk_conformance/sdk-v2/proof-fragment-allowlist-v1.json"),
+        "journey": "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json",
     }
     producer_paths = sorted(
         (
@@ -1222,7 +1218,7 @@ def _emit_workforce_v2_remote_proof_fragment() -> None:
         )
     )
     fragment = {
-        "format": "typebridge.workforce-v2-proof-fragment/v1",
+        "format": "typebridge.sdk-v2-proof-fragment/v1",
         "binding": "python",
         "semantic_profile": "typedb-3.12.1/v1",
         "run_nonce": run_nonce,
@@ -1255,35 +1251,35 @@ def _emit_workforce_v2_remote_proof_fragment() -> None:
         json.dumps(fragment, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
     ).encode()
     if len(payload) > 64 * 1024:
-        raise AssertionError("workforce-v2 proof fragment exceeds 64 KiB")
+        raise AssertionError("sdk-v2 proof fragment exceeds 64 KiB")
     with destination.open("xb") as output:
         output.write(payload)
         output.flush()
         os.fsync(output.fileno())
 
 
-_emit_workforce_v2_remote_proof_fragment()
+_emit_sdk_v2_remote_proof_fragment()
 
 
-def _emit_workforce_v3_package_proof_fragment() -> None:
-    raw_destination = os.environ.get("TYPE_BRIDGE_WORKFORCE_V3_PROOF_FRAGMENT")
+def _emit_sdk_v3_package_proof_fragment() -> None:
+    raw_destination = os.environ.get("TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT")
     if raw_destination is None:
         return
-    run_nonce = os.environ.get("TYPE_BRIDGE_WORKFORCE_V3_PROOF_RUN_NONCE")
+    run_nonce = os.environ.get("TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE")
     if (
         run_nonce is None
         or len(run_nonce) != 64
         or any(character not in "0123456789abcdef" for character in run_nonce)
     ):
-        raise AssertionError("workforce-v3 proof run nonce must be 64 lowercase hex characters")
+        raise AssertionError("sdk-v3 proof run nonce must be 64 lowercase hex characters")
     destination = Path(raw_destination)
     if not destination.is_absolute() or destination.exists():
-        raise AssertionError("workforce-v3 proof destination must be absent and absolute")
+        raise AssertionError("sdk-v3 proof destination must be absent and absolute")
     root = Path.cwd()
     contract_paths = {
-        "proof_schema": "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-schema-v1.json",
-        "allowlist": "tests/contracts/sdk_conformance/workforce-v3/proof-fragment-allowlist-v1.json",
-        "journey": "tests/contracts/sdk_conformance/workforce-v3/journey-v3.json",
+        "proof_schema": "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-schema-v1.json",
+        "allowlist": "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-allowlist-v1.json",
+        "journey": "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json",
     }
     producer_paths = sorted(
         (
@@ -1407,7 +1403,7 @@ def _emit_workforce_v3_package_proof_fragment() -> None:
     }
     test_id = "python.generated_package_v3_integrity"
     fragment = {
-        "format": "typebridge.workforce-v3-proof-fragment/v1",
+        "format": "typebridge.sdk-v3-proof-fragment/v1",
         "binding": "python",
         "semantic_profile": "typedb-3.12.1/v1",
         "run_nonce": run_nonce,
@@ -1623,4 +1619,4 @@ finally:
     generated_query_module.Query.materialize_page = saved_page_materializer
     generated_query_module.Query.materialize_reduction = saved_reduction_materializer
 
-_emit_workforce_v3_package_proof_fragment()
+_emit_sdk_v3_package_proof_fragment()

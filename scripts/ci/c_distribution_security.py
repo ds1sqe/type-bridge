@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble and validate supply-chain evidence for C distribution candidates."""
+"""Assemble and validate supply-chain evidence for C distribution artifacts."""
 
 from __future__ import annotations
 
@@ -17,23 +17,23 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-import c_package_candidates as packages
-import standalone_cli_candidate as cli
+import c_package_artifacts as packages
+import standalone_cli_artifact as cli
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE = ROOT / "type-bridge-core"
 CONTRACT = ROOT / "tests/contracts/c-distribution-v1.json"
 LOCKFILE = CORE / "Cargo.lock"
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
-FORMAT = "typebridge.c-distribution-candidate-set/v1"
-PROVENANCE_FORMAT = "typebridge.c-candidate-provenance/v1"
-SECURITY_FORMAT = "typebridge.c-candidate-security-scan/v1"
+FORMAT = "typebridge.c-distribution-artifact-set/v1"
+PROVENANCE_FORMAT = "typebridge.c-artifact-provenance/v1"
+SECURITY_FORMAT = "typebridge.c-artifact-security-scan/v1"
 SIGNATURE_FORMAT = "typebridge.c-signature-policy/v1"
 AUDIT_VERSION = "0.22.2"
 TARGET = "x86_64-unknown-linux-gnu"
-DISPOSITION = "candidate-only-unpublished-unsupported"
+DISPOSITION = "artifact-only-unpublished-unsupported"
 EVIDENCE_NAMES = (
-    "candidate-manifest.json",
+    "artifact-manifest.json",
     "cli.spdx.json",
     "runtime.spdx.json",
     "generated.spdx.json",
@@ -64,7 +64,7 @@ SECRET_PATTERNS = (
 
 
 class SecurityError(RuntimeError):
-    """Candidate evidence is incomplete, stale, ambiguous, or unsafe."""
+    """Artifact evidence is incomplete, stale, ambiguous, or unsafe."""
 
 
 def canonical_json(value: object) -> bytes:
@@ -188,7 +188,7 @@ def pruned_lock_payload(metadata: Mapping[str, Any], closure: set[str]) -> bytes
         if (item["name"], item["version"], item.get("source")) in selected
     ]
     if len(records) != len(selected):
-        raise SecurityError("pruned lock cannot map every candidate dependency")
+        raise SecurityError("pruned lock cannot map every artifact dependency")
     lines = [f"version = {lock['version']}", ""]
     for item in records:
         lines.extend(["[[package]]", f"name = {json.dumps(item['name'])}"])
@@ -211,7 +211,7 @@ def write_pruned_lock(destination: Path) -> None:
 def artifact_record(path: Path, manifest: Mapping[str, Any], kind: str) -> dict[str, Any]:
     body = read_regular(path)
     return {
-        "candidate-id": manifest["candidate-id"],
+        "artifact-id": manifest["artifact-id"],
         "filename": path.name,
         "kind": kind,
         "sha256": sha256(body),
@@ -277,7 +277,7 @@ def cargo_sbom(
         {
             "SPDXID": document,
             "name": artifact["filename"],
-            "versionInfo": artifact["candidate-id"],
+            "versionInfo": artifact["artifact-id"],
             "downloadLocation": "NOASSERTION",
             "filesAnalyzed": False,
             "licenseConcluded": "NOASSERTION",
@@ -326,7 +326,7 @@ def generated_sbom(artifact: Mapping[str, Any], runtime: Mapping[str, Any]) -> d
             {
                 "SPDXID": "SPDXRef-Generated",
                 "name": artifact["filename"],
-                "versionInfo": artifact["candidate-id"],
+                "versionInfo": artifact["artifact-id"],
                 "downloadLocation": "NOASSERTION",
                 "filesAnalyzed": False,
                 "licenseConcluded": "NOASSERTION",
@@ -337,7 +337,7 @@ def generated_sbom(artifact: Mapping[str, Any], runtime: Mapping[str, Any]) -> d
             {
                 "SPDXID": "SPDXRef-Runtime",
                 "name": runtime["filename"],
-                "versionInfo": runtime["candidate-id"],
+                "versionInfo": runtime["artifact-id"],
                 "downloadLocation": "NOASSERTION",
                 "filesAnalyzed": False,
                 "licenseConcluded": "NOASSERTION",
@@ -372,7 +372,7 @@ def validate_audit(report: Mapping[str, Any]) -> dict[str, Any]:
         or vulnerabilities.get("count") != 0
         or vulnerabilities.get("list") != []
     ):
-        raise SecurityError("RustSec report contains candidate vulnerabilities")
+        raise SecurityError("RustSec report contains artifact vulnerabilities")
     if not isinstance(warnings, dict):
         raise SecurityError("RustSec report omitted warning classifications")
     actual_warnings: list[dict[str, str]] = []
@@ -403,7 +403,7 @@ def validate_audit(report: Mapping[str, Any]) -> dict[str, Any]:
 def binary_security(binary: Path) -> None:
     sections = run(["readelf", "-SW", str(binary)])
     if re.search(r"\.(?:debug|symtab)(?:\s|$)", sections):
-        raise SecurityError(f"candidate binary retains forbidden debug/symbol sections: {binary}")
+        raise SecurityError(f"artifact binary retains forbidden debug/symbol sections: {binary}")
 
 
 def validate_binary_payloads(
@@ -450,8 +450,8 @@ def scan_payloads(
 def signature_policy() -> dict[str, Any]:
     return {
         "format": SIGNATURE_FORMAT,
-        "candidate-signatures": [],
-        "candidate-state": "unsigned-awaiting-protected-publication-authorization",
+        "artifact-signatures": [],
+        "artifact-state": "unsigned-awaiting-protected-publication-authorization",
         "protected-release": {
             "required": True,
             "issuer": "https://token.actions.githubusercontent.com",
@@ -477,7 +477,7 @@ def validate_frozen_security_policy() -> None:
         signature.get("cosign_version") != actual_signature["cosign-version"]
         or signature.get("issuer") != actual_signature["issuer"]
         or signature.get("identity_regexp") != actual_signature["identity-regexp"]
-        or signature.get("candidate_signatures") != "forbidden-before-authorization"
+        or signature.get("artifact_signatures") != "forbidden-before-authorization"
     ):
         raise SecurityError("frozen protected signature policy drifted")
 
@@ -487,7 +487,7 @@ def provenance(artifacts: Sequence[Mapping[str, Any]], commit: str, tree: str) -
         "format": PROVENANCE_FORMAT,
         "builder": {
             "workflow": ".github/workflows/ci.yml",
-            "jobs": ["standalone-cli-candidate", "c-package-candidates"],
+            "jobs": ["standalone-cli-artifact", "c-package-artifacts"],
             "runner": "ubuntu-latest",
         },
         "materials": [
@@ -526,13 +526,13 @@ def evidence_records(output: Path) -> list[dict[str, object]]:
             "size": len(read_regular(output / name)),
         }
         for name in sorted(EVIDENCE_NAMES)
-        if name != "candidate-manifest.json"
+        if name != "artifact-manifest.json"
     ]
 
 
 def validate_evidence_records(declared: object, output: Path) -> None:
     if declared != evidence_records(output):
-        raise SecurityError("candidate evidence digest drifted")
+        raise SecurityError("artifact evidence digest drifted")
 
 
 def validate_signature_document(value: object) -> None:
@@ -544,7 +544,7 @@ def validate_provenance_document(
     value: object, artifacts: Sequence[Mapping[str, Any]], commit: str, tree: str
 ) -> None:
     if value != provenance(artifacts, commit, tree):
-        raise SecurityError("candidate provenance source, materials, builder, or subjects drifted")
+        raise SecurityError("artifact provenance source, materials, builder, or subjects drifted")
 
 
 def assemble(
@@ -559,10 +559,10 @@ def assemble(
         for item in (cli_manifest, runtime_manifest, generated_manifest)
     }
     if len(identities) != 1:
-        raise SecurityError("candidate artifacts do not share one source commit and tree")
+        raise SecurityError("artifacts do not share one source commit and tree")
     commit, tree = identities.pop()
     if not HEX40.fullmatch(commit) or not HEX40.fullmatch(tree):
-        raise SecurityError("candidate source identity is malformed")
+        raise SecurityError("artifact source identity is malformed")
     artifacts = [
         artifact_record(cli_path, cli_manifest, "cli"),
         artifact_record(runtime_path, runtime_manifest, "runtime"),
@@ -613,8 +613,8 @@ def assemble(
         "source-commit": commit,
         "source-tree": tree,
     }
-    payload["candidate-set-id"] = "sha256:" + sha256(canonical_json(payload))
-    values["candidate-manifest.json"] = payload
+    payload["artifact-set-id"] = "sha256:" + sha256(canonical_json(payload))
+    values["artifact-manifest.json"] = payload
     write_evidence(output, values)
     validate_evidence(output, cli_path, runtime_path, generated_path)
 
@@ -624,14 +624,14 @@ def validate_evidence(
 ) -> None:
     validate_frozen_security_policy()
     if not output.is_dir() or output.is_symlink():
-        raise SecurityError("candidate evidence directory is absent or linked")
+        raise SecurityError("artifact evidence directory is absent or linked")
     if tuple(sorted(path.name for path in output.iterdir())) != tuple(sorted(EVIDENCE_NAMES)):
-        raise SecurityError("candidate evidence member set drifted")
+        raise SecurityError("artifact evidence member set drifted")
     values = {name: load_json(output / name, canonical=True) for name in EVIDENCE_NAMES}
-    manifest = values["candidate-manifest.json"]
+    manifest = values["artifact-manifest.json"]
     required_manifest = {
         "artifacts",
-        "candidate-set-id",
+        "artifact-set-id",
         "evidence",
         "format",
         "publication-disposition",
@@ -639,26 +639,26 @@ def validate_evidence(
         "source-tree",
     }
     if set(manifest) != required_manifest:
-        raise SecurityError("candidate manifest fields drifted")
-    candidate_id = manifest.pop("candidate-set-id", None)
+        raise SecurityError("artifact manifest fields drifted")
+    artifact_id = manifest.pop("artifact-set-id", None)
     expected_id = "sha256:" + sha256(canonical_json(manifest))
-    manifest["candidate-set-id"] = candidate_id
-    if candidate_id != expected_id or manifest.get("format") != FORMAT:
-        raise SecurityError("candidate-set identity drifted")
+    manifest["artifact-set-id"] = artifact_id
+    if artifact_id != expected_id or manifest.get("format") != FORMAT:
+        raise SecurityError("artifact-set identity drifted")
     if manifest.get("publication-disposition") != DISPOSITION:
-        raise SecurityError("candidate publication disposition widened")
+        raise SecurityError("artifact publication disposition widened")
     expected_artifacts = [
         (cli_path, cli.validate(cli_path), "cli"),
         (runtime_path, packages.validate_runtime(runtime_path), "runtime"),
         (generated_path, packages.validate_generated(generated_path), "generated-package"),
     ]
     if manifest.get("artifacts") != [artifact_record(*item) for item in expected_artifacts]:
-        raise SecurityError("candidate artifact identity drifted")
+        raise SecurityError("artifact identity drifted")
     source_identities = {
         (item[1]["source-commit"], item[1]["source-tree"]) for item in expected_artifacts
     }
     if source_identities != {(manifest["source-commit"], manifest["source-tree"])}:
-        raise SecurityError("candidate source identity drifted")
+        raise SecurityError("artifact source identity drifted")
     validate_evidence_records(manifest.get("evidence"), output)
     validate_audit(values["rustsec-report.json"])
     validate_signature_document(values["signature-policy.json"])
@@ -704,7 +704,7 @@ def validate_evidence(
     payloads.update({f"runtime:{path}": body for path, body in runtime_files.items()})
     payloads.update({f"generated:{path}": body for path, body in generated_files.items()})
     if values["security-scan.json"] != scan_payloads(payloads, forbidden):
-        raise SecurityError("candidate security scan policy or result drifted")
+        raise SecurityError("artifact security scan policy or result drifted")
     validate_binary_payloads(cli_files, runtime_files)
 
 
@@ -733,7 +733,7 @@ def main() -> int:
             assemble(args.cli, args.runtime, args.generated, args.audit_report, args.output)
         else:
             validate_evidence(args.output, args.cli, args.runtime, args.generated)
-    except (SecurityError, cli.CandidateError, packages.CandidateError) as error:
+    except (SecurityError, cli.ArtifactError, packages.ArtifactError) as error:
         print(f"C distribution security gate rejected: {error}", file=sys.stderr)
         return 1
     return 0

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://type-bridge.dev/contracts/sdk-conformance/sdk-operational-evidence-v5.schema.json",
+  "title": "TypeBridge Sdk V5 provider-free operational evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "binding",
+    "cancellation",
+    "deadline",
+    "diagnostic",
+    "format",
+    "lifecycle",
+    "resource_limits",
+    "test_id"
+  ],
+  "properties": {
+    "binding": {"enum": ["python", "node", "rust", "c"]},
+    "cancellation": {"$ref": "observation-schema-v5.json#/$defs/cancellation"},
+    "deadline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "partial_output"],
+      "properties": {
+        "code": {"const": "projected_codec_deadline_exceeded"},
+        "partial_output": {"const": false}
+      }
+    },
+    "diagnostic": {"$ref": "observation-schema-v5.json#/$defs/diagnostic"},
+    "format": {"const": "typebridge.sdk-v5-operational-evidence/v1"},
+    "lifecycle": {"$ref": "observation-schema-v5.json#/$defs/lifecycle"},
+    "resource_limits": {"$ref": "observation-schema-v5.json#/$defs/resourceLimits"},
+    "test_id": {"type": "string", "minLength": 1}
+  }
+}

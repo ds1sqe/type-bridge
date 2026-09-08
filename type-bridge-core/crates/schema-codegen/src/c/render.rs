@@ -25,12 +25,8 @@ const C_SIMULTANEOUS_MACRO_MAX: usize = 4_095;
 const C_HOSTED_OBJECT_BYTES_MIN: usize = 65_535;
 const C_EMBEDDED_BYTE_CHUNK_MAX: usize = 32_768;
 const C_CREATE_ARGS_VERSION: u32 = 1;
-const C_BASE_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT: usize = 180;
-const C_BASE_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT: usize = 205;
-const C_ABI_1_4_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT: usize = 225;
-const C_ABI_1_4_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT: usize = 215;
-const C_UNORDERED_DESCRIPTOR_ABI_MINOR: u32 = 3;
-const C_ORDERED_DESCRIPTOR_ABI_MINOR: u32 = 6;
+const C_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT: usize = 340;
+const C_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT: usize = 262;
 // GCC, Clang, MinGW GCC, and clang-cl require at most 715 predefined or
 // stddef/stdint platform macros beyond the repository-owned runtime header.
 // Keep a power-of-two reserve above that measured maximum so compiler updates
@@ -122,7 +118,7 @@ fn render_header(
     let guard = format!("{}_TYPE_BRIDGE_MODELS_H", prefix.to_ascii_uppercase());
     let macro_prefix = prefix.to_ascii_uppercase();
     let runtime_header = if ordered {
-        "typebridge/type_bridge_abi_1_6.h"
+        "typebridge/type_bridge.h"
     } else {
         "typebridge/type_bridge.h"
     };
@@ -343,11 +339,7 @@ fn render_source(
         authority.semantic_profile_id.as_bytes(),
     );
 
-    let descriptor_abi_minor = if ordered {
-        C_ORDERED_DESCRIPTOR_ABI_MINOR
-    } else {
-        C_UNORDERED_DESCRIPTOR_ABI_MINOR
-    };
+    let descriptor_abi_minor = type_bridge_contract::projection::TYPE_BRIDGE_C_ABI_MINOR;
 
     let _ = write!(
         output,
@@ -1330,25 +1322,15 @@ fn validate_c_projection_limits(
     validate_c_translation_inventory(
         generated_external_identifiers(projection, prefix, ordered)?.len(),
         generated_macro_identifiers(projection, prefix)?.len(),
-        ordered,
     )
 }
 
 fn validate_c_translation_inventory(
     generated_external_identifier_count: usize,
     generated_macro_identifier_count: usize,
-    ordered: bool,
 ) -> Result<(), Diagnostic> {
-    let runtime_external_identifier_count = if ordered {
-        C_ABI_1_4_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT
-    } else {
-        C_BASE_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT
-    };
-    let runtime_macro_identifier_count = if ordered {
-        C_ABI_1_4_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT
-    } else {
-        C_BASE_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT
-    };
+    let runtime_external_identifier_count = C_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT;
+    let runtime_macro_identifier_count = C_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT;
     let external_identifier_count = runtime_external_identifier_count
         .checked_add(generated_external_identifier_count)
         .expect("C identifier inventory is bounded by the canonical projection limit");
@@ -2018,7 +2000,7 @@ fn render_successor_model_api(
     projection: &RuntimeProjection,
     prefix: &str,
 ) -> Result<(), Diagnostic> {
-    output.push_str("\n/* ABI 1.4 policy-aware nominal data operations. */\n");
+    output.push_str("\n/* Policy-aware nominal data operations. */\n");
     for model in projection.models().values().filter(|model| {
         matches!(model.id().kind(), TypeKind::Entity | TypeKind::Relation)
             && model.create().target_name().is_some()
@@ -4822,148 +4804,63 @@ fn chunked_byte_view_initializer(name: &str, total_length: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        C_ABI_1_4_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT,
-        C_ABI_1_4_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT,
-        C_BASE_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT,
-        C_BASE_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT, C_SIMULTANEOUS_MACRO_MAX,
-        C_SUPPORTED_IMPLEMENTATION_MACRO_RESERVE, C_TRANSLATION_UNIT_IDENTIFIER_MAX,
-        validate_c_translation_inventory,
+        C_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT, C_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT,
+        C_SIMULTANEOUS_MACRO_MAX, C_SUPPORTED_IMPLEMENTATION_MACRO_RESERVE,
+        C_TRANSLATION_UNIT_IDENTIFIER_MAX, validate_c_translation_inventory,
     };
 
-    const RUNTIME_HEADER: &str = include_str!("../../../c/include/typebridge/type_bridge.h");
-    const RUNTIME_EXTENSION_HEADER: &str =
-        include_str!("../../../c/include/typebridge/type_bridge_abi_1_4.h");
-    const RUNTIME_EXPORT_LEDGER: &str = include_str!("../../../c/tests/schema_package_abi.rs");
-
-    fn runtime_export_ledger(marker: &str) -> Vec<&'static str> {
-        let body = RUNTIME_EXPORT_LEDGER
-            .split_once(marker)
-            .expect("native ABI ledger keeps its frozen declaration")
-            .1
-            .split_once("] = [")
-            .expect("native ABI ledger declares its export array")
-            .1
-            .split_once("];\n")
-            .expect("native ABI ledger terminates its export array")
-            .0;
-        body.lines()
-            .filter_map(|line| {
-                line.trim()
-                    .strip_prefix('"')
-                    .and_then(|line| line.strip_suffix("\","))
-            })
-            .collect()
-    }
-
     #[test]
-    fn frozen_runtime_inventory_matches_public_header_and_export_ledger() {
-        let header_macro_names = RUNTIME_HEADER
+    fn runtime_inventory_matches_the_current_header_and_contract() {
+        let header = include_str!("../../../c/include/typebridge/type_bridge.h");
+        let contract: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../../tests/contracts/c-abi.json"))
+                .expect("C ABI inventory parses");
+        let macros = header
             .lines()
             .filter_map(|line| line.strip_prefix("#define "))
             .filter_map(|definition| definition.split_ascii_whitespace().next())
             .map(|name| name.split_once('(').map_or(name, |(name, _)| name))
             .collect::<std::collections::BTreeSet<_>>();
-        let header_export_count = RUNTIME_HEADER
-            .lines()
-            .filter(|line| line.starts_with("TYPE_BRIDGE_API"))
-            .count();
-        let ledger = runtime_export_ledger("const ABI_1_3_EXPORTED_SYMBOLS: [&str; ");
-
+        assert_eq!(macros.len(), C_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT);
         assert_eq!(
-            header_macro_names.len(),
-            C_BASE_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT
+            header
+                .lines()
+                .filter(|line| line.starts_with("TYPE_BRIDGE_API"))
+                .count(),
+            C_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT
         );
-        assert_eq!(
-            header_export_count,
-            C_BASE_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT
-        );
-        assert_eq!(
-            ledger.len(),
-            C_BASE_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT
-        );
-        for name in ledger {
-            assert!(
-                RUNTIME_HEADER.contains(&format!("{name}(")),
-                "native ABI ledger export {name} is absent from the public header",
-            );
+        let exports = contract["exports"]
+            .as_array()
+            .expect("C exports form an array");
+        assert_eq!(exports.len(), C_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT);
+        for name in exports {
+            assert!(header.contains(&format!("{}(", name.as_str().expect("export name is text"))));
         }
     }
 
     #[test]
-    fn ordered_runtime_inventory_matches_aggregate_abi_1_4_header_and_export_ledger() {
-        assert!(
-            RUNTIME_EXTENSION_HEADER.contains("#include <typebridge/type_bridge.h>"),
-            "ABI 1.4 extension must aggregate the frozen base header",
-        );
-        let macro_names = [RUNTIME_HEADER, RUNTIME_EXTENSION_HEADER]
-            .into_iter()
-            .flat_map(str::lines)
-            .filter_map(|line| line.strip_prefix("#define "))
-            .filter_map(|definition| definition.split_ascii_whitespace().next())
-            .map(|name| name.split_once('(').map_or(name, |(name, _)| name))
-            .collect::<std::collections::BTreeSet<_>>();
-        let export_count = [RUNTIME_HEADER, RUNTIME_EXTENSION_HEADER]
-            .into_iter()
-            .flat_map(str::lines)
-            .filter(|line| line.starts_with("TYPE_BRIDGE_API"))
-            .count();
-        let additions = runtime_export_ledger("const ABI_1_4_ADDED_EXPORTED_SYMBOLS: [&str; ");
-
+    fn translation_identifier_limit_accepts_the_boundary_and_rejects_one_more() {
+        let exact = C_TRANSLATION_UNIT_IDENTIFIER_MAX - C_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT;
+        validate_c_translation_inventory(exact, 0).expect("exact identifier limit is accepted");
+        let error = validate_c_translation_inventory(exact + 1, 0)
+            .expect_err("excess identifier is rejected");
         assert_eq!(
-            macro_names.len(),
-            C_ABI_1_4_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT
+            error.code().as_str(),
+            "c_emitter_translation_unit_identifier_limit_exceeded"
         );
-        assert_eq!(
-            export_count,
-            C_ABI_1_4_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT
-        );
-        assert_eq!(
-            additions.len(),
-            C_ABI_1_4_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT
-                - C_BASE_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT,
-        );
-        for name in additions {
-            assert!(
-                RUNTIME_EXTENSION_HEADER.contains(&format!("{name}(")),
-                "native ABI 1.4 addition {name} is absent from the extension header",
-            );
-        }
     }
 
     #[test]
-    fn c_translation_external_identifier_inventory_accepts_exact_minimum_and_rejects_one_more() {
-        for (ordered, runtime_count) in [
-            (false, C_BASE_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT),
-            (true, C_ABI_1_4_RUNTIME_HEADER_EXTERNAL_IDENTIFIER_COUNT),
-        ] {
-            let exact_generated = C_TRANSLATION_UNIT_IDENTIFIER_MAX - runtime_count;
-            validate_c_translation_inventory(exact_generated, 0, ordered)
-                .expect("the exact C external-identifier minimum is accepted");
-            let error = validate_c_translation_inventory(exact_generated + 1, 0, ordered)
-                .expect_err("one external identifier over the C minimum is rejected");
-            assert_eq!(
-                error.code().as_str(),
-                "c_emitter_translation_unit_identifier_limit_exceeded"
-            );
-        }
-    }
-
-    #[test]
-    fn c_translation_macro_inventory_accepts_exact_minimum_and_rejects_one_more() {
-        for (ordered, runtime_count) in [
-            (false, C_BASE_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT),
-            (true, C_ABI_1_4_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT),
-        ] {
-            let exact_generated =
-                C_SIMULTANEOUS_MACRO_MAX - runtime_count - C_SUPPORTED_IMPLEMENTATION_MACRO_RESERVE;
-            validate_c_translation_inventory(0, exact_generated, ordered)
-                .expect("the exact simultaneous-macro minimum is accepted");
-            let error = validate_c_translation_inventory(0, exact_generated + 1, ordered)
-                .expect_err("one simultaneous macro over the C minimum is rejected");
-            assert_eq!(
-                error.code().as_str(),
-                "c_emitter_simultaneous_macro_limit_exceeded"
-            );
-        }
+    fn translation_macro_limit_accepts_the_boundary_and_rejects_one_more() {
+        let exact = C_SIMULTANEOUS_MACRO_MAX
+            - C_RUNTIME_HEADER_MACRO_IDENTIFIER_COUNT
+            - C_SUPPORTED_IMPLEMENTATION_MACRO_RESERVE;
+        validate_c_translation_inventory(0, exact).expect("exact macro limit is accepted");
+        let error =
+            validate_c_translation_inventory(0, exact + 1).expect_err("excess macro is rejected");
+        assert_eq!(
+            error.code().as_str(),
+            "c_emitter_simultaneous_macro_limit_exceeded"
+        );
     }
 }

@@ -1,4 +1,4 @@
-"""Fail-closed tests for C candidate supply-chain evidence."""
+"""Fail-closed tests for C artifact supply-chain evidence."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def clean_audit_report() -> dict[str, object]:
     }
 
 
-def test_pruned_candidate_lock_contains_only_runtime_closure() -> None:
+def test_pruned_artifact_lock_contains_only_runtime_closure() -> None:
     metadata = SECURITY.cargo_metadata()
     closure = SECURITY.runtime_closure(metadata, ("type-bridge-cli", "type-bridge-c"))
     lock = tomllib.loads(SECURITY.pruned_lock_payload(metadata, closure).decode())
@@ -94,10 +94,10 @@ def test_secret_and_source_path_scanner_rejects_hostile_payloads(payload: bytes)
         SECURITY.scan_payloads({"hostile": payload}, (str(ROOT).encode(),))
 
 
-def test_signature_policy_is_candidate_only_and_identity_bound() -> None:
+def test_signature_policy_is_artifact_only_and_identity_bound() -> None:
     policy = SECURITY.signature_policy()
 
-    assert policy["candidate-signatures"] == []
+    assert policy["artifact-signatures"] == []
     assert policy["publication-disposition"] == SECURITY.DISPOSITION
     assert policy["protected-release"]["issuer"] == ("https://token.actions.githubusercontent.com")
     assert "c-release\\.yml@refs/tags/v2\\.2\\.0" in policy["protected-release"]["identity-regexp"]
@@ -110,7 +110,7 @@ def test_signature_policy_is_candidate_only_and_identity_bound() -> None:
 
 def test_individually_tampered_evidence_and_provenance_fail_closed(tmp_path: Path) -> None:
     for name in SECURITY.EVIDENCE_NAMES:
-        if name != "candidate-manifest.json":
+        if name != "artifact-manifest.json":
             (tmp_path / name).write_bytes(SECURITY.canonical_json({"name": name}))
     records = SECURITY.evidence_records(tmp_path)
     SECURITY.validate_evidence_records(records, tmp_path)

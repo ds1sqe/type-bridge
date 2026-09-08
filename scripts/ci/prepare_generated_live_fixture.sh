@@ -19,7 +19,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CORE_DIR="$ROOT_DIR/type-bridge-core"
 NODE_DIR="$CORE_DIR/crates/node"
 ACCEPTANCE_DIR="$CORE_DIR/crates/schema-codegen/tests/acceptance"
-WORKFORCE_V3_DIR="$ROOT_DIR/tests/contracts/sdk_conformance/workforce-v3"
+SDK_V3_DIR="$ROOT_DIR/tests/contracts/sdk_conformance/sdk-v3"
 semantic_profile="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-typedb-3.12.1/v1}"
 output_dir="$(realpath -m "$requested_output")"
 
@@ -96,8 +96,8 @@ generate_workspace() {
 
 sed \
     -e 's/range: { min: 0, max: 80 }/range: { min: 0, max: 79 }/' \
-    "$WORKFORCE_V3_DIR/schema-v3.yaml" > "$ordered_foreign_schema"
-if cmp -s "$WORKFORCE_V3_DIR/schema-v3.yaml" "$ordered_foreign_schema"; then
+    "$SDK_V3_DIR/schema-v3.yaml" > "$ordered_foreign_schema"
+if cmp -s "$SDK_V3_DIR/schema-v3.yaml" "$ordered_foreign_schema"; then
     echo "Generated ordered foreign schema did not alter its authority." >&2
     exit 1
 fi
@@ -114,10 +114,10 @@ if [[ "$binding" == "python" ]]; then
         ordered="$scratch/ordered"
         write_workspace \
             "$ordered" python generated_ordered generated-python-ordered \
-            "$WORKFORCE_V3_DIR/schema-v3.yaml" yes
+            "$SDK_V3_DIR/schema-v3.yaml" yes
         generate_workspace "$ordered"
         cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_ordered"
-        cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_phase2"
+        cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_projected"
         cp "$ordered/generated/schema-authority.json" \
             "$output_dir/schema-authority-ordered.json"
 
@@ -163,10 +163,10 @@ if [[ "$semantic_profile" == "typedb-3.12.1/v1" ]]; then
     ordered="$scratch/ordered"
     write_workspace \
         "$ordered" typescript generated_ordered generated-node-ordered \
-        "$WORKFORCE_V3_DIR/schema-v3.yaml" yes
+        "$SDK_V3_DIR/schema-v3.yaml" yes
     generate_workspace "$ordered"
     cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_ordered"
-    cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_phase2"
+    cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_projected"
     cp "$ordered/generated/schema-authority.json" \
         "$output_dir/schema-authority-ordered.json"
 
@@ -198,7 +198,7 @@ if [[ -d "$output_dir/generated_ordered" ]]; then
     "$NODE_DIR/node_modules/.bin/tsc" \
         --project "$output_dir/generated_ordered/tsconfig.json"
     "$NODE_DIR/node_modules/.bin/tsc" \
-        --project "$output_dir/generated_phase2/tsconfig.json"
+        --project "$output_dir/generated_projected/tsconfig.json"
     "$NODE_DIR/node_modules/.bin/tsc" \
         --project "$output_dir/generated_ordered_foreign/tsconfig.json"
 fi
