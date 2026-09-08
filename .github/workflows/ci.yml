@@ -441,6 +441,7 @@ jobs:
     name: Rust ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
@@ -1134,7 +1135,7 @@ jobs:
 
       - name: Prepare generated package and consumer tools
         run: |
-          scripts/ci/prepare_generated_live_fixture.sh python \
+          scripts/ci/prepare_generated_live_fixture.sh python-artifact \
             tmp/generated-python-wheels/generated
           uv venv --python python tmp/generated-python-tools
           uv pip install --python tmp/generated-python-tools/bin/python \
@@ -1708,7 +1709,7 @@ jobs:
           cargo build --locked --manifest-path type-bridge-core/Cargo.toml \
             -p type-bridge-c --lib
           bash scripts/ci/run_exact_ignored_rust_test.sh \
-            live_c17_consumer_exercises_exact_3_12_1_transaction_lifecycle \
+            live_c17_consumer_exercises_exact_3_12_3_transaction_lifecycle \
             --locked --manifest-path type-bridge-core/Cargo.toml \
             -p type-bridge-c --test schema_package_abi
 

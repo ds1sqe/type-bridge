@@ -6259,10 +6259,10 @@ mod tests {
     use std::mem::{offset_of, size_of};
     use std::path::{Path, PathBuf};
     use std::ptr;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use sha2::{Digest as _, Sha256};
 
@@ -6332,6 +6332,14 @@ mod tests {
         queries: AtomicUsize,
         hydrations: AtomicUsize,
         closes: AtomicUsize,
+        pending_polled: AtomicBool,
+    }
+
+    impl Events {
+        async fn pending<T>(&self) -> T {
+            self.pending_polled.store(true, Ordering::Release);
+            std::future::pending().await
+        }
     }
 
     struct FakeBackend {
@@ -6354,7 +6362,7 @@ mod tests {
         ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
             self.events.opens.fetch_add(1, Ordering::AcqRel);
             if self.open_pending {
-                return Box::pin(std::future::pending());
+                return Box::pin(self.events.pending());
             }
             let transaction = FakeTransaction {
                 events: Arc::clone(&self.events),
@@ -6424,7 +6432,7 @@ mod tests {
                         "provider-secret-query-failure".to_owned(),
                     )),
                     Response::Panic => panic!("injected typed-query provider panic"),
-                    Response::Pending => std::future::pending().await,
+                    Response::Pending => self.events.pending().await,
                 }
             })
         }
@@ -6449,7 +6457,7 @@ mod tests {
                         "provider-secret-hydration-failure".to_owned(),
                     )),
                     Response::Panic => panic!("injected typed-query hydration panic"),
-                    Response::Pending => std::future::pending().await,
+                    Response::Pending => self.events.pending().await,
                 }
             })
         }
@@ -6474,7 +6482,7 @@ mod tests {
                         "provider-secret-root-failure".to_owned(),
                     )),
                     Response::Panic => panic!("injected typed-query root panic"),
-                    Response::Pending => std::future::pending().await,
+                    Response::Pending => self.events.pending().await,
                 }
             })
         }
@@ -6499,7 +6507,7 @@ mod tests {
                         "provider-secret-rematch-failure".to_owned(),
                     )),
                     Response::Panic => panic!("injected typed-query rematch panic"),
-                    Response::Pending => std::future::pending().await,
+                    Response::Pending => self.events.pending().await,
                 }
             })
         }
@@ -6916,15 +6924,26 @@ mod tests {
         output
     }
 
-    fn request_cancellation_soon(
+    fn request_cancellation_after_pending(
         cancellation: *const TypeBridgeCancellation,
+        events: Arc<Events>,
     ) -> thread::JoinHandle<TypeBridgeStatus> {
         let address = cancellation.addr();
         thread::spawn(move || {
-            thread::sleep(Duration::from_millis(10));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !events.pending_polled.load(Ordering::Acquire) && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(1));
+            }
             // SAFETY: the execution call retains the cancellation handle until
             // this requester joins immediately after it returns.
-            unsafe { type_bridge_cancellation_request(address as *const TypeBridgeCancellation) }
+            let status = unsafe {
+                type_bridge_cancellation_request(address as *const TypeBridgeCancellation)
+            };
+            assert!(
+                events.pending_polled.load(Ordering::Acquire),
+                "provider future must be polled before cancellation"
+            );
+            status
         })
     }
 
@@ -7594,7 +7613,10 @@ mod tests {
             unsafe { type_bridge_cancellation_open(&mut cancellation) },
             TypeBridgeStatus::Ok,
         );
-        let requester = request_cancellation_soon(cancellation);
+        let requester = request_cancellation_after_pending(
+            cancellation,
+            Arc::clone(&statement_database.events),
+        );
         result = std::ptr::NonNull::<TypeBridgeQueryResult>::dangling().as_ptr();
         let status = unsafe {
             type_bridge_database_query_execute_v1(
@@ -12161,7 +12183,7 @@ mod tests {
         assert_eq!(deadline_database.events.queries.load(Ordering::Acquire), 0);
 
         // One absolute deadline includes the bounded C alias/preflight walk;
-        // expiry during that read-only phase still precedes nominal kind checks
+        // expiry during that read-only walk still precedes nominal kind checks
         // and result-handle reservation.
         limits.timeout_milliseconds = 1;
         QUERY_PREFLIGHT_DELAY_MILLISECONDS.with(|delay| delay.set(5));
@@ -12194,7 +12216,10 @@ mod tests {
             unsafe { type_bridge_cancellation_open(&mut cancellation) },
             TypeBridgeStatus::Ok,
         );
-        let requester = request_cancellation_soon(cancellation);
+        let requester =
+            request_cancellation_after_pending(cancellation, Arc::clone(&open_database.events));
+        // Cancellation must wait for the provider even when preflight is slow.
+        QUERY_PREFLIGHT_DELAY_MILLISECONDS.with(|delay| delay.set(20));
         assert_eq!(
             unsafe {
                 type_bridge_database_query_execute_v1(
@@ -12236,7 +12261,10 @@ mod tests {
             unsafe { type_bridge_cancellation_open(&mut cancellation) },
             TypeBridgeStatus::Ok,
         );
-        let requester = request_cancellation_soon(cancellation);
+        let requester = request_cancellation_after_pending(
+            cancellation,
+            Arc::clone(&statement_database.events),
+        );
         assert_eq!(
             unsafe {
                 type_bridge_database_query_execute_v1(

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: $0 <python|node> <empty-output-directory>" >&2
+    echo "usage: $0 <python|python-artifact|node> <empty-output-directory>" >&2
     exit 2
 }
 
@@ -11,7 +11,7 @@ binding="$1"
 requested_output="$2"
 
 case "$binding" in
-    python | node) ;;
+    python | python-artifact | node) ;;
     *) usage ;;
 esac
 
@@ -103,14 +103,22 @@ if cmp -s "$SDK_V3_DIR/schema-v3.yaml" "$ordered_foreign_schema"; then
 fi
 
 primary="$scratch/primary"
-if [[ "$binding" == "python" ]]; then
+if [[ "$binding" == python* ]]; then
     write_workspace \
         "$primary" python generated_v2 generated-python-live "$schema_source" yes
     generate_workspace "$primary"
     cp -R "$primary/generated/generated_v2" "$output_dir/generated_v2"
     cp "$primary/generated/schema-authority.json" "$output_dir/schema-authority.json"
 
-    if [[ "$semantic_profile" == "typedb-3.12.1/v1" ]]; then
+    if [[ "$binding" == "python-artifact" ]]; then
+        cp -R "$output_dir/generated_v2" "$output_dir/generated_identical"
+        ordered="$scratch/ordered"
+        write_workspace \
+            "$ordered" python generated_ordered generated-python-ordered \
+            "$ACCEPTANCE_DIR/schema-ordered.yaml" no
+        generate_workspace "$ordered"
+        cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_ordered"
+    elif [[ "$semantic_profile" == "typedb-3.12.1/v1" ]]; then
         ordered="$scratch/ordered"
         write_workspace \
             "$ordered" python generated_ordered generated-python-ordered \

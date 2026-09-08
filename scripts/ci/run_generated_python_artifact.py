@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate generated Python consumers against two prebuilt candidate wheels."""
+"""Validate generated Python consumers against two prebuilt wheels."""
 
 from __future__ import annotations
 
@@ -416,6 +416,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         copy_tree_without_links(generated_stage, generated_root)
         for required in (
             generated_root / "generated_v2/__init__.py",
+            generated_root / "generated_identical/__init__.py",
+            generated_root / "generated_ordered/__init__.py",
             generated_root / "generated_variant/__init__.py",
             generated_root / "schema-authority.json",
         ):
