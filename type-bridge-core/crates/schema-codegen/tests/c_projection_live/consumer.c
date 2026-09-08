@@ -646,8 +646,8 @@ static int caller_http_exchange(uint16_t port, const char *method,
   memset(&address, 0, sizeof(address));
   address.sin_family = AF_INET;
   address.sin_port = htons(port);
-  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if (connect(socket_fd, (const struct sockaddr *)&address,
+  if (inet_pton(AF_INET, "127.0.0.1", &address.sin_addr) != 1 ||
+      connect(socket_fd, (const struct sockaddr *)&address,
               sizeof(address)) != 0) {
     (void)close(socket_fd);
     return 0;
