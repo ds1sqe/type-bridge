@@ -1,5 +1,8 @@
 # Upgrading to 2.1
 
+[TypeBridge 2.1.0](https://github.com/ds1sqe/type-bridge/releases/tag/v2.1.0)
+was released on September 8, 2026.
+
 TypeBridge 2.1 makes Split YAML and generated bindings the only active schema
 and model authoring path. It preserves application operations through generated
 Python, TypeScript/Node, and Rust packages, removes the handwritten declaration
