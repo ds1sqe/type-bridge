@@ -42,7 +42,9 @@ def test_all_44_current_and_c_cells_are_accepted() -> None:
 
 def test_gap_or_planned_c_cell_fails_closed() -> None:
     manifest = _manifest()
-    manifest["capabilities"][0]["binding_profile"] = "current_live_future_planned"
+    capabilities = manifest["capabilities"]
+    assert isinstance(capabilities, list)
+    capabilities[0]["binding_profile"] = "current_live_future_planned"
     with pytest.raises(AUDITOR.AuditError) as raised:
         AUDITOR.validate_capabilities(manifest, _contract())
     assert raised.value.code == "gap_or_planned_cell"

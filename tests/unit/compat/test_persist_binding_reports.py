@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -9,7 +10,13 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "scripts/ci"))
-import persist_binding_reports as publisher  # noqa: E402
+SPEC = importlib.util.spec_from_file_location(
+    "persist_binding_reports", ROOT / "scripts/ci/persist_binding_reports.py"
+)
+assert SPEC is not None and SPEC.loader is not None
+publisher = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = publisher
+SPEC.loader.exec_module(publisher)
 
 
 def reports(tmp_path: Path) -> tuple[Path, ...]:

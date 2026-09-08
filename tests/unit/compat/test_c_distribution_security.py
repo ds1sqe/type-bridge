@@ -69,7 +69,9 @@ def test_vulnerability_or_unadjudicated_warning_fails_closed() -> None:
         SECURITY.validate_audit(vulnerable)
 
     warning = copy.deepcopy(report)
-    warning["warnings"]["unsound"] = [
+    warnings = warning["warnings"]
+    assert isinstance(warnings, dict)
+    warnings["unsound"] = [
         {
             "advisory": {"id": "RUSTSEC-2099-0001"},
             "package": {"name": "hostile", "version": "1.0.0"},
