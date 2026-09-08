@@ -29,7 +29,7 @@ impl Stage {
             std::process::id()
         ));
         fs::create_dir_all(&path).expect("proof test stage is created");
-        Self(path)
+        Self(path.canonicalize().expect("proof test stage resolves"))
     }
 
     fn root(&self) -> &Path {
