@@ -148,13 +148,22 @@ def validate_run(
     for key in ("repository", "head_repository"):
         require(run.get(key, {}).get("full_name") == REPOSITORY, "Fork or wrong repository")
         require(run[key].get("id") == 1085407082, "Wrong repository ID")
-    if event == "push":
+    if workflow == ".github/workflows/ci.yml":
         require(run.get("head_branch") == "master", "CI must accept the exact master commit")
     else:
         require(
             run.get("head_branch") in {"master", "release/c-sdk-readiness", f"v{policy.VERSION}"},
             "Unselected verification branch",
         )
+
+
+def validate_ci_run(run: dict[str, Any], *, run_id: int, source: str) -> None:
+    event = run.get("event")
+    if not isinstance(event, str) or event not in {"push", "workflow_dispatch"}:
+        raise PromotionError("Unselected CI event")
+    validate_run(
+        run, run_id=run_id, source=source, workflow=".github/workflows/ci.yml", event=event
+    )
 
 
 def validate_jobs(
@@ -281,9 +290,7 @@ def capture(ci_run: int, output: Path) -> None:
     output.mkdir(parents=True, exist_ok=False)
     run = api(f"actions/runs/{ci_run}", output / "ci-run.json")
     jobs = api(f"actions/runs/{ci_run}/attempts/1/jobs?per_page=100", output / "ci-jobs.json")
-    validate_run(
-        run, run_id=ci_run, source=source, workflow=".github/workflows/ci.yml", event="push"
-    )
+    validate_ci_run(run, run_id=ci_run, source=source)
     validate_jobs(jobs, run_id=ci_run, source=source, expected=selected["ci_jobs"])
     artifacts = capture_artifacts(ci_run, source, policy.ARTIFACTS, output)
     write(
@@ -464,13 +471,7 @@ def stage(verify_run: int, output: Path) -> None:
     ci_jobs = api(
         f"actions/runs/{receipt['ci_run']}/attempts/1/jobs?per_page=100", output / "ci-jobs.json"
     )
-    validate_run(
-        ci_run,
-        run_id=receipt["ci_run"],
-        source=source,
-        workflow=".github/workflows/ci.yml",
-        event="push",
-    )
+    validate_ci_run(ci_run, run_id=receipt["ci_run"], source=source)
     validate_jobs(ci_jobs, run_id=receipt["ci_run"], source=source, expected=selected["ci_jobs"])
     reference = api(f"git/ref/tags/v{policy.VERSION}", output / "tag-ref.json")
     require(reference.get("object", {}).get("type") == "tag", "Annotated tag required")

@@ -25,7 +25,13 @@ regenerate its policy with `uv run python scripts/ci/c_release_policy.py`
 and review the resulting diff before committing.
 
 First require the complete CI run on the exact master commit to pass. The
-five C distribution jobs build deterministic artifact archives, validate
+run may start from a master push or a manual `ci.yml` dispatch on master.
+If GitHub infrastructure interrupts a run, dispatch the complete workflow
+again on the same commit. Each accepted run must succeed on its first
+attempt with every required job and step; partial reruns remain rejected.
+No source change is needed to restart verification.
+
+The five C distribution jobs build deterministic artifact archives, validate
 their dependency closure, notices, SBOMs and provenance, and exercise clean
 compiler-free installation plus compiled provider-free and live consumers.
 The live journey includes direct and caller-transport queries, custom-root

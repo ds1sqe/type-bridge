@@ -80,6 +80,7 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
     )
 
 
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
 @pytest.mark.parametrize(
     ("key", "value"),
     [
@@ -87,8 +88,13 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
         ("id", True),
         ("head_sha", "c" * 40),
         ("head_branch", "develop"),
+        ("head_branch", "release/c-sdk-readiness"),
+        ("head_branch", "v2.2.0"),
         ("path", ".github/workflows/release.yml"),
         ("event", "pull_request"),
+        ("event", "schedule"),
+        ("event", None),
+        ("event", True),
         ("run_attempt", 2),
         ("status", "in_progress"),
         ("conclusion", "failure"),
@@ -96,16 +102,15 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
         ("head_repository", {"full_name": "attacker/type-bridge", "id": 1085407082}),
     ],
 )
-def test_source_run_rejects_identity_and_acceptance_changes(key: str, value: Any) -> None:
+def test_source_run_rejects_identity_and_acceptance_changes(
+    event: str, key: str, value: Any
+) -> None:
     run = run_snapshot()
-    promotion.validate_run(
-        run, run_id=123, source=SOURCE, workflow=".github/workflows/ci.yml", event="push"
-    )
+    run["event"] = event
+    promotion.validate_ci_run(run, run_id=123, source=SOURCE)
     run[key] = value
     with pytest.raises(promotion.PromotionError):
-        promotion.validate_run(
-            run, run_id=123, source=SOURCE, workflow=".github/workflows/ci.yml", event="push"
-        )
+        promotion.validate_ci_run(run, run_id=123, source=SOURCE)
 
 
 def jobs_snapshot() -> dict[str, Any]:
