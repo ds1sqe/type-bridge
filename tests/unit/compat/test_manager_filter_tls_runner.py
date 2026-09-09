@@ -11,7 +11,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 CI = ROOT / "scripts/ci"
-RUNNER = CI / "run_manager_filter_tls.py"
+RUNNER = CI / "run_generated_live.py"
 
 
 def load_runner():
@@ -68,7 +68,7 @@ def test_tls_report_requires_cross_binding_semantic_identity(tmp_path: Path) -> 
         json.dumps({**common, "binding": "node", "observation": {"terminals": {"count": 3}}}),
         encoding="utf-8",
     )
-    with pytest.raises(runner.live.RunnerError, match="not semantically identical"):
+    with pytest.raises(runner.RunnerError, match="not semantically identical"):
         runner._parity_report(python_path, node_path)
 
 
@@ -78,7 +78,17 @@ def test_tls_fixture_rejects_missing_or_non_regular_root(tmp_path: Path) -> None
         runner.TLS_ADDRESS_ENV: "127.0.0.1:1729",
         runner.TLS_HTTP_PORT_ENV: "8000",
     }
-    with pytest.raises(runner.live.RunnerError, match=runner.TLS_ROOT_CA_ENV):
+    with pytest.raises(runner.RunnerError, match=runner.TLS_ROOT_CA_ENV):
         runner._root_ca(environment)
-    with pytest.raises(runner.live.RunnerError, match="regular non-symlink"):
+    with pytest.raises(runner.RunnerError, match="regular non-symlink"):
         runner._root_ca({**environment, runner.TLS_ROOT_CA_ENV: str(tmp_path)})
+
+
+def test_tls_root_rejects_a_symlink(tmp_path: Path) -> None:
+    runner = load_runner()
+    real = tmp_path / "root.pem"
+    real.write_text("test certificate")
+    link = tmp_path / "linked.pem"
+    link.symlink_to(real)
+    with pytest.raises(runner.RunnerError, match="regular non-symlink"):
+        runner._root_ca({runner.TLS_ROOT_CA_ENV: str(link)})

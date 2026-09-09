@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Any, NoReturn
 
+from compare_sdk_conformance_v5 import canonical_json_bytes
+
 FORMAT = "typebridge.sdk-v5-operational-evidence/v1"
 COMPARISON_FORMAT = "typebridge.sdk-v5-operational-comparison/v1"
 BINDINGS = ("python", "node", "rust", "c")
@@ -79,16 +81,6 @@ def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             reject("duplicate_operational_key", f"duplicate operational key {key!r}")
         result[key] = value
     return result
-
-
-def canonical_json_bytes(value: Any) -> bytes:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
 
 
 def load_evidence(path: Path, expected_binding: str) -> dict[str, Any]:

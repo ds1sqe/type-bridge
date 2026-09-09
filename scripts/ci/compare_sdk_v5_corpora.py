@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import Any, NoReturn
 
+from compare_sdk_conformance_v5 import canonical_json_bytes
+
 FORMAT = "typebridge.sdk-v5-provider-free-corpus/v1"
 BINDINGS = ("python", "node", "rust", "c")
 MAX_CORPUS_BYTES = 64 * 1024 * 1024
@@ -39,16 +41,6 @@ def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             reject("duplicate_corpus_key", f"duplicate corpus key {key!r}")
         result[key] = value
     return result
-
-
-def canonical_json_bytes(value: Any) -> bytes:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
 
 
 def decode_b64(value: Any, label: str, maximum: int) -> bytes:

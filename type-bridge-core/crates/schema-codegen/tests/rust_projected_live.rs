@@ -1,17 +1,13 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::Command;
 
-use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, RuntimeProjection};
-use type_bridge_contract::schema::DocumentId;
-use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+use type_bridge_contract::projection::RuntimeProjection;
 use type_bridge_schema_codegen::{GeneratedPackage, RustEmitter};
 
 mod support;
+use support::{Stage, cargo_with_env as cargo, repository_root as repository, write_package};
 
 const PRODUCER: &str = include_str!("rust_acceptance/projected_live.rs");
 const OUTPUT_ENV: &str = "TYPE_BRIDGE_PROJECTED_LIVE_REPORT";
@@ -27,88 +23,15 @@ const FORBIDDEN_PRODUCER_MARKERS: [&str; 5] = [
     "expected_report",
     "load_contract",
 ];
-static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-static CARGO_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-struct Stage(PathBuf);
-
-impl Stage {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time follows the Unix epoch")
-            .as_nanos();
-        let sequence = STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = env::temp_dir().join(format!(
-            "type-bridge-rust-projected-live-{}-{nonce}-{sequence}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).expect("Rust Projected live stage is created");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Stage {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn repository() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("schema-codegen crate has the crates directory")
-        .parent()
-        .expect("crates directory has the core workspace")
-        .parent()
-        .expect("core workspace has the repository")
-        .canonicalize()
-        .expect("repository root canonicalizes")
-}
 
 fn project_from_source(source: &str) -> RuntimeProjection {
-    let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("rust-projected-live.yaml").expect("static document ID is canonical"),
-        source,
-    )])
-    .expect("Projected live schema parses");
-    let declared = normalize_documents(&documents).expect("Projected live schema normalizes");
-    let resolved = resolve(
-        &declared,
-        &SemanticProfileId::new("typedb-3.12.1/v1").expect("static profile is canonical"),
-    )
-    .expect("Projected live schema resolves");
-    let emitter = RustEmitter::new();
-    let resources = emitter
-        .code_resources_for(&resolved)
-        .expect("Rust code resources resolve");
-    project(
-        &resolved,
-        BindingTarget::Rust,
-        &ProjectionConfig::rust(),
-        &emitter.generator_handlers_for(&resolved),
-        &resources,
-    )
-    .expect("Projected live Rust projection builds")
+    support::rust_projection(source, "rust-projected-live.yaml")
 }
 
 fn emit_from_source(source: &str) -> GeneratedPackage {
     RustEmitter::new()
         .emit(&project_from_source(source), &support::authority(source))
         .expect("Projected live Rust package emits")
-}
-
-fn write_package(package: &GeneratedPackage, root: &Path) {
-    for (relative, bytes) in package.files() {
-        let path = root.join(relative);
-        fs::create_dir_all(path.parent().expect("generated file has a parent"))
-            .expect("generated parent directory is created");
-        fs::write(path, bytes).expect("generated file is written");
-    }
 }
 
 fn write_consumer(root: &Path) {
@@ -150,46 +73,6 @@ type-bridge-orm = {{ path = "{orm_path}" }}
         support::locks::Consumer::ProjectedLive.lock(),
     )
     .expect("consumer lockfile is staged");
-}
-
-fn cargo_target() -> PathBuf {
-    env::var_os("ACCEPTANCE_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .expect("schema-codegen crate has the crates directory")
-                .parent()
-                .expect("crates directory has the core workspace")
-                .join("target/tmp_acceptance_target")
-        })
-}
-
-fn cargo(arguments: &[&str]) -> Output {
-    let _guard = CARGO_MUTEX.lock().expect("acceptance cargo mutex locks");
-    Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
-        .args(arguments)
-        .env("CARGO_TARGET_DIR", cargo_target())
-        .output()
-        .expect("cargo command starts")
-}
-
-fn run_live_consumer(manifest: &Path, report: &Path) -> Output {
-    let _guard = CARGO_MUTEX.lock().expect("acceptance cargo mutex locks");
-    Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
-        .args([
-            "run",
-            "--locked",
-            "--offline",
-            "--quiet",
-            "--manifest-path",
-            manifest.to_str().expect("consumer manifest is UTF-8"),
-        ])
-        .env("CARGO_TARGET_DIR", cargo_target())
-        .env(OUTPUT_ENV, report)
-        .env(ROOT_ENV, repository())
-        .output()
-        .expect("live consumer starts")
 }
 
 fn sdk_source() -> String {
@@ -245,17 +128,20 @@ fn generated_rust_projected_live_producer_compiles_and_rejects_foreign_shape_bef
     write_package(&emit_from_source(&sdk_source()), &generated);
     write_consumer(&consumer);
     let manifest = consumer.join("Cargo.toml");
-    let checked = cargo(&[
-        "clippy",
-        "--locked",
-        "--offline",
-        "--quiet",
-        "--manifest-path",
-        manifest.to_str().expect("consumer manifest is UTF-8"),
-        "--",
-        "-D",
-        "warnings",
-    ]);
+    let checked = cargo(
+        &[
+            "clippy",
+            "--locked",
+            "--offline",
+            "--quiet",
+            "--manifest-path",
+            manifest.to_str().expect("consumer manifest is UTF-8"),
+            "--",
+            "-D",
+            "warnings",
+        ],
+        &[],
+    );
     assert!(
         checked.status.success(),
         "local live producer failed to compile\nstdout:\n{}\nstderr:\n{}",
@@ -265,14 +151,17 @@ fn generated_rust_projected_live_producer_compiles_and_rejects_foreign_shape_bef
 
     fs::remove_dir_all(&generated).expect("local generated package is removed");
     write_package(&emit_from_source(&foreign_sdk_source()), &generated);
-    let rejected = cargo(&[
-        "run",
-        "--locked",
-        "--offline",
-        "--quiet",
-        "--manifest-path",
-        manifest.to_str().expect("consumer manifest is UTF-8"),
-    ]);
+    let rejected = cargo(
+        &[
+            "run",
+            "--locked",
+            "--offline",
+            "--quiet",
+            "--manifest-path",
+            manifest.to_str().expect("consumer manifest is UTF-8"),
+        ],
+        &[],
+    );
     assert!(
         !rejected.status.success(),
         "foreign package unexpectedly ran"
@@ -321,7 +210,20 @@ fn generated_rust_projected_live_producer_runs_when_explicitly_configured() {
     write_package(&emit_from_source(&sdk_source()), &generated);
     write_consumer(&consumer);
     let manifest = consumer.join("Cargo.toml");
-    let output = run_live_consumer(&manifest, &report);
+    let output = cargo(
+        &[
+            "run",
+            "--locked",
+            "--offline",
+            "--quiet",
+            "--manifest-path",
+            manifest.to_str().expect("consumer manifest is UTF-8"),
+        ],
+        &[
+            (OUTPUT_ENV, report.as_os_str()),
+            (ROOT_ENV, repository().as_os_str()),
+        ],
+    );
     assert!(
         output.status.success(),
         "Rust Projected live producer failed\nstdout:\n{}\nstderr:\n{}",
@@ -334,7 +236,20 @@ fn generated_rust_projected_live_producer_runs_when_explicitly_configured() {
     let payload = fs::read(&report).expect("live report reads");
     assert_eq!(payload.last(), Some(&b'\n'));
 
-    let duplicate = run_live_consumer(&manifest, &report);
+    let duplicate = cargo(
+        &[
+            "run",
+            "--locked",
+            "--offline",
+            "--quiet",
+            "--manifest-path",
+            manifest.to_str().expect("consumer manifest is UTF-8"),
+        ],
+        &[
+            (OUTPUT_ENV, report.as_os_str()),
+            (ROOT_ENV, repository().as_os_str()),
+        ],
+    );
     assert!(
         !duplicate.status.success(),
         "duplicate live producer unexpectedly replaced its report"

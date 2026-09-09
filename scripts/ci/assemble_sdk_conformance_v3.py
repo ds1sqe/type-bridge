@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-"""Assemble one Sdk V3 report from live observations and proof fragments."""
+"""Compose measured evidence and assemble SDK V3 reports."""
 
 from __future__ import annotations
 
 import argparse
+import copy
 import json
-import os
-import secrets
 import stat
 import sys
 from pathlib import Path
 from typing import Any
 
+import compare_manager_filter_live as manager_comparator
+import compare_projected_live as projected_live
+import compare_projected_parity as projected_parity
 import compare_sdk_conformance_v3 as conformance
-import sdk_v3_proof_fragments as fragments
+import proof_fragments as fragments
+import validate_generation_artifact as generation
+from persist_binding_reports import publish_bytes
 
 ROOT = Path(__file__).resolve().parents[2]
 LIVE_FORMAT = "typebridge.sdk-v3-live-observations/v1"
@@ -21,6 +25,15 @@ REPORT_FORMAT = "typebridge.sdk-conformance-report/v3"
 SEMANTIC_PROFILE = "typedb-3.12.1/v1"
 MAX_LIVE_BYTES = 512 * 1024
 MAX_REPORT_BYTES = 1024 * 1024
+SUPPLEMENT_FORMAT = "typebridge.sdk-v3-live-supplement/v1"
+REUSED_LANES = {
+    ("atomic_multibinding_generation", "artifact"),
+    ("field_name_identity", "artifact"),
+    ("inherited_relation_role_lifecycle", "direct_runtime"),
+    ("integer_key_polymorphic_role", "direct_runtime"),
+    ("manager_field_token_filter", "direct_runtime"),
+    ("ordered_distinct_collections", "direct_runtime"),
+}
 
 
 class AssemblyError(ValueError):
@@ -38,8 +51,7 @@ def _exact_object(value: Any, keys: set[str], label: str) -> dict[str, Any]:
     if actual != keys:
         raise AssemblyError(
             "invalid_object_fields",
-            f"{label} fields differ; missing={sorted(keys - actual)}, "
-            f"extra={sorted(actual - keys)}",
+            f"{label} fields differ; missing={sorted(keys - actual)}, extra={sorted(actual - keys)}",
         )
     return value
 
@@ -117,7 +129,6 @@ def _live_observations(
         )
     if type(live["results"]) is not list:
         raise AssemblyError("invalid_results", "live results must be an array")
-
     expected = {
         (observation_ref, proof_kind) for _, proof_kind, observation_ref in contracts.selected
     } - fragment_lanes
@@ -157,10 +168,7 @@ def assemble_report(
     proof_observations: dict[tuple[str, str], dict[str, Any]],
 ) -> dict[str, Any]:
     live_observations = _live_observations(
-        live,
-        binding=binding,
-        contracts=contracts,
-        fragment_lanes=set(proof_observations),
+        live, binding=binding, contracts=contracts, fragment_lanes=set(proof_observations)
     )
     observations = {**live_observations, **proof_observations}
     selected_lanes = {
@@ -168,7 +176,6 @@ def assemble_report(
     }
     if set(observations) != selected_lanes:
         raise AssemblyError("lane_coverage_mismatch", "combined observations are incomplete")
-
     results = []
     for case_id, proof_kind, observation_ref in contracts.selected:
         results.append(
@@ -177,7 +184,7 @@ def assemble_report(
                 "capability_id": contracts.cases[case_id]["capability"]["id"],
                 "proof_kind": proof_kind,
                 "outcome": "passed",
-                "observation": observations[(observation_ref, proof_kind)],
+                "observation": observations[observation_ref, proof_kind],
             }
         )
     return {
@@ -203,52 +210,214 @@ def assemble_report(
 
 
 def _publish(path: Path, report: dict[str, Any]) -> None:
-    if not path.is_absolute():
-        raise AssemblyError("invalid_output_path", "output path must be absolute")
-    parent = path.parent
-    try:
-        metadata = parent.lstat()
-    except OSError as error:
-        raise AssemblyError("invalid_output_path", "output parent cannot be inspected") from error
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-        raise AssemblyError("invalid_output_path", "output parent must be a real directory")
-    raw = conformance.canonical_json_bytes(report)
-    if len(raw) > MAX_REPORT_BYTES:
-        raise AssemblyError("report_size_limit", "assembled report exceeds its size limit")
-    temporary = parent / f".{path.name}.{os.getpid()}.{secrets.token_hex(16)}.tmp"
-    try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "wb") as output:
-            output.write(raw)
-            output.flush()
-            os.fsync(output.fileno())
-        os.link(temporary, path, follow_symlinks=False)
-    except OSError as error:
-        raise AssemblyError("report_publication_failed", "report cannot be created") from error
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+    publish_bytes(
+        path, conformance.canonical_json_bytes(report), AssemblyError, maximum=MAX_REPORT_BYTES
+    )
+
+
+def _validated_feature_reports(
+    parity_path: Path, live_path: Path, manager_path: Path, *, binding: str
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    parity_binding, parity = projected_parity._load_report(
+        parity_path, projected_parity.load_contract()
+    )
+    live_binding, live = projected_live._load_report(live_path, projected_live.load_contract())
+    manager_binding, manager = manager_comparator._load_report(
+        manager_path, manager_comparator.load_contract()
+    )
+    if {parity_binding, live_binding, manager_binding} != {binding}:
+        raise AssemblyError(
+            "component_binding_mismatch", "feature reports do not share the requested binding"
+        )
+    return (parity, live, manager)
+
+
+def _inherited_observation(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "model": value["model"],
+        "inherited_relation": value["inherited_relation"],
+        "inherited_role": value["role"],
+        "player_model": value["participant"]["model"],
+        "created": value["created"],
+        "read_after_create": value["read_after_create"],
+        "role_identity_preserved": value["role_identity_preserved"],
+        "deleted": value["deleted"],
+        "read_after_delete": value["read_after_delete"],
+        "count_after_delete": value["count_after_delete"],
+    }
+
+
+def compose_bundle(
+    supplement: dict[str, Any],
+    *,
+    binding: str,
+    contracts: conformance.Contracts,
+    parity: dict[str, Any],
+    live: dict[str, Any],
+    manager: dict[str, Any],
+    atomic_generation_observation: dict[str, Any],
+    field_identity_observation: dict[str, Any],
+) -> dict[str, Any]:
+    if supplement["format"] != SUPPLEMENT_FORMAT:
+        raise AssemblyError("invalid_supplement_format", "supplement format is not V3")
+    normalized = copy.deepcopy(supplement)
+    normalized["format"] = LIVE_FORMAT
+    observations = _live_observations(
+        normalized,
+        binding=binding,
+        contracts=contracts,
+        fragment_lanes=REUSED_LANES
+        | {
+            ("complete_connection_policy", "direct_runtime"),
+            ("data_operation_cancellation", "direct_runtime"),
+            ("data_operation_resource_limits", "direct_runtime"),
+            ("data_operation_structured_diagnostic", "diagnostic"),
+            ("projected_constraint_validation", "diagnostic"),
+            ("projection_evidence_integrity", "diagnostic"),
+            ("token_package_fencing", "diagnostic"),
+        },
+    )
+    observations.update(
+        {
+            ("inherited_relation_role_lifecycle", "direct_runtime"): _inherited_observation(
+                live["observations"]["inherited_plain_activity_role_lifecycle"]
+            ),
+            ("integer_key_polymorphic_role", "direct_runtime"): copy.deepcopy(
+                parity["observations"]["integer_key_polymorphic_role"]
+            ),
+            ("manager_field_token_filter", "direct_runtime"): copy.deepcopy(manager["observation"]),
+            ("ordered_distinct_collections", "direct_runtime"): copy.deepcopy(
+                parity["observations"]["ordered_distinct_collections"]
+            ),
+            ("atomic_multibinding_generation", "artifact"): copy.deepcopy(
+                atomic_generation_observation
+            ),
+            ("field_name_identity", "artifact"): copy.deepcopy(field_identity_observation),
+        }
+    )
+    selected_live = {
+        (observation_ref, proof_kind) for _, proof_kind, observation_ref in contracts.selected
+    } - {
+        ("complete_connection_policy", "direct_runtime"),
+        ("data_operation_cancellation", "direct_runtime"),
+        ("data_operation_resource_limits", "direct_runtime"),
+        ("data_operation_structured_diagnostic", "diagnostic"),
+        ("projected_constraint_validation", "diagnostic"),
+        ("projection_evidence_integrity", "diagnostic"),
+        ("token_package_fencing", "diagnostic"),
+    }
+    if set(observations) != selected_live:
+        raise AssemblyError("composed_lane_coverage_mismatch", "composed live lanes are not exact")
+    return {
+        key: copy.deepcopy(supplement[key])
+        for key in (
+            "binding",
+            "producer",
+            "projection_fingerprint",
+            "semantic_fingerprint",
+            "semantic_profile",
+        )
+    } | {
+        "format": LIVE_FORMAT,
+        "results": [
+            {
+                "observation_ref": observation_ref,
+                "proof_kind": proof_kind,
+                "outcome": "passed",
+                "observation": observation,
+            }
+            for (observation_ref, proof_kind), observation in sorted(observations.items())
+        ],
+    }
+
+
+def compose_inputs(arguments: argparse.Namespace) -> dict[str, Any]:
+    contracts = conformance.load_contracts()
+    parity, live, manager = _validated_feature_reports(
+        arguments.projected_parity,
+        arguments.projected_live,
+        arguments.manager,
+        binding=arguments.binding,
+    )
+    supplement = _load_live(arguments.supplement)
+    atomic_generation_observation = generation.validate_artifact(
+        arguments.atomic_generation, "atomic"
+    )
+    field_identity_observation = generation.validate_artifact(
+        arguments.field_identity, "field-identity"
+    )
+    bundle = compose_bundle(
+        supplement,
+        binding=arguments.binding,
+        contracts=contracts,
+        parity=parity,
+        live=live,
+        manager=manager,
+        atomic_generation_observation=atomic_generation_observation,
+        field_identity_observation=field_identity_observation,
+    )
+    if len(conformance.canonical_json_bytes(bundle)) > MAX_LIVE_BYTES:
+        raise AssemblyError("input_size_limit", "composed evidence exceeds its byte limit")
+    return bundle
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binding", required=True, choices=conformance.REPORT_BINDINGS)
-    parser.add_argument("--live-observations", required=True, type=Path)
+    parser.add_argument("--live-observations", required=False, type=Path)
     parser.add_argument("--run-nonce", required=True)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("fragments", nargs="+", type=Path)
+    parser.add_argument("--projected-parity", required=False, type=Path)
+    parser.add_argument("--projected-live", required=False, type=Path)
+    parser.add_argument("--manager", required=False, type=Path)
+    parser.add_argument("--atomic-generation", required=False, type=Path)
+    parser.add_argument("--field-identity", required=False, type=Path)
+    parser.add_argument("--supplement", required=False, type=Path)
     arguments = parser.parse_args(argv)
+    if arguments.live_observations is None:
+        missing = [
+            name
+            for name in (
+                "projected_parity",
+                "projected_live",
+                "manager",
+                "atomic_generation",
+                "field_identity",
+                "supplement",
+            )
+            if getattr(arguments, name) is None
+        ]
+        if missing:
+            parser.error(
+                "composition requires "
+                + ", ".join("--" + name.replace("_", "-") for name in missing)
+            )
+    elif any(
+        getattr(arguments, name) is not None
+        for name in (
+            "projected_parity",
+            "projected_live",
+            "manager",
+            "atomic_generation",
+            "field_identity",
+            "supplement",
+        )
+    ):
+        parser.error("choose existing evidence or composition inputs, not both")
     try:
         contracts = conformance.load_contracts()
-        proof_observations = fragments.load_proof_fragments(
+        proof_observations = fragments.CONTRACTS[3].load_proof_fragments(
             arguments.fragments,
             expected_binding=arguments.binding,
             run_nonce=arguments.run_nonce,
             root=ROOT,
         )
-        live = _load_live(arguments.live_observations)
+        live = (
+            compose_inputs(arguments)
+            if arguments.live_observations is None
+            else _load_live(arguments.live_observations)
+        )
         report = assemble_report(
             live,
             binding=arguments.binding,
@@ -257,14 +426,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         conformance._validate_report(
             conformance.LoadedJson(
-                path=arguments.output,
-                raw=conformance.canonical_json_bytes(report),
-                value=report,
+                path=arguments.output, raw=conformance.canonical_json_bytes(report), value=report
             ),
             contracts,
         )
         _publish(arguments.output, report)
-    except (AssemblyError, conformance.ContractError, fragments.ProofFragmentError) as error:
+    except (
+        AssemblyError,
+        conformance.ContractError,
+        fragments.ProofFragmentError,
+        projected_live.ContractError,
+        projected_parity.ContractError,
+        manager_comparator.ContractError,
+        generation.ArtifactError,
+    ) as error:
         print(f"sdk-v3 report assembly rejected: {error}", file=sys.stderr)
         return 1
     return 0

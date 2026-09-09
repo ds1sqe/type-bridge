@@ -57,7 +57,7 @@ const SDK_V2_CATALOG = resolve(ROOT, SDK_V2_CATALOG_RELATIVE);
 const SDK_V2_JOURNEY = resolve(ROOT, SDK_V2_JOURNEY_RELATIVE);
 const SDK_V2_PROOF_VALIDATOR = resolve(
   ROOT,
-  "scripts/ci/sdk_v2_proof_fragments.py",
+  "scripts/ci/proof_fragments.py",
 );
 
 function sourceIdentity(path: string, raw: Uint8Array): Record<string, string> {
@@ -196,6 +196,8 @@ function loadSdkV2ProofObservations(): ReadonlyMap<string, Record<string, unknow
     python,
     [
       SDK_V2_PROOF_VALIDATOR,
+      "--sdk",
+      "2",
       "--binding",
       "node",
       "--run-nonce",

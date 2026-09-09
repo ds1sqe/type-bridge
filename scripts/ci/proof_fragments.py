@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -524,3 +525,63 @@ class ProofContract:
                 "proof fragments did not cover every committed producer",
             )
         return observations
+
+
+# Only these two accepted contracts emit same-run proof fragments.
+CONTRACTS = {
+    version: ProofContract(
+        proof_schema_relative=f"tests/contracts/sdk_conformance/sdk-v{version}/proof-fragment-schema-v1.json",
+        allowlist_relative=f"tests/contracts/sdk_conformance/sdk-v{version}/proof-fragment-allowlist-v1.json",
+        journey_relative=f"tests/contracts/sdk_conformance/sdk-v{version}/journey-v{version}.json",
+        fragment_format=f"typebridge.sdk-v{version}-proof-fragment/v1",
+        allowlist_format=f"typebridge.sdk-v{version}-proof-fragment-allowlist/v1",
+        proof_kinds=kinds,
+        max_results=limit,
+    )
+    for version, kinds, limit in (
+        (2, frozenset({"direct_runtime", "remote_runtime", "diagnostic", "lifecycle"}), 16),
+        (3, frozenset({"direct_runtime", "diagnostic"}), 4),
+    )
+}
+
+
+def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--sdk", required=True, type=int, choices=sorted(CONTRACTS))
+    parser.add_argument("--binding", required=True, choices=sorted(REPORT_BINDINGS))
+    parser.add_argument("--run-nonce", required=True)
+    parser.add_argument(
+        "--observations-json",
+        action="store_true",
+        help="write the validated closed observation lanes as canonical JSON",
+    )
+    parser.add_argument("fragments", nargs="+", type=Path)
+    args = parser.parse_args(argv)
+    contract = CONTRACTS[args.sdk]
+    try:
+        observations = contract.load_proof_fragments(
+            args.fragments,
+            expected_binding=args.binding,
+            run_nonce=args.run_nonce,
+            root=root,
+        )
+    except ProofFragmentError as error:
+        print(f"sdk-v{args.sdk} proof fragments rejected: {error}")
+        return 1
+    if args.observations_json:
+        rows = [
+            {
+                "observation": observation,
+                "observation_ref": lane[0],
+                "proof_kind": lane[1],
+            }
+            for lane, observation in observations.items()
+        ]
+        print(canonical_json_bytes(rows).decode("utf-8"), end="")
+    else:
+        print(f"validated {len(observations)} sdk-v{args.sdk} proof lanes for {args.binding}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

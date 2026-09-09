@@ -5,7 +5,6 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -24,6 +23,7 @@ use type_bridge_schema::{
 use type_bridge_schema_codegen::{CEmitter, GeneratedPackage};
 
 mod support;
+use support::{Stage as TempDirectory, command_exists, runtime_include, write_package};
 
 // Mach-O records dead-strippable symbol atoms without ELF-style section splitting.
 #[cfg(all(unix, target_os = "macos"))]
@@ -2266,58 +2266,6 @@ int main(void) {
     assert!(invocations > 0, "GCC or Clang is required");
 }
 
-static TEMP_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-struct TempDirectory(PathBuf);
-
-impl TempDirectory {
-    fn new() -> Self {
-        let sequence = TEMP_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let directory = std::env::temp_dir().join(format!(
-            "typebridge-c-emitter-{}-{sequence}",
-            std::process::id()
-        ));
-        fs::create_dir(&directory).expect("unique C emitter test directory is created");
-        Self(directory)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDirectory {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).expect("C emitter test directory is removed");
-    }
-}
-
-fn write_package(package: &GeneratedPackage, root: &Path) {
-    for (relative, contents) in package.files() {
-        let path = root.join(relative);
-        fs::create_dir_all(path.parent().expect("generated path has a parent"))
-            .expect("generated parent directory is created");
-        fs::write(path, contents).expect("generated C package file is written");
-    }
-}
-
-fn runtime_include() -> PathBuf {
-    // C compiler include flags do not accept Windows verbatim paths.
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("schema-codegen belongs to the crate directory")
-        .join("c/include");
-    assert!(path.join("typebridge/type_bridge.h").is_file());
-    path
-}
-
-fn command_exists(program: &str) -> bool {
-    Command::new(program)
-        .arg("--version")
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
-
 #[cfg(windows)]
 fn msvc_tool(stage: &Path, tool: &str, arguments: &[String]) -> std::process::Output {
     let installer = std::env::var_os("ProgramFiles(x86)")
@@ -3581,7 +3529,6 @@ static void clear_diagnostics(
     *out_diagnostics = NULL;
   }
 }
-
 
 type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_session_open(
     const type_bridge_schema_package_t *package,

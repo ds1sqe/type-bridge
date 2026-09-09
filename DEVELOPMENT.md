@@ -204,6 +204,11 @@ The public site is <https://ds1sqe.github.io/type-bridge/>.
 
 - Follow existing ownership boundaries and extend the correct shared API
   instead of adding facade-local workarounds.
+- Keep the maintenance surface narrow. Extend existing entry points and shared
+  harnesses before adding parallel scripts or version-specific scaffolding.
+  Give common behavior one owner, keep genuine contract differences explicit,
+  and remove superseded callers in the same change. Measure simplification by
+  the places a future change must touch, alongside file and line counts.
 - Add public API documentation where behavior or compatibility depends on it.
 - Add inline comments only for non-obvious reasons.
 - Use modern Python 3.12+ typing and project-specific Rust error types.

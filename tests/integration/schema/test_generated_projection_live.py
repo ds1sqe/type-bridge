@@ -53,7 +53,7 @@ SDK_V2_CATALOG = ROOT / SDK_V2_CATALOG_RELATIVE
 SDK_V2_JOURNEY = ROOT / SDK_V2_JOURNEY_RELATIVE
 SDK_V3_JOURNEY = ROOT / SDK_V3_JOURNEY_RELATIVE
 SDK_V3_PROVIDER_SCHEMA = ROOT / "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql"
-SDK_V2_PROOF_LOADER = ROOT / "scripts/ci/sdk_v2_proof_fragments.py"
+SDK_V2_PROOF_LOADER = ROOT / "scripts/ci/proof_fragments.py"
 
 
 class _StringValue(Protocol):
@@ -141,14 +141,15 @@ def _load_sdk_v2_proof_observations() -> dict[tuple[str, str], dict[str, object]
     if not path_values or any(not value for value in path_values):
         raise AssertionError("sdk-v2 proof fragment paths must be a nonempty path list")
     spec = importlib.util.spec_from_file_location(
-        "_typebridge_sdk_v2_proof_fragments",
+        "_typebridge_proof_fragments",
         SDK_V2_PROOF_LOADER,
     )
     if spec is None or spec.loader is None:
         raise AssertionError("sdk-v2 proof fragment validator is not importable")
     loader = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = loader
     spec.loader.exec_module(loader)
-    load_proof_fragments = getattr(loader, "load_proof_fragments")
+    load_proof_fragments = loader.CONTRACTS[2].load_proof_fragments
     loaded = load_proof_fragments(
         [Path(value) for value in path_values],
         expected_binding="python",

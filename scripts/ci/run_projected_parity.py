@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from persist_binding_reports import PublishError, publish  # noqa: E402
+from run_generated_live import _cargo_run_example  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE = ROOT / "type-bridge-core"
@@ -84,24 +85,6 @@ class CommandSpec:
     arguments: tuple[str, ...]
     cwd: Path
     environment: Mapping[str, str] | None = None
-
-
-def _cargo_run_example(example: str, schema: Path, output: Path) -> tuple[str, ...]:
-    return (
-        "cargo",
-        "run",
-        "--locked",
-        "--quiet",
-        "--manifest-path",
-        str(CORE / "Cargo.toml"),
-        "--package",
-        "type-bridge-schema-codegen",
-        "--example",
-        example,
-        "--",
-        str(schema),
-        str(output),
-    )
 
 
 def command_plan(layout: Layout) -> tuple[CommandSpec, ...]:

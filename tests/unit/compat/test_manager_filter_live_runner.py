@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-RUNNER_PATH = ROOT / "scripts/ci/run_manager_filter_live.py"
+RUNNER_PATH = ROOT / "scripts/ci/run_generated_live.py"
 
 
 def load_runner():
@@ -23,7 +23,7 @@ def load_runner():
 
 def test_command_plan_is_one_four_binding_fan_in(tmp_path: Path) -> None:
     runner = load_runner()
-    layout = runner.Layout.under(tmp_path.resolve(), "0123456789abcdef01234567")
+    layout = runner.Layout.under(tmp_path.resolve(), "0123456789abcdef01234567", runner.MANAGER)
     fixture = runner.Fixture(address="127.0.0.1:1729", http_port="8000")
     plan = runner.command_plan(layout, fixture)
 
@@ -65,7 +65,7 @@ def test_command_plan_is_one_four_binding_fan_in(tmp_path: Path) -> None:
 
 def test_each_producer_has_one_unique_report_and_database(tmp_path: Path) -> None:
     runner = load_runner()
-    layout = runner.Layout.under(tmp_path.resolve(), "0123456789abcdef01234567")
+    layout = runner.Layout.under(tmp_path.resolve(), "0123456789abcdef01234567", runner.MANAGER)
     fixture = runner.Fixture(address="127.0.0.1:1729", http_port="8000")
     plan = runner.command_plan(layout, fixture)
     producers = {
@@ -84,18 +84,18 @@ def test_each_producer_has_one_unique_report_and_database(tmp_path: Path) -> Non
     databases = []
     for command in producers.values():
         assert command.environment is not None
-        reports.append(command.environment[runner.REPORT_ENV])
-        databases.append(command.environment[runner.DATABASE_ENV])
-        assert command.environment[runner.ADDRESS_ENV] == fixture.address
-        assert command.environment[runner.HTTP_PORT_ENV] == fixture.http_port
-        assert command.environment[runner.REPOSITORY_ENV] == str(ROOT)
+        reports.append(command.environment[runner.MANAGER.REPORT_ENV])
+        databases.append(command.environment[runner.MANAGER.DATABASE_ENV])
+        assert command.environment[runner.MANAGER.ADDRESS_ENV] == fixture.address
+        assert command.environment[runner.MANAGER.HTTP_PORT_ENV] == fixture.http_port
+        assert command.environment[runner.MANAGER.REPOSITORY_ENV] == str(ROOT)
     assert len(set(reports)) == len(set(databases)) == 4
     assert all(len(name) <= 64 for name in databases)
 
 
 def test_prepare_mutates_only_selected_foreign_field(tmp_path: Path) -> None:
     runner = load_runner()
-    layout = runner.Layout.under(tmp_path.resolve(), "0123456789abcdef01234567")
+    layout = runner.Layout.under(tmp_path.resolve(), "0123456789abcdef01234567", runner.MANAGER)
     runner._prepare(layout)
     local = runner.SCHEMA.read_text(encoding="utf-8")
     foreign = layout.foreign_schema.read_text(encoding="utf-8")
@@ -111,17 +111,17 @@ def test_prepare_mutates_only_selected_foreign_field(tmp_path: Path) -> None:
 
 def test_runner_validates_all_committed_producer_sources() -> None:
     runner = load_runner()
-    contract = runner._load_live_contract()
+    contract = runner._load_live_contract(runner.MANAGER)
 
-    runner._validate_producer_sources(contract)
-    assert runner.PRODUCER_SOURCES == (
-        ("Python producer", runner.PYTHON_PRODUCER),
-        ("Node producer", runner.NODE_PRODUCER),
+    runner._validate_producer_sources(contract, runner.MANAGER)
+    assert runner.MANAGER.PRODUCER_SOURCES == (
+        ("Python producer", runner.MANAGER.PYTHON_PRODUCER),
+        ("Node producer", runner.MANAGER.NODE_PRODUCER),
         ("Node helper", runner.NODE_HELPER),
         ("Rust harness", runner.RUST_HARNESS),
-        ("Rust producer", runner.RUST_PRODUCER),
-        ("C harness", runner.C_HARNESS),
-        ("C consumer", runner.C_CONSUMER),
+        ("Rust producer", runner.MANAGER.RUST_PRODUCER),
+        ("C harness", runner.MANAGER.C_HARNESS),
+        ("C consumer", runner.MANAGER.C_CONSUMER),
         ("C setup", runner.C_SETUP),
         ("C provider helper", runner.C_PROVIDER_HELPER),
     )
@@ -130,29 +130,32 @@ def test_runner_validates_all_committed_producer_sources() -> None:
 def test_fixture_requires_only_caller_endpoint() -> None:
     runner = load_runner()
     valid = {
-        runner.ADDRESS_ENV: "127.0.0.1:1729",
-        runner.HTTP_PORT_ENV: "8000",
+        runner.MANAGER.ADDRESS_ENV: "127.0.0.1:1729",
+        runner.MANAGER.HTTP_PORT_ENV: "8000",
     }
-    assert runner._required_fixture(valid) == runner.Fixture(
+    assert runner._required_fixture(valid, runner.MANAGER) == runner.Fixture(
         address="127.0.0.1:1729", http_port="8000"
     )
-    for owned in runner.RUNNER_OWNED_ENV:
+    for owned in runner.MANAGER.RUNNER_OWNED_ENV:
         with pytest.raises(runner.RunnerError, match="runner-owned"):
-            runner._required_fixture({**valid, owned: "caller-value"})
+            runner._required_fixture({**valid, owned: "caller-value"}, runner.MANAGER)
     for hostile in (
         {},
-        {runner.ADDRESS_ENV: "https://127.0.0.1:1729", runner.HTTP_PORT_ENV: "8000"},
-        {runner.ADDRESS_ENV: "127.0.0.1:1729", runner.HTTP_PORT_ENV: "0"},
-        {runner.ADDRESS_ENV: "127.0.0.1:1729", runner.HTTP_PORT_ENV: "8.0"},
+        {
+            runner.MANAGER.ADDRESS_ENV: "https://127.0.0.1:1729",
+            runner.MANAGER.HTTP_PORT_ENV: "8000",
+        },
+        {runner.MANAGER.ADDRESS_ENV: "127.0.0.1:1729", runner.MANAGER.HTTP_PORT_ENV: "0"},
+        {runner.MANAGER.ADDRESS_ENV: "127.0.0.1:1729", runner.MANAGER.HTTP_PORT_ENV: "8.0"},
     ):
         with pytest.raises(runner.RunnerError):
-            runner._required_fixture(hostile)
+            runner._required_fixture(hostile, runner.MANAGER)
 
 
 def test_runner_has_one_ephemeral_stage_and_no_promotion_wiring() -> None:
     source = RUNNER_PATH.read_text(encoding="utf-8")
 
-    assert source.count("tempfile.TemporaryDirectory(") == 1
+    assert source.count("tempfile.TemporaryDirectory(") == 2
     assert "secrets.token_hex(12)" in source
     assert "compare_manager_filter_live.py" in source
     assert "catalog" not in source.casefold()

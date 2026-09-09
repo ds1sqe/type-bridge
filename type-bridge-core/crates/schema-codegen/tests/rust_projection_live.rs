@@ -1,11 +1,11 @@
 use std::env;
 use std::fs;
 use std::fs::File;
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use type_bridge_contract::fingerprint::SemanticProfileId;
@@ -17,6 +17,7 @@ use type_bridge_schema::{
 use type_bridge_schema_codegen::RustEmitter;
 
 mod support;
+use support::{Stage, base64, free_port};
 
 const SCHEMA: &str = include_str!("acceptance/schema.yaml");
 const SCHEMA_3_11: &str = include_str!("acceptance/schema-3.11.5.yaml");
@@ -58,33 +59,6 @@ const CONSUMER_TESTS: [&str; 12] = [
     "generated_data_model_runtime_v3_live",
     "generated_canonical_serialization_v5_live",
 ];
-
-struct Stage(PathBuf);
-
-impl Stage {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time follows the Unix epoch")
-            .as_nanos();
-        let path = env::temp_dir().join(format!(
-            "type-bridge-rust-projection-live-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).expect("live acceptance stage is created");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Stage {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
 
 struct ServerProcess {
     child: Child,
@@ -135,37 +109,6 @@ impl Drop for ServerProcess {
 
 fn toml_string(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
-}
-
-fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let first = chunk[0];
-        let second = chunk.get(1).copied().unwrap_or(0);
-        let third = chunk.get(2).copied().unwrap_or(0);
-        output.push(ALPHABET[(first >> 2) as usize] as char);
-        output.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
-        if chunk.len() > 1 {
-            output.push(ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
-        } else {
-            output.push('=');
-        }
-        if chunk.len() > 2 {
-            output.push(ALPHABET[(third & 0x3f) as usize] as char);
-        } else {
-            output.push('=');
-        }
-    }
-    output
-}
-
-fn free_port() -> u16 {
-    TcpListener::bind(("127.0.0.1", 0))
-        .expect("loopback port allocation succeeds")
-        .local_addr()
-        .expect("loopback local address is readable")
-        .port()
 }
 
 fn manifest_path(path: &Path) -> String {
