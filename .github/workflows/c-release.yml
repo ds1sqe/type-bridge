@@ -86,6 +86,7 @@ jobs:
       - name: Install verification dependencies
         run: |
           uv sync --extra dev
+          uv pip install maturin==1.14.1
           npm ci --prefix type-bridge-core/crates/node
           gcc --version
           clang --version

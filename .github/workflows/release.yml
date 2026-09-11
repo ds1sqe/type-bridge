@@ -567,6 +567,11 @@ jobs:
           scripts/ci/prepare_generated_live_fixture.sh python
           tmp/release-generated-python
 
+      - name: Prepare generated Python artifact fixture
+        run: >-
+          scripts/ci/prepare_generated_live_fixture.sh python-artifact
+          tmp/release-generated-python-artifact
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -581,6 +586,13 @@ jobs:
         with:
           name: generated-python-live-fixture
           path: tmp/release-generated-python
+          if-no-files-found: error
+
+      - name: Upload generated Python artifact fixture
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: generated-python-artifact-fixture
+          path: tmp/release-generated-python-artifact
           if-no-files-found: error
 
   # Validate every immutable Python artifact produced by this workflow before
@@ -641,7 +653,7 @@ jobs:
       - name: Download generated Python fixture
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: generated-python-live-fixture
+          name: generated-python-artifact-fixture
           path: tmp/release-python-artifacts/generated
 
       - name: Validate exact Python release inventory
@@ -1625,7 +1637,8 @@ jobs:
           raise SystemExit(
               pytest.main(
                   [
-                      str(test),
+                      f"{test}::test_generated_package_preserves_application_operation_outcomes_live",
+                      f"{test}::test_generated_projection_round_trips_live_models",
                       "--rootdir",
                       str(workspace),
                       "--import-mode=importlib",
