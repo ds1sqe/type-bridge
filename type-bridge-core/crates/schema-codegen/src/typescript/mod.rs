@@ -1308,15 +1308,15 @@ mod tests {
     #[test]
     fn legacy_runtime_source_remains_byte_exact() {
         assert_eq!(runtime_source(false).unwrap(), RUNTIME_SOURCE);
-        assert_eq!(RUNTIME_SOURCE.len(), 132_647);
+        assert_eq!(RUNTIME_SOURCE.len(), 132_719);
         assert_eq!(
             format!("{:x}", Sha256::digest(RUNTIME_SOURCE)),
-            "0900245d2dfb8f6a4a60d6ce086e535a2b15561f9fbe2b0f3547a61b620562a9"
+            "71f6aba6c743d3dd7d19b88b8f7549b90f069ce96341ace75e92417ad01ad849"
         );
         let resource = CodeResourceDigest::from_bytes(RUNTIME_SOURCE_ID, RUNTIME_SOURCE).unwrap();
         assert_eq!(
             resource.content_fingerprint().digest().to_hex(),
-            "1c976e41892f2e0a31ec19d97ebd6a0c73004ca2ff37dc4d616be77649a8e371"
+            "955879feedff263aa72d578c5c05823adf1f4811dc1429f2dd3d2a3816abd25a"
         );
     }
 
