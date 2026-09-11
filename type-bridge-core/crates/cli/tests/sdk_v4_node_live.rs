@@ -87,12 +87,10 @@ fn generated_node_emits_complete_v4_report_on_3_12_3() {
         "generated package local dependency install",
     );
     run(
-        Command::new("npx").current_dir(&generated).args([
-            "--no-install",
-            "tsc",
-            "-p",
-            "tsconfig.json",
-        ]),
+        Command::new("node")
+            .arg(node_package.join("node_modules/typescript/bin/tsc"))
+            .current_dir(&generated)
+            .args(["-p", "tsconfig.json"]),
         "generated package build",
     );
 
