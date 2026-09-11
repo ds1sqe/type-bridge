@@ -337,6 +337,8 @@ def test_installed_binary_version_must_be_exact(tmp_path: Path) -> None:
 
     def fake_runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         commands.append(command)
+        if command[-2:] == ["--version", "--verbose"]:
+            return subprocess.CompletedProcess(command, 0, "host: x86_64-unknown-linux-gnu\n", "")
         if command[-1] == "--version":
             return subprocess.CompletedProcess(command, 0, "type-bridge 2.0.0\n", "")
         return subprocess.CompletedProcess(command, 0, "", "")
@@ -382,3 +384,57 @@ def test_release_wires_external_consumers_between_archive_and_identity_gates() -
     assert '"publish",' not in source
     assert "member.isfile()" in source
     assert "extractall" not in source
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("", ""),
+        ("type-bridge 2.2.0", "type-bridge 2.1.0"),
+        ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"),
+        ("typedb-3.11.5/v1,typedb-3.12.1/v1", "typedb-3.12.1/v1"),
+        ("source-commit: development-uncommitted", "source-commit: wrong"),
+        ("source-tree: development-uncommitted", "source-tree: wrong"),
+        (
+            "source-tree: development-uncommitted",
+            "source-tree: development-uncommitted\nextra: field",
+        ),
+    ],
+)
+def test_installed_cli_checks_the_complete_build_identity(
+    tmp_path: Path, old: str, new: str
+) -> None:
+    report = (
+        "type-bridge 2.2.0\n"
+        "target: x86_64-unknown-linux-gnu\n"
+        "semantic-profiles: typedb-3.11.5/v1,typedb-3.12.1/v1\n"
+        "source-commit: development-uncommitted\n"
+        "source-tree: development-uncommitted\n"
+    )
+    if old:
+        report = report.replace(old, new)
+
+    def fake_runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command[-2:] == ["--version", "--verbose"]:
+            return subprocess.CompletedProcess(command, 0, "host: x86_64-unknown-linux-gnu\n", "")
+        if command[-1] == "--version":
+            return subprocess.CompletedProcess(command, 0, report, "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def validate() -> None:
+        validator._install_and_run_binary(
+            cargo=("cargo", "+1.94.1"),
+            package_root=tmp_path / "type-bridge-cli-2.2.0",
+            binary="type-bridge",
+            expected_version="2.2.0",
+            install_root=tmp_path / "installed",
+            work_root=tmp_path,
+            environment={},
+            runner=fake_runner,
+        )
+
+    if old:
+        with pytest.raises(validator.ExternalConsumerError, match="version output drifted"):
+            validate()
+    else:
+        validate()
