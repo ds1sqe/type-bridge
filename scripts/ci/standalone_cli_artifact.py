@@ -203,10 +203,10 @@ def inspect_elf(binary: Path) -> dict[str, Any]:
     return {"format": "elf64-x86-64", "interpreter": interpreter, "needed": needed}
 
 
-def expected_version_report(*, version: str, commit: str, tree: str) -> str:
+def expected_version_report(*, version: str, commit: str, tree: str, target: str = TARGET) -> str:
     return (
         f"type-bridge {version}\n"
-        f"target: {TARGET}\n"
+        f"target: {target}\n"
         f"semantic-profiles: {','.join(SEMANTIC_PROFILES)}\n"
         f"source-commit: {commit}\n"
         f"source-tree: {tree}"

@@ -39,6 +39,11 @@ try:
 except ModuleNotFoundError:
     from scripts.ci.cargo_release_candidate import CandidateError, validate_candidate_bundle
 
+try:
+    from standalone_cli_artifact import expected_version_report
+except ModuleNotFoundError:
+    from scripts.ci.standalone_cli_artifact import expected_version_report
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ARTIFACTS_DIRECTORY = Path("type-bridge-core/target/package")
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
@@ -685,6 +690,23 @@ def _install_and_run_binary(
         runner=runner,
     )
     expected = f"{binary} {expected_version}"
+    if binary == "type-bridge":
+        cargo_version = _run_command(
+            (*cargo, "--version", "--verbose"),
+            cwd=work_root,
+            environment=environment,
+            capture_output=True,
+            runner=runner,
+        )
+        hosts = re.findall(r"^host: (\S+)$", cargo_version.stdout, flags=re.MULTILINE)
+        if len(hosts) != 1:
+            raise ExternalConsumerError("Cargo version must report exactly one host target")
+        expected = expected_version_report(
+            version=expected_version,
+            target=environment.get("CARGO_BUILD_TARGET", hosts[0]),
+            commit=environment.get("TYPE_BRIDGE_BUILD_SOURCE_COMMIT", "development-uncommitted"),
+            tree=environment.get("TYPE_BRIDGE_BUILD_SOURCE_TREE", "development-uncommitted"),
+        )
     if result.stdout.strip() != expected or result.stderr.strip():
         raise ExternalConsumerError(
             f"installed {binary} version output drifted: "
