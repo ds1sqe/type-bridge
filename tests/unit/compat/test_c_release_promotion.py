@@ -311,6 +311,11 @@ def test_tag_requires_an_annotated_direct_same_source_target() -> None:
 
 def test_workflow_keeps_publish_protected_and_without_builders() -> None:
     workflow = yaml.load((ROOT / policy.WORKFLOW).read_text(), Loader=yaml.BaseLoader)
+    verification_steps = workflow["jobs"]["verify"]["steps"]
+    dependencies = next(
+        step for step in verification_steps if step["name"] == "Install verification dependencies"
+    )["run"]
+    assert "uv pip install maturin==1.14.1" in dependencies
     assert set(workflow["on"]) == {"workflow_dispatch"}
     assert workflow["permissions"] == {"contents": "read", "actions": "read"}
     publish = workflow["jobs"]["publish"]

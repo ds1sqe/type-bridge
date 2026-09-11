@@ -432,7 +432,8 @@ def test_python_publication_depends_on_exact_artifact_acceptance() -> None:
     assert "merge-multiple: true" in acceptance
     assert "name: core-sdist" in acceptance
     assert "name: python-dist" in acceptance
-    assert "name: generated-python-live-fixture" in acceptance
+    assert "name: generated-python-artifact-fixture" in acceptance
+    assert "name: generated-python-live-fixture" not in acceptance
     assert "scripts/ci/validate_python_release_artifacts.py" in acceptance
     assert "--core-wheels-dir tmp/release-python-artifacts/core-wheels" in acceptance
     assert "--core-sdist-dir tmp/release-python-artifacts/core-sdist" in acceptance
@@ -1434,6 +1435,11 @@ def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> 
     assert "test_generated_projection_live.py" in acceptance
     assert "test_generated_package_preserves_application_operation_outcomes_live" in acceptance
     assert "test_generated_projection_round_trips_live_models" in acceptance
+    assert (
+        'f"{test}::test_generated_package_preserves_application_operation_outcomes_live"'
+        in acceptance
+    )
+    assert 'f"{test}::test_generated_projection_round_trips_live_models"' in acceptance
     assert "generated-package-live.test.js" in acceptance
     assert "--import-mode=importlib" in acceptance
     assert "release-generated-parity.xml" in acceptance
@@ -1460,7 +1466,10 @@ def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> 
 
     fixture_script = "scripts/ci/prepare_generated_live_fixture.sh"
     assert f"{fixture_script} python" in build_python
+    assert f"{fixture_script} python-artifact" in build_python
     assert "name: generated-python-live-fixture" in build_python
+    assert "name: generated-python-artifact-fixture" in build_python
+    assert "path: tmp/release-generated-python-artifact" in build_python
     assert 'prepare_generated_live_fixture.sh" node' in pack_node
     assert "name: generated-node-live-fixture" in pack_node
     fixture_source = (REPO_ROOT / fixture_script).read_text(encoding="utf-8")
