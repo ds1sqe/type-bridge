@@ -78,28 +78,6 @@ pub(super) const PUBLIC_SCHEMA_NAMES: &[&str] = &[
     "SEMANTIC_SCHEMA_FINGERPRINT_JSON",
 ];
 
-/// Properties installed on generated model tokens or hydrated facets.
-pub(super) const MODEL_RESERVED_NAMES: &[&str] = &[
-    "__proto__",
-    "completeRead",
-    "constructor",
-    "create",
-    "declaration",
-    "fields",
-    "id",
-    "iid",
-    "metadata",
-    "manager",
-    "name",
-    "plays",
-    "prototype",
-    "reference",
-    "roles",
-    "typeKey",
-    "typeToken",
-    "valueType",
-];
-
 /// Complete TypeScript-v1 strict-mode and contextual keyword set.
 pub(super) const TYPESCRIPT_STRICT_KEYWORDS: &[&str] = &[
     "abstract",

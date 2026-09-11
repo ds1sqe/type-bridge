@@ -5,16 +5,16 @@
   "transition_capabilities": ["G05", "G06", "G08", "G13"],
   "source_slices": {
     "query-remote": {
-      "source_commit": "8097bab115258a66d94fa4897f00c9abafd5f5f7",
+      "source_commit": "5ec1ec836efbcca75a789b7777aeef8ea4753b40",
       "authorities": [
-        {"path": "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json", "sha256": "c966d035583ad624cd05e325a0e0d554137a2849ff2395d78b1b2761917eb468"},
+        {"path": "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json", "sha256": "da28d4df64711f963aca46279ecdb57a2d2f53ff0cf559378ba4f604385c01e7"},
         {"path": "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json", "sha256": "cb63ccb1b76e7f00f68fe6fd9d14fad978560f98cbc5a741949656b20e95ce96"}
       ]
     },
     "data-model": {
-      "source_commit": "4d74f2759612fe07fd7c6134d0e1976f951011c1",
+      "source_commit": "5ec1ec836efbcca75a789b7777aeef8ea4753b40",
       "authorities": [
-        {"path": "tests/contracts/sdk_conformance/sdk-v3/catalog-v3.json", "sha256": "639b8b4f78ee0e71801ce5424bc2f8f55f264136a4d10fc507fe901139507025"},
+        {"path": "tests/contracts/sdk_conformance/sdk-v3/catalog-v3.json", "sha256": "daddf890831fc148f382055faf4fee5d46c91076e1b409d714ad10088855e3ad"},
         {"path": "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json", "sha256": "c5679b428c22e2bff7989f6d674cde3780b752a40f6bbce6ccb3aa451797b1c0"}
       ]
     },

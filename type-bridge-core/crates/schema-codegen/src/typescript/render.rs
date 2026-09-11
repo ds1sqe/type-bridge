@@ -7,14 +7,13 @@ use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::projection::{
     FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection, ProjectedContainer,
     ProjectedModelForm, ProjectedModelUse, ProjectedMultiplicity, ProjectedTypeRef,
-    RuntimeProjection,
+    RuntimeProjection, TYPESCRIPT_MODEL_RESERVED_NAMES as MODEL_RESERVED_NAMES,
 };
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::ValueTypeTag;
 
 use super::reserved::{
-    MODEL_RESERVED_NAMES, ORDERED_PUBLIC_RUNTIME_NAMES, PUBLIC_RUNTIME_NAMES, PUBLIC_SCHEMA_NAMES,
-    is_typescript_keyword,
+    ORDERED_PUBLIC_RUNTIME_NAMES, PUBLIC_RUNTIME_NAMES, PUBLIC_SCHEMA_NAMES, is_typescript_keyword,
 };
 use crate::{
     EmbeddedAuthority, GeneratedPackage, MIGRATION_HISTORY_BUNDLE_RESOURCE,

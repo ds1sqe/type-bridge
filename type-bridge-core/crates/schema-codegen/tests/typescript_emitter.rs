@@ -193,3 +193,33 @@ fn rejects_schema_name_colliding_with_runtime_export() {
     );
     assert!(error.to_string().contains("Cardinality"));
 }
+
+#[test]
+fn emits_collision_safe_members_with_canonical_key_identity() {
+    use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
+    use type_bridge_contract::schema::OwnsFactId;
+
+    let emitter = TypeScriptEmitter::new();
+    let resources = emitter.code_resources().unwrap();
+    let source = include_str!("typescript_acceptance/schema-blockers.yaml");
+    let (projection, authority) = projected(source, &resources);
+    let marker = TypeId::new(TypeKind::Entity, "marker").unwrap();
+    let key = OwnsFactId::new(marker.clone(), AttributeId::new("name").unwrap()).unwrap();
+    let model = &projection.models()[&marker];
+    assert_eq!(model.reference_read().key_fields(), std::slice::from_ref(&key));
+    let token = &model.query_tokens().fields()[&key];
+    assert!(token.is_key());
+    assert_eq!(token.target_name().as_str(), "name_");
+    assert!(
+        model
+            .create()
+            .fields()
+            .iter()
+            .any(|field| field.token() == &key)
+    );
+    let package = emitter.emit(&projection, &authority).unwrap();
+    let models = std::str::from_utf8(package.get("src/models.ts").unwrap()).unwrap();
+    assert!(models.contains("readonly name_:"));
+    assert!(models.contains("readonly nameValue:"));
+    assert_eq!(package, emitter.emit(&projection, &authority).unwrap());
+}

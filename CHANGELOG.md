@@ -4,6 +4,15 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Fix generated TypeScript construction for unbounded roles and list fields by
+  recognizing canonical `"unbounded"` cardinality metadata.
+- Project model fields and roles that collide with runtime members to names with
+  a trailing underscore, including the physical string key `name` as `name_`.
+  Preserve schema identity and existing non-colliding names. Regenerate complete
+  TypeScript packages after updating the generator and compatible runtime.
+
 ### C distribution preparation
 
 - Prepare the 2.2.0 standalone CLI and ABI 1.6 C shared runtime for Linux

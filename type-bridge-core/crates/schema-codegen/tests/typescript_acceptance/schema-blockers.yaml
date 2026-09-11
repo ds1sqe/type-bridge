@@ -1,0 +1,25 @@
+format: typebridge.schema/v2
+attributes:
+  name: { value: string }
+  name-value: { value: string }
+  aliases: { value: string }
+  revision: { value: integer }
+entities:
+  marker:
+    owns:
+      name: { key: true }
+      name-value: { card: 1 }
+      aliases: { card: { min: 0 } }
+      revision: { card: { min: 0, max: 1 } }
+relations:
+  archive:
+    relates:
+      name: { card: { min: 1 } }
+      name-value: { card: { min: 0 } }
+      reference: { card: { min: 0, max: 2 } }
+plays:
+  marker:
+    archive:
+      name: {}
+      name-value: {}
+      reference: {}

@@ -12,7 +12,8 @@ use type_bridge_contract::projection::{
     ProjectedModelForm, ProjectedModelUse, ProjectedMultiplicity, ProjectedTypeRef,
     ProjectionConfig, ProjectionHandler, QueryTokenProjection, ReadFieldProjection,
     ReadRoleProjection, ReferenceReadProjection, RoleTokenProjection, RuntimeProjection,
-    RustCreatePolicy, StructFieldProjection, StructProjection, TargetIdentifier,
+    RustCreatePolicy, StructFieldProjection, StructProjection, TYPESCRIPT_MODEL_RESERVED_NAMES,
+    TargetIdentifier,
 };
 use type_bridge_contract::schema::{
     AnnotationFactId, AnnotationKindId, AnnotationSubjectId, FunctionReturnMode, OwnsFactId,
@@ -224,6 +225,20 @@ impl<'a> ProjectionNamer<'a> {
                 "unsupported_binding_projection_target",
                 "schema projection does not support this binding target",
             ))
+        }
+    }
+
+    fn model_member_identifier(&self, label: &str) -> Result<TargetIdentifier, SchemaDiagnostics> {
+        if self.target == BindingTarget::TypeScript {
+            let mut name = typescript_member_name(label);
+            if TYPESCRIPT_MODEL_RESERVED_NAMES.contains(&name.as_str()) {
+                // Camel-case projection removes underscores, so this suffix cannot
+                // collide with an otherwise valid, unchanged projected member.
+                name.push('_');
+            }
+            TargetIdentifier::typescript(name).map_err(no_source)
+        } else {
+            self.member_identifier(label)
         }
     }
 
@@ -666,7 +681,7 @@ pub fn project(
                         "ordered ownership is absent from the effective ownership map",
                     )
                 })?;
-            let name = namer.member_identifier(owns.id().attribute().label().as_str())?;
+            let name = namer.model_member_identifier(owns.id().attribute().label().as_str())?;
             names.insert(
                 format!("model:{id:?}"),
                 &name,
@@ -733,7 +748,7 @@ pub fn project(
             if replaced.contains(role_id) {
                 continue;
             }
-            let name = namer.member_identifier(role_id.label().as_str())?;
+            let name = namer.model_member_identifier(role_id.label().as_str())?;
             names.insert(format!("model:{id:?}"), &name, format!("role:{role_id:?}"))?;
             let resolved_role = resolved.roles().get(role_id).ok_or_else(|| {
                 projection_error(

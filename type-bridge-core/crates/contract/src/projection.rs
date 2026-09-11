@@ -32,6 +32,32 @@ const BINDING_PROJECTION_CONTENT_DOMAIN: &str = "typebridge.binding.projection-c
 const MAX_TARGET_IDENTIFIER_BYTES: usize = 255;
 const MAX_C_SYMBOL_PREFIX_BYTES: usize = 63;
 
+/// Properties installed on generated TypeScript model tokens or hydrated facets.
+///
+/// Canonical model-member projection appends `_` when a camel-case field or
+/// role name is in this set. The emitter uses the same set to reject invalid
+/// descriptors without changing physical schema identities.
+pub const TYPESCRIPT_MODEL_RESERVED_NAMES: &[&str] = &[
+    "__proto__",
+    "completeRead",
+    "constructor",
+    "create",
+    "declaration",
+    "fields",
+    "id",
+    "iid",
+    "metadata",
+    "manager",
+    "name",
+    "plays",
+    "prototype",
+    "reference",
+    "roles",
+    "typeKey",
+    "typeToken",
+    "valueType",
+];
+
 /// ABI major required by C packages emitted under the C-v1 projection contract.
 pub const TYPE_BRIDGE_C_ABI_MAJOR: u32 = 1;
 /// Current aggregate ABI minor supported by the native C runtime.
