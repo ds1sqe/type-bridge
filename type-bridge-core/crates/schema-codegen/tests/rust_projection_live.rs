@@ -637,6 +637,18 @@ fn generated_rust_projection_round_trips_exact_live_models() {
             "forbidden consumer surface: {forbidden}"
         );
     }
+    // The frozen consumer graph can contain versions absent from the workspace cache.
+    // Fetch that exact graph before requiring the consumer compilation to be offline.
+    let consumer_fetch = Command::new(&cargo)
+        .args(["fetch", "--locked", "--manifest-path"])
+        .arg(&consumer_manifest_path)
+        .output()
+        .expect("locked consumer dependency fetch starts");
+    assert!(
+        consumer_fetch.status.success(),
+        "locked consumer dependency fetch failed\n{}",
+        String::from_utf8_lossy(&consumer_fetch.stderr)
+    );
     let consumer_check = Command::new(&cargo)
         .args([
             "check",
