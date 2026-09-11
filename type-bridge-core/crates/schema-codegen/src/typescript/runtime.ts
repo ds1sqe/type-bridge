@@ -48,7 +48,8 @@ const FUNCTION_CALL_BRAND: unique symbol = Symbol("typebridge.function-call");
 export interface Cardinality {
   readonly kind: "cardinality";
   readonly min: string;
-  readonly max: string | null;
+  // Canonical cardinality encodes an unlimited maximum as "unbounded".
+  readonly max: string;
 }
 
 export type ProjectedModelForm = "complete" | "reference";
@@ -563,7 +564,7 @@ function validateMultiplicity(
   const actual = BigInt(count);
   const minimum = BigInt(multiplicity.cardinality.min);
   const maximum =
-    multiplicity.cardinality.max === null
+    multiplicity.cardinality.max === "unbounded"
       ? null
       : BigInt(multiplicity.cardinality.max);
   if (actual < minimum || (maximum !== null && actual > maximum)) {

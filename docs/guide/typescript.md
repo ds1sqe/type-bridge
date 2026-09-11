@@ -61,6 +61,20 @@ Generated values are immutable. Integer attributes use JavaScript `bigint` so
 the TypeDB integer domain is not silently truncated. Decimal and duration values
 use their lossless generated boundary representations.
 
+Schema fields and roles that collide with generated runtime members receive a
+trailing underscore in the canonical projection: a key physically named `name`
+is accessed as `name_`, and a role named `reference` becomes `reference_`.
+Use these same names in construction, references, field/role tokens, and hydrated
+values. Physical schema labels and key identity stay unchanged; existing
+non-colliding projected names stay unchanged.
+
+Unbounded role and list cardinalities accept any count at or above their
+declared minimum. Finite maxima and optional zero cardinality remain enforced.
+
+After upgrading the generator and compatible runtime, regenerate the complete
+package. Projection and package fingerprints are recomputed from the corrected
+names and runtime resources; semantic schema fingerprints remain unchanged.
+
 ## Managers
 
 ```ts

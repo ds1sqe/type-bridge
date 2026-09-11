@@ -8,6 +8,7 @@ const CORE = resolve(HERE, "../../../..");
 const ROOT = resolve(CORE, "..");
 const STAGE = resolve(CORE, "target/schema-codegen-typescript-acceptance");
 const GENERATED = resolve(STAGE, "generated_v2");
+const BLOCKERS = resolve(STAGE, "generated_blockers");
 const ORDERED = resolve(STAGE, "generated_ordered");
 const FOREIGN = resolve(STAGE, "generated_foreign");
 const PROJECTED = resolve(STAGE, "generated_projected");
@@ -33,10 +34,12 @@ function command(program, args, cwd = ROOT, environment = process.env) {
 }
 
 for (const fixture of [
+  "blockers_positive.ts",
   "positive.ts",
   "negative.ts",
   "ordered_batch_positive.ts",
   "ordered_batch_negative.ts",
+  "blockers_check.mjs",
   "runtime_check.mjs",
   "projected_parity_check.mjs",
 ]) {
@@ -53,8 +56,10 @@ for (const forbidden of ["as unknown as", "@ts-ignore"]) {
   }
 }
 for (const fixture of [
+  "blockers_positive.ts",
   "positive.ts",
   "ordered_batch_positive.ts",
+  "blockers_check.mjs",
   "runtime_check.mjs",
 ]) {
   const source = readFileSync(resolve(HERE, fixture), "utf8");
@@ -170,8 +175,14 @@ command("cargo", [
   projectedForeignSchema,
   PROJECTED_FOREIGN,
 ]);
+command("cargo", [
+  "run", "--quiet", "--manifest-path", resolve(CORE, "Cargo.toml"),
+  "--package", "type-bridge-schema-codegen", "--example", "emit_typescript_acceptance",
+  "--", resolve(HERE, "schema-blockers.yaml"), BLOCKERS,
+]);
 mkdirSync(resolve(STAGE, "node_modules/@type-bridge"), { recursive: true });
 symlinkSync(NODE_PACKAGE, resolve(STAGE, "node_modules/@type-bridge/node"), "dir");
+command("tsc", ["--project", resolve(BLOCKERS, "tsconfig.json")]);
 command("tsc", ["--project", resolve(GENERATED, "tsconfig.json")]);
 command("tsc", ["--project", resolve(ORDERED, "tsconfig.json")]);
 command("tsc", ["--project", resolve(FOREIGN, "tsconfig.json")]);
@@ -207,10 +218,12 @@ if (!orderedModelsDts.includes("OrderedModelToken as ModelToken")) {
 }
 
 for (const fixture of [
+  "blockers_positive.ts",
   "positive.ts",
   "negative.ts",
   "ordered_batch_positive.ts",
   "ordered_batch_negative.ts",
+  "blockers_check.mjs",
   "runtime_check.mjs",
   "authority_rejection_check.mjs",
   "projected_parity_check.mjs",
@@ -234,6 +247,7 @@ writeFileSync(
       skipLibCheck: false,
     },
     include: [
+      "blockers_positive.ts",
       "positive.ts",
       "negative.ts",
       "ordered_batch_positive.ts",
@@ -247,6 +261,7 @@ writeFileSync(
 );
 command("tsc", ["--project", resolve(STAGE, "tsconfig.json")]);
 command("node", [resolve(STAGE, "authority_rejection_check.mjs")]);
+command("node", [resolve(STAGE, "blockers_check.mjs")]);
 command("node", [resolve(STAGE, "runtime_check.mjs")]);
 const externalProjectedReport = process.env.TYPE_BRIDGE_PROJECTED_PARITY_REPORT;
 const projectedReport = externalProjectedReport ?? resolve(STAGE, "projected-node-report.json");

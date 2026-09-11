@@ -1100,34 +1100,37 @@ entities:
 }
 
 #[test]
-fn typescript_runtime_reserved_names_fail_before_emission() {
-    let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("schema.yaml").unwrap(),
-        r#"format: typebridge.schema/v2
-relations:
-  bad:
-    relates: [prototype]
-"#,
-    )])
-    .unwrap();
-    let declared = normalize_documents(&documents).unwrap();
-    let resolved = resolve(
-        &declared,
-        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
-    )
-    .unwrap();
-    let error = project(
-        &resolved,
-        BindingTarget::TypeScript,
-        &ProjectionConfig::typescript(),
-        &[ProjectionHandler::typescript_v1()],
-        &[],
-    )
-    .unwrap_err();
-    assert_eq!(
-        error.iter().next().unwrap().diagnostic().code().as_str(),
-        "reserved_typescript_projection_identifier"
-    );
+fn typescript_runtime_reserved_model_members_are_escaped() {
+    use type_bridge_contract::projection::TYPESCRIPT_MODEL_RESERVED_NAMES;
+
+    for reserved in TYPESCRIPT_MODEL_RESERVED_NAMES {
+        // Labels are projected through camel case before checking runtime names.
+        let label = match *reserved {
+            "iid" => "Iid",
+            "plays" => "Plays",
+            other => other,
+        };
+        let source = format!(
+            "format: typebridge.schema/v2\nrelations:\n  holder:\n    relates: [{label}]\n"
+        );
+        let projected = projection_for(
+            &source,
+            BindingTarget::TypeScript,
+            ProjectionConfig::typescript(),
+            ProjectionHandler::typescript_v1(),
+        );
+        let holder = TypeId::new(TypeKind::Relation, "holder").unwrap();
+        let role = RoleId::new("holder", label).unwrap();
+        let name = projected.models()[&holder].query_tokens().roles()[&role]
+            .target_name()
+            .as_str();
+        let expected = if *reserved == "__proto__" {
+            "proto".to_owned()
+        } else {
+            format!("{reserved}_")
+        };
+        assert_eq!(name, expected);
+    }
 }
 
 #[test]
