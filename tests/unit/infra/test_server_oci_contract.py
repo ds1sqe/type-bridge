@@ -54,6 +54,18 @@ def test_server_image_build_and_runtime_are_immutable_and_least_privilege() -> N
         "debian:bookworm-slim@"
         "sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818"
     ) in source
+    for architecture, checksum in (
+        ("amd64", "81c5502941118a24d47af69a17b8b0b9548d75cc6d72b3eb3fe01047b46fa10e"),
+        ("arm64", "d178d33697eef877c2c27733141b7f8520fee66a329ae5809e8c8eae3709efa3"),
+    ):
+        assert f"ADD --checksum=sha256:{checksum}" in source
+        assert (
+            "https://security.debian.org/debian-security/pool/updates/main/p/pcre2/"
+            f"libpcre2-8-0_10.42-1+deb12u1_{architecture}.deb"
+        ) in source
+    assert "COPY --from=runtime-security /security/libpcre2-${TARGETARCH}.deb" in source
+    assert "dpkg --install /tmp/libpcre2.deb" in source
+    assert "rm -f /tmp/libpcre2.deb /var/log/dpkg.log /var/cache/ldconfig/aux-cache" in source
     assert "cargo build --locked --release -p type-bridge-server --no-default-features" in source
     assert "--features band8,band9,v2-query" in source
     assert "&& chage --lastday 0 typebridge" in source

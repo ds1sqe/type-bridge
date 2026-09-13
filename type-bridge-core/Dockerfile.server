@@ -5,6 +5,15 @@
 ARG RUST_BUILDER_IMAGE=rust:1.94.1-bookworm@sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55
 ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
 
+FROM ${RUST_BUILDER_IMAGE} AS runtime-security
+
+# The base image predates Debian's PCRE2 security update. Keep each package
+# immutable until the next reviewed base-image refresh incorporates it.
+ADD --checksum=sha256:81c5502941118a24d47af69a17b8b0b9548d75cc6d72b3eb3fe01047b46fa10e \
+    https://security.debian.org/debian-security/pool/updates/main/p/pcre2/libpcre2-8-0_10.42-1+deb12u1_amd64.deb /security/libpcre2-amd64.deb
+ADD --checksum=sha256:d178d33697eef877c2c27733141b7f8520fee66a329ae5809e8c8eae3709efa3 \
+    https://security.debian.org/debian-security/pool/updates/main/p/pcre2/libpcre2-8-0_10.42-1+deb12u1_arm64.deb /security/libpcre2-arm64.deb
+
 FROM ${RUST_BUILDER_IMAGE} AS builder
 
 WORKDIR /build
@@ -22,6 +31,7 @@ RUN cargo build --locked --release -p type-bridge-server --no-default-features \
 
 FROM ${RUNTIME_IMAGE} AS runtime
 
+ARG TARGETARCH
 ARG SOURCE_REVISION=unknown
 ARG RELEASE_VERSION=0.0.0-dev
 ARG CREATED=1970-01-01T00:00:00Z
@@ -38,9 +48,13 @@ LABEL org.opencontainers.image.title="TypeBridge Server" \
       org.opencontainers.image.licenses="MIT" \
       io.type-bridge.release-identity="${RELEASE_IDENTITY}"
 
-# SOURCE_DATE_EPOCH cannot normalize the password-aging value written by
-# useradd, so pin the locked service account's last-change field explicitly.
-RUN groupadd --gid 10001 typebridge \
+COPY --from=runtime-security /security/libpcre2-${TARGETARCH}.deb /tmp/libpcre2.deb
+
+# Remove package-install logs and inode-dependent loader caches. Normalize
+# the password-aging value, which SOURCE_DATE_EPOCH cannot rewrite.
+RUN dpkg --install /tmp/libpcre2.deb \
+    && rm -f /tmp/libpcre2.deb /var/log/dpkg.log /var/cache/ldconfig/aux-cache \
+    && groupadd --gid 10001 typebridge \
     && useradd --uid 10001 --gid 10001 --no-create-home \
       --home-dir /nonexistent --shell /usr/sbin/nologin typebridge \
     && chage --lastday 0 typebridge \
