@@ -6,6 +6,8 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Fixed
 
+- Apply Debian's PCRE2 security update to both server-container architectures,
+  fixing CVE-2026-86145 and CVE-2026-89161 with checksum-pinned packages.
 - Fix generated TypeScript construction for unbounded roles and list fields by
   recognizing canonical `"unbounded"` cardinality metadata.
 - Project model fields and roles that collide with runtime members to names with
