@@ -128,6 +128,19 @@ def rust_consumer(surface: Path, root: Path) -> list[str]:
     run(
         [
             "cargo",
+            "fetch",
+            "--locked",
+            "--config",
+            "net.offline=false",
+            "--manifest-path",
+            str(package / "Cargo.toml"),
+        ],
+        cwd=package,
+        env=environment,
+    )
+    run(
+        [
+            "cargo",
             "check",
             "--locked",
             "--offline",

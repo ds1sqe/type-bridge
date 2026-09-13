@@ -115,11 +115,20 @@ def test_rust_consumer_stages_frozen_dependency_graph(
     assert commands == [
         [
             "cargo",
+            "fetch",
+            "--locked",
+            "--config",
+            "net.offline=false",
+            "--manifest-path",
+            str(tmp_path / "rust/Cargo.toml"),
+        ],
+        [
+            "cargo",
             "check",
             "--locked",
             "--offline",
             "--manifest-path",
             str(tmp_path / "rust/Cargo.toml"),
             "--all-targets",
-        ]
+        ],
     ]

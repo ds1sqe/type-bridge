@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Value, json};
 use type_bridge_contract::codec::to_canonical_json;
@@ -20,16 +20,19 @@ struct Stage(PathBuf);
 
 impl Stage {
     fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time follows the Unix epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "typebridge-sdk-v2-proof-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).expect("proof test stage is created");
-        Self(path.canonicalize().expect("proof test stage resolves"))
+        static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let nonce = NEXT_STAGE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "typebridge-sdk-v2-proof-{}-{nonce}",
+                std::process::id()
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return Self(path.canonicalize().expect("proof test stage resolves")),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("proof test stage creates: {error}"),
+            }
+        }
     }
 
     fn root(&self) -> &Path {
@@ -41,6 +44,27 @@ impl Drop for Stage {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+#[test]
+fn concurrent_stages_keep_distinct_directories() {
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(32));
+    let threads: Vec<_> = (0..32)
+        .map(|_| {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                Stage::new()
+            })
+        })
+        .collect();
+    let stages: Vec<_> = threads
+        .into_iter()
+        .map(|thread| thread.join().expect("stage creator completes"))
+        .collect();
+    let paths: std::collections::HashSet<_> = stages.iter().map(Stage::root).collect();
+    assert_eq!(paths.len(), stages.len());
+    assert!(paths.iter().all(|path| path.is_dir()));
 }
 
 fn copy_contract(stage: &Stage, relative: &str, bytes: &[u8]) {

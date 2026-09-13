@@ -219,7 +219,10 @@ def artifact_record(path: Path, manifest: Mapping[str, Any], kind: str) -> dict[
     }
 
 
-def package_spdx_id(identifier: str) -> str:
+def package_spdx_id(package: Mapping[str, Any]) -> str:
+    identifier = (
+        package["id"] if package.get("source") else f"path+{package['name']}@{package['version']}"
+    )
     return "SPDXRef-Package-" + re.sub(r"[^A-Za-z0-9.-]", "-", identifier)
 
 
@@ -240,7 +243,7 @@ def cargo_sbom(
     ]
     for identifier in sorted(closure):
         item = packages_by_id[identifier]
-        spdx_id = package_spdx_id(identifier)
+        spdx_id = package_spdx_id(item)
         entry: dict[str, Any] = {
             "SPDXID": spdx_id,
             "name": item["name"],
@@ -270,7 +273,7 @@ def cargo_sbom(
                     {
                         "spdxElementId": spdx_id,
                         "relationshipType": "DEPENDS_ON",
-                        "relatedSpdxElement": package_spdx_id(target),
+                        "relatedSpdxElement": package_spdx_id(packages_by_id[target]),
                     }
                 )
     entries.append(

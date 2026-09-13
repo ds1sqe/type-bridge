@@ -54,6 +54,34 @@ def test_pruned_artifact_lock_contains_only_runtime_closure() -> None:
     assert ("rustls-webpki", "0.103.13") in packages
 
 
+def test_sbom_is_independent_of_checkout_location() -> None:
+    metadata = SECURITY.cargo_metadata()
+    moved = copy.deepcopy(metadata)
+    replacements = {
+        item["id"]: item["id"].replace(str(ROOT), "/different/checkout")
+        for item in metadata["packages"]
+        if item.get("source") is None
+    }
+    for item in moved["packages"]:
+        item["id"] = replacements.get(item["id"], item["id"])
+    for item in moved["resolve"]["nodes"]:
+        item["id"] = replacements.get(item["id"], item["id"])
+        for dependency in item["deps"]:
+            dependency["pkg"] = replacements.get(dependency["pkg"], dependency["pkg"])
+    artifact = {"filename": "cli.tar.gz", "artifact-id": "sha256:" + "1" * 64, "sha256": "1" * 64}
+    original = SECURITY.cargo_sbom(
+        artifact,
+        metadata,
+        SECURITY.runtime_closure(metadata, ("type-bridge-cli",)),
+        "type-bridge-cli",
+    )
+    relocated = SECURITY.cargo_sbom(
+        artifact, moved, SECURITY.runtime_closure(moved, ("type-bridge-cli",)), "type-bridge-cli"
+    )
+    assert original == relocated
+    assert str(ROOT) not in str(original)
+
+
 def test_exact_current_rustsec_report_and_adjudication_pass() -> None:
     report = clean_audit_report()
 
