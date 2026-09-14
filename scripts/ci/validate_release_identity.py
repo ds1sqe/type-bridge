@@ -1695,7 +1695,7 @@ def validate_server_oci_release_channels(workflow: Path) -> None:
     tag_preflight = _release_workflow_job(source, "release-tag-preflight")
     freeze_tag = _release_workflow_step(tag_preflight, "Freeze exact annotated tag object")
     tag_requirements = {
-        "needs: [channel-preflight]": "stable channel preflight",
+        "needs: [channel-preflight, recovery-preflight]": "stable channel preflight",
         "needs.channel-preflight.result == 'success'": "stable channel acceptance",
         "outputs:\n      tag_object: ${{ steps.freeze-tag.outputs.tag_object }}": (
             "frozen tag-object job output"
@@ -1773,14 +1773,18 @@ def validate_server_oci_release_channels(workflow: Path) -> None:
         (metadata_step, 'alias_markdown = ", ".join(', "release-note aliases"),
         (
             signature_step,
-            "COSIGN_CERTIFICATE_IDENTITY_REGEXP: '^https://github.com/ds1sqe/type-bridge/.github/workflows/"
-            "release.yml@refs/tags/v2[.]2[.]0$'",
+            "COSIGN_CERTIFICATE_IDENTITY: 'https://github.com/${{ github.repository }}/.github/workflows/"
+            "release.yml@refs/tags/${{ env.RELEASE_TAG }}'",
             "closed stable Cosign identities",
         ),
     )
     malformed.extend(
         label for block, marker, label in scoped_requirements if block.count(marker) != 1
     )
+    if "--certificate-identity-regexp" in signature_step:
+        malformed.append("non-exact Cosign identities")
+    if '"$COSIGN_CERTIFICATE_IDENTITY"' not in signature_step:
+        malformed.append("missing Cosign identities")
     stale_stable_markers = (
         "for alias in 2.0 2 latest; do",
         '"aliases": ["2.0", "2", "latest"],',

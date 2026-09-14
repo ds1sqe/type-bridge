@@ -60,6 +60,28 @@ procedure. `release.yml` owns Python, npm, Cargo, OCI and the ordinary GitHub
 draft. Preserve successful publisher outputs and independently verify their
 public bytes before final publication.
 
+The ordinary 2.2.1 release has a narrowly scoped publication recovery option.
+Its original run, [34846118498](https://github.com/ds1sqe/type-bridge/actions/runs/34846118498),
+accepted the artifacts and published npm and Cargo packages, then stopped at an
+OCI certificate check that still required the 2.2.0 tag identity. The annotated
+`v2.2.1` tag and original source remain immutable.
+
+To resume, dispatch `release.yml` from reviewed `master` with
+`release_channel=stable` and `recover_publication=true`. The policy in
+`.github/release/recovery-2.2.1.json` binds the original source, tag object,
+complete job and step results, artifact IDs, sizes, hashes, and OCI digests.
+Recovery rejects any change to that accepted state, skips builds and completed
+npm/Cargo publishers, and compares all consumed files with the original
+hash-verified artifact archives before completing OCI, PyPI, and draft creation.
+Ordinary manual runs remain read-only when recovery is false.
+
+OCI recovery verifies the existing signatures against the exact original tag
+identity. Its separate `publication-recovery/v1` attestations identify both the
+original build and the recovery control revision and run; they do not claim a
+new build. The release metadata embeds that recovery record and links its
+attestations and the per-platform SBOM attestations. Independently verify this
+chain as well as the public bytes before making the completed draft public.
+
 On the exact `v2.2.1` tag, dispatch `c-release.yml` with `mode=publish` and
 the successful same-source `verify_run_id`. This job uses the `release`
 environment and rechecks the verification run, every required step, the master

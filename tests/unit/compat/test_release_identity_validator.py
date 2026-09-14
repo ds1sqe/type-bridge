@@ -428,7 +428,7 @@ def test_release_workflow_requires_ordered_native_artifact_gates(
             "for alias in 2.0 2 latest; do",
         ),
         (
-            "release.yml@refs/tags/v2[.]2[.]0$'",
+            "release.yml@refs/tags/${{ env.RELEASE_TAG }}'",
             "release.yml@refs/tags/v2[.]0[.]0$'",
         ),
         (
@@ -469,7 +469,7 @@ def test_release_tag_freeze_and_publisher_rechecks_cannot_be_bypassed(tmp_path: 
 def test_stable_cosign_identity_cannot_be_broadened(tmp_path: Path) -> None:
     workflow = tmp_path / "release.yml"
     source = (ROOT / ".github/workflows/release.yml").read_text()
-    exact = "release.yml@refs/tags/v2[.]2[.]0$"
+    exact = "release.yml@refs/tags/${{ env.RELEASE_TAG }}"
     assert source.count(exact) == 1
     workflow.write_text(source.replace(exact, "release.yml@refs/tags/.*$", 1))
 
