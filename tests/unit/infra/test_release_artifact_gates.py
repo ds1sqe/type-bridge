@@ -601,7 +601,12 @@ def test_release_channels_have_fixed_non_attacker_controlled_identities() -> Non
             "type": "choice",
             "default": "candidate",
             "options": ["candidate", "stable"],
-        }
+        },
+        "recover_publication": {
+            "description": "Resume only the accepted 2.2.1 partial publication",
+            "type": "boolean",
+            "default": "false",
+        },
     }
     assert document["env"] == {
         "RELEASE_TAG": "v2.2.1",
@@ -609,10 +614,13 @@ def test_release_channels_have_fixed_non_attacker_controlled_identities() -> Non
         "PYTHON_RELEASE_VERSION": "2.2.1",
         "SERVER_OCI_MINOR_ALIAS": "2.2",
         "RELEASE_CHANNEL": "${{ github.event_name == 'workflow_dispatch' && inputs.release_channel || 'stable' }}",
-        "RELEASE_REVISION": "${{ github.sha }}",
-        "RELEASE_ARTIFACT_RUN_ID": "${{ github.run_id }}",
+        "RELEASE_REVISION": "${{ inputs.recover_publication && '5d1a1e17c0b41fb720a3a60040ddd215e453a899' || github.sha }}",
+        "RELEASE_ARTIFACT_RUN_ID": "${{ inputs.recover_publication && '34846118498' || github.run_id }}",
     }
-    assert "recovery" not in workflow
+    assert document["jobs"]["recovery-preflight"]["permissions"] == {
+        "contents": "read",
+        "actions": "read",
+    }
     assert "notice-finalize" not in workflow
     assert "GITHUB_REF_NAME" not in workflow
     assert "github.ref_name" not in workflow
@@ -698,18 +706,18 @@ def test_python_npm_publication_is_serial_after_global_candidate_gates() -> None
     )
     assert needs_line(node_publish) == ("    needs: [channel-preflight, release-tag-preflight]")
     assert needs_line(job_block(workflow, "publish-server-oci")) == (
-        "    needs: [channel-preflight, release-tag-preflight, accept-server-oci, publish-node-npm]"
+        "    needs: [channel-preflight, release-tag-preflight, accept-server-oci, publish-node-npm, recovery-preflight]"
     )
     assert needs_line(core_publish) == (
         "    needs: [build-core-wheels, build-core-sdist, "
-        "release-tag-preflight, publish-server-oci]"
+        "release-tag-preflight, publish-server-oci, recovery-preflight]"
     )
     assert needs_line(root_publish) == (
-        "    needs: [build-python, release-tag-preflight, publish-core-pypi]"
+        "    needs: [build-python, release-tag-preflight, publish-core-pypi, recovery-preflight]"
     )
     assert needs_line(github_release) == (
         "    needs: [release-tag-preflight, publish-server-oci, "
-        "publish-node-npm, publish-core-pypi, publish-python-pypi, publish-crates]"
+        "publish-node-npm, publish-core-pypi, publish-python-pypi, publish-crates, recovery-preflight]"
     )
     assert needs_line(cargo_publish) == (
         "    needs: [release-tag-preflight, publish-node-npm, validate-release-identity]"
@@ -1428,7 +1436,7 @@ def test_publishers_consume_same_run_artifacts_and_recheck_the_frozen_tag() -> N
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     jobs = yaml.load(workflow, Loader=yaml.BaseLoader)["jobs"]
     freeze = jobs["release-tag-preflight"]
-    assert freeze["needs"] == ["channel-preflight"]
+    assert freeze["needs"] == ["channel-preflight", "recovery-preflight"]
     assert freeze["outputs"]["tag_object"] == "${{ steps.freeze-tag.outputs.tag_object }}"
     for name in MUTATING_RELEASE_JOBS:
         steps = jobs[name]["steps"]

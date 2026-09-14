@@ -680,7 +680,7 @@ def test_release_builds_accepts_and_publishes_only_exact_oci_bytes() -> None:
     assert "SERVER_OCI_MINOR_ALIAS: '2.2'" in workflow
     assert 'for alias in "$SERVER_OCI_MINOR_ALIAS" 2 latest; do' in workflow
     assert '"aliases": [os.environ["SERVER_OCI_MINOR_ALIAS"], "2", "latest"],' in workflow
-    assert "release.yml@refs/tags/v2[.]2[.]0$'" in workflow
+    assert "release.yml@refs/tags/${{ env.RELEASE_TAG }}'" in workflow
     assert "release.yml@refs/tags/v2[.]0[.]0$'" not in workflow
     assert "for alias in 2.0 2 latest; do" not in workflow
     assert "|not found|" not in workflow
