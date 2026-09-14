@@ -33,20 +33,26 @@ def main() -> None:
     output.mkdir(parents=True)
     inputs = arguments.inputs.resolve()
     provider = ("--address", arguments.address, "--http-port", arguments.http_port)
-    run("run_sdk_v1_v2_artifact.py", "--output", str(output / "v12"), *provider)
+    run("run_sdk_conformance.py", "queries", "--output", str(output / "v12"), *provider)
     for version in (1, 2):
         shutil.move(str(output / "v12" / f"v{version}"), output / f"v{version}")
     (output / "v12").rmdir()
-    for version in (3, 4, 5):
-        script = "run_sdk_v4_live.py" if version == 4 else f"run_sdk_v{version}_artifact.py"
-        run(script, "--output", str(output / f"v{version}"), *(() if version == 4 else provider))
+    for version, suite in ((3, "models"), (4, "administration"), (5, "serialization")):
+        run(
+            "run_sdk_conformance.py",
+            suite,
+            "--output",
+            str(output / f"v{version}"),
+            *(() if version == 4 else provider),
+        )
     files = {
         filename: inputs / artifact / filename
         for artifact, filenames in policy.ARTIFACTS.items()
         for filename in filenames
     }
     run(
-        "run_sdk_v6_artifact.py",
+        "run_sdk_conformance.py",
+        "artifacts",
         "--predecessors",
         str(output),
         "--acceptance",

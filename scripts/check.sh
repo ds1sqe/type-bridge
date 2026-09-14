@@ -151,12 +151,7 @@ run_c() {
         tests/unit/compat/test_sdk_conformance_v6.py \
         tests/unit/compat/test_sdk_conformance_v6_assembler.py \
         tests/unit/compat/test_persist_binding_reports.py \
-        tests/unit/compat/test_sdk_v1_v2_artifact_runner.py \
-        tests/unit/compat/test_sdk_v3_artifact_runner.py \
-        tests/unit/compat/test_sdk_v4_live_runner.py \
-        tests/unit/compat/test_sdk_v5_artifact_runner.py \
-        tests/unit/compat/test_sdk_v6_artifact_runner.py \
-        tests/unit/compat/test_sdk_v6_evidence_composer.py \
+        tests/unit/compat/test_sdk_conformance_runner.py \
         tests/unit/compat/test_sdk_v6_surfaces.py \
         tests/unit/compat/test_sdk_v6_surface_consumer.py -q
 
@@ -251,7 +246,7 @@ run_projected_parity() {
 run_projected_live() {
     printf "${BOLD}━━━ Exact-TypeDB-3.12.3 Projected live parity ━━━${RESET}\n\n"
     run_step "four-binding exact-TypeDB-3.12.3 Projected live fan-in" \
-        uv run python scripts/ci/run_projected_live.py
+        uv run python scripts/ci/run_generated_live.py projected
 }
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────

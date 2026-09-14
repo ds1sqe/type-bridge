@@ -1,17 +1,14 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, RuntimeProjection};
-use type_bridge_contract::schema::DocumentId;
-use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 use type_bridge_schema_codegen::{GeneratedPackage, RustEmitter};
 
 mod support;
+use support::{
+    Stage, cargo_with_env as cargo, repository_root as repository,
+    rust_projection as project_from_source, write_package,
+};
 
 const PRODUCER: &str = include_str!("rust_acceptance/manager_live.rs");
 const OUTPUT_ENV: &str = "TYPE_BRIDGE_MANAGER_LIVE_REPORT";
@@ -20,49 +17,6 @@ const DATABASE_ENV: &str = "TYPE_BRIDGE_MANAGER_LIVE_DATABASE";
 const HTTP_PORT_ENV: &str = "TYPE_BRIDGE_MANAGER_LIVE_HTTP_PORT";
 const ROOT_ENV: &str = "TYPE_BRIDGE_MANAGER_REPOSITORY_ROOT";
 const MAX_PRODUCER_BYTES: usize = 1024 * 1024;
-
-static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-static CARGO_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-struct Stage(PathBuf);
-
-impl Stage {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time follows Unix epoch")
-            .as_nanos();
-        let sequence = STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = env::temp_dir().join(format!(
-            "typebridge-rust-manager-live-{}-{nonce}-{sequence}",
-            std::process::id(),
-        ));
-        fs::create_dir(&path).expect("unique Rust Manager stage creates");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Stage {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn repository() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("schema-codegen has crates parent")
-        .parent()
-        .expect("crates has core parent")
-        .parent()
-        .expect("core has repository parent")
-        .canonicalize()
-        .expect("repository root canonicalizes")
-}
 
 fn sdk_source() -> String {
     fs::read_to_string(repository().join("tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"))
@@ -78,32 +32,6 @@ fn foreign_sdk_source() -> String {
     foreign
 }
 
-fn project_from_source(source: &str, document: &str) -> RuntimeProjection {
-    let documents = SchemaDocumentSet::parse([(
-        DocumentId::new(document).expect("static document ID is canonical"),
-        source,
-    )])
-    .expect("Manager schema parses");
-    let declared = normalize_documents(&documents).expect("Manager schema normalizes");
-    let resolved = resolve(
-        &declared,
-        &SemanticProfileId::new("typedb-3.12.1/v1").expect("profile is canonical"),
-    )
-    .expect("Manager schema resolves");
-    let emitter = RustEmitter::new();
-    let resources = emitter
-        .code_resources_for(&resolved)
-        .expect("Rust code resources resolve");
-    project(
-        &resolved,
-        BindingTarget::Rust,
-        &ProjectionConfig::rust(),
-        &emitter.generator_handlers_for(&resolved),
-        &resources,
-    )
-    .expect("Manager Rust projection builds")
-}
-
 fn emit_from_source(source: &str, document: &str) -> GeneratedPackage {
     RustEmitter::new()
         .emit(
@@ -111,15 +39,6 @@ fn emit_from_source(source: &str, document: &str) -> GeneratedPackage {
             &support::authority(source),
         )
         .expect("Manager Rust package emits")
-}
-
-fn write_package(package: &GeneratedPackage, root: &Path) {
-    for (relative, bytes) in package.files() {
-        let path = root.join(relative);
-        fs::create_dir_all(path.parent().expect("generated path has parent"))
-            .expect("generated parent creates");
-        fs::write(path, bytes).expect("generated file writes");
-    }
 }
 
 fn write_foreign_package(package: &GeneratedPackage, root: &Path) {
@@ -180,31 +99,6 @@ type-bridge-orm = {{ path = "{orm_path}" }}
         support::locks::Consumer::ManagerLive.lock(),
     )
     .expect("consumer lockfile is staged");
-}
-
-fn cargo_target() -> PathBuf {
-    env::var_os("ACCEPTANCE_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .expect("schema-codegen has crates parent")
-                .parent()
-                .expect("crates has core parent")
-                .join("target/tmp_acceptance_target")
-        })
-}
-
-fn cargo(arguments: &[&str], environment: &[(&str, &Path)]) -> Output {
-    let _guard = CARGO_MUTEX.lock().expect("acceptance cargo mutex locks");
-    let mut command = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-    command
-        .args(arguments)
-        .env("CARGO_TARGET_DIR", cargo_target());
-    for (name, value) in environment {
-        command.env(name, value);
-    }
-    command.output().expect("cargo command starts")
 }
 
 fn staged_consumer(stage: &Stage) -> PathBuf {
@@ -297,7 +191,10 @@ fn generated_rust_manager_live_runs_when_explicitly_configured() {
             "--manifest-path",
             manifest.to_str().expect("manifest path is UTF-8"),
         ],
-        &[(OUTPUT_ENV, &report), (ROOT_ENV, &repository)],
+        &[
+            (OUTPUT_ENV, report.as_os_str()),
+            (ROOT_ENV, repository.as_os_str()),
+        ],
     );
     assert!(
         output.status.success(),

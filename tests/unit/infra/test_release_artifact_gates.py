@@ -18,24 +18,20 @@ CRATE_PUBLISH_HELPER = REPO_ROOT / "scripts/ci/publish_crate_idempotently.sh"
 CRATE_RELEASE_GRAPH = REPO_ROOT / "scripts/ci/release_crates_graph.sh"
 FRESH_RUNTIME_PROBE = REPO_ROOT / "scripts/ci/validate_fresh_typedb_runtime_package.sh"
 RUST_RELEASE_ARTIFACT_VALIDATOR = REPO_ROOT / "scripts/ci/validate_rust_release_artifacts.py"
-RECOVERY_VALIDATOR = REPO_ROOT / "scripts/ci/validate_release_recovery.py"
-RECOVERY_PAYLOAD_VALIDATOR = REPO_ROOT / "scripts/ci/validate_release_recovery_payloads.py"
-RECOVERY_MANIFEST = REPO_ROOT / ".github/release/v2.0.0-recovery.json"
-RECOVERY_MANIFEST_SHA256 = "f8d5b2d04ad01a45694aecdd171846443bfd511a9363ab771e5f182c6bd17d2d"
 STABLE_PUBLICATION_GUARD = "if: github.event_name == 'push' && github.ref == 'refs/tags/v2.2.0'"
 QEMU_ACTION = "docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130"
 QEMU_BINFMT_IMAGE = (
     "docker.io/tonistiigi/binfmt@"
     "sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0"
 )
-RECOVERY_MUTATING_JOBS = (
+ARTIFACT_MUTATING_JOBS = (
     "publish-server-oci",
     "publish-node-npm",
     "publish-core-pypi",
     "publish-python-pypi",
     "github-release",
 )
-MUTATING_RELEASE_JOBS = ("publish-crates", *RECOVERY_MUTATING_JOBS)
+MUTATING_RELEASE_JOBS = ("publish-crates", *ARTIFACT_MUTATING_JOBS)
 CARGO_PUBLICATION_MARKERS = (
     "publish-crates:",
     "CARGO_REGISTRY_TOKEN",
@@ -195,46 +191,16 @@ def needs_line(block: str) -> str:
 
 
 def assert_stable_only_release_mutations(workflow: str) -> None:
-    """Require every publication to use the exact tag or pinned recovery path."""
-    for name in RECOVERY_MUTATING_JOBS:
+    """Require every publication to use the exact stable tag."""
+    for name in ARTIFACT_MUTATING_JOBS:
         block = job_block(workflow, name)
         assert block.count("    if: >-\n") == 1
         assert "      always() &&\n      !cancelled() &&\n" in block
-        assert "github.event_name == 'push'" in block
-        assert "github.ref == 'refs/tags/v2.2.0'" in block
-        assert "github.event_name == 'workflow_dispatch'" in block
-        assert "github.ref == 'refs/heads/master'" in block
-        assert "inputs.release_channel == 'recovery'" in block
-        assert "inputs.recovery_mode == 'publish'" in block
-        assert "inputs.recovery_run_id == '30612912483'" in block
-        assert "needs.recovery-preflight.result == 'success'" in block
-        assert "inputs.release_channel == 'candidate'" not in block
-
-    notice = job_block(workflow, "notice-recovery-publish")
-    for term in (
-        "github.repository == 'ds1sqe/type-bridge'",
-        "github.event_name == 'workflow_dispatch'",
-        "github.ref == 'refs/heads/release/2.0.2-notice'",
-        "inputs.release_channel == 'notice-recovery'",
-        "inputs.recovery_mode == 'publish'",
-        "inputs.notice_verify_run_id != ''",
-        "needs.notice-recovery-verify.result == 'success'",
-    ):
-        assert term in notice
-    assert needs_line(notice) == "    needs: notice-recovery-verify"
-
-    finalize = job_block(workflow, "notice-finalize-write")
-    for term in (
-        "github.repository == 'ds1sqe/type-bridge'",
-        "github.event_name == 'workflow_dispatch'",
-        "github.ref == 'refs/heads/release/2.0.2-notice'",
-        "inputs.release_channel == 'notice-finalize'",
-        "inputs.notice_finalize_mode == 'draft' || inputs.notice_finalize_mode == 'publish'",
-        "inputs.notice_finalize_verify_run_id != ''",
-        "needs.notice-finalize-verify.result == 'success'",
-    ):
-        assert term in finalize
-    assert needs_line(finalize) == "    needs: notice-finalize-verify"
+        guard = yaml.load(block, Loader=yaml.BaseLoader)[name]["if"]
+        assert "github.event_name == 'push'" in guard
+        assert "github.ref == 'refs/tags/v2.2.0'" in guard
+        assert "github.event_name == 'workflow_dispatch'" not in block
+        assert "needs.release-tag-preflight.result == 'success'" in block
 
     cargo = job_block(workflow, "publish-crates")
     assert cargo.count("    if: >-\n") == 1
@@ -257,17 +223,13 @@ def assert_stable_only_release_mutations(workflow: str) -> None:
         "pypa/gh-action-pypi-publish": (
             "publish-core-pypi",
             "publish-python-pypi",
-            "notice-recovery-publish",
         ),
-        "softprops/action-gh-release": ("github-release", "notice-finalize-write"),
-        "gh release edit": "notice-finalize-write",
+        "softprops/action-gh-release": "github-release",
     }
     for marker, owners in publication_markers.items():
         expected_owners = (owners,) if isinstance(owners, str) else owners
         containing_jobs = tuple(
-            name
-            for name in (*MUTATING_RELEASE_JOBS, "notice-recovery-publish", "notice-finalize-write")
-            if marker in job_block(workflow, name)
+            name for name in MUTATING_RELEASE_JOBS if marker in job_block(workflow, name)
         )
         assert containing_jobs == expected_owners
         owned_count = sum(job_block(workflow, name).count(marker) for name in expected_owners)
@@ -630,307 +592,41 @@ def test_each_core_wheel_executes_v2_authoring_on_its_native_target() -> None:
 
 def test_release_channels_have_fixed_non_attacker_controlled_identities() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    preamble = workflow.split("\njobs:\n", maxsplit=1)[0]
-
-    assert (
-        "on:\n"
-        "  push:\n"
-        "    tags:\n"
-        "      - 'v2.2.0'\n"
-        "  workflow_dispatch:\n"
-        "    inputs:\n"
-        "      release_channel:\n"
-        "        description: Validate the 2.2.0 release identity or recover "
-        "the accepted v2.0.0 tag run\n"
-        "        required: true\n"
-        "        type: choice\n"
-        "        default: candidate\n"
-        "        options:\n"
-        "          - candidate\n"
-        "          - stable\n"
-        "          - recovery\n"
-        "          - notice-recovery\n"
-        "          - notice-finalize\n"
-        "      notice_verify_run_id:\n"
-        "        description: Exact same-control successful notice-recovery verify run; required to publish\n"
-        "        required: false\n"
-        "        type: string\n"
-        "        default: ''\n"
-        "      notice_finalize_mode:\n"
-        "        description: Rehearse, create a draft, or publish the independently verified notice\n"
-        "        required: false\n"
-        "        type: choice\n"
-        "        default: verify\n"
-        "        options:\n"
-        "          - verify\n"
-        "          - draft\n"
-        "          - publish\n"
-        "      notice_finalize_verify_run_id:\n"
-        "        description: Same-control successful notice-finalize verification run\n"
-        "        required: false\n"
-        "        type: string\n"
-        "        default: ''\n"
-        "      recovery_run_id:\n"
-        "        description: Exact failed v2.0.0 tag run; required only for recovery\n"
-        "        required: false\n"
-        "        type: string\n"
-        "        default: ''\n"
-        "      recovery_mode:\n"
-        "        description: Verify recovery inputs without mutation before "
-        "explicitly publishing\n"
-        "        required: false\n"
-        "        type: choice\n"
-        "        default: verify\n"
-        "        options:\n"
-        "          - verify\n"
-        "          - publish\n"
-    ) in preamble
-    assert "'v*'" not in preamble
-    assert (
-        "RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && "
-        "inputs.release_channel == 'recovery' && 'v2.0.0' || 'v2.2.0' }}"
-    ) in preamble
-    assert (
-        "RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && "
-        "inputs.release_channel == 'recovery' && '2.0.0' || '2.2.0' }}"
-    ) in preamble
-    assert (
-        "PYTHON_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && "
-        "inputs.release_channel == 'recovery' && '2.0.0' || '2.2.0' }}"
-    ) in preamble
-    assert (
-        "SERVER_OCI_MINOR_ALIAS: ${{ github.event_name == 'workflow_dispatch' && "
-        "inputs.release_channel == 'recovery' && '2.0' || '2.2' }}"
-    ) in preamble
-    assert (
-        "RELEASE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' "
-        "&& inputs.release_channel || 'stable' }}"
-    ) in preamble
-    assert (
-        "RELEASE_REVISION: ${{ github.event_name == 'workflow_dispatch' && "
-        "inputs.release_channel == 'recovery' && "
-        "'aacf4d16486a3a3bae47c3b10c1d526c587dd7a7' || github.sha }}"
-    ) in preamble
-    assert (
-        "RELEASE_ARTIFACT_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && "
-        "inputs.release_channel == 'recovery' && inputs.recovery_run_id || github.run_id }}"
-    ) in preamble
-    assert f"RELEASE_RECOVERY_MANIFEST_SHA256: {RECOVERY_MANIFEST_SHA256}" in preamble
-    assert workflow.count("RELEASE_TAG:") == 1
-    assert workflow.count("\n  RELEASE_VERSION:") == 1
-    assert workflow.count("PYTHON_RELEASE_VERSION:") == 1
-    assert workflow.count("RELEASE_CHANNEL:") == 1
-    assert preamble.count("inputs.release_channel") == 7
+    document = yaml.load(workflow, Loader=yaml.BaseLoader)
+    assert document["on"]["push"] == {"tags": ["v2.2.0"]}
+    assert document["on"]["workflow_dispatch"]["inputs"] == {
+        "release_channel": {
+            "description": "Validate the 2.2.0 release identity",
+            "required": "true",
+            "type": "choice",
+            "default": "candidate",
+            "options": ["candidate", "stable"],
+        }
+    }
+    assert document["env"] == {
+        "RELEASE_TAG": "v2.2.0",
+        "RELEASE_VERSION": "2.2.0",
+        "PYTHON_RELEASE_VERSION": "2.2.0",
+        "SERVER_OCI_MINOR_ALIAS": "2.2",
+        "RELEASE_CHANNEL": "${{ github.event_name == 'workflow_dispatch' && inputs.release_channel || 'stable' }}",
+        "RELEASE_REVISION": "${{ github.sha }}",
+        "RELEASE_ARTIFACT_RUN_ID": "${{ github.run_id }}",
+    }
+    assert "recovery" not in workflow
+    assert "notice-finalize" not in workflow
     assert "GITHUB_REF_NAME" not in workflow
     assert "github.ref_name" not in workflow
-    assert "RELEASE_TAG#v" not in workflow
-    assert workflow.count('version="$PYTHON_RELEASE_VERSION"') == 7
-
     pack = job_block(workflow, "pack-node-package")
     publish = job_block(workflow, "publish-node-npm")
     assert "validator_args+=(--allow-prerelease)" in pack
     assert "--allow-prerelease" not in publish
 
 
-def test_recovery_preflight_is_pinned_to_the_failed_exact_tag_run() -> None:
-    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    recovery = job_block(workflow, "recovery-preflight")
-    test_job = job_block(workflow, "test")
-
-    assert (
-        "if: github.event_name != 'workflow_dispatch' || "
-        "(inputs.release_channel != 'recovery' && inputs.release_channel != 'notice-recovery' "
-        "&& inputs.release_channel != 'notice-finalize')"
-    ) in test_job
-    assert "github.event_name == 'workflow_dispatch'" in recovery
-    assert "github.ref == 'refs/heads/master'" in recovery
-    assert "inputs.release_channel == 'recovery'" in recovery
-    assert "inputs.recovery_mode == 'publish'" not in recovery
-    assert "ref: refs/tags/v2.0.0" in recovery
-    assert "fetch-depth: 0" in recovery
-    assert "path: tmp/release-source" in recovery
-    assert 'test "$RECOVERY_RUN_ID" = "30612912483"' in recovery
-    assert "cat-file -t refs/tags/v2.0.0" in recovery
-    assert "a4cec6478ad4e764f039e51eabcbb68d45efd45a" in recovery
-    assert "refs/tags/v2.0.0^{}" in recovery
-    assert "aacf4d16486a3a3bae47c3b10c1d526c587dd7a7" in recovery
-    for endpoint in (
-        'actions/runs/${RECOVERY_RUN_ID}"',
-        'actions/runs/${RECOVERY_RUN_ID}/jobs?per_page=100"',
-        'actions/runs/${RECOVERY_RUN_ID}/artifacts?per_page=100"',
-    ):
-        assert endpoint in recovery
-    assert "pattern: '*'" in recovery
-    assert "merge-multiple: false" in recovery
-    assert "github-token: ${{ secrets.GITHUB_TOKEN }}" in recovery
-    assert "run-id: ${{ inputs.recovery_run_id }}" in recovery
-    assert "python scripts/ci/validate_release_recovery.py" in recovery
-    assert "--manifest .github/release/v2.0.0-recovery.json" in recovery
-    assert '--expected-manifest-sha256 "$RELEASE_RECOVERY_MANIFEST_SHA256"' in recovery
-    assert "--artifact-root tmp/recovery-artifacts" in recovery
-    assert "name: release-recovery-evidence" in recovery
-    assert "path: tmp/recovery-release-evidence" in recovery
-    assert "validation-summary.json" in recovery
-    assert "source-run.json" in recovery
-    assert "source-jobs.json" in recovery
-    assert "source-artifacts.json" in recovery
-    assert 'test "$authenticated_user" = "ds1sqe"' in recovery
-    assert "npm access list" not in recovery
-    assert "npm publish" not in recovery
-    assert "skopeo copy" not in recovery
-    assert "gh-action-pypi-publish" not in recovery
-    assert RECOVERY_VALIDATOR.is_file()
-    assert RECOVERY_PAYLOAD_VALIDATOR.is_file()
-    assert RECOVERY_MANIFEST.is_file()
-
-
-def test_recovery_publishers_reuse_only_source_run_artifacts() -> None:
-    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-
-    for job in RECOVERY_MUTATING_JOBS:
-        publish = job_block(workflow, job)
-        assert "ref: ${{ env.RELEASE_REVISION }}" in publish
-        assert "persist-credentials: false" in publish
-        assert "name: Checkout recovery payload controls" in publish
-        assert "ref: ${{ github.sha }}" in publish
-        assert "path: tmp/recovery-controls" in publish
-        assert "validate_release_recovery_payloads.py" in publish
-        assert "tmp/recovery-controls/.github/release/v2.0.0-recovery.json" in publish
-        assert '--expected-manifest-sha256 "$RELEASE_RECOVERY_MANIFEST_SHA256"' in publish
-        assert publish.count("name: Revalidate immutable release tag") == 1
-        assert 'gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}"' in publish
-        assert 'test "$(jq -r \'.object.type\' <<<"$tag_ref_json")" = tag' in publish
-        assert 'gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"' in publish
-        assert 'test "$(jq -r \'.object.type\' <<<"$tag_json")" = commit' in publish
-        assert 'test "$(jq -r \'.object.sha\' <<<"$tag_json")" = "$RELEASE_REVISION"' in publish
-        assert "EXPECTED_RELEASE_TAG_OBJECT" in publish
-        assert 'test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"' in publish
-        assert "actions: read" in publish
-        assert "github.event_name == 'workflow_dispatch'" in publish
-        assert "github.ref == 'refs/heads/master'" in publish
-        assert "inputs.release_channel == 'recovery'" in publish
-        assert "inputs.recovery_mode == 'publish'" in publish
-        assert "inputs.recovery_run_id == '30612912483'" in publish
-        assert "needs.recovery-preflight.result == 'success'" in publish
-        assert "RELEASE_ARTIFACT_RUN_ID" in publish
-
-    recovery = job_block(workflow, "recovery-preflight")
-    assert "a4cec6478ad4e764f039e51eabcbb68d45efd45a" in recovery
-
-    frozen = job_block(workflow, "release-tag-preflight")
-    assert needs_line(frozen) == "    needs: [channel-preflight, recovery-preflight]"
-    assert "tag_object: ${{ steps.freeze-tag.outputs.tag_object }}" in frozen
-    assert "a4cec6478ad4e764f039e51eabcbb68d45efd45a" in frozen
-    assert "inputs.recovery_mode == 'publish'" in frozen
-
-    node = job_block(workflow, "publish-node-npm")
-    server = job_block(workflow, "publish-server-oci")
-    core = job_block(workflow, "publish-core-pypi")
-    root = job_block(workflow, "publish-python-pypi")
-    release = job_block(workflow, "github-release")
-    assert needs_line(node) == (
-        "    needs: [channel-preflight, recovery-preflight, release-tag-preflight]"
-    )
-    assert "publish-node-npm" in needs_line(server)
-    assert "publish-server-oci" in needs_line(core)
-    assert "publish-core-pypi" in needs_line(root)
-    assert "publish-python-pypi" in needs_line(release)
-    assert "run-id: ${{ env.RELEASE_ARTIFACT_RUN_ID }}" in node
-    assert server.count("run-id: ${{ env.RELEASE_ARTIFACT_RUN_ID }}") == 2
-    assert core.count("run-id: ${{ env.RELEASE_ARTIFACT_RUN_ID }}") == 2
-    assert root.count("run-id: ${{ env.RELEASE_ARTIFACT_RUN_ID }}") == 1
-    assert release.count("run-id: ${{ env.RELEASE_ARTIFACT_RUN_ID }}") == 4
-
-    expected_payloads = {
-        "publish-server-oci": {
-            "server-oci-accepted-amd64",
-            "server-oci-accepted-arm64",
-        },
-        "publish-node-npm": {"node-package"},
-        "publish-core-pypi": {
-            "core-wheels-linux-aarch64",
-            "core-wheels-linux-x86_64",
-            "core-wheels-macos-aarch64",
-            "core-wheels-macos-x86_64",
-            "core-wheels-windows-x86_64",
-            "core-sdist",
-        },
-        "publish-python-pypi": {"python-dist"},
-        "github-release": {
-            "core-wheels-linux-aarch64",
-            "core-wheels-linux-x86_64",
-            "core-wheels-macos-aarch64",
-            "core-wheels-macos-x86_64",
-            "core-wheels-windows-x86_64",
-            "core-sdist",
-            "python-dist",
-            "node-package",
-        },
-    }
-    mutation_markers = {
-        "publish-server-oci": "- name: Publish exact accepted platform manifests",
-        "publish-node-npm": "- name: Publish to npm registry",
-        "publish-core-pypi": "- name: Publish to PyPI",
-        "publish-python-pypi": "- name: Publish to PyPI",
-        "github-release": "- name: Create draft release",
-    }
-    for job, expected in expected_payloads.items():
-        publish = job_block(workflow, job)
-        selected = set(
-            re.findall(
-                r"^\s+--artifact ([A-Za-z0-9._-]+)(?: \\)?$",
-                publish,
-                re.MULTILINE,
-            )
-        )
-        assert selected == expected
-        payload_position = publish.index("validate_release_recovery_payloads.py")
-        tag_position = publish.index("name: Revalidate immutable release tag")
-        mutation_position = publish.index(mutation_markers[job])
-        assert payload_position < tag_position < mutation_position
-
-
-def test_recovery_metadata_preserves_release_source_and_exact_tag() -> None:
-    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    server = job_block(workflow, "publish-server-oci")
-    release = job_block(workflow, "github-release")
-
-    assert '"revision": os.environ["RELEASE_REVISION"]' in server
-    assert "release.yml@refs/heads/master$" in server
-    assert "release.yml@refs/tags/v2[.]2[.]0$" in server
-    assert "release.yml@refs/tags/v2[.]0[.]0$" not in server
-    for name in (
-        "Attest amd64 build provenance",
-        "Attest arm64 build provenance",
-        "Attest multi-platform provenance",
-    ):
-        suffix = server.split(f"- name: {name}\n", maxsplit=1)[1]
-        step = suffix.split("\n      - name:", maxsplit=1)[0]
-        assert "if: github.event_name == 'push'" in step
-        assert "actions/attest-build-provenance@" in step
-    assert server.count("actions/attest@e59cbc1ad1ac2d59339667419eb8cdde6eb61e3d") == 3
-    assert server.count("if: github.event_name == 'workflow_dispatch'") >= 5
-    assert (
-        server.count("https://github.com/ds1sqe/type-bridge/attestations/release-promotion/v1") == 3
-    )
-    assert '"source_revision": os.environ["RELEASE_REVISION"]' in server
-    assert '"source_run_id": manifest["run"]["id"]' in server
-    assert '"artifact_ledger_sha256": ledger_sha256' in server
-    assert "RELEASE_RECOVERY_MANIFEST_SHA256" in server
-    assert '"recovery_promotion_amd64"' in server
-    assert '"build_provenance_amd64"' in server
-    assert "tag_name: ${{ env.RELEASE_TAG }}" in release
-    assert "target_commitish: ${{ env.RELEASE_REVISION }}" in release
-    assert "name: TypeBridge ${{ env.RELEASE_VERSION }}" in release
-    assert "draft: true" in release
-    assert "name: release-recovery-evidence" in release
-
-
-@pytest.mark.parametrize("job", RECOVERY_MUTATING_JOBS)
+@pytest.mark.parametrize("job", ARTIFACT_MUTATING_JOBS)
 def test_candidate_guard_gate_rejects_an_unguarded_mutation_job(job: str) -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     block = job_block(workflow, job)
-    guarded_term = "          inputs.recovery_mode == 'publish' &&\n"
+    guarded_term = "      github.event_name == 'push' &&\n"
     assert guarded_term in block
     hostile_block = block.replace(guarded_term, "", 1)
     hostile_workflow = workflow.replace(block, hostile_block, 1)
@@ -977,26 +673,6 @@ def test_candidate_guard_gate_rejects_hidden_preflight_publication() -> None:
         assert_stable_only_release_mutations(hostile_workflow)
 
 
-@pytest.mark.parametrize(
-    "term",
-    [
-        "github.repository == 'ds1sqe/type-bridge'",
-        "github.event_name == 'workflow_dispatch'",
-        "github.ref == 'refs/heads/release/2.0.2-notice'",
-        "inputs.release_channel == 'notice-recovery'",
-        "inputs.recovery_mode == 'publish'",
-        "inputs.notice_verify_run_id != ''",
-        "needs.notice-recovery-verify.result == 'success'",
-    ],
-)
-def test_notice_recovery_rejects_missing_publication_guard(term: str) -> None:
-    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    block = job_block(workflow, "notice-recovery-publish")
-    hostile = workflow.replace(block, block.replace(term, "true", 1), 1)
-    with pytest.raises(AssertionError):
-        assert_stable_only_release_mutations(hostile)
-
-
 @pytest.mark.parametrize("marker", CARGO_PUBLICATION_MARKERS)
 def test_cargo_inclusive_release_contains_each_required_path(marker: str) -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
@@ -1020,22 +696,19 @@ def test_python_npm_publication_is_serial_after_global_candidate_gates() -> None
         "    needs: [validate-release-identity, accept-python-artifacts, "
         "accept-node-package, accept-live-artifact-parity, accept-server-oci]"
     )
-    assert needs_line(node_publish) == (
-        "    needs: [channel-preflight, recovery-preflight, release-tag-preflight]"
-    )
+    assert needs_line(node_publish) == ("    needs: [channel-preflight, release-tag-preflight]")
     assert needs_line(job_block(workflow, "publish-server-oci")) == (
-        "    needs: [channel-preflight, recovery-preflight, release-tag-preflight, "
-        "accept-server-oci, publish-node-npm]"
+        "    needs: [channel-preflight, release-tag-preflight, accept-server-oci, publish-node-npm]"
     )
     assert needs_line(core_publish) == (
-        "    needs: [build-core-wheels, build-core-sdist, recovery-preflight, "
+        "    needs: [build-core-wheels, build-core-sdist, "
         "release-tag-preflight, publish-server-oci]"
     )
     assert needs_line(root_publish) == (
-        "    needs: [build-python, recovery-preflight, release-tag-preflight, publish-core-pypi]"
+        "    needs: [build-python, release-tag-preflight, publish-core-pypi]"
     )
     assert needs_line(github_release) == (
-        "    needs: [recovery-preflight, release-tag-preflight, publish-server-oci, "
+        "    needs: [release-tag-preflight, publish-server-oci, "
         "publish-node-npm, publish-core-pypi, publish-python-pypi, publish-crates]"
     )
     assert needs_line(cargo_publish) == (
@@ -1385,7 +1058,7 @@ def test_generated_and_low_level_queries_are_required_in_the_tls_lane() -> None:
     assert tls_lane.count("TYPEDB_TLS_ROOT_CA") >= 4
     assert 'NODE_EXTRA_CA_CERTS="$fixture_root_ca"' in tls_lane
     assert "NODE_TLS_REJECT_UNAUTHORIZED" not in tls_lane
-    assert "scripts/ci/run_manager_filter_tls.py" in tls_lane
+    assert "scripts/ci/run_generated_live.py manager-tls" in tls_lane
     assert "TLS ordered generated Python + Node manager parity" in tls_lane
 
 
@@ -1517,7 +1190,7 @@ def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> 
     preflight = job_block(workflow, "channel-preflight")
     assert "accept-live-artifact-parity" in needs_line(preflight)
     assert needs_line(job_block(workflow, "publish-node-npm")) == (
-        "    needs: [channel-preflight, recovery-preflight, release-tag-preflight]"
+        "    needs: [channel-preflight, release-tag-preflight]"
     )
 
 
@@ -1701,9 +1374,7 @@ def test_npm_publication_uses_the_accepted_tarball() -> None:
     assert "npm pack" not in acceptance
     assert "actions/upload-artifact" not in acceptance
 
-    assert needs_line(publish) == (
-        "    needs: [channel-preflight, recovery-preflight, release-tag-preflight]"
-    )
+    assert needs_line(publish) == ("    needs: [channel-preflight, release-tag-preflight]")
     assert "name: node-package" in publish
     assert publish.count("scripts/ci/validate_node_release_package.py") == 2
     assert "--repository-package type-bridge-core/crates/node/package.json" in publish
@@ -1711,8 +1382,6 @@ def test_npm_publication_uses_the_accepted_tarball() -> None:
     assert "--allow-prerelease" not in publish
     assert "environment: release" in publish
     assert "github.ref == 'refs/tags/v2.2.0'" in publish
-    assert "inputs.release_channel == 'recovery'" in publish
-    assert "inputs.recovery_mode == 'publish'" in publish
     assert "name: Install pinned npm publisher" in publish
     assert "npm install --global --ignore-scripts npm@11.18.0" in publish
     assert 'test "$(npm --version)" = "11.18.0"' in publish
@@ -1753,3 +1422,30 @@ def test_pypi_skip_existing_is_guarded_before_and_after_publish() -> None:
         assert "skip-existing: true" in publish
         assert "--require-existing" in publish[post_publish:]
         assert "--attempts 6" in publish[post_publish:]
+
+
+def test_publishers_consume_same_run_artifacts_and_recheck_the_frozen_tag() -> None:
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    jobs = yaml.load(workflow, Loader=yaml.BaseLoader)["jobs"]
+    freeze = jobs["release-tag-preflight"]
+    assert freeze["needs"] == ["channel-preflight"]
+    assert freeze["outputs"]["tag_object"] == "${{ steps.freeze-tag.outputs.tag_object }}"
+    for name in MUTATING_RELEASE_JOBS:
+        steps = jobs[name]["steps"]
+        tag_check = next(
+            i
+            for i, step in enumerate(steps)
+            if step.get("name")
+            in {"Revalidate immutable release tag", "Revalidate frozen release tag"}
+        )
+        for index, step in enumerate(steps):
+            if step.get("uses", "").startswith("actions/download-artifact@"):
+                assert step["with"].get("run-id", "${{ github.run_id }}") in {
+                    "${{ env.RELEASE_ARTIFACT_RUN_ID }}",
+                    "${{ github.run_id }}",
+                }
+                assert index < tag_check
+        check = steps[tag_check]["run"]
+        assert 'test "$(jq -r \'.object.type\' <<<"$tag_json")" = commit' in check
+        assert 'test "$(jq -r \'.object.sha\' <<<"$tag_json")" = "$RELEASE_REVISION"' in check
+        assert 'test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"' in check

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-RUNNER_PATH = ROOT / "scripts/ci/run_projected_live.py"
+RUNNER_PATH = ROOT / "scripts/ci/run_generated_live.py"
 CHECK = ROOT / "scripts/check.sh"
 TEST = ROOT / "test.sh"
 CI = ROOT / ".github/workflows/ci.yml"
@@ -80,11 +80,11 @@ def test_command_plan_runs_four_live_producers_then_exactly_one_comparator(
     for label, (report, database) in expected.items():
         environment = producers[label].environment
         assert environment is not None
-        assert environment[runner.REPORT_ENV] == report
-        assert environment[runner.DATABASE_ENV] == database
-        assert environment[runner.ADDRESS_ENV] == fixture.address
-        assert environment[runner.HTTP_PORT_ENV] == fixture.http_port
-        assert environment[runner.REPOSITORY_ENV] == str(ROOT)
+        assert environment[runner.PROJECTED.REPORT_ENV] == report
+        assert environment[runner.PROJECTED.DATABASE_ENV] == database
+        assert environment[runner.PROJECTED.ADDRESS_ENV] == fixture.address
+        assert environment[runner.PROJECTED.HTTP_PORT_ENV] == fixture.http_port
+        assert environment[runner.PROJECTED.REPOSITORY_ENV] == str(ROOT)
         assert producers[label].timeout_seconds <= 1200
     assert producers["produce the Rust report"].environment[runner.ACCEPTANCE_TARGET_ENV] == str(
         layout.scratch / "rust-target"
@@ -100,7 +100,7 @@ def test_command_plan_runs_four_live_producers_then_exactly_one_comparator(
         in plan[10].arguments
     )
     assert "generated_c17_projected_live_subset_round_trips_exact_3_12_1" in plan[13].arguments
-    assert plan[-1].arguments[1] == str(runner.COMPARATOR)
+    assert plan[-1].arguments[1] == str(runner.PROJECTED.COMPARATOR)
     assert plan[-1].arguments[2:] == reports
 
 
@@ -109,19 +109,19 @@ def test_runner_validates_every_committed_producer_before_tools_or_staging() -> 
     contract = runner._load_live_contract()
 
     runner._validate_producer_sources(contract)
-    assert runner.PRODUCER_SOURCES == (
-        ("Python producer", runner.PYTHON_PRODUCER),
-        ("Node producer", runner.NODE_PRODUCER),
+    assert runner.PROJECTED.PRODUCER_SOURCES == (
+        ("Python producer", runner.PROJECTED.PYTHON_PRODUCER),
+        ("Node producer", runner.PROJECTED.NODE_PRODUCER),
         ("Node helper", runner.NODE_HELPER),
-        ("Rust producer", runner.RUST_PRODUCER),
-        ("C harness", runner.C_HARNESS),
-        ("C consumer", runner.C_CONSUMER),
+        ("Rust producer", runner.PROJECTED.RUST_PRODUCER),
+        ("C harness", runner.PROJECTED.C_HARNESS),
+        ("C consumer", runner.PROJECTED.C_CONSUMER),
         ("C setup", runner.C_SETUP),
         ("C provider helper", runner.C_PROVIDER_HELPER),
     )
     source = RUNNER_PATH.read_text(encoding="utf-8")
     run_source = source[source.index("def run(") :]
-    assert run_source.index("_validate_producer_sources(contract)") < run_source.index(
+    assert run_source.index("_validate_producer_sources(contract, profile)") < run_source.index(
         "_require_tools()"
     )
     assert run_source.index("_require_tools()") < run_source.index("tempfile.TemporaryDirectory(")
@@ -130,7 +130,7 @@ def test_runner_validates_every_committed_producer_before_tools_or_staging() -> 
 def test_runner_uses_one_stage_and_makes_no_ordered_instance_claim() -> None:
     source = RUNNER_PATH.read_text(encoding="utf-8")
 
-    assert source.count("tempfile.TemporaryDirectory(") == 1
+    assert source.count("tempfile.TemporaryDirectory(") == 2
     assert "secrets.token_hex(12)" in source
     assert "compare_projected_live.py" in source
     assert "ordered_distinct_collections" not in source
@@ -141,22 +141,25 @@ def test_runner_uses_one_stage_and_makes_no_ordered_instance_claim() -> None:
 def test_fixture_requires_caller_endpoint_and_rejects_runner_owned_overrides() -> None:
     runner = load_runner()
     valid = {
-        runner.ADDRESS_ENV: "127.0.0.1:32942",
-        runner.HTTP_PORT_ENV: "32943",
+        runner.PROJECTED.ADDRESS_ENV: "127.0.0.1:32942",
+        runner.PROJECTED.HTTP_PORT_ENV: "32943",
     }
 
     assert runner._required_fixture(valid) == runner.Fixture(
         address="127.0.0.1:32942",
         http_port="32943",
     )
-    for owned in runner.RUNNER_OWNED_ENV:
+    for owned in runner.PROJECTED.RUNNER_OWNED_ENV:
         with pytest.raises(runner.RunnerError, match="runner-owned"):
             runner._required_fixture({**valid, owned: "caller-value"})
     for hostile in (
         {},
-        {runner.ADDRESS_ENV: "https://127.0.0.1:32942", runner.HTTP_PORT_ENV: "32943"},
-        {runner.ADDRESS_ENV: "127.0.0.1:32942", runner.HTTP_PORT_ENV: "0"},
-        {runner.ADDRESS_ENV: "127.0.0.1:32942", runner.HTTP_PORT_ENV: "8000.0"},
+        {
+            runner.PROJECTED.ADDRESS_ENV: "https://127.0.0.1:32942",
+            runner.PROJECTED.HTTP_PORT_ENV: "32943",
+        },
+        {runner.PROJECTED.ADDRESS_ENV: "127.0.0.1:32942", runner.PROJECTED.HTTP_PORT_ENV: "0"},
+        {runner.PROJECTED.ADDRESS_ENV: "127.0.0.1:32942", runner.PROJECTED.HTTP_PORT_ENV: "8000.0"},
     ):
         with pytest.raises(runner.RunnerError):
             runner._required_fixture(hostile)
@@ -248,8 +251,8 @@ def test_runner_cleans_owned_names_after_interrupt(
 ) -> None:
     runner = load_runner()
     fixture_environment = {
-        runner.ADDRESS_ENV: "127.0.0.1:32942",
-        runner.HTTP_PORT_ENV: "32943",
+        runner.PROJECTED.ADDRESS_ENV: "127.0.0.1:32942",
+        runner.PROJECTED.HTTP_PORT_ENV: "32943",
     }
     initial_guard = runner.CommandSpec(
         "verify exact fixture and four initially absent databases",
@@ -266,8 +269,8 @@ def test_runner_cleans_owned_names_after_interrupt(
     )
     cleanup_calls = []
 
-    monkeypatch.setattr(runner, "_load_live_contract", lambda: object())
-    monkeypatch.setattr(runner, "_validate_producer_sources", lambda contract: None)
+    monkeypatch.setattr(runner, "_load_live_contract", lambda *_args: object())
+    monkeypatch.setattr(runner, "_validate_producer_sources", lambda *_args: None)
     monkeypatch.setattr(runner, "_require_tools", lambda: None)
     monkeypatch.setattr(runner, "_prepare", lambda layout: None)
     monkeypatch.setattr(
@@ -304,8 +307,8 @@ def test_runner_never_cleans_when_process_group_termination_is_interrupted(
 ) -> None:
     runner = load_runner()
     fixture_environment = {
-        runner.ADDRESS_ENV: "127.0.0.1:32942",
-        runner.HTTP_PORT_ENV: "32943",
+        runner.PROJECTED.ADDRESS_ENV: "127.0.0.1:32942",
+        runner.PROJECTED.HTTP_PORT_ENV: "32943",
     }
     initial_guard = runner.CommandSpec(
         "verify exact fixture and four initially absent databases",
@@ -335,8 +338,8 @@ def test_runner_never_cleans_when_process_group_termination_is_interrupted(
         ]
     )
 
-    monkeypatch.setattr(runner, "_load_live_contract", lambda: object())
-    monkeypatch.setattr(runner, "_validate_producer_sources", lambda contract: None)
+    monkeypatch.setattr(runner, "_load_live_contract", lambda *_args: object())
+    monkeypatch.setattr(runner, "_validate_producer_sources", lambda *_args: None)
     monkeypatch.setattr(runner, "_require_tools", lambda: None)
     monkeypatch.setattr(runner, "_prepare", lambda layout: None)
     monkeypatch.setattr(runner, "command_plan", lambda layout, fixture: (initial_guard, unsafe))
@@ -365,8 +368,8 @@ def test_runner_never_cleans_after_interrupted_popen_launch(
 ) -> None:
     runner = load_runner()
     fixture_environment = {
-        runner.ADDRESS_ENV: "127.0.0.1:32942",
-        runner.HTTP_PORT_ENV: "32943",
+        runner.PROJECTED.ADDRESS_ENV: "127.0.0.1:32942",
+        runner.PROJECTED.HTTP_PORT_ENV: "32943",
     }
     initial_guard = runner.CommandSpec(
         "verify exact fixture and four initially absent databases",
@@ -387,8 +390,8 @@ def test_runner_never_cleans_after_interrupted_popen_launch(
 
     launches = iter((GuardProcess(), KeyboardInterrupt()))
 
-    monkeypatch.setattr(runner, "_load_live_contract", lambda: object())
-    monkeypatch.setattr(runner, "_validate_producer_sources", lambda contract: None)
+    monkeypatch.setattr(runner, "_load_live_contract", lambda *_args: object())
+    monkeypatch.setattr(runner, "_validate_producer_sources", lambda *_args: None)
     monkeypatch.setattr(runner, "_require_tools", lambda: None)
     monkeypatch.setattr(runner, "_prepare", lambda layout: None)
     monkeypatch.setattr(
@@ -459,7 +462,7 @@ def test_check_local_integration_and_ci_persist_the_same_exact_live_gate() -> No
         "ACCEPTANCE_TARGET_DIR",
     ):
         assert owned in local
-    local_gate = local.index("scripts/ci/run_projected_live.py")
+    local_gate = local.index("scripts/ci/run_generated_live.py")
     exact_detection = local.index('if [[ "$typedb_server_version" == "3.12.3" ]]')
     rust_integration = local.index('printf "${BOLD}━━━ Rust (integration)')
     assert exact_detection < local_gate < rust_integration

@@ -107,7 +107,7 @@ informational finding remains visible without an advisory ignore.
 Facade builds validate metadata in the exact digest-verified PyPI publisher
 image with networking disabled before cross-registry publication. PyPI uses
 the pinned metadata-2.5-compatible publisher with Trusted Publishing and
-attestations enabled. Historical recovery identities remain unchanged.
+attestations enabled.
 
 ```bash
 # Default offline Python tests
@@ -142,27 +142,6 @@ Exact wheel, npm tarball, native-platform, multi-platform container, and
 publication acceptance remains workflow-only. Local source checks do not
 replace those gates. See [Testing](docs/development/testing.md) for suite
 selection and environment variables.
-
-The 2.0.2 facade publisher recovery is separately selected with
-`release_channel=notice-recovery` in `release.yml` on `release/2.0.2-notice`.
-It defaults to `recovery_mode=verify`; publishing requires the exact successful
-same-control verification run in `notice_verify_run_id`. The committed
-`.github/release/v2.0.2-recovery.json` binds the original tag, partial stable
-run, every job/step, archive identity and payload hash. New publisher controls
-do not change the original artifact source. Recovery never rebuilds artifacts
-or republishes Cargo, npm, native-core PyPI or GHCR; it signs an explicit
-promotion predicate and retains PyPI Trusted Publishing and attestations.
-The subsequent GitHub notice/assets must be independently verified before
-making the draft public. The old v2.0.0 recovery remains separately frozen.
-
-GitHub-only notice finalization uses `release_channel=notice-finalize` and
-`notice_finalize_mode=verify`, then `draft`, then `publish`. Both mutating
-stages require the same-control verification run in
-`notice_finalize_verify_run_id`. Its separately pinned finalization ledger
-requires the successful facade recovery, all 13 exact assets and full notice
-body. Draft assets are downloaded and verified before publication. This path
-uses existing workflow release-writing permissions and cannot republish any
-package or container; it does not require changing local credential scopes.
 
 Python facade builds also run a network-disabled metadata check in the exact
 digest-verified publisher image before entering cross-registry publication.
@@ -206,6 +185,11 @@ The public site is <https://ds1sqe.github.io/type-bridge/>.
 
 - Follow existing ownership boundaries and extend the correct shared API
   instead of adding facade-local workarounds.
+- Keep the maintenance surface narrow. Extend existing entry points and shared
+  harnesses before adding parallel scripts or version-specific scaffolding.
+  Give common behavior one owner, keep genuine contract differences explicit,
+  and remove superseded callers in the same change. Measure simplification by
+  the places a future change must touch, alongside file and line counts.
 - Add public API documentation where behavior or compatibility depends on it.
 - Add inline comments only for non-obvious reasons.
 - Use modern Python 3.12+ typing and project-specific Rust error types.

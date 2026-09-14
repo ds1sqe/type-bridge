@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,6 +24,10 @@ use type_bridge_schema::{
 use type_bridge_schema_codegen::{CEmitter, GeneratedPackage};
 
 mod support;
+use support::{
+    Stage as TempDirectory, base64, command_exists, free_port, native_library, repository_root,
+    runtime_include, write_package,
+};
 
 const SCHEMA: &str = include_str!("acceptance/schema.yaml");
 const PROVIDER_SCHEMA: &str = include_str!("acceptance/provider-3.12.1.tql");
@@ -238,30 +242,6 @@ const SDK_V2_MANIFEST_TRANSITION_CASES: [&str; 17] = [
 
 static TEMP_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-struct TempDirectory(PathBuf);
-
-impl TempDirectory {
-    fn new() -> Self {
-        let sequence = TEMP_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let directory = env::temp_dir().join(format!(
-            "typebridge-c-projection-live-{}-{sequence}",
-            std::process::id()
-        ));
-        fs::create_dir(&directory).expect("unique generated C live directory is created");
-        Self(directory)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 fn emitted_package() -> GeneratedPackage {
     emitted_package_authority_and_fingerprints().0
 }
@@ -421,22 +401,6 @@ fn publish_sdk_v3_c_live_supplement() {
     output.sync_all().expect("C V3 live supplement is durable");
 }
 
-fn write_package(package: &GeneratedPackage, root: &Path) {
-    for (relative, contents) in package.files() {
-        let path = root.join(relative);
-        fs::create_dir_all(path.parent().expect("generated path has a parent"))
-            .expect("generated parent directory is created");
-        fs::write(path, contents).expect("generated C package file is written");
-    }
-}
-
-fn command_exists(program: &str) -> bool {
-    Command::new(program)
-        .arg("--version")
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
-
 fn c_compilers() -> Vec<&'static str> {
     ["gcc", "clang"]
         .into_iter()
@@ -449,13 +413,6 @@ fn cpp_compilers() -> Vec<&'static str> {
         .into_iter()
         .filter(|compiler| command_exists(compiler))
         .collect()
-}
-
-fn runtime_include() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../c/include")
-        .canonicalize()
-        .expect("C runtime include directory exists")
 }
 
 #[test]
@@ -623,38 +580,8 @@ fn required_live_environment(name: &str) -> String {
     }
 }
 
-fn native_library() -> PathBuf {
-    let executable = env::current_exe().expect("current test executable path is available");
-    let filename = format!(
-        "{}type_bridge_c{}",
-        env::consts::DLL_PREFIX,
-        env::consts::DLL_SUFFIX
-    );
-    executable
-        .ancestors()
-        .flat_map(|directory| {
-            [
-                directory.join(&filename),
-                directory.join("deps").join(&filename),
-            ]
-        })
-        .find(|candidate| candidate.is_file())
-        .unwrap_or_else(|| {
-            panic!("build the TypeBridge C shared library before exact generated C acceptance")
-        })
-}
-
 fn manifest_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "\\\\")
-}
-
-fn repository_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-        .expect("schema-codegen lives beneath the repository root")
-        .to_path_buf()
 }
 
 fn requested_sdk_v2_report() -> Option<PathBuf> {
@@ -1284,37 +1211,6 @@ fn sdk_v2_c_catalog_report_builder_preflight_is_exact_and_nonpublishing() {
         !report_path.exists(),
         "provider-free report-builder preflight must not publish a report"
     );
-}
-
-fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let first = chunk[0];
-        let second = chunk.get(1).copied().unwrap_or(0);
-        let third = chunk.get(2).copied().unwrap_or(0);
-        output.push(ALPHABET[(first >> 2) as usize] as char);
-        output.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
-        if chunk.len() > 1 {
-            output.push(ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
-        } else {
-            output.push('=');
-        }
-        if chunk.len() > 2 {
-            output.push(ALPHABET[(third & 0x3f) as usize] as char);
-        } else {
-            output.push('=');
-        }
-    }
-    output
-}
-
-fn free_port() -> u16 {
-    TcpListener::bind(("127.0.0.1", 0))
-        .expect("loopback port allocation succeeds")
-        .local_addr()
-        .expect("loopback local address is readable")
-        .port()
 }
 
 struct RemoteServer {

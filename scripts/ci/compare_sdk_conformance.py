@@ -9,6 +9,7 @@ import json
 import re
 import stat
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -233,27 +234,7 @@ def _integer(value: Any, label: str) -> int:
 
 
 def _contract_path(value: Any, expected: str, label: str) -> Path:
-    text = _string(value, label)
-    relative = PurePosixPath(text)
-    if (
-        relative.is_absolute()
-        or relative.as_posix() != text
-        or "." in relative.parts
-        or ".." in relative.parts
-        or not CONTRACT_NAME_RE.fullmatch(text)
-    ):
-        raise ContractError("invalid_contract_path", f"{label} is not a canonical relative path")
-    if text != expected:
-        raise ContractError("contract_path_mismatch", f"{label} is {text!r}, expected {expected!r}")
-    path = ROOT.joinpath(*relative.parts)
-    if path.is_symlink() or not path.is_file():
-        raise ContractError("invalid_source_file", f"{label} target is not a regular file")
-    resolved = path.resolve()
-    try:
-        resolved.relative_to(ROOT.resolve())
-    except ValueError as error:
-        raise ContractError("contract_path_escape", f"{label} escapes the repository") from error
-    return path
+    return contract_path(value, expected, label, ROOT)
 
 
 def _expand_binding_profile(manifest: dict[str, Any], profile_name: str) -> dict[str, str]:
@@ -443,7 +424,11 @@ def _validate_scalar(value: Any, expected_kind: str, label: str) -> Any:
             raise ContractError("invalid_scalar_value", f"{label} must contain a boolean")
     elif type(scalar) is not str or not scalar:
         raise ContractError("invalid_scalar_value", f"{label} must contain non-empty text")
-    if expected_kind == "long" and re.fullmatch(r"-?(0|[1-9][0-9]*)", scalar) is None:
+    if (
+        expected_kind == "long"
+        and isinstance(scalar, str)
+        and re.fullmatch(r"-?(0|[1-9][0-9]*)", scalar) is None
+    ):
         raise ContractError("invalid_scalar_value", f"{label} has a noncanonical integer")
     return scalar
 
@@ -1130,6 +1115,183 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     sys.stdout.buffer.write(canonical_json_bytes(summary))
     return 0
+
+
+def contract_path(value: Any, expected: str, label: str, root: Path) -> Path:
+    text = _string(value, label)
+    relative = PurePosixPath(text)
+    if (
+        relative.is_absolute()
+        or relative.as_posix() != text
+        or "." in relative.parts
+        or (".." in relative.parts)
+        or (CONTRACT_NAME_RE.fullmatch(text) is None)
+    ):
+        raise ContractError("invalid_contract_path", f"{label} is not a canonical relative path")
+    if text != expected:
+        raise ContractError("contract_path_mismatch", f"{label} is {text!r}, expected {expected!r}")
+    path = root.joinpath(*relative.parts)
+    if path.is_symlink() or not path.is_file():
+        raise ContractError("invalid_source_file", f"{label} target is not a regular file")
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError as error:
+        raise ContractError("contract_path_escape", f"{label} escapes the repository") from error
+    return path
+
+
+def validate_report_schema(
+    value: Any, report_format: str, bindings: tuple[str, ...], result_count: int
+) -> None:
+    schema = _exact_object(
+        value,
+        {
+            "$schema",
+            "$id",
+            "title",
+            "type",
+            "additionalProperties",
+            "required",
+            "properties",
+            "$defs",
+        },
+        "report schema",
+    )
+    if schema["$schema"] != "https://json-schema.org/draft/2020-12/schema":
+        raise ContractError("invalid_report_schema", "unexpected JSON Schema dialect")
+    if schema["type"] != "object" or schema["additionalProperties"] is not False:
+        raise ContractError("invalid_report_schema", "report root must be a closed object")
+    properties = schema["properties"]
+    if type(properties) is not dict:
+        raise ContractError("invalid_report_schema", "report properties are malformed")
+    if properties.get("format") != {"const": report_format}:
+        raise ContractError("invalid_report_schema", "report format is not frozen")
+    if properties.get("binding") != {"enum": list(bindings)}:
+        raise ContractError("invalid_report_schema", "report bindings are not frozen")
+    results = properties.get("results")
+    if type(results) is not dict:
+        raise ContractError("invalid_report_schema", "report results are malformed")
+    if results.get("minItems") != result_count:
+        raise ContractError("invalid_report_schema", "report result minimum is not frozen")
+    if results.get("maxItems") != result_count:
+        raise ContractError("invalid_report_schema", "report result maximum is not frozen")
+
+
+def compare_report_set(
+    report_paths: list[Path],
+    bindings: tuple[str, ...],
+    validate: Callable[[Path], dict[str, Any]],
+    summarize: Callable[[dict[str, dict[str, Any]]], dict[str, Any]],
+) -> dict[str, Any]:
+    reports: dict[str, dict[str, Any]] = {}
+    for path in report_paths:
+        validated = validate(path)
+        binding = validated["binding"]
+        if binding in reports:
+            raise ContractError("duplicate_binding", f"received two {binding!r} reports")
+        reports[binding] = validated
+    missing = sorted(set(bindings) - reports.keys())
+    extra = sorted(reports.keys() - set(bindings))
+    if missing:
+        raise ContractError("missing_binding", f"missing reports for {missing}")
+    if extra:
+        raise ContractError("unexpected_binding", f"unexpected reports for {extra}")
+    semantic = {
+        canonical_json_bytes(reports[binding]["semantic_fingerprint"]) for binding in bindings
+    }
+    if len(semantic) != 1:
+        raise ContractError(
+            "semantic_fingerprint_mismatch", "report semantic fingerprints do not match"
+        )
+    projections = {
+        canonical_json_bytes(reports[binding]["projection_fingerprint"]) for binding in bindings
+    }
+    if len(projections) != len(bindings):
+        raise ContractError(
+            "projection_fingerprint_collision", "binding projection fingerprints must differ"
+        )
+    first_results = reports[bindings[0]]["results"]
+    for binding in bindings[1:]:
+        if reports[binding]["results"] != first_results:
+            raise ContractError(
+                "cross_binding_observation_mismatch", f"{binding} results differ from {bindings[0]}"
+            )
+    return summarize(reports)
+
+
+def report_parser(description: str | None, bindings: tuple[str, ...]) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument(
+        "reports",
+        nargs=len(bindings),
+        type=Path,
+        metavar="REPORT",
+        help="one canonical report per binding (order-independent): " + ", ".join(bindings),
+    )
+    return parser
+
+
+def _regular_bytes(path: Path, label: str, limit: int) -> bytes:
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise ContractError("invalid_source_file", f"{label} cannot be inspected") from error
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise ContractError("invalid_source_file", f"{label} must be a regular non-symlink file")
+    if metadata.st_size > limit:
+        raise ContractError("source_size_limit", f"{label} exceeds {limit} bytes")
+    try:
+        with path.open("rb") as source:
+            raw = source.read(limit + 1)
+    except OSError as error:
+        raise ContractError("invalid_source_file", f"{label} cannot be read") from error
+    if len(raw) > limit:
+        raise ContractError("source_size_limit", f"{label} exceeds {limit} bytes")
+    return raw
+
+
+def _json_value(raw: bytes, label: str) -> Any:
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ContractError("invalid_json_utf8", f"{label} is not UTF-8") from error
+    try:
+        return json.loads(text, object_pairs_hook=_duplicate_key_object)
+    except ContractError:
+        raise
+    except (json.JSONDecodeError, RecursionError) as error:
+        raise ContractError("malformed_json", f"{label} is not valid bounded JSON") from error
+
+
+def validate_producer_source(
+    source: str | bytes, maximum: int, forbidden_markers: tuple[str, ...]
+) -> None:
+    """Reject a producer that imports or names comparator-side expectations."""
+    if type(source) is bytes:
+        if len(source) > maximum:
+            raise ContractError(
+                "producer_source_size_limit", f"producer source exceeds {maximum} bytes"
+            )
+        try:
+            text = source.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ContractError(
+                "invalid_producer_source_utf8", "producer source is not UTF-8"
+            ) from error
+    elif type(source) is str:
+        if len(source.encode("utf-8")) > maximum:
+            raise ContractError(
+                "producer_source_size_limit", f"producer source exceeds {maximum} bytes"
+            )
+        text = source
+    else:
+        raise ContractError("invalid_producer_source", "producer source must be text")
+    for marker in forbidden_markers:
+        if marker in text:
+            raise ContractError(
+                "expected_observation_import",
+                f"producer source contains forbidden marker {marker!r}",
+            )
 
 
 if __name__ == "__main__":

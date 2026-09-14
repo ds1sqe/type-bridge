@@ -108,7 +108,7 @@ or release artifact.
 Run the focused generated manager-filter parity lane with:
 
 ```bash
-uv run python scripts/ci/run_manager_filter_live.py
+uv run python scripts/ci/run_generated_live.py manager
 ```
 
 ### Live integration

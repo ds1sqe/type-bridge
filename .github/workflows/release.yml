@@ -7,63 +7,25 @@ on:
   workflow_dispatch:
     inputs:
       release_channel:
-        description: Validate the 2.2.0 release identity or recover the accepted v2.0.0 tag run
+        description: Validate the 2.2.0 release identity
         required: true
         type: choice
         default: candidate
         options:
           - candidate
           - stable
-          - recovery
-          - notice-recovery
-          - notice-finalize
-      notice_verify_run_id:
-        description: Exact same-control successful notice-recovery verify run; required to publish
-        required: false
-        type: string
-        default: ''
-      notice_finalize_mode:
-        description: Rehearse, create a draft, or publish the independently verified notice
-        required: false
-        type: choice
-        default: verify
-        options:
-          - verify
-          - draft
-          - publish
-      notice_finalize_verify_run_id:
-        description: Same-control successful notice-finalize verification run
-        required: false
-        type: string
-        default: ''
-      recovery_run_id:
-        description: Exact failed v2.0.0 tag run; required only for recovery
-        required: false
-        type: string
-        default: ''
-      recovery_mode:
-        description: Verify recovery inputs without mutation before explicitly publishing
-        required: false
-        type: choice
-        default: verify
-        options:
-          - verify
-          - publish
 
 # The event allowlist above is the sole release-identity selector. A manual run
-# validates one fixed current identity without mutation. The recovery channel
-# is pinned below to the one accepted v2.0.0 tag run whose preflight failed
-# before any publisher executed.
+# validates one fixed current identity without mutation.
 env:
   # Candidate acceptance verifies the exact stable bytes before the stable tag exists.
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && 'v2.0.0' || 'v2.2.0' }}
-  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0.0' || '2.2.0' }}
-  PYTHON_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0.0' || '2.2.0' }}
-  SERVER_OCI_MINOR_ALIAS: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && '2.0' || '2.2' }}
+  RELEASE_TAG: 'v2.2.0'
+  RELEASE_VERSION: '2.2.0'
+  PYTHON_RELEASE_VERSION: '2.2.0'
+  SERVER_OCI_MINOR_ALIAS: '2.2'
   RELEASE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel || 'stable' }}
-  RELEASE_REVISION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && 'aacf4d16486a3a3bae47c3b10c1d526c587dd7a7' || github.sha }}
-  RELEASE_ARTIFACT_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel == 'recovery' && inputs.recovery_run_id || github.run_id }}
-  RELEASE_RECOVERY_MANIFEST_SHA256: f8d5b2d04ad01a45694aecdd171846443bfd511a9363ab771e5f182c6bd17d2d
+  RELEASE_REVISION: ${{ github.sha }}
+  RELEASE_ARTIFACT_RUN_ID: ${{ github.run_id }}
 
 # Ensure only one release workflow runs at a time
 concurrency:
@@ -74,7 +36,6 @@ jobs:
   # Run tests before releasing
   test:
     name: Test
-    if: github.event_name != 'workflow_dispatch' || (inputs.release_channel != 'recovery' && inputs.release_channel != 'notice-recovery' && inputs.release_channel != 'notice-finalize')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -309,22 +270,10 @@ jobs:
     if: >-
       always() &&
       !cancelled() &&
-      (
-        (
-          github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.2.0' &&
-          needs.channel-preflight.result == 'success'
-        ) ||
-        (
-          github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/master' &&
-          inputs.release_channel == 'recovery' &&
-          inputs.recovery_mode == 'publish' &&
-          inputs.recovery_run_id == '30612912483' &&
-          needs.recovery-preflight.result == 'success'
-        )
-      )
-    needs: [channel-preflight, recovery-preflight]
+      github.event_name == 'push' &&
+      github.ref == 'refs/tags/v2.2.0' &&
+      needs.channel-preflight.result == 'success'
+    needs: [channel-preflight]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -342,10 +291,6 @@ jobs:
           )"
           test "$(jq -r '.object.type' <<<"$tag_ref_json")" = tag
           tag_object="$(jq -r '.object.sha' <<<"$tag_ref_json")"
-          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
-            test "$tag_object" = \
-              "a4cec6478ad4e764f039e51eabcbb68d45efd45a"
-          fi
           tag_json="$(
             gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}"
           )"
@@ -1690,154 +1635,18 @@ jobs:
           node --test --test-concurrency=1
           "$TYPE_BRIDGE_GENERATED_NODE_STAGE/harness/tests/projection-integration/generated-package-live.test.js"
 
-  # The immutable v2.0.0 tag run accepted every artifact but stopped before
-  # mutation because npm's owner-wide ACL endpoint rejected a least-privilege
-  # package token. Recovery runs from protected master, preserves the existing
-  # tag, and consumes only the committed source-run/artifact ledger.
-  recovery-preflight:
-    name: Validate v2.0.0 recovery
-    if: >-
-      github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/master' &&
-      inputs.release_channel == 'recovery'
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - name: Checkout recovery controls
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
-      - name: Checkout immutable release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: refs/tags/v2.0.0
-          fetch-depth: 0
-          path: tmp/release-source
-          persist-credentials: false
-
-      - name: Bind recovery to the exact annotated tag and source run
-        env:
-          RECOVERY_RUN_ID: ${{ inputs.recovery_run_id }}
-        run: |
-          set -euo pipefail
-          test "$RECOVERY_RUN_ID" = "30612912483"
-          test "$(git -C tmp/release-source cat-file -t refs/tags/v2.0.0)" = tag
-          test "$(
-            git -C tmp/release-source rev-parse refs/tags/v2.0.0
-          )" = "a4cec6478ad4e764f039e51eabcbb68d45efd45a"
-          test "$(
-            git -C tmp/release-source rev-parse 'refs/tags/v2.0.0^{}'
-          )" = "$RELEASE_REVISION"
-          test "$RELEASE_REVISION" = \
-            "aacf4d16486a3a3bae47c3b10c1d526c587dd7a7"
-
-      - name: Download source-run API evidence
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RECOVERY_RUN_ID: ${{ inputs.recovery_run_id }}
-        run: |
-          set -euo pipefail
-          mkdir -p tmp/recovery-evidence
-          gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${RECOVERY_RUN_ID}" \
-            > tmp/recovery-evidence/run.json
-          gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${RECOVERY_RUN_ID}/jobs?per_page=100" \
-            > tmp/recovery-evidence/jobs.json
-          gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${RECOVERY_RUN_ID}/artifacts?per_page=100" \
-            > tmp/recovery-evidence/artifacts.json
-
-      - name: Download every immutable source-run artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: '*'
-          path: tmp/recovery-artifacts
-          merge-multiple: false
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: ${{ inputs.recovery_run_id }}
-
-      - name: Validate source run, jobs, and artifact bytes
-        run: |
-          set -euo pipefail
-          mkdir -p tmp/recovery-release-evidence
-          python scripts/ci/validate_release_recovery.py \
-            --manifest .github/release/v2.0.0-recovery.json \
-            --expected-manifest-sha256 "$RELEASE_RECOVERY_MANIFEST_SHA256" \
-            --run tmp/recovery-evidence/run.json \
-            --jobs tmp/recovery-evidence/jobs.json \
-            --artifacts tmp/recovery-evidence/artifacts.json \
-            --artifact-root tmp/recovery-artifacts \
-            | tee tmp/recovery-release-evidence/validation-summary.json
-          cp .github/release/v2.0.0-recovery.json \
-            tmp/recovery-release-evidence/v2.0.0-recovery-manifest.json
-          cp tmp/recovery-evidence/run.json \
-            tmp/recovery-release-evidence/source-run.json
-          cp tmp/recovery-evidence/jobs.json \
-            tmp/recovery-release-evidence/source-jobs.json
-          cp tmp/recovery-evidence/artifacts.json \
-            tmp/recovery-release-evidence/source-artifacts.json
-
-      - name: Upload immutable recovery evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: release-recovery-evidence
-          path: tmp/recovery-release-evidence
-          if-no-files-found: error
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: "20"
-          registry-url: https://registry.npmjs.org
-
-      - name: Authenticate npm publication credential
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
-            echo "NPM_TOKEN is required for the v2.0.0 recovery." >&2
-            exit 1
-          fi
-          npm install --global --ignore-scripts npm@11.18.0
-          test "$(npm --version)" = "11.18.0"
-          authenticated_user="$(
-            npm whoami --registry=https://registry.npmjs.org
-          )"
-          test "$authenticated_user" = "ds1sqe"
-
-  # Import the two already-accepted platform manifests without rebuilding,
-  # assemble their stable multi-platform index, and attach registry evidence.
   publish-server-oci:
     name: Publish accepted TypeBridge server OCI
     if: >-
       always() &&
       !cancelled() &&
-      (
-        (
-          github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.2.0' &&
-          needs.channel-preflight.result == 'success' &&
-          needs.release-tag-preflight.result == 'success' &&
-          needs.accept-server-oci.result == 'success' &&
-          needs.publish-node-npm.result == 'success'
-        ) ||
-        (
-          github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/master' &&
-          inputs.release_channel == 'recovery' &&
-          inputs.recovery_mode == 'publish' &&
-          inputs.recovery_run_id == '30612912483' &&
-          needs.recovery-preflight.result == 'success' &&
-          needs.release-tag-preflight.result == 'success' &&
-          needs.publish-node-npm.result == 'success'
-        )
-      )
-    needs: [channel-preflight, recovery-preflight, release-tag-preflight, accept-server-oci, publish-node-npm]
+      github.event_name == 'push' &&
+      github.ref == 'refs/tags/v2.2.0' &&
+      needs.channel-preflight.result == 'success' &&
+      needs.release-tag-preflight.result == 'success' &&
+      needs.accept-server-oci.result == 'success' &&
+      needs.publish-node-npm.result == 'success'
+    needs: [channel-preflight, release-tag-preflight, accept-server-oci, publish-node-npm]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -1851,14 +1660,6 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.RELEASE_REVISION }}
-          persist-credentials: false
-
-      - name: Checkout recovery payload controls
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          path: tmp/recovery-controls
           persist-credentials: false
 
       - name: Download accepted amd64 OCI
@@ -1877,23 +1678,6 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ env.RELEASE_ARTIFACT_RUN_ID }}
 
-      - name: Revalidate recovery OCI payloads
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          set -euo pipefail
-          validator=tmp/recovery-controls/scripts/ci/validate_release_recovery_payloads.py
-          manifest=tmp/recovery-controls/.github/release/v2.0.0-recovery.json
-          python "$validator" \
-            --manifest "$manifest" \
-            --expected-manifest-sha256 "$RELEASE_RECOVERY_MANIFEST_SHA256" \
-            --artifact-root tmp/server-oci/amd64 \
-            --artifact server-oci-accepted-amd64
-          python "$validator" \
-            --manifest "$manifest" \
-            --expected-manifest-sha256 "$RELEASE_RECOVERY_MANIFEST_SHA256" \
-            --artifact-root tmp/server-oci/arm64 \
-            --artifact server-oci-accepted-arm64
-
       - name: Set up pinned Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
         with:
@@ -1910,9 +1694,6 @@ jobs:
         run: |
           set -euo pipefail
           runner=scripts/ci/run_pinned_skopeo.py
-          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
-            runner=tmp/recovery-controls/scripts/ci/run_pinned_skopeo.py
-          fi
           test -f "$runner"
           test ! -L "$runner"
           python "$runner" -- --version
@@ -2064,13 +1845,6 @@ jobs:
               > "$alias_raw" 2> "$alias_error"; then
               alias_digest="sha256:$(sha256sum "$alias_raw" | cut -d' ' -f1)"
               if [[ "$alias_digest" != "$digest" ]]; then
-                if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
-                  echo "Refusing to move conflicting OCI alias during recovery." >&2
-                  echo "alias=${alias}" >&2
-                  echo "existing=${alias_digest}" >&2
-                  echo "accepted=${digest}" >&2
-                  exit 1
-                fi
                 docker buildx imagetools create \
                   --tag "${image}:${alias}" "${image}@${digest}"
                 python "$TYPE_BRIDGE_SKOPEO_RUNNER" --registry-auth -- \
@@ -2095,7 +1869,7 @@ jobs:
 
       - name: Sign exact platform and multi-platform digests
         env:
-          COSIGN_CERTIFICATE_IDENTITY_REGEXP: ${{ github.event_name == 'workflow_dispatch' && '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/heads/master$' || '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2[.]2[.]0$' }}
+          COSIGN_CERTIFICATE_IDENTITY_REGEXP: '^https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2[.]2[.]0$'
         run: |
           cosign sign --yes \
             "${SERVER_OCI_IMAGE}@${SERVER_OCI_AMD64_DIGEST}" \
@@ -2140,112 +1914,6 @@ jobs:
           subject-digest: ${{ env.SERVER_OCI_DIGEST }}
           push-to-registry: true
 
-      - name: Record recovery promotion predicate
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          set -euo pipefail
-          mkdir -p tmp/server-oci-release
-          python - <<'PY'
-          import hashlib
-          import json
-          import os
-          from pathlib import Path
-
-          manifest_path = Path(
-              "tmp/recovery-controls/.github/release/v2.0.0-recovery.json"
-          )
-          manifest_bytes = manifest_path.read_bytes()
-          manifest = json.loads(manifest_bytes)
-          accepted_names = (
-              "server-oci-accepted-amd64",
-              "server-oci-accepted-arm64",
-          )
-          accepted = {
-              artifact["name"]: {
-                  "artifact_id": artifact["id"],
-                  "archive_digest": artifact["digest"],
-                  "files": artifact["files"],
-              }
-              for artifact in manifest["artifacts"]
-              if artifact["name"] in accepted_names
-          }
-          if set(accepted) != set(accepted_names):
-              raise SystemExit("Recovery predicate is missing an accepted OCI artifact")
-          canonical_manifest = json.dumps(
-              manifest,
-              ensure_ascii=False,
-              sort_keys=True,
-              separators=(",", ":"),
-          ).encode("utf-8")
-          ledger_sha256 = hashlib.sha256(canonical_manifest).hexdigest()
-          if ledger_sha256 != os.environ["RELEASE_RECOVERY_MANIFEST_SHA256"]:
-              raise SystemExit("Recovery predicate ledger SHA-256 mismatch")
-          predicate = {
-              "schema_version": 1,
-              "release": {
-                  "tag": os.environ["RELEASE_TAG"],
-                  "annotated_tag_object": (
-                      "a4cec6478ad4e764f039e51eabcbb68d45efd45a"
-                  ),
-                  "source_revision": os.environ["RELEASE_REVISION"],
-                  "source_run_id": manifest["run"]["id"],
-                  "source_run_attempt": manifest["run"]["run_attempt"],
-                  "source_workflow": manifest["run"]["workflow"],
-                  "artifact_ledger_sha256": ledger_sha256,
-              },
-              "accepted_artifacts": accepted,
-              "published_subjects": {
-                  "linux/amd64": os.environ["SERVER_OCI_AMD64_DIGEST"],
-                  "linux/arm64": os.environ["SERVER_OCI_ARM64_DIGEST"],
-                  "multi-platform": os.environ["SERVER_OCI_DIGEST"],
-              },
-              "promotion": {
-                  "control_revision": os.environ["GITHUB_SHA"],
-                  "run_id": int(os.environ["GITHUB_RUN_ID"]),
-                  "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
-                  "workflow_ref": os.environ["GITHUB_WORKFLOW_REF"],
-              },
-          }
-          output = Path("tmp/server-oci-release/recovery-promotion.json")
-          output.write_text(json.dumps(predicate, indent=2, sort_keys=True) + "\n")
-          PY
-
-      - name: Attest amd64 recovery promotion
-        if: github.event_name == 'workflow_dispatch'
-        id: attest-promotion-amd64
-        uses: actions/attest@e59cbc1ad1ac2d59339667419eb8cdde6eb61e3d # v3.2.0
-        with:
-          subject-name: ${{ env.SERVER_OCI_IMAGE }}
-          subject-digest: ${{ env.SERVER_OCI_AMD64_DIGEST }}
-          predicate-type: https://github.com/ds1sqe/type-bridge/attestations/release-promotion/v1
-          predicate-path: tmp/server-oci-release/recovery-promotion.json
-          push-to-registry: true
-          create-storage-record: false
-
-      - name: Attest arm64 recovery promotion
-        if: github.event_name == 'workflow_dispatch'
-        id: attest-promotion-arm64
-        uses: actions/attest@e59cbc1ad1ac2d59339667419eb8cdde6eb61e3d # v3.2.0
-        with:
-          subject-name: ${{ env.SERVER_OCI_IMAGE }}
-          subject-digest: ${{ env.SERVER_OCI_ARM64_DIGEST }}
-          predicate-type: https://github.com/ds1sqe/type-bridge/attestations/release-promotion/v1
-          predicate-path: tmp/server-oci-release/recovery-promotion.json
-          push-to-registry: true
-          create-storage-record: false
-
-      - name: Attest multi-platform recovery promotion
-        if: github.event_name == 'workflow_dispatch'
-        id: attest-promotion-index
-        uses: actions/attest@e59cbc1ad1ac2d59339667419eb8cdde6eb61e3d # v3.2.0
-        with:
-          subject-name: ${{ env.SERVER_OCI_IMAGE }}
-          subject-digest: ${{ env.SERVER_OCI_DIGEST }}
-          predicate-type: https://github.com/ds1sqe/type-bridge/attestations/release-promotion/v1
-          predicate-path: tmp/server-oci-release/recovery-promotion.json
-          push-to-registry: true
-          create-storage-record: false
-
       - name: Attest amd64 SPDX SBOM
         id: attest-sbom-amd64
         uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
@@ -2269,9 +1937,6 @@ jobs:
           PROVENANCE_AMD64_URL: ${{ steps.attest-provenance-amd64.outputs.attestation-url }}
           PROVENANCE_ARM64_URL: ${{ steps.attest-provenance-arm64.outputs.attestation-url }}
           PROVENANCE_INDEX_URL: ${{ steps.attest-provenance-index.outputs.attestation-url }}
-          PROMOTION_AMD64_URL: ${{ steps.attest-promotion-amd64.outputs.attestation-url }}
-          PROMOTION_ARM64_URL: ${{ steps.attest-promotion-arm64.outputs.attestation-url }}
-          PROMOTION_INDEX_URL: ${{ steps.attest-promotion-index.outputs.attestation-url }}
           SBOM_AMD64_URL: ${{ steps.attest-sbom-amd64.outputs.attestation-url }}
           SBOM_ARM64_URL: ${{ steps.attest-sbom-arm64.outputs.attestation-url }}
         run: |
@@ -2285,9 +1950,6 @@ jobs:
               "build_provenance_amd64": os.environ["PROVENANCE_AMD64_URL"],
               "build_provenance_arm64": os.environ["PROVENANCE_ARM64_URL"],
               "build_provenance_index": os.environ["PROVENANCE_INDEX_URL"],
-              "recovery_promotion_amd64": os.environ["PROMOTION_AMD64_URL"],
-              "recovery_promotion_arm64": os.environ["PROMOTION_ARM64_URL"],
-              "recovery_promotion_index": os.environ["PROMOTION_INDEX_URL"],
               "sbom_amd64": os.environ["SBOM_AMD64_URL"],
               "sbom_arm64": os.environ["SBOM_ARM64_URL"],
           }
@@ -2332,24 +1994,11 @@ jobs:
     if: >-
       always() &&
       !cancelled() &&
-      (
-        (
-          github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.2.0' &&
-          needs.channel-preflight.result == 'success' &&
-          needs.release-tag-preflight.result == 'success'
-        ) ||
-        (
-          github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/master' &&
-          inputs.release_channel == 'recovery' &&
-          inputs.recovery_mode == 'publish' &&
-          inputs.recovery_run_id == '30612912483' &&
-          needs.recovery-preflight.result == 'success' &&
-          needs.release-tag-preflight.result == 'success'
-        )
-      )
-    needs: [channel-preflight, recovery-preflight, release-tag-preflight]
+      github.event_name == 'push' &&
+      github.ref == 'refs/tags/v2.2.0' &&
+      needs.channel-preflight.result == 'success' &&
+      needs.release-tag-preflight.result == 'success'
+    needs: [channel-preflight, release-tag-preflight]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -2360,14 +2009,6 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.RELEASE_REVISION }}
-          persist-credentials: false
-
-      - name: Checkout recovery payload controls
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          path: tmp/recovery-controls
           persist-credentials: false
 
       - name: Set up Node.js
@@ -2393,15 +2034,6 @@ jobs:
           path: dist
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ env.RELEASE_ARTIFACT_RUN_ID }}
-
-      - name: Revalidate recovery npm payload
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          python tmp/recovery-controls/scripts/ci/validate_release_recovery_payloads.py \
-            --manifest tmp/recovery-controls/.github/release/v2.0.0-recovery.json \
-            --expected-manifest-sha256 "$RELEASE_RECOVERY_MANIFEST_SHA256" \
-            --artifact-root dist \
-            --artifact node-package
 
       - name: Revalidate accepted npm identity before publish
         run: |
@@ -2475,27 +2107,13 @@ jobs:
     if: >-
       always() &&
       !cancelled() &&
-      (
-        (
-          github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.2.0' &&
-          needs.release-tag-preflight.result == 'success' &&
-          needs.build-core-wheels.result == 'success' &&
-          needs.build-core-sdist.result == 'success' &&
-          needs.publish-server-oci.result == 'success'
-        ) ||
-        (
-          github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/master' &&
-          inputs.release_channel == 'recovery' &&
-          inputs.recovery_mode == 'publish' &&
-          inputs.recovery_run_id == '30612912483' &&
-          needs.recovery-preflight.result == 'success' &&
-          needs.release-tag-preflight.result == 'success' &&
-          needs.publish-server-oci.result == 'success'
-        )
-      )
-    needs: [build-core-wheels, build-core-sdist, recovery-preflight, release-tag-preflight, publish-server-oci]
+      github.event_name == 'push' &&
+      github.ref == 'refs/tags/v2.2.0' &&
+      needs.release-tag-preflight.result == 'success' &&
+      needs.build-core-wheels.result == 'success' &&
+      needs.build-core-sdist.result == 'success' &&
+      needs.publish-server-oci.result == 'success'
+    needs: [build-core-wheels, build-core-sdist, release-tag-preflight, publish-server-oci]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -2507,14 +2125,6 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.RELEASE_REVISION }}
-          persist-credentials: false
-
-      - name: Checkout recovery payload controls
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          path: tmp/recovery-controls
           persist-credentials: false
 
       - name: Set up Python
@@ -2538,20 +2148,6 @@ jobs:
           path: dist/
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ env.RELEASE_ARTIFACT_RUN_ID }}
-
-      - name: Revalidate recovery core payloads
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          python tmp/recovery-controls/scripts/ci/validate_release_recovery_payloads.py \
-            --manifest tmp/recovery-controls/.github/release/v2.0.0-recovery.json \
-            --expected-manifest-sha256 "$RELEASE_RECOVERY_MANIFEST_SHA256" \
-            --artifact-root dist \
-            --artifact core-wheels-linux-aarch64 \
-            --artifact core-wheels-linux-x86_64 \
-            --artifact core-wheels-macos-aarch64 \
-            --artifact core-wheels-macos-x86_64 \
-            --artifact core-wheels-windows-x86_64 \
-            --artifact core-sdist
 
       - name: List artifacts
         run: ls -la dist/
@@ -2611,26 +2207,12 @@ jobs:
     if: >-
       always() &&
       !cancelled() &&
-      (
-        (
-          github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.2.0' &&
-          needs.release-tag-preflight.result == 'success' &&
-          needs.build-python.result == 'success' &&
-          needs.publish-core-pypi.result == 'success'
-        ) ||
-        (
-          github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/master' &&
-          inputs.release_channel == 'recovery' &&
-          inputs.recovery_mode == 'publish' &&
-          inputs.recovery_run_id == '30612912483' &&
-          needs.recovery-preflight.result == 'success' &&
-          needs.release-tag-preflight.result == 'success' &&
-          needs.publish-core-pypi.result == 'success'
-        )
-      )
-    needs: [build-python, recovery-preflight, release-tag-preflight, publish-core-pypi]
+      github.event_name == 'push' &&
+      github.ref == 'refs/tags/v2.2.0' &&
+      needs.release-tag-preflight.result == 'success' &&
+      needs.build-python.result == 'success' &&
+      needs.publish-core-pypi.result == 'success'
+    needs: [build-python, release-tag-preflight, publish-core-pypi]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -2642,14 +2224,6 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.RELEASE_REVISION }}
-          persist-credentials: false
-
-      - name: Checkout recovery payload controls
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          path: tmp/recovery-controls
           persist-credentials: false
 
       - name: Set up Python
@@ -2665,17 +2239,6 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ env.RELEASE_ARTIFACT_RUN_ID }}
 
-      - name: Revalidate recovery Python payload
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          python tmp/recovery-controls/scripts/ci/validate_release_recovery_payloads.py \
-            --manifest tmp/recovery-controls/.github/release/v2.0.0-recovery.json \
-            --expected-manifest-sha256 "$RELEASE_RECOVERY_MANIFEST_SHA256" \
-            --artifact-root dist \
-            --artifact python-dist
-
-      # The publisher action adds attestation sidecars to dist/. Preserve the
-      # exact accepted bytes for both the preflight and post-publish checks.
       - name: Snapshot immutable PyPI candidate
         run: |
           mkdir -p tmp
@@ -2729,32 +2292,15 @@ jobs:
     if: >-
       always() &&
       !cancelled() &&
-      (
-        (
-          github.event_name == 'push' &&
-          github.ref == 'refs/tags/v2.2.0' &&
-          needs.release-tag-preflight.result == 'success' &&
-          needs.publish-server-oci.result == 'success' &&
-          needs.publish-node-npm.result == 'success' &&
-          needs.publish-core-pypi.result == 'success' &&
-          needs.publish-python-pypi.result == 'success' &&
-          needs.publish-crates.result == 'success'
-        ) ||
-        (
-          github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/master' &&
-          inputs.release_channel == 'recovery' &&
-          inputs.recovery_mode == 'publish' &&
-          inputs.recovery_run_id == '30612912483' &&
-          needs.recovery-preflight.result == 'success' &&
-          needs.release-tag-preflight.result == 'success' &&
-          needs.publish-server-oci.result == 'success' &&
-          needs.publish-node-npm.result == 'success' &&
-          needs.publish-core-pypi.result == 'success' &&
-          needs.publish-python-pypi.result == 'success'
-        )
-      )
-    needs: [recovery-preflight, release-tag-preflight, publish-server-oci, publish-node-npm, publish-core-pypi, publish-python-pypi, publish-crates]
+      github.event_name == 'push' &&
+      github.ref == 'refs/tags/v2.2.0' &&
+      needs.release-tag-preflight.result == 'success' &&
+      needs.publish-server-oci.result == 'success' &&
+      needs.publish-node-npm.result == 'success' &&
+      needs.publish-core-pypi.result == 'success' &&
+      needs.publish-python-pypi.result == 'success' &&
+      needs.publish-crates.result == 'success'
+    needs: [release-tag-preflight, publish-server-oci, publish-node-npm, publish-core-pypi, publish-python-pypi, publish-crates]
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -2764,14 +2310,6 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.RELEASE_REVISION }}
-          persist-credentials: false
-
-      - name: Checkout recovery payload controls
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          path: tmp/recovery-controls
           persist-credentials: false
 
       - name: Download core wheel artifacts
@@ -2807,33 +2345,10 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ env.RELEASE_ARTIFACT_RUN_ID }}
 
-      - name: Revalidate recovery release payloads
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          python tmp/recovery-controls/scripts/ci/validate_release_recovery_payloads.py \
-            --manifest tmp/recovery-controls/.github/release/v2.0.0-recovery.json \
-            --expected-manifest-sha256 "$RELEASE_RECOVERY_MANIFEST_SHA256" \
-            --artifact-root dist \
-            --artifact core-wheels-linux-aarch64 \
-            --artifact core-wheels-linux-x86_64 \
-            --artifact core-wheels-macos-aarch64 \
-            --artifact core-wheels-macos-x86_64 \
-            --artifact core-wheels-windows-x86_64 \
-            --artifact core-sdist \
-            --artifact python-dist \
-            --artifact node-package
-
       - name: Download immutable server OCI metadata
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: server-oci-release-metadata
-          path: dist/
-
-      - name: Download immutable recovery evidence
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: release-recovery-evidence
           path: dist/
 
       - name: Revalidate immutable release tag
@@ -2864,223 +2379,3 @@ jobs:
           generate_release_notes: true
           body_path: dist/server-oci-release.md
           files: dist/*
-
-  # This lane promotes original stable-run bytes only. The control commit is
-  # deliberately distinct from the immutable v2.0.2 artifact source and tag.
-  notice-recovery-verify:
-    name: Verify 2.0.2 publisher recovery
-    if: >-
-      github.repository == 'ds1sqe/type-bridge' &&
-      github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/release/2.0.2-notice' &&
-      inputs.release_channel == 'notice-recovery'
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - name: Checkout exact recovery controls
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-
-      - name: Capture and verify original stable evidence
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RECOVERY_MODE: ${{ inputs.recovery_mode }}
-          VERIFY_RUN_ID: ${{ inputs.notice_verify_run_id }}
-        run: |
-          python scripts/ci/recover_notice_release.py \
-            --output tmp/notice-recovery \
-            --control-sha "$GITHUB_SHA" \
-            --mode "${RECOVERY_MODE:-verify}" \
-            --verify-run "$VERIFY_RUN_ID"
-
-      - name: Validate metadata in the exact publisher image
-        run: bash scripts/ci/check_pypi_publisher_metadata.sh tmp/notice-recovery/dist
-
-      - name: Upload immutable recovery verification evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: notice-recovery-verification
-          path: tmp/notice-recovery/evidence/
-          if-no-files-found: error
-          retention-days: 90
-
-  notice-recovery-publish:
-    name: Recover 2.0.2 Python facade
-    needs: notice-recovery-verify
-    if: >-
-      github.repository == 'ds1sqe/type-bridge' &&
-      github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/release/2.0.2-notice' &&
-      inputs.release_channel == 'notice-recovery' &&
-      inputs.recovery_mode == 'publish' &&
-      inputs.notice_verify_run_id != '' &&
-      needs.notice-recovery-verify.result == 'success'
-    runs-on: ubuntu-latest
-    environment: release
-    permissions:
-      actions: read
-      contents: read
-      id-token: write
-      attestations: write
-    steps:
-      - name: Checkout exact recovery controls
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-
-      - name: Revalidate source, rehearsal and destinations before mutation
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERIFY_RUN_ID: ${{ inputs.notice_verify_run_id }}
-        run: |
-          python scripts/ci/recover_notice_release.py \
-            --output tmp/notice-recovery \
-            --control-sha "$GITHUB_SHA" \
-            --mode publish \
-            --verify-run "$VERIFY_RUN_ID"
-
-      - name: Validate metadata in the exact publisher image
-        run: bash scripts/ci/check_pypi_publisher_metadata.sh tmp/notice-recovery/dist
-
-      - name: Attest unchanged artifact origin and new publisher controls
-        uses: actions/attest@e59cbc1ad1ac2d59339667419eb8cdde6eb61e3d # v3.2.0
-        with:
-          subject-path: tmp/notice-recovery/dist/*
-          predicate-type: https://github.com/ds1sqe/type-bridge/attestations/release-promotion/v1
-          predicate-path: tmp/notice-recovery/evidence/recovery-promotion.json
-
-      - name: Recheck immutable tag, bytes and public destination
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python scripts/ci/recover_notice_release.py \
-            --output tmp/notice-recovery --control-sha "$GITHUB_SHA" --recheck-only
-
-      - name: Publish unchanged facade with Trusted Publishing
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
-        with:
-          packages-dir: tmp/notice-recovery/dist/
-          verify-metadata: true
-          attestations: true
-          skip-existing: true
-
-      - name: Verify published facade hashes
-        run: |
-          python scripts/ci/verify_pypi_release_hashes.py \
-            --project type-bridge --version 2.0.2 \
-            --dist-dir tmp/notice-recovery/payloads/python-dist \
-            --require-existing --attempts 6 --retry-delay-seconds 10
-
-      - name: Upload immutable publisher recovery evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: notice-recovery-publication
-          path: tmp/notice-recovery/evidence/
-          if-no-files-found: error
-          retention-days: 90
-
-  # GitHub-only finalization uses the existing release-writing permission.
-  # No registry publisher is reachable from this channel.
-  notice-finalize-verify:
-    name: Verify 2.0.2 GitHub notice finalization
-    if: >-
-      github.repository == 'ds1sqe/type-bridge' &&
-      github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/release/2.0.2-notice' &&
-      inputs.release_channel == 'notice-finalize'
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - name: Checkout exact notice controls
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Verify original artifacts, publication and exact notice packet
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NOTICE_MODE: ${{ inputs.notice_finalize_mode }}
-          VERIFY_RUN_ID: ${{ inputs.notice_finalize_verify_run_id }}
-        run: |
-          python scripts/ci/finalize_notice_release.py --output tmp/notice-finalize \
-            --mode "${NOTICE_MODE:-verify}" --verify-run "$VERIFY_RUN_ID"
-
-      - name: Validate metadata in the exact publisher image
-        run: bash scripts/ci/check_pypi_publisher_metadata.sh tmp/notice-finalize/original/dist
-
-      - name: Upload immutable notice verification evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: notice-finalization-verification
-          path: tmp/notice-finalize/evidence/
-          if-no-files-found: error
-          retention-days: 90
-
-  notice-finalize-write:
-    name: Finalize 2.0.2 GitHub notice
-    needs: notice-finalize-verify
-    if: >-
-      github.repository == 'ds1sqe/type-bridge' &&
-      github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/release/2.0.2-notice' &&
-      inputs.release_channel == 'notice-finalize' &&
-      (inputs.notice_finalize_mode == 'draft' || inputs.notice_finalize_mode == 'publish') &&
-      inputs.notice_finalize_verify_run_id != '' &&
-      needs.notice-finalize-verify.result == 'success'
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: write
-    steps:
-      - name: Checkout exact notice controls
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Revalidate original artifacts, publication and exact notice packet
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NOTICE_MODE: ${{ inputs.notice_finalize_mode }}
-          VERIFY_RUN_ID: ${{ inputs.notice_finalize_verify_run_id }}
-        run: |
-          python scripts/ci/finalize_notice_release.py --output tmp/notice-finalize \
-            --mode "$NOTICE_MODE" --verify-run "$VERIFY_RUN_ID"
-
-      - name: Create exact notice draft
-        if: inputs.notice_finalize_mode == 'draft'
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
-        with:
-          tag_name: v2.0.2
-          target_commitish: f94703f4c9b44a965a089f85b47c17933f4d9be6
-          name: TypeBridge 2.0.2
-          draft: true
-          body_path: tmp/notice-finalize/body.md
-          files: tmp/notice-finalize/assets/*
-          fail_on_unmatched_files: true
-
-      - name: Verify downloaded draft assets and publish the notice
-        if: inputs.notice_finalize_mode == 'publish'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python scripts/ci/finalize_notice_release.py --output tmp/notice-finalize --verify-draft
-          gh release edit v2.0.2 --repo "$GITHUB_REPOSITORY" --draft=false --latest
-
-      - name: Upload immutable notice finalization evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: notice-finalization-result
-          path: tmp/notice-finalize/evidence/
-          if-no-files-found: error
-          retention-days: 90

@@ -576,7 +576,7 @@ if [[ "$integration" == 1 ]]; then
         run_step "four-binding exact-TypeDB-3.12.3 Projected live fan-in" \
             env TYPE_BRIDGE_PROJECTED_LIVE_ADDRESS="$TYPEDB_ADDRESS" \
                 TYPE_BRIDGE_PROJECTED_LIVE_HTTP_PORT="$TYPEDB_HTTP_PORT" \
-            uv run python scripts/ci/run_projected_live.py
+            uv run python scripts/ci/run_generated_live.py projected
     else
         printf "${CYAN}Projected exact-live fan-in requires TypeDB 3.12.3; skipping %s.${RESET}\n\n" \
             "$typedb_server_version"
@@ -836,7 +836,7 @@ run_tls_transport_steps() {
                 TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
                 TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
                 RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-stable}" \
-            uv run python scripts/ci/run_manager_filter_tls.py
+            uv run python scripts/ci/run_generated_live.py manager-tls
     else
         printf "${CYAN}External TLS runtime proof is custom-root only; native-root and exact-topology assertions require the isolated 3.12.3 lane.${RESET}\n\n"
         run_step "TLS runtime HTTP + gRPC lifecycle (external custom-root)" \

@@ -4,8 +4,13 @@
 pub mod locks;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::fs;
+use std::net::TcpListener;
 use std::path::{Component, Path, PathBuf};
+use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -13,11 +18,14 @@ use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::managed_scope::ManagedScopeId;
+use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, RuntimeProjection};
 use type_bridge_contract::schema::{DeclaredSchema, DocumentId};
 use type_bridge_schema::{
     BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SchemaDocumentSet, VerifiedSchemaAuthority,
-    build_schema_authority, normalize_documents,
+    build_schema_authority, normalize_documents, project, resolve,
 };
+
+use type_bridge_schema_codegen::{GeneratedPackage, RustEmitter};
 
 pub const TEST_PROFILE: &str = "typedb-3.12.1/v1";
 pub const TEST_SCOPE: &str = "schema-codegen-acceptance";
@@ -616,4 +624,258 @@ pub fn authority_for_declared(
     );
     build_schema_authority(declared, declared.required_capabilities(), &context)
         .expect("test schema authority builds")
+}
+
+// Own the staging and tool lifecycle once; test suites retain their contract inputs.
+static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+pub static CARGO_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub struct Stage(PathBuf);
+
+impl Stage {
+    pub fn new() -> Self {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time follows the Unix epoch")
+            .as_nanos();
+        Self::new_for_nonce(nonce)
+    }
+
+    pub fn new_for_nonce(nonce: u128) -> Self {
+        let sequence = STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = env::temp_dir().join(format!(
+            "typebridge-codegen-{}-{nonce}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&path).expect("unique codegen acceptance stage creates");
+        Self(path)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Stage {
+    fn drop(&mut self) {
+        let result = fs::remove_dir_all(&self.0);
+        if !std::thread::panicking() {
+            result.expect("codegen acceptance stage removes");
+        }
+    }
+}
+
+pub fn write_package(package: &GeneratedPackage, root: &Path) {
+    for (relative, contents) in package.files() {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().expect("generated path has a parent"))
+            .expect("generated package directory creates");
+        fs::write(path, contents).expect("generated package file writes");
+    }
+}
+
+pub fn command_exists(program: &str) -> bool {
+    Command::new(program)
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+pub fn runtime_include() -> PathBuf {
+    // C compiler include flags do not accept Windows verbatim paths.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("schema-codegen belongs to the crate directory")
+        .join("c/include");
+    assert!(path.join("typebridge/type_bridge.h").is_file());
+    path
+}
+
+pub fn native_library() -> PathBuf {
+    let executable = env::current_exe().expect("current test executable is available");
+    let filename = format!(
+        "{}type_bridge_c{}",
+        env::consts::DLL_PREFIX,
+        env::consts::DLL_SUFFIX,
+    );
+    executable
+        .ancestors()
+        .flat_map(|directory| {
+            [
+                directory.join(&filename),
+                directory.join("deps").join(&filename),
+            ]
+        })
+        .find(|candidate| candidate.is_file())
+        .expect("build type-bridge-c's shared library before the C live producer")
+}
+
+pub fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        output.push(ALPHABET[(first >> 2) as usize] as char);
+        output.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            output.push(ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
+        } else {
+            output.push('=');
+        }
+        if chunk.len() > 2 {
+            output.push(ALPHABET[(third & 0x3f) as usize] as char);
+        } else {
+            output.push('=');
+        }
+    }
+    output
+}
+
+pub fn free_port() -> u16 {
+    TcpListener::bind(("127.0.0.1", 0))
+        .expect("loopback port allocation succeeds")
+        .local_addr()
+        .expect("loopback local address is readable")
+        .port()
+}
+
+pub fn repository_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("schema-codegen has crates parent")
+        .parent()
+        .expect("crates has core parent")
+        .parent()
+        .expect("core has repository parent")
+        .canonicalize()
+        .expect("repository root canonicalizes")
+}
+
+pub fn cargo_target() -> PathBuf {
+    env::var_os("ACCEPTANCE_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("schema-codegen has crates parent")
+                .parent()
+                .expect("crates has core parent")
+                .join("target/tmp_acceptance_target")
+        })
+}
+
+pub fn cargo_with_env(arguments: &[&str], environment: &[(&str, &std::ffi::OsStr)]) -> Output {
+    let _guard = CARGO_MUTEX.lock().unwrap();
+    let executable = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut command = Command::new(executable);
+    command
+        .args(arguments)
+        .env("CARGO_TARGET_DIR", cargo_target());
+    for (name, value) in environment {
+        command.env(name, value);
+    }
+    command.output().unwrap()
+}
+
+pub fn rust_projection(source: &str, document: &str) -> RuntimeProjection {
+    let documents = SchemaDocumentSet::parse([(
+        DocumentId::new(document).expect("static document ID is canonical"),
+        source,
+    )])
+    .expect("Rust fixture schema parses");
+    let declared = normalize_documents(&documents).expect("Rust fixture schema normalizes");
+    let resolved = resolve(
+        &declared,
+        &SemanticProfileId::new("typedb-3.12.1/v1").expect("profile is canonical"),
+    )
+    .expect("Rust fixture schema resolves");
+    let emitter = RustEmitter::new();
+    let resources = emitter
+        .code_resources_for(&resolved)
+        .expect("Rust code resources resolve");
+    project(
+        &resolved,
+        BindingTarget::Rust,
+        &ProjectionConfig::rust(),
+        &emitter.generator_handlers_for(&resolved),
+        &resources,
+    )
+    .expect("Rust fixture projection builds")
+}
+
+pub fn authority_for(
+    source: &str,
+    document: &str,
+    scope: &str,
+) -> (
+    type_bridge_schema::ResolvedSchema,
+    type_bridge_schema::VerifiedSchemaAuthority,
+) {
+    let documents = SchemaDocumentSet::parse([(
+        DocumentId::new(document).expect("Projected document ID is valid"),
+        source,
+    )])
+    .expect("Projected schema parses");
+    let declared = normalize_documents(&documents).expect("Projected schema normalizes");
+    let profile = SemanticProfileId::new(TEST_PROFILE).expect("Projected profile is valid");
+    let resolved = resolve(&declared, &profile).expect("Projected schema resolves");
+    let authority = authority_for_declared(&declared, scope, TEST_PROFILE);
+    (resolved, authority)
+}
+
+pub fn compile_c_consumer(
+    producer: (&str, &str),
+    compiler: &str,
+    stage: &Path,
+    local: &Path,
+    foreign: &Path,
+    library: Option<&Path>,
+) -> PathBuf {
+    let (name, contents) = producer;
+    let source = stage.join(format!("{name}-live-consumer.c"));
+    fs::write(&source, contents).expect("C live consumer stages");
+    let output = stage.join(format!("{name}-live-{compiler}"));
+    let mut command = Command::new(compiler);
+    command
+        .args([
+            "-std=c17",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-pedantic-errors",
+        ])
+        .arg("-I")
+        .arg(runtime_include())
+        .arg("-I")
+        .arg(local.join("include"))
+        .arg("-I")
+        .arg(foreign.join("include"))
+        .arg(local.join("src/models.c"))
+        .arg(foreign.join("src/models.c"))
+        .arg(&source);
+    if let Some(library) = library {
+        let directory = library.parent().expect("shared library has a parent");
+        command
+            .arg("-L")
+            .arg(directory)
+            .arg("-ltype_bridge_c")
+            .arg(format!("-Wl,-rpath,{}", directory.display()))
+            .arg("-o")
+            .arg(&output);
+    } else {
+        command.args(["-fsyntax-only"]);
+    }
+    let compiled = command
+        .output()
+        .unwrap_or_else(|error| panic!("failed to launch {compiler}: {error}"));
+    assert!(
+        compiled.status.success(),
+        "{compiler} rejected the strict C17 {name} live producer:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compiled.stdout),
+        String::from_utf8_lossy(&compiled.stderr),
+    );
+    output
 }

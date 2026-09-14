@@ -11,7 +11,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[3]
 CI = ROOT / "scripts/ci"
 ASSEMBLER_PATH = CI / "assemble_sdk_conformance_v3.py"
-
 FRAGMENT_LANES = {
     ("complete_connection_policy", "direct_runtime"),
     ("data_operation_cancellation", "direct_runtime"),
@@ -60,19 +59,14 @@ def _inputs(binding: str = "rust"):
             for observation_ref, proof_kind in live_lanes
         ],
     }
-    return contracts, proof, live
+    return (contracts, proof, live)
 
 
 def test_assembler_builds_one_comparator_valid_exact_21_row_report() -> None:
     contracts, proof, live = _inputs()
-
     report = assembler.assemble_report(
-        live,
-        binding="rust",
-        contracts=contracts,
-        proof_observations=proof,
+        live, binding="rust", contracts=contracts, proof_observations=proof
     )
-
     assert len(live["results"]) == 14
     assert len(report["results"]) == 21
     assert report["fixture"]["projection_target"] == "rust"
@@ -91,29 +85,21 @@ def test_assembler_rejects_missing_live_lane_and_fragment_overlap() -> None:
     live["results"].pop()
     with pytest.raises(assembler.AssemblyError) as missing:
         assembler.assemble_report(
-            live,
-            binding="rust",
-            contracts=contracts,
-            proof_observations=proof,
+            live, binding="rust", contracts=contracts, proof_observations=proof
         )
     assert missing.value.code == "live_lane_coverage_mismatch"
-
     contracts, proof, live = _inputs()
     overlap = (live["results"][0]["observation_ref"], live["results"][0]["proof_kind"])
     proof[overlap] = live["results"][0]["observation"]
     with pytest.raises(assembler.AssemblyError) as rejected:
         assembler.assemble_report(
-            live,
-            binding="rust",
-            contracts=contracts,
-            proof_observations=proof,
+            live, binding="rust", contracts=contracts, proof_observations=proof
         )
     assert rejected.value.code == "unexpected_live_lane"
 
 
 def test_assembler_source_cannot_import_expected_journey_objects() -> None:
     source = ASSEMBLER_PATH.read_text(encoding="utf-8")
-
     assert "expected_observations" not in source
     assert "contracts.observations" not in source
 
@@ -121,12 +107,95 @@ def test_assembler_source_cannot_import_expected_journey_objects() -> None:
 def test_report_publication_is_create_new_and_leaves_no_temporary_file(tmp_path: Path) -> None:
     destination = tmp_path / "rust-v3.json"
     assembler._publish(destination, {"status": "passed"})
-
     assert destination.read_bytes() == b'{"status":"passed"}\n'
     assert list(tmp_path.iterdir()) == [destination]
-
     with pytest.raises(assembler.AssemblyError) as rejected:
         assembler._publish(destination, {"status": "replaced"})
     assert rejected.value.code == "report_publication_failed"
     assert destination.read_bytes() == b'{"status":"passed"}\n'
     assert list(tmp_path.iterdir()) == [destination]
+
+
+def test_composition_reuses_six_lanes_and_requires_eight_supplement_lanes() -> None:
+    contracts = assembler.conformance.load_contracts()
+    binding = "rust"
+    supplement_lanes = sorted(
+        {(observation_ref, proof_kind) for _, proof_kind, observation_ref in contracts.selected}
+        - FRAGMENT_LANES
+        - assembler.REUSED_LANES
+    )
+    supplement = {
+        "format": assembler.SUPPLEMENT_FORMAT,
+        "binding": binding,
+        "semantic_profile": assembler.SEMANTIC_PROFILE,
+        "producer": contracts.report_producers[binding]["id"],
+        "semantic_fingerprint": contracts.semantic_fingerprint,
+        "projection_fingerprint": contracts.projection_fingerprints[binding],
+        "results": [
+            {
+                "observation_ref": observation_ref,
+                "proof_kind": proof_kind,
+                "outcome": "passed",
+                "observation": contracts.observations[observation_ref],
+            }
+            for observation_ref, proof_kind in supplement_lanes
+        ],
+    }
+    parity = {
+        "observations": {
+            name: contracts.observations[name]
+            for name in ("integer_key_polymorphic_role", "ordered_distinct_collections")
+        }
+    }
+    inherited = contracts.observations["inherited_relation_role_lifecycle"]
+    live = {
+        "observations": {
+            "inherited_plain_activity_role_lifecycle": {
+                "count_after_delete": inherited["count_after_delete"],
+                "created": inherited["created"],
+                "deleted": inherited["deleted"],
+                "inherited_relation": inherited["inherited_relation"],
+                "model": inherited["model"],
+                "participant": {"key": "data-ada", "model": inherited["player_model"]},
+                "read_after_create": inherited["read_after_create"],
+                "read_after_delete": inherited["read_after_delete"],
+                "ref": "plain-activity-ada",
+                "role": inherited["inherited_role"],
+                "role_identity_preserved": inherited["role_identity_preserved"],
+            }
+        }
+    }
+    manager = {"observation": contracts.observations["manager_field_token_filter"]}
+    bundle = assembler.compose_bundle(
+        supplement,
+        binding=binding,
+        contracts=contracts,
+        parity=parity,
+        live=live,
+        manager=manager,
+        atomic_generation_observation=contracts.observations["atomic_multibinding_generation"],
+        field_identity_observation=contracts.observations["field_name_identity"],
+    )
+    assert len(supplement_lanes) == 8
+    assert len(bundle["results"]) == 14
+    observations = assembler._live_observations(
+        bundle, binding=binding, contracts=contracts, fragment_lanes=FRAGMENT_LANES
+    )
+    assert {lane: observation for lane, observation in observations.items()} == {
+        (observation_ref, proof_kind): contracts.observations[observation_ref]
+        for _, proof_kind, observation_ref in contracts.selected
+        if (observation_ref, proof_kind) not in FRAGMENT_LANES
+    }
+    supplement["format"] = assembler.LIVE_FORMAT
+    with pytest.raises(assembler.AssemblyError) as rejected:
+        assembler.compose_bundle(
+            supplement,
+            binding=binding,
+            contracts=contracts,
+            parity=parity,
+            live=live,
+            manager=manager,
+            atomic_generation_observation=contracts.observations["atomic_multibinding_generation"],
+            field_identity_observation=contracts.observations["field_name_identity"],
+        )
+    assert rejected.value.code == "invalid_supplement_format"

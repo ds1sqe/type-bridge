@@ -47,12 +47,7 @@ def test_current_release_keeps_the_published_notice_separate() -> None:
     current = jobs["github-release"]
     release = next(step for step in current["steps"] if "softprops/" in step.get("uses", ""))
     assert release["with"]["body_path"] == "dist/server-oci-release.md"
-    historical = jobs["notice-finalize-write"]
-    assert "github.ref == 'refs/heads/release/2.0.2-notice'" in historical["if"]
-    notice = next(step for step in historical["steps"] if "softprops/" in step.get("uses", ""))
-    assert notice["with"]["tag_name"] == "v2.0.2"
-    assert notice["with"]["target_commitish"] == "f94703f4c9b44a965a089f85b47c17933f4d9be6"
-    assert "inputs.release_channel == 'recovery' && 'v2.0.0' || 'v2.2.0'" in workflow
+    assert not any("notice" in name or "recovery" in name for name in jobs)
 
 
 @pytest.mark.parametrize(
@@ -63,12 +58,9 @@ def test_current_release_keeps_the_published_notice_separate() -> None:
         ("stable", "b" * 40, "tag", "commit", "d" * 40, False),
         ("stable", "b" * 40, "commit", "commit", "c" * 40, False),
         ("stable", "b" * 40, "tag", "tag", "c" * 40, False),
-        ("recovery", "a4cec6478ad4e764f039e51eabcbb68d45efd45a", "tag", "commit", "c" * 40, True),
-        ("recovery", "b" * 40, "tag", "commit", "c" * 40, False),
-        ("recovery", "a4cec6478ad4e764f039e51eabcbb68d45efd45a", "tag", "commit", "d" * 40, False),
     ],
 )
-def test_oci_publisher_binds_current_tag_and_preserves_frozen_recovery(
+def test_oci_publisher_binds_current_tag(
     channel: str,
     tag_object: str,
     ref_type: str,
@@ -82,8 +74,8 @@ def test_oci_publisher_binds_current_tag_and_preserves_frozen_recovery(
     steps = workflow["jobs"]["publish-server-oci"]["steps"]
     guards = [step["run"] for step in steps if step["name"] == "Revalidate immutable release tag"]
     assert len(guards) == 1
-    release_tag = "v2.0.0" if channel == "recovery" else "v2.2.0"
-    expected_tag = "a4cec6478ad4e764f039e51eabcbb68d45efd45a" if channel == "recovery" else "b" * 40
+    release_tag = "v2.2.0"
+    expected_tag = "b" * 40
     ref_payload = json.dumps({"object": {"type": ref_type, "sha": tag_object}})
     tag_payload = json.dumps({"object": {"type": target_type, "sha": target_revision}})
     # Execute the actual publisher guard with read-only GitHub responses mocked.

@@ -6,13 +6,22 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
-import json
 import re
-import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from compare_sdk_conformance import (  # noqa: E402, F401
+    ContractError,
+    _duplicate_key_object,
+    _exact_object,
+    _json_value,
+    _regular_bytes,
+    canonical_json_bytes,
+)
+from compare_sdk_conformance import validate_producer_source as check_producer_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"
@@ -111,91 +120,10 @@ LIVE_RECORD_REFS = frozenset(
 )
 
 
-class ContractError(ValueError):
-    """A stable fail-closed Projected live-contract rejection."""
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(f"{code}: {message}")
-        self.code = code
-
-
 @dataclass(frozen=True)
 class ProjectedLiveContract:
     authority: dict[str, dict[str, str]]
     observations: dict[str, Any]
-
-
-def _duplicate_key_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    value: dict[str, Any] = {}
-    for key, item in pairs:
-        if key in value:
-            raise ContractError("duplicate_json_key", f"duplicate JSON key {key!r}")
-        value[key] = item
-    return value
-
-
-def canonical_json_bytes(value: Any) -> bytes:
-    """Return the live contract's compact deterministic JSON spelling."""
-
-    try:
-        encoded = json.dumps(
-            value,
-            ensure_ascii=False,
-            allow_nan=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-    except (TypeError, ValueError, RecursionError) as error:
-        raise ContractError("invalid_json_value", "value cannot be canonicalized") from error
-    return f"{encoded}\n".encode()
-
-
-def _regular_bytes(path: Path, label: str, limit: int) -> bytes:
-    try:
-        metadata = path.lstat()
-    except OSError as error:
-        raise ContractError("invalid_source_file", f"{label} cannot be inspected") from error
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-        raise ContractError(
-            "invalid_source_file",
-            f"{label} must be a regular non-symlink file",
-        )
-    if metadata.st_size > limit:
-        raise ContractError("source_size_limit", f"{label} exceeds {limit} bytes")
-    try:
-        with path.open("rb") as source:
-            raw = source.read(limit + 1)
-    except OSError as error:
-        raise ContractError("invalid_source_file", f"{label} cannot be read") from error
-    if len(raw) > limit:
-        raise ContractError("source_size_limit", f"{label} exceeds {limit} bytes")
-    return raw
-
-
-def _json_value(raw: bytes, label: str) -> Any:
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise ContractError("invalid_json_utf8", f"{label} is not UTF-8") from error
-    try:
-        return json.loads(text, object_pairs_hook=_duplicate_key_object)
-    except ContractError:
-        raise
-    except (json.JSONDecodeError, RecursionError) as error:
-        raise ContractError("malformed_json", f"{label} is not valid bounded JSON") from error
-
-
-def _exact_object(value: Any, keys: set[str], label: str) -> dict[str, Any]:
-    if type(value) is not dict:
-        raise ContractError("invalid_object", f"{label} must be an object")
-    actual = set(value)
-    if actual != keys:
-        raise ContractError(
-            "invalid_object_fields",
-            f"{label} fields differ; missing={sorted(keys - actual)}, "
-            f"extra={sorted(actual - keys)}",
-        )
-    return value
 
 
 def _exact_list(value: Any, label: str) -> list[Any]:
@@ -236,36 +164,7 @@ def _reject_forbidden_claims(value: Any, path: str = "report") -> None:
 
 
 def validate_producer_source(source: str | bytes) -> None:
-    """Reject a producer that imports or names comparator-side expectations."""
-
-    if type(source) is bytes:
-        if len(source) > MAX_PRODUCER_SOURCE_BYTES:
-            raise ContractError(
-                "producer_source_size_limit",
-                f"producer source exceeds {MAX_PRODUCER_SOURCE_BYTES} bytes",
-            )
-        try:
-            text = source.decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise ContractError(
-                "invalid_producer_source_utf8",
-                "producer source is not UTF-8",
-            ) from error
-    elif type(source) is str:
-        if len(source.encode("utf-8")) > MAX_PRODUCER_SOURCE_BYTES:
-            raise ContractError(
-                "producer_source_size_limit",
-                f"producer source exceeds {MAX_PRODUCER_SOURCE_BYTES} bytes",
-            )
-        text = source
-    else:
-        raise ContractError("invalid_producer_source", "producer source must be text")
-    for marker in FORBIDDEN_PRODUCER_IMPORT_MARKERS:
-        if marker in text:
-            raise ContractError(
-                "expected_observation_import",
-                f"producer source contains forbidden marker {marker!r}",
-            )
+    check_producer_source(source, MAX_PRODUCER_SOURCE_BYTES, FORBIDDEN_PRODUCER_IMPORT_MARKERS)
 
 
 def _source_identity(label: str) -> tuple[dict[str, str], bytes]:

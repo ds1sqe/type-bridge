@@ -1,5 +1,11 @@
 #![cfg(unix)]
 
+mod support;
+use support::{
+    Stage, authority_for, command_exists, compile_c_consumer, native_library, repository_root,
+    runtime_include, write_package,
+};
+
 #[path = "support/c_provider.rs"]
 mod c_provider;
 use c_provider::{IsolatedDatabase, SETUP_LOCK};
@@ -10,20 +16,12 @@ use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::codec::to_canonical_json;
-use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::projection::{BindingTarget, CSymbolPrefix, ProjectionConfig};
-use type_bridge_contract::schema::DocumentId;
-use type_bridge_schema::{
-    BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SchemaDocumentSet, build_schema_authority,
-    normalize_documents, project, resolve,
-};
+use type_bridge_schema::project;
 use type_bridge_schema_codegen::{CEmitter, GeneratedPackage};
 
 const SOURCE: &str =
@@ -62,74 +60,9 @@ const AUTHORITIES: [(&str, &str, &str); 3] = [
     ),
 ];
 
-static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-struct Stage(PathBuf);
-
-impl Stage {
-    fn new() -> Self {
-        let sequence = STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = env::temp_dir().join(format!(
-            "typebridge-c-manager-live-{}-{sequence}",
-            std::process::id(),
-        ));
-        fs::create_dir(&path).expect("unique C Manager stage creates");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Stage {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 struct EmittedFixture {
     local: GeneratedPackage,
     foreign: GeneratedPackage,
-}
-
-fn repository_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-        .expect("schema-codegen lives beneath repository root")
-        .to_path_buf()
-}
-
-fn authority_for(
-    source: &str,
-    document: &str,
-    scope: &str,
-) -> (
-    type_bridge_schema::ResolvedSchema,
-    type_bridge_schema::VerifiedSchemaAuthority,
-) {
-    let documents = SchemaDocumentSet::parse([(
-        DocumentId::new(document).expect("document ID is valid"),
-        source,
-    )])
-    .expect("Manager schema parses");
-    let declared = normalize_documents(&documents).expect("Manager schema normalizes");
-    let profile = SemanticProfileId::new(SEMANTIC_PROFILE).expect("profile is valid");
-    let resolved = resolve(&declared, &profile).expect("Manager schema resolves");
-    let capabilities: CapabilitySet = BUILTIN_SCHEMA_CAPABILITY_IDS
-        .iter()
-        .map(|id| CapabilityId::new(*id).expect("built-in capability ID is valid"))
-        .collect();
-    let context = ManagedDeltaContext::new(
-        ManagedScopeId::new(scope).expect("managed scope is valid"),
-        profile,
-        capabilities,
-    );
-    let authority = build_schema_authority(&declared, declared.required_capabilities(), &context)
-        .expect("Manager schema authority builds");
-    (resolved, authority)
 }
 
 fn emitted_fixture() -> EmittedFixture {
@@ -172,101 +105,6 @@ fn emitted_fixture() -> EmittedFixture {
         "foreign selected-field metadata retains distinct authority",
     );
     EmittedFixture { local, foreign }
-}
-
-fn write_package(package: &GeneratedPackage, root: &Path) {
-    for (relative, contents) in package.files() {
-        let path = root.join(relative);
-        fs::create_dir_all(path.parent().expect("generated path has parent"))
-            .expect("generated package directory creates");
-        fs::write(path, contents).expect("generated package file writes");
-    }
-}
-
-fn command_exists(program: &str) -> bool {
-    Command::new(program)
-        .arg("--version")
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
-
-fn runtime_include() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../c/include")
-        .canonicalize()
-        .expect("C runtime headers exist")
-}
-
-fn native_library() -> PathBuf {
-    let executable = env::current_exe().expect("current executable is available");
-    let filename = format!(
-        "{}type_bridge_c{}",
-        env::consts::DLL_PREFIX,
-        env::consts::DLL_SUFFIX,
-    );
-    executable
-        .ancestors()
-        .flat_map(|directory| {
-            [
-                directory.join(&filename),
-                directory.join("deps").join(&filename),
-            ]
-        })
-        .find(|candidate| candidate.is_file())
-        .expect("build type-bridge-c shared library before C live producer")
-}
-
-fn compile_consumer(
-    compiler: &str,
-    stage: &Path,
-    local: &Path,
-    foreign: &Path,
-    library: Option<&Path>,
-) -> PathBuf {
-    let source = stage.join("manager-live-consumer.c");
-    fs::write(&source, CONSUMER).expect("C Manager consumer stages");
-    let output = stage.join(format!("manager-live-{compiler}"));
-    let mut command = Command::new(compiler);
-    command
-        .args([
-            "-std=c17",
-            "-O2",
-            "-Wall",
-            "-Wextra",
-            "-Werror",
-            "-pedantic-errors",
-        ])
-        .arg("-I")
-        .arg(runtime_include())
-        .arg("-I")
-        .arg(local.join("include"))
-        .arg("-I")
-        .arg(foreign.join("include"))
-        .arg(local.join("src/models.c"))
-        .arg(foreign.join("src/models.c"))
-        .arg(&source);
-    if let Some(library) = library {
-        let directory = library.parent().expect("shared library has parent");
-        command
-            .arg("-L")
-            .arg(directory)
-            .arg("-ltype_bridge_c")
-            .arg(format!("-Wl,-rpath,{}", directory.display()))
-            .arg("-o")
-            .arg(&output);
-    } else {
-        command.arg("-fsyntax-only");
-    }
-    let compiled = command
-        .output()
-        .unwrap_or_else(|error| panic!("failed to launch {compiler}: {error}"));
-    assert!(
-        compiled.status.success(),
-        "{compiler} rejected strict C17 Manager producer:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&compiled.stdout),
-        String::from_utf8_lossy(&compiled.stderr),
-    );
-    output
 }
 
 fn assert_wrong_owner_compile_negative(compiler: &str, stage: &Path, local: &Path) {
@@ -467,7 +305,14 @@ fn strict_c17_manager_live_consumer_compiles() {
     let mut compiled = 0usize;
     for compiler in ["gcc", "clang"] {
         if command_exists(compiler) {
-            compile_consumer(compiler, stage.path(), &local, &foreign, None);
+            compile_c_consumer(
+                ("manager", CONSUMER),
+                compiler,
+                stage.path(),
+                &local,
+                &foreign,
+                None,
+            );
             assert_wrong_owner_compile_negative(compiler, stage.path(), &local);
             assert_manager_value_compile_negative(
                 compiler,
@@ -508,7 +353,8 @@ fn c_manager_live_runs_when_explicitly_configured() {
         .into_iter()
         .find(|compiler| command_exists(compiler))
         .expect("a strict C17 compiler is available");
-    let executable = compile_consumer(
+    let executable = compile_c_consumer(
+        ("manager", CONSUMER),
         compiler,
         stage.path(),
         &local,

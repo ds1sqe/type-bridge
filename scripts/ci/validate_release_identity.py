@@ -1688,20 +1688,15 @@ def validate_server_oci_release_channels(workflow: Path) -> None:
         raise ValidationError(f"Release workflow is missing or non-regular: {workflow}")
     source = workflow.read_text(encoding="utf-8")
     preamble = source.split("\njobs:\n", maxsplit=1)[0]
-    alias_selector = (
-        "  SERVER_OCI_MINOR_ALIAS: ${{ github.event_name == 'workflow_dispatch' && "
-        "inputs.release_channel == 'recovery' && '2.0' || '2.2' }}"
-    )
+    alias_selector = "  SERVER_OCI_MINOR_ALIAS: '2.2'"
     if preamble.count(alias_selector) != 1:
         raise ValidationError("Release workflow has no exact OCI minor-alias selector")
 
     tag_preflight = _release_workflow_job(source, "release-tag-preflight")
     freeze_tag = _release_workflow_step(tag_preflight, "Freeze exact annotated tag object")
     tag_requirements = {
-        "needs: [channel-preflight, recovery-preflight]": "both channel preflights",
+        "needs: [channel-preflight]": "stable channel preflight",
         "needs.channel-preflight.result == 'success'": "stable channel acceptance",
-        "needs.recovery-preflight.result == 'success'": "recovery acceptance",
-        "inputs.recovery_mode == 'publish'": "explicit recovery publication mode",
         "outputs:\n      tag_object: ${{ steps.freeze-tag.outputs.tag_object }}": (
             "frozen tag-object job output"
         ),
@@ -1709,8 +1704,6 @@ def validate_server_oci_release_channels(workflow: Path) -> None:
     malformed = [label for marker, label in tag_requirements.items() if marker not in tag_preflight]
     freeze_requirements = {
         'test "$(jq -r \'.object.type\' <<<"$tag_ref_json")" = tag': ("annotated-tag requirement"),
-        'if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then': ("recovery tag-object branch"),
-        '"a4cec6478ad4e764f039e51eabcbb68d45efd45a"': "exact v2.0.0 tag object",
         'test "$(jq -r \'.object.type\' <<<"$tag_json")" = commit': ("tag target kind"),
         'test "$(jq -r \'.object.sha\' <<<"$tag_json")" = "$RELEASE_REVISION"': (
             "tag target revision"
@@ -1780,10 +1773,9 @@ def validate_server_oci_release_channels(workflow: Path) -> None:
         (metadata_step, 'alias_markdown = ", ".join(', "release-note aliases"),
         (
             signature_step,
-            "release.yml@refs/heads/master$' || "
-            "'^https://github.com/ds1sqe/type-bridge/.github/workflows/"
+            "COSIGN_CERTIFICATE_IDENTITY_REGEXP: '^https://github.com/ds1sqe/type-bridge/.github/workflows/"
             "release.yml@refs/tags/v2[.]2[.]0$'",
-            "closed recovery/stable Cosign identities",
+            "closed stable Cosign identities",
         ),
     )
     malformed.extend(
@@ -2648,10 +2640,6 @@ def validate_release_identity(
         },
         "python_version": python_version,
         "release_channel": release_channel,
-        "server_oci_recovery_aliases": ["2.0", "2", "latest"],
-        "server_oci_recovery_signing_identity": (
-            "https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/heads/master"
-        ),
         "server_oci_stable_aliases": [
             ".".join(version.split(".")[:2]),
             version.split(".")[0],

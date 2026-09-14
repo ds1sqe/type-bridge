@@ -4,8 +4,6 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -17,6 +15,7 @@ use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolv
 use type_bridge_schema_codegen::{GeneratedPackage, RustEmitter};
 
 mod support;
+use support::{CARGO_MUTEX, Stage, cargo_with_env, repository_root, write_package};
 
 const POSITIVE: &str = include_str!("rust_acceptance/positive.rs");
 const NEGATIVE: &str = include_str!("rust_acceptance/negative.rs");
@@ -24,22 +23,9 @@ const PROJECTED_PARITY: &str = include_str!("rust_acceptance/projected_parity.rs
 const PROJECTED_FOREIGN_NEGATIVE: &str =
     include_str!("rust_acceptance/projected_foreign_negative.rs");
 const SDK_V5_CODEC: &str = include_str!("rust_acceptance/sdk_v5_codec.rs");
-static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const SDK_V3_PROOF_FRAGMENT_ENV: &str = "TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT";
 const SDK_V3_PROOF_NONCE_ENV: &str = "TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE";
-
-fn repository_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .canonicalize()
-        .unwrap()
-}
 
 fn v3_source_identity(root: &Path, relative: &str) -> Value {
     let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
@@ -102,66 +88,25 @@ fn publish_v3_package_fragment(results: Vec<Value>) {
     output.sync_all().expect("V3 package fragment is durable");
 }
 
-struct Stage(PathBuf);
-
-impl Stage {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time follows the Unix epoch")
-            .as_nanos();
-        Self::new_for_nonce(nonce)
-    }
-
-    fn new_for_nonce(nonce: u128) -> Self {
-        let sequence = STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = env::temp_dir().join(format!(
-            "type-bridge-schema-codegen-rust-acceptance-{}-{nonce}-{sequence}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).expect("acceptance stage is created");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Stage {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 #[test]
 fn acceptance_stages_are_unique_when_clock_nonce_repeats() {
     let first = Stage::new_for_nonce(u128::MAX);
     let second = Stage::new_for_nonce(u128::MAX);
 
     assert_ne!(first.path(), second.path());
+    let first_path = first.path().to_owned();
+    let second_path = second.path().to_owned();
+    let sentinel = second.path().join("owned.txt");
+    fs::write(&sentinel, b"second stage").unwrap();
+    drop(first);
+    assert!(!first_path.exists());
+    assert_eq!(fs::read(&sentinel).unwrap(), b"second stage");
+    drop(second);
+    assert!(!second_path.exists());
 }
 
 fn project_from_source(source: &str) -> RuntimeProjection {
-    let documents =
-        SchemaDocumentSet::parse([(DocumentId::new("rust-acceptance.yaml").unwrap(), source)])
-            .unwrap();
-    let declared = normalize_documents(&documents).unwrap();
-    let resolved = resolve(
-        &declared,
-        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
-    )
-    .unwrap();
-    let emitter = RustEmitter::new();
-    let resources = emitter.code_resources_for(&resolved).unwrap();
-    project(
-        &resolved,
-        BindingTarget::Rust,
-        &ProjectionConfig::rust(),
-        &emitter.generator_handlers_for(&resolved),
-        &resources,
-    )
-    .unwrap()
+    support::rust_projection(source, "rust-acceptance.yaml")
 }
 
 fn emit_from_source(source: &str) -> GeneratedPackage {
@@ -173,14 +118,6 @@ fn emit_from_source(source: &str) -> GeneratedPackage {
 
 fn emit() -> GeneratedPackage {
     emit_from_source(include_str!("acceptance/schema.yaml"))
-}
-
-fn write_package(package: &GeneratedPackage, root: &Path) {
-    for (relative, bytes) in package.files() {
-        let path = root.join(relative);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, bytes).unwrap();
-    }
 }
 
 fn write_consumer_with_features_and_dependencies(
@@ -218,32 +155,6 @@ fn write_consumer(root: &Path, name: &str, source: &str) {
     write_consumer_with_features(root, name, source, &["test-harness"]);
 }
 
-static CARGO_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn cargo(arguments: &[&str], _target: &Path) -> Output {
-    cargo_with_env(arguments, &[])
-}
-
-fn cargo_with_env(arguments: &[&str], environment: &[(&str, &std::ffi::OsStr)]) -> Output {
-    let _guard = CARGO_MUTEX.lock().unwrap();
-    let executable = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let workspace_target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("target")
-        .join("tmp_acceptance_target");
-    let target_dir = env::var_os("ACCEPTANCE_TARGET_DIR")
-        .unwrap_or_else(|| workspace_target.as_os_str().to_os_string());
-    let mut command = Command::new(executable);
-    command.args(arguments).env("CARGO_TARGET_DIR", target_dir);
-    for (name, value) in environment {
-        command.env(name, value);
-    }
-    command.output().unwrap()
-}
-
 #[test]
 fn generated_rust_crate_compiles_rejects_invalid_types_and_runs() {
     let stage = Stage::new();
@@ -255,14 +166,14 @@ fn generated_rust_crate_compiles_rejects_invalid_types_and_runs() {
     write_consumer(&negative, "rust-projection-negative", NEGATIVE);
 
     let positive_manifest = positive.join("Cargo.toml");
-    let positive_output = cargo(
+    let positive_output = cargo_with_env(
         &[
             "run",
             "--quiet",
             "--manifest-path",
             positive_manifest.to_str().unwrap(),
         ],
-        &stage.path().join("positive-target"),
+        &[],
     );
     assert!(
         positive_output.status.success(),
@@ -272,14 +183,14 @@ fn generated_rust_crate_compiles_rejects_invalid_types_and_runs() {
     );
 
     let negative_manifest = negative.join("Cargo.toml");
-    let negative_output = cargo(
+    let negative_output = cargo_with_env(
         &[
             "check",
             "--quiet",
             "--manifest-path",
             negative_manifest.to_str().unwrap(),
         ],
-        &stage.path().join("negative-target"),
+        &[],
     );
     assert!(
         !negative_output.status.success(),
@@ -385,7 +296,7 @@ fn main() {}"#,
     for (name, source, expected) in cases {
         let consumer = stage.path().join(name);
         write_consumer(&consumer, name, source);
-        let output = cargo(
+        let output = cargo_with_env(
             &[
                 "check",
                 "--offline",
@@ -393,7 +304,7 @@ fn main() {}"#,
                 "--manifest-path",
                 consumer.join("Cargo.toml").to_str().unwrap(),
             ],
-            &stage.path().join(format!("{name}-target")),
+            &[],
         );
         assert!(!output.status.success(), "{name} unexpectedly compiled");
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -476,7 +387,7 @@ fn main() {
         &["band8", "band9"],
     );
 
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--offline",
@@ -484,7 +395,7 @@ fn main() {
             "--manifest-path",
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("direct-connection-positive-target"),
+        &[],
     );
     assert!(
         output.status.success(),
@@ -576,7 +487,7 @@ fn main() {}"#,
     for (name, source, expected) in cases {
         let consumer = stage.path().join(name);
         write_consumer_with_features(&consumer, name, source, &["band8", "band9"]);
-        let output = cargo(
+        let output = cargo_with_env(
             &[
                 "check",
                 "--offline",
@@ -584,7 +495,7 @@ fn main() {}"#,
                 "--manifest-path",
                 consumer.join("Cargo.toml").to_str().unwrap(),
             ],
-            &stage.path().join(format!("{name}-target")),
+            &[],
         );
         assert!(!output.status.success(), "{name} unexpectedly compiled");
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -637,14 +548,14 @@ fn main() {}"#,
     for (name, source) in cases {
         let consumer = stage.path().join(name);
         write_consumer_with_features(&consumer, name, source, &[]);
-        let output = cargo(
+        let output = cargo_with_env(
             &[
                 "check",
                 "--offline",
                 "--manifest-path",
                 consumer.join("Cargo.toml").to_str().unwrap(),
             ],
-            &stage.path().join(format!("{name}-target")),
+            &[],
         );
         assert!(!output.status.success(), "{name} unexpectedly compiled");
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -674,13 +585,13 @@ fn generated_subtype_association_compiles_as_ordinary_dependency() {
         "use generated::{Model, Record}; fn main() { let _ = Record::TYPE_ID_JSON; }\n",
         &[],
     );
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--manifest-path",
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("ordinary-consumer-target"),
+        &[],
     );
     assert!(
         output.status.success(),
@@ -720,14 +631,14 @@ fn single_variant_families_compile_without_irrefutable_patterns() {
         "fn main() { let _ = generated::SingleActorFamily::as_single_person; let _ = generated::SingleIdentifierFamily::as_single_id; }\n",
         &[],
     );
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--offline",
             "--manifest-path",
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("consumer-target"),
+        &[],
     );
     assert!(
         output.status.success(),
@@ -759,7 +670,7 @@ fn main() {
 "#,
         &[],
     );
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "run",
             "--offline",
@@ -767,7 +678,7 @@ fn main() {
             "--manifest-path",
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("attribute-family-consumer-target"),
+        &[],
     );
     assert!(
         output.status.success(),
@@ -934,14 +845,14 @@ fn main() {}
 "#,
         &[],
     );
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--offline",
             "--manifest-path",
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("manager-target"),
+        &[],
     );
     let manifest = fs::read_to_string(consumer.join("Cargo.toml")).unwrap();
     let deps = manifest
@@ -1006,14 +917,14 @@ async fn count(db: &Database<AppSchema>) { let _ = db.entities::<Party>().count(
 fn main() {}"#,
         &[],
     );
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--offline",
             "--manifest-path",
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("negative-manager-target"),
+        &[],
     );
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1158,14 +1069,14 @@ plays:
     for (name, source, reason) in cases {
         let consumer = stage.path().join(name);
         write_consumer_with_features(&consumer, name, source, &[]);
-        let output = cargo(
+        let output = cargo_with_env(
             &[
                 "check",
                 "--offline",
                 "--manifest-path",
                 consumer.join("Cargo.toml").to_str().unwrap(),
             ],
-            &stage.path().join(format!("{name}-target")),
+            &[],
         );
         assert!(!output.status.success(), "{name} unexpectedly compiled");
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1204,14 +1115,14 @@ fn generated_external_cross_schema_boundaries() {
         .join("rust");
     let rust_path = rust_crate.to_string_lossy().replace('\\', "\\\\");
     fs::write(consumer.join("Cargo.toml"), format!("[package]\nname=\"cross-boundary-consumer\"\nversion=\"0.0.0\"\nedition=\"2024\"\n[dependencies]\nschema_a={{package=\"type-bridge-generated-schema\",path=\"../generated-a\"}}\nschema_b={{package=\"schema-b\",path=\"../generated-b\"}}\ntype-bridge={{path=\"{rust_path}\",default-features=false}}\n[patch.crates-io]\ntype-bridge={{path=\"{rust_path}\"}}\n[workspace]\n")).unwrap();
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--offline",
             "--manifest-path",
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("cross-boundary-target"),
+        &[],
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success());
@@ -1671,13 +1582,13 @@ fn main() {
 "#,
         &[],
     );
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--manifest-path",
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("closure-target"),
+        &[],
     );
     assert!(
         output.status.success(),
@@ -1752,9 +1663,9 @@ fn main() {}
     fs::write(cross_neg.join("src/main.rs"), cross_neg_source).unwrap();
 
     let manifest = cross_neg.join("Cargo.toml");
-    let output = cargo(
+    let output = cargo_with_env(
         &["check", "--manifest-path", manifest.to_str().unwrap()],
-        &stage.path().join("cross-neg-target"),
+        &[],
     );
 
     assert!(
@@ -1805,13 +1716,13 @@ fn main() {
 "#;
     fs::write(neg.join("src/main.rs"), neg_source).unwrap();
 
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--manifest-path",
             neg.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("abstract-neg-target"),
+        &[],
     );
 
     assert!(
@@ -1862,13 +1773,13 @@ fn main() {}
 "#;
     fs::write(neg.join("src/main.rs"), neg_source).unwrap();
 
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--manifest-path",
             neg.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("family-neg-target"),
+        &[],
     );
 
     assert!(
@@ -1919,13 +1830,13 @@ fn main() {}
 "#;
     fs::write(neg.join("src/main.rs"), neg_source).unwrap();
 
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--manifest-path",
             neg.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("relation-create-neg-target"),
+        &[],
     );
 
     assert!(
@@ -1977,13 +1888,13 @@ fn main() {
 "#;
     fs::write(neg.join("src/main.rs"), neg_source).unwrap();
 
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--manifest-path",
             neg.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("kind-neg-target"),
+        &[],
     );
 
     assert!(
@@ -2030,13 +1941,13 @@ fn main() {
 "#;
     fs::write(neg.join("src/main.rs"), neg_source).unwrap();
 
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--manifest-path",
             neg.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("from-parts-neg-target"),
+        &[],
     );
 
     assert!(
@@ -2064,13 +1975,13 @@ fn entity_ref_cannot_satisfy_entity_model_bound() {
         "use type_bridge::model::EntityModel;\nuse generated::PersonRef;\nfn check<T: EntityModel>() {}\nfn main() { check::<PersonRef>(); }\n",
     );
 
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--manifest-path",
             neg.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("entity-ref-neg-target"),
+        &[],
     );
 
     assert!(
@@ -2098,13 +2009,13 @@ fn relation_ref_cannot_satisfy_relation_model_bound() {
         "use type_bridge::model::RelationModel;\nuse generated::MembershipRef;\nfn check<T: RelationModel>() {}\nfn main() { check::<MembershipRef>(); }\n",
     );
 
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--manifest-path",
             neg.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("relation-ref-neg-target"),
+        &[],
     );
 
     assert!(
@@ -2132,13 +2043,13 @@ fn relation_cannot_satisfy_entity_model_bound() {
         "use type_bridge::model::EntityModel;\nuse generated::Membership;\nfn check<T: EntityModel>() {}\nfn main() { check::<Membership>(); }\n",
     );
 
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--manifest-path",
             neg.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("relation-entity-neg-target"),
+        &[],
     );
 
     assert!(
@@ -2167,13 +2078,13 @@ fn abstract_model_does_not_implement_complete_model() {
         "use type_bridge::model::CompleteModel;\nuse generated::Thing;\nfn check<T: CompleteModel>() {}\nfn main() { check::<Thing>(); }\n",
     );
 
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--manifest-path",
             neg.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("abstract-complete-neg-target"),
+        &[],
     );
 
     assert!(
@@ -2228,13 +2139,13 @@ fn rust_acceptance_review_06b_capability_boundary_is_real() {
         "cap-public-new",
         "use type_bridge::__codegen::HydrationCapability;\nfn main() { let _ = HydrationCapability::new(); }\n",
     );
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--manifest-path",
             public_new.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("cap-public-new-target"),
+        &[],
     );
     assert!(
         output.status.success(),
@@ -2264,13 +2175,13 @@ fn rust_acceptance_review_06b_capability_boundary_is_real() {
     for (name, features, source, expected) in failures {
         let consumer = stage.path().join(name);
         write_consumer_with_features(&consumer, name, source, features);
-        let output = cargo(
+        let output = cargo_with_env(
             &[
                 "check",
                 "--manifest-path",
                 consumer.join("Cargo.toml").to_str().unwrap(),
             ],
-            &stage.path().join(format!("{name}-target")),
+            &[],
         );
         assert!(
             !output.status.success(),
@@ -2737,13 +2648,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     write_consumer_with_features(&consumer, "consumer-06a", main_rs, &["test-harness"]);
 
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "run",
             "--manifest-path",
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("consumer-06a-target"),
+        &[],
     );
 
     assert!(
@@ -3054,13 +2965,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         main_rs,
         &["test-harness"],
     );
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "run",
             "--manifest-path",
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("consumer-06b-hygiene-target"),
+        &[],
     );
     assert!(
         output.status.success(),
@@ -3447,13 +3358,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 "#;
     write_consumer_with_features(&consumer, "consumer-06b", main_rs, &["test-harness"]);
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "run",
             "--manifest-path",
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("consumer-06b-target"),
+        &[],
     );
     assert!(
         output.status.success(),
@@ -3470,13 +3381,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "use generated::*;\nfn main() { let _ = NoKeyRef::from_key(Email::new(\"x\").unwrap()); }\n",
         &[],
     );
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--manifest-path",
             no_key_negative.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("no-key-negative-target"),
+        &[],
     );
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3494,13 +3405,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "use generated::*;\nfn probe(value: &FamilyRootFamily) { let _ = value.redeclared_value(); }\nfn main() {}\n",
         &[],
     );
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--manifest-path",
             family_negative.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("family-negative-target"),
+        &[],
     );
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3603,7 +3514,7 @@ fn check(db: &Database<AppSchema>) {
 fn main() {}"#,
     );
 
-    let output = cargo(
+    let output = cargo_with_env(
         &[
             "check",
             "--locked",
@@ -3612,7 +3523,7 @@ fn main() {}"#,
             "--manifest-path",
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("manager-token-negative-target"),
+        &[],
     );
     assert!(
         !output.status.success(),
@@ -3949,7 +3860,7 @@ fn generated_rust_projected_parity_producer() {
     write_projected_consumer(&producer, PROJECTED_PARITY);
     write_projected_consumer(&negative, PROJECTED_FOREIGN_NEGATIVE);
 
-    let negative_output = cargo(
+    let negative_output = cargo_with_env(
         &[
             "check",
             "--locked",
@@ -3958,7 +3869,7 @@ fn generated_rust_projected_parity_producer() {
             "--manifest-path",
             negative.join("Cargo.toml").to_str().unwrap(),
         ],
-        &stage.path().join("foreign-negative-target"),
+        &[],
     );
     assert!(
         !negative_output.status.success(),
@@ -3988,14 +3899,7 @@ fn generated_rust_projected_parity_producer() {
         stage.path().join("rust-projected-parity.json")
     };
     let _guard = CARGO_MUTEX.lock().unwrap();
-    let workspace_target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("target/tmp_acceptance_target");
-    let target_dir = env::var_os("ACCEPTANCE_TARGET_DIR")
-        .unwrap_or_else(|| workspace_target.as_os_str().to_os_string());
+    let target_dir = support::cargo_target().into_os_string();
     let producer_manifest = producer.join("Cargo.toml");
     let output = run_projected_consumer(
         &producer_manifest,

@@ -6,12 +6,20 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
-import json
-import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from compare_sdk_conformance import (  # noqa: E402, F401
+    ContractError,
+    _duplicate_key_object,
+    _exact_object,
+    _json_value,
+    _regular_bytes,
+    canonical_json_bytes,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"
@@ -34,14 +42,6 @@ MAX_REPORT_BYTES = 256 * 1024
 MAX_AUTHORITY_BYTES = 1024 * 1024
 
 
-class ContractError(ValueError):
-    """A stable fail-closed Projected parity rejection."""
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(f"{code}: {message}")
-        self.code = code
-
-
 @dataclass(frozen=True)
 class SourceIdentity:
     path: str
@@ -55,76 +55,6 @@ class SourceIdentity:
 class ProjectedParityContract:
     authority: dict[str, dict[str, str]]
     observations: dict[str, Any]
-
-
-def _duplicate_key_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    value: dict[str, Any] = {}
-    for key, item in pairs:
-        if key in value:
-            raise ContractError("duplicate_json_key", f"duplicate JSON key {key!r}")
-        value[key] = item
-    return value
-
-
-def canonical_json_bytes(value: Any) -> bytes:
-    """Return the parity contract's compact deterministic JSON spelling."""
-
-    try:
-        encoded = json.dumps(
-            value,
-            ensure_ascii=False,
-            allow_nan=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-    except (TypeError, ValueError, RecursionError) as error:
-        raise ContractError("invalid_json_value", "value cannot be canonicalized") from error
-    return f"{encoded}\n".encode()
-
-
-def _regular_bytes(path: Path, label: str, limit: int) -> bytes:
-    try:
-        metadata = path.lstat()
-    except OSError as error:
-        raise ContractError("invalid_source_file", f"{label} cannot be inspected") from error
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-        raise ContractError(
-            "invalid_source_file",
-            f"{label} must be a regular non-symlink file",
-        )
-    if metadata.st_size > limit:
-        raise ContractError("source_size_limit", f"{label} exceeds {limit} bytes")
-    with path.open("rb") as source:
-        raw = source.read(limit + 1)
-    if len(raw) > limit:
-        raise ContractError("source_size_limit", f"{label} exceeds {limit} bytes")
-    return raw
-
-
-def _json_value(raw: bytes, label: str) -> Any:
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise ContractError("invalid_json_utf8", f"{label} is not UTF-8") from error
-    try:
-        return json.loads(text, object_pairs_hook=_duplicate_key_object)
-    except ContractError:
-        raise
-    except (json.JSONDecodeError, RecursionError) as error:
-        raise ContractError("malformed_json", f"{label} is not valid bounded JSON") from error
-
-
-def _exact_object(value: Any, keys: set[str], label: str) -> dict[str, Any]:
-    if type(value) is not dict:
-        raise ContractError("invalid_object", f"{label} must be an object")
-    actual = set(value)
-    if actual != keys:
-        raise ContractError(
-            "invalid_object_fields",
-            f"{label} fields differ; missing={sorted(keys - actual)}, "
-            f"extra={sorted(actual - keys)}",
-        )
-    return value
 
 
 def _source_identity(relative: str, label: str) -> tuple[SourceIdentity, bytes]:

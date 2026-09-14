@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::projection::{
@@ -19,32 +18,7 @@ use type_bridge_schema_codegen::{
 };
 
 mod support;
-
-static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-struct Stage(PathBuf);
-
-impl Stage {
-    fn new() -> Self {
-        let sequence = STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "typebridge-ordered-four-target-{}-{sequence}",
-            std::process::id(),
-        ));
-        fs::create_dir(&path).expect("unique ordered-collection stage creates");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Stage {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).expect("ordered-collection stage removes");
-    }
-}
+use support::{Stage, write_package};
 
 const UNORDERED_SOURCE: &str = r#"format: typebridge.schema/v2
 attributes:
@@ -142,14 +116,6 @@ fn projection(
     resources: &[CodeResourceDigest],
 ) -> RuntimeProjection {
     project(schema, target, config, handlers, resources).unwrap()
-}
-
-fn write_package(package: &type_bridge_schema_codegen::GeneratedPackage, root: &Path) {
-    for (relative, bytes) in package.files() {
-        let path = root.join(relative);
-        fs::create_dir_all(path.parent().expect("generated path has a parent")).unwrap();
-        fs::write(path, bytes).unwrap();
-    }
 }
 
 fn checked_command(command: &mut Command, description: &str) -> Output {

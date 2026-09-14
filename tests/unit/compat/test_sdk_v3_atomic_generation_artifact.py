@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-VALIDATOR_PATH = ROOT / "scripts/ci/validate_sdk_v3_atomic_generation.py"
+VALIDATOR_PATH = ROOT / "scripts/ci/validate_generation_artifact.py"
 
 
 def _load_validator():
@@ -30,15 +30,15 @@ validator = _load_validator()
 
 
 def _artifact(root: Path) -> dict:
-    source = root / validator.SOURCE_PATH
+    source = root / validator.CONTRACTS["atomic"].sources[0]
     return {
         "format": validator.FORMAT,
         "semantic_profile": validator.SEMANTIC_PROFILE,
         "producer": {
-            "id": validator.PRODUCER_ID,
-            "test_id": validator.TEST_ID,
+            "id": validator.CONTRACTS["atomic"].producer,
+            "test_id": validator.CONTRACTS["atomic"].test,
             "source": {
-                "path": validator.SOURCE_PATH,
+                "path": validator.CONTRACTS["atomic"].sources[0],
                 "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
             },
         },
@@ -78,7 +78,7 @@ def test_atomic_generation_artifact_accepts_exact_source_bound_observation(tmp_p
     artifact = _artifact(ROOT)
     _write(path, artifact)
 
-    assert validator.validate_artifact(path) == artifact["result"]["observation"]
+    assert validator.validate_artifact(path, "atomic") == artifact["result"]["observation"]
 
 
 @pytest.mark.parametrize(
@@ -111,7 +111,7 @@ def test_atomic_generation_artifact_rejects_hostile_drift(
     _write(path, artifact)
 
     with pytest.raises(validator.ArtifactError) as rejected:
-        validator.validate_artifact(path)
+        validator.validate_artifact(path, "atomic")
     assert rejected.value.code == code
 
 
@@ -120,5 +120,5 @@ def test_atomic_generation_artifact_rejects_noncanonical_json(tmp_path: Path) ->
     path.write_text(json.dumps(_artifact(ROOT), indent=2) + "\n", encoding="utf-8")
 
     with pytest.raises(validator.ArtifactError) as rejected:
-        validator.validate_artifact(path)
+        validator.validate_artifact(path, "atomic")
     assert rejected.value.code == "noncanonical_json"
