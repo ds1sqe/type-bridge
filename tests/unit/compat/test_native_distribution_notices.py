@@ -109,7 +109,7 @@ def test_generated_notice_covers_locked_compound_and_platform_licenses() -> None
         "`(MIT OR Apache-2.0) AND Unicode-3.0`",
         "`webpki-roots` | `1.0.7`",
         "`CDLA-Permissive-2.0`",
-        "`rustls-webpki` | `0.103.13`",
+        "`rustls-webpki` | `0.103.15`",
         "`pyo3` | `0.29.2`",
         "`untrusted` | `0.9.0`",
         "`subtle` | `2.6.1`",

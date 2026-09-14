@@ -1,5 +1,10 @@
 # TypeBridge Server Container
 
+**Security update:** The 2.2.1 prebuilt distributions use a rustls version
+affected by [RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc).
+A corrective release is in preparation; see the
+[post-release notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1).
+
 The TypeBridge container product is the V2-capable standalone query server:
 
 ```text

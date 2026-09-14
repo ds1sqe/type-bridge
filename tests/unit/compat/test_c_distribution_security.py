@@ -51,7 +51,7 @@ def test_pruned_artifact_lock_contains_only_runtime_closure() -> None:
     assert ("type-bridge-c", "2.2.1") in packages
     assert ("pyo3", "0.23.5") not in packages
     assert ("h2", "0.4.16") in packages
-    assert ("rustls-webpki", "0.103.13") in packages
+    assert ("rustls-webpki", "0.103.15") in packages
 
 
 def test_sbom_is_independent_of_checkout_location() -> None:

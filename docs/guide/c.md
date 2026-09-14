@@ -1,5 +1,10 @@
 # C SDK
 
+**Security update:** The 2.2.1 prebuilt distributions use a rustls version
+affected by [RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc).
+A corrective release is in preparation; see the
+[post-release notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1).
+
 TypeBridge 2.2.1 provides a generated C SDK with native ABI 1.6.0 for
 **Ubuntu 24.04, x86_64 GNU/Linux, shared runtime**. C17 and C++17 applications
 consume generated schema packages through CMake or pkg-config. The public

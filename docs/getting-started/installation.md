@@ -1,5 +1,10 @@
 # Installation
 
+**Security update:** The 2.2.1 prebuilt distributions use a rustls version
+affected by [RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc).
+A corrective release is in preparation; see the
+[post-release notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1).
+
 Install the TypeBridge surface used by your application. Python, Node, Rust,
 C, the CLI, and the server are separate distribution identities backed by the same Rust
 semantic engine.

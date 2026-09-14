@@ -31,7 +31,7 @@ cap-std = "4.0"
 # The explicit rustls dependencies pin native-root and custom-PEM semantics;
 # ureq's default HTTPS client uses webpki roots and is not used for typed TLS.
 ureq = "2"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
 rustls-pemfile = "2"
 tempfile = "3"
