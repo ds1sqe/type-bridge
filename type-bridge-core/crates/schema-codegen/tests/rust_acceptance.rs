@@ -2408,7 +2408,7 @@ entities:
     let inherited_encoded_line = create_rs
         .lines()
         .find(|line| {
-            line.contains("fields.push")
+            line.contains("into_encoded_scalar")
                 && line.contains("inherited_score")
                 && line.contains("base_owner")
         })

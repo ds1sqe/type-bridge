@@ -15,6 +15,17 @@ fn projected(
     type_bridge_contract::projection::RuntimeProjection,
     type_bridge_schema::VerifiedSchemaAuthority,
 ) {
+    projected_with_config(source, resources, &ProjectionConfig::typescript())
+}
+
+fn projected_with_config(
+    source: &str,
+    resources: &[CodeResourceDigest],
+    config: &ProjectionConfig,
+) -> (
+    type_bridge_contract::projection::RuntimeProjection,
+    type_bridge_schema::VerifiedSchemaAuthority,
+) {
     let documents =
         SchemaDocumentSet::parse([(DocumentId::new("typescript-emitter.yaml").unwrap(), source)])
             .unwrap();
@@ -24,7 +35,7 @@ fn projected(
     let projection = project(
         &resolved,
         BindingTarget::TypeScript,
-        &ProjectionConfig::typescript(),
+        config,
         &TypeScriptEmitter::new().generator_handlers(),
         resources,
     )
@@ -202,7 +213,13 @@ fn emits_collision_safe_members_with_canonical_key_identity() {
     let emitter = TypeScriptEmitter::new();
     let resources = emitter.code_resources().unwrap();
     let source = include_str!("typescript_acceptance/schema-blockers.yaml");
-    let (projection, authority) = projected(source, &resources);
+    let config = ProjectionConfig::typescript()
+        .with_type_name_override(
+            TypeId::new(TypeKind::Attribute, "powertrain_ref").unwrap(),
+            "PowertrainReferenceValue",
+        )
+        .unwrap();
+    let (projection, authority) = projected_with_config(source, &resources, &config);
     let marker = TypeId::new(TypeKind::Entity, "marker").unwrap();
     let key = OwnsFactId::new(marker.clone(), AttributeId::new("name").unwrap()).unwrap();
     let model = &projection.models()[&marker];
