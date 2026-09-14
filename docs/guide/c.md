@@ -1,11 +1,12 @@
 # C SDK
 
-**Security update:** The 2.2.1 prebuilt distributions use a rustls version
-affected by [RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc).
-A corrective release is in preparation; see the
-[post-release notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1).
+**Security update:** Upgrade to TypeBridge 2.2.2. Its prebuilt distributions
+use rustls 0.23.45, which fixes
+[RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc).
+The [2.2.1 post-release notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1)
+records the affected earlier release.
 
-TypeBridge 2.2.1 provides a generated C SDK with native ABI 1.6.0 for
+TypeBridge 2.2.2 provides a generated C SDK with native ABI 1.6.0 for
 **Ubuntu 24.04, x86_64 GNU/Linux, shared runtime**. C17 and C++17 applications
 consume generated schema packages through CMake or pkg-config. The public
 release was independently verified on 2026-09-14.
@@ -19,12 +20,12 @@ macOS, Windows, or other architectures.
 ## Install the runtime
 
 Download the runtime archive and its Sigstore bundle from the
-[2.2.1 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1):
+[2.2.2 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.2):
 
-- `type-bridge-c-runtime-2.2.1-abi-1.6-x86_64-unknown-linux-gnu.tar.gz`
-- `type-bridge-cli-2.2.1-x86_64-unknown-linux-gnu.tar.gz` for standalone generation
+- `type-bridge-c-runtime-2.2.2-abi-1.6-x86_64-unknown-linux-gnu.tar.gz`
+- `type-bridge-cli-2.2.2-x86_64-unknown-linux-gnu.tar.gz` for standalone generation
   and migration commands
-- `type-bridge-c-sdk-example-2.2.1.tar.gz` for the verified `tb_sdkv3` example
+- `type-bridge-c-sdk-example-2.2.2.tar.gz` for the verified `tb_sdkv3` example
 
 Verify the signed release files using the
 [documented signing identity and provenance](../development/c-release.md#protected-promotion).

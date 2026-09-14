@@ -4,8 +4,8 @@ The C release path selects product version **2.2.2**, native ABI **1.6.0**,
 and the `x86_64-unknown-linux-gnu` shared runtime built and consumed on
 Ubuntu 24.04. C17 and C++17 applications use the installed runtime through
 CMake or pkg-config. Public C support for this matrix was established with
-2.2.0 on 2026-09-14. The 2.2.2 artifacts must complete promotion and
-the independent public verification below before support is claimed.
+2.2.0 on 2026-09-14. The 2.2.2 artifacts completed promotion and independent public
+verification on 2026-09-14.
 
 The standalone CLI, native runtime and generated sdk example are
 separate archives. Application owners generate and distribute their own
@@ -139,3 +139,14 @@ The [2.2.1 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1)
 retains the signed evidence, verification receipt, promotion record, and
 Sigstore bundles. Public installation and complete C application journeys
 passed against those downloaded release bytes.
+
+The 2.2.2 public artifacts were independently verified on 2026-09-14.
+They bind source `ec5e0814feb65a43909f0cec0ae12d2a7a64323c`,
+[CI run 34882563529](https://github.com/ds1sqe/type-bridge/actions/runs/34882563529),
+[C verification run 34890264580](https://github.com/ds1sqe/type-bridge/actions/runs/34890264580),
+and [promotion run 34906322357](https://github.com/ds1sqe/type-bridge/actions/runs/34906322357).
+The [2.2.2 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.2)
+retains the signed evidence, verification receipt, promotion record, and
+Sigstore bundles. Public archive signatures, provenance, clean installation,
+and the complete C application journeys passed against the downloaded bytes.
+This release includes patched rustls 0.23.45 for RUSTSEC-2026-0285.
