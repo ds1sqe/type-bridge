@@ -36,3 +36,24 @@ assert.equal(hydratedArchive.name_.length, 3);
 assert.equal(hydratedArchive.name_[0].name_, name);
 assert(Object.isFrozen(hydratedArchive));
 console.log("TypeScript generation blocker regressions passed");
+
+const { Powertrain, PowertrainReferenceValue } = await import("./generated_blockers/dist/index.js");
+const engineValue = PowertrainReferenceValue.create("engine-1");
+const engine = Powertrain.create({ powertrainRef: engineValue });
+const engineReference = Powertrain.reference("0x501", { powertrainRef: engineValue });
+assert.equal(engine.powertrainRef.value, "engine-1");
+assert.equal(engineReference.powertrainRef.value, "engine-1");
+const engineHydrator = Object.getOwnPropertySymbols(Powertrain).find(
+  (symbol) => symbol.description === "typebridge.hydrate-complete",
+);
+assert(engineHydrator);
+const hydratedEngine = Powertrain[engineHydrator]("0x501", { powertrainRef: engineValue });
+assert.equal(hydratedEngine.powertrainRef.value, "engine-1");
+assert.equal(hydratedEngine.iid, "0x501");
+const engineBytes = Powertrain.encodeCreate(engine);
+const engineJson = new TextDecoder().decode(engineBytes);
+assert(engineJson.includes('"powertrain_ref"'));
+assert(!engineJson.includes("PowertrainReferenceValue"));
+assert.equal(Powertrain.decodeCreate(engineBytes).powertrainRef.value, "engine-1");
+const engineReferenceBytes = Powertrain.encodeReference(engineReference);
+assert.equal(Powertrain.decodeReference(engineReferenceBytes).powertrainRef.value, "engine-1");

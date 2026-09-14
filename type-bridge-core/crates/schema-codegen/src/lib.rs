@@ -52,7 +52,9 @@ pub fn verify_projection_evidence(
         };
     let expected = match projection.target() {
         BindingTarget::Python => {
-            if projection.config() != &ProjectionConfig::python() {
+            if projection.config().python_naming_policy()
+                != ProjectionConfig::python().python_naming_policy()
+            {
                 return Err(invalid(
                     "schema_codegen_projection_evidence_mismatch",
                     "Python runtime projection carries a foreign target configuration",
@@ -66,7 +68,9 @@ pub fn verify_projection_evidence(
             )?
         }
         BindingTarget::TypeScript => {
-            if projection.config() != &ProjectionConfig::typescript() {
+            if projection.config().typescript_naming_policy()
+                != ProjectionConfig::typescript().typescript_naming_policy()
+            {
                 return Err(invalid(
                     "schema_codegen_projection_evidence_mismatch",
                     "TypeScript runtime projection carries a foreign target configuration",
@@ -80,7 +84,11 @@ pub fn verify_projection_evidence(
             )?
         }
         BindingTarget::Rust => {
-            if projection.config() != &ProjectionConfig::rust() {
+            if projection.config().rust_naming_policy()
+                != ProjectionConfig::rust().rust_naming_policy()
+                || projection.config().rust_create_policy()
+                    != ProjectionConfig::rust().rust_create_policy()
+            {
                 return Err(invalid(
                     "schema_codegen_projection_evidence_mismatch",
                     "Rust runtime projection carries a foreign target configuration",

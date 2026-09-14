@@ -5580,7 +5580,7 @@ fn verify_legacy_python_projection_evidence(runtime: &RuntimeProjection) -> PyRe
     }
     let emitter = PythonEmitter::new();
     let resources = emitter.code_resources().map_err(py_diagnostic)?;
-    if runtime.config() != &ProjectionConfig::python()
+    if runtime.config().python_naming_policy() != ProjectionConfig::python().python_naming_policy()
         || runtime.generator_handlers() != emitter.generator_handlers()
         || runtime.code_resources() != resources
     {

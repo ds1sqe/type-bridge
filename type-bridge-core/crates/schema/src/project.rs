@@ -638,6 +638,18 @@ pub fn project(
             "projection configuration belongs to a different target",
         ));
     }
+    config.validate_type_name_overrides().map_err(no_source)?;
+    for item in config.type_name_overrides() {
+        if !resolved.types().contains_key(item.type_id()) {
+            return Err(projection_error(
+                "unknown_type_name_override",
+                format!(
+                    "type-name override refers to unknown type {:?}",
+                    item.type_id()
+                ),
+            ));
+        }
+    }
     let namer = ProjectionNamer::new(target, config)?;
     let mut names = NameRegistry::default();
     if let Some(descriptor_name) = namer.c_schema_package_identifier()? {
@@ -647,7 +659,14 @@ pub fn project(
     let mut playing_facts = BTreeMap::new();
 
     for (id, resolved_type) in resolved.types() {
-        let target_name = namer.class_identifier(id.label().as_str())?;
+        let target_name = match config
+            .type_name_overrides()
+            .iter()
+            .find(|item| item.type_id() == id)
+        {
+            Some(item) => item.name().clone(),
+            None => namer.class_identifier(id.label().as_str())?,
+        };
         names.insert("root", &target_name, format!("model:{id:?}"))?;
         let reference_name = if matches!(id.kind(), TypeKind::Entity | TypeKind::Relation) {
             let reference = namer.reference_identifier(&target_name)?;

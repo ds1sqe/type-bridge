@@ -15,6 +15,17 @@ fn projected(
     type_bridge_contract::projection::RuntimeProjection,
     type_bridge_schema::VerifiedSchemaAuthority,
 ) {
+    projected_with_config(source, resources, &ProjectionConfig::typescript())
+}
+
+fn projected_with_config(
+    source: &str,
+    resources: &[CodeResourceDigest],
+    config: &ProjectionConfig,
+) -> (
+    type_bridge_contract::projection::RuntimeProjection,
+    type_bridge_schema::VerifiedSchemaAuthority,
+) {
     let documents =
         SchemaDocumentSet::parse([(DocumentId::new("typescript-emitter.yaml").unwrap(), source)])
             .unwrap();
@@ -24,7 +35,7 @@ fn projected(
     let projection = project(
         &resolved,
         BindingTarget::TypeScript,
-        &ProjectionConfig::typescript(),
+        config,
         &TypeScriptEmitter::new().generator_handlers(),
         resources,
     )
@@ -202,11 +213,20 @@ fn emits_collision_safe_members_with_canonical_key_identity() {
     let emitter = TypeScriptEmitter::new();
     let resources = emitter.code_resources().unwrap();
     let source = include_str!("typescript_acceptance/schema-blockers.yaml");
-    let (projection, authority) = projected(source, &resources);
+    let config = ProjectionConfig::typescript()
+        .with_type_name_override(
+            TypeId::new(TypeKind::Attribute, "powertrain_ref").unwrap(),
+            "PowertrainReferenceValue",
+        )
+        .unwrap();
+    let (projection, authority) = projected_with_config(source, &resources, &config);
     let marker = TypeId::new(TypeKind::Entity, "marker").unwrap();
     let key = OwnsFactId::new(marker.clone(), AttributeId::new("name").unwrap()).unwrap();
     let model = &projection.models()[&marker];
-    assert_eq!(model.reference_read().key_fields(), std::slice::from_ref(&key));
+    assert_eq!(
+        model.reference_read().key_fields(),
+        std::slice::from_ref(&key)
+    );
     let token = &model.query_tokens().fields()[&key];
     assert!(token.is_key());
     assert_eq!(token.target_name().as_str(), "name_");
@@ -222,4 +242,33 @@ fn emits_collision_safe_members_with_canonical_key_identity() {
     assert!(models.contains("readonly name_:"));
     assert!(models.contains("readonly nameValue:"));
     assert_eq!(package, emitter.emit(&projection, &authority).unwrap());
+}
+
+#[test]
+fn emits_type_name_overrides_without_changing_database_tokens() {
+    use type_bridge_contract::id::{TypeId, TypeKind};
+    let source = "format: typebridge.schema/v2\nattributes:\n  powertrain_ref: { value: string }\nentities:\n  Powertrain:\n    owns:\n      powertrain_ref: { card: 1 }\n";
+    let emitter = TypeScriptEmitter::new();
+    let authority = support::authority(source);
+    let resolved = authority.resolved_schema();
+    let config = ProjectionConfig::typescript()
+        .with_type_name_override(
+            TypeId::new(TypeKind::Attribute, "powertrain_ref").unwrap(),
+            "PowertrainReferenceValue",
+        )
+        .unwrap();
+    let projection = project(
+        resolved,
+        BindingTarget::TypeScript,
+        &config,
+        &emitter.generator_handlers_for(resolved),
+        &emitter.code_resources_for(resolved).unwrap(),
+    )
+    .unwrap();
+    let package = emitter.emit(&projection, &authority).unwrap();
+    let models = std::str::from_utf8(package.get("src/models.ts").unwrap()).unwrap();
+    assert!(models.contains("PowertrainReferenceValue"));
+    assert!(models.contains("PowertrainRef"));
+    assert!(models.contains("powertrain_ref"));
+    assert_eq!(emitter.emit(&projection, &authority).unwrap(), package);
 }

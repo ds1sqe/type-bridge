@@ -618,7 +618,13 @@ fn sanitize_migration_rollback_outcome(
 /// touched or deleted.
 fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
     run_schema_generate_with(workspace, |target, resolved, authority| {
-        generate_binding_package(target, resolved, authority, workspace.config().app_label())
+        generate_binding_package(
+            target,
+            resolved,
+            authority,
+            workspace.config().app_label(),
+            workspace.config().type_name_overrides(target),
+        )
     })
 }
 
@@ -627,10 +633,20 @@ fn generate_binding_package(
     resolved: &type_bridge_schema::ResolvedSchema,
     authority: &type_bridge_schema::VerifiedSchemaAuthority,
     app_label: &type_bridge_contract::migration::MigrationAppLabel,
+    type_names: &[type_bridge_contract::projection::TypeNameOverride],
 ) -> Result<type_bridge_schema_codegen::GeneratedPackage, String> {
     use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
     use type_bridge_schema::project;
     use type_bridge_schema_codegen::{CEmitter, PythonEmitter, RustEmitter, TypeScriptEmitter};
+
+    let configure = |mut config: ProjectionConfig| -> Result<ProjectionConfig, String> {
+        for item in type_names {
+            config = config
+                .with_type_name_override(item.type_id().clone(), item.name().as_str())
+                .map_err(display)?;
+        }
+        Ok(config)
+    };
 
     match target {
         BindingTarget::Python => {
@@ -640,7 +656,7 @@ fn generate_binding_package(
             let projection = project(
                 resolved,
                 BindingTarget::Python,
-                &ProjectionConfig::python(),
+                &configure(ProjectionConfig::python())?,
                 &handlers,
                 &resources,
             )
@@ -654,7 +670,7 @@ fn generate_binding_package(
             let projection = project(
                 resolved,
                 BindingTarget::TypeScript,
-                &ProjectionConfig::typescript(),
+                &configure(ProjectionConfig::typescript())?,
                 &handlers,
                 &resources,
             )
@@ -668,7 +684,7 @@ fn generate_binding_package(
             let projection = project(
                 resolved,
                 BindingTarget::Rust,
-                &ProjectionConfig::rust(),
+                &configure(ProjectionConfig::rust())?,
                 &handlers,
                 &resources,
             )
@@ -679,7 +695,9 @@ fn generate_binding_package(
             let emitter = CEmitter::new();
             let handlers = emitter.generator_handlers_for(resolved);
             let resources = emitter.code_resources_for(resolved).map_err(display)?;
-            let config = ProjectionConfig::c(c_symbol_prefix_for_app_label(app_label));
+            let config = configure(ProjectionConfig::c(c_symbol_prefix_for_app_label(
+                app_label,
+            )))?;
             let projection = project(resolved, BindingTarget::C, &config, &handlers, &resources)
                 .map_err(display)?;
             emitter.emit(&projection, authority)
@@ -913,6 +931,33 @@ mod schema_generation_atomicity_tests {
     }
 
     #[test]
+    fn workspace_type_names_resolve_collisions_in_generated_packages() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let manifest = write_workspace(
+            root,
+            "format: typebridge.schema/v2\nattributes:\n  powertrain_ref: { value: string }\nentities:\n  Powertrain:\n    owns:\n      powertrain_ref: { card: 1 }\n",
+        );
+        let workspace = load_workspace(&manifest).unwrap();
+        assert!(run_schema_generate(&workspace).is_err());
+        let original = fs::read_to_string(&manifest).unwrap();
+        let mut configured = original;
+        for target in ["python", "typescript", "rust", "c"] {
+            let output = format!("output: generated/{target}");
+            configured = configured.replace(&output, &format!("{output}\n    type-names:\n      attribute:\n        powertrain_ref: PowertrainReferenceValue"));
+        }
+        fs::write(&manifest, configured).unwrap();
+        let workspace = load_workspace(&manifest).unwrap();
+        run_schema_generate(&workspace).unwrap();
+        let models = fs::read_to_string(root.join("generated/typescript/src/models.ts")).unwrap();
+        assert!(models.contains("PowertrainReferenceValue"));
+        assert!(models.contains("powertrain_ref"));
+        let first = snapshot(&root.join("generated"));
+        run_schema_generate(&workspace).unwrap();
+        assert_eq!(first, snapshot(&root.join("generated")));
+    }
+
+    #[test]
     fn injected_c_emitter_failure_preserves_all_four_ordered_packages() {
         let directory = tempfile::tempdir().expect("workspace directory");
         let root = directory.path();
@@ -974,7 +1019,13 @@ mod schema_generation_atomicity_tests {
             if target == BindingTarget::C {
                 return Err("injected C emitter failure".to_owned());
             }
-            generate_binding_package(target, resolved, authority, changed.config().app_label())
+            generate_binding_package(
+                target,
+                resolved,
+                authority,
+                changed.config().app_label(),
+                changed.config().type_name_overrides(target),
+            )
         })
         .expect_err("injected C emitter failure rejects the transaction");
         assert_eq!(error, "injected C emitter failure");

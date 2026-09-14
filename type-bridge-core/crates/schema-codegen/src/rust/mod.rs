@@ -110,7 +110,10 @@ impl RustEmitter {
         let handlers = self.handlers_for_ordered(ordered);
         let resources = self.resources_for_ordered(ordered)?;
         if projection.target() != BindingTarget::Rust
-            || projection.config() != &ProjectionConfig::rust()
+            || (projection.config().rust_naming_policy()
+                != ProjectionConfig::rust().rust_naming_policy()
+                || projection.config().rust_create_policy()
+                    != ProjectionConfig::rust().rust_create_policy())
             || projection.generator_handlers() != handlers
             || projection.code_resources() != resources
         {

@@ -113,6 +113,16 @@ fn emits_exact_deterministic_single_dependency_crate() {
         "impl RoleTokenCompatible<Membership, MembershipMemberPlayer> for Employment {}"
     ));
     let create = String::from_utf8(first.get("src/create.rs").unwrap().to_vec()).unwrap();
+    assert!(!create.contains("} if"));
+    assert!(!create.contains("allow(clippy::possible_missing_else)"));
+    for evidence in [
+        "duplicate_scalar_evidence",
+        "unexpected_field_evidence",
+        "duplicate_role_evidence",
+        "unexpected_role_evidence",
+    ] {
+        assert!(create.contains(evidence));
+    }
     assert!(create.contains("pub struct ContainerCreate"));
     assert!(create.contains("pub fn try_new"));
     let read = String::from_utf8(first.get("src/read.rs").unwrap().to_vec()).unwrap();

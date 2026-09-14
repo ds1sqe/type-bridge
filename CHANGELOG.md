@@ -4,6 +4,15 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Add per-binding canonical type-name overrides through workspace `type-names`
+  and Rust `ProjectionConfig`. Resolve generated model/reference collisions
+  without changing database labels or semantic schema identity.
+- Generate Rust validation checks on separate lines and emit Clippy-clean
+  reference validation and collection encoding. Cover pristine generated
+  consumer test modules under `-D warnings`.
+
 ## [2.2.0] - 2026-09-14
 
 ### Fixed

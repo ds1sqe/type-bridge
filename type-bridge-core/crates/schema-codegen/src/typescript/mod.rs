@@ -1203,7 +1203,8 @@ impl TypeScriptEmitter {
         let handlers = self.handlers_for_ordered(ordered);
         let resources = self.resources_for_ordered(ordered)?;
         if projection.target() != BindingTarget::TypeScript
-            || projection.config() != &ProjectionConfig::typescript()
+            || projection.config().typescript_naming_policy()
+                != ProjectionConfig::typescript().typescript_naming_policy()
             || projection.generator_handlers() != handlers
             || projection.code_resources() != resources
         {

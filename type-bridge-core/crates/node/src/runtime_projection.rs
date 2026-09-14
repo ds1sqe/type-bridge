@@ -3873,7 +3873,8 @@ fn verify_legacy_typescript_projection_evidence(runtime: &RuntimeProjection) -> 
     }
     let emitter = TypeScriptEmitter::new();
     let resources = emitter.code_resources().map_err(diagnostic_error)?;
-    if runtime.config() != &ProjectionConfig::typescript()
+    if runtime.config().typescript_naming_policy()
+        != ProjectionConfig::typescript().typescript_naming_policy()
         || runtime.generator_handlers() != emitter.generator_handlers()
         || runtime.code_resources() != resources
     {

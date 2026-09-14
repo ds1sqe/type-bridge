@@ -289,7 +289,8 @@ impl PythonEmitter {
         let handlers = self.handlers_for_ordered(ordered);
         let resources = self.resources_for_ordered(ordered)?;
         if projection.target() != BindingTarget::Python
-            || projection.config() != &ProjectionConfig::python()
+            || projection.config().python_naming_policy()
+                != ProjectionConfig::python().python_naming_policy()
             || projection.generator_handlers() != handlers
             || projection.code_resources() != resources
         {

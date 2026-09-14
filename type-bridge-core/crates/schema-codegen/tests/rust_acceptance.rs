@@ -156,6 +156,82 @@ fn write_consumer(root: &Path, name: &str, source: &str) {
 }
 
 #[test]
+fn pristine_generated_rust_passes_strict_clippy_as_consumer_test_modules() {
+    assert_pristine_consumer_clippy(&emit());
+}
+
+#[test]
+fn explicit_rust_type_names_pass_strict_consumer_clippy() {
+    use type_bridge_contract::id::{TypeId, TypeKind};
+    let source = include_str!("acceptance/schema.yaml");
+    let authority = support::authority(source);
+    let resolved = authority.resolved_schema();
+    let emitter = RustEmitter::new();
+    let config = ProjectionConfig::rust()
+        .with_type_name_override(
+            TypeId::new(TypeKind::Entity, "person").unwrap(),
+            "person_value",
+        )
+        .unwrap();
+    let projection = project(
+        resolved,
+        BindingTarget::Rust,
+        &config,
+        &emitter.generator_handlers_for(resolved),
+        &emitter.code_resources_for(resolved).unwrap(),
+    )
+    .unwrap();
+    assert_pristine_consumer_clippy(&emitter.emit(&projection, &authority).unwrap());
+}
+
+fn assert_pristine_consumer_clippy(package: &GeneratedPackage) {
+    let stage = Stage::new();
+    let generated = stage.path().join("generated");
+    let consumer = stage.path().join("consumer");
+    write_package(package, &generated);
+    write_consumer(&consumer, "rust-generated-clippy", "fn main() {}\n");
+    fs::create_dir_all(consumer.join("tests")).unwrap();
+    // The crate root and its sibling modules remain byte-for-byte emitter output.
+    // Cargo treats this second copy as a consumer integration-test crate.
+    for (relative, contents) in package.files() {
+        if let Some(relative) = relative.strip_prefix("src/") {
+            let destination = if relative == "lib.rs" {
+                consumer.join("tests/generated.rs")
+            } else {
+                consumer.join("tests").join(relative)
+            };
+            fs::write(destination, contents).unwrap();
+        } else if relative.starts_with("typebridge/") {
+            let destination = consumer.join(relative);
+            fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            fs::write(destination, contents).unwrap();
+        }
+    }
+    let manifest = consumer.join("Cargo.toml");
+    let output = cargo_with_env(
+        &[
+            "clippy",
+            "--quiet",
+            "--manifest-path",
+            manifest.to_str().unwrap(),
+            "--test",
+            "generated",
+            "--no-deps",
+            "--",
+            "-D",
+            "warnings",
+        ],
+        &[],
+    );
+    assert!(
+        output.status.success(),
+        "pristine generated consumer Clippy failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
 fn generated_rust_crate_compiles_rejects_invalid_types_and_runs() {
     let stage = Stage::new();
     let generated = stage.path().join("generated");
@@ -2332,7 +2408,7 @@ entities:
     let inherited_encoded_line = create_rs
         .lines()
         .find(|line| {
-            line.contains("fields.push")
+            line.contains("into_encoded_scalar")
                 && line.contains("inherited_score")
                 && line.contains("base_owner")
         })

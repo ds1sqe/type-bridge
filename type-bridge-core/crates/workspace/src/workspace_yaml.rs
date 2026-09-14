@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use type_bridge_contract::capability::CapabilityId;
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::fingerprint::SemanticProfileId;
+use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration::MigrationAppLabel;
 use type_bridge_contract::projection::BindingTarget;
@@ -131,6 +132,13 @@ struct EnvironmentWire {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct BindingWire {
+    target: BindingTarget,
+    output: SpannedString,
+    names: Vec<(TypeId, SpannedString)>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct WorkspaceWire {
     app_label: SpannedString,
     authority_output: Option<SpannedString>,
@@ -140,7 +148,7 @@ struct WorkspaceWire {
     extensions: Vec<ExtensionWire>,
     managed_scope: SpannedString,
     migration_directory: SpannedString,
-    outputs: Vec<(BindingTarget, SpannedString)>,
+    outputs: Vec<BindingWire>,
     schema_root: SpannedString,
     secrets: Vec<SecretWire>,
     semantic_profile: SpannedString,
@@ -330,12 +338,20 @@ impl LocatedConfigSpec {
             })?;
             builder = builder.require_capability(value);
         }
-        for (target, output) in wire.outputs {
+        for BindingWire {
+            target,
+            output,
+            names,
+        } in wire.outputs
+        {
             let field = output_field(target)?;
             let path = resolve_owned_path(&origin, &output, field)?;
             let directory = OutputDirectory::new(path)
                 .map_err(|error| sourced(error, &origin, &output.span))?;
             builder = builder.output(target, directory);
+            for (type_id, name) in names {
+                builder = builder.type_name_override(target, type_id, name.value);
+            }
         }
         for secret in wire.secrets {
             let slot = SecretSlot::new(secret.slot.value)
@@ -1070,7 +1086,7 @@ fn parse_environment(
 fn parse_bindings(
     value: &YamlMapping,
     origin: &ConfigOrigin,
-) -> Result<Vec<(BindingTarget, SpannedString)>, WorkspaceConfigError> {
+) -> Result<Vec<BindingWire>, WorkspaceConfigError> {
     let mut outputs = Vec::new();
     for entry in value.entries() {
         let target = match entry.key().value() {
@@ -1083,22 +1099,47 @@ fn parse_bindings(
         let field_name = output_field(target)?;
         let binding = mapping(entry.value(), field_name, origin)?;
         let mut output = None;
+        let mut names = Vec::new();
         for field in binding.entries() {
             match field.key().value() {
                 "output" => output = Some(field.value()),
+                "type-names" => {
+                    for kind_entry in mapping(field.value(), "type-names", origin)?.entries() {
+                        let kind = match kind_entry.key().value() {
+                            "attribute" => TypeKind::Attribute,
+                            "entity" => TypeKind::Entity,
+                            "relation" => TypeKind::Relation,
+                            unknown => {
+                                return Err(unknown_key(
+                                    "type-names",
+                                    unknown,
+                                    kind_entry.key().span(),
+                                    origin,
+                                ));
+                            }
+                        };
+                        for name in mapping(kind_entry.value(), "type-names", origin)?.entries() {
+                            let id = TypeId::new(kind, name.key().value()).map_err(|error| {
+                                contract_value(error, "type-names", name.key().span(), origin)
+                            })?;
+                            names.push((id, scalar(name.value(), "type-names", origin)?));
+                        }
+                    }
+                }
                 unknown => {
                     return Err(unknown_key(field_name, unknown, field.key().span(), origin));
                 }
             }
         }
-        outputs.push((
+        outputs.push(BindingWire {
             target,
-            scalar(
+            output: scalar(
                 required(output, field_name, binding, origin)?,
                 field_name,
                 origin,
             )?,
-        ));
+            names,
+        });
     }
     Ok(outputs)
 }
