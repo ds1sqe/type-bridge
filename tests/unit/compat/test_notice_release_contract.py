@@ -40,15 +40,14 @@ def test_notice_is_nonretroactive_and_does_not_add_warning_behavior() -> None:
 def test_current_release_keeps_the_published_notice_separate() -> None:
     workflow = (ROOT / ".github/workflows/release.yml").read_text()
     parsed = yaml.load(workflow, Loader=yaml.BaseLoader)
-    assert parsed["on"]["push"]["tags"] == ["v2.2.1"]
+    assert parsed["on"]["push"]["tags"] == ["v2.2.2"]
     assert "release.yml@refs/tags/${{ env.RELEASE_TAG }}" in workflow
     assert "release.yml@refs/tags/v2[.]0[.]0$" not in workflow
     jobs = parsed["jobs"]
     current = jobs["github-release"]
     release = next(step for step in current["steps"] if "softprops/" in step.get("uses", ""))
     assert release["with"]["body_path"] == "dist/server-oci-release.md"
-    assert not any("notice" in name for name in jobs)
-    assert jobs["recovery-preflight"]["permissions"] == {"contents": "read", "actions": "read"}
+    assert not any("notice" in name or "recovery" in name for name in jobs)
 
 
 @pytest.mark.parametrize(
@@ -75,7 +74,7 @@ def test_oci_publisher_binds_current_tag(
     steps = workflow["jobs"]["publish-server-oci"]["steps"]
     guards = [step["run"] for step in steps if step["name"] == "Revalidate immutable release tag"]
     assert len(guards) == 1
-    release_tag = "v2.2.1"
+    release_tag = "v2.2.2"
     expected_tag = "b" * 40
     ref_payload = json.dumps({"object": {"type": ref_type, "sha": tag_object}})
     tag_payload = json.dumps({"object": {"type": target_type, "sha": target_revision}})

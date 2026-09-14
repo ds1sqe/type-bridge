@@ -147,7 +147,7 @@ selection and environment variables.
 Python facade builds also run a network-disabled metadata check in the exact
 digest-verified publisher image before entering cross-registry publication.
 
-The separately selected C 2.2.1 path uses `c-release.yml`: read-only verification
+The separately selected C 2.2.2 path uses `c-release.yml`: read-only verification
 consumes successful same-source master CI artifacts and runs complete V1–V6
 and FULL-C acceptance. Protected promotion consumes that exact verification
 run, signs the unchanged bytes and adds only absent or identical assets to

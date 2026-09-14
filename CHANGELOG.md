@@ -4,6 +4,8 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-09-14
+
 ### Security
 
 - Require rustls 0.23.45 and update resolved TLS dependencies to fix

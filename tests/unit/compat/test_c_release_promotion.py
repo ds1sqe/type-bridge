@@ -89,7 +89,7 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
         ("head_sha", "c" * 40),
         ("head_branch", "develop"),
         ("head_branch", "release/c-sdk-readiness"),
-        ("head_branch", "v2.2.1"),
+        ("head_branch", "v2.2.2"),
         ("path", ".github/workflows/release.yml"),
         ("event", "pull_request"),
         ("event", "schedule"),
@@ -290,10 +290,10 @@ def test_verified_bundle_rejects_substitution(tmp_path: Path, change: str) -> No
 
 
 def test_tag_requires_an_annotated_direct_same_source_target() -> None:
-    reference = {"ref": "refs/tags/v2.2.1", "object": {"type": "tag", "sha": "c" * 40}}
+    reference = {"ref": "refs/tags/v2.2.2", "object": {"type": "tag", "sha": "c" * 40}}
     tag = {
         "sha": "c" * 40,
-        "tag": "v2.2.1",
+        "tag": "v2.2.2",
         "object": {
             "type": "commit",
             "sha": SOURCE,
@@ -320,7 +320,7 @@ def test_workflow_keeps_publish_protected_and_without_builders() -> None:
     assert workflow["permissions"] == {"contents": "read", "actions": "read"}
     publish = workflow["jobs"]["publish"]
     assert publish["environment"] == "release"
-    assert publish["if"] == "inputs.mode == 'publish' && github.ref == 'refs/tags/v2.2.1'"
+    assert publish["if"] == "inputs.mode == 'publish' && github.ref == 'refs/tags/v2.2.2'"
     assert publish["permissions"] == {"contents": "write", "actions": "read", "id-token": "write"}
     assert all(job["runs-on"] == "ubuntu-24.04" for job in workflow["jobs"].values())
     source = json.dumps(publish)
@@ -422,10 +422,10 @@ def test_conflicting_draft_bytes_stop_before_signing_or_upload(
             "files": [promotion.record(payloads / name) for name in files],
         },
     )
-    reference = {"ref": "refs/tags/v2.2.1", "object": {"type": "tag", "sha": "c" * 40}}
+    reference = {"ref": "refs/tags/v2.2.2", "object": {"type": "tag", "sha": "c" * 40}}
     tag = {
         "sha": "c" * 40,
-        "tag": "v2.2.1",
+        "tag": "v2.2.2",
         "object": {
             "type": "commit",
             "sha": SOURCE,
@@ -440,7 +440,7 @@ def test_conflicting_draft_bytes_stop_before_signing_or_upload(
         "id": 999,
         "draft": True,
         "prerelease": False,
-        "tag_name": "v2.2.1",
+        "tag_name": "v2.2.2",
         "target_commitish": SOURCE,
         "body": "Ordinary release",
         "assets": [
