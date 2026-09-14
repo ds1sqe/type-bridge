@@ -23,7 +23,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: c-release-2.2.0-${{ inputs.mode }}
+  group: c-release-2.2.1-${{ inputs.mode }}
   cancel-in-progress: false
 
 env:
@@ -42,7 +42,7 @@ jobs:
       inputs.mode == 'verify' &&
       (github.ref == 'refs/heads/master' ||
        github.ref == 'refs/heads/release/c-sdk-readiness' ||
-       github.ref == 'refs/tags/v2.2.0')
+       github.ref == 'refs/tags/v2.2.1')
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     services:
@@ -118,14 +118,14 @@ jobs:
       - name: Upload immutable verified C release bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: c-verified-release-2.2.0
+          name: c-verified-release-2.2.1
           path: ${{ runner.temp }}/c-verified-release/*
           if-no-files-found: error
           retention-days: 30
 
   publish:
     name: Promote verified C release artifacts
-    if: inputs.mode == 'publish' && github.ref == 'refs/tags/v2.2.0'
+    if: inputs.mode == 'publish' && github.ref == 'refs/tags/v2.2.1'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: release
@@ -166,7 +166,7 @@ jobs:
       - name: Preserve verified promotion evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: c-release-promotion-2.2.0
+          name: c-release-promotion-2.2.1
           path: ${{ runner.temp }}/c-promotion
           if-no-files-found: error
           retention-days: 30
