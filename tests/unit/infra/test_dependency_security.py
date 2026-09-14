@@ -15,6 +15,11 @@ GATE = ROOT / "scripts/ci/check_dependency_security.sh"
 LOCKFILES = (
     "type-bridge-core/Cargo.lock",
     "type-bridge-core/crates/core/tests/fixtures/rule-wire-standalone/Cargo.lock",
+    "tests/contracts/sdk-v6-rust-surface-Cargo.lock",
+    "tests/support/provider/Cargo.lock",
+    "tests/support/rust-live/Cargo.lock",
+    "tests/support/rust-offline/Cargo.lock",
+    "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer-Cargo.lock",
 )
 
 
@@ -101,7 +106,9 @@ def test_gate_audits_every_lockfile_without_filters_or_stale_database(tmp_path: 
     assert commands == [
         f"audit --file {lockfile} --deny unsound --deny yanked" for lockfile in LOCKFILES
     ]
-    assert result.stdout.count("informational maintenance warning remains visible") == 2
+    assert result.stdout.count("informational maintenance warning remains visible") == len(
+        LOCKFILES
+    )
 
 
 @pytest.mark.parametrize("lockfile", LOCKFILES)

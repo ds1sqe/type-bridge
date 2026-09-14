@@ -97,8 +97,9 @@ Use the smallest focused check while iterating, then the scope-level check
 before handoff.
 
 Rust scope checks require cargo-audit 0.22.2. The shared CI/release gate
-`bash scripts/ci/check_dependency_security.sh` audits both maintained lockfiles
-against a freshly fetched database without target/severity filters.
+`bash scripts/ci/check_dependency_security.sh` audits the workspace and retained
+consumer lockfiles against a freshly fetched database without target/severity
+filters.
 Vulnerabilities, unsoundness, yanked crates and audit errors block acceptance.
 The retained TypeDB transport graph requires rustls-pemfile 2.2.0 through
 tonic 0.12.3. RUSTSEC-2025-0134 reports it unmaintained, not vulnerable; that
