@@ -1,6 +1,6 @@
 # C SDK
 
-TypeBridge 2.2.0 provides a generated C SDK with native ABI 1.6.0 for
+TypeBridge 2.2.1 provides a generated C SDK with native ABI 1.6.0 for
 **Ubuntu 24.04, x86_64 GNU/Linux, shared runtime**. C17 and C++17 applications
 consume generated schema packages through CMake or pkg-config. The public
 release was independently verified on 2026-09-14.
@@ -14,12 +14,12 @@ macOS, Windows, or other architectures.
 ## Install the runtime
 
 Download the runtime archive and its Sigstore bundle from the
-[2.2.0 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.0):
+[2.2.1 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1):
 
-- `type-bridge-c-runtime-2.2.0-abi-1.6-x86_64-unknown-linux-gnu.tar.gz`
-- `type-bridge-cli-2.2.0-x86_64-unknown-linux-gnu.tar.gz` for standalone generation
+- `type-bridge-c-runtime-2.2.1-abi-1.6-x86_64-unknown-linux-gnu.tar.gz`
+- `type-bridge-cli-2.2.1-x86_64-unknown-linux-gnu.tar.gz` for standalone generation
   and migration commands
-- `type-bridge-c-sdk-example-2.2.0.tar.gz` for the verified `tb_sdkv3` example
+- `type-bridge-c-sdk-example-2.2.1.tar.gz` for the verified `tb_sdkv3` example
 
 Verify the signed release files using the
 [documented signing identity and provenance](../development/c-release.md#protected-promotion).

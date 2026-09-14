@@ -130,7 +130,7 @@ for generation, direct execution, transactions, and remote queries.
 
 ## C
 
-TypeBridge 2.2.0 ships a C ABI 1.6.0 shared runtime and standalone CLI for
+TypeBridge 2.2.1 ships a C ABI 1.6.0 shared runtime and standalone CLI for
 Ubuntu 24.04 on x86_64 GNU/Linux. Generate an application schema package from
 Split-YAML, then link C17 or C++17 consumers with CMake or pkg-config.
 

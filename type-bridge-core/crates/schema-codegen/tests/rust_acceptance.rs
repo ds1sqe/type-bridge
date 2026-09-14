@@ -184,6 +184,20 @@ fn explicit_rust_type_names_pass_strict_consumer_clippy() {
     assert_pristine_consumer_clippy(&emitter.emit(&projection, &authority).unwrap());
 }
 
+#[test]
+fn sparse_generated_rust_passes_strict_consumer_clippy() {
+    assert_pristine_consumer_clippy(&emit_from_source(
+        r#"format: typebridge.schema/v2
+attributes:
+  identifier: { value: string }
+entities:
+  person:
+    owns:
+      identifier: { key: true }
+"#,
+    ));
+}
+
 fn assert_pristine_consumer_clippy(package: &GeneratedPackage) {
     let stage = Stage::new();
     let generated = stage.path().join("generated");
@@ -1330,10 +1344,7 @@ fn generated_declaration_boundary_matrix_is_scoped() {
         .lines()
         .find(|l| l.starts_with("use crate::runtime::{"))
         .unwrap();
-    assert_eq!(
-        import,
-        "use crate::runtime::{self, AbstractModel, CompleteModel, EntityModel, HydratedRow, HydrationCapability, MaterializeModel, Model, ModelFamily, NominalUpcast, ReferenceModel, RelationModel, RoleTokenCompatible, RoleUpcast, SubtypeRootModel, ThingModel, ValidationError};"
-    );
+    assert_eq!(import, "use crate::runtime::{self, *};");
     assert!(
         declarations.contains("__tb_dispatch_subtype")
             && !declarations.contains("fn dispatch_subtype")

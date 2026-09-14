@@ -4,6 +4,12 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Avoid unused imports and empty function/struct re-exports in generated Rust
+  for schemas containing attributes and entities without roles, functions, or
+  structs. Pristine consumer test modules pass strict Clippy.
+
 ## [2.2.1] - 2026-09-14
 
 ### Fixed

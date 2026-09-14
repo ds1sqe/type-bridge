@@ -3,9 +3,9 @@
 The C release path selects product version **2.2.1**, native ABI **1.6.0**,
 and the `x86_64-unknown-linux-gnu` shared runtime built and consumed on
 Ubuntu 24.04. C17 and C++17 applications use the installed runtime through
-CMake or pkg-config. Public C support for this matrix was established with 2.2.0 on 2026-09-14.
-The 2.2.1 artifacts must complete the independent public verification below
-before publication.
+CMake or pkg-config. Public C support for this matrix was established with
+2.2.0 on 2026-09-14. The 2.2.1 artifacts completed promotion and the independent
+public verification below on the same date.
 
 The standalone CLI, native runtime and generated sdk example are
 separate archives. Application owners generate and distribute their own
@@ -133,6 +133,18 @@ selected matrix. It binds source `6c9f37c5c01cba25db62195e83af42f1a6a4d46d`,
 [CI run 34790325709](https://github.com/ds1sqe/type-bridge/actions/runs/34790325709),
 and [C verification run 34793581010](https://github.com/ds1sqe/type-bridge/actions/runs/34793581010).
 The signed evidence, receipt, promotion record, and all six Sigstore bundles
-are retained in the [2.2.0 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.0). Update the support documentation with the actual release date and
+are retained in the
+[2.2.0 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.0).
+Update the support documentation with the actual release date and
 verified runtime/compiler requirements, preserve the public evidence record,
 and complete the C handoff before starting Kotlin/JVM.
+
+The 2.2.1 public artifacts were independently verified on 2026-09-14.
+They bind source `5d1a1e17c0b41fb720a3a60040ddd215e453a899`,
+[CI run 34834062772](https://github.com/ds1sqe/type-bridge/actions/runs/34834062772),
+[C verification run 34839669075](https://github.com/ds1sqe/type-bridge/actions/runs/34839669075),
+and [promotion run 34867352503](https://github.com/ds1sqe/type-bridge/actions/runs/34867352503).
+The [2.2.1 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1)
+retains the signed evidence, verification receipt, promotion record, and
+Sigstore bundles. Public installation and complete C application journeys
+passed against those downloaded release bytes.
