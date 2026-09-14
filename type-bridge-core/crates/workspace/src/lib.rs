@@ -1112,6 +1112,7 @@ pub struct TypeBridgeConfig {
     migration_policy: MigrationSafetyPolicy,
     migration_v2_directory: MigrationV2Directory,
     outputs: BTreeMap<BindingTarget, OutputDirectory>,
+    type_names: BTreeMap<BindingTarget, Vec<type_bridge_contract::projection::TypeNameOverride>>,
     required_capabilities: CapabilitySet,
     schema_authority_output: Option<SchemaAuthorityOutputPath>,
     schema_set: SchemaSetPath,
@@ -1216,6 +1217,15 @@ impl TypeBridgeConfig {
         &self.outputs
     }
 
+    /// Return validated model-name overrides for one binding output.
+    #[must_use]
+    pub fn type_name_overrides(
+        &self,
+        target: BindingTarget,
+    ) -> &[type_bridge_contract::projection::TypeNameOverride] {
+        self.type_names.get(&target).map_or(&[], Vec::as_slice)
+    }
+
     /// Return the configured generated server-authority artifact path.
     #[must_use]
     pub const fn schema_authority_output(&self) -> Option<&SchemaAuthorityOutputPath> {
@@ -1249,6 +1259,7 @@ pub struct TypeBridgeConfigBuilder {
     migration_policy: Option<MigrationSafetyPolicy>,
     migration_v2_directory: Option<MigrationV2Directory>,
     outputs: Vec<(BindingTarget, OutputDirectory)>,
+    type_names: Vec<(BindingTarget, type_bridge_contract::id::TypeId, String)>,
     required_capabilities: CapabilitySet,
     schema_authority_output: Option<SchemaAuthorityOutputPath>,
     schema_set: Option<SchemaSetPath>,
@@ -1268,6 +1279,7 @@ impl TypeBridgeConfigBuilder {
             migration_policy: None,
             migration_v2_directory: None,
             outputs: Vec::new(),
+            type_names: Vec::new(),
             required_capabilities: CapabilitySet::new(),
             schema_authority_output: None,
             schema_set: None,
@@ -1390,6 +1402,18 @@ impl TypeBridgeConfigBuilder {
         self
     }
 
+    /// Override a generated model name while retaining its canonical database identity.
+    #[must_use]
+    pub fn type_name_override(
+        mut self,
+        target: BindingTarget,
+        type_id: type_bridge_contract::id::TypeId,
+        name: impl Into<String>,
+    ) -> Self {
+        self.type_names.push((target, type_id, name.into()));
+        self
+    }
+
     /// Select the generated server schema-authority artifact path.
     #[must_use]
     pub fn schema_authority_output(mut self, output: SchemaAuthorityOutputPath) -> Self {
@@ -1505,6 +1529,40 @@ impl TypeBridgeConfigBuilder {
                 ));
             }
         }
+
+        let mut name_configs = BTreeMap::new();
+        for (target, type_id, name) in self.type_names {
+            use type_bridge_contract::projection::{CSymbolPrefix, ProjectionConfig};
+            if !outputs.contains_key(&target) {
+                return Err(WorkspaceConfigError::new(
+                    WorkspaceConfigErrorCode::InvalidWorkspaceValue,
+                    "type-name overrides require a configured binding output",
+                ));
+            }
+            let config = name_configs
+                .remove(&target)
+                .unwrap_or_else(|| match target {
+                    BindingTarget::Python => ProjectionConfig::python(),
+                    BindingTarget::TypeScript => ProjectionConfig::typescript(),
+                    BindingTarget::Rust => ProjectionConfig::rust(),
+                    // Only names are retained; CLI generation owns the actual C prefix.
+                    _ => ProjectionConfig::c(CSymbolPrefix::new("tb").expect("static C prefix")),
+                });
+            let config = config
+                .with_type_name_override(type_id, name)
+                .map_err(|error| {
+                    WorkspaceConfigError::new(
+                        WorkspaceConfigErrorCode::InvalidWorkspaceValue,
+                        "invalid binding type-name override",
+                    )
+                    .with_detail(error.to_string())
+                })?;
+            name_configs.insert(target, config);
+        }
+        let type_names = name_configs
+            .into_iter()
+            .map(|(target, config)| (target, config.type_name_overrides().to_vec()))
+            .collect();
 
         let mut workspace_paths: Vec<(&'static str, &Path)> = vec![
             ("schema_set", schema_set.as_path()),
@@ -1672,6 +1730,7 @@ impl TypeBridgeConfigBuilder {
                 .unwrap_or_else(MigrationSafetyPolicy::default_policy),
             migration_v2_directory,
             outputs,
+            type_names,
             required_capabilities: self.required_capabilities,
             schema_authority_output,
             schema_set,

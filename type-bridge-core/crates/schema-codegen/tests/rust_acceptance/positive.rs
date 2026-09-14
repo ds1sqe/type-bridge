@@ -308,7 +308,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let score_bytes = SCHEMA.encode_attribute(score.clone())?;
     let decoded_score: Score = SCHEMA.decode_attribute(&score_bytes)?;
     assert_eq!(decoded_score.value(), &42);
-    assert!(SCHEMA.decode_attribute::<CounterValue>(&score_bytes).is_err());
+    assert!(
+        SCHEMA
+            .decode_attribute::<CounterValue>(&score_bytes)
+            .is_err()
+    );
     let v_double = ValDouble::new(CanonicalDouble::try_new(3.14)?)?;
     let v_decimal = ValDecimal::new(Decimal::try_new("123.45")?)?;
     let v_bool = ValBool::new(true)?;
@@ -336,14 +340,77 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_eq!(person_create.aliases().len(), 2);
 
+    // Exercise independent field and role evidence checks on pristine generated materializers.
+    use type_bridge::__codegen::{
+        DecodedCreate, IntoEncodedCreate, MaterializeCreate, ValidationPath,
+    };
+    let encoded = person_create.clone().into_encoded_create()?;
+    let fields: Vec<_> = encoded
+        .fields()
+        .iter()
+        .map(|(token, values)| ((*token).to_owned(), values.clone()))
+        .collect();
+    let valid = DecodedCreate::new(Person::TYPE_ID_JSON.to_owned(), fields.clone(), vec![]);
+    let materialized = PersonCreate::materialize_create(&valid, &ValidationPath::root())?;
+    assert_eq!(materialized.identifier().value(), "person-1");
+    let mut duplicates = fields.clone();
+    duplicates.push(fields[0].clone());
+    let duplicate = DecodedCreate::new(Person::TYPE_ID_JSON.to_owned(), duplicates, vec![]);
+    assert_eq!(
+        PersonCreate::materialize_create(&duplicate, &ValidationPath::root())
+            .unwrap_err()
+            .code(),
+        "duplicate_scalar_evidence"
+    );
+    let mut unexpected = fields;
+    unexpected.push(("unexpected".to_owned(), vec![]));
+    let unexpected = DecodedCreate::new(Person::TYPE_ID_JSON.to_owned(), unexpected, vec![]);
+    assert_eq!(
+        PersonCreate::materialize_create(&unexpected, &ValidationPath::root())
+            .unwrap_err()
+            .code(),
+        "unexpected_field_evidence"
+    );
+    let role = ContainerType::item.role_id_json().to_owned();
+    let duplicate = DecodedCreate::new(
+        Container::TYPE_ID_JSON.to_owned(),
+        vec![],
+        vec![(role.clone(), vec![]), (role.clone(), vec![])],
+    );
+    assert_eq!(
+        ContainerCreate::materialize_create(&duplicate, &ValidationPath::root())
+            .unwrap_err()
+            .code(),
+        "duplicate_role_evidence"
+    );
+    let unexpected = DecodedCreate::new(
+        Container::TYPE_ID_JSON.to_owned(),
+        vec![],
+        vec![("unexpected".to_owned(), vec![])],
+    );
+    assert_eq!(
+        ContainerCreate::materialize_create(&unexpected, &ValidationPath::root())
+            .unwrap_err()
+            .code(),
+        "unexpected_role_evidence"
+    );
+    let valid = DecodedCreate::new(
+        Container::TYPE_ID_JSON.to_owned(),
+        vec![],
+        vec![(role, vec![])],
+    );
+    ContainerCreate::materialize_create(&valid, &ValidationPath::root())?;
+
     let person_create_bytes = SCHEMA.encode_create(person_create.clone())?;
     let decoded_person_create: PersonCreate = SCHEMA.decode_create(&person_create_bytes)?;
     assert_eq!(decoded_person_create.identifier().value(), "person-1");
     assert_eq!(decoded_person_create.aliases().len(), 2);
     assert!(decoded_person_create.nickname().is_some());
-    assert!(SCHEMA
-        .decode_create::<CounterCreate>(&person_create_bytes)
-        .is_err());
+    assert!(
+        SCHEMA
+            .decode_create::<CounterCreate>(&person_create_bytes)
+            .is_err()
+    );
 
     let id_scalar = identifier.value().into_encoded_scalar();
     let score_scalar = score.value().into_encoded_scalar();
@@ -398,9 +465,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let decoded_person: Person = SCHEMA.decode_snapshot(&person_snapshot_bytes)?;
     assert_eq!(decoded_person.iid(), "0x1");
     assert_eq!(decoded_person.identifier().value(), "person-1");
-    assert!(SCHEMA
-        .decode_snapshot::<Event>(&person_snapshot_bytes)
-        .is_err());
+    assert!(
+        SCHEMA
+            .decode_snapshot::<Event>(&person_snapshot_bytes)
+            .is_err()
+    );
 
     let person_ref = person.reference();
     assert_eq!(person_ref.iid(), Some("0x1"));
@@ -476,9 +545,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let decoded_stats: PlayerStats = SCHEMA.decode_struct(&stats_bytes)?;
     assert_eq!(decoded_stats.nickname().map(String::as_str), Some("stable"));
     assert_eq!(*decoded_stats.wins(), 3);
-    assert!(SCHEMA
-        .decode_struct::<PlayerStats>(&person_snapshot_bytes)
-        .is_err());
+    assert!(
+        SCHEMA
+            .decode_struct::<PlayerStats>(&person_snapshot_bytes)
+            .is_err()
+    );
     let archive_bytes = SCHEMA.encode_archive([
         score_bytes.as_slice(),
         person_create_bytes.as_slice(),

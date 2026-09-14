@@ -19,3 +19,11 @@ void archive;
 void key;
 // @ts-expect-error Physical labels do not replace canonical projected member names.
 Marker.create({ name, nameValue: NameValue.create("label"), aliases: [], revision: null });
+
+import { Powertrain, PowertrainReferenceValue, type PowertrainRef } from "./generated_blockers/src/index.js";
+const engineValue: PowertrainReferenceValue = PowertrainReferenceValue.create("engine-1");
+const engine: Powertrain = Powertrain.create({ powertrainRef: engineValue });
+const engineRef: PowertrainRef = Powertrain.reference("0x501", { powertrainRef: engineValue });
+const engineField: PowertrainReferenceValue = engine.powertrainRef;
+void engineRef;
+void engineField;

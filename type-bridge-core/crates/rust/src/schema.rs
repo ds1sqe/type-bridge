@@ -927,7 +927,9 @@ fn verify_rust_projection_evidence(
 ) -> Result<()> {
     let projection = installed.projection();
     let emitter = RustEmitter::new();
-    if projection.config() != &ProjectionConfig::rust() {
+    if projection.config().rust_naming_policy() != ProjectionConfig::rust().rust_naming_policy()
+        || projection.config().rust_create_policy() != ProjectionConfig::rust().rust_create_policy()
+    {
         return Err(authority_error(
             "generated Rust schema package does not match the exact shipped projection configuration",
         ));

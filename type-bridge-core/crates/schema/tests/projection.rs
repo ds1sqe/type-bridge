@@ -1424,3 +1424,135 @@ entities:
     assert_eq!(field.multiplicity().cardinality().min(), 1);
     assert_eq!(field.multiplicity().cardinality().max(), Some(1));
 }
+
+#[test]
+fn type_name_overrides_resolve_reference_collisions_and_round_trip() {
+    let source = r#"format: typebridge.schema/v2
+attributes:
+  powertrain_ref: { value: string }
+entities:
+  Powertrain:
+    owns:
+      powertrain_ref: { card: 1 }
+"#;
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("overrides.yaml").unwrap(), source)]).unwrap();
+    let declared = normalize_documents(&documents).unwrap();
+    let resolved = resolve(
+        &declared,
+        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+    )
+    .unwrap();
+    let attribute = TypeId::new(TypeKind::Attribute, "powertrain_ref").unwrap();
+    let entity = TypeId::new(TypeKind::Entity, "Powertrain").unwrap();
+    let handlers = [ProjectionHandler::typescript_v1()];
+    assert!(
+        project(
+            &resolved,
+            BindingTarget::TypeScript,
+            &ProjectionConfig::typescript(),
+            &handlers,
+            &[]
+        )
+        .is_err()
+    );
+    let config = ProjectionConfig::typescript()
+        .with_type_name_override(attribute.clone(), "PowertrainReferenceValue")
+        .unwrap();
+    assert!(
+        config
+            .clone()
+            .with_type_name_override(attribute.clone(), "Other")
+            .is_err()
+    );
+    let first = project(
+        &resolved,
+        BindingTarget::TypeScript,
+        &config,
+        &handlers,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        first.models()[&attribute].target_name().as_str(),
+        "PowertrainReferenceValue"
+    );
+    assert_eq!(
+        first.models()[&entity]
+            .reference_read()
+            .target_name()
+            .unwrap()
+            .as_str(),
+        "PowertrainRef"
+    );
+    for bad_config in [
+        ProjectionConfig::typescript()
+            .with_type_name_override(attribute.clone(), "PowertrainRef")
+            .unwrap(),
+        config
+            .clone()
+            .with_type_name_override(entity.clone(), "PowertrainReferenceValue")
+            .unwrap(),
+        config
+            .clone()
+            .with_type_name_override(TypeId::new(TypeKind::Entity, "missing").unwrap(), "Missing")
+            .unwrap(),
+    ] {
+        assert!(
+            project(
+                &resolved,
+                BindingTarget::TypeScript,
+                &bad_config,
+                &handlers,
+                &[]
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        ProjectionConfig::typescript()
+            .with_type_name_override(attribute.clone(), "class")
+            .is_err()
+    );
+    let ascending = config
+        .clone()
+        .with_type_name_override(entity.clone(), "Engine")
+        .unwrap();
+    let descending = ProjectionConfig::typescript()
+        .with_type_name_override(entity.clone(), "Engine")
+        .unwrap()
+        .with_type_name_override(attribute.clone(), "PowertrainReferenceValue")
+        .unwrap();
+    assert_eq!(
+        to_canonical_json(&ascending).unwrap(),
+        to_canonical_json(&descending).unwrap()
+    );
+    assert!(
+        !String::from_utf8(to_canonical_json(&ProjectionConfig::typescript()).unwrap())
+            .unwrap()
+            .contains("type_name_overrides")
+    );
+    let second_config = ProjectionConfig::typescript()
+        .with_type_name_override(attribute, "OtherReferenceValue")
+        .unwrap();
+    let second = project(
+        &resolved,
+        BindingTarget::TypeScript,
+        &second_config,
+        &handlers,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(first.semantic_fingerprint(), second.semantic_fingerprint());
+    assert_ne!(
+        first.projection_fingerprint(),
+        second.projection_fingerprint()
+    );
+    let bytes = to_canonical_json(&first).unwrap();
+    let semantic = to_canonical_json(first.semantic_fingerprint()).unwrap();
+    let binding = to_canonical_json(first.projection_fingerprint()).unwrap();
+    assert_eq!(
+        decode_runtime_projection_verified(&bytes, &semantic, &binding).unwrap(),
+        first
+    );
+}

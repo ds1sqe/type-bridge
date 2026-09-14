@@ -565,3 +565,33 @@ fn secret_literals_and_unknown_binding_targets_are_rejected_before_resolution() 
     assert_eq!(error.detail(), Some("bindings.kotlin"));
     assert!(error.source_span().is_some());
 }
+
+#[test]
+fn binding_type_names_preserve_canonical_identity_and_validate_names() {
+    let source = CanonicalSource(Cell::new(0));
+    let secrets = AcceptSecrets(Cell::new(0));
+    let extensions = AcceptExtensions(Cell::new(0));
+    let service_set = services(&source, &secrets, &extensions);
+    let yaml = WORKSPACE_YAML.replace(
+        "output: ../generated/typescript",
+        "output: ../generated/typescript\n    type-names:\n      attribute:\n        powertrain_ref: PowertrainReferenceValue",
+    );
+    let config = TypeBridgeConfigSpec::parse_yaml(&yaml, origin())
+        .unwrap()
+        .resolve(&service_set)
+        .unwrap();
+    let names = config.type_name_overrides(BindingTarget::TypeScript);
+    assert_eq!(names.len(), 1);
+    assert_eq!(names[0].type_id().label().as_str(), "powertrain_ref");
+    assert_eq!(names[0].name().as_str(), "PowertrainReferenceValue");
+    assert!(config.type_name_overrides(BindingTarget::Python).is_empty());
+    let invalid = yaml.replace("PowertrainReferenceValue", "class");
+    assert!(
+        TypeBridgeConfigSpec::parse_yaml(invalid, origin())
+            .unwrap()
+            .resolve(&service_set)
+            .is_err()
+    );
+    let unknown_kind = yaml.replace("      attribute:", "      unknown:");
+    assert!(TypeBridgeConfigSpec::parse_yaml(unknown_kind, origin()).is_err());
+}

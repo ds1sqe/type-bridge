@@ -125,21 +125,36 @@ enum ProjectionConfigWire {
     #[serde(rename = "python")]
     Python {
         naming_policy: PythonNamingPolicyWire,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        type_name_overrides: Vec<TypeNameOverrideWire>,
     },
     #[serde(rename = "typescript")]
     TypeScript {
         naming_policy: TypeScriptNamingPolicyWire,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        type_name_overrides: Vec<TypeNameOverrideWire>,
     },
     #[serde(rename = "rust")]
     Rust {
         naming_policy: RustNamingPolicyWire,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        type_name_overrides: Vec<TypeNameOverrideWire>,
         create_policy: RustCreatePolicyWire,
     },
     #[serde(rename = "c")]
     C {
         naming_policy: CNamingPolicyWire,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        type_name_overrides: Vec<TypeNameOverrideWire>,
         symbol_prefix: String,
     },
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TypeNameOverrideWire {
+    type_id: TypeId,
+    name: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -174,14 +189,32 @@ enum CNamingPolicyWire {
 
 impl ProjectionConfigWire {
     fn rebuild(self) -> Result<ProjectionConfig, Diagnostic> {
-        Ok(match self {
-            Self::Python { .. } => ProjectionConfig::python(),
-            Self::TypeScript { .. } => ProjectionConfig::typescript(),
-            Self::Rust { .. } => ProjectionConfig::rust(),
-            Self::C { symbol_prefix, .. } => {
-                ProjectionConfig::c(CSymbolPrefix::new(symbol_prefix)?)
-            }
-        })
+        let (mut config, overrides) = match self {
+            Self::Python {
+                type_name_overrides,
+                ..
+            } => (ProjectionConfig::python(), type_name_overrides),
+            Self::TypeScript {
+                type_name_overrides,
+                ..
+            } => (ProjectionConfig::typescript(), type_name_overrides),
+            Self::Rust {
+                type_name_overrides,
+                ..
+            } => (ProjectionConfig::rust(), type_name_overrides),
+            Self::C {
+                symbol_prefix,
+                type_name_overrides,
+                ..
+            } => (
+                ProjectionConfig::c(CSymbolPrefix::new(symbol_prefix)?),
+                type_name_overrides,
+            ),
+        };
+        for item in overrides {
+            config = config.with_type_name_override(item.type_id, item.name)?;
+        }
+        Ok(config)
     }
 }
 

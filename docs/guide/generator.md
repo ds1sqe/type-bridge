@@ -36,6 +36,34 @@ schema, migration directory, custom trust material, or each other. Ordinary
 applications need only generated bindings; no standalone authority JSON is
 required.
 
+## Override generated type names
+
+Use `type-names` within each binding output to resolve collisions between model
+names and generated reference or helper names. Keys identify the canonical type
+kind (`attribute`, `entity`, or `relation`) and its exact database label:
+
+```yaml
+bindings:
+  typescript:
+    output: generated/typescript
+    type-names:
+      attribute:
+        powertrain_ref: PowertrainReferenceValue
+```
+
+This keeps entity `Powertrain` and reference `PowertrainRef`, while naming the
+attribute model `PowertrainReferenceValue`. It preserves database label
+`powertrain_ref`, query tokens, field naming, and schema identity. Changing an
+override changes the binding fingerprint. A field alias alone does not rename
+the attribute model. Overrides apply before collision validation; unknown types,
+invalid identifiers, duplicate identities, and conflicting generated names fail.
+Names are exact language identifiers, without case conversion. Python, Rust,
+and C outputs support the same mapping under their own binding configuration.
+
+Rust generator integrations can pass the same mapping using
+`ProjectionConfig::typescript().with_type_name_override(type_id, name)?` before
+calling `project`. Pass canonical `TypeId` values, including their type kind.
+
 ## Generate
 
 ```bash

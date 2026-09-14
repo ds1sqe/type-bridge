@@ -1,10 +1,14 @@
 format: typebridge.schema/v2
 attributes:
+  powertrain_ref: { value: string }
   name: { value: string }
   name-value: { value: string }
   aliases: { value: string }
   revision: { value: integer }
 entities:
+  Powertrain:
+    owns:
+      powertrain_ref: { key: true }
   marker:
     owns:
       name: { key: true }

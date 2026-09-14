@@ -179,7 +179,12 @@ command("cargo", [
   "run", "--quiet", "--manifest-path", resolve(CORE, "Cargo.toml"),
   "--package", "type-bridge-schema-codegen", "--example", "emit_typescript_acceptance",
   "--", resolve(HERE, "schema-blockers.yaml"), BLOCKERS,
-]);
+], ROOT, {
+  ...process.env,
+  TYPE_BRIDGE_ACCEPTANCE_TYPE_NAMES: JSON.stringify([
+    [{ kind: "attribute", label: "powertrain_ref" }, "PowertrainReferenceValue"],
+  ]),
+});
 mkdirSync(resolve(STAGE, "node_modules/@type-bridge"), { recursive: true });
 symlinkSync(NODE_PACKAGE, resolve(STAGE, "node_modules/@type-bridge/node"), "dir");
 command("tsc", ["--project", resolve(BLOCKERS, "tsconfig.json")]);

@@ -296,6 +296,27 @@ impl fmt::Display for CSymbolPrefix {
     }
 }
 
+/// One exact canonical model identity and its language-facing type name.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct TypeNameOverride {
+    type_id: TypeId,
+    name: TargetIdentifier,
+}
+
+impl TypeNameOverride {
+    /// Return the unchanged database type identity.
+    #[must_use]
+    pub const fn type_id(&self) -> &TypeId {
+        &self.type_id
+    }
+
+    /// Return the validated language-facing name.
+    #[must_use]
+    pub const fn name(&self) -> &TargetIdentifier {
+        &self.name
+    }
+}
+
 /// Target-specific options that are consumed by a shipped emitter.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "binding")]
@@ -307,6 +328,9 @@ pub enum ProjectionConfig {
     Python {
         /// Versioned Python naming behavior used for every generated symbol.
         naming_policy: PythonNamingPolicy,
+        /// Explicit model names, sorted by canonical type identity.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        type_name_overrides: Vec<TypeNameOverride>,
     },
     /// TypeScript projection options.
     #[serde(rename = "typescript")]
@@ -314,6 +338,9 @@ pub enum ProjectionConfig {
     TypeScript {
         /// Versioned TypeScript naming behavior used for every generated symbol.
         naming_policy: TypeScriptNamingPolicy,
+        /// Explicit model names, sorted by canonical type identity.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        type_name_overrides: Vec<TypeNameOverride>,
     },
     /// Native Rust projection options.
     #[serde(rename = "rust")]
@@ -321,6 +348,9 @@ pub enum ProjectionConfig {
     Rust {
         /// Versioned Rust naming behavior used for every generated symbol.
         naming_policy: RustNamingPolicy,
+        /// Explicit model names, sorted by canonical type identity.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        type_name_overrides: Vec<TypeNameOverride>,
         /// Versioned checked construction surface generated for constructible models.
         create_policy: RustCreatePolicy,
     },
@@ -330,6 +360,9 @@ pub enum ProjectionConfig {
     C {
         /// Versioned C naming behavior used for every generated symbol.
         naming_policy: CNamingPolicy,
+        /// Explicit model names, sorted by canonical type identity.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        type_name_overrides: Vec<TypeNameOverride>,
         /// Application-specific prefix for C's global link namespace.
         symbol_prefix: CSymbolPrefix,
     },
@@ -341,6 +374,7 @@ impl ProjectionConfig {
     pub const fn python() -> Self {
         Self::Python {
             naming_policy: PythonNamingPolicy::TypeBridgeV1,
+            type_name_overrides: Vec::new(),
         }
     }
 
@@ -349,6 +383,7 @@ impl ProjectionConfig {
     pub const fn typescript() -> Self {
         Self::TypeScript {
             naming_policy: TypeScriptNamingPolicy::TypeBridgeV1,
+            type_name_overrides: Vec::new(),
         }
     }
 
@@ -357,6 +392,7 @@ impl ProjectionConfig {
     pub const fn rust() -> Self {
         Self::Rust {
             naming_policy: RustNamingPolicy::TypeBridgeV1,
+            type_name_overrides: Vec::new(),
             create_policy: RustCreatePolicy::ValidatedInputV1,
         }
     }
@@ -366,7 +402,99 @@ impl ProjectionConfig {
     pub fn c(symbol_prefix: CSymbolPrefix) -> Self {
         Self::C {
             naming_policy: CNamingPolicy::TypeBridgeV1,
+            type_name_overrides: Vec::new(),
             symbol_prefix,
+        }
+    }
+
+    /// Add an exact model type-name override without changing database names.
+    ///
+    /// Duplicate identities are rejected. Projection validates schema membership
+    /// and collisions with other model names and generated helper names.
+    pub fn with_type_name_override(
+        mut self,
+        type_id: TypeId,
+        name: impl Into<String>,
+    ) -> Result<Self, Diagnostic> {
+        let name = match self.target() {
+            BindingTarget::Python => TargetIdentifier::python(name)?,
+            BindingTarget::TypeScript => TargetIdentifier::typescript(name)?,
+            BindingTarget::Rust => TargetIdentifier::rust(name)?,
+            BindingTarget::C => TargetIdentifier::c(name)?,
+        };
+        let overrides = match &mut self {
+            Self::Python {
+                type_name_overrides,
+                ..
+            }
+            | Self::TypeScript {
+                type_name_overrides,
+                ..
+            }
+            | Self::Rust {
+                type_name_overrides,
+                ..
+            }
+            | Self::C {
+                type_name_overrides,
+                ..
+            } => type_name_overrides,
+        };
+        ensure_collection_limit(overrides.len() + 1, "too_many_type_name_overrides")?;
+        match overrides.binary_search_by(|item| item.type_id.cmp(&type_id)) {
+            Ok(_) => {
+                return Err(Diagnostic::stable(
+                    DiagnosticCategory::InvalidContract,
+                    "duplicate_type_name_override",
+                    "a canonical type identity has more than one type-name override",
+                ));
+            }
+            Err(index) => overrides.insert(index, TypeNameOverride { type_id, name }),
+        }
+        Ok(self)
+    }
+
+    /// Validate overrides after configuration assembly or external mutation.
+    pub fn validate_type_name_overrides(&self) -> Result<(), Diagnostic> {
+        let mut validated = match self {
+            Self::Python { .. } => Self::python(),
+            Self::TypeScript { .. } => Self::typescript(),
+            Self::Rust { .. } => Self::rust(),
+            Self::C { symbol_prefix, .. } => Self::c(symbol_prefix.clone()),
+        };
+        for item in self.type_name_overrides() {
+            validated =
+                validated.with_type_name_override(item.type_id.clone(), item.name.as_str())?;
+        }
+        if validated.type_name_overrides() != self.type_name_overrides() {
+            return Err(invalid_projection(
+                "unordered_type_name_overrides",
+                "type-name overrides must be sorted by canonical type identity",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Return explicit model names in canonical identity order.
+    #[must_use]
+    pub fn type_name_overrides(&self) -> &[TypeNameOverride] {
+        match self {
+            Self::Python {
+                type_name_overrides,
+                ..
+            }
+            | Self::TypeScript {
+                type_name_overrides,
+                ..
+            }
+            | Self::Rust {
+                type_name_overrides,
+                ..
+            }
+            | Self::C {
+                type_name_overrides,
+                ..
+            } => type_name_overrides,
         }
     }
 
@@ -385,7 +513,7 @@ impl ProjectionConfig {
     #[must_use]
     pub const fn python_naming_policy(&self) -> Option<PythonNamingPolicy> {
         match self {
-            Self::Python { naming_policy } => Some(*naming_policy),
+            Self::Python { naming_policy, .. } => Some(*naming_policy),
             Self::TypeScript { .. } | Self::Rust { .. } | Self::C { .. } => None,
         }
     }
@@ -394,7 +522,7 @@ impl ProjectionConfig {
     #[must_use]
     pub const fn typescript_naming_policy(&self) -> Option<TypeScriptNamingPolicy> {
         match self {
-            Self::TypeScript { naming_policy } => Some(*naming_policy),
+            Self::TypeScript { naming_policy, .. } => Some(*naming_policy),
             Self::Python { .. } | Self::Rust { .. } | Self::C { .. } => None,
         }
     }

@@ -38,10 +38,20 @@ fn main() {
     let resources = emitter
         .code_resources_for(&resolved)
         .expect("emitter resources hash");
+    let mut config = ProjectionConfig::typescript();
+    if let Ok(overrides) = env::var("TYPE_BRIDGE_ACCEPTANCE_TYPE_NAMES") {
+        let overrides: Vec<(type_bridge_contract::id::TypeId, String)> =
+            serde_json::from_str(&overrides).expect("acceptance type-name overrides decode");
+        for (type_id, name) in overrides {
+            config = config
+                .with_type_name_override(type_id, name)
+                .expect("valid override");
+        }
+    }
     let projection = project(
         &resolved,
         BindingTarget::TypeScript,
-        &ProjectionConfig::typescript(),
+        &config,
         &handlers,
         &resources,
     )
