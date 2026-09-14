@@ -171,9 +171,7 @@ def test_repository_cargo_inclusive_stable_identity_is_complete() -> None:
     assert report["python_package_version"] == "2.2.0"
     assert report["node_package_lock_version"] == "2.2.0"
     assert report["server_oci_stable_aliases"] == ["2.2", "2", "latest"]
-    assert report["server_oci_recovery_aliases"] == ["2.0", "2", "latest"]
     assert report["server_oci_stable_signing_identity"].endswith("release.yml@refs/tags/v2.2.0")
-    assert report["server_oci_recovery_signing_identity"].endswith("release.yml@refs/heads/master")
     assert set(report["cargo_licenses"].values()) == {
         "MIT",
         "Apache-2.0",
@@ -422,8 +420,8 @@ def test_release_workflow_requires_ordered_native_artifact_gates(
     ("old", "new"),
     [
         (
-            "inputs.release_channel == 'recovery' && '2.0' || '2.2' }}",
-            "inputs.release_channel == 'recovery' && '2.0' || '2.0' }}",
+            "SERVER_OCI_MINOR_ALIAS: '2.2'",
+            "SERVER_OCI_MINOR_ALIAS: '2.0'",
         ),
         (
             'for alias in "$SERVER_OCI_MINOR_ALIAS" 2 latest; do',
@@ -468,12 +466,12 @@ def test_release_tag_freeze_and_publisher_rechecks_cannot_be_bypassed(tmp_path: 
         validator.validate_server_oci_release_channels(workflow)
 
 
-def test_recovery_cosign_identity_cannot_be_broadened(tmp_path: Path) -> None:
+def test_stable_cosign_identity_cannot_be_broadened(tmp_path: Path) -> None:
     workflow = tmp_path / "release.yml"
     source = (ROOT / ".github/workflows/release.yml").read_text()
-    exact = "release.yml@refs/heads/master$"
+    exact = "release.yml@refs/tags/v2[.]2[.]0$"
     assert source.count(exact) == 1
-    workflow.write_text(source.replace(exact, "release.yml@refs/heads/.*$", 1))
+    workflow.write_text(source.replace(exact, "release.yml@refs/tags/.*$", 1))
 
     with pytest.raises(validator.ValidationError, match="Cosign identities"):
         validator.validate_server_oci_release_channels(workflow)

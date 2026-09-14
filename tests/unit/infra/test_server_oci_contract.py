@@ -642,9 +642,8 @@ def test_release_builds_accepts_and_publishes_only_exact_oci_bytes() -> None:
     assert "linux/arm64" in workflow
     assert "type=oci,dest=${archive},oci-mediatypes=false" in workflow
     assert workflow.count("copy --preserve-digests") == 2
-    assert workflow.count("scripts/ci/run_pinned_skopeo.py") == 3
+    assert workflow.count("scripts/ci/run_pinned_skopeo.py") == 2
     assert workflow.count('python "$TYPE_BRIDGE_SKOPEO_RUNNER" --registry-auth --') == 8
-    assert "tmp/recovery-controls/scripts/ci/run_pinned_skopeo.py" in workflow
     assert "--daemon --" not in workflow
     assert workflow.count('--write-directory "$conversion_dir"') == 1
     assert workflow.count("--registry-auth --") == 8
@@ -676,19 +675,9 @@ def test_release_builds_accepts_and_publishes_only_exact_oci_bytes() -> None:
     assert "aquasecurity/trivy-action@" in workflow
     assert "cosign sign --yes" in workflow
     assert workflow.count("actions/attest-build-provenance@") == 3
-    # Three OCI promotions plus the separately scoped facade-only recovery.
-    assert workflow.count("actions/attest@e59cbc1ad1ac2d59339667419eb8cdde6eb61e3d") == 4
-    oci_publisher = workflow.split("  publish-server-oci:\n", 1)[1].split(
-        "  publish-node-npm:\n", 1
-    )[0]
-    assert oci_publisher.count("actions/attest@e59cbc1ad1ac2d59339667419eb8cdde6eb61e3d") == 3
     assert workflow.count("actions/attest-sbom@") == 2
     assert "Refusing to overwrite conflicting immutable OCI tag." in workflow
-    assert "Refusing to move conflicting OCI alias during recovery." in workflow
-    assert (
-        "SERVER_OCI_MINOR_ALIAS: ${{ github.event_name == 'workflow_dispatch' && "
-        "inputs.release_channel == 'recovery' && '2.0' || '2.2' }}"
-    ) in workflow
+    assert "SERVER_OCI_MINOR_ALIAS: '2.2'" in workflow
     assert 'for alias in "$SERVER_OCI_MINOR_ALIAS" 2 latest; do' in workflow
     assert '"aliases": [os.environ["SERVER_OCI_MINOR_ALIAS"], "2", "latest"],' in workflow
     assert "release.yml@refs/tags/v2[.]2[.]0$'" in workflow
@@ -696,11 +685,6 @@ def test_release_builds_accepts_and_publishes_only_exact_oci_bytes() -> None:
     assert "for alias in 2.0 2 latest; do" not in workflow
     assert "|not found|" not in workflow
     assert "Stable OCI index conflicts with accepted platforms" in workflow
-    assert "recovery-promotion.json" in workflow
-    assert (
-        workflow.count("https://github.com/ds1sqe/type-bridge/attestations/release-promotion/v1")
-        == 4
-    )
     assert "packages: write" in workflow
     assert workflow.count("packages: write") == 1
     assert "body_path: dist/server-oci-release.md" in workflow
