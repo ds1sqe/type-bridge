@@ -20,7 +20,9 @@ use type_bridge_schema::{
     SchemaDocumentSet, VerifiedSchemaAuthority, encode_schema_authority, normalize_documents,
     project, resolve,
 };
-use type_bridge_schema_codegen::{CEmitter, GeneratedPackage};
+use type_bridge_schema_codegen::CEmitter;
+#[cfg(unix)]
+use type_bridge_schema_codegen::GeneratedPackage;
 
 mod support;
 use support::{Stage as TempDirectory, command_exists, runtime_include, write_package};
