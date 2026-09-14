@@ -40,7 +40,7 @@ def test_notice_is_nonretroactive_and_does_not_add_warning_behavior() -> None:
 def test_current_release_keeps_the_published_notice_separate() -> None:
     workflow = (ROOT / ".github/workflows/release.yml").read_text()
     parsed = yaml.load(workflow, Loader=yaml.BaseLoader)
-    assert parsed["on"]["push"]["tags"] == ["v2.2.0"]
+    assert parsed["on"]["push"]["tags"] == ["v2.2.1"]
     assert "release.yml@refs/tags/v2[.]2[.]0$" in workflow
     assert "release.yml@refs/tags/v2[.]0[.]0$" not in workflow
     jobs = parsed["jobs"]
@@ -74,7 +74,7 @@ def test_oci_publisher_binds_current_tag(
     steps = workflow["jobs"]["publish-server-oci"]["steps"]
     guards = [step["run"] for step in steps if step["name"] == "Revalidate immutable release tag"]
     assert len(guards) == 1
-    release_tag = "v2.2.0"
+    release_tag = "v2.2.1"
     expected_tag = "b" * 40
     ref_payload = json.dumps({"object": {"type": ref_type, "sha": tag_object}})
     tag_payload = json.dumps({"object": {"type": target_type, "sha": target_revision}})

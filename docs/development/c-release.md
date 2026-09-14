@@ -1,10 +1,11 @@
 # C release procedure
 
-The C release path selects product version **2.2.0**, native ABI **1.6.0**,
+The C release path selects product version **2.2.1**, native ABI **1.6.0**,
 and the `x86_64-unknown-linux-gnu` shared runtime built and consumed on
 Ubuntu 24.04. C17 and C++17 applications use the installed runtime through
-CMake or pkg-config. Public C support for this matrix was established on 2026-09-14 after the
-complete independent public verification described below.
+CMake or pkg-config. Public C support for this matrix was established with 2.2.0 on 2026-09-14.
+The 2.2.1 artifacts must complete the independent public verification below
+before publication.
 
 The standalone CLI, native runtime and generated sdk example are
 separate archives. Application owners generate and distribute their own
@@ -17,7 +18,7 @@ that profile identifier is not the connected server version requirement.
 
 ## Source and artifact acceptance
 
-The committed policy in `.github/release/c-2.2.0.json` enumerates every CI
+The committed policy in `.github/release/c-2.2.1.json` enumerates every CI
 job and explicit step, including the permitted platform and failure-log
 skips. It also binds the CI workflow digest, exact Actions artifact names,
 public filename mapping and signing identity. After reviewing a CI change,
@@ -46,7 +47,7 @@ The terminal FULL-C audit must accept all 44 C capabilities and every
 predecessor and current-SDK obligation.
 
 The successful attempt-one verification run produces
-`c-verified-release-2.2.0`. It contains the three accepted archives, a complete
+`c-verified-release-2.2.1`. It contains the three accepted archives, a complete
 evidence archive and a verification receipt binding their hashes to the
 source, CI run and policy. Public filenames are assigned by copying the
 accepted archive bytes; archive members and embedded artifact provenance
@@ -54,12 +55,12 @@ remain unchanged. The artifact's nonpublishing disposition is preserved.
 
 ## Protected promotion
 
-Complete the ordinary 2.2.0 release preflight and immutable annotated tag
+Complete the ordinary 2.2.1 release preflight and immutable annotated tag
 procedure. `release.yml` owns Python, npm, Cargo, OCI and the ordinary GitHub
 draft. Preserve successful publisher outputs and independently verify their
 public bytes before final publication.
 
-On the exact `v2.2.0` tag, dispatch `c-release.yml` with `mode=publish` and
+On the exact `v2.2.1` tag, dispatch `c-release.yml` with `mode=publish` and
 the successful same-source `verify_run_id`. This job uses the `release`
 environment and rechecks the verification run, every required step, the master
 CI run, accepted artifact digests, policy and annotated tag object. Promotion
@@ -70,7 +71,7 @@ verification receipt and separate promotion record. The six Sigstore bundles
 must verify with this exact certificate identity:
 
 ```text
-https://github.com/ds1sqe/type-bridge/.github/workflows/c-release.yml@refs/tags/v2.2.0
+https://github.com/ds1sqe/type-bridge/.github/workflows/c-release.yml@refs/tags/v2.2.1
 ```
 
 The issuer is `https://token.actions.githubusercontent.com`; the certificate's

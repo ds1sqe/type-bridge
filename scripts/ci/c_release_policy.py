@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-POLICY = ROOT / ".github/release/c-2.2.0.json"
+POLICY = ROOT / ".github/release/c-2.2.1.json"
 CI = ROOT / ".github/workflows/ci.yml"
-VERSION = "2.2.0"
+VERSION = "2.2.1"
 TARGET = "x86_64-unknown-linux-gnu"
 CLI = f"type-bridge-cli-artifact-{TARGET}.tar.gz"
 RUNTIME = f"type-bridge-c-runtime-abi-1.6-{TARGET}.tar.gz"
@@ -46,7 +46,7 @@ PUBLIC_FILES = {
 EVIDENCE = f"type-bridge-c-evidence-{VERSION}.tar.gz"
 RECEIPT = f"type-bridge-c-verification-{VERSION}.json"
 PROMOTION = f"type-bridge-c-promotion-{VERSION}.json"
-VERIFY_ARTIFACT = "c-verified-release-2.2.0"
+VERIFY_ARTIFACT = "c-verified-release-2.2.1"
 VERIFY_JOB = "Verify FULL C release artifacts"
 PUBLISH_JOB = "Promote verified C release artifacts"
 WORKFLOW = ".github/workflows/c-release.yml"
