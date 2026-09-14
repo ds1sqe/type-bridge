@@ -1,5 +1,10 @@
 # Installation
 
+**Security update:** The 2.2.1 prebuilt distributions use a rustls version
+affected by [RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc).
+A corrective release is in preparation; see the
+[post-release notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1).
+
 Install the TypeBridge surface used by your application. Python, Node, Rust,
 C, the CLI, and the server are separate distribution identities backed by the same Rust
 semantic engine.
@@ -60,7 +65,7 @@ setup and the historical 2.0.0 Git declaration.
 
 ## C
 
-The [2.2.0 GitHub release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.0)
+The [2.2.1 GitHub release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1)
 provides the ABI 1.6.0 shared runtime, standalone CLI, and generated C example
 for Ubuntu 24.04 on x86_64 GNU/Linux. Verify the signed archives before
 installation. C17 and C++17 applications use CMake or pkg-config; application
@@ -81,14 +86,14 @@ type-bridge --help
 It validates Split-YAML workspaces, creates and applies migrations, and
 generates configured Python, TypeScript, Rust, and C projections. Split-YAML
 workspace generation is the only active model-generation path. A standalone
-CLI archive for Ubuntu 24.04 x86_64 is also available from the 2.2.0 release.
+CLI archive for Ubuntu 24.04 x86_64 is also available from the 2.2.1 release.
 
 ## Server container
 
 The standalone V2 query server is published separately:
 
 ```bash
-docker pull ghcr.io/ds1sqe/type-bridge-server:2.2.0
+docker pull ghcr.io/ds1sqe/type-bridge-server:2.2.1
 ```
 
 Production deployments should use the immutable digest recorded in the release

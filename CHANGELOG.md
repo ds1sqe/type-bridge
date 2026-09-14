@@ -4,6 +4,18 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- Require rustls 0.23.45 and update resolved TLS dependencies to fix
+  [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285),
+  which rejects TLS 1.3 handshake messages crossing encryption levels.
+
+### Fixed
+
+- Avoid unused imports and empty function/struct re-exports in generated Rust
+  for schemas containing attributes and entities without roles, functions, or
+  structs. Pristine consumer test modules pass strict Clippy.
+
 ## [2.2.1] - 2026-09-14
 
 ### Fixed

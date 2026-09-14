@@ -775,7 +775,7 @@ and fails the byte-for-byte CI freshness check.
 - C root: `crates/c/Cargo.toml` with default features
 - Release targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`
 - Excluded from this package inventory: build-only and development-only dependencies, plus private TypeBridge-authored crates covered by the MIT section
-- Closure fingerprint: `sha256:6a6c77c24a218bcd5cc2f30598c61ad9b43157ee4957d8799892468487e228db`
+- Closure fingerprint: `sha256:24b0b86091df366a3a1729b52868bea2bffdb64e545ec15636b731eb02ec10ff`
 
 Every evaluated package's complete cargo-about-resolved SPDX expression is retained
 below. The
@@ -959,11 +959,11 @@ bytes actually reproduced in this notice.
 | `rustc-hash` | `2.1.3` | Node | `crates.io` | `Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `rustix` | `1.1.4` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `rustix-linux-procfs` | `0.1.1` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
-| `rustls` | `0.23.37` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 OR MIT OR ISC` | `MIT@sha256:709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c` |
+| `rustls` | `0.23.45` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 OR MIT OR ISC` | `MIT@sha256:709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c` |
 | `rustls-native-certs` | `0.8.3` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 OR ISC OR MIT` | `MIT@sha256:709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c` |
 | `rustls-pemfile` | `2.2.0` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 OR ISC OR MIT` | `MIT@sha256:709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c` |
 | `rustls-pki-types` | `1.14.0` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:9117d922e667125508dde62b02c1f57ed22f5ad21eb536aa2e2d99e1c796e639` |
-| `rustls-webpki` | `0.103.13` | Python, Node, CLI, C | `crates.io` | `ISC` | `ISC@sha256:5b698ca13897be3afdb7174256fa1574f8c6892b8bea1a66dd6469d3fe27885a` |
+| `rustls-webpki` | `0.103.15` | Python, Node, CLI, C | `crates.io` | `ISC` | `ISC@sha256:5b698ca13897be3afdb7174256fa1574f8c6892b8bea1a66dd6469d3fe27885a` |
 | `rustversion` | `1.0.22` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `schannel` | `0.1.29` | Python, Node, CLI, C | `crates.io` | `MIT` | `MIT@sha256:aa72991ac35b4de0034da0afe943e62b48c4092fc2ba13ae47806d8e9a4ad551` |
 | `scopeguard` | `1.2.0` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:fb77f0a9c53e473abe5103c8632ef9f0f2874d4fb3f17cb2d8c661aab9cee9d7` |

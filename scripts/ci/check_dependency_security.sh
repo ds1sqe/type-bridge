@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Audit both maintained lockfiles, including development and platform inputs.
+# Audit workspace and retained consumer lockfiles, including development inputs.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
@@ -18,7 +18,12 @@ esac
 # the pinned TypeDB transport graph still requires it (see DEVELOPMENT.md).
 for lockfile in \
     type-bridge-core/Cargo.lock \
-    type-bridge-core/crates/core/tests/fixtures/rule-wire-standalone/Cargo.lock
+    type-bridge-core/crates/core/tests/fixtures/rule-wire-standalone/Cargo.lock \
+    tests/contracts/sdk-v6-rust-surface-Cargo.lock \
+    tests/support/provider/Cargo.lock \
+    tests/support/rust-live/Cargo.lock \
+    tests/support/rust-offline/Cargo.lock \
+    type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer-Cargo.lock
 do
     cargo audit --file "$lockfile" --deny unsound --deny yanked
 done
