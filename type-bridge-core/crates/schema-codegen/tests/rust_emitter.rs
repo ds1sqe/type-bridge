@@ -66,13 +66,13 @@ fn emits_exact_deterministic_single_dependency_crate() {
     assert!(schema.contains("include_bytes!(\"../typebridge/migration-history.json\")"));
     let declarations =
         String::from_utf8(first.get("src/declaration.rs").unwrap().to_vec()).unwrap();
-    for import in [
+    for boundary in [
         "HydratedRow",
         "HydrationCapability",
         "ValidationError",
-        "MaterializeModel",
+        "::materialize(__tb_row, __tb_cap)",
     ] {
-        assert!(declarations.contains(import));
+        assert!(declarations.contains(boundary));
     }
     assert!(declarations.contains("fn __tb_dispatch_subtype"));
     assert!(!declarations.contains("fn dispatch_subtype"));
