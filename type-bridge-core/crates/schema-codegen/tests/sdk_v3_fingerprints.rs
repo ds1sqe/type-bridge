@@ -327,7 +327,7 @@ fn sdk_catalogs_and_release_archive_use_current_emitter_resources() {
         }
     }
     let policy: serde_json::Value =
-        serde_json::from_str(include_str!("../../../../.github/release/c-2.2.1.json")).unwrap();
+        serde_json::from_str(include_str!("../../../../.github/release/c-2.2.2.json")).unwrap();
     assert!(
         policy["public_files"].get(&archive).is_some(),
         "release archive fingerprint is stale"

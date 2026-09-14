@@ -1,7 +1,7 @@
 {
   "abi": "1.6.0",
   "artifact_disposition": "unchanged; promotion is a separate signed record",
-  "certificate_identity": "https://github.com/ds1sqe/type-bridge/.github/workflows/c-release.yml@refs/tags/v2.2.1",
+  "certificate_identity": "https://github.com/ds1sqe/type-bridge/.github/workflows/c-release.yml@refs/tags/v2.2.2",
   "certificate_issuer": "https://token.actions.githubusercontent.com",
   "ci_artifacts": {
     "c-artifact-clean-consumer-linux-x86_64-gnu": [
@@ -760,25 +760,25 @@
   },
   "ci_workflow_sha256": "10ebf78d7d31420150b71c54d507dff99471008a538459ba9e4d27d2e478696e",
   "cosign_version": "3.0.6",
-  "evidence": "type-bridge-c-evidence-2.2.1.tar.gz",
+  "evidence": "type-bridge-c-evidence-2.2.2.tar.gz",
   "format": "typebridge.c-release-policy/v1",
   "linkage": "shared",
-  "promotion_record": "type-bridge-c-promotion-2.2.1.json",
+  "promotion_record": "type-bridge-c-promotion-2.2.2.json",
   "public_files": {
-    "tb_sdkv3-c-de6ec4acca4cfc7ba35cfbbd969dce49c7bf3b709532fca43ac41ed482606264.tar.gz": "type-bridge-c-sdk-example-2.2.1.tar.gz",
-    "type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz": "type-bridge-c-runtime-2.2.1-abi-1.6-x86_64-unknown-linux-gnu.tar.gz",
-    "type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz": "type-bridge-cli-2.2.1-x86_64-unknown-linux-gnu.tar.gz"
+    "tb_sdkv3-c-de6ec4acca4cfc7ba35cfbbd969dce49c7bf3b709532fca43ac41ed482606264.tar.gz": "type-bridge-c-sdk-example-2.2.2.tar.gz",
+    "type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz": "type-bridge-c-runtime-2.2.2-abi-1.6-x86_64-unknown-linux-gnu.tar.gz",
+    "type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz": "type-bridge-cli-2.2.2-x86_64-unknown-linux-gnu.tar.gz"
   },
   "recovery": "draft-only; absent-or-identical payloads; verify and retain existing signatures",
   "repository": "ds1sqe/type-bridge",
   "repository_id": 1085407082,
   "runner": "ubuntu-24.04",
   "semantic_profile": "typedb-3.12.1/v1",
-  "tag": "v2.2.1",
+  "tag": "v2.2.2",
   "target": "x86_64-unknown-linux-gnu",
   "typedb": "3.12.3",
-  "verification_artifact": "c-verified-release-2.2.1",
-  "verification_receipt": "type-bridge-c-verification-2.2.1.json",
+  "verification_artifact": "c-verified-release-2.2.2",
+  "verification_receipt": "type-bridge-c-verification-2.2.2.json",
   "verification_steps": {
     "Capture exact successful master CI artifacts": "success",
     "Checkout exact release source": "success",
@@ -792,6 +792,6 @@
     "Upload immutable verified C release bundle": "success",
     "Wait for the exact TypeDB fixture": "success"
   },
-  "version": "2.2.1",
+  "version": "2.2.2",
   "workflow": ".github/workflows/c-release.yml"
 }

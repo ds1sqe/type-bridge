@@ -1695,7 +1695,7 @@ def validate_server_oci_release_channels(workflow: Path) -> None:
     tag_preflight = _release_workflow_job(source, "release-tag-preflight")
     freeze_tag = _release_workflow_step(tag_preflight, "Freeze exact annotated tag object")
     tag_requirements = {
-        "needs: [channel-preflight, recovery-preflight]": "stable channel preflight",
+        "needs: [channel-preflight]": "stable channel preflight",
         "needs.channel-preflight.result == 'success'": "stable channel acceptance",
         "outputs:\n      tag_object: ${{ steps.freeze-tag.outputs.tag_object }}": (
             "frozen tag-object job output"

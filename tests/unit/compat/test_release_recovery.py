@@ -220,54 +220,15 @@ def test_recovery_attestation_rejects_changed_identity(field):
         validator.recovery_predicate(policy, environment)
 
 
-def test_recovery_workflow_preserves_publication_dependencies():
+def test_current_release_cannot_resume_historical_publication():
     import yaml
 
-    workflow = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())
-    jobs = workflow["jobs"]
-    assert jobs["test"]["if"] == "${{ !inputs.recover_publication }}"
-    admission = (
-        "inputs.recover_publication && github.ref == 'refs/heads/master' && "
-        "inputs.release_channel == 'stable'"
-    )
-    assert jobs["recovery-preflight"]["if"] == admission
-    previous = {
-        "release-tag-preflight": None,
-        "publish-server-oci": "release-tag-preflight",
-        "publish-core-pypi": "publish-server-oci",
-        "publish-python-pypi": "publish-core-pypi",
-        "github-release": "publish-python-pypi",
-    }
-    for name, prerequisite in previous.items():
-        job = jobs[name]
-        recovery_guard = job["if"].split(" || ")[1]
-        assert admission in recovery_guard
-        assert "needs.recovery-preflight.result == 'success'" in recovery_guard
-        assert "recovery-preflight" in job["needs"]
-        if prerequisite:
-            assert prerequisite in job["needs"]
-            assert f"needs.{prerequisite}.result == 'success'" in recovery_guard
-            assert "needs.release-tag-preflight.result == 'success'" in recovery_guard
-    for name in ["publish-node-npm", "publish-crates"]:
-        assert "github.event_name == 'push'" in jobs[name]["if"]
-        assert "||" not in jobs[name]["if"]
-    for name in list(previous)[1:]:
-        steps = jobs[name]["steps"]
-        checks = [
-            step for step in steps if step.get("name") == "Verify original recovery artifact bytes"
-        ]
-        assert len(checks) == 1
-        assert checks[0]["if"] == "inputs.recover_publication"
-        assert "--check " in checks[0]["run"]
-        assert steps.index(checks[0]) < next(
-            i
-            for i, step in enumerate(steps)
-            if step.get("name") == "Revalidate immutable release tag"
-        )
-    steps = jobs["publish-server-oci"]["steps"]
-    for step in steps:
-        if step.get("id", "").startswith("attest-provenance-"):
-            assert step["if"] == "${{ !inputs.recover_publication }}"
-        if step.get("id", "").startswith("attest-recovery-"):
-            assert step["if"] == "inputs.recover_publication"
-            assert step["with"]["predicate-type"].endswith("publication-recovery/v1")
+    source = (ROOT / ".github/workflows/release.yml").read_text()
+    workflow = yaml.load(source, Loader=yaml.BaseLoader)
+    assert "recover_publication" not in workflow["on"]["workflow_dispatch"]["inputs"]
+    assert "recovery-preflight" not in workflow["jobs"]
+    assert workflow["env"]["RELEASE_REVISION"] == "${{ github.sha }}"
+    assert workflow["env"]["RELEASE_ARTIFACT_RUN_ID"] == "${{ github.run_id }}"
+    policy = json.loads(validator.POLICY.read_text())
+    assert policy["source"] not in source
+    assert str(policy["run_id"]) not in source
