@@ -13,17 +13,18 @@
 
 TypeBridge is a typed application toolkit for [TypeDB](https://typedb.com/).
 A versioned Split-YAML workspace is the schema authority. TypeBridge validates
-that workspace and generates Python, TypeScript/Node, and Rust bindings that
+that workspace and generates Python, TypeScript/Node, Rust, and C bindings that
 share one Rust-owned schema, query, migration, validation, and ORM engine.
 
-## One system, three generated SDKs
+## One system, four generated SDKs
 
 | Surface | Generated application API | Distribution |
 | --- | --- | --- |
 | Python | Value classes, model managers, transactions, direct/remote queries | [`type-bridge`](https://pypi.org/project/type-bridge/) |
 | TypeScript / Node | Branded values, model managers, native and remote queries | [`@type-bridge/node`](https://www.npmjs.com/package/@type-bridge/node) |
 | Rust | Schema-bound create/model types, async CRUD and immutable queries | [`type-bridge`](https://crates.io/crates/type-bridge) |
-| CLI | Split-YAML checks, migrations, and all three projections | Included with the Python package |
+| C | Generated nominal models, transactions, direct/remote queries | [Ubuntu 24.04 x86_64 shared runtime](https://ds1sqe.github.io/type-bridge/guide/c/) |
+| CLI | Split-YAML checks, migrations, and all four projections | Python package or standalone Linux archive |
 | Server | Remote V2 query execution over the same generated contract | `ghcr.io/ds1sqe/type-bridge-server` |
 
 TypeBridge preserves TypeDB concepts directly: independent attributes,
@@ -48,7 +49,7 @@ type-bridge --manifest typebridge.yaml migration make --name initial
 type-bridge --manifest typebridge.yaml migration apply --environment development
 ```
 
-One generation snapshot writes every configured Python, TypeScript, and Rust
+One generation snapshot writes every configured Python, TypeScript, Rust, and C
 package. Generated packages privately embed the verified authority used by
 their managers and direct or remote queries, so ordinary applications never
 configure or read an external authority JSON. A workspace deploying the optional
@@ -127,6 +128,15 @@ type-bridge = "2"
 Follow the [Rust client guide](https://ds1sqe.github.io/type-bridge/guide/rust/)
 for generation, direct execution, transactions, and remote queries.
 
+## C
+
+TypeBridge 2.2.0 ships a C ABI 1.6.0 shared runtime and standalone CLI for
+Ubuntu 24.04 on x86_64 GNU/Linux. Generate an application schema package from
+Split-YAML, then link C17 or C++17 consumers with CMake or pkg-config.
+
+See the [C SDK guide](https://ds1sqe.github.io/type-bridge/guide/c/) for signed
+archives, installation, generation, and the exact supported matrix.
+
 ## Documentation
 
 - [Install a surface](https://ds1sqe.github.io/type-bridge/getting-started/installation/)
@@ -140,7 +150,7 @@ for generation, direct execution, transactions, and remote queries.
 ## Development
 
 ```bash
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv sync --extra dev
+uv sync --extra dev
 uv run pytest
 ./test.sh
 ./scripts/check.sh all

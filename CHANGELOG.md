@@ -4,6 +4,8 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-14
+
 ### Fixed
 
 - Apply Debian's PCRE2 security update to both server-container architectures,
@@ -15,12 +17,12 @@ All notable changes to TypeBridge will be documented in this file.
   Preserve schema identity and existing non-colliding names. Regenerate complete
   TypeScript packages after updating the generator and compatible runtime.
 
-### C distribution preparation
+### C SDK and standalone CLI
 
-- Prepare the 2.2.0 standalone CLI and ABI 1.6 C shared runtime for Linux
+- Release the standalone CLI and ABI 1.6 C shared runtime for Linux
   x86_64 on Ubuntu 24.04, with independent generated schema packages and
-  complete V1–V6 application acceptance. Public C support requires the
-  protected promotion and independent public-consumer gates.
+  complete V1–V6 application acceptance. Signed public artifacts passed
+  independent provenance, installation, C17/C++17, and live-consumer checks.
 - Add exact-source artifact verification and signed promotion to the GitHub
   release draft, preserving accepted archive bytes and supporting only
   absent-or-identical partial-upload recovery.

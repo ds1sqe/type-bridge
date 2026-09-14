@@ -9,14 +9,16 @@ remote server later without changing semantic systems.
 | A Python application | [Install Python](installation.md#python) → [Python quick start](quickstart.md) |
 | A TypeScript or Node application | [Install Node](installation.md#typescript-node) → [TypeScript/Node guide](../guide/typescript.md) |
 | A Rust application | [Rust distribution](installation.md#rust) → [Generate a Rust schema crate](../guide/rust.md) |
+| A C17 or C++17 application on Ubuntu 24.04 x86_64 | [Install C](installation.md#c) → [C SDK guide](../guide/c.md) |
 | A schema-first, multi-SDK workspace | [Install the CLI](installation.md#cli-and-code-generation) → [Schema workflows](../guide/schema-workflows.md) |
 | A remote query service | [Server container](../guide/server-container.md) |
 
 ## Before connecting
 
-You need a supported TypeDB 3.x server for database operations. TypeBridge 2.1
+You need a supported TypeDB 3.x server for database operations. TypeBridge 2.2
 supports generated CRUD/query operations on TypeDB 3.11–3.12; connected V2
-migration apply/verify/adopt requires exactly 3.12.3. The exact interpreter,
+migration apply/verify/adopt requires exactly 3.12.3. The selected C release
+matrix is verified against TypeDB 3.12.3. The exact interpreter,
 native-target, provider-band, and server matrix is
 maintained in [TypeDB compatibility](../development/typedb.md#server-and-driver-compatibility).
 

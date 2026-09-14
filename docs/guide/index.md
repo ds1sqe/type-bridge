@@ -8,7 +8,7 @@ while detailed reference pages keep their stable URLs.
 
 -   **Choose an SDK**
 
-    Python, TypeScript/Node, generated Rust, or remote server execution.
+    Python, TypeScript/Node, generated Rust or C, or remote server execution.
 
     [:octicons-arrow-right-24: Compare surfaces](sdks.md)
 
@@ -45,7 +45,7 @@ while detailed reference pages keep their stable URLs.
 ## How the guides relate
 
 Split-YAML is the authoring authority. Applications check one workspace, review
-and apply canonical migrations, then generate Python, TypeScript, or Rust
+and apply canonical migrations, then generate Python, TypeScript, Rust, or C
 projections. Historical inputs use the documented one-way conversion/adoption
 paths; they are not parallel active authoring systems.
 

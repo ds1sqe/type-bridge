@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "type-bridge"
 version = "2.2.0"
-description = "Typed Python, TypeScript, and Rust application tooling for TypeDB"
+description = "Typed Python, TypeScript, Rust, and C application tooling for TypeDB"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 license = {text = "MIT"}
