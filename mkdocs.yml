@@ -1,6 +1,6 @@
 site_name: TypeBridge
 site_url: https://ds1sqe.github.io/type-bridge/
-site_description: Typed Python, TypeScript, and Rust application tooling for TypeDB
+site_description: Typed Python, TypeScript, Rust, and C application tooling for TypeDB
 site_author: ds1sqe
 repo_url: https://github.com/ds1sqe/type-bridge
 repo_name: ds1sqe/type-bridge
@@ -98,6 +98,7 @@ nav:
       - Cargo Package Index: guide/cargo-packages.md
       - TypeScript / Node: guide/typescript.md
       - Rust: guide/rust.md
+      - C: guide/c.md
     - Model TypeDB Data:
       - Overview: guide/models.md
       - Attributes: guide/attributes.md

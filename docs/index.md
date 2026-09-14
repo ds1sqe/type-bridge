@@ -5,7 +5,7 @@
 # Build typed TypeDB applications
 
 TypeBridge is a multi-language application toolkit for TypeDB. Define a schema
-once, project typed models for Python, TypeScript/Node, and Rust, then use the
+once, project typed models for Python, TypeScript/Node, Rust, and C, then use the
 same Rust-owned query, migration, validation, and ORM semantics locally or
 through the TypeBridge server.
 
@@ -38,6 +38,15 @@ through the TypeBridge server.
 
     [:octicons-arrow-right-24: Rust client](guide/rust.md)
 
+-   :material-code-braces:{ .lg .middle } **C**
+
+    ---
+
+    Generated nominal models and ABI 1.6.0 shared runtime for C17/C++17
+    applications on Ubuntu 24.04 x86_64.
+
+    [:octicons-arrow-right-24: C SDK](guide/c.md)
+
 -   :material-server-security:{ .lg .middle } **Schema and server**
 
     ---
@@ -58,14 +67,14 @@ through the TypeBridge server.
   Rust schema · query · migration · ORM
        │             │              │
        ▼             ▼              ▼
-    Python     TypeScript/Node    Rust SDK
+    Python     TypeScript/Node    Rust / C SDKs
        └─────────────┬──────────────┘
                      ▼
               TypeDB 3.x / server
 ```
 
 Python and Node generated packages are typed language projections, not schema
-authorities or independent implementations. Generated Rust applications and
+authorities or independent implementations. Generated Rust and C applications and
 the standalone server consume the same canonical contracts. This keeps
 cardinality, roles, inheritance, value coercion, query validation, and
 migration behavior aligned.

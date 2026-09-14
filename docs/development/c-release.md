@@ -3,8 +3,8 @@
 The C release path selects product version **2.2.0**, native ABI **1.6.0**,
 and the `x86_64-unknown-linux-gnu` shared runtime built and consumed on
 Ubuntu 24.04. C17 and C++17 applications use the installed runtime through
-CMake or pkg-config. This preparation does not establish public C support;
-that requires the public verification below.
+CMake or pkg-config. Public C support for this matrix was established on 2026-09-14 after the
+complete independent public verification described below.
 
 The standalone CLI, native runtime and generated sdk example are
 separate archives. Application owners generate and distribute their own
@@ -105,7 +105,11 @@ promotion-to-verification-to-CI hash chain, then repeat the clean installation,
 C17/C++17, loader, provider-free, TLS, migration and complete application
 journeys using those public bytes.
 
-Only that complete public result establishes FULL C support for the selected
-matrix. Update the support documentation with the actual release date and
+The 2.2.0 public result on 2026-09-14 establishes FULL C support for the
+selected matrix. It binds source `6c9f37c5c01cba25db62195e83af42f1a6a4d46d`,
+[CI run 34790325709](https://github.com/ds1sqe/type-bridge/actions/runs/34790325709),
+and [C verification run 34793581010](https://github.com/ds1sqe/type-bridge/actions/runs/34793581010).
+The signed evidence, receipt, promotion record, and all six Sigstore bundles
+are retained in the [2.2.0 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.0). Update the support documentation with the actual release date and
 verified runtime/compiler requirements, preserve the public evidence record,
 and complete the C handoff before starting Kotlin/JVM.
