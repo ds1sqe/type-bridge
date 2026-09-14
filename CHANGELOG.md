@@ -4,6 +4,8 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-09-14
+
 ### Fixed
 
 - Add per-binding canonical type-name overrides through workspace `type-names`
