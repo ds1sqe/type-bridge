@@ -157,11 +157,38 @@ fn write_consumer(root: &Path, name: &str, source: &str) {
 
 #[test]
 fn pristine_generated_rust_passes_strict_clippy_as_consumer_test_modules() {
+    assert_pristine_consumer_clippy(&emit());
+}
+
+#[test]
+fn explicit_rust_type_names_pass_strict_consumer_clippy() {
+    use type_bridge_contract::id::{TypeId, TypeKind};
+    let source = include_str!("acceptance/schema.yaml");
+    let authority = support::authority(source);
+    let resolved = authority.resolved_schema();
+    let emitter = RustEmitter::new();
+    let config = ProjectionConfig::rust()
+        .with_type_name_override(
+            TypeId::new(TypeKind::Entity, "person").unwrap(),
+            "person_value",
+        )
+        .unwrap();
+    let projection = project(
+        resolved,
+        BindingTarget::Rust,
+        &config,
+        &emitter.generator_handlers_for(resolved),
+        &emitter.code_resources_for(resolved).unwrap(),
+    )
+    .unwrap();
+    assert_pristine_consumer_clippy(&emitter.emit(&projection, &authority).unwrap());
+}
+
+fn assert_pristine_consumer_clippy(package: &GeneratedPackage) {
     let stage = Stage::new();
     let generated = stage.path().join("generated");
     let consumer = stage.path().join("consumer");
-    let package = emit();
-    write_package(&package, &generated);
+    write_package(package, &generated);
     write_consumer(&consumer, "rust-generated-clippy", "fn main() {}\n");
     fs::create_dir_all(consumer.join("tests")).unwrap();
     // The crate root and its sibling modules remain byte-for-byte emitter output.
