@@ -89,9 +89,7 @@ class Proofs:
         )
 
 
-@pytest.fixture(params=[2, 3], ids=["queries", "models"])
-def proofs(request: pytest.FixtureRequest, tmp_path: Path) -> Proofs:
-    version = request.param
+def _build_proofs(version: int, tmp_path: Path) -> Proofs:
     contract = validator.CONTRACTS[version]
     for relative in (contract.proof_schema_relative, contract.journey_relative):
         target = tmp_path / relative
@@ -173,6 +171,16 @@ def proofs(request: pytest.FixtureRequest, tmp_path: Path) -> Proofs:
         sources,
         {(r["observation_ref"], r["proof_kind"]) for value in values for r in value["results"]},
     )
+
+
+@pytest.fixture(params=[2, 3], ids=["queries", "models"])
+def proofs(request: pytest.FixtureRequest, tmp_path: Path) -> Proofs:
+    return _build_proofs(request.param, tmp_path)
+
+
+@pytest.fixture
+def model_proofs(tmp_path: Path) -> Proofs:
+    return _build_proofs(3, tmp_path)
 
 
 def test_only_exact_measured_lanes_are_returned(proofs: Proofs) -> None:
@@ -268,11 +276,10 @@ def test_missing_lane_and_duplicate_producer_fail_closed(
     assert rejected.value.code == code
 
 
-@pytest.mark.parametrize("proofs", [3], indirect=True)
-def test_model_contract_requires_both_producers(proofs: Proofs) -> None:
-    paths = proofs.write()[:1]
+def test_model_contract_requires_both_producers(model_proofs: Proofs) -> None:
+    paths = model_proofs.write()[:1]
     with pytest.raises(validator.ProofFragmentError) as rejected:
-        proofs.load(paths)
+        model_proofs.load(paths)
     assert rejected.value.code == "lane_coverage_mismatch"
 
 
