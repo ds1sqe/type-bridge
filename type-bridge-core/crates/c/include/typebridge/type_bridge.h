@@ -435,6 +435,18 @@ typedef struct type_bridge_query_terminal_descriptor_v1 {
   uint64_t reserved[4];
 } type_bridge_query_terminal_descriptor_v1_t;
 
+/*
+ * One named override of a canonical query limit. `name` is `name_length`
+ * bytes of UTF-8, not NUL-terminated, spelling one stable limit name such as
+ * "canonical_bytes" or "boolean_terms". A limit that is not named keeps its
+ * canonical default.
+ */
+typedef struct type_bridge_query_limit_override_v1 {
+  const uint8_t *name;
+  size_t name_length;
+  uint64_t value;
+} type_bridge_query_limit_override_v1_t;
+
 typedef struct type_bridge_query_execution_limits_v1 {
   uint32_t struct_size;
   uint32_t version;
@@ -1097,6 +1109,19 @@ type_bridge_write_transaction_close(
  */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_query_session_open(const type_bridge_schema_package_t *package,
+    type_bridge_query_session_t **out_session,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+/*
+ * Open a session whose queries are validated, encoded, and executed under
+ * caller-supplied query limits. NULL overrides with a zero count select the
+ * canonical defaults. An unknown name, a repeated name, or an unsupported
+ * value returns TYPE_BRIDGE_STATUS_INVALID_ARGUMENT and opens nothing.
+ */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_query_session_open_with_limits_v1(
+    const type_bridge_schema_package_t *package,
+    const type_bridge_query_limit_override_v1_t *overrides,
+    size_t override_count,
     type_bridge_query_session_t **out_session,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use type_bridge_contract::id::{FunctionId, TypeId, TypeKind};
-use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
+use type_bridge_contract::limits::{MAX_REMOTE_ENVELOPE_BYTES, QueryLimits};
 use type_bridge_contract::projection::{ProjectedTokenIdentity, ProjectionHandler};
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_contract::schema::{OwnsFactId, encode_declared_schema};
@@ -951,10 +951,49 @@ fn query_result_value(storage: &QueryResultStorage) -> Option<&ProjectedQueryVal
     }
 }
 
+/// One named override of a canonical query limit.
+///
+/// `name` is `name_length` bytes of UTF-8, not NUL-terminated, spelling one
+/// stable limit name. A limit that is not named keeps its default.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TypeBridgeQueryLimitOverrideV1 {
+    pub name: *const u8,
+    pub name_length: usize,
+    pub value: u64,
+}
+
 /// Open an isolated provider-free typed-query construction session.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_query_session_open(
     package: *const TypeBridgeSchemaPackage,
+    out_session: *mut *mut TypeBridgeQuerySession,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: the caller contract is forwarded unchanged with no overrides.
+    unsafe {
+        type_bridge_query_session_open_with_limits_v1(
+            package,
+            ptr::null(),
+            0,
+            out_session,
+            out_diagnostics,
+        )
+    }
+}
+
+/// Open a typed-query construction session whose queries are validated,
+/// encoded, and executed under caller-supplied query limits.
+///
+/// `overrides` names the limits that differ from the canonical defaults; a
+/// NULL pointer with a zero count selects the defaults. The shared engine
+/// admits the values: an unknown name, a repeated name, or an unsupported
+/// value returns `TYPE_BRIDGE_STATUS_INVALID_ARGUMENT` and opens nothing.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_query_session_open_with_limits_v1(
+    package: *const TypeBridgeSchemaPackage,
+    overrides: *const TypeBridgeQueryLimitOverrideV1,
+    override_count: usize,
     out_session: *mut *mut TypeBridgeQuerySession,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
@@ -980,6 +1019,12 @@ pub unsafe extern "C" fn type_bridge_query_session_open(
         if package.is_null() {
             return TypeBridgeStatus::InvalidArgument;
         }
+        // SAFETY: the caller retains `override_count` readable overrides and
+        // each named byte range for the duration of this call.
+        let Some(limits) = (unsafe { query_limits_from_overrides(overrides, override_count) })
+        else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
         // SAFETY: caller retains the immutable package through this call.
         let package = unsafe { &*package };
         let registry = match package.state().installed_projection.match_registry() {
@@ -988,7 +1033,7 @@ pub unsafe extern "C" fn type_bridge_query_session_open(
         };
         let state = Arc::new(QuerySessionState {
             package: Arc::clone(package.state()),
-            handle: SessionHandle::new(Arc::clone(&registry)),
+            handle: SessionHandle::with_limits(Arc::clone(&registry), limits),
             registry,
         });
         write_handle(
@@ -998,6 +1043,41 @@ pub unsafe extern "C" fn type_bridge_query_session_open(
             out_diagnostics,
         )
     })
+}
+
+/// Read caller-supplied limit overrides and admit them through the shared
+/// engine. Returns `None` for a malformed or refused set.
+///
+/// # Safety
+/// `overrides` must be NULL with a zero count, or point to `count` readable
+/// entries whose `name` ranges are readable for `name_length` bytes.
+unsafe fn query_limits_from_overrides(
+    overrides: *const TypeBridgeQueryLimitOverrideV1,
+    count: usize,
+) -> Option<QueryLimits> {
+    if count == 0 {
+        return Some(QueryLimits::CANONICAL);
+    }
+    // More entries than limits can only repeat or invent a name.
+    if overrides.is_null() || count > QueryLimits::FIELDS.len() {
+        return None;
+    }
+    // SAFETY: the caller guarantees `count` readable entries.
+    let entries = unsafe { std::slice::from_raw_parts(overrides, count) };
+    let mut named = Vec::with_capacity(count);
+    for entry in entries {
+        if entry.name.is_null() {
+            return None;
+        }
+        // SAFETY: the caller guarantees `name_length` readable bytes.
+        let name = unsafe { std::slice::from_raw_parts(entry.name, entry.name_length) };
+        let name = std::str::from_utf8(name).ok()?;
+        if named.iter().any(|(seen, _)| *seen == name) {
+            return None;
+        }
+        named.push((name, entry.value));
+    }
+    QueryLimits::from_overrides(named).ok()
 }
 
 /// Close an immutable query-construction session handle.
@@ -7395,6 +7475,16 @@ mod tests {
             terminal_kind: u32,
             cardinality: u32,
         ) -> Self {
+            // SAFETY: forwarded caller contract; no overrides are read.
+            unsafe { Self::open_with_limits(package, terminal_kind, cardinality, &[]) }
+        }
+
+        unsafe fn open_with_limits(
+            package: &TypeBridgeSchemaPackage,
+            terminal_kind: u32,
+            cardinality: u32,
+            overrides: &[TypeBridgeQueryLimitOverrideV1],
+        ) -> Self {
             let model = model_token(
                 package,
                 TypeId::new(TypeKind::Entity, "person").expect("test type identity"),
@@ -7402,8 +7492,20 @@ mod tests {
             let mut diagnostics = ptr::null_mut();
             let mut session = ptr::null_mut();
             assert_eq!(
-                // SAFETY: package and writable independent outputs are live.
-                unsafe { type_bridge_query_session_open(package, &mut session, &mut diagnostics) },
+                // SAFETY: package, overrides, and writable independent outputs are live.
+                unsafe {
+                    type_bridge_query_session_open_with_limits_v1(
+                        package,
+                        if overrides.is_empty() {
+                            ptr::null()
+                        } else {
+                            overrides.as_ptr()
+                        },
+                        overrides.len(),
+                        &mut session,
+                        &mut diagnostics,
+                    )
+                },
                 TypeBridgeStatus::Ok,
             );
             assert!(diagnostics.is_null());
@@ -8507,6 +8609,98 @@ mod tests {
         assert_eq!(filter.len(), 3);
         assert_eq!(filter.resource_measure().items(), 3);
         assert_eq!(filter.resource_measure().attribute_values(), 3);
+    }
+
+    fn limit_override(name: &'static str, value: u64) -> TypeBridgeQueryLimitOverrideV1 {
+        TypeBridgeQueryLimitOverrideV1 {
+            name: name.as_ptr(),
+            name_length: name.len(),
+            value,
+        }
+    }
+
+    #[test]
+    fn session_limits_are_admitted_by_the_shared_engine_or_open_nothing() {
+        let package = ordered_package("querysessionlimitsadmission");
+        for refused in [
+            vec![limit_override("made_up", 1)],
+            vec![limit_override("boolean_terms", 0)],
+            vec![limit_override("canonical_depth", 1_000)],
+            vec![
+                limit_override("boolean_terms", 4),
+                limit_override("boolean_terms", 8),
+            ],
+        ] {
+            let mut session = ptr::null_mut();
+            let mut diagnostics = ptr::null_mut();
+            assert_eq!(
+                // SAFETY: package, overrides, and writable outputs are live.
+                unsafe {
+                    type_bridge_query_session_open_with_limits_v1(
+                        &package,
+                        refused.as_ptr(),
+                        refused.len(),
+                        &mut session,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::InvalidArgument,
+            );
+            assert!(session.is_null());
+        }
+        // A non-zero count without overrides is refused, not read.
+        let mut session = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_query_session_open_with_limits_v1(
+                    &package,
+                    ptr::null(),
+                    1,
+                    &mut session,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::InvalidArgument,
+        );
+        assert!(session.is_null());
+    }
+
+    #[test]
+    fn a_session_with_a_lowered_limit_refuses_what_the_default_accepts() {
+        let package = ordered_package("querysessionloweredlimit");
+        let overrides = [limit_override("boolean_terms", 1)];
+        // SAFETY: fixture owns the exact generated construction graph.
+        let mut built = unsafe {
+            BuiltQuery::open_with_limits(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY, &overrides)
+        };
+        for value in [b"Ada".as_slice(), b"Bob".as_slice()] {
+            // SAFETY: this mirrors one generated immutable manager predicate transition.
+            unsafe { add_identifier_equality(&package, &mut built, value) };
+        }
+        let descriptor = manager_terminal_descriptor(&built, ManagerTerminalKind::Count);
+        assert_eq!(
+            unsafe { type_bridge_query_terminal_close(&mut built.terminal) },
+            TypeBridgeStatus::Ok,
+        );
+        let mut diagnostics = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_query_terminal_open_v1(
+                    built.query,
+                    &descriptor,
+                    &mut built.terminal,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::ResourceLimit,
+        );
+        assert!(built.terminal.is_null());
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "structural_limit_exceeded"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
     }
 
     #[test]

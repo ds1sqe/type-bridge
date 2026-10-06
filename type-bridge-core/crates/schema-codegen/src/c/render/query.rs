@@ -361,6 +361,7 @@ pub(super) fn function_names(
     let mut names = BTreeSet::new();
     for suffix in [
         "query_session_open",
+        "query_session_open_with_limits",
         "query_session_close",
         "query_predicate_and",
         "query_predicate_or",
@@ -587,6 +588,11 @@ fn render_declarations(
          }} {row_result_ref};\n\n\
          type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_session_open(\n\
            const type_bridge_schema_package_t *package, {session} **out_session,\n\
+           type_bridge_execution_diagnostics_t **out_diagnostics);\n\
+         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_session_open_with_limits(\n\
+           const type_bridge_schema_package_t *package,\n\
+           const type_bridge_query_limit_override_v1_t *overrides, size_t override_count,\n\
+           {session} **out_session,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n\
          type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_session_close(\n\
            {session} **session);\n",
@@ -1345,6 +1351,15 @@ fn render_package_definitions(
            type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
            return type_bridge_query_session_open(\n\
                package, (type_bridge_query_session_t **)out_session, out_diagnostics);\n\
+         }}\n\n\
+         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_session_open_with_limits(\n\
+           const type_bridge_schema_package_t *package,\n\
+           const type_bridge_query_limit_override_v1_t *overrides, size_t override_count,\n\
+           {session} **out_session,\n\
+           type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
+           return type_bridge_query_session_open_with_limits_v1(\n\
+               package, overrides, override_count,\n\
+               (type_bridge_query_session_t **)out_session, out_diagnostics);\n\
          }}\n\n\
          type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_session_close(\n\
            {session} **session) {{\n\

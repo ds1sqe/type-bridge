@@ -54,6 +54,10 @@ QUERY_STATIC_ASSERT(sizeof(type_bridge_query_terminal_descriptor_v1_t) <= 65535u
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *query_session_open_fn)(
     const type_bridge_schema_package_t *, type_bridge_query_session_t **,
     type_bridge_execution_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *query_session_open_with_limits_fn)(
+    const type_bridge_schema_package_t *,
+    const type_bridge_query_limit_override_v1_t *, size_t,
+    type_bridge_query_session_t **, type_bridge_execution_diagnostics_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *query_binding_open_fn)(
     const type_bridge_query_session_t *, const type_bridge_projected_token_v1_t *,
     type_bridge_query_match_mode_t, type_bridge_query_binding_t **,
@@ -99,6 +103,8 @@ typedef type_bridge_status_t (TYPE_BRIDGE_CALL *reduced_metadata_fn)(
 
 void query_abi_probe(void) {
   query_session_open_fn session_open = &type_bridge_query_session_open;
+  query_session_open_with_limits_fn session_open_with_limits =
+      &type_bridge_query_session_open_with_limits_v1;
   query_binding_open_fn binding_open = &type_bridge_query_binding_open_v1;
   query_function_call_open_fn function_call_open =
       &type_bridge_query_function_call_open_v1;
@@ -123,6 +129,7 @@ void query_abi_probe(void) {
   type_bridge_query_function_argument_member_v1_t function_member;
   type_bridge_query_function_arguments_graph_v1_t function_graph;
   (void)session_open;
+  (void)session_open_with_limits;
   (void)binding_open;
   (void)function_call_open;
   (void)query_open;
