@@ -683,23 +683,21 @@ fn native_library() -> Option<PathBuf> {
         return Some(path);
     }
     let executable = std::env::current_exe().expect("current test executable path is available");
-    let dependency_directory = executable
-        .parent()
-        .expect("test executable has a parent directory");
-    let profile_directory = dependency_directory
-        .parent()
-        .expect("Cargo dependency directory has a profile parent");
     let filename = format!(
         "{}type_bridge_c{}",
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     );
-    [
-        dependency_directory.join(&filename),
-        profile_directory.join(filename),
-    ]
-    .into_iter()
-    .find(|candidate| candidate.is_file())
+    // Cargo places the test executable in `<profile>/deps` or, with the
+    // per-package build directory layout, several levels below the profile
+    // directory. The shared library is always in the profile directory, so
+    // search upward a bounded number of levels instead of assuming a depth.
+    executable
+        .ancestors()
+        .skip(1)
+        .take(6)
+        .map(|directory| directory.join(&filename))
+        .find(|candidate| candidate.is_file())
 }
 
 fn native_library_or_skip(test_name: &str) -> Option<PathBuf> {
