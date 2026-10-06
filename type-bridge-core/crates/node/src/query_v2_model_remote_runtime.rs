@@ -188,18 +188,22 @@ pub fn query_v2_remote_model_context(
         max_role_players,
         deadline_ms,
     )?;
-    let resources = QueryExecutionResourceLimits::tightened(
-        limits
+    // A budget above a default is kept, not clamped; past a supported
+    // maximum it is refused by name.
+    let resources = QueryExecutionResourceLimits {
+        timeout_milliseconds: limits
             .deadline_ms
-            .unwrap_or(type_bridge_orm::MAX_QUERY_TIMEOUT_MILLISECONDS),
-        limits.max_items,
-        limits.max_bytes,
-        limits.max_graph_nodes,
-        limits.max_attribute_values,
-        limits.max_collection_members,
-        limits.max_role_players,
-        limits.max_statements,
-    );
+            .unwrap_or(type_bridge_orm::DEFAULT_QUERY_TIMEOUT_MILLISECONDS),
+        items: limits.max_items,
+        bytes: limits.max_bytes,
+        graph_nodes: limits.max_graph_nodes,
+        attribute_values: limits.max_attribute_values,
+        collection_members: limits.max_collection_members,
+        role_players: limits.max_role_players,
+        statements: limits.max_statements,
+    }
+    .validate()
+    .map_err(|refusal| napi::Error::new(napi::Status::InvalidArg, refusal.to_string()))?;
     RemoteCapabilities::decode(&advertisement)
         .map_err(|diagnostic| napi_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))?;
     Ok(NodeRemoteModelQueryContext {

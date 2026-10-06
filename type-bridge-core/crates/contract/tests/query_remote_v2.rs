@@ -1642,6 +1642,99 @@ fn low_level_signed_response_round_trips_and_preflights_item_budget() {
     );
 }
 
+/// A reply past the default ceilings is exchanged only between peers that
+/// both raised the limit.
+#[test]
+fn a_reply_past_the_default_ceilings_needs_both_peers_to_raise_them() {
+    const ROWS: usize = 70_000;
+    let plan = low_level_plan();
+    let raised_request = RemoteLimitsV2 {
+        max_items: 100_000,
+        max_bytes: 1 << 26,
+        ..limits()
+    };
+    let request = request_with_limits(&plan, RemoteResultKindV2::Rows, false, raised_request);
+    let request_fingerprint = request.fingerprint().expect("request fingerprint");
+    let rows = || {
+        (0..ROWS)
+            .map(|index| {
+                vec![type_bridge_contract::query_remote::RemoteValue::Thing {
+                    iid: format!("0x{:x}", index + 1),
+                    type_id: person(),
+                }]
+            })
+            .collect::<Vec<_>>()
+    };
+    let raised = RemoteReplyDecodeLimitsV2 {
+        max_items: 100_000,
+        max_bytes: 1 << 26,
+        ..decode_limits()
+    };
+    let advertisement = advertisement(&plan, false);
+    let advertisement_fingerprint = advertisement.fingerprint().expect("advertisement");
+
+    // An executor at the default ceilings cannot build or encode the reply.
+    let at_default = RemoteQueryResponseV2::new(
+        NONCE,
+        &plan,
+        &request_fingerprint,
+        RemoteResultKindV2::Rows,
+        RemoteOutcomeV2::Rows { rows: rows() },
+    )
+    .and_then(|response| response.encode_signed(&advertisement_fingerprint, &TestSigner));
+    assert!(
+        at_default.is_err(),
+        "the default envelope holds 65,536 rows"
+    );
+
+    // One that raised them can, and a client that raised its own budget
+    // reads it.
+    let bytes = RemoteQueryResponseV2::new_with_limits(
+        NONCE,
+        &plan,
+        &request_fingerprint,
+        RemoteResultKindV2::Rows,
+        RemoteOutcomeV2::Rows { rows: rows() },
+        raised,
+    )
+    .expect("a response under raised budgets")
+    .encode_signed(&advertisement_fingerprint, &TestSigner)
+    .expect("signed response under raised budgets");
+    let decode = |limits| {
+        decode_remote_reply_v2(
+            &bytes,
+            &request,
+            &plan.fingerprint().expect("plan fingerprint"),
+            &request_fingerprint,
+            &advertisement_fingerprint,
+            advertisement.reply_key(),
+            limits,
+            &TestSigner,
+        )
+    };
+    let RemoteReplyV2::Response(response) = decode(raised).expect("a raised client reads it")
+    else {
+        panic!("expected a response")
+    };
+    let RemoteOutcomeV2::Rows { rows } = response.outcome() else {
+        panic!("expected rows")
+    };
+    assert_eq!(rows.len(), ROWS);
+
+    // A client that kept the default item budget refuses it.
+    let default_items = RemoteReplyDecodeLimitsV2 {
+        max_items: 65_536,
+        ..raised
+    };
+    assert_eq!(
+        decode(default_items)
+            .expect_err("more rows than the client's budget")
+            .code()
+            .as_str(),
+        "query_remote_v2_item_limit",
+    );
+}
+
 #[test]
 fn scalar_count_remains_lossless_above_collection_ceiling() {
     const COUNT: u64 = 100_000;

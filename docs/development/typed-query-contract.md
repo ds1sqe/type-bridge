@@ -587,9 +587,8 @@ Rules that hold in every binding:
   each predicate level costs two encoded levels, so a predicate nested past
   about thirty real levels is refused by `canonical_depth` until the caller
   raises it.
-- Answer ceilings are separate. Reply size, item and graph counts, statement
-  count, and duration belong to the tighten-only execution policy described
-  above and are not query limits.
+- Answer ceilings are separate. How much a query may return is the answer
+  policy described under [Answer Limits](#answer-limits), not a query limit.
 
 ### Remote agreement
 
@@ -618,6 +617,49 @@ A query refused by a limit reports `resource_limit` with three details:
 does not help when the advertisement is the binding side. Diagnostics that
 already carried their own details, such as `maximum_depth` or `actual_bytes`,
 keep them.
+
+
+## Answer Limits
+
+How much a query may return is one policy on every transport,
+`QueryExecutionResourceLimits`. A direct execution and a proxy execution of
+the same request run under the same eight values.
+
+| Limit | Default | Supported maximum | Bounds |
+| --- | ---: | ---: | --- |
+| `timeout_milliseconds` | 30,000 | 86,400,000 | Duration of one terminal |
+| `items` | 65,536 | none | Provider items read and rows returned; the scan and hydration both draw on it |
+| `bytes` | 32 MiB | none | Provider answer bytes, the reply envelope, and the projected result |
+| `graph_nodes` | 65,536 | none | Hydrated things, including nested role players |
+| `attribute_values` | 65,536 | none | Hydrated attribute values |
+| `collection_members` | 65,536 | none | Collected identities, group keys, and reducer cells |
+| `role_players` | 65,536 | none | Role-player references |
+| `statements` | 3 | 3 | Provider statements of one terminal |
+
+Rules that hold in every binding:
+
+- A caller may tighten any dimension and may raise one by configuring it. A
+  value past a supported maximum is refused by name, never clamped.
+- A session never widens the policy of the connection it runs on: each
+  dimension is the stricter of the two.
+- The executor, the reply codec, and projected materialization have no
+  ceilings of their own. A result the policy admits is one every stage admits.
+- A result past a ceiling is refused with `resource_limit` and the details
+  `limit`, `maximum`, and `source`, as for query limits.
+
+### Remote agreement
+
+An executor states the answer ceilings it enforces in its capability
+advertisement, naming only those that differ from the defaults, so a default
+executor's advertisement bytes and fingerprint are unchanged. Each request
+carries the caller's budget. The client asks for no more than the executor
+advertised, and the executor runs each request under the stricter of the
+request's budget and its own ceilings, per dimension. The reply is encoded
+and decoded under those budgets, so a reply over 32 MiB or 65,536 rows is
+exchanged only between peers that both raised the limit.
+
+The proxy keeps one bound of its own: a request lives at most five minutes,
+so a longer `timeout_milliseconds` shortens to that through a proxy.
 
 ## Stable Error Categories
 

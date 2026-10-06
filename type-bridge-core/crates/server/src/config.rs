@@ -248,9 +248,27 @@ pub struct V2Section {
     /// name. A limit left out keeps its canonical default.
     #[serde(default)]
     pub query_limits: std::collections::BTreeMap<String, u64>,
+    /// Answer ceilings this executor advertises and enforces, by stable
+    /// name: how much one query may return. A dimension left out keeps its
+    /// default.
+    #[serde(default)]
+    pub answer_limits: std::collections::BTreeMap<String, u64>,
 }
 
 impl V2Section {
+    /// Resolve the configured answer ceilings, refusing unknown names and
+    /// values past a dimension's supported maximum.
+    pub fn resolved_answer_limits(
+        &self,
+    ) -> Result<type_bridge_orm::QueryExecutionResourceLimits, String> {
+        type_bridge_orm::QueryExecutionResourceLimits::from_overrides(
+            self.answer_limits
+                .iter()
+                .map(|(name, value)| (name.as_str(), *value)),
+        )
+        .map_err(|error| format!("v2.answer_limits is rejected: {error}"))
+    }
+
     /// Resolve the configured query limits, refusing unknown names and
     /// values the implementation does not support.
     pub fn resolved_query_limits(
@@ -641,6 +659,8 @@ struct RuntimeV2SectionWire {
     authority_mode: V2AuthorityMode,
     #[serde(default)]
     query_limits: std::collections::BTreeMap<String, u64>,
+    #[serde(default)]
+    answer_limits: std::collections::BTreeMap<String, u64>,
 }
 
 impl From<RuntimeSchemaSectionWire> for SchemaSection {
@@ -685,6 +705,7 @@ impl From<RuntimeV2SectionWire> for V2Section {
             schema_authority_file: wire.schema_authority_file,
             authority_mode: wire.authority_mode,
             query_limits: wire.query_limits,
+            answer_limits: wire.answer_limits,
         }
     }
 }
@@ -3426,6 +3447,44 @@ enabled = ["audit-log", "rate-limiter", "custom"]
                 .resolved_query_limits()
                 .unwrap_err()
                 .contains("canonical_depth")
+        );
+    }
+
+    #[test]
+    fn v2_answer_limits_resolve_by_name_and_refuse_unknown_or_unsupported_values() {
+        use type_bridge_orm::QueryExecutionResourceLimits;
+
+        let section = |entries: &[(&str, u64)]| V2Section {
+            answer_limits: entries
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), *value))
+                .collect(),
+            ..V2Section::default()
+        };
+        assert_eq!(
+            section(&[]).resolved_answer_limits().expect("defaults"),
+            QueryExecutionResourceLimits::default()
+        );
+        let raised = section(&[("items", 1_000_000), ("bytes", 1 << 30)])
+            .resolved_answer_limits()
+            .expect("raised ceilings");
+        assert_eq!((raised.items, raised.bytes), (1_000_000, 1 << 30));
+        assert_eq!(
+            raised.graph_nodes,
+            QueryExecutionResourceLimits::default().graph_nodes
+        );
+
+        assert!(
+            section(&[("made_up", 1)])
+                .resolved_answer_limits()
+                .unwrap_err()
+                .contains("not a known answer limit")
+        );
+        assert!(
+            section(&[("statements", 4)])
+                .resolved_answer_limits()
+                .unwrap_err()
+                .contains("statements")
         );
     }
 }

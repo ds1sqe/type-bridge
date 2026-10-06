@@ -22,7 +22,7 @@ use crate::fingerprint::{
 use crate::id::TypeId;
 use crate::limits::{
     MAX_CANONICAL_COLLECTION_LEN, MAX_REMOTE_ENVELOPE_BYTES, QueryLimits,
-    REMOTE_ENVELOPE_CODEC_LIMITS,
+    REMOTE_ENVELOPE_CODEC_LIMITS, answer_limit_field,
 };
 use crate::query_plan::{
     InputRow, QueryInvocation, QueryOperation, QueryPlan, QueryPlanFingerprint,
@@ -992,6 +992,10 @@ pub struct RemoteCapabilities {
     // released ones. The executor enforces exactly this statement.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     query_limits: BTreeMap<String, u64>,
+    // The executor's answer ceilings, by stable name, holding only those
+    // that differ from the defaults, under the same rule as `query_limits`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    answer_limits: BTreeMap<String, u64>,
     // This key is an explicit caller trust input. Its inclusion in the exact
     // advertisement fingerprint binds every prepared request to one signer.
     reply_key: RemoteSigningPublicKey,
@@ -1014,9 +1018,43 @@ impl RemoteCapabilities {
             executor,
             format: QUERY_REMOTE_CAPABILITIES_FORMAT_V1.to_owned(),
             query_limits: BTreeMap::new(),
+            answer_limits: BTreeMap::new(),
             reply_key,
             reply_key_id,
         }
+    }
+
+    /// Advertise the answer ceilings this executor enforces.
+    ///
+    /// `ceilings` names the dimensions that differ from their defaults; a
+    /// default-valued, unknown, or unsupported entry is refused.
+    pub fn with_answer_limits(
+        mut self,
+        ceilings: BTreeMap<String, u64>,
+    ) -> Result<Self, Diagnostic> {
+        self.answer_limits = ceilings;
+        self.validate_answer_limits()?;
+        Ok(self)
+    }
+
+    /// Return the answer ceilings this executor advertises and enforces, by
+    /// stable name. A dimension the advertisement does not name has its
+    /// default.
+    #[must_use]
+    pub const fn answer_limits(&self) -> &BTreeMap<String, u64> {
+        &self.answer_limits
+    }
+
+    /// Require the canonical form of the advertised answer ceilings: known
+    /// names, no default-valued entry, and no value past its maximum.
+    fn validate_answer_limits(&self) -> Result<(), Diagnostic> {
+        for (name, value) in &self.answer_limits {
+            let field = answer_limit_field(name).ok_or_else(advertised_limits_invalid)?;
+            if *value == field.default || *value > field.maximum {
+                return Err(advertised_limits_invalid());
+            }
+        }
+        Ok(())
     }
 
     /// Advertise the query limits this executor enforces.
@@ -1084,6 +1122,7 @@ impl RemoteCapabilities {
         validate_executor_component(advertisement.executor.identity())?;
         validate_executor_component(advertisement.executor.epoch())?;
         advertisement.validate_query_limits()?;
+        advertisement.validate_answer_limits()?;
         if advertisement.reply_key_id != RemoteSigningKeyId::for_public_key(advertisement.reply_key)
         {
             return Err(remote_signature_invalid());
@@ -1165,7 +1204,7 @@ fn advertised_limits_invalid() -> Diagnostic {
     envelope_failure(
         DiagnosticCategory::InvalidContract,
         "query_remote_capabilities_limits_invalid",
-        "remote capability query limits are unknown, redundant, or unsupported",
+        "remote capability limits are unknown, redundant, or unsupported",
     )
 }
 
@@ -1299,11 +1338,21 @@ fn preflight_remote_reply_size(bytes: &[u8], caller_max_bytes: u64) -> Result<()
 
 /// Shared authenticated-outer-envelope byte preflight for additive payload
 /// versions. This does not inspect or reconstruct a version-specific payload.
+///
+/// The byte ceiling is the caller's own. A caller that asked for less than
+/// the default envelope is told its budget was exceeded; one at or above it
+/// is told the envelope was.
 pub(crate) fn preflight_signed_reply_size(
     bytes: &[u8],
     caller_max_bytes: u64,
 ) -> Result<(), Diagnostic> {
-    preflight_remote_reply_size(bytes, caller_max_bytes)
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= caller_max_bytes {
+        return Ok(());
+    }
+    if caller_max_bytes < u64::try_from(MAX_REMOTE_ENVELOPE_BYTES).unwrap_or(u64::MAX) {
+        return Err(remote_response_oversized());
+    }
+    Err(remote_envelope_too_large())
 }
 
 fn verify_signed_reply<'wire>(
@@ -1382,8 +1431,17 @@ fn encode_signed_reply(
     advertisement: &RemoteCapabilitiesFingerprint,
     signer: &impl RemoteReplySigner,
 ) -> Result<Vec<u8>, Diagnostic> {
+    encode_signed_reply_bounded(payload, advertisement, signer, MAX_REMOTE_ENVELOPE_BYTES)
+}
+
+fn encode_signed_reply_bounded(
+    payload: &[u8],
+    advertisement: &RemoteCapabilitiesFingerprint,
+    signer: &impl RemoteReplySigner,
+    max_bytes: usize,
+) -> Result<Vec<u8>, Diagnostic> {
     let encoded = encode_signed_reply_unchecked(payload, advertisement, signer);
-    if encoded.len() > MAX_REMOTE_ENVELOPE_BYTES {
+    if encoded.len() > max_bytes {
         return Err(envelope_failure(
             DiagnosticCategory::ResourceLimit,
             "query_remote_envelope_too_large",
@@ -1401,6 +1459,17 @@ pub(crate) fn encode_signed_reply_payload(
     signer: &impl RemoteReplySigner,
 ) -> Result<Vec<u8>, Diagnostic> {
     encode_signed_reply(payload, advertisement, signer)
+}
+
+/// Encode additive versioned payload bytes under the envelope byte ceiling
+/// the two peers agreed on.
+pub(crate) fn encode_signed_reply_payload_bounded(
+    payload: &[u8],
+    advertisement: &RemoteCapabilitiesFingerprint,
+    signer: &impl RemoteReplySigner,
+    max_bytes: usize,
+) -> Result<Vec<u8>, Diagnostic> {
+    encode_signed_reply_bounded(payload, advertisement, signer, max_bytes)
 }
 
 /// Encode already bounded, canonical additive payload bytes.

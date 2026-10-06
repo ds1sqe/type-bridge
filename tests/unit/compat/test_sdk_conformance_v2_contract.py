@@ -294,7 +294,7 @@ def test_sdk_v2_freezes_21_normalized_observations_without_runtime_identity() ->
             ],
         },
     }
-    assert observations["resource_limits"]["hard_maxima"] == {
+    assert observations["resource_limits"]["defaults"] == {
         "timeout_milliseconds": 30_000,
         "items": 65_536,
         "bytes": 33_554_432,
@@ -304,7 +304,8 @@ def test_sdk_v2_freezes_21_normalized_observations_without_runtime_identity() ->
         "role_players": 65_536,
         "statements": 3,
     }
-    assert observations["resource_limits"]["plus_one_clamped_all"] is True
+    assert observations["resource_limits"]["plus_one_kept_all"] is True
+    assert observations["resource_limits"]["past_maximum_refused"] is True
     assert observations["resource_limits"]["zero_tightening_all"] is True
     assert observations["query_resource_lifecycle"]["query"]["post_close_io_count"] == 0
     assert (

@@ -402,9 +402,9 @@ impl NodeQueryExecutionResources {
 
 #[napi]
 impl NodeQueryExecutionResources {
-    /// Construct a tighten-only resource policy. Every dimension is clamped
-    /// independently to the shared direct/remote hard ceiling; zero remains a
-    /// valid tightening.
+    /// Construct an answer policy. Each dimension may tighten or raise its
+    /// default, and zero is valid. A value above a dimension's supported
+    /// maximum is refused by name, never clamped.
     #[napi(constructor)]
     #[allow(
         clippy::too_many_arguments,
@@ -421,18 +421,19 @@ impl NodeQueryExecutionResources {
         statements: BigInt,
     ) -> Result<Self> {
         let statements = bigint_u64(&statements, "statements")?;
-        Ok(Self {
-            inner: QueryExecutionResourceLimits::tightened(
-                bigint_u64(&timeout_milliseconds, "timeoutMilliseconds")?,
-                bigint_u64(&items, "items")?,
-                bigint_u64(&bytes, "bytes")?,
-                bigint_u64(&graph_nodes, "graphNodes")?,
-                bigint_u64(&attribute_values, "attributeValues")?,
-                bigint_u64(&collection_members, "collectionMembers")?,
-                bigint_u64(&role_players, "rolePlayers")?,
-                u32::try_from(statements).unwrap_or(u32::MAX),
-            ),
-        })
+        let inner = QueryExecutionResourceLimits {
+            timeout_milliseconds: bigint_u64(&timeout_milliseconds, "timeoutMilliseconds")?,
+            items: bigint_u64(&items, "items")?,
+            bytes: bigint_u64(&bytes, "bytes")?,
+            graph_nodes: bigint_u64(&graph_nodes, "graphNodes")?,
+            attribute_values: bigint_u64(&attribute_values, "attributeValues")?,
+            collection_members: bigint_u64(&collection_members, "collectionMembers")?,
+            role_players: bigint_u64(&role_players, "rolePlayers")?,
+            statements: u32::try_from(statements).unwrap_or(u32::MAX),
+        }
+        .validate()
+        .map_err(|refusal| invalid_arg(refusal.to_string()))?;
+        Ok(Self { inner })
     }
 
     #[napi(getter, js_name = "timeoutMilliseconds")]
@@ -3646,23 +3647,55 @@ plays:
     }
 
     #[test]
-    fn common_resources_clamp_plus_one_and_preserve_zero_tightening() {
+    fn common_resources_keep_a_raise_refuse_past_the_maximum_and_preserve_zero() {
         let wide = |value| BigInt {
             sign_bit: false,
             words: vec![value],
         };
         let resources = NodeQueryExecutionResources::new(
-            wide(type_bridge_orm::MAX_QUERY_TIMEOUT_MILLISECONDS + 1),
-            wide(type_bridge_orm::MAX_QUERY_ITEMS + 1),
-            wide(type_bridge_orm::MAX_QUERY_BYTES + 1),
-            wide(type_bridge_orm::MAX_QUERY_GRAPH_NODES + 1),
-            wide(type_bridge_orm::MAX_QUERY_ATTRIBUTE_VALUES + 1),
-            wide(type_bridge_orm::MAX_QUERY_COLLECTION_MEMBERS + 1),
-            wide(type_bridge_orm::MAX_QUERY_ROLE_PLAYERS + 1),
-            wide(u64::from(type_bridge_orm::MAX_QUERY_STATEMENTS) + 1),
+            wide(type_bridge_orm::DEFAULT_QUERY_TIMEOUT_MILLISECONDS + 1),
+            wide(type_bridge_orm::DEFAULT_QUERY_ITEMS + 1),
+            wide(type_bridge_orm::DEFAULT_QUERY_BYTES + 1),
+            wide(type_bridge_orm::DEFAULT_QUERY_GRAPH_NODES + 1),
+            wide(type_bridge_orm::DEFAULT_QUERY_ATTRIBUTE_VALUES + 1),
+            wide(type_bridge_orm::DEFAULT_QUERY_COLLECTION_MEMBERS + 1),
+            wide(type_bridge_orm::DEFAULT_QUERY_ROLE_PLAYERS + 1),
+            wide(u64::from(type_bridge_orm::DEFAULT_QUERY_STATEMENTS)),
         )
         .unwrap();
-        assert_eq!(resources.inner(), QueryExecutionResourceLimits::default());
+        let default = QueryExecutionResourceLimits::default();
+        assert_eq!(
+            resources.inner(),
+            QueryExecutionResourceLimits {
+                timeout_milliseconds: default.timeout_milliseconds + 1,
+                items: default.items + 1,
+                bytes: default.bytes + 1,
+                graph_nodes: default.graph_nodes + 1,
+                attribute_values: default.attribute_values + 1,
+                collection_members: default.collection_members + 1,
+                role_players: default.role_players + 1,
+                statements: default.statements,
+            },
+            "a raised dimension keeps what the caller asked for"
+        );
+        let with = |timeout: u64, statements: u64| {
+            NodeQueryExecutionResources::new(
+                wide(timeout),
+                wide(default.items),
+                wide(default.bytes),
+                wide(default.graph_nodes),
+                wide(default.attribute_values),
+                wide(default.collection_members),
+                wide(default.role_players),
+                wide(statements),
+            )
+            .map(|_| ())
+            .map_err(|error| error.reason.clone())
+        };
+        let refused = with(type_bridge_orm::MAX_QUERY_TIMEOUT_MILLISECONDS + 1, 3).unwrap_err();
+        assert!(refused.contains("timeout_milliseconds"), "{refused}");
+        let refused = with(1, u64::from(type_bridge_orm::MAX_QUERY_STATEMENTS) + 1).unwrap_err();
+        assert!(refused.contains("statements"), "{refused}");
 
         let zero = || BigInt {
             sign_bit: false,

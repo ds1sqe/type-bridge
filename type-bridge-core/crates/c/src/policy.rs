@@ -6,9 +6,10 @@ use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
 };
 use type_bridge_orm::{
-    AnswerCancellation, MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
-    MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS, MAX_QUERY_STATEMENTS,
-    MAX_QUERY_TIMEOUT_MILLISECONDS, QueryExecutionDeadline, QueryExecutionResourceLimits,
+    AnswerCancellation, DEFAULT_QUERY_ATTRIBUTE_VALUES, DEFAULT_QUERY_BYTES,
+    DEFAULT_QUERY_COLLECTION_MEMBERS, DEFAULT_QUERY_GRAPH_NODES, DEFAULT_QUERY_ITEMS,
+    DEFAULT_QUERY_ROLE_PLAYERS, DEFAULT_QUERY_STATEMENTS, DEFAULT_QUERY_TIMEOUT_MILLISECONDS,
+    QueryExecutionDeadline, QueryExecutionResourceLimits,
 };
 
 use crate::abi::TypeBridgeByteView;
@@ -78,20 +79,23 @@ fn default_limits_descriptor() -> TypeBridgeQueryExecutionLimitsV1 {
     TypeBridgeQueryExecutionLimitsV1 {
         struct_size: size_of::<TypeBridgeQueryExecutionLimitsV1>() as u32,
         version: LIMITS_VERSION,
-        timeout_milliseconds: MAX_QUERY_TIMEOUT_MILLISECONDS,
-        items: MAX_QUERY_ITEMS,
-        bytes: MAX_QUERY_BYTES,
-        graph_nodes: MAX_QUERY_GRAPH_NODES,
-        attribute_values: MAX_QUERY_ATTRIBUTE_VALUES,
-        collection_members: MAX_QUERY_COLLECTION_MEMBERS,
-        role_players: MAX_QUERY_ROLE_PLAYERS,
-        statements: MAX_QUERY_STATEMENTS,
+        timeout_milliseconds: DEFAULT_QUERY_TIMEOUT_MILLISECONDS,
+        items: DEFAULT_QUERY_ITEMS,
+        bytes: DEFAULT_QUERY_BYTES,
+        graph_nodes: DEFAULT_QUERY_GRAPH_NODES,
+        attribute_values: DEFAULT_QUERY_ATTRIBUTE_VALUES,
+        collection_members: DEFAULT_QUERY_COLLECTION_MEMBERS,
+        role_players: DEFAULT_QUERY_ROLE_PLAYERS,
+        statements: DEFAULT_QUERY_STATEMENTS,
         reserved0: 0,
         reserved: [0; 4],
     }
 }
 
-/// Parse one optional frozen limits descriptor and clamp it to common ceilings.
+/// Parse one optional frozen limits descriptor.
+///
+/// A dimension may tighten or raise its default. A value above a
+/// dimension's supported maximum is refused, never clamped.
 pub(crate) fn parse_common_limits(
     value: Option<TypeBridgeQueryExecutionLimitsV1>,
 ) -> Result<QueryExecutionResourceLimits, SdkExecutionDiagnostic> {
@@ -103,16 +107,18 @@ pub(crate) fn parse_common_limits(
     {
         return Err(invalid_limits());
     }
-    Ok(QueryExecutionResourceLimits::tightened(
-        value.timeout_milliseconds,
-        value.items,
-        value.bytes,
-        value.graph_nodes,
-        value.attribute_values,
-        value.collection_members,
-        value.role_players,
-        value.statements,
-    ))
+    QueryExecutionResourceLimits {
+        timeout_milliseconds: value.timeout_milliseconds,
+        items: value.items,
+        bytes: value.bytes,
+        graph_nodes: value.graph_nodes,
+        attribute_values: value.attribute_values,
+        collection_members: value.collection_members,
+        role_players: value.role_players,
+        statements: value.statements,
+    }
+    .validate()
+    .map_err(|_| invalid_limits())
 }
 
 /// Parse one optional limits descriptor under an immutable enclosing ceiling.

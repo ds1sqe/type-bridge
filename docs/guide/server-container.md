@@ -159,6 +159,22 @@ limits cannot read an advertisement that names any, so leave the table out
 until every client is upgraded. Limit names and defaults are listed in the
 [typed-query contract](../development/typed-query-contract.md#query-limits).
 
+To let one query return more than the defaults allow, or to hold clients to
+less, name the answer ceilings to change under `[v2.answer_limits]`:
+
+```toml
+[v2.answer_limits]
+items = 1000000        # provider items and rows per query
+bytes = 1073741824     # 1 GiB replies
+graph_nodes = 1000000
+```
+
+The same rules apply: the table is validated at startup, advertised in
+`/v2/capabilities`, and enforced as advertised. A client must raise its own
+answer policy too; each request runs under the stricter of the two. Names
+and defaults are listed in the
+[typed-query contract](../development/typed-query-contract.md#answer-limits).
+
 Supply `TYPEDB_USERNAME` and `TYPEDB_PASSWORD` at runtime. `managed`
 authority requires the artifact's exact migration-control partition and free
 singleton. Use `query_only` only for a database with neither canonical nor

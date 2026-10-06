@@ -6751,23 +6751,24 @@ mod tests {
     #[test]
     fn sdk_v3_node_data_plane_fragment() {
         use type_bridge_orm::{
-            AnswerCancellation, DirectConnectionPolicy, MAX_QUERY_ATTRIBUTE_VALUES,
-            MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS, MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS,
-            MAX_QUERY_ROLE_PLAYERS, MAX_QUERY_STATEMENTS, MAX_QUERY_TIMEOUT_MILLISECONDS,
+            AnswerCancellation, DEFAULT_QUERY_ATTRIBUTE_VALUES, DEFAULT_QUERY_BYTES,
+            DEFAULT_QUERY_COLLECTION_MEMBERS, DEFAULT_QUERY_GRAPH_NODES, DEFAULT_QUERY_ITEMS,
+            DEFAULT_QUERY_ROLE_PLAYERS, DEFAULT_QUERY_STATEMENTS,
+            DEFAULT_QUERY_TIMEOUT_MILLISECONDS, DirectConnectionPolicy,
             QueryExecutionResourceLimits,
         };
         let cancellation = AnswerCancellation::default();
         cancellation.cancel();
         assert!(cancellation.is_cancelled());
         let effective = QueryExecutionResourceLimits::tightened(
-            MAX_QUERY_TIMEOUT_MILLISECONDS + 1,
-            MAX_QUERY_ITEMS + 1,
-            MAX_QUERY_BYTES + 1,
-            MAX_QUERY_GRAPH_NODES + 1,
-            MAX_QUERY_ATTRIBUTE_VALUES + 1,
-            MAX_QUERY_COLLECTION_MEMBERS + 1,
-            MAX_QUERY_ROLE_PLAYERS + 1,
-            MAX_QUERY_STATEMENTS + 1,
+            DEFAULT_QUERY_TIMEOUT_MILLISECONDS + 1,
+            DEFAULT_QUERY_ITEMS + 1,
+            DEFAULT_QUERY_BYTES + 1,
+            DEFAULT_QUERY_GRAPH_NODES + 1,
+            DEFAULT_QUERY_ATTRIBUTE_VALUES + 1,
+            DEFAULT_QUERY_COLLECTION_MEMBERS + 1,
+            DEFAULT_QUERY_ROLE_PLAYERS + 1,
+            DEFAULT_QUERY_STATEMENTS + 1,
         );
         assert_eq!(effective, QueryExecutionResourceLimits::default());
         let policy = DirectConnectionPolicy::new("localhost:1729", "sdk", "admin", "secret")
@@ -6775,14 +6776,14 @@ mod tests {
             .answer_limits(effective);
         assert_eq!(format!("{policy:?}"), "DirectConnectionPolicy([REDACTED])");
         let dimensions = [
-            ("timeout_milliseconds", MAX_QUERY_TIMEOUT_MILLISECONDS),
-            ("items", MAX_QUERY_ITEMS),
-            ("bytes", MAX_QUERY_BYTES),
-            ("graph_nodes", MAX_QUERY_GRAPH_NODES),
-            ("attribute_values", MAX_QUERY_ATTRIBUTE_VALUES),
-            ("collection_members", MAX_QUERY_COLLECTION_MEMBERS),
-            ("role_players", MAX_QUERY_ROLE_PLAYERS),
-            ("statements", u64::from(MAX_QUERY_STATEMENTS)),
+            ("timeout_milliseconds", DEFAULT_QUERY_TIMEOUT_MILLISECONDS),
+            ("items", DEFAULT_QUERY_ITEMS),
+            ("bytes", DEFAULT_QUERY_BYTES),
+            ("graph_nodes", DEFAULT_QUERY_GRAPH_NODES),
+            ("attribute_values", DEFAULT_QUERY_ATTRIBUTE_VALUES),
+            ("collection_members", DEFAULT_QUERY_COLLECTION_MEMBERS),
+            ("role_players", DEFAULT_QUERY_ROLE_PLAYERS),
+            ("statements", u64::from(DEFAULT_QUERY_STATEMENTS)),
         ]
         .into_iter()
         .map(|(dimension, hard_max)| {

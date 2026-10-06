@@ -480,3 +480,59 @@ fn shared_definitions_of_two_cars_prepare_and_are_admitted() {
 fn shared_definition_evidence_of_two_cars_prepares_and_is_admitted() {
     prepares_and_is_admitted(true);
 }
+
+/// The client asks for no more than the executor advertised, and no more
+/// than it wants itself.
+#[test]
+fn a_request_budget_is_held_to_the_advertised_answer_ceilings() {
+    use std::collections::BTreeMap;
+
+    use type_bridge_contract::query_remote_v2::RemoteQueryRequestV2;
+
+    let registry = automotive_registry();
+    let authority = authority(&registry);
+    let wanted = RemoteLimitsV2 {
+        deadline_ms: Some(30_000),
+        max_bytes: 1 << 31,
+        max_items: 2_000_000,
+        max_collection_members: 1 << 16,
+        max_graph_nodes: 3_000_000,
+        max_attribute_values: 1 << 16,
+        max_role_players: 1 << 16,
+        max_statements: 3,
+    };
+    let prepared_limits = |advertisement: &RemoteCapabilities| {
+        let pending = prepare_remote_model_query_v2(
+            &authority,
+            &registry,
+            common_definitions(&registry, false),
+            &advertisement.encode().expect("advertisement bytes"),
+            wanted,
+        )
+        .unwrap_or_else(|error| panic!("the client prepares the request: {error:?}"));
+        RemoteQueryRequestV2::decode(pending.request_bytes())
+            .expect("the prepared request decodes")
+            .limits()
+    };
+
+    // An executor that advertised nothing has the default ceilings.
+    let held = prepared_limits(&executor_advertisement());
+    assert_eq!(
+        (held.max_bytes, held.max_items, held.max_graph_nodes),
+        (32 << 20, 65_536, 65_536)
+    );
+
+    // One that advertised more admits more, and one dimension it left alone
+    // stays at its default.
+    let raised = executor_advertisement()
+        .with_answer_limits(BTreeMap::from([
+            ("bytes".to_owned(), 1_u64 << 30),
+            ("items".to_owned(), 1_000_000),
+        ]))
+        .expect("raised ceilings");
+    let held = prepared_limits(&raised);
+    assert_eq!(
+        (held.max_bytes, held.max_items, held.max_graph_nodes),
+        (1 << 30, 1_000_000, 65_536)
+    );
+}

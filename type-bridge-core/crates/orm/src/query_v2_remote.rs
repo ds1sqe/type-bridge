@@ -42,6 +42,7 @@ use type_bridge_query::{
     validate_query_plan,
 };
 
+use crate::query_execution_limits::QueryExecutionResourceLimits;
 use crate::query_v2::{
     DocumentFieldValue, QueryResultDocument, QueryResultRow, QueryRowValue, QueryV2Outcome,
     QueryV2ValidatedItemObserver, execute_with_provider_observer, failure,
@@ -1319,25 +1320,14 @@ fn preflight_remote_request_v2_with_clock(
         )));
     }
 
-    let shape = match result {
-        RemoteResultKindV2::Rows
-        | RemoteResultKindV2::HydratedRows
-        | RemoteResultKindV2::HydratedPage
-        | RemoteResultKindV2::ModelReduction => RemoteExecutionShape::Rows,
-        RemoteResultKindV2::Documents => RemoteExecutionShape::Documents,
-        RemoteResultKindV2::Count | RemoteResultKindV2::DistinctCount => {
-            RemoteExecutionShape::Count
-        }
-        RemoteResultKindV2::Exists | RemoteResultKindV2::DistinctExists => {
-            RemoteExecutionShape::Exists
-        }
-    };
-    let provider_byte_budget = ceilings
-        .answer
-        .max_bytes
-        .min(u64::try_from(MAX_REMOTE_ENVELOPE_BYTES).unwrap_or(u64::MAX));
-    let (limits, reply_limits) =
-        tighten_limits_v2(request_envelope.limits(), ceilings, execution_until, shape);
+    let advertised = advertised_answer_limits(advertisement).map_err(&fail)?;
+    let provider_byte_budget = ceilings.answer.max_bytes.min(advertised.bytes);
+    let (limits, reply_limits) = tighten_limits_v2(
+        request_envelope.limits(),
+        ceilings,
+        advertised,
+        execution_until,
+    );
     let max_statements = u8::try_from(request_envelope.limits().max_statements)
         .expect("validated remote statement ceiling fits u8");
     let byte_budget = limits.answer.max_bytes;
@@ -1957,7 +1947,14 @@ async fn run_admitted_request_v2(
     // future executor path can sign an outcome the caller's exact request
     // budgets would reject.
     validate_remote_outcome_v2(&outcome, result, reply_limits, &plan)?;
-    let response = RemoteQueryResponseV2::new(nonce, &plan, &request_fingerprint, result, outcome)?;
+    let response = RemoteQueryResponseV2::new_with_limits(
+        nonce,
+        &plan,
+        &request_fingerprint,
+        result,
+        outcome,
+        reply_limits,
+    )?;
     let signed_len = u64::try_from(
         response.signed_encoded_len(&advertisement_fingerprint, signer.public_key())?,
     )
@@ -2106,35 +2103,29 @@ fn tighten_limits(
     }
 }
 
+// The budgets one request runs under: the stricter, per dimension, of what
+// the caller asked for, what this executor advertised, and the provider
+// ceilings of the hosting process.
 fn tighten_limits_v2(
     caller: RemoteLimitsV2,
     ceilings: QueryV2AnswerLimits,
+    advertised: QueryExecutionResourceLimits,
     request_expiry: Instant,
-    shape: RemoteExecutionShape,
 ) -> (QueryV2AnswerLimits, RemoteReplyDecodeLimitsV2) {
-    let hard_collection = u64::try_from(MAX_CANONICAL_COLLECTION_LEN).unwrap_or(u64::MAX);
-    let max_items = ceilings.answer.max_items.min(caller.max_items);
-    let max_items = if matches!(
-        shape,
-        RemoteExecutionShape::Rows | RemoteExecutionShape::Documents
-    ) {
-        max_items.min(hard_collection)
-    } else {
-        max_items
-    };
+    let max_items = ceilings
+        .answer
+        .max_items
+        .min(caller.max_items)
+        .min(advertised.items);
     let max_collection_members = ceilings
         .max_collection_members
-        .min(caller.max_collection_members);
-    let max_collection_members = if shape == RemoteExecutionShape::Documents {
-        max_collection_members.min(hard_collection)
-    } else {
-        max_collection_members
-    };
+        .min(caller.max_collection_members)
+        .min(advertised.collection_members);
     let max_bytes = ceilings
         .answer
         .max_bytes
         .min(caller.max_bytes)
-        .min(u64::try_from(MAX_REMOTE_ENVELOPE_BYTES).unwrap_or(u64::MAX));
+        .min(advertised.bytes);
     let limits = QueryV2AnswerLimits {
         answer: BoundedAnswerLimits {
             max_items,
@@ -2153,11 +2144,30 @@ fn tighten_limits_v2(
         max_bytes,
         max_items,
         max_collection_members,
-        max_graph_nodes: caller.max_graph_nodes.min(hard_collection),
-        max_attribute_values: caller.max_attribute_values.min(hard_collection),
-        max_role_players: caller.max_role_players.min(hard_collection),
+        max_graph_nodes: caller.max_graph_nodes.min(advertised.graph_nodes),
+        max_attribute_values: caller.max_attribute_values.min(advertised.attribute_values),
+        max_role_players: caller.max_role_players.min(advertised.role_players),
     };
     (limits, reply)
+}
+
+/// Read the answer ceilings an executor stated in its advertisement.
+pub(crate) fn advertised_answer_limits(
+    advertisement: &RemoteCapabilities,
+) -> Result<QueryExecutionResourceLimits, Diagnostic> {
+    QueryExecutionResourceLimits::from_overrides(
+        advertisement
+            .answer_limits()
+            .iter()
+            .map(|(name, value)| (name.as_str(), *value)),
+    )
+    .map_err(|_| {
+        failure(
+            DiagnosticCategory::Integrity,
+            "query_remote_v2_advertised_answer_limits",
+            "the capability advertisement states answer limits this executor cannot enforce",
+        )
+    })
 }
 
 fn unix_time_ms() -> Result<u64, Diagnostic> {
@@ -2390,8 +2400,8 @@ mod tests {
         let (execution, reply) = tighten_limits_v2(
             caller,
             ceilings,
+            QueryExecutionResourceLimits::default(),
             request_expiry,
-            RemoteExecutionShape::Documents,
         );
         assert_eq!(execution.answer.max_bytes, 19);
         assert_eq!(execution.answer.max_items, 17);
@@ -2414,11 +2424,13 @@ mod tests {
             max_role_players: u64::MAX,
             max_statements: 3,
         };
+        // A caller that asks for everything gets what the executor
+        // advertised: the defaults when it advertised nothing.
         let (execution, reply) = tighten_limits_v2(
             unbounded,
             unbounded_ceiling(),
+            QueryExecutionResourceLimits::default(),
             request_expiry,
-            RemoteExecutionShape::Rows,
         );
         assert_eq!(execution.answer.max_bytes, hard_bytes);
         assert_eq!(execution.answer.max_items, hard_collection);
@@ -2427,6 +2439,20 @@ mod tests {
         assert_eq!(reply.max_graph_nodes, hard_collection);
         assert_eq!(reply.max_attribute_values, hard_collection);
         assert_eq!(reply.max_role_players, hard_collection);
+
+        // An executor that advertised more admits more, per dimension.
+        let raised = QueryExecutionResourceLimits {
+            items: 1_000_000,
+            bytes: 1 << 30,
+            graph_nodes: 2_000_000,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let (execution, reply) =
+            tighten_limits_v2(unbounded, unbounded_ceiling(), raised, request_expiry);
+        assert_eq!(execution.answer.max_items, 1_000_000);
+        assert_eq!(execution.answer.max_bytes, 1 << 30);
+        assert_eq!(reply.max_graph_nodes, 2_000_000);
+        assert_eq!(reply.max_attribute_values, hard_collection);
     }
 
     #[test]

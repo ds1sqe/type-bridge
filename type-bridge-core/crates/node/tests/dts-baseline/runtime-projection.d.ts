@@ -52,7 +52,7 @@ export interface RuntimeProjectionRemoteLimits {
     readonly maxRolePlayers: bigint;
     readonly deadlineMs?: bigint | null;
 }
-/** Common tighten-only execution policy shared by direct and remote queries. */
+/** The answer policy shared by direct and remote queries; a dimension may tighten or raise its default. */
 export interface QueryExecutionResourceLimitOptions {
     readonly timeoutMilliseconds?: bigint;
     readonly items?: bigint;
@@ -63,7 +63,7 @@ export interface QueryExecutionResourceLimitOptions {
     readonly rolePlayers?: bigint;
     readonly statements?: bigint;
 }
-/** Canonical common resource limits, clamped by the Rust semantic engine. */
+/** The answer policy, validated by the Rust semantic engine: a value past a supported maximum is refused. */
 export declare class QueryExecutionResourceLimits {
     #private;
     constructor(options?: QueryExecutionResourceLimitOptions);

@@ -17,6 +17,17 @@ All notable changes to TypeBridge will be documented in this file.
   before sending. The standalone server reads `[v2.query_limits]`.
 - Query resource-limit refusals report `limit`, `maximum`, and `source`
   (`default`, `configured`, or `advertised`).
+- Configurable answer limits. How much a query may return is one policy,
+  `QueryExecutionResourceLimits`, on both transports. A caller may raise a
+  dimension as well as tighten it: more than 65,536 items or 32 MiB can be
+  returned when the session, and through a proxy the executor too, are
+  configured for it. Only `timeout_milliseconds` (one day) and `statements`
+  (3) have a supported maximum; a value past it is refused by name.
+- Remote executors advertise the answer ceilings they enforce. A client asks
+  for no more than was advertised, and a request runs under the stricter of
+  its own budget and the executor's. The standalone server reads
+  `[v2.answer_limits]`.
+- Answer-limit refusals report `limit`, `maximum`, and `source`.
 - A `complete` row cardinality in the request model and the V2 plan: every
   distinct selected row, or a refusal when there are more than the limit. It
   needs no order and no unique key. Plans that use it require the new
@@ -33,6 +44,22 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
+- The answer-policy constants `MAX_QUERY_ITEMS`, `MAX_QUERY_BYTES`,
+  `MAX_QUERY_GRAPH_NODES`, `MAX_QUERY_ATTRIBUTE_VALUES`,
+  `MAX_QUERY_COLLECTION_MEMBERS`, and `MAX_QUERY_ROLE_PLAYERS` are renamed
+  `DEFAULT_QUERY_*`: they are defaults, no longer ceilings.
+  `DEFAULT_QUERY_TIMEOUT_MILLISECONDS` and `DEFAULT_QUERY_STATEMENTS` are the
+  defaults of the two dimensions that keep a maximum
+  (`MAX_QUERY_TIMEOUT_MILLISECONDS`, `MAX_QUERY_STATEMENTS`).
+- `QueryExecutionResourceLimits` constructors in Python, TypeScript/Node, and
+  C no longer clamp a value above the default; they keep it, or refuse it
+  when it is past the supported maximum. `tightened` in Rust still clamps to
+  the defaults.
+- `ProjectedQueryMaterializationLimits::tightened` is replaced by `new`, and
+  the `MAX_PROJECTED_QUERY_*` constants are removed: materialization takes
+  its bounds from the answer policy.
+- A hydration graph and a row sequence in a reply are no longer capped at
+  65,536 by the container; the caller's budget bounds them.
 - A generated package runs direct queries on the executor a proxy uses. Each
   request is adapted to a V2 plan under the package's embedded schema
   authority, so the same query is accepted or refused the same way direct and

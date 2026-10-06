@@ -34,18 +34,12 @@ use crate::session::database::DatabaseExecutionIdentity;
 use crate::session::{Database, TransactionContext, TxType};
 use crate::value::AttributeValue;
 
-/// Hard projected-query row or reduction-row ceiling.
-pub const MAX_PROJECTED_QUERY_ROWS: usize = 100_000;
-/// Hard number of collected identities, page roots, group keys, and reducer cells.
-pub const MAX_PROJECTED_QUERY_CELLS: usize = 1_000_000;
-/// Hard number of projected things, including collected values and role players.
-pub const MAX_PROJECTED_QUERY_THINGS: usize = 1_000_000;
-/// Hard number of projected attribute values across one materialized result.
-pub const MAX_PROJECTED_QUERY_ATTRIBUTE_VALUES: usize = 4_000_000;
-/// Hard recursively charged projected payload byte ceiling.
-pub const MAX_PROJECTED_QUERY_BYTES: usize = 64 * 1024 * 1024;
-
-/// Caller policy clamped to the projected-query materializer's hard ceilings.
+/// The share of one answer policy that bounds projected materialization.
+///
+/// It has no ceilings of its own: a session derives it from its
+/// [`QueryExecutionResourceLimits`](crate::QueryExecutionResourceLimits), so a
+/// result the executor was allowed to return is one the materializer is
+/// allowed to build.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProjectedQueryMaterializationLimits {
     rows: usize,
@@ -56,9 +50,9 @@ pub struct ProjectedQueryMaterializationLimits {
 }
 
 impl ProjectedQueryMaterializationLimits {
-    /// Construct an explicitly tightened all-or-nothing materialization policy.
+    /// Construct one all-or-nothing materialization policy.
     #[must_use]
-    pub const fn tightened(
+    pub const fn new(
         rows: usize,
         cells: usize,
         things: usize,
@@ -66,43 +60,43 @@ impl ProjectedQueryMaterializationLimits {
         bytes: usize,
     ) -> Self {
         Self {
-            rows: min_usize(rows, MAX_PROJECTED_QUERY_ROWS),
-            cells: min_usize(cells, MAX_PROJECTED_QUERY_CELLS),
-            things: min_usize(things, MAX_PROJECTED_QUERY_THINGS),
-            attribute_values: min_usize(attribute_values, MAX_PROJECTED_QUERY_ATTRIBUTE_VALUES),
-            bytes: min_usize(bytes, MAX_PROJECTED_QUERY_BYTES),
+            rows,
+            cells,
+            things,
+            attribute_values,
+            bytes,
         }
     }
 
-    /// Return the effective row ceiling after hard-limit clamping.
+    /// Return the row ceiling.
     #[doc(hidden)]
     #[must_use]
     pub const fn rows(self) -> usize {
         self.rows
     }
 
-    /// Return the effective collection-member/group-key/reducer-cell ceiling.
+    /// Return the collection-member/group-key/reducer-cell ceiling.
     #[doc(hidden)]
     #[must_use]
     pub const fn cells(self) -> usize {
         self.cells
     }
 
-    /// Return the effective projected-thing ceiling.
+    /// Return the projected-thing ceiling.
     #[doc(hidden)]
     #[must_use]
     pub const fn things(self) -> usize {
         self.things
     }
 
-    /// Return the effective projected attribute-value ceiling.
+    /// Return the projected attribute-value ceiling.
     #[doc(hidden)]
     #[must_use]
     pub const fn attribute_values(self) -> usize {
         self.attribute_values
     }
 
-    /// Return the effective recursive projected-payload byte ceiling.
+    /// Return the recursive projected-payload byte ceiling.
     #[doc(hidden)]
     #[must_use]
     pub const fn bytes(self) -> usize {
@@ -112,18 +106,8 @@ impl ProjectedQueryMaterializationLimits {
 
 impl Default for ProjectedQueryMaterializationLimits {
     fn default() -> Self {
-        Self::tightened(
-            MAX_PROJECTED_QUERY_ROWS,
-            MAX_PROJECTED_QUERY_CELLS,
-            MAX_PROJECTED_QUERY_THINGS,
-            MAX_PROJECTED_QUERY_ATTRIBUTE_VALUES,
-            MAX_PROJECTED_QUERY_BYTES,
-        )
+        crate::QueryExecutionResourceLimits::default().projected()
     }
-}
-
-const fn min_usize(left: usize, right: usize) -> usize {
-    if left < right { left } else { right }
 }
 
 /// Trusted source of projected-query hydration.
@@ -1636,7 +1620,7 @@ plays:
     }
 
     fn limits_for(measure: ProjectedQueryResourceMeasure) -> ProjectedQueryMaterializationLimits {
-        ProjectedQueryMaterializationLimits::tightened(
+        ProjectedQueryMaterializationLimits::new(
             measure.rows(),
             measure.cells(),
             measure.things(),
@@ -2175,7 +2159,7 @@ plays:
             ProjectedQueryOrigin::remote_unbound(),
             request,
             result,
-            ProjectedQueryMaterializationLimits::tightened(
+            ProjectedQueryMaterializationLimits::new(
                 exact.rows(),
                 exact.cells() - 1,
                 exact.things(),
@@ -2425,7 +2409,7 @@ plays:
             ProjectedQueryOrigin::remote_unbound(),
             limited_request,
             limited_result,
-            ProjectedQueryMaterializationLimits::tightened(
+            ProjectedQueryMaterializationLimits::new(
                 measure.rows(),
                 measure.cells(),
                 measure.things(),
@@ -2490,7 +2474,7 @@ plays:
             &registry,
             one_rows_request(&registry),
             make(),
-            ProjectedQueryMaterializationLimits::tightened(
+            ProjectedQueryMaterializationLimits::new(
                 lower(measure.rows()),
                 measure.cells(),
                 measure.things(),
@@ -2505,7 +2489,7 @@ plays:
             &registry,
             one_rows_request(&registry),
             make(),
-            ProjectedQueryMaterializationLimits::tightened(
+            ProjectedQueryMaterializationLimits::new(
                 measure.rows(),
                 measure.cells(),
                 lower(measure.things()),
@@ -2520,7 +2504,7 @@ plays:
             &registry,
             one_rows_request(&registry),
             make(),
-            ProjectedQueryMaterializationLimits::tightened(
+            ProjectedQueryMaterializationLimits::new(
                 measure.rows(),
                 measure.cells(),
                 measure.things(),
@@ -2535,7 +2519,7 @@ plays:
             &registry,
             one_rows_request(&registry),
             make(),
-            ProjectedQueryMaterializationLimits::tightened(
+            ProjectedQueryMaterializationLimits::new(
                 measure.rows(),
                 measure.cells(),
                 measure.things(),
@@ -2917,7 +2901,7 @@ plays:
             ProjectedQueryOrigin::remote_unbound(),
             tuple_request,
             tuple_result,
-            ProjectedQueryMaterializationLimits::tightened(
+            ProjectedQueryMaterializationLimits::new(
                 exact.rows(),
                 exact.cells() - 1,
                 exact.things(),

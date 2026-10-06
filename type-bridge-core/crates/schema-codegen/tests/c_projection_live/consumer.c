@@ -162,6 +162,7 @@ typedef struct sdk_resource_limit_observation {
   type_bridge_execution_diagnostic_category_t category;
   size_t zero_dimensions;
   size_t plus_one_dimensions;
+  size_t past_maximum_refusals;
   int no_partial_result;
   char code[64];
   char dimension[64];
@@ -437,16 +438,15 @@ static int emit_resource_limits_observation(
   }
   return emit_v2_observationf(
       "resource_limits", proof_kind,
-      "{\"enforced\":{\"category\":\"resource_limit\",\"code\":\"%s\","
-      "\"dimension\":\"%s\","
-      "\"no_partial_result\":%s},\"hard_maxima\":{\"attribute_values\":%" PRIu64
+      "{\"defaults\":{\"attribute_values\":%" PRIu64
       ",\"bytes\":%" PRIu64 ",\"collection_members\":%" PRIu64
       ",\"graph_nodes\":%" PRIu64 ",\"items\":%" PRIu64
       ",\"role_players\":%" PRIu64 ",\"statements\":%u,"
-      "\"timeout_milliseconds\":%" PRIu64 "},\"plus_one_clamped_all\":%s,"
-      "\"zero_tightening_all\":%s}",
-      observation->code, observation->dimension,
-      observation->no_partial_result ? "true" : "false",
+      "\"timeout_milliseconds\":%" PRIu64 "},"
+      "\"enforced\":{\"category\":\"resource_limit\",\"code\":\"%s\","
+      "\"dimension\":\"%s\","
+      "\"no_partial_result\":%s},\"past_maximum_refused\":%s,"
+      "\"plus_one_kept_all\":%s,\"zero_tightening_all\":%s}",
       TYPE_BRIDGE_QUERY_DEFAULT_ATTRIBUTE_VALUES,
       TYPE_BRIDGE_QUERY_DEFAULT_BYTES,
       TYPE_BRIDGE_QUERY_DEFAULT_COLLECTION_MEMBERS,
@@ -454,7 +454,10 @@ static int emit_resource_limits_observation(
       TYPE_BRIDGE_QUERY_DEFAULT_ROLE_PLAYERS,
       TYPE_BRIDGE_QUERY_DEFAULT_STATEMENTS,
       TYPE_BRIDGE_QUERY_DEFAULT_TIMEOUT_MILLISECONDS,
-      observation->plus_one_dimensions == 8u ? "true" : "false",
+      observation->code, observation->dimension,
+      observation->no_partial_result ? "true" : "false",
+      observation->past_maximum_refusals == 2u ? "true" : "false",
+      observation->plus_one_dimensions == 7u ? "true" : "false",
       observation->zero_dimensions == 8u ? "true" : "false");
 }
 
@@ -2275,6 +2278,7 @@ static int run_typed_query_function_and_remote(
   size_t remote_one_exchange_count = 0u;
   size_t zero_limit_dimension_count = 0u;
   size_t plus_one_limit_dimension_count = 0u;
+  size_t past_maximum_refusal_count = 0u;
   uint64_t count_value = 0u;
   uint64_t direct_terminal_count = 0u;
   uint64_t remote_terminal_count = 0u;
@@ -2305,7 +2309,7 @@ static int run_typed_query_function_and_remote(
   sdk_topology_observation_t direct_topology = {0};
   sdk_topology_observation_t remote_topology = {0};
   int remote_representative_zero_limit = 0;
-  int remote_plus_one_clamped_all = 0;
+  int remote_plus_one_kept_all = 0;
   char direct_membership_member_key[64] = {0};
   char remote_membership_member_key[64] = {0};
   char direct_topology_source_key[64] = {0};
@@ -3046,7 +3050,9 @@ static int run_typed_query_function_and_remote(
     plus_one_limits[5].collection_members += 1u;
     plus_one_limits[6].role_players += 1u;
     plus_one_limits[7].statements += 1u;
-    for (limit_index = 0u; limit_index < 8u; ++limit_index) {
+    /* Every dimension but the statement count may be raised past its
+     * default and is kept as given. */
+    for (limit_index = 0u; limit_index < 7u; ++limit_index) {
       CHECK(fixture_database_query_execute_count(
                 database, count_terminal, &plus_one_limits[limit_index], NULL,
                 &clamped_direct, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -3058,6 +3064,21 @@ static int run_typed_query_function_and_remote(
             TYPE_BRIDGE_STATUS_OK);
       ++plus_one_limit_dimension_count;
     }
+    /* Past a supported maximum a value is refused by name, never clamped. */
+    /* One millisecond past the longest supported duration, a day. */
+    plus_one_limits[0].timeout_milliseconds = UINT64_C(86400001);
+    for (limit_index = 0u; limit_index < 8u; limit_index += 7u) {
+      CHECK(fixture_database_query_execute_count(
+                database, count_terminal, &plus_one_limits[limit_index], NULL,
+                &clamped_direct, out_diagnostics) ==
+            TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
+      CHECK(clamped_direct == NULL);
+      CHECK(execution_code_is(*out_diagnostics,
+                              "c_query_execution_limits_invalid"));
+      CHECK(type_bridge_execution_diagnostics_close(out_diagnostics) ==
+            TYPE_BRIDGE_STATUS_OK);
+      ++past_maximum_refusal_count;
+    }
     clamped_limits.timeout_milliseconds += 1u;
     clamped_limits.items += 1u;
     clamped_limits.bytes += 1u;
@@ -3065,7 +3086,6 @@ static int run_typed_query_function_and_remote(
     clamped_limits.attribute_values += 1u;
     clamped_limits.collection_members += 1u;
     clamped_limits.role_players += 1u;
-    clamped_limits.statements += 1u;
     CHECK(fixture_database_query_execute_count(
               database, count_terminal, &clamped_limits, NULL,
               &clamped_direct, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -3119,10 +3139,11 @@ static int run_typed_query_function_and_remote(
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_remote_context_close(&clamped_context) ==
           TYPE_BRIDGE_STATUS_OK);
-    remote_plus_one_clamped_all = 1;
-    CHECK(plus_one_limit_dimension_count == 8u);
+    remote_plus_one_kept_all = 1;
+    CHECK(plus_one_limit_dimension_count == 7u);
+    CHECK(past_maximum_refusal_count == 2u);
     puts("G05 pre-dispatch cancellation direct/remote: passed");
-    puts("G06 all-eight plus-one clamp and representative remote limit: passed");
+    puts("G06 raised limits kept, unsupported ones refused, remote limit: passed");
     puts("G08 live structured cancellation/resource diagnostics: passed");
   }
 
@@ -3718,13 +3739,15 @@ static int run_typed_query_function_and_remote(
           zero_limit_dimension_count;
       resource_limit_observation.plus_one_dimensions =
           plus_one_limit_dimension_count;
+      resource_limit_observation.past_maximum_refusals =
+          past_maximum_refusal_count;
       resource_limit_observation.no_partial_result =
           role_limit_result == NULL;
       CHECK(emit_resource_limits_observation(
           "direct_runtime", &resource_limit_observation));
       resource_limit_observation.no_partial_result =
           role_limit_result == NULL && remote_representative_zero_limit &&
-          remote_plus_one_clamped_all;
+          remote_plus_one_kept_all;
       CHECK(emit_resource_limits_observation(
           "remote_runtime", &resource_limit_observation));
       puts("G06 all-eight independent zero ceilings: passed");

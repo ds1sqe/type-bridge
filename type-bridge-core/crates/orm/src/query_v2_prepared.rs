@@ -1201,6 +1201,9 @@ struct PendingRemoteQueryStateV2 {
     reply_deadline: Instant,
     trusted_key: RemoteSigningPublicKey,
     validated: ValidatedQuery,
+    // The budget the caller asked for, before it was held to the executor's
+    // advertised ceilings; kept to say where a refusing ceiling came from.
+    wanted: RemoteLimitsV2,
 }
 
 const REMOTE_QUERY_PENDING: u8 = 0;
@@ -1368,6 +1371,13 @@ impl ClaimedRemoteReplyV2 {
         Ok(outcome)
     }
 
+    /// The budget the caller asked for and the one the request carried after
+    /// it was held to the executor's advertised ceilings.
+    #[must_use]
+    pub fn answer_budgets(&self) -> (RemoteLimitsV2, RemoteLimitsV2) {
+        (self.state.wanted, self.state.request_envelope.limits())
+    }
+
     /// Authenticate, correlate, and validate one reply without serializing its
     /// typed outcome through a host-language representation.
     ///
@@ -1462,6 +1472,7 @@ pub(crate) fn prepare_validated_remote_query_v2_with_budget(
     deadline: QueryExecutionDeadline,
     cancellation: &AnswerCancellation,
 ) -> Result<PendingRemoteQueryV2, Diagnostic> {
+    let wanted = limits;
     check_remote_execution_budget(deadline, cancellation)?;
     if matches!(
         &authority.control_policy,
@@ -1485,6 +1496,19 @@ pub(crate) fn prepare_validated_remote_query_v2_with_budget(
     check_remote_execution_budget(deadline, cancellation)?;
     check_advertised_capabilities_v2(&validated, &invocation, &advertisement)?;
     check_remote_execution_budget(deadline, cancellation)?;
+    // Ask for no more than the executor advertised: it bounds the request to
+    // that anyway, and the reply is then decoded under the same budgets the
+    // executor ran under.
+    let advertised = crate::query_v2_remote::advertised_answer_limits(&advertisement)?;
+    limits.max_bytes = limits.max_bytes.min(advertised.bytes);
+    limits.max_items = limits.max_items.min(advertised.items);
+    limits.max_collection_members = limits
+        .max_collection_members
+        .min(advertised.collection_members);
+    limits.max_graph_nodes = limits.max_graph_nodes.min(advertised.graph_nodes);
+    limits.max_attribute_values = limits.max_attribute_values.min(advertised.attribute_values);
+    limits.max_role_players = limits.max_role_players.min(advertised.role_players);
+    limits.max_statements = limits.max_statements.min(advertised.statements);
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let prepared_at_unix_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1554,6 +1578,7 @@ pub(crate) fn prepare_validated_remote_query_v2_with_budget(
             reply_deadline,
             trusted_key,
             validated,
+            wanted,
         }),
     })
 }

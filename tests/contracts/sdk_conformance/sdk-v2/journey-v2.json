@@ -262,7 +262,7 @@
       "server_exchange_cancelled_after_send": false
     },
     "resource_limits": {
-      "hard_maxima": {
+      "defaults": {
         "timeout_milliseconds": 30000,
         "items": 65536,
         "bytes": 33554432,
@@ -272,7 +272,8 @@
         "role_players": 65536,
         "statements": 3
       },
-      "plus_one_clamped_all": true,
+      "plus_one_kept_all": true,
+      "past_maximum_refused": true,
       "zero_tightening_all": true,
       "enforced": {
         "dimension": "role_players",

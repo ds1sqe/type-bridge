@@ -72,12 +72,16 @@ impl MatchExecutionLimits {
     ) -> Self {
         let default = QueryExecutionResourceLimits::default();
         Self::from_policy(
-            QueryExecutionResourceLimits {
-                timeout_milliseconds: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
-                items: max_items,
-                bytes: max_bytes,
-                ..default
-            },
+            QueryExecutionResourceLimits::tightened(
+                u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+                max_items,
+                max_bytes,
+                default.graph_nodes,
+                default.attribute_values,
+                default.collection_members,
+                default.role_players,
+                default.statements,
+            ),
             cancellation,
         )
     }
@@ -132,6 +136,25 @@ impl MatchExecutionLimits {
 
     fn max_statements(&self) -> u8 {
         u8::try_from(self.policy.statements).unwrap_or(u8::MAX)
+    }
+
+    /// Name the ceiling behind an answer-limit refusal: which dimension, its
+    /// value, and whether that value was the default or configured.
+    fn annotate_refusal(&self, error: OrmError) -> OrmError {
+        let OrmError::Match(error) = error else {
+            return error;
+        };
+        if error.details().contains_key("limit") {
+            return error.into();
+        }
+        match self.policy.refusal_details(error.code().as_str()) {
+            Some((limit, maximum, source)) => error
+                .with_detail("limit", limit)
+                .with_detail("maximum", maximum)
+                .with_detail("source", source)
+                .into(),
+            None => error.into(),
+        }
     }
 
     #[cfg(test)]
@@ -339,6 +362,7 @@ impl<'a> SelectedResultExecutor<'a> {
         fenced
             .execute_compatible_owned_fenced(database, validated)
             .await
+            .map_err(|error| self.limits.annotate_refusal(error))
     }
 
     async fn execute_compatible_owned_fenced(
@@ -383,6 +407,7 @@ impl<'a> SelectedResultExecutor<'a> {
         fenced
             .execute_compatible_borrowed_fenced(context, validated)
             .await
+            .map_err(|error| self.limits.annotate_refusal(error))
     }
 
     async fn execute_compatible_borrowed_fenced(
@@ -744,7 +769,19 @@ pub(crate) fn released_model_execution_error(diagnostic: &Diagnostic) -> MatchEr
         ) => "provider resource limits prevented complete typed match evidence",
         _ => mapped_message,
     };
-    MatchError::new(category, code, message).with_path(path)
+    let mut error = MatchError::new(category, code, message).with_path(path);
+    // Keep what a refusal says about its limit.
+    for key in ["limit", "maximum", "source"] {
+        error = match diagnostic.details().get(key) {
+            Some(DiagnosticDetailValue::Text(value)) => error.with_detail(key, value.clone()),
+            Some(DiagnosticDetailValue::Long(value)) => match u64::try_from(*value) {
+                Ok(value) => error.with_detail(key, value),
+                Err(_) => error,
+            },
+            _ => error,
+        };
+    }
+    error
 }
 
 fn released_execution_path(diagnostic: &Diagnostic) -> MatchErrorPath {
@@ -1185,7 +1222,7 @@ mod tests {
     use crate::_descriptor::{
         EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor,
     };
-    use crate::query_execution_limits::MAX_QUERY_ITEMS;
+    use crate::query_execution_limits::DEFAULT_QUERY_ITEMS;
 
     use crate::_entity::Annotation;
     use crate::MatchErrorPath;
@@ -3399,7 +3436,7 @@ mod tests {
         assert_eq!(events.root_statements.len(), 2);
         assert!(events.root_statements[0].order.is_empty());
         assert_eq!(events.root_statements[0].offset, None);
-        assert_eq!(events.root_statements[0].limit, Some(MAX_QUERY_ITEMS));
+        assert_eq!(events.root_statements[0].limit, Some(DEFAULT_QUERY_ITEMS));
         assert!(events.root_statements[1].order.is_empty());
         assert_eq!(events.root_statements[1].offset, None);
         assert_eq!(events.root_statements[1].limit, Some(1));
@@ -3965,7 +4002,7 @@ mod tests {
                 let total = &events.root_statements[0];
                 assert!(total.order.is_empty());
                 assert_eq!(total.offset, None);
-                assert_eq!(total.limit, Some(MAX_QUERY_ITEMS));
+                assert_eq!(total.limit, Some(DEFAULT_QUERY_ITEMS));
             }
             assert_eq!(
                 events.rematch_statements[0].root_concept_ids,
@@ -4098,6 +4135,114 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 2]
         );
+    }
+
+    /// A result past the default ceilings: refused by name under the default
+    /// policy, returned in full when the policy is raised.
+    #[tokio::test]
+    async fn a_raised_policy_returns_what_the_default_refuses() {
+        let registry = person_registry();
+        let total = usize::try_from(DEFAULT_QUERY_ITEMS).unwrap() + 4_464;
+        let iid = |index: usize| format!("0x{:x}", index + 1);
+        let roots = || {
+            vec![Ok((0..total)
+                .map(|index| solution(&[(0, &iid(index))], &[]))
+                .collect::<Vec<_>>())]
+        };
+        let raised = || {
+            MatchExecutionLimits::from_policy(
+                // Scanning and hydration both draw on the item budget.
+                QueryExecutionResourceLimits {
+                    items: 200_000,
+                    bytes: 1 << 30,
+                    graph_nodes: 100_000,
+                    attribute_values: 100_000,
+                    ..QueryExecutionResourceLimits::default()
+                }
+                .validate()
+                .unwrap(),
+                AnswerCancellation::default(),
+            )
+        };
+
+        let count = validate_match_request(
+            &registry,
+            person_root_request(&registry, |root| MatchOperation::CountBy { root }),
+        )
+        .unwrap();
+        let (default_db, _) = database(CapabilitySet::all(), roots(), vec![]);
+        let refused = default_db
+            .execute_match(&registry, &count)
+            .await
+            .unwrap_err();
+        assert_eq!(match_code(&refused), "solution_scan_limit");
+        let details = |error: &OrmError| {
+            let details = match_error(error).details();
+            (
+                details.get("limit").cloned(),
+                details.get("maximum").cloned(),
+                details.get("source").cloned(),
+            )
+        };
+        assert_eq!(
+            details(&refused),
+            (
+                Some(crate::MatchErrorDetailValue::Text("items".into())),
+                Some(crate::MatchErrorDetailValue::Unsigned(DEFAULT_QUERY_ITEMS)),
+                Some(crate::MatchErrorDetailValue::Text("default".into())),
+            )
+        );
+        let (tight_db, _) = database(CapabilitySet::all(), roots(), vec![]);
+        let tight = tight_db
+            .execute_match_with_limits(
+                &registry,
+                &count,
+                MatchExecutionLimits::tightened(
+                    10,
+                    1 << 20,
+                    Duration::from_secs(1),
+                    AnswerCancellation::default(),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            details(&tight),
+            (
+                Some(crate::MatchErrorDetailValue::Text("items".into())),
+                Some(crate::MatchErrorDetailValue::Unsigned(10)),
+                Some(crate::MatchErrorDetailValue::Text("configured".into())),
+            )
+        );
+        let (raised_db, _) = database(CapabilitySet::all(), roots(), vec![]);
+        let counted = raised_db
+            .execute_match_with_limits(&registry, &count, raised())
+            .await
+            .unwrap();
+        assert!(matches!(
+            counted.result(),
+            super::super::result::MatchResult::Count { value, .. } if *value == total as u64
+        ));
+
+        let rows = validate_match_request(
+            &registry,
+            person_request(&registry, RowCardinality::Complete, 100_000),
+        )
+        .unwrap();
+        let hydrations = || {
+            vec![Ok((0..total)
+                .map(|index| person_hydration(0, &iid(index), &format!("person-{index}")))
+                .collect::<Vec<_>>())]
+        };
+        let (raised_db, _) = database(CapabilitySet::all(), roots(), hydrations());
+        let fetched = raised_db
+            .execute_match_with_limits(&registry, &rows, raised())
+            .await
+            .unwrap();
+        let super::super::result::MatchResult::Rows { rows } = fetched.result() else {
+            panic!("expected rows")
+        };
+        assert_eq!(rows.len(), total);
     }
 
     #[tokio::test]
@@ -5273,7 +5418,7 @@ mod tests {
         };
         window.offset = 2;
         let validated = validate_match_request(&registry, request).unwrap();
-        let solutions = (1..=MAX_QUERY_ITEMS + 1)
+        let solutions = (1..=DEFAULT_QUERY_ITEMS + 1)
             .map(|index| {
                 let concept_id = format!("0x{index:x}");
                 solution(&[(0, &concept_id)], &[])

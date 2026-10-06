@@ -69,9 +69,11 @@ pub use transaction::{
 };
 pub use type_bridge_contract::limits::{QueryLimits, QueryLimitsError};
 pub use type_bridge_orm::{
-    AnswerCancellation, MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
-    MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS, MAX_QUERY_STATEMENTS,
-    MAX_QUERY_TIMEOUT_MILLISECONDS, ProjectedManagerComparison, QueryExecutionDeadline,
+    AnswerCancellation, DEFAULT_QUERY_ATTRIBUTE_VALUES, DEFAULT_QUERY_BYTES,
+    DEFAULT_QUERY_COLLECTION_MEMBERS, DEFAULT_QUERY_GRAPH_NODES, DEFAULT_QUERY_ITEMS,
+    DEFAULT_QUERY_ROLE_PLAYERS, DEFAULT_QUERY_STATEMENTS, DEFAULT_QUERY_TIMEOUT_MILLISECONDS,
+    MAX_QUERY_STATEMENTS, MAX_QUERY_TIMEOUT_MILLISECONDS, ProjectedManagerComparison,
+    QueryExecutionDeadline, QueryExecutionLimitOutOfRange, QueryExecutionLimitsError,
     QueryExecutionResourceLimits,
 };
 #[cfg(feature = "typedb")]

@@ -496,6 +496,75 @@ impl QueryLimits {
     }
 }
 
+/// One dimension of the answer policy: how much a query may return.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnswerLimitField {
+    /// Stable public name.
+    pub name: &'static str,
+    /// The value in force when nothing was configured.
+    pub default: u64,
+    /// The largest value a peer may configure or advertise.
+    pub maximum: u64,
+}
+
+/// The answer policy dimensions, in declaration order.
+///
+/// This table is the one statement of their names, defaults, and supported
+/// maxima. Only the timeout and the statement count have a maximum below the
+/// type's: a day keeps deadline arithmetic exact, and no terminal issues
+/// more than three provider statements.
+pub const ANSWER_LIMIT_FIELDS: [AnswerLimitField; 8] = [
+    AnswerLimitField {
+        name: "timeout_milliseconds",
+        default: 30_000,
+        maximum: 24 * 60 * 60 * 1000,
+    },
+    AnswerLimitField {
+        name: "items",
+        default: MAX_CANONICAL_COLLECTION_LEN as u64,
+        maximum: u64::MAX,
+    },
+    AnswerLimitField {
+        name: "bytes",
+        default: MAX_REMOTE_ENVELOPE_BYTES as u64,
+        maximum: u64::MAX,
+    },
+    AnswerLimitField {
+        name: "graph_nodes",
+        default: MAX_CANONICAL_COLLECTION_LEN as u64,
+        maximum: u64::MAX,
+    },
+    AnswerLimitField {
+        name: "attribute_values",
+        default: MAX_CANONICAL_COLLECTION_LEN as u64,
+        maximum: u64::MAX,
+    },
+    AnswerLimitField {
+        name: "collection_members",
+        default: MAX_CANONICAL_COLLECTION_LEN as u64,
+        maximum: u64::MAX,
+    },
+    AnswerLimitField {
+        name: "role_players",
+        default: MAX_CANONICAL_COLLECTION_LEN as u64,
+        maximum: u64::MAX,
+    },
+    AnswerLimitField {
+        name: "statements",
+        default: 3,
+        maximum: 3,
+    },
+];
+
+/// Look one answer policy dimension up by its stable name.
+#[must_use]
+pub fn answer_limit_field(name: &str) -> Option<AnswerLimitField> {
+    ANSWER_LIMIT_FIELDS
+        .iter()
+        .copied()
+        .find(|field| field.name == name)
+}
+
 /// `source` detail of a limit left at its released default.
 pub const LIMIT_SOURCE_DEFAULT: &str = "default";
 /// `source` detail of a limit a session or host configured.

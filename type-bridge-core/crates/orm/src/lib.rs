@@ -152,20 +152,20 @@ pub use projected_model::{
 };
 #[doc(hidden)]
 pub use projected_query::{
-    MAX_PROJECTED_QUERY_ATTRIBUTE_VALUES, MAX_PROJECTED_QUERY_BYTES, MAX_PROJECTED_QUERY_CELLS,
-    MAX_PROJECTED_QUERY_ROWS, MAX_PROJECTED_QUERY_THINGS, ProjectedQueryMaterializationLimits,
-    ProjectedQueryOrigin, ProjectedQueryResourceMeasure, ProjectedQueryResult, ProjectedQueryRow,
-    ProjectedQuerySlot, ProjectedQuerySlotValue, ProjectedQueryValue, ProjectedReducedValue,
-    ProjectedReductionGroup, ProjectedReductionRow, materialize_projected_query_result,
-    materialize_projected_query_result_with_budget,
+    ProjectedQueryMaterializationLimits, ProjectedQueryOrigin, ProjectedQueryResourceMeasure,
+    ProjectedQueryResult, ProjectedQueryRow, ProjectedQuerySlot, ProjectedQuerySlotValue,
+    ProjectedQueryValue, ProjectedReducedValue, ProjectedReductionGroup, ProjectedReductionRow,
+    materialize_projected_query_result, materialize_projected_query_result_with_budget,
     materialize_projected_query_result_with_cancellation,
 };
 pub use provider_runtime::ProviderRuntimeOwner;
 pub use query::{EntityQuery, GroupByEntityQuery, GroupByRelationQuery, RelationQuery};
 pub use query_execution_limits::{
-    MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
-    MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS, MAX_QUERY_STATEMENTS,
-    MAX_QUERY_TIMEOUT_MILLISECONDS, QueryExecutionDeadline, QueryExecutionResourceLimits,
+    DEFAULT_QUERY_ATTRIBUTE_VALUES, DEFAULT_QUERY_BYTES, DEFAULT_QUERY_COLLECTION_MEMBERS,
+    DEFAULT_QUERY_GRAPH_NODES, DEFAULT_QUERY_ITEMS, DEFAULT_QUERY_ROLE_PLAYERS,
+    DEFAULT_QUERY_STATEMENTS, DEFAULT_QUERY_TIMEOUT_MILLISECONDS, MAX_QUERY_STATEMENTS,
+    MAX_QUERY_TIMEOUT_MILLISECONDS, QueryExecutionDeadline, QueryExecutionLimitOutOfRange,
+    QueryExecutionLimitsError, QueryExecutionResourceLimits,
 };
 pub use query_v2_model_remote::{
     ClaimedRemoteModelReplyV2, PendingRemoteModelQueryV2, RemoteModelQueryV2Error,

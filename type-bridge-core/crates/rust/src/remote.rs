@@ -52,21 +52,23 @@ impl RemoteQueryLimits {
         max_attribute_values: u64,
         max_role_players: u64,
     ) -> Self {
+        // Each budget is kept as given: it may tighten or raise the default.
         Self {
-            resources: QueryExecutionResourceLimits::tightened(
-                type_bridge_orm::MAX_QUERY_TIMEOUT_MILLISECONDS,
-                max_items,
-                max_bytes,
-                max_graph_nodes,
-                max_attribute_values,
-                max_collection_members,
-                max_role_players,
-                type_bridge_orm::MAX_QUERY_STATEMENTS,
-            ),
+            resources: QueryExecutionResourceLimits {
+                timeout_milliseconds: type_bridge_orm::DEFAULT_QUERY_TIMEOUT_MILLISECONDS,
+                items: max_items,
+                bytes: max_bytes,
+                graph_nodes: max_graph_nodes,
+                attribute_values: max_attribute_values,
+                collection_members: max_collection_members,
+                role_players: max_role_players,
+                statements: type_bridge_orm::DEFAULT_QUERY_STATEMENTS,
+            },
         }
     }
 
-    /// Attach an optional executor deadline in milliseconds.
+    /// Attach an optional executor deadline in milliseconds, bounded by the
+    /// longest supported execution duration.
     #[must_use]
     pub const fn deadline_ms(mut self, deadline_ms: u64) -> Self {
         self.resources.timeout_milliseconds =

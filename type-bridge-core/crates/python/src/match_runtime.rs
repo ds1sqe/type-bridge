@@ -172,8 +172,9 @@ impl PyQueryExecutionResourceLimits {
 
 #[pymethods]
 impl PyQueryExecutionResourceLimits {
-    /// Construct a tighten-only resource policy. Every dimension is clamped
-    /// independently to the shared direct/remote ceiling; zero is valid.
+    /// Construct an answer policy. An omitted dimension keeps its default;
+    /// a given one may tighten or raise it, and zero is valid. A value above
+    /// a dimension's supported maximum is refused by name, never clamped.
     #[new]
     #[pyo3(signature = (
         timeout_milliseconds=None,
@@ -202,34 +203,39 @@ impl PyQueryExecutionResourceLimits {
             u64::from(defaults.statements),
             "statements",
         )?;
-        Ok(Self {
-            inner: QueryExecutionResourceLimits::tightened(
-                python_optional_resource_limit(
-                    timeout_milliseconds,
-                    defaults.timeout_milliseconds,
-                    "timeout_milliseconds",
-                )?,
-                python_optional_resource_limit(items, defaults.items, "items")?,
-                python_optional_resource_limit(bytes, defaults.bytes, "bytes")?,
-                python_optional_resource_limit(graph_nodes, defaults.graph_nodes, "graph_nodes")?,
-                python_optional_resource_limit(
-                    attribute_values,
-                    defaults.attribute_values,
-                    "attribute_values",
-                )?,
-                python_optional_resource_limit(
-                    collection_members,
-                    defaults.collection_members,
-                    "collection_members",
-                )?,
-                python_optional_resource_limit(
-                    role_players,
-                    defaults.role_players,
-                    "role_players",
-                )?,
-                u32::try_from(statements).unwrap_or(u32::MAX),
-            ),
-        })
+        let inner = QueryExecutionResourceLimits {
+            timeout_milliseconds: python_optional_resource_limit(
+                timeout_milliseconds,
+                defaults.timeout_milliseconds,
+                "timeout_milliseconds",
+            )?,
+            items: python_optional_resource_limit(items, defaults.items, "items")?,
+            bytes: python_optional_resource_limit(bytes, defaults.bytes, "bytes")?,
+            graph_nodes: python_optional_resource_limit(
+                graph_nodes,
+                defaults.graph_nodes,
+                "graph_nodes",
+            )?,
+            attribute_values: python_optional_resource_limit(
+                attribute_values,
+                defaults.attribute_values,
+                "attribute_values",
+            )?,
+            collection_members: python_optional_resource_limit(
+                collection_members,
+                defaults.collection_members,
+                "collection_members",
+            )?,
+            role_players: python_optional_resource_limit(
+                role_players,
+                defaults.role_players,
+                "role_players",
+            )?,
+            statements: u32::try_from(statements).unwrap_or(u32::MAX),
+        }
+        .validate()
+        .map_err(|refusal| PyValueError::new_err(refusal.to_string()))?;
+        Ok(Self { inner })
     }
 
     #[getter]
@@ -2525,7 +2531,7 @@ mod tests {
     }
 
     #[test]
-    fn public_resource_limits_clamp_plus_one_and_preserve_zero() {
+    fn public_resource_limits_keep_a_raise_refuse_past_the_maximum_and_preserve_zero() {
         Python::initialize();
         Python::attach(|py| {
             let module = PyModule::new(py, "type_bridge_core").unwrap();
@@ -2534,7 +2540,7 @@ mod tests {
             globals.set_item("m", &module).unwrap();
             py.run(
                 pyo3::ffi::c_str!(
-                    "plus = m.QueryExecutionResourceLimits(30001, 65537, 33554433, 65537, 65537, 65537, 65537, 4)\nzero = m.QueryExecutionResourceLimits(0, 0, 0, 0, 0, 0, 0, 0)"
+                    "plus = m.QueryExecutionResourceLimits(30001, 65537, 33554433, 65537, 65537, 65537, 65537, 3)\nzero = m.QueryExecutionResourceLimits(0, 0, 0, 0, 0, 0, 0, 0)\nrefused = []\nfor arguments in ({'timeout_milliseconds': 86400001}, {'statements': 4}):\n    try:\n        m.QueryExecutionResourceLimits(**arguments)\n    except ValueError as error:\n        refused.append(str(error))"
                 ),
                 Some(&globals),
                 None,
@@ -2542,20 +2548,29 @@ mod tests {
             .unwrap();
             let plus = globals.get_item("plus").unwrap().unwrap();
             let zero = globals.get_item("zero").unwrap().unwrap();
+            let refused = globals
+                .get_item("refused")
+                .unwrap()
+                .unwrap()
+                .extract::<Vec<String>>()
+                .unwrap();
+            assert_eq!(refused.len(), 2, "{refused:?}");
+            assert!(refused[0].contains("timeout_milliseconds"), "{refused:?}");
+            assert!(refused[1].contains("statements"), "{refused:?}");
             for (name, expected) in [
-                ("timeout_milliseconds", 30_000_u64),
-                ("items", 65_536),
-                ("bytes", 33_554_432),
-                ("graph_nodes", 65_536),
-                ("attribute_values", 65_536),
-                ("collection_members", 65_536),
-                ("role_players", 65_536),
+                ("timeout_milliseconds", 30_001_u64),
+                ("items", 65_537),
+                ("bytes", 33_554_433),
+                ("graph_nodes", 65_537),
+                ("attribute_values", 65_537),
+                ("collection_members", 65_537),
+                ("role_players", 65_537),
                 ("statements", 3),
             ] {
                 assert_eq!(
                     plus.getattr(name).unwrap().extract::<u64>().unwrap(),
                     expected,
-                    "{name} must clamp independently"
+                    "{name} must keep what the caller raised it to"
                 );
                 assert_eq!(
                     zero.getattr(name).unwrap().extract::<u64>().unwrap(),

@@ -19,7 +19,7 @@ use type_bridge::value::{
 };
 use type_bridge::{
     AnswerCancellation, ConnectionOptions, Database, Error, ErrorCategory, ErrorDetail,
-    ErrorPathSegment, MAX_QUERY_ITEMS, PageOptions, ProjectedManagerComparison,
+    ErrorPathSegment, DEFAULT_QUERY_ITEMS, PageOptions, ProjectedManagerComparison,
     QueryDiagnosticCategory, QueryDiagnosticPathKind, QueryExecutionResourceLimits, QuerySession,
     RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits, RemoteQueryTransport, RowsOptions,
     aggregate,
@@ -2110,18 +2110,33 @@ async fn sdk_v2_remote_cancellation(
 
 fn sdk_v2_resource_limit_base() -> Value {
     let hard = QueryExecutionResourceLimits::default();
-    let plus_one = QueryExecutionResourceLimits::tightened(
-        hard.timeout_milliseconds.saturating_add(1),
-        hard.items.saturating_add(1),
-        hard.bytes.saturating_add(1),
-        hard.graph_nodes.saturating_add(1),
-        hard.attribute_values.saturating_add(1),
-        hard.collection_members.saturating_add(1),
-        hard.role_players.saturating_add(1),
-        hard.statements.saturating_add(1),
-    );
+    // Every dimension but the statement count may be raised past its default
+    // and is kept as given.
+    let raised = QueryExecutionResourceLimits {
+        timeout_milliseconds: hard.timeout_milliseconds + 1,
+        items: hard.items + 1,
+        bytes: hard.bytes + 1,
+        graph_nodes: hard.graph_nodes + 1,
+        attribute_values: hard.attribute_values + 1,
+        collection_members: hard.collection_members + 1,
+        role_players: hard.role_players + 1,
+        statements: hard.statements,
+    };
+    let plus_one_kept_all = raised.validate() == Ok(raised) && raised.effective() == raised;
+    // Past a supported maximum a value is refused by name, never clamped.
+    let past_maximum_refused = QueryExecutionResourceLimits {
+        statements: hard.statements + 1,
+        ..hard
+    }
+    .validate()
+    .is_err_and(|refusal| refusal.limit == "statements")
+        && QueryExecutionResourceLimits {
+            timeout_milliseconds: type_bridge::MAX_QUERY_TIMEOUT_MILLISECONDS + 1,
+            ..hard
+        }
+        .validate()
+        .is_err_and(|refusal| refusal.limit == "timeout_milliseconds");
     let zero = QueryExecutionResourceLimits::tightened(0, 0, 0, 0, 0, 0, 0, 0);
-    let plus_one_clamped_all = plus_one == hard;
     let zero_tightening_all = zero.timeout_milliseconds == 0
         && zero.items == 0
         && zero.bytes == 0
@@ -2131,7 +2146,7 @@ fn sdk_v2_resource_limit_base() -> Value {
         && zero.role_players == 0
         && zero.statements == 0;
     json!({
-        "hard_maxima": {
+        "defaults": {
             "timeout_milliseconds": hard.timeout_milliseconds,
             "items": hard.items,
             "bytes": hard.bytes,
@@ -2141,7 +2156,8 @@ fn sdk_v2_resource_limit_base() -> Value {
             "role_players": hard.role_players,
             "statements": hard.statements,
         },
-        "plus_one_clamped_all": plus_one_clamped_all,
+        "plus_one_kept_all": plus_one_kept_all,
+        "past_maximum_refused": past_maximum_refused,
         "zero_tightening_all": zero_tightening_all,
     })
 }
@@ -7117,7 +7133,7 @@ async fn generated_data_model_runtime_v3_live() {
         .await
         .expect_err("borrowed provider failure poisons transaction");
     assert_eq!(first_cause.code(), Some("provider_operation_failed"));
-    let limit = usize::try_from(MAX_QUERY_ITEMS).expect("query item limit fits usize");
+    let limit = usize::try_from(DEFAULT_QUERY_ITEMS).expect("query item limit fits usize");
     let excessive = (0..=limit)
         .map(|index| ownership_edge_person_input(&format!("data-excessive-{index}"), &[], None))
         .collect();

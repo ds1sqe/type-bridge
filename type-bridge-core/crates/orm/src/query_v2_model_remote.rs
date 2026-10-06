@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
+use type_bridge_contract::limits::LIMIT_SOURCE_ADVERTISED;
 use type_bridge_contract::query_plan::{QueryInvocation, query_given_rows_capability};
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
@@ -17,11 +18,12 @@ use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
 use crate::_registry::DescriptorRegistry;
 use crate::match_request::provider_order::check_provider_orders;
 use crate::match_request::result_validation::validated_match_result_from_v2;
+use crate::match_request::selected_result_executor::released_model_execution_error;
 use crate::match_request::{
     Capability, MatchError, MatchErrorCategory, MatchErrorPathSegment, ValidatedMatchRequest,
     ValidatedMatchResult,
 };
-use crate::query_execution_limits::QueryExecutionDeadline;
+use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
 use crate::query_v2::failure;
 use crate::query_v2_adapter::adapt_match_request;
 use crate::query_v2_prepared::{
@@ -173,12 +175,56 @@ impl ClaimedRemoteModelReplyV2 {
             registry,
             request,
         } = self;
-        let outcome = claimed.decode_outcome(response_bytes)?;
+        let (wanted, held) = claimed.answer_budgets();
+        let outcome = claimed
+            .decode_outcome(response_bytes)
+            .map_err(|refusal| answer_limit_refusal(refusal, wanted, held))?;
         check_decode_cancellation(cancellation)?;
         let result = validated_match_result_from_v2(&registry, &request, outcome)?;
         check_decode_cancellation(cancellation)?;
         Ok((request, result, registry))
     }
+}
+
+/// Report an executor's answer-limit refusal the way direct execution does.
+///
+/// The refusal names its limit, the value in force, and where that value
+/// came from: the executor's advertisement when it lowered what the caller
+/// asked for, the caller otherwise. Any other failure passes through
+/// unchanged.
+fn answer_limit_refusal(
+    refusal: Diagnostic,
+    wanted: RemoteLimitsV2,
+    held: RemoteLimitsV2,
+) -> Diagnostic {
+    if refusal.category() != DiagnosticCategory::ResourceLimit
+        || refusal.details().contains_key("limit")
+    {
+        return refusal;
+    }
+    // An executor may report its internal code or the released one.
+    let released = if refusal.code().as_str().starts_with("query_v2_model_") {
+        released_model_execution_error(&refusal)
+            .code()
+            .as_str()
+            .to_owned()
+    } else {
+        refusal.code().as_str().to_owned()
+    };
+    let held = QueryExecutionResourceLimits::from_remote(held);
+    let Some((limit, maximum, source)) = held.refusal_details(&released) else {
+        return refusal;
+    };
+    let wanted = QueryExecutionResourceLimits::from_remote(wanted);
+    let source = if wanted.get(limit).is_some_and(|wanted| maximum < wanted) {
+        LIMIT_SOURCE_ADVERTISED
+    } else {
+        source
+    };
+    refusal
+        .with_detail("limit", limit)
+        .with_detail("maximum", i64::try_from(maximum).unwrap_or(i64::MAX))
+        .with_detail("source", source)
 }
 
 fn check_decode_cancellation(
@@ -1517,5 +1563,73 @@ functions:
         };
         assert_eq!(replay.category(), DiagnosticCategory::Integrity);
         assert_eq!(replay.code().as_str(), "query_remote_v2_reply_replayed");
+    }
+}
+
+#[cfg(test)]
+mod answer_limit_refusal_tests {
+    use type_bridge_contract::diagnostic::DiagnosticDetailValue;
+
+    use super::*;
+
+    fn budget(items: u64) -> RemoteLimitsV2 {
+        RemoteLimitsV2 {
+            max_items: items,
+            ..QueryExecutionResourceLimits::default().remote()
+        }
+    }
+
+    fn refusal(code: &'static str) -> Diagnostic {
+        failure(DiagnosticCategory::ResourceLimit, code, "refused")
+    }
+
+    fn details(diagnostic: &Diagnostic) -> (Option<String>, Option<i64>, Option<String>) {
+        let text = |key: &str| match diagnostic.details().get(key) {
+            Some(DiagnosticDetailValue::Text(value)) => Some(value.clone()),
+            _ => None,
+        };
+        let long = match diagnostic.details().get("maximum") {
+            Some(DiagnosticDetailValue::Long(value)) => Some(*value),
+            _ => None,
+        };
+        (text("limit"), long, text("source"))
+    }
+
+    #[test]
+    fn an_executor_refusal_names_its_limit_and_where_the_ceiling_came_from() {
+        // The executor's ceiling was the stricter one.
+        let advertised = answer_limit_refusal(
+            refusal("processed_item_limit"),
+            budget(1_000_000),
+            budget(65_536),
+        );
+        assert_eq!(
+            details(&advertised),
+            (
+                Some("items".into()),
+                Some(65_536),
+                Some("advertised".into())
+            )
+        );
+        // The caller's own configured budget was.
+        let configured =
+            answer_limit_refusal(refusal("query_v2_model_item_limit"), budget(10), budget(10));
+        assert_eq!(
+            details(&configured),
+            (Some("items".into()), Some(10), Some("configured".into()))
+        );
+        // Neither side configured anything.
+        let default = answer_limit_refusal(
+            refusal("solution_scan_limit"),
+            budget(65_536),
+            budget(65_536),
+        );
+        assert_eq!(
+            details(&default),
+            (Some("items".into()), Some(65_536), Some("default".into()))
+        );
+        // A refusal that reports no answer dimension is left alone.
+        let other = answer_limit_refusal(refusal("row_window_exceeded"), budget(1), budget(1));
+        assert!(other.details().is_empty());
     }
 }

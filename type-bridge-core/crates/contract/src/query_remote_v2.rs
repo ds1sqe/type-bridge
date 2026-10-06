@@ -25,7 +25,7 @@ use crate::fingerprint::{
 };
 use crate::id::{AttributeId, RoleId, TypeId, TypeKind, is_canonical_thing_iid};
 use crate::limits::{
-    MAX_CANONICAL_COLLECTION_LEN, MAX_DIAGNOSTIC_BYTES, MAX_REMOTE_ENVELOPE_BYTES,
+    CodecLimits, MAX_CANONICAL_COLLECTION_LEN, MAX_DIAGNOSTIC_BYTES, MAX_REMOTE_ENVELOPE_BYTES,
     MAX_SELECTED_SLOTS, QueryLimits, REMOTE_ENVELOPE_CODEC_LIMITS,
 };
 use crate::migration_assertion::BindingId;
@@ -861,10 +861,10 @@ impl HydrationGraphV2 {
         &self.nodes
     }
 
+    // Structure only. How many nodes a graph may hold is the caller's
+    // budget, checked where a budget is known
+    // (`validate_hydration_graph_budget`), not a property of the container.
     fn validate(&self) -> Result<(), Diagnostic> {
-        if self.nodes.len() > MAX_CANONICAL_COLLECTION_LEN {
-            return Err(remote_graph_limit_v2());
-        }
         let mut iids = BTreeSet::new();
         let mut previous_iid = None;
         for (index, node) in self.nodes.iter().enumerate() {
@@ -1176,21 +1176,51 @@ pub struct RemoteReplyDecodeLimitsV2 {
 }
 
 impl RemoteReplyDecodeLimitsV2 {
-    fn hard_ceiling() -> Self {
-        let collection = u64::try_from(MAX_CANONICAL_COLLECTION_LEN).unwrap_or(u64::MAX);
-        Self {
-            max_bytes: u64::try_from(MAX_REMOTE_ENVELOPE_BYTES).unwrap_or(u64::MAX),
-            max_items: u64::MAX,
-            max_collection_members: collection,
-            max_graph_nodes: collection,
-            max_attribute_values: collection,
-            max_role_players: collection,
+    /// The budgets a reply is bound to when its peers configured none: the
+    /// default envelope and hydration ceilings, with scalar evidence (a
+    /// count) left to the executor's own item budget.
+    pub const DEFAULT_CEILING: Self = Self {
+        max_bytes: MAX_REMOTE_ENVELOPE_BYTES as u64,
+        max_items: u64::MAX,
+        max_collection_members: MAX_CANONICAL_COLLECTION_LEN as u64,
+        max_graph_nodes: MAX_CANONICAL_COLLECTION_LEN as u64,
+        max_attribute_values: MAX_CANONICAL_COLLECTION_LEN as u64,
+        max_role_players: MAX_CANONICAL_COLLECTION_LEN as u64,
+    };
+
+    /// The codec limits a reply under these budgets is encoded and decoded
+    /// with.
+    ///
+    /// They are the default envelope limits, widened where a budget asks for
+    /// more. A budget tighter than the default leaves the codec at the
+    /// default; the budget checks enforce it.
+    #[must_use]
+    pub fn codec(self) -> CodecLimits {
+        let widest = self
+            .max_items
+            .max(self.max_collection_members)
+            .max(self.max_graph_nodes)
+            .max(self.max_attribute_values)
+            .max(self.max_role_players);
+        CodecLimits {
+            max_bytes: self.envelope_bytes(),
+            max_collection_len: REMOTE_ENVELOPE_CODEC_LIMITS
+                .max_collection_len
+                .max(usize::try_from(widest).unwrap_or(usize::MAX)),
+            ..REMOTE_ENVELOPE_CODEC_LIMITS
         }
+    }
+
+    /// The largest signed reply envelope these budgets admit: the default
+    /// envelope ceiling, or more when the byte budget was raised past it.
+    #[must_use]
+    pub fn envelope_bytes(self) -> usize {
+        MAX_REMOTE_ENVELOPE_BYTES.max(usize::try_from(self.max_bytes).unwrap_or(usize::MAX))
     }
 }
 
 /// One successful V2 remote execution bound to its request and plan.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteQueryResponseV2 {
     format: String,
@@ -1198,11 +1228,30 @@ pub struct RemoteQueryResponseV2 {
     outcome: RemoteOutcomeV2,
     plan: String,
     request: String,
+    // The codec limits this reply is encoded and decoded under; never wire
+    // state, because each peer derives them from the budgets it agreed to.
+    #[serde(skip, default = "default_reply_codec_v2")]
+    codec: CodecLimits,
+}
+
+const fn default_reply_codec_v2() -> CodecLimits {
+    REMOTE_ENVELOPE_CODEC_LIMITS
+}
+
+// Two replies are equal when their wire content is.
+impl PartialEq for RemoteQueryResponseV2 {
+    fn eq(&self, other: &Self) -> bool {
+        self.format == other.format
+            && self.nonce == other.nonce
+            && self.outcome == other.outcome
+            && self.plan == other.plan
+            && self.request == other.request
+    }
 }
 
 impl RemoteQueryResponseV2 {
     /// Bind one V2 outcome to the nonce, V2 plan, whole V2 request, and
-    /// request-selected result family.
+    /// request-selected result family, under the default reply budgets.
     pub fn new(
         nonce: impl Into<String>,
         plan: &QueryPlan,
@@ -1210,22 +1259,41 @@ impl RemoteQueryResponseV2 {
         expected_result: RemoteResultKindV2,
         outcome: RemoteOutcomeV2,
     ) -> Result<Self, Diagnostic> {
+        let mut response = Self::new_with_limits(
+            nonce,
+            plan,
+            request,
+            expected_result,
+            outcome,
+            RemoteReplyDecodeLimitsV2::DEFAULT_CEILING,
+        )?;
+        response.codec = default_reply_codec_v2();
+        Ok(response)
+    }
+
+    /// Bind one V2 outcome under the budgets the executor ran under: the
+    /// stricter of the request's and its own. The outcome is checked against
+    /// them and the reply is encoded under them.
+    pub fn new_with_limits(
+        nonce: impl Into<String>,
+        plan: &QueryPlan,
+        request: &RemoteRequestFingerprintV2,
+        expected_result: RemoteResultKindV2,
+        outcome: RemoteOutcomeV2,
+        limits: RemoteReplyDecodeLimitsV2,
+    ) -> Result<Self, Diagnostic> {
         let nonce = nonce.into();
         check_nonce_v2(&nonce)?;
         validate_v2_plan_and_result(plan, expected_result)?;
         validate_outcome_kind_v2(&outcome, expected_result)?;
-        validate_outcome_evidence_v2(
-            &outcome,
-            expected_result,
-            RemoteReplyDecodeLimitsV2::hard_ceiling(),
-            Some(plan),
-        )?;
+        validate_outcome_evidence_v2(&outcome, expected_result, limits, Some(plan))?;
         Ok(Self {
             format: QUERY_REMOTE_RESPONSE_FORMAT_V2.to_owned(),
             nonce,
             outcome,
             plan: plan.fingerprint()?.as_fingerprint().digest().to_hex(),
             request: request.digest_hex(),
+            codec: limits.codec(),
         })
     }
 
@@ -1236,10 +1304,11 @@ impl RemoteQueryResponseV2 {
         advertisement: &RemoteCapabilitiesFingerprint,
         signer: &impl RemoteReplySigner,
     ) -> Result<Vec<u8>, Diagnostic> {
-        crate::query_remote::encode_signed_reply_payload(
+        crate::query_remote::encode_signed_reply_payload_bounded(
             &self.encode_payload()?,
             advertisement,
             signer,
+            self.codec.max_bytes,
         )
     }
 
@@ -1339,12 +1408,13 @@ impl RemoteQueryResponseV2 {
             outcome,
             plan: plan.fingerprint()?.as_fingerprint().digest().to_hex(),
             request: request.digest_hex(),
+            codec: default_reply_codec_v2(),
         };
         response.signed_encoded_len(advertisement, key)
     }
 
     fn encode_payload(&self) -> Result<Vec<u8>, Diagnostic> {
-        to_canonical_json_with_limits(self, REMOTE_ENVELOPE_CODEC_LIMITS)
+        to_canonical_json_with_limits(self, self.codec)
     }
 
     fn decode_bound(
@@ -1353,11 +1423,12 @@ impl RemoteQueryResponseV2 {
         limits: RemoteReplyDecodeLimitsV2,
         plan: Option<&QueryPlan>,
     ) -> Result<Self, Diagnostic> {
+        let codec = limits.codec();
         require_format(
             bytes,
             QUERY_REMOTE_RESPONSE_FORMAT_V2,
             "remote response",
-            MAX_REMOTE_ENVELOPE_BYTES,
+            codec.max_bytes,
         )?;
         let output_width = match expected_result {
             RemoteResultKindV2::Rows | RemoteResultKindV2::Documents => {
@@ -1373,8 +1444,8 @@ impl RemoteQueryResponseV2 {
             | RemoteResultKindV2::ModelReduction => None,
         };
         preflight_response_evidence_v2(bytes, expected_result, output_width, limits)?;
-        let response =
-            from_canonical_json_with_limits::<Self>(bytes, REMOTE_ENVELOPE_CODEC_LIMITS)?;
+        let mut response = from_canonical_json_with_limits::<Self>(bytes, codec)?;
+        response.codec = codec;
         validate_outcome_kind_v2(&response.outcome, expected_result)?;
         validate_outcome_evidence_v2(&response.outcome, expected_result, limits, plan)?;
         if response.encode_payload()? != bytes {
@@ -1625,7 +1696,13 @@ pub fn decode_remote_reply_v2(
     verifier: &impl RemoteReplyVerifier,
 ) -> Result<RemoteReplyV2, Diagnostic> {
     validate_reply_limits_v2(expected_request_envelope.limits(), limits)?;
-    crate::query_remote::preflight_signed_reply_size(bytes, u64::MAX)?;
+    // An error reply is not charged to the success-data byte budget, so the
+    // first check is the envelope ceiling alone.
+    let envelope_bytes = limits.envelope_bytes();
+    crate::query_remote::preflight_signed_reply_size(
+        bytes,
+        u64::try_from(envelope_bytes).unwrap_or(u64::MAX),
+    )?;
     let payload = crate::query_remote::verify_signed_reply_payload(
         bytes,
         expected_advertisement,
@@ -1638,7 +1715,7 @@ pub fn decode_remote_reply_v2(
         expected_request,
         expected_advertisement,
     )?;
-    let peek = peek_remote_reply_binding_v2(payload)?;
+    let peek = peek_remote_reply_binding_v2(payload, envelope_bytes)?;
     if peek.format == QUERY_REMOTE_RESPONSE_FORMAT_V2 {
         verify_response_binding_v2(
             peek.nonce,
@@ -1731,7 +1808,12 @@ pub fn decode_signed_remote_failure_v2(
     max_bytes: u64,
     verifier: &impl RemoteReplyVerifier,
 ) -> Result<RemoteQueryFailureV2, Diagnostic> {
-    crate::query_remote::preflight_signed_reply_size(bytes, max_bytes)?;
+    // A failure carries no result data, so it never needs more than the
+    // default envelope whatever byte budget the caller raised.
+    crate::query_remote::preflight_signed_reply_size(
+        bytes,
+        max_bytes.min(u64::try_from(MAX_REMOTE_ENVELOPE_BYTES).unwrap_or(u64::MAX)),
+    )?;
     let payload = crate::query_remote::verify_signed_reply_payload(
         bytes,
         expected_advertisement,
@@ -1985,8 +2067,11 @@ fn validate_remote_diagnostic_wire(value: &RemoteDiagnosticV2) -> Result<(), Dia
     Ok(())
 }
 
-fn peek_remote_reply_binding_v2(bytes: &[u8]) -> Result<RemoteReplyBindingPeekV2<'_>, Diagnostic> {
-    if bytes.len() > MAX_REMOTE_ENVELOPE_BYTES {
+fn peek_remote_reply_binding_v2(
+    bytes: &[u8],
+    max_bytes: usize,
+) -> Result<RemoteReplyBindingPeekV2<'_>, Diagnostic> {
+    if bytes.len() > max_bytes {
         return Err(remote_v2_failure(
             DiagnosticCategory::ResourceLimit,
             "query_remote_v2_envelope_too_large",
@@ -2141,12 +2226,12 @@ fn validate_outcome_evidence_v2(
     validate_outcome_kind_v2(outcome, expected)?;
     match outcome {
         RemoteOutcomeV2::Rows { rows } => {
-            check_sequence_item_budget(rows.len(), limits.max_items)?;
+            check_item_budget(rows.len(), limits.max_items)?;
             let expected_width = plan.and_then(low_level_output_width);
             validate_low_level_rows(rows, expected_width)?;
         }
         RemoteOutcomeV2::Documents { documents } => {
-            check_sequence_item_budget(documents.len(), limits.max_items)?;
+            check_item_budget(documents.len(), limits.max_items)?;
             let expected_width = plan.and_then(low_level_output_width);
             let mut members = 0_u64;
             let width = expected_width.or_else(|| documents.first().map(Vec::len));
@@ -2182,7 +2267,7 @@ fn validate_outcome_evidence_v2(
             }
         }
         RemoteOutcomeV2::HydratedRows { graph, rows } => {
-            check_sequence_item_budget(rows.len(), limits.max_items)?;
+            check_item_budget(rows.len(), limits.max_items)?;
             validate_hydration_graph_budget(graph, limits)?;
             validate_hydrated_rows(graph, rows, limits, plan, expected)?;
         }
@@ -2194,7 +2279,7 @@ fn validate_outcome_evidence_v2(
             root,
             total,
         } => {
-            check_sequence_item_budget(entries.len(), limits.max_items)?;
+            check_item_budget(entries.len(), limits.max_items)?;
             if u64::try_from(entries.len()).unwrap_or(u64::MAX) > *limit {
                 return Err(remote_evidence_mismatch_v2(
                     "V2 page contains more entries than its exact limit",
@@ -2271,7 +2356,7 @@ fn validate_model_reduction(
             "typed reduction outcome does not echo its exact root, group, and reducer contract",
         ));
     }
-    check_sequence_item_budget(rows.len(), limits.max_items)?;
+    check_item_budget(rows.len(), limits.max_items)?;
     if group.is_none() && rows.len() != 1 {
         return Err(remote_evidence_mismatch_v2(
             "ungrouped reduction must carry exactly one total row",
@@ -2598,14 +2683,6 @@ fn check_item_budget(actual: usize, maximum: u64) -> Result<(), Diagnostic> {
     }
 }
 
-fn check_sequence_item_budget(actual: usize, maximum: u64) -> Result<(), Diagnostic> {
-    check_item_budget(actual, sequence_item_limit(maximum))
-}
-
-fn sequence_item_limit(maximum: u64) -> u64 {
-    maximum.min(u64::try_from(MAX_CANONICAL_COLLECTION_LEN).unwrap_or(u64::MAX))
-}
-
 fn add_budgeted(
     total: &mut u64,
     increment: usize,
@@ -2783,7 +2860,7 @@ impl<'de> Visitor<'de> for OutcomeScanVisitor<'_> {
                         child: ScanChild::Row,
                         counter: Some((
                             StreamingCounter::Items,
-                            sequence_item_limit(self.limits.max_items),
+                            self.limits.max_items,
                             StreamingPreflightFailure::Items,
                         )),
                         limits: self.limits,
@@ -2797,7 +2874,7 @@ impl<'de> Visitor<'de> for OutcomeScanVisitor<'_> {
                         child: ScanChild::Document,
                         counter: Some((
                             StreamingCounter::Items,
-                            sequence_item_limit(self.limits.max_items),
+                            self.limits.max_items,
                             StreamingPreflightFailure::Items,
                         )),
                         limits: self.limits,
@@ -2812,7 +2889,7 @@ impl<'de> Visitor<'de> for OutcomeScanVisitor<'_> {
                         child: ScanChild::HydratedRow,
                         counter: Some((
                             StreamingCounter::Items,
-                            sequence_item_limit(self.limits.max_items),
+                            self.limits.max_items,
                             StreamingPreflightFailure::Items,
                         )),
                         limits: self.limits,
@@ -2826,7 +2903,7 @@ impl<'de> Visitor<'de> for OutcomeScanVisitor<'_> {
                         child: ScanChild::ReductionRow,
                         counter: Some((
                             StreamingCounter::Items,
-                            sequence_item_limit(self.limits.max_items),
+                            self.limits.max_items,
                             StreamingPreflightFailure::Items,
                         )),
                         limits: self.limits,

@@ -308,6 +308,9 @@ async fn build_v2_state(
     .map_err(|error| format!("v2 executor advertisement rejected: {error:?}"))?
     .with_query_limits(config.v2.resolved_query_limits()?)
     .map_err(|error| format!("v2 query limits rejected: {error:?}"))?;
+    let state = state
+        .with_answer_limits(config.v2.resolved_answer_limits()?)
+        .map_err(|error| format!("v2 answer limits rejected: {error:?}"))?;
     state
         .verify_startup_authority()
         .await

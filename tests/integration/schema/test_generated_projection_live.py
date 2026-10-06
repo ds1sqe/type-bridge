@@ -927,7 +927,7 @@ def _sdk_v2_resource_limits(
     remote_exchange: Any,
     membership_iid: str,
 ) -> dict[str, object]:
-    maxima = {
+    defaults = {
         "timeout_milliseconds": 30_000,
         "items": 65_536,
         "bytes": 33_554_432,
@@ -937,12 +937,25 @@ def _sdk_v2_resource_limits(
         "role_players": 65_536,
         "statements": 3,
     }
-    plus = generated.QueryExecutionResourceLimits(
-        **{name: value + 1 for name, value in maxima.items()}
+    # Every dimension but the statement count may be raised past its
+    # default and is kept as given.
+    raisable = {name: value + 1 for name, value in defaults.items() if name != "statements"}
+    plus = generated.QueryExecutionResourceLimits(**raisable)
+    zero = generated.QueryExecutionResourceLimits(**dict.fromkeys(defaults, 0))
+    plus_one_kept_all = (
+        all(getattr(plus, name) == value for name, value in raisable.items())
+        and plus.statements == defaults["statements"]
     )
-    zero = generated.QueryExecutionResourceLimits(**dict.fromkeys(maxima, 0))
-    plus_one_clamped_all = all(getattr(plus, name) == value for name, value in maxima.items())
-    zero_tightening_all = all(getattr(zero, name) == 0 for name in maxima)
+    zero_tightening_all = all(getattr(zero, name) == 0 for name in defaults)
+    # Past a supported maximum a value is refused by name, never clamped.
+    past_maximum_refused = True
+    for arguments in ({"statements": 4}, {"timeout_milliseconds": 86_400_001}):
+        try:
+            generated.QueryExecutionResourceLimits(**arguments)
+        except ValueError as error:
+            past_maximum_refused = past_maximum_refused and next(iter(arguments)) in str(error)
+        else:
+            past_maximum_refused = False
 
     def limited_session(*, remote: bool) -> Any:
         limits = generated.QueryExecutionResourceLimits(role_players=0)
@@ -975,8 +988,9 @@ def _sdk_v2_resource_limits(
     assert errors[0] == errors[1]
     category, _, code = errors[0]
     return {
-        "hard_maxima": maxima,
-        "plus_one_clamped_all": plus_one_clamped_all,
+        "defaults": defaults,
+        "plus_one_kept_all": plus_one_kept_all,
+        "past_maximum_refused": past_maximum_refused,
         "zero_tightening_all": zero_tightening_all,
         "enforced": {
             "dimension": "role_players",

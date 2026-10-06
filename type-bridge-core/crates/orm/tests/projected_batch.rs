@@ -9,7 +9,7 @@ use type_bridge_contract::temporal::{CanonicalDateTimeTz, TimeZoneDesignator};
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, DecimalValue};
 use type_bridge_orm::projected_batch::ProjectedBatchBindingBudget;
 use type_bridge_orm::{
-    AnswerCancellation, InstalledRuntimeProjection, MAX_QUERY_ITEMS,
+    AnswerCancellation, DEFAULT_QUERY_ITEMS, InstalledRuntimeProjection,
     PreparedProjectedBatchInvocation, ProjectedAttributeValue, ProjectedBatch,
     ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchRow, ProjectedCreate,
     ProjectedReference, QueryExecutionResourceLimits,
@@ -558,7 +558,7 @@ fn binding_budget_resource_crossing_precedes_duplicate_only_before_retention() {
     .unwrap();
     let limits = QueryExecutionResourceLimits::tightened(
         30_000,
-        MAX_QUERY_ITEMS,
+        DEFAULT_QUERY_ITEMS,
         prefix.resource_measure().bytes(),
         u64::MAX,
         u64::MAX,
@@ -852,7 +852,7 @@ fn plain_binding_budget_rejects_the_first_row_beyond_the_hard_item_cap() {
     let mut budget =
         ProjectedBatchBindingBudget::try_new(&installed, person, ProjectedBatchOperation::Delete)
             .unwrap();
-    let maximum = usize::try_from(MAX_QUERY_ITEMS).unwrap();
+    let maximum = usize::try_from(DEFAULT_QUERY_ITEMS).unwrap();
     for _ in 0..maximum {
         budget.try_add_row(&installed, &row).unwrap();
     }
@@ -1741,7 +1741,7 @@ fn reusable_batch_rejects_a_foreign_installed_projection() {
 #[test]
 fn hard_item_cap_rejects_before_normalization_work() {
     let installed = installed(BindingTarget::Python);
-    let rows = (0..=MAX_QUERY_ITEMS)
+    let rows = (0..=DEFAULT_QUERY_ITEMS)
         .map(|index| ProjectedBatchRow::Delete {
             iid: format!("0x{:x}", index + 1),
         })
@@ -1756,11 +1756,11 @@ fn hard_item_cap_rejects_before_normalization_work() {
     assert_eq!(error.code().as_str(), "batch_item_limit");
     assert_eq!(
         error.details().get(&name("actual")),
-        Some(&SdkDiagnosticDetailValue::Count(MAX_QUERY_ITEMS + 1))
+        Some(&SdkDiagnosticDetailValue::Count(DEFAULT_QUERY_ITEMS + 1))
     );
     assert_eq!(
         error.details().get(&name("maximum")),
-        Some(&SdkDiagnosticDetailValue::Count(MAX_QUERY_ITEMS))
+        Some(&SdkDiagnosticDetailValue::Count(DEFAULT_QUERY_ITEMS))
     );
 }
 

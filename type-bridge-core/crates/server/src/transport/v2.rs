@@ -350,6 +350,28 @@ impl V2QueryState {
         Ok(self)
     }
 
+    /// Advertise and enforce `ceilings` instead of the default answer
+    /// policy: how much one query may return through this executor.
+    ///
+    /// As with the query limits, the advertisement is the statement admission
+    /// reads back. The hosting process's provider ceilings follow it, so a
+    /// raised policy is not cut short by an unrelated default.
+    pub fn with_answer_limits(
+        mut self,
+        ceilings: type_bridge_orm::QueryExecutionResourceLimits,
+    ) -> Result<Self, Diagnostic> {
+        let advertisement = self
+            .advertisement
+            .clone()
+            .with_answer_limits(ceilings.overrides())?;
+        self.advertisement_fingerprint = advertisement.fingerprint()?;
+        self.advertisement = advertisement;
+        self.ceilings.answer.max_items = ceilings.items;
+        self.ceilings.answer.max_bytes = ceilings.bytes;
+        self.ceilings.max_collection_members = ceilings.collection_members;
+        Ok(self)
+    }
+
     /// Largest HTTP body the collector reads: the advertised request budget
     /// plus framing slack.
     fn body_limit_bytes(&self) -> usize {

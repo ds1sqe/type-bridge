@@ -33,9 +33,9 @@ use type_bridge_orm::{
 };
 #[cfg(test)]
 use type_bridge_orm::{
-    MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
-    MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS, MAX_QUERY_STATEMENTS,
-    MAX_QUERY_TIMEOUT_MILLISECONDS,
+    DEFAULT_QUERY_ATTRIBUTE_VALUES, DEFAULT_QUERY_BYTES, DEFAULT_QUERY_COLLECTION_MEMBERS,
+    DEFAULT_QUERY_GRAPH_NODES, DEFAULT_QUERY_ITEMS, DEFAULT_QUERY_ROLE_PLAYERS,
+    DEFAULT_QUERY_STATEMENTS, DEFAULT_QUERY_TIMEOUT_MILLISECONDS,
 };
 
 use crate::abi::{
@@ -8270,14 +8270,14 @@ mod tests {
         TypeBridgeQueryExecutionLimitsV1 {
             struct_size: size_of::<TypeBridgeQueryExecutionLimitsV1>() as u32,
             version: DESCRIPTOR_VERSION,
-            timeout_milliseconds: MAX_QUERY_TIMEOUT_MILLISECONDS,
-            items: MAX_QUERY_ITEMS,
-            bytes: MAX_QUERY_BYTES,
-            graph_nodes: MAX_QUERY_GRAPH_NODES,
-            attribute_values: MAX_QUERY_ATTRIBUTE_VALUES,
-            collection_members: MAX_QUERY_COLLECTION_MEMBERS,
-            role_players: MAX_QUERY_ROLE_PLAYERS,
-            statements: MAX_QUERY_STATEMENTS,
+            timeout_milliseconds: DEFAULT_QUERY_TIMEOUT_MILLISECONDS,
+            items: DEFAULT_QUERY_ITEMS,
+            bytes: DEFAULT_QUERY_BYTES,
+            graph_nodes: DEFAULT_QUERY_GRAPH_NODES,
+            attribute_values: DEFAULT_QUERY_ATTRIBUTE_VALUES,
+            collection_members: DEFAULT_QUERY_COLLECTION_MEMBERS,
+            role_players: DEFAULT_QUERY_ROLE_PLAYERS,
+            statements: DEFAULT_QUERY_STATEMENTS,
             reserved0: 0,
             reserved: [0; 4],
         }
@@ -11997,13 +11997,13 @@ mod tests {
         // SAFETY: fixture owns exact generated handles.
         let built = unsafe { BuiltQuery::open(&package, TERMINAL_FIRST, ROWS_BOUNDED_MANY) };
         let ceiling = QueryExecutionResourceLimits::tightened(
-            MAX_QUERY_TIMEOUT_MILLISECONDS,
-            MAX_QUERY_ITEMS,
-            MAX_QUERY_BYTES,
-            MAX_QUERY_GRAPH_NODES,
-            MAX_QUERY_ATTRIBUTE_VALUES,
-            MAX_QUERY_COLLECTION_MEMBERS,
-            MAX_QUERY_ROLE_PLAYERS,
+            DEFAULT_QUERY_TIMEOUT_MILLISECONDS,
+            DEFAULT_QUERY_ITEMS,
+            DEFAULT_QUERY_BYTES,
+            DEFAULT_QUERY_GRAPH_NODES,
+            DEFAULT_QUERY_ATTRIBUTE_VALUES,
+            DEFAULT_QUERY_COLLECTION_MEMBERS,
+            DEFAULT_QUERY_ROLE_PLAYERS,
             0,
         );
         let database = fake_database_with_answer_ceiling(&package, Vec::new(), Vec::new(), ceiling);
@@ -12106,52 +12106,51 @@ mod tests {
         );
         unsafe { close_diagnostics(&mut diagnostics) };
         assert_eq!(database.events.opens.load(Ordering::Acquire), 0);
-        let excessive_limits = [
+        // A dimension may be raised past its default and is kept as given.
+        let raised = {
+            let mut value = default_limits();
+            value.timeout_milliseconds = DEFAULT_QUERY_TIMEOUT_MILLISECONDS + 1;
+            value.items = DEFAULT_QUERY_ITEMS + 1;
+            value.bytes = DEFAULT_QUERY_BYTES + 1;
+            value.graph_nodes = DEFAULT_QUERY_GRAPH_NODES + 1;
+            value.attribute_values = DEFAULT_QUERY_ATTRIBUTE_VALUES + 1;
+            value.collection_members = DEFAULT_QUERY_COLLECTION_MEMBERS + 1;
+            value.role_players = DEFAULT_QUERY_ROLE_PLAYERS + 1;
+            value
+        };
+        assert_eq!(
+            parse_common_limits(Some(raised)).expect("a raised policy is admitted"),
+            QueryExecutionResourceLimits {
+                timeout_milliseconds: DEFAULT_QUERY_TIMEOUT_MILLISECONDS + 1,
+                items: DEFAULT_QUERY_ITEMS + 1,
+                bytes: DEFAULT_QUERY_BYTES + 1,
+                graph_nodes: DEFAULT_QUERY_GRAPH_NODES + 1,
+                attribute_values: DEFAULT_QUERY_ATTRIBUTE_VALUES + 1,
+                collection_members: DEFAULT_QUERY_COLLECTION_MEMBERS + 1,
+                role_players: DEFAULT_QUERY_ROLE_PLAYERS + 1,
+                statements: DEFAULT_QUERY_STATEMENTS,
+            },
+        );
+        // Past a supported maximum it is refused, never clamped.
+        let unsupported = [
             {
                 let mut value = default_limits();
-                value.timeout_milliseconds = MAX_QUERY_TIMEOUT_MILLISECONDS + 1;
+                value.timeout_milliseconds = type_bridge_orm::MAX_QUERY_TIMEOUT_MILLISECONDS + 1;
                 value
             },
             {
                 let mut value = default_limits();
-                value.items = MAX_QUERY_ITEMS + 1;
-                value
-            },
-            {
-                let mut value = default_limits();
-                value.bytes = MAX_QUERY_BYTES + 1;
-                value
-            },
-            {
-                let mut value = default_limits();
-                value.graph_nodes = MAX_QUERY_GRAPH_NODES + 1;
-                value
-            },
-            {
-                let mut value = default_limits();
-                value.attribute_values = MAX_QUERY_ATTRIBUTE_VALUES + 1;
-                value
-            },
-            {
-                let mut value = default_limits();
-                value.collection_members = MAX_QUERY_COLLECTION_MEMBERS + 1;
-                value
-            },
-            {
-                let mut value = default_limits();
-                value.role_players = MAX_QUERY_ROLE_PLAYERS + 1;
-                value
-            },
-            {
-                let mut value = default_limits();
-                value.statements = MAX_QUERY_STATEMENTS + 1;
+                value.statements = type_bridge_orm::MAX_QUERY_STATEMENTS + 1;
                 value
             },
         ];
-        for excessive in &excessive_limits {
+        for refused in &unsupported {
             assert_eq!(
-                parse_common_limits(Some(*excessive)).expect("layout remains canonical"),
-                QueryExecutionResourceLimits::default(),
+                parse_common_limits(Some(*refused))
+                    .expect_err("a value past its supported maximum")
+                    .code()
+                    .as_str(),
+                "c_query_execution_limits_invalid",
             );
             assert_eq!(database.events.opens.load(Ordering::Acquire), 0);
         }

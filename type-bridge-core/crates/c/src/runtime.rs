@@ -5330,14 +5330,14 @@ entities:
         assert!(cancellation.is_cancelled());
         assert_eq!(REQUIRED_SEMANTIC_PROFILE, b"typedb-3.12.1/v1");
         let limits = QueryExecutionResourceLimits::tightened(
-            type_bridge_orm::MAX_QUERY_TIMEOUT_MILLISECONDS + 1,
-            type_bridge_orm::MAX_QUERY_ITEMS + 1,
-            type_bridge_orm::MAX_QUERY_BYTES + 1,
-            type_bridge_orm::MAX_QUERY_GRAPH_NODES + 1,
-            type_bridge_orm::MAX_QUERY_ATTRIBUTE_VALUES + 1,
-            type_bridge_orm::MAX_QUERY_COLLECTION_MEMBERS + 1,
-            type_bridge_orm::MAX_QUERY_ROLE_PLAYERS + 1,
-            type_bridge_orm::MAX_QUERY_STATEMENTS + 1,
+            type_bridge_orm::DEFAULT_QUERY_TIMEOUT_MILLISECONDS + 1,
+            type_bridge_orm::DEFAULT_QUERY_ITEMS + 1,
+            type_bridge_orm::DEFAULT_QUERY_BYTES + 1,
+            type_bridge_orm::DEFAULT_QUERY_GRAPH_NODES + 1,
+            type_bridge_orm::DEFAULT_QUERY_ATTRIBUTE_VALUES + 1,
+            type_bridge_orm::DEFAULT_QUERY_COLLECTION_MEMBERS + 1,
+            type_bridge_orm::DEFAULT_QUERY_ROLE_PLAYERS + 1,
+            type_bridge_orm::DEFAULT_QUERY_STATEMENTS + 1,
         );
         assert_eq!(limits, QueryExecutionResourceLimits::default());
 

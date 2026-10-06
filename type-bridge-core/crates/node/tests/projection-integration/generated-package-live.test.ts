@@ -893,7 +893,7 @@ async function sdkV2ResourceLimits(
   exchange: (request: Uint8Array, signal?: AbortSignal) => Promise<Uint8Array>,
   membershipIid: string,
 ): Promise<Record<string, unknown>> {
-  const maxima = {
+  const defaults = {
     timeout_milliseconds: 30_000,
     items: 65_536,
     bytes: 33_554_432,
@@ -903,17 +903,31 @@ async function sdkV2ResourceLimits(
     role_players: 65_536,
     statements: 3,
   };
-  const toOptions = (offset: number): Record<string, bigint> => ({
-    timeoutMilliseconds: BigInt(maxima.timeout_milliseconds + offset),
-    items: BigInt(maxima.items + offset),
-    bytes: BigInt(maxima.bytes + offset),
-    graphNodes: BigInt(maxima.graph_nodes + offset),
-    attributeValues: BigInt(maxima.attribute_values + offset),
-    collectionMembers: BigInt(maxima.collection_members + offset),
-    rolePlayers: BigInt(maxima.role_players + offset),
-    statements: BigInt(maxima.statements + offset),
+  // Every dimension but the statement count may be raised past its default
+  // and is kept as given.
+  const raised = (offset: number): Record<string, bigint> => ({
+    timeoutMilliseconds: BigInt(defaults.timeout_milliseconds + offset),
+    items: BigInt(defaults.items + offset),
+    bytes: BigInt(defaults.bytes + offset),
+    graphNodes: BigInt(defaults.graph_nodes + offset),
+    attributeValues: BigInt(defaults.attribute_values + offset),
+    collectionMembers: BigInt(defaults.collection_members + offset),
+    rolePlayers: BigInt(defaults.role_players + offset),
+    statements: BigInt(defaults.statements),
   });
-  const plus = new generated.QueryExecutionResourceLimits(toOptions(1));
+  const plus = new generated.QueryExecutionResourceLimits(raised(1));
+  // Past a supported maximum a value is refused by name, never clamped.
+  const refusedByName = (options: Record<string, bigint>, name: string): boolean => {
+    try {
+      new generated.QueryExecutionResourceLimits(options);
+      return false;
+    } catch (error) {
+      return String((error as Error).message).includes(name);
+    }
+  };
+  const pastMaximumRefused =
+    refusedByName({ statements: 4n }, "statements") &&
+    refusedByName({ timeoutMilliseconds: 86_400_001n }, "timeout_milliseconds");
   const zero = new generated.QueryExecutionResourceLimits({
     timeoutMilliseconds: 0n,
     items: 0n,
@@ -934,8 +948,8 @@ async function sdkV2ResourceLimits(
     Number(limits.rolePlayers),
     Number(limits.statements),
   ];
-  const maximaValues = Object.values(maxima);
-  const plusOneClampedAll = values(plus).every((value, index) => value === maximaValues[index]);
+  const expectedPlus = Object.values(defaults).map((value, index) => (index === 7 ? value : value + 1));
+  const plusOneKeptAll = values(plus).every((value, index) => value === expectedPlus[index]);
   const zeroTighteningAll = values(zero).every((value) => value === 0);
   const errors: readonly [string, string][] = await Promise.all(
     [false, true].map(async (remote) => {
@@ -959,8 +973,9 @@ async function sdkV2ResourceLimits(
   );
   assert.deepEqual(errors[1], errors[0]);
   return {
-    hard_maxima: maxima,
-    plus_one_clamped_all: plusOneClampedAll,
+    defaults,
+    plus_one_kept_all: plusOneKeptAll,
+    past_maximum_refused: pastMaximumRefused,
     zero_tightening_all: zeroTighteningAll,
     enforced: {
       dimension: "role_players",

@@ -1600,6 +1600,62 @@ fn limit_conversion_rejects_the_signed_and_oversized_ranges() {
 }
 
 #[test]
+fn advertised_answer_limits_are_omitted_at_default_and_canonical_otherwise() {
+    use std::collections::BTreeMap;
+
+    let default = advertisement();
+    let default_bytes = default.encode().expect("default advertisement");
+    assert!(default.answer_limits().is_empty());
+    assert!(!String::from_utf8_lossy(&default_bytes).contains("answer_limits"));
+
+    let ceilings = BTreeMap::from([
+        ("items".to_owned(), 1_000_000_u64),
+        ("bytes".to_owned(), 1_u64 << 30),
+    ]);
+    let advertised = advertisement()
+        .with_answer_limits(ceilings.clone())
+        .expect("admissible ceilings");
+    let bytes = advertised.encode().expect("raised advertisement");
+    let decoded = RemoteCapabilities::decode(&bytes).expect("canonical raised advertisement");
+    assert_eq!(decoded, advertised);
+    assert_eq!(decoded.answer_limits(), &ceilings);
+    assert_ne!(
+        decoded.fingerprint().expect("raised fingerprint"),
+        default.fingerprint().expect("default fingerprint"),
+        "a request cannot bind one advertisement and be admitted under another's ceilings"
+    );
+
+    // An unknown name, a redundant default, and a value past its maximum.
+    for refused in [
+        ("made_up", 1_u64),
+        ("items", 65_536),
+        ("statements", 4),
+        ("timeout_milliseconds", 24 * 60 * 60 * 1000 + 1),
+    ] {
+        assert_eq!(
+            advertisement()
+                .with_answer_limits(BTreeMap::from([(refused.0.to_owned(), refused.1)]))
+                .expect_err("inadmissible ceilings cannot be advertised")
+                .code()
+                .as_str(),
+            "query_remote_capabilities_limits_invalid",
+            "{refused:?}",
+        );
+    }
+    let mut forged: Value = serde_json::from_slice(&bytes).expect("advertisement JSON");
+    forged["answer_limits"]["made_up"] = Value::from(1);
+    assert_eq!(
+        RemoteCapabilities::decode(
+            &type_bridge_contract::codec::to_canonical_json(&forged).expect("forged advertisement"),
+        )
+        .expect_err("forged ceilings are refused")
+        .code()
+        .as_str(),
+        "query_remote_capabilities_limits_invalid",
+    );
+}
+
+#[test]
 fn advertised_query_limits_are_omitted_at_default_and_canonical_otherwise() {
     use type_bridge_contract::limits::QueryLimits;
 
