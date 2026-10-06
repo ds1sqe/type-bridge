@@ -64,6 +64,8 @@ mod query_v2_model;
 mod query_v2_model_remote;
 pub mod query_v2_prepared;
 pub mod query_v2_remote;
+#[cfg(test)]
+mod query_v2_wide_query_tests;
 pub mod runtime_projection;
 pub mod session;
 pub mod value;
