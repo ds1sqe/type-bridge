@@ -1073,6 +1073,68 @@ else:
     raise AssertionError("a lowered session limit must refuse the wider query")
 assert generated_remote_exchanges == 1
 limited_remote_session.close()
+
+# Repeated where clauses are one flat conjunction, so a wide query adapts
+# under the default limits. Thirty-eight clauses used to nest past the
+# canonical encoding depth and were refused as a resource limit during
+# adaptation. This fixture's advertisement omits the field-comparison
+# capability, so preparation now ends one step later, at capability
+# negotiation, which only an adapted plan reaches.
+wide_remote_requests: list[int] = []
+
+
+async def wide_remote_exchange(request: bytes) -> bytes:
+    wide_remote_requests.append(len(request))
+    return b"{}"
+
+
+wide_remote_session = RemoteQuerySession(
+    generated_advertisement,
+    wide_remote_exchange,
+    RemoteQueryLimits(
+        max_items=11,
+        max_bytes=1 << 20,
+        max_collection_members=12,
+        max_graph_nodes=13,
+        max_attribute_values=14,
+        max_role_players=15,
+    ),
+)
+wide_remote_person = wide_remote_session.exact(Person)
+try:
+    asyncio.run(
+        wide_remote_session.query(wide_remote_person)
+        .where(*(wide_remote_person.field(Person.score).gte(Score(1)) for _ in range(38)))
+        .rows(limit=1)
+    )
+except MatchRequestError as error:
+    assert error.category == "unsupported_capability", (error.category, error.code)
+else:
+    raise AssertionError("the fixture advertisement cannot execute a field comparison")
+assert wide_remote_requests == []
+
+# Nesting the caller actually wrote is still bounded: alternating conjunction
+# and disjunction thirty-eight deep is refused during adaptation, before
+# capability negotiation, and the refusal names the limit to raise.
+nested_remote_predicate = wide_remote_person.field(Person.score).gte(Score(1))
+for depth in range(1, 38):
+    nested_remote_term = wide_remote_person.field(Person.score).gte(Score(1))
+    nested_remote_predicate = (
+        nested_remote_predicate.and_(nested_remote_term)
+        if depth % 2 == 0
+        else nested_remote_predicate.or_(nested_remote_term)
+    )
+try:
+    asyncio.run(
+        wide_remote_session.query(wide_remote_person).where(nested_remote_predicate).rows(limit=1)
+    )
+except MatchRequestError as error:
+    assert error.category == "resource_limit", (error.category, error.code)
+    assert error.code == "canonical_json_too_deep"
+else:
+    raise AssertionError("a predicate nested past the encoding depth must be refused")
+assert wide_remote_requests == []
+wide_remote_session.close()
 assert generated_failure_reply is not None
 try:
     getattr(captured_failure_pending[0], "decode_reply")(generated_failure_reply)

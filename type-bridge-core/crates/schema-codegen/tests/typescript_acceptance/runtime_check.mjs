@@ -1089,6 +1089,67 @@ await assert.rejects(
 assert.equal(generatedRemoteExchanges, limitedRemoteExchangesBefore);
 limitedRemoteSession.close();
 
+// Repeated where clauses are one flat conjunction, so a wide query adapts
+// under the default limits. Thirty-eight clauses used to nest past the
+// canonical encoding depth and were refused as a resource limit during
+// adaptation. This fixture's advertisement omits the field-comparison
+// capability, so preparation now ends one step later, at capability
+// negotiation, which only an adapted plan reaches.
+let wideRemoteRequests = 0;
+const wideRemoteSession = new RemoteQuerySession(
+  generatedAdvertisement,
+  async () => {
+    wideRemoteRequests += 1;
+    return new TextEncoder().encode("{}");
+  },
+  {
+    maxItems: 11n,
+    maxBytes: 1n << 20n,
+    maxCollectionMembers: 12n,
+    maxGraphNodes: 13n,
+    maxAttributeValues: 14n,
+    maxRolePlayers: 15n,
+  },
+);
+const wideRemotePerson = wideRemoteSession.exact(Person);
+await assert.rejects(
+  async () =>
+    wideRemoteSession
+      .query(wideRemotePerson)
+      .where(
+        ...Array.from({ length: 38 }, () =>
+          wideRemotePerson.field(Person.score).gte(Score.create(1n)),
+        ),
+      )
+      .one(),
+  (error) => {
+    assert.equal(error.category, "unsupported_capability");
+    return true;
+  },
+);
+assert.equal(wideRemoteRequests, 0);
+
+// Nesting the caller actually wrote is still bounded: alternating conjunction
+// and disjunction thirty-eight deep is refused during adaptation, before
+// capability negotiation, and the refusal names the limit to raise.
+let nestedRemotePredicate = wideRemotePerson.field(Person.score).gte(Score.create(1n));
+for (let depth = 1; depth < 38; depth += 1) {
+  const term = wideRemotePerson.field(Person.score).gte(Score.create(1n));
+  nestedRemotePredicate =
+    depth % 2 === 0 ? nestedRemotePredicate.and(term) : nestedRemotePredicate.or(term);
+}
+await assert.rejects(
+  async () =>
+    wideRemoteSession.query(wideRemotePerson).where(nestedRemotePredicate).one(),
+  (error) => {
+    assert.equal(error.category, "resource_limit");
+    assert.equal(error.code, "canonical_json_too_deep");
+    return true;
+  },
+);
+assert.equal(wideRemoteRequests, 0);
+wideRemoteSession.close();
+
 const remoteLifecycle = generatedRemoteSession.query(generatedRemotePerson);
 const remoteLifecycleClone = remoteLifecycle.clone();
 const remoteLifecycleDerived = remoteLifecycle.where(
