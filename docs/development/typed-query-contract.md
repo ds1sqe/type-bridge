@@ -530,6 +530,87 @@ may tighten but never raise those ceilings. Limits are enforced while
 processing, never after unbounded materialization. Any violation fails the
 whole operation; no partial row or page is exposed.
 
+## Query Limits
+
+A query is held to one set of limits from authoring to execution: the plan's
+canonical encoding, its structure, and its remote request envelope. The limits
+are a value, `QueryLimits`, not library constants. Defaults reproduce the
+ceilings every earlier release enforced, so a caller who sets nothing sees
+unchanged plan bytes, fingerprints, and refusals.
+
+| Limit | Default | Supported maximum | Bounds |
+| --- | ---: | ---: | --- |
+| `canonical_bytes` | 16 MiB | none | One plan or invocation artifact; also one predicate literal and the lowered TypeQL |
+| `canonical_depth` | 64 | 126 | Nesting of the canonical encoding |
+| `canonical_collection_len` | 65,536 | none | Members of one encoded array or object |
+| `canonical_string_bytes` | 1 MiB | none | One encoded string or key |
+| `selected_slots` | 16 | 16 | Output slots, reducers, and grouping fields |
+| `bindings` | 256 | 65,536 | Plan bindings and input columns |
+| `predicate_nodes` | 4,096 | none | Total predicate nodes |
+| `predicate_depth` | 64 | 126 | Predicate nesting |
+| `boolean_terms` | 256 | none | Children of one conjunction, disjunction, or call |
+| `allowed_cross_joins` | 1,024 | none | Explicit cross-join pairs |
+| `order_terms` | 64 | none | Row or root ordering terms |
+| `collection_order_terms` | 64 | none | Ordering terms of one collected slot |
+| `input_rows` | 4,096 | none | Rows of one invocation |
+| `input_bytes` | 4 MiB | none | Encoded bytes of one invocation's rows |
+| `output_name_bytes` | 128 | none | One output or variable name |
+| `semantic_id_bytes` | 512 | none | One semantic identity |
+| `diagnostic_bytes` | 65,536 | none | One serialized diagnostic |
+| `remote_request_bytes` | 32 MiB | none | One remote request envelope |
+
+Every limit must be at least one. The three supported maxima are properties of
+the implementation, not policy: the JSON parser decodes at most 127 nesting
+levels and a request frames the plan in one, binding identities are 16 bits
+wide, and generated tuple typing in every binding is sealed at sixteen
+positions. `selected_slots` can therefore be lowered but not raised.
+
+Rules that hold in every binding:
+
+- Rust admits limits. A binding passes named overrides through and never
+  validates, clamps, or defaults them. An unknown name or an unsupported value
+  is refused before a session exists.
+- A session's limits apply to every query it authors. Validation, V2
+  adaptation, canonical encoding, and execution all read the limits the
+  request was validated under.
+- Repeated `where` clauses and chained `and`/`or` build one flat conjunction
+  or disjunction. Nesting depth reflects only nesting the caller wrote.
+- Default `predicate_depth` and default `canonical_depth` are both 64, and
+  each predicate level costs two encoded levels, so a predicate nested past
+  about thirty real levels is refused by `canonical_depth` until the caller
+  raises it.
+- Answer ceilings are separate. Reply size, item and graph counts, statement
+  count, and duration belong to the tighten-only execution policy described
+  above and are not query limits.
+
+### Remote agreement
+
+An executor states its query limits in its capability advertisement and
+enforces exactly that statement: it decodes each request and validates each
+plan under the advertised limits, whatever the client was configured with.
+The advertisement names only limits that differ from the defaults, so a
+default executor's advertisement bytes and fingerprint are unchanged. A client
+built before query limits were configurable rejects an advertisement that
+names any, which is the intended fail-closed outcome.
+
+A client holds each request to the stricter of its session's limits and the
+advertised limits and refuses before sending when the plan does not fit.
+
+### Refusals
+
+A query refused by a limit reports `resource_limit` with three details:
+
+| Detail | Meaning |
+| --- | --- |
+| `limit` | The stable limit name from the table above |
+| `maximum` | The effective value the query was held to |
+| `source` | `default`, `configured` (the caller or host set it), or `advertised` (the remote executor's value was the stricter one) |
+
+`source` tells the reader which setting to change: raising a session limit
+does not help when the advertisement is the binding side. Diagnostics that
+already carried their own details, such as `maximum_depth` or `actual_bytes`,
+keep them.
+
 ## Stable Error Categories
 
 | Category | Meaning | Executor invoked? | Data statements? |

@@ -4,6 +4,20 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Configurable query limits. `QueryLimits` replaces the fixed ceilings on a
+  query's encoded size, nesting depth, and structure, and a session can lower
+  or raise them, including plans larger than 16 MiB. Python, TypeScript/Node,
+  and Rust sessions accept it (`query_limits`, `queryLimits`,
+  `with_query_limits`); C gains
+  `type_bridge_query_session_open_with_limits_v1`. Defaults are unchanged.
+- Remote executors advertise the query limits they enforce. A client holds a
+  request to the stricter of its own and the advertised limits and refuses
+  before sending. The standalone server reads `[v2.query_limits]`.
+- Query resource-limit refusals report `limit`, `maximum`, and `source`
+  (`default`, `configured`, or `advertised`).
+
 ### Fixed
 
 - Build repeated `where` clauses and chained `and`/`or` predicates as one flat
@@ -21,6 +35,12 @@ All notable changes to TypeBridge will be documented in this file.
   is removed.
 - A generated manager filter with more than 256 predicates is refused with
   `structural_limit_exceeded` instead of `manager_filter_predicate_limit`.
+- `selected_slots` validation messages no longer spell the number sixteen;
+  the ceiling is reported in the `maximum` detail.
+- A client older than this release cannot decode a capability advertisement
+  from an executor configured with non-default query limits.
+- The C runtime header adds `type_bridge_query_limit_override_v1_t` and
+  `type_bridge_query_session_open_with_limits_v1`.
 
 ## [2.2.6] - 2026-10-16
 

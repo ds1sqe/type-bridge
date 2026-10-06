@@ -240,6 +240,53 @@ materialization through the same projection as direct execution.
 
 Remote mutations are not advertised by generated sessions.
 
+## Query limits
+
+A query is held to limits on its size and shape: encoded bytes, nesting depth,
+bindings, predicate nodes, and so on. They default to fixed ceilings. A
+session can lower them for an untrusted workload or raise them for a query the
+defaults refuse, such as a predicate with a literal over 16 MiB:
+
+```python
+from app_models import Person, QueryLimits
+
+session = Person.query(
+    db,
+    query_limits=QueryLimits(canonical_bytes=64 * 1024 * 1024),
+)
+```
+
+```ts
+import { QueryLimits, QuerySession } from "app-models";
+
+const session = new QuerySession(database, {
+  queryLimits: new QueryLimits({ canonical_bytes: 64n * 1024n * 1024n }),
+});
+```
+
+```rust
+use type_bridge::QueryLimits;
+
+let session = db
+    .query()?
+    .with_query_limits(QueryLimits::from_overrides([("canonical_bytes", 64 << 20)])?)?;
+```
+
+`RemoteQuerySession` takes the same value (`query_limits=` in Python, a fifth
+constructor argument in TypeScript). C callers use
+`<prefix>_query_session_open_with_limits` with an array of named overrides.
+
+Limits are named identically in every language. The engine validates them, so
+an unknown name or an unsupported value fails when the limits are built.
+
+Raising a limit locally is not enough for a remote query: the executor
+advertises the limits it enforces and a request is held to the stricter of the
+two. A refusal names the `limit`, the `maximum` it was held to, and a `source`
+of `default`, `configured`, or `advertised`, so it is clear whether changing
+the session's limits can help. The
+[typed-query contract](../development/typed-query-contract.md#query-limits)
+lists every limit with its default.
+
 ## Safety contract
 
 - Schema and projection fingerprints are verified at package installation.
