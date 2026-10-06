@@ -39,8 +39,14 @@ All notable changes to TypeBridge will be documented in this file.
   remote. Direct sessions of generated packages now apply the query limits
   that previously bound only remote sessions; a predicate nested past
   `canonical_depth` is refused with `canonical_json_too_deep` instead of
-  running. A package generated without a schema authority keeps the previous
-  executor.
+  running.
+- The second selected-row executor is removed. Every match request, direct
+  or remote, from a generated package or a dynamic registry, is adapted to a
+  V2 plan and run on one executor.
+- A generated package installed without a schema authority can no longer
+  run queries; it is refused with `schema_authority_required`. Every
+  generator has embedded the authority since 2.1.0, so this affects only
+  packages generated before that release: regenerate them.
 - Generated manager `all` and `first` run as complete fetches on the same
   executor. Results and the `manager_first_identity_not_unique` refusal are
   unchanged.

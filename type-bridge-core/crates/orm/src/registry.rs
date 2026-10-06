@@ -47,16 +47,14 @@ impl DescriptorFingerprintRoot {
     }
 }
 
-/// Thread-safe registry for runtime entity and relation descriptors.
-///
-/// The registry is intentionally standalone: it has no database, transaction,
-/// manager, Python, or TypeScript dependency. Bindings normalize their metadata
-/// into descriptors before registration.
+/// Where a registry's query schema comes from.
 #[derive(Debug, Clone, Default)]
-enum MatchExecutionAuthority {
+enum MatchSchemaSource {
+    /// A dynamic registry: the registered descriptors are the schema.
     #[default]
-    ReleasedAdapter,
-    InstalledProjectionNative(Arc<InstalledMatchProjectionAuthority>),
+    Descriptors,
+    /// A registry installed from a generated package's verified projection.
+    InstalledProjection(Arc<InstalledMatchProjectionAuthority>),
 }
 
 /// Immutable query authority retained from one verified runtime projection.
@@ -111,10 +109,15 @@ impl InstalledSchemaAuthority {
     }
 }
 
+/// Thread-safe registry for runtime entity and relation descriptors.
+///
+/// The registry is intentionally standalone: it has no database, transaction,
+/// manager, Python, or TypeScript dependency. Bindings normalize their metadata
+/// into descriptors before registration.
 #[derive(Debug, Default)]
 pub struct DescriptorRegistry {
     descriptors: RwLock<HashMap<String, TypeDescriptorRef>>,
-    match_execution_authority: MatchExecutionAuthority,
+    match_schema_source: MatchSchemaSource,
 }
 
 impl DescriptorRegistry {
@@ -132,33 +135,31 @@ impl DescriptorRegistry {
     ) -> Self {
         Self {
             descriptors: RwLock::new(HashMap::new()),
-            match_execution_authority: MatchExecutionAuthority::InstalledProjectionNative(
-                Arc::new(InstalledMatchProjectionAuthority {
+            match_schema_source: MatchSchemaSource::InstalledProjection(Arc::new(
+                InstalledMatchProjectionAuthority {
                     semantic_fingerprint,
                     target,
                     projection_fingerprint,
                     functions,
                     schema,
-                }),
-            ),
+                },
+            )),
         }
     }
 
     /// Return the verified schema authority this registry was installed
     /// with, if its package supplied one.
     pub(crate) fn installed_schema_authority(&self) -> Option<&Arc<InstalledSchemaAuthority>> {
-        match &self.match_execution_authority {
-            MatchExecutionAuthority::InstalledProjectionNative(authority) => {
-                authority.schema.as_ref()
-            }
-            MatchExecutionAuthority::ReleasedAdapter => None,
+        match &self.match_schema_source {
+            MatchSchemaSource::InstalledProjection(authority) => authority.schema.as_ref(),
+            MatchSchemaSource::Descriptors => None,
         }
     }
 
-    pub(crate) fn uses_installed_projection_native_execution(&self) -> bool {
+    pub(crate) fn is_installed_projection(&self) -> bool {
         matches!(
-            self.match_execution_authority,
-            MatchExecutionAuthority::InstalledProjectionNative(_)
+            self.match_schema_source,
+            MatchSchemaSource::InstalledProjection(_)
         )
     }
 
@@ -170,11 +171,9 @@ impl DescriptorRegistry {
     #[doc(hidden)]
     #[must_use]
     pub fn projected_function(&self, id: &FunctionId) -> Option<&FunctionProjection> {
-        match &self.match_execution_authority {
-            MatchExecutionAuthority::ReleasedAdapter => None,
-            MatchExecutionAuthority::InstalledProjectionNative(authority) => {
-                authority.functions.get(id)
-            }
+        match &self.match_schema_source {
+            MatchSchemaSource::Descriptors => None,
+            MatchSchemaSource::InstalledProjection(authority) => authority.functions.get(id),
         }
     }
 
@@ -183,9 +182,9 @@ impl DescriptorRegistry {
     #[doc(hidden)]
     #[must_use]
     pub fn projected_function_schema_fingerprint(&self) -> Option<&SemanticSchemaFingerprint> {
-        match &self.match_execution_authority {
-            MatchExecutionAuthority::ReleasedAdapter => None,
-            MatchExecutionAuthority::InstalledProjectionNative(authority) => {
+        match &self.match_schema_source {
+            MatchSchemaSource::Descriptors => None,
+            MatchSchemaSource::InstalledProjection(authority) => {
                 Some(&authority.semantic_fingerprint)
             }
         }
@@ -195,9 +194,9 @@ impl DescriptorRegistry {
     #[doc(hidden)]
     #[must_use]
     pub fn projected_function_binding_target(&self) -> Option<BindingTarget> {
-        match &self.match_execution_authority {
-            MatchExecutionAuthority::ReleasedAdapter => None,
-            MatchExecutionAuthority::InstalledProjectionNative(authority) => Some(authority.target),
+        match &self.match_schema_source {
+            MatchSchemaSource::Descriptors => None,
+            MatchSchemaSource::InstalledProjection(authority) => Some(authority.target),
         }
     }
 
@@ -207,9 +206,9 @@ impl DescriptorRegistry {
     pub fn projected_function_projection_fingerprint(
         &self,
     ) -> Option<&BindingProjectionFingerprint> {
-        match &self.match_execution_authority {
-            MatchExecutionAuthority::ReleasedAdapter => None,
-            MatchExecutionAuthority::InstalledProjectionNative(authority) => {
+        match &self.match_schema_source {
+            MatchSchemaSource::Descriptors => None,
+            MatchSchemaSource::InstalledProjection(authority) => {
                 Some(&authority.projection_fingerprint)
             }
         }
@@ -340,13 +339,11 @@ impl DescriptorRegistry {
     #[doc(hidden)]
     pub fn owned_registry_snapshot(&self) -> Result<Self> {
         let descriptors = self.owned_snapshot()?;
-        let snapshot = match &self.match_execution_authority {
-            MatchExecutionAuthority::ReleasedAdapter => Self::new(),
-            MatchExecutionAuthority::InstalledProjectionNative(authority) => Self {
+        let snapshot = match &self.match_schema_source {
+            MatchSchemaSource::Descriptors => Self::new(),
+            MatchSchemaSource::InstalledProjection(authority) => Self {
                 descriptors: RwLock::new(HashMap::new()),
-                match_execution_authority: MatchExecutionAuthority::InstalledProjectionNative(
-                    Arc::clone(authority),
-                ),
+                match_schema_source: MatchSchemaSource::InstalledProjection(Arc::clone(authority)),
             },
         };
         for descriptor in descriptors.into_values() {
@@ -987,13 +984,13 @@ mod tests {
         );
         let snapshot = registry.owned_registry_snapshot().unwrap();
 
-        assert!(registry.uses_installed_projection_native_execution());
-        assert!(snapshot.uses_installed_projection_native_execution());
+        assert!(registry.is_installed_projection());
+        assert!(snapshot.is_installed_projection());
         assert_eq!(
             snapshot.projected_function_schema_fingerprint(),
             Some(&semantic_fingerprint)
         );
-        assert!(!DescriptorRegistry::new().uses_installed_projection_native_execution());
+        assert!(!DescriptorRegistry::new().is_installed_projection());
         assert!(
             DescriptorRegistry::new()
                 .projected_function_schema_fingerprint()

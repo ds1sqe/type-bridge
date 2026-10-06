@@ -596,12 +596,12 @@ mod tests {
         state: Arc<DirectCancellationState>,
     ) -> crate::session::Database<TestSchema> {
         let generated = package();
-        let installed = InstalledRuntimeProjection::from_verified_rust_json(
-            generated.runtime_projection_json().as_bytes(),
-            generated.semantic_fingerprint_json().as_bytes(),
-            generated.projection_fingerprint_json().as_bytes(),
+        let installed = Arc::into_inner(
+            generated
+                .verify_and_install()
+                .expect("Rust cancellation proof installs the generated package"),
         )
-        .expect("Rust cancellation proof installs the generated projection");
+        .expect("a fresh installation has one owner");
         crate::session::Database::from_test_parts(
             type_bridge_orm::Database::with_backend(
                 Box::new(DirectCancellationBackend { state }),

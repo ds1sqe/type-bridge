@@ -15,7 +15,6 @@ use crate::_entity::Annotation;
 use crate::_registry::DescriptorRegistry;
 use crate::AttributeValue;
 use crate::ValueType;
-use crate::match_request::lowering::{LoweredMatchExecution, lower_match_execution};
 use crate::match_request::{
     BindingId as V1BindingId, BindingPair, BoundFieldId, ComparisonOp, DescriptorId, FetchShape,
     FetchSlot, FieldId, MatchBinding, MatchExpr, MatchMode, MatchOperation, MatchOrder, MatchPlan,
@@ -397,96 +396,23 @@ fn adapt(
     adapt_match_request(&validated, &registry, &context)
 }
 
-fn assert_provider_ast_parity(
-    registry: &DescriptorRegistry,
-    validated: &crate::match_request::ValidatedMatchRequest,
-    adapted: &AdaptedMatchRequest,
-) {
-    let direct =
-        lower_match_execution(registry, validated).expect("released typed lowering succeeds");
+/// Lower one adapted request to the provider plan the executor runs.
+fn provider_plan(adapted: &AdaptedMatchRequest) -> CompatibilityProviderPlan {
     let invocation = QueryInvocation::new(
         adapted.validated().plan(),
         adapted.operation(),
         adapted.inputs().to_vec(),
     )
     .expect("adapted invocation");
-    let compatibility =
-        lower_validated_compatibility_query(adapted.validated(), &invocation, adapted.operation())
-            .expect("compatibility lowering succeeds")
-            .expect("adapter-authored plan has one compatibility provider plan");
-    match (direct, compatibility.provider_plan()) {
-        (
-            LoweredMatchExecution::FetchRows(direct),
-            CompatibilityProviderPlan::Rows {
-                statement,
-                tuple_proof,
-            },
-        ) => {
-            assert_eq!(&direct, statement);
-            assert!(tuple_proof.is_none());
-        }
-        (
-            LoweredMatchExecution::ExactlyOneBy {
-                selection,
-                evidence,
-            },
-            CompatibilityProviderPlan::Rows {
-                statement,
-                tuple_proof,
-            },
-        ) => {
-            // V2 executes the two-row terminal selection directly. The
-            // released evidence statement differs only in window/order; its
-            // targets, fields, predicate, projection, and distinctness are the
-            // exact same cross-band typed vocabulary.
-            assert_eq!(&selection, statement);
-            assert_eq!(tuple_proof.as_ref(), Some(&selection));
-            assert_eq!(evidence.targets, statement.targets);
-            assert_eq!(evidence.fields, statement.fields);
-            assert_eq!(evidence.predicate, statement.predicate);
-            assert_eq!(evidence.projection, statement.projection);
-            assert_eq!(evidence.distinct, statement.distinct);
-        }
-        (
-            LoweredMatchExecution::CountBy { root, scan: direct },
-            CompatibilityProviderPlan::DistinctCount { scan },
-        ) => {
-            assert_eq!(root.get(), scan.root);
-            assert_eq!(&direct, scan);
-        }
-        (
-            LoweredMatchExecution::ExistsBy { root, scan: direct },
-            CompatibilityProviderPlan::DistinctExists { scan },
-        ) => {
-            assert_eq!(root.get(), scan.root);
-            assert_eq!(&direct, scan);
-        }
-        (
-            LoweredMatchExecution::PageBy {
-                root,
-                total,
-                selection,
-                rematch,
-            },
-            CompatibilityProviderPlan::Page {
-                selection: adapted_selection,
-                total: adapted_total,
-                rematch: adapted_rematch,
-            },
-        ) => {
-            assert_eq!(root.get(), adapted_selection.root);
-            assert_eq!(selection.as_ref(), adapted_selection);
-            assert_eq!(&total, adapted_total);
-            assert_eq!(&rematch, adapted_rematch);
-        }
-        (direct, adapted) => {
-            panic!("released/adapted provider plan variants diverged: {direct:?} vs {adapted:?}")
-        }
-    }
+    lower_validated_compatibility_query(adapted.validated(), &invocation, adapted.operation())
+        .expect("compatibility lowering succeeds")
+        .expect("adapter-authored plan has one compatibility provider plan")
+        .provider_plan()
+        .clone()
 }
 
 #[test]
-fn production_adapter_provider_asts_are_band_neutral_for_every_released_operation() {
+fn every_released_operation_lowers_to_its_provider_plan() {
     let registry = registry();
     let authority = MatchRequestAdapterAuthority::from_registry(&registry)
         .expect("production authority projects");
@@ -495,68 +421,135 @@ fn production_adapter_provider_asts_are_band_neutral_for_every_released_operatio
             binding: V1BindingId::new(0),
         }],
     };
-    let cases = vec![
-        (representative_plan(), fetch_rows_operation()),
-        (
-            representative_plan(),
-            MatchOperation::FetchRows {
-                output: one.clone(),
-                order: Vec::new(),
-                window: Window {
-                    offset: 0,
-                    limit: 1,
-                },
-                cardinality: RowCardinality::ExactlyOne,
-            },
-        ),
-        (
-            representative_plan(),
-            MatchOperation::PageBy {
-                root: V1BindingId::new(0),
-                output: one.clone(),
-                order: Vec::new(),
-                window: Window {
-                    offset: 1,
-                    limit: 2,
-                },
-                include_total: false,
-            },
-        ),
-        (
-            representative_plan(),
-            MatchOperation::PageBy {
-                root: V1BindingId::new(0),
-                output: one,
-                order: Vec::new(),
-                window: Window {
-                    offset: 0,
-                    limit: 3,
-                },
-                include_total: true,
-            },
-        ),
-        (
-            representative_plan(),
-            MatchOperation::CountBy {
-                root: V1BindingId::new(0),
-            },
-        ),
-        (
-            representative_plan(),
-            MatchOperation::ExistsBy {
-                root: V1BindingId::new(0),
-            },
-        ),
-        (inherited_role_plan(), fetch_rows_operation()),
-    ];
-
-    for (plan, operation) in cases {
+    let lower = |plan: MatchPlan, operation: MatchOperation| {
         let validated = validate_match_request(&registry, MatchRequest::v1(plan, operation))
             .expect("released operation validates");
         let adapted = adapt_match_request(&validated, &registry, &authority.context())
             .expect("released operation adapts");
-        assert_provider_ast_parity(&registry, &validated, &adapted);
+        provider_plan(&adapted)
+    };
+    let rows = |window: Window, cardinality: RowCardinality| {
+        lower(
+            representative_plan(),
+            MatchOperation::FetchRows {
+                output: one.clone(),
+                order: Vec::new(),
+                window,
+                cardinality,
+            },
+        )
+    };
+    let page = |window: Window, include_total: bool| {
+        lower(
+            representative_plan(),
+            MatchOperation::PageBy {
+                root: V1BindingId::new(0),
+                output: one.clone(),
+                order: Vec::new(),
+                window,
+                include_total,
+            },
+        )
+    };
+
+    // A bounded window is sorted and cut by the provider.
+    let CompatibilityProviderPlan::Rows {
+        statement,
+        tuple_proof: None,
+    } = rows(
+        Window {
+            offset: 3,
+            limit: 7,
+        },
+        RowCardinality::BoundedMany,
+    )
+    else {
+        panic!("bounded rows lower to one row statement")
+    };
+    assert!(statement.distinct);
+    assert!(!statement.order.is_empty());
+    assert_eq!((statement.offset, statement.limit), (3, 7));
+
+    // Exactly-one asks for two rows, unordered, and proves the tuple count.
+    let CompatibilityProviderPlan::Rows {
+        statement,
+        tuple_proof: Some(proof),
+    } = rows(
+        Window {
+            offset: 0,
+            limit: 1,
+        },
+        RowCardinality::ExactlyOne,
+    )
+    else {
+        panic!("exactly-one lowers to one row statement with its proof")
+    };
+    assert!(statement.order.is_empty());
+    assert_eq!((statement.offset, statement.limit), (0, 2));
+    assert_eq!(proof, statement);
+
+    // Complete rows ask for one row past the accepted count, unordered.
+    let CompatibilityProviderPlan::Rows {
+        statement,
+        tuple_proof: None,
+    } = rows(
+        Window {
+            offset: 0,
+            limit: 7,
+        },
+        RowCardinality::Complete,
+    )
+    else {
+        panic!("complete rows lower to one row statement")
+    };
+    assert!(statement.order.is_empty());
+    assert_eq!((statement.offset, statement.limit), (0, 8));
+
+    for include_total in [false, true] {
+        let CompatibilityProviderPlan::Page {
+            selection,
+            total,
+            rematch,
+        } = page(
+            Window {
+                offset: 1,
+                limit: 2,
+            },
+            include_total,
+        )
+        else {
+            panic!("a page lowers to a root selection and a rematch")
+        };
+        assert_eq!(selection.root, 0);
+        assert_eq!((selection.offset, selection.limit), (Some(1), Some(2)));
+        assert_eq!(total.is_some(), include_total);
+        assert_eq!(rematch.root, 0);
     }
+
+    let CompatibilityProviderPlan::DistinctCount { scan } = lower(
+        representative_plan(),
+        MatchOperation::CountBy {
+            root: V1BindingId::new(0),
+        },
+    ) else {
+        panic!("count lowers to a distinct root scan")
+    };
+    assert_eq!((scan.root, scan.offset, scan.limit), (0, None, None));
+
+    let CompatibilityProviderPlan::DistinctExists { scan } = lower(
+        representative_plan(),
+        MatchOperation::ExistsBy {
+            root: V1BindingId::new(0),
+        },
+    ) else {
+        panic!("exists lowers to a one-root scan")
+    };
+    assert_eq!((scan.root, scan.limit), (0, Some(1)));
+
+    assert!(matches!(
+        lower(inherited_role_plan(), fetch_rows_operation()),
+        CompatibilityProviderPlan::Rows { .. }
+    ));
 }
 
 #[test]

@@ -3229,11 +3229,9 @@ plays:
             ORDERED_QUERY_SCHEMA,
         )])
         .unwrap();
-        let resolved = resolve(
-            &normalize_documents(&documents).unwrap(),
-            &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
-        )
-        .unwrap();
+        let declared = normalize_documents(&documents).unwrap();
+        let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+        let resolved = resolve(&declared, &profile).unwrap();
         let emitter = TypeScriptEmitter::new();
         let projection = project(
             &resolved,
@@ -3243,7 +3241,24 @@ plays:
             &emitter.code_resources_for(&resolved).unwrap(),
         )
         .unwrap();
-        Arc::new(InstalledRuntimeProjection::try_new(projection).unwrap())
+        // Installed the way a generated package is: with the schema
+        // authority the package embeds, which direct execution adapts under.
+        let authority = type_bridge_schema::build_schema_authority(
+            &declared,
+            declared.required_capabilities(),
+            &type_bridge_schema::ManagedDeltaContext::new(
+                type_bridge_contract::managed_scope::ManagedScopeId::new("node-ordered-query")
+                    .unwrap(),
+                profile,
+                type_bridge_schema::schema_authority_capability_vocabulary(),
+            ),
+        )
+        .unwrap();
+        Arc::new(
+            InstalledRuntimeProjection::try_new(projection)
+                .unwrap()
+                .with_schema_authority(&authority),
+        )
     }
 
     fn projected_query_database(

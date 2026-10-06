@@ -309,11 +309,8 @@ functions:
     )])
     .unwrap();
     let declared = normalize_documents(&documents).unwrap();
-    let resolved = resolve(
-        &declared,
-        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
-    )
-    .unwrap();
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+    let resolved = resolve(&declared, &profile).unwrap();
     let (config, handlers) = match target {
         BindingTarget::Python => (
             ProjectionConfig::python(),
@@ -325,10 +322,23 @@ functions:
         ),
         _ => panic!("focused function handles need only Python and TypeScript projections"),
     };
+    // Installed the way a generated package is: with the schema authority
+    // the package embeds, which direct execution adapts under.
+    let authority = type_bridge_schema::build_schema_authority(
+        &declared,
+        declared.required_capabilities(),
+        &type_bridge_schema::ManagedDeltaContext::new(
+            type_bridge_contract::managed_scope::ManagedScopeId::new("function-handles").unwrap(),
+            profile,
+            type_bridge_schema::schema_authority_capability_vocabulary(),
+        ),
+    )
+    .unwrap();
     InstalledRuntimeProjection::try_new(
         project(&resolved, target, &config, &handlers, resources).unwrap(),
     )
     .unwrap()
+    .with_schema_authority(&authority)
 }
 
 fn installed_wide_function_projection(parameter_count: usize) -> InstalledRuntimeProjection {

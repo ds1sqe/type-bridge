@@ -15,7 +15,7 @@ use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
 
 use crate::_registry::DescriptorRegistry;
-use crate::match_request::lowering::preflight_released_match_execution;
+use crate::match_request::provider_order::check_provider_orders;
 use crate::match_request::result_validation::validated_match_result_from_v2;
 use crate::match_request::{
     Capability, MatchError, MatchErrorCategory, MatchErrorPathSegment, ValidatedMatchRequest,
@@ -255,7 +255,7 @@ pub fn prepare_remote_model_query_v2_with_budget(
         )
     })?;
     check_prepare_budget(deadline, cancellation)?;
-    preflight_released_match_execution(&registry, &request)?;
+    check_provider_orders(&registry, &request)?;
     check_prepare_budget(deadline, cancellation)?;
 
     // A request that does not fit the session's limits is refused here,

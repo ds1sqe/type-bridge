@@ -1,11 +1,10 @@
-//! Result parity between the V1 executor and adapted V2 execution.
+//! Live corpus for the selected-row pipeline.
 //!
-//! This is the delegation gate: every expressible corpus request runs
-//! through the released V1 executor and through adapt -> validate -> lower
-//! -> execute on the same live data, and the results must agree exactly —
-//! row identities in order, counts, and existence. The V1 side deliberately
-//! uses the retained direct executor rather than the production compatibility
-//! route so this test cannot compare adapted V2 execution with itself.
+//! Every expressible request shape runs through adapt -> validate -> lower ->
+//! execute against live data and is checked against pinned expectations: row
+//! identities in order, counts, existence, and refusals. The corpus was the
+//! delegation gate while a second executor existed; its cases now pin the one
+//! pipeline.
 
 use std::collections::BTreeSet;
 
@@ -13,7 +12,6 @@ use crate::common::dynamic_crud::{
     DynamicCrudSchema, company_attrs, relation_attrs, role_players, setup_dynamic_database,
 };
 use crate::internal::*;
-use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_orm::integration_test_support::adapt_match_request_for_live_test;
 use type_bridge_orm::*;
 
@@ -76,60 +74,43 @@ fn rows_operation(
     }
 }
 
-async fn assert_result_parity(
+/// Run one corpus case and return its result.
+async fn corpus_result(
     db: &Database,
     fixture: &ParityFixture,
     request: MatchRequest,
     case: &str,
 ) -> MatchResult {
     let validated = validate_match_request(&fixture.registry, request)
-        .expect("corpus request passes V1 validation");
+        .expect("corpus request passes validation");
     adapt_match_request_for_live_test(&validated, &fixture.registry)
-        .unwrap_or_else(|error| panic!("{case} must take the adapted V2 path: {error}"));
-    let legacy = db
-        .execute_match_v1_legacy_for_live_test(&fixture.registry, &validated)
+        .unwrap_or_else(|error| panic!("{case} must adapt: {error}"));
+    db.execute_match(&fixture.registry, &validated)
         .await
-        .unwrap_or_else(|error| panic!("direct V1 execution failed for {case}: {error:?}"));
-    let adapted = db
-        .execute_match(&fixture.registry, &validated)
-        .await
-        .unwrap_or_else(|error| {
-            panic!("production adapted V2 execution failed for {case}: {error:?}")
-        });
-    assert_eq!(
-        legacy.result(),
-        adapted.result(),
-        "direct V1 and production adapted V2 differ for {case}",
-    );
-    legacy.result().clone()
+        .unwrap_or_else(|error| panic!("execution failed for {case}: {error:?}"))
+        .result()
+        .clone()
 }
 
-async fn assert_error_parity(
+/// Run one corpus case that must be refused and return its refusal.
+async fn corpus_error(
     db: &Database,
     fixture: &ParityFixture,
     request: MatchRequest,
     case: &str,
 ) -> MatchError {
     let validated = validate_match_request(&fixture.registry, request)
-        .expect("error corpus request passes V1 validation");
+        .expect("error corpus request passes validation");
     adapt_match_request_for_live_test(&validated, &fixture.registry)
-        .unwrap_or_else(|error| panic!("{case} must take the adapted V2 path: {error}"));
-    let legacy = db
-        .execute_match_v1_legacy_for_live_test(&fixture.registry, &validated)
-        .await
-        .expect_err("direct V1 execution must reject this cardinality");
-    let adapted = db
+        .unwrap_or_else(|error| panic!("{case} must adapt: {error}"));
+    let error = db
         .execute_match(&fixture.registry, &validated)
         .await
-        .expect_err("production adapted V2 execution must reject this cardinality");
-    let (OrmError::Match(legacy), OrmError::Match(adapted)) = (legacy, adapted) else {
-        panic!("{case} must return the released Match error variant");
+        .expect_err("execution must refuse this case");
+    let OrmError::Match(error) = error else {
+        panic!("{case} must return the Match error variant");
     };
-    assert_eq!(
-        legacy, adapted,
-        "direct V1 and production adapted V2 diagnostics differ for {case}",
-    );
-    legacy
+    error
 }
 
 fn row_iids(result: &MatchResult) -> Vec<Vec<String>> {
@@ -522,7 +503,7 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
             filtered(SortDirection::Ascending, 1, 1),
         ),
     ] {
-        let result = assert_result_parity(&db, &fixture, request, case).await;
+        let result = corpus_result(&db, &fixture, request, case).await;
         assert!(!row_iids(&result).is_empty(), "{case} must be non-trivial");
     }
 
@@ -662,7 +643,7 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
             ),
             rows_operation(&fixture, SortDirection::Ascending, 0, 10),
         );
-        let result = assert_result_parity(&db, &fixture, request, case).await;
+        let result = corpus_result(&db, &fixture, request, case).await;
         assert_eq!(row_count(&result), expected, "{case} fixture cardinality");
     }
 
@@ -698,7 +679,7 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
         ),
         rows_operation(&fixture, SortDirection::Ascending, 0, 10),
     );
-    let negated = assert_result_parity(&db, &fixture, negated, "nested numeric negation").await;
+    let negated = corpus_result(&db, &fixture, negated, "nested numeric negation").await;
     assert_eq!(
         row_iids(&negated).len(),
         4,
@@ -706,7 +687,7 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
     );
 
     // Exact and subtype-inclusive targets retain concrete descriptor evidence.
-    let subtype_rows = assert_result_parity(
+    let subtype_rows = corpus_result(
         &db,
         &fixture,
         MatchRequest::v1(
@@ -732,7 +713,7 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
 
     let mut exact_plan = person_plan(&fixture, None);
     exact_plan.bindings[0].match_mode = MatchMode::Exact;
-    let exact_rows = assert_result_parity(
+    let exact_rows = corpus_result(
         &db,
         &fixture,
         MatchRequest::v1(
@@ -802,7 +783,7 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
             cardinality: RowCardinality::BoundedMany,
         },
     );
-    let cross_join = assert_result_parity(
+    let cross_join = corpus_result(
         &db,
         &fixture,
         cross_join,
@@ -831,7 +812,7 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
             cardinality: RowCardinality::BoundedMany,
         },
     );
-    let field_comparison = assert_result_parity(
+    let field_comparison = corpus_result(
         &db,
         &fixture,
         field_comparison,
@@ -854,7 +835,7 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
             cardinality: RowCardinality::BoundedMany,
         },
     );
-    let relation_rows = assert_result_parity(
+    let relation_rows = corpus_result(
         &db,
         &fixture,
         relation_rows,
@@ -879,7 +860,7 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
         operator: ComparisonOp::Equal,
         value: AttributeValue::Date("2020-01-01".into()),
     });
-    let one_relation = assert_result_parity(
+    let one_relation = corpus_result(
         &db,
         &fixture,
         MatchRequest::v1(
@@ -967,7 +948,7 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
         },
     );
     let reachable =
-        assert_result_parity(&db, &fixture, reachable, "bounded reachable endpoint pairs").await;
+        corpus_result(&db, &fixture, reachable, "bounded reachable endpoint pairs").await;
     assert_eq!(row_count(&reachable), 4);
 
     // Page by distinct person identity while preserving collection
@@ -1013,7 +994,7 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
                 include_total: true,
             },
         );
-        let page = assert_result_parity(
+        let page = corpus_result(
             &db,
             &fixture,
             page,
@@ -1050,9 +1031,9 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
             value: AttributeValue::String("Ada".into()),
         }),
     );
-    let one = assert_result_parity(&db, &fixture, one, "exactly-one success").await;
+    let one = corpus_result(&db, &fixture, one, "exactly-one success").await;
     assert_eq!(row_count(&one), 1);
-    let no_result = assert_error_parity(
+    let no_result = corpus_error(
         &db,
         &fixture,
         exact_one_request(
@@ -1067,7 +1048,7 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
     )
     .await;
     assert_eq!(no_result.code().as_str(), "no_result");
-    let not_unique = assert_error_parity(
+    let not_unique = corpus_error(
         &db,
         &fixture,
         exact_one_request(&fixture, None),
@@ -1076,7 +1057,7 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
     .await;
     assert_eq!(not_unique.code().as_str(), "not_unique");
 
-    // Count and exists agree with V1 distinct-root semantics, including a
+    // Count and exists use distinct-root semantics, including a
     // joined graph where duplicate relations do not inflate the root count.
     let count_request = MatchRequest::v1(
         person_plan(&fixture, None),
@@ -1084,13 +1065,13 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
             root: BindingId::new(0),
         },
     );
-    let count = assert_result_parity(&db, &fixture, count_request, "subtype-inclusive count").await;
+    let count = corpus_result(&db, &fixture, count_request, "subtype-inclusive count").await;
     let MatchResult::Count { value: count, .. } = count else {
         panic!("expected count");
     };
     assert_eq!(count, 4);
 
-    let joined_count = assert_result_parity(
+    let joined_count = corpus_result(
         &db,
         &fixture,
         MatchRequest::v1(
@@ -1125,8 +1106,7 @@ async fn v1_and_adapted_v2_execution_agree_on_the_expressible_corpus() {
         )
     };
     for (value, expected) in [("Grace", true), ("Nobody", false)] {
-        let result =
-            assert_result_parity(&db, &fixture, exists(value), &format!("exists {value}")).await;
+        let result = corpus_result(&db, &fixture, exists(value), &format!("exists {value}")).await;
         let MatchResult::Exists { value: actual, .. } = result else {
             panic!("expected exists");
         };

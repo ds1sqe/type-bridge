@@ -80,13 +80,13 @@ pub mod value;
 #[doc(hidden)]
 pub mod integration_test_support {
     use type_bridge_contract::diagnostic::Diagnostic;
-    use type_bridge_contract::limits::StructuralLimits;
+
     use type_bridge_contract::query_plan::QueryOperation;
     use type_bridge_query::ValidatedQuery;
 
     use crate::_registry::DescriptorRegistry;
     use crate::match_request::ValidatedMatchRequest;
-    use crate::query_v2::failure;
+
     use crate::query_v2_adapter::{MatchRequestAdapterAuthority, adapt_match_request};
 
     /// Adapt a validated V1 request through the production registry authority.

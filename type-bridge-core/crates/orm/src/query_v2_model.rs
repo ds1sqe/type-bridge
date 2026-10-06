@@ -40,10 +40,10 @@ use type_bridge_core_lib::ast::{
 use type_bridge_query::ValidatedQuery;
 use unicase::UniCase;
 
-use crate::match_request::lowering::{
+use crate::match_request::reducer::reduce_rows;
+use crate::match_request::reducer::{
     LoweredReduceGroup, LoweredReduceInput, LoweredReduceTerm, ReduceDomain,
 };
-use crate::match_request::reducer::reduce_rows;
 use crate::match_request::result::{
     BoundConceptEvidence, ConceptId, HydratedAttribute, HydratedThing, ProviderSolutionEvidence,
     ReducedValue, ReductionRow,
@@ -3679,6 +3679,15 @@ fn evidence_failure(code: &'static str, message: &'static str) -> Diagnostic {
 mod tests {
     use super::*;
     use type_bridge_contract::value::{CanonicalValue, Cardinality, DecimalValue};
+
+    #[test]
+    fn live_binding_ordinals_accept_only_integral_in_range_numbers() {
+        assert_eq!(json_u16(&serde_json::json!(3.0)), Some(3));
+        assert_eq!(json_u16(&serde_json::json!({"value": 4.0})), Some(4));
+        assert_eq!(json_u16(&serde_json::json!(3.5)), None);
+        assert_eq!(json_u16(&serde_json::json!(-1.0)), None);
+        assert_eq!(json_u16(&serde_json::json!(65536.0)), None);
+    }
 
     #[test]
     fn graph_finish_orders_attribute_evidence_by_descriptor() {

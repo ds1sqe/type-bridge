@@ -496,29 +496,6 @@ impl Database {
             .await
     }
 
-    /// Execute through the retained direct V1 implementation for live parity tests.
-    ///
-    /// This test-only seam is intentionally unavailable in normal builds. It
-    /// lets the integration corpus compare the released executor semantics
-    /// with the production V1-to-V2 compatibility path without changing which
-    /// path public callers use.
-    #[cfg(feature = "integration-tests")]
-    #[doc(hidden)]
-    pub async fn execute_match_v1_legacy_for_live_test(
-        &self,
-        registry: &DescriptorRegistry,
-        validated: &ValidatedMatchRequest,
-    ) -> Result<ValidatedMatchResult> {
-        let registry = registry.owned_registry_snapshot()?;
-        SelectedResultExecutor::new(
-            &registry,
-            self.backend.match_capabilities(),
-            MatchExecutionLimits::default(),
-        )
-        .execute_owned(self, validated)
-        .await
-    }
-
     /// Get the database name.
     pub fn database_name(&self) -> &str {
         &self.database_name

@@ -279,24 +279,6 @@ impl ProviderResultEvidence {
         }
     }
 
-    /// Construct an unwindowed selected-solution prefix from the streaming
-    /// executor. Canonical validation verifies order/distinctness first and
-    /// applies the validated offset/limit atomically.
-    pub(crate) fn rows_unwindowed(
-        request_token: RequestToken,
-        shape_id: ResultShapeId,
-        solutions: Vec<ProviderSolutionEvidence>,
-    ) -> Self {
-        Self {
-            request_token,
-            shape_id,
-            payload: ProviderResultPayload::Rows {
-                solutions,
-                apply_window: true,
-            },
-        }
-    }
-
     /// Construct distinct-root page evidence.
     pub(crate) fn page(
         request_token: RequestToken,
