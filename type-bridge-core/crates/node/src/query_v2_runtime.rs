@@ -22,13 +22,13 @@ use type_bridge_contract::limits::{
     MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES, MAX_REMOTE_ENVELOPE_BYTES,
 };
 use type_bridge_contract::query_remote::{
-    RemoteLimits, checked_remote_deadline, checked_remote_limit, remote_deadline_limit,
-    remote_limit_invalid,
+    checked_remote_deadline, checked_remote_limit, remote_deadline_limit, remote_limit_invalid,
 };
+use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
 use type_bridge_contract::schema::encode_declared_schema;
 use type_bridge_orm::query_v2_prepared::{
-    ClaimedRemoteReply, PendingRemoteQuery, QueryAuthority, decode_remote_capabilities,
-    execute_prepared_local, prepare_remote_query, query_v2_host_string_unicode_error,
+    ClaimedRemoteReplyV2, PendingRemoteQueryV2, QueryAuthority, decode_remote_capabilities,
+    execute_prepared_local, prepare_remote_query_v2, query_v2_host_string_unicode_error,
 };
 use type_bridge_orm::session::backend::{BoundedAnswerLimits, QueryV2AnswerLimits};
 use type_bridge_schema::{
@@ -89,7 +89,7 @@ impl NodeQueryV2Authority {
 /// One prepared request with an atomic one-shot reply decoder.
 #[napi]
 pub struct NodePendingQueryV2Remote {
-    pending: Arc<PendingRemoteQuery>,
+    pending: Arc<PendingRemoteQueryV2>,
 }
 
 /// One remote reply decode scheduled on the libuv worker pool.
@@ -99,7 +99,7 @@ pub struct DecodeRemoteReplyTask {
 
 enum DecodeRemoteReplyTaskState {
     Claimed {
-        claimed: Option<ClaimedRemoteReply>,
+        claimed: Option<ClaimedRemoteReplyV2>,
         response: Vec<u8>,
     },
     Rejected {
@@ -671,9 +671,12 @@ fn remote_limits(
     max_bytes: &BigInt,
     max_collection_members: &BigInt,
     deadline_ms: Option<&BigInt>,
-) -> napi::Result<RemoteLimits> {
-    let build = || -> Result<RemoteLimits, Diagnostic> {
-        Ok(RemoteLimits {
+) -> napi::Result<RemoteLimitsV2> {
+    let build = || -> Result<RemoteLimitsV2, Diagnostic> {
+        // A low-level plan returns no hydration graph, so the graph budgets
+        // keep the answer policy's defaults.
+        let policy = type_bridge_orm::QueryExecutionResourceLimits::default();
+        Ok(RemoteLimitsV2 {
             deadline_ms: checked_remote_deadline(
                 deadline_ms
                     .map(|value| remote_limit(value).map(i128::from))
@@ -682,6 +685,10 @@ fn remote_limits(
             max_bytes: remote_limit(max_bytes)?,
             max_items: remote_limit(max_items)?,
             max_collection_members: remote_limit(max_collection_members)?,
+            max_graph_nodes: policy.graph_nodes,
+            max_attribute_values: policy.attribute_values,
+            max_role_players: policy.role_players,
+            max_statements: policy.statements,
         })
     };
     build().map_err(|diagnostic| napi_error(&diagnostic))
@@ -732,7 +739,7 @@ pub fn query_v2_prepare_remote(
         &max_collection_members,
         deadline_ms.as_ref(),
     )?;
-    let pending = prepare_remote_query(
+    let pending = prepare_remote_query_v2(
         &authority.authority,
         bounded_buffer(
             &plan,

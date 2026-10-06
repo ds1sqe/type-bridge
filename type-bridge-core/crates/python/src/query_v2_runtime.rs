@@ -23,13 +23,13 @@ use type_bridge_contract::limits::{
     MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES, MAX_REMOTE_ENVELOPE_BYTES,
 };
 use type_bridge_contract::query_remote::{
-    RemoteLimits, checked_remote_deadline, checked_remote_limit, remote_deadline_limit,
-    remote_limit_invalid,
+    checked_remote_deadline, checked_remote_limit, remote_deadline_limit, remote_limit_invalid,
 };
+use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
 use type_bridge_contract::schema::encode_declared_schema;
 use type_bridge_orm::query_v2_prepared::{
-    PendingRemoteQuery, QueryAuthority, decode_remote_capabilities, execute_prepared_local,
-    prepare_remote_query, query_v2_host_string_unicode_error,
+    PendingRemoteQueryV2, QueryAuthority, decode_remote_capabilities, execute_prepared_local,
+    prepare_remote_query_v2, query_v2_host_string_unicode_error,
 };
 use type_bridge_orm::session::backend::{BoundedAnswerLimits, QueryV2AnswerLimits};
 use type_bridge_schema::{
@@ -142,7 +142,7 @@ impl PyQueryV2Authority {
 /// One prepared request with an atomic one-shot reply decoder.
 #[pyclass(name = "PendingQueryV2Remote", frozen)]
 pub struct PyPendingQueryV2Remote {
-    pending: PendingRemoteQuery,
+    pending: PendingRemoteQueryV2,
 }
 
 pub(crate) enum PythonBytes<'py> {
@@ -503,13 +503,20 @@ fn remote_limits(
     max_bytes: &Bound<'_, PyAny>,
     max_collection_members: &Bound<'_, PyAny>,
     deadline_ms: Option<&Bound<'_, PyAny>>,
-) -> PyResult<RemoteLimits> {
-    let build = || -> Result<RemoteLimits, Diagnostic> {
-        Ok(RemoteLimits {
+) -> PyResult<RemoteLimitsV2> {
+    let build = || -> Result<RemoteLimitsV2, Diagnostic> {
+        // A low-level plan returns no hydration graph, so the graph budgets
+        // keep the answer policy's defaults.
+        let policy = type_bridge_orm::QueryExecutionResourceLimits::default();
+        Ok(RemoteLimitsV2 {
             deadline_ms: checked_remote_deadline(python_optional_limit(deadline_ms)?)?,
             max_bytes: checked_remote_limit(python_limit(max_bytes)?)?,
             max_items: checked_remote_limit(python_limit(max_items)?)?,
             max_collection_members: checked_remote_limit(python_limit(max_collection_members)?)?,
+            max_graph_nodes: policy.graph_nodes,
+            max_attribute_values: policy.attribute_values,
+            max_role_players: policy.role_players,
+            max_statements: policy.statements,
         })
     };
     build().map_err(|diagnostic| value_error(&diagnostic))
@@ -559,7 +566,7 @@ pub fn query_v2_prepare_remote(
     let authority = Arc::clone(&authority.authority);
     let pending = py
         .detach(move || {
-            prepare_remote_query(&authority, &plan, &invocation_json, &advertisement, limits)
+            prepare_remote_query_v2(&authority, &plan, &invocation_json, &advertisement, limits)
         })
         .map_err(|diagnostic| value_error(&diagnostic))?;
     Ok(PyPendingQueryV2Remote { pending })

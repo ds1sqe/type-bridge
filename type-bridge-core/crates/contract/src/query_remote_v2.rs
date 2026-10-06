@@ -352,18 +352,12 @@ impl RemoteQueryRequestV2 {
 
     /// Rebuild the trusted V2 plan from the embedded canonical document.
     pub fn plan(&self) -> Result<QueryPlan, Diagnostic> {
-        let plan = decode_query_plan_with_limits(
+        // The envelope is transport; the plan format is the artifact's own
+        // version, and either released one travels in it.
+        decode_query_plan_with_limits(
             &to_canonical_json_with_limits(&self.plan, self.query_limits.codec)?,
             self.query_limits,
-        )?;
-        if !is_query_plan_v2(&plan) {
-            return Err(remote_v2_failure(
-                DiagnosticCategory::InvalidContract,
-                "query_remote_v2_plan_format_mismatch",
-                "a V2 remote request must embed a V2 query plan",
-            ));
-        }
-        Ok(plan)
+        )
     }
 
     /// Rebuild the validated invocation against the carried plan.
@@ -1884,21 +1878,10 @@ where
     BindingId::new(wire.0).map_err(serde::de::Error::custom)
 }
 
-fn is_query_plan_v2(plan: &QueryPlan) -> bool {
-    plan.format() == "typebridge.query-plan/v2"
-}
-
 fn validate_v2_plan_and_result(
     plan: &QueryPlan,
     result: RemoteResultKindV2,
 ) -> Result<(), Diagnostic> {
-    if !is_query_plan_v2(plan) {
-        return Err(remote_v2_failure(
-            DiagnosticCategory::InvalidContract,
-            "query_remote_v2_plan_format_mismatch",
-            "V2 remote envelopes accept only typebridge.query-plan/v2",
-        ));
-    }
     let has_model_contract = plan
         .v2_compatibility()
         .and_then(|compatibility| compatibility.model_query())
