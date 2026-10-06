@@ -32,6 +32,7 @@ use crate::query_v2_compatibility::{
 };
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::FormatVersion;
+use type_bridge_contract::diagnostic::{DiagnosticCategory, DiagnosticDetailValue};
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::limits::StructuralLimits;
@@ -1662,8 +1663,6 @@ fn the_complete_released_shape_inventory_adapts() {
 
 #[test]
 fn only_the_fixed_v2_artifact_envelope_uses_the_legacy_executor() {
-    use crate::query_v2_adapter::V1ResourceEnvelopeReason;
-
     let fixture = schema_fixture();
     let registry = registry();
     let disposition = |literal: String| {
@@ -1693,16 +1692,89 @@ fn only_the_fixed_v2_artifact_envelope_uses_the_legacy_executor() {
         .expect("resource mismatch is a typed disposition, not a semantic error")
     };
 
+    let cause = |literal: String| match disposition(literal) {
+        MatchRequestAdaptation::LegacyRequired(cause) => cause,
+        MatchRequestAdaptation::Adapted(_) => panic!("oversized request adapted"),
+    };
+
+    let literal = cause("x".repeat(16 * 1024 * 1024 + 1));
+    assert_eq!(literal.category(), DiagnosticCategory::ResourceLimit);
+    assert_eq!(literal.code().as_str(), "query_v2_adapter_literal_byte_limit");
+    assert_eq!(
+        literal.details().get("actual_bytes"),
+        Some(&DiagnosticDetailValue::Long(16 * 1024 * 1024 + 1))
+    );
+    assert_eq!(
+        literal.details().get("maximum_bytes"),
+        Some(&DiagnosticDetailValue::Long(16 * 1024 * 1024))
+    );
+
+    let encoded = cause("\\".repeat(9 * 1024 * 1024));
+    assert_eq!(encoded.category(), DiagnosticCategory::ResourceLimit);
+    assert_eq!(encoded.code().as_str(), "canonical_json_too_large");
+}
+
+fn conjunction_request(predicate: MatchExpr) -> MatchRequestAdaptation {
+    let fixture = schema_fixture();
+    let registry = registry();
+    let plan = MatchPlan {
+        bindings: vec![MatchBinding {
+            id: V1BindingId::new(0),
+            descriptor: DescriptorId::new("entity:person"),
+            thing_kind: ThingKind::Entity,
+            match_mode: MatchMode::Exact,
+        }],
+        predicate: Some(predicate),
+        allowed_cross_joins: BTreeSet::new(),
+    };
+    let validated =
+        validate_match_request(&registry, MatchRequest::v1(plan, fetch_rows_operation()))
+            .expect("conjunction passes V1 validation");
+    adapt_match_request(
+        &validated,
+        &registry,
+        &MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed),
+        StructuralLimits::CANONICAL,
+    )
+    .expect("resource mismatch is a typed disposition, not a semantic error")
+}
+
+fn name_at_least(index: usize) -> MatchExpr {
+    MatchExpr::FieldValue {
+        field: name_field(),
+        operator: ComparisonOp::GreaterThanOrEqual,
+        value: AttributeValue::String(format!("A{index}")),
+    }
+}
+
+#[test]
+fn a_wide_flat_conjunction_fits_the_canonical_artifact() {
+    // The width of the two-anchor automotive query that a depth-linear
+    // conjunction could not encode.
+    let flat = MatchExpr::And {
+        expressions: (0..38).map(name_at_least).collect(),
+    };
     assert!(matches!(
-        disposition("x".repeat(16 * 1024 * 1024 + 1)),
-        MatchRequestAdaptation::LegacyRequired(
-            V1ResourceEnvelopeReason::LiteralExceedsCanonicalArtifact
-        )
+        conjunction_request(flat),
+        MatchRequestAdaptation::Adapted(_)
     ));
-    assert!(matches!(
-        disposition("\\".repeat(9 * 1024 * 1024)),
-        MatchRequestAdaptation::LegacyRequired(
-            V1ResourceEnvelopeReason::EncodedPlanExceedsCanonicalArtifact
-        )
-    ));
+}
+
+#[test]
+fn a_plan_nested_past_the_codec_depth_reports_that_limit() {
+    let mut nested = name_at_least(0);
+    for index in 1..38 {
+        nested = MatchExpr::And {
+            expressions: vec![nested, name_at_least(index)],
+        };
+    }
+    let MatchRequestAdaptation::LegacyRequired(cause) = conjunction_request(nested) else {
+        panic!("a plan deeper than the canonical codec cannot adapt");
+    };
+    assert_eq!(cause.category(), DiagnosticCategory::ResourceLimit);
+    assert_eq!(cause.code().as_str(), "canonical_json_too_deep");
+    assert_eq!(
+        cause.details().get("maximum_depth"),
+        Some(&DiagnosticDetailValue::Long(64))
+    );
 }

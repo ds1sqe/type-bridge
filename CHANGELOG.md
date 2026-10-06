@@ -4,6 +4,24 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Build repeated `where` clauses and chained `and`/`or` predicates as one flat
+  conjunction or disjunction in every language binding. A query with more than
+  about thirty clauses previously nested past the canonical JSON depth of 64,
+  so remote sessions refused it and direct sessions silently used the V1
+  executor.
+
+### Changed
+
+- Remote model-query preparation reports the resource limit that refused
+  adaptation, such as `canonical_json_too_deep` with `maximum_depth`, or
+  `query_v2_adapter_literal_byte_limit` with `actual_bytes` and
+  `maximum_bytes`. The catch-all `query_remote_v2_model_artifact_limit` code
+  is removed.
+- A generated manager filter with more than 256 predicates is refused with
+  `structural_limit_exceeded` instead of `manager_filter_predicate_limit`.
+
 ## [2.2.6] - 2026-10-16
 
 ### Fixed

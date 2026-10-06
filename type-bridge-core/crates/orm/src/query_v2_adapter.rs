@@ -8,9 +8,11 @@
 //!
 //! Arbitrary V1 strings predate the fixed V2 canonical artifact ceiling. A
 //! request whose exact V2 representation cannot fit that envelope receives a
-//! typed, non-error legacy disposition so the released direct executor can
-//! preserve its behavior. This fallback is decided only after V1 validation
-//! and registry recheck; decoded V2 input can never request it.
+//! typed, non-error legacy disposition carrying the resource-limit cause, so
+//! the released direct executor can preserve its behavior and every other
+//! caller can report the limit that was hit. This fallback is decided only
+//! after V1 validation and registry recheck; decoded V2 input can never
+//! request it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -128,22 +130,15 @@ impl MatchRequestAdapterAuthority {
     }
 }
 
-/// Why a released request must remain on the direct V1 executor.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum V1ResourceEnvelopeReason {
-    /// One exact released literal is larger than the complete V2 artifact.
-    LiteralExceedsCanonicalArtifact,
-    /// The complete canonical plan, including escaping and hydration, is too large.
-    EncodedPlanExceedsCanonicalArtifact,
-}
-
 /// Result of production V1-to-V2 adaptation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum MatchRequestAdaptation {
     /// Execute the schema-validated ordinary V2 plan.
     Adapted(AdaptedMatchRequest),
-    /// Preserve released behavior through the already-validated direct V1 path.
-    LegacyRequired(V1ResourceEnvelopeReason),
+    /// The request does not fit the V2 resource limits. The direct executor
+    /// preserves released behavior through the already-validated V1 path; a
+    /// caller without that path reports the carried resource-limit cause.
+    LegacyRequired(Diagnostic),
 }
 
 /// The V2 program one V1 request adapts to.
@@ -209,14 +204,21 @@ pub(crate) fn adapt_match_request(
             ));
         }
     }
-    if request
+    if let Some(actual) = request
         .plan
         .predicate
         .as_ref()
-        .is_some_and(predicate_has_artifact_sized_literal)
+        .and_then(artifact_sized_literal_bytes)
     {
         return Ok(MatchRequestAdaptation::LegacyRequired(
-            V1ResourceEnvelopeReason::LiteralExceedsCanonicalArtifact,
+            Diagnostic::new(
+                DiagnosticCategory::ResourceLimit,
+                DiagnosticCode::new("query_v2_adapter_literal_byte_limit")
+                    .expect("static adapter diagnostic code"),
+                "a predicate literal exceeds the canonical artifact byte ceiling",
+            )
+            .with_detail("actual_bytes", byte_count(actual))
+            .with_detail("maximum_bytes", byte_count(MAX_CANONICAL_BYTES)),
         ));
     }
 
@@ -313,9 +315,7 @@ pub(crate) fn adapt_match_request(
     ) {
         Ok(validated) => validated,
         Err(error) if error.category() == DiagnosticCategory::ResourceLimit => {
-            return Ok(MatchRequestAdaptation::LegacyRequired(
-                V1ResourceEnvelopeReason::EncodedPlanExceedsCanonicalArtifact,
-            ));
+            return Ok(MatchRequestAdaptation::LegacyRequired(error));
         }
         Err(error) => return Err(error),
     };
@@ -326,9 +326,7 @@ pub(crate) fn adapt_match_request(
             validated: Box::new(validated),
         })),
         Err(error) if error.category() == DiagnosticCategory::ResourceLimit => {
-            Ok(MatchRequestAdaptation::LegacyRequired(
-                V1ResourceEnvelopeReason::EncodedPlanExceedsCanonicalArtifact,
-            ))
+            Ok(MatchRequestAdaptation::LegacyRequired(error))
         }
         Err(error) => Err(error),
     }
@@ -1279,22 +1277,27 @@ pub(crate) fn adapt_value(value: &AttributeValue) -> Result<CompatibilityValueV2
     )?))
 }
 
-fn predicate_has_artifact_sized_literal(expression: &MatchExpr) -> bool {
+/// Return the byte length of the first literal larger than a whole artifact.
+fn artifact_sized_literal_bytes(expression: &MatchExpr) -> Option<usize> {
     match expression {
-        MatchExpr::FieldValue { value, .. } => {
-            textual_value(value).is_some_and(|value| value.len() > MAX_CANONICAL_BYTES)
-        }
+        MatchExpr::FieldValue { value, .. } => textual_value(value)
+            .map(str::len)
+            .filter(|bytes| *bytes > MAX_CANONICAL_BYTES),
         MatchExpr::And { expressions } | MatchExpr::Or { expressions } => {
-            expressions.iter().any(predicate_has_artifact_sized_literal)
+            expressions.iter().find_map(artifact_sized_literal_bytes)
         }
-        MatchExpr::Not { expression } => predicate_has_artifact_sized_literal(expression),
+        MatchExpr::Not { expression } => artifact_sized_literal_bytes(expression),
         MatchExpr::FieldComparison { .. }
         | MatchExpr::ScalarComparison { .. }
         | MatchExpr::FieldPresence { .. }
         | MatchExpr::BindingIid { .. }
         | MatchExpr::RoleEdge { .. }
-        | MatchExpr::Reachable { .. } => false,
+        | MatchExpr::Reachable { .. } => None,
     }
+}
+
+fn byte_count(bytes: usize) -> i64 {
+    i64::try_from(bytes).unwrap_or(i64::MAX)
 }
 
 fn textual_value(value: &AttributeValue) -> Option<&str> {

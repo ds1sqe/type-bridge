@@ -24,9 +24,7 @@ use crate::match_request::{
 };
 use crate::query_execution_limits::QueryExecutionDeadline;
 use crate::query_v2::failure;
-use crate::query_v2_adapter::{
-    MatchRequestAdaptation, V1ResourceEnvelopeReason, adapt_match_request,
-};
+use crate::query_v2_adapter::{MatchRequestAdaptation, adapt_match_request};
 use crate::query_v2_prepared::{
     ClaimedRemoteReplyV2, PendingRemoteQueryV2, QueryAuthority,
     prepare_validated_remote_query_v2_with_budget,
@@ -268,9 +266,9 @@ pub fn prepare_remote_model_query_v2_with_budget(
         StructuralLimits::CANONICAL,
     )? {
         MatchRequestAdaptation::Adapted(adapted) => adapted,
-        MatchRequestAdaptation::LegacyRequired(reason) => {
-            return Err(resource_envelope_failure(reason).into());
-        }
+        // No V1 wire format exists, so the limit that refused V2 adaptation
+        // is the caller's answer.
+        MatchRequestAdaptation::LegacyRequired(cause) => return Err(cause.into()),
     };
     check_prepare_budget(deadline, cancellation)?;
     let invocation = QueryInvocation::new(
@@ -321,22 +319,6 @@ fn check_prepare_budget(
         .into());
     }
     Ok(())
-}
-
-fn resource_envelope_failure(reason: V1ResourceEnvelopeReason) -> Diagnostic {
-    let message = match reason {
-        V1ResourceEnvelopeReason::LiteralExceedsCanonicalArtifact => {
-            "released model-query literal exceeds the canonical V2 remote artifact ceiling"
-        }
-        V1ResourceEnvelopeReason::EncodedPlanExceedsCanonicalArtifact => {
-            "adapted model query exceeds the canonical V2 remote artifact ceiling"
-        }
-    };
-    failure(
-        DiagnosticCategory::ResourceLimit,
-        "query_remote_v2_model_artifact_limit",
-        message,
-    )
 }
 
 #[cfg(test)]
@@ -550,6 +532,87 @@ functions:
             &[MatchErrorPathSegment::Field(nullable_field)]
         );
         assert!(error.details().is_empty());
+    }
+
+    fn prepare_person_count(
+        compose: impl Fn(
+            crate::match_request::QueryHandle,
+            crate::match_request::PredicateHandle,
+            usize,
+        ) -> crate::match_request::QueryHandle,
+    ) -> Diagnostic {
+        let registry = Arc::new(nullable_order_registry());
+        let authority = matching_authority(&registry);
+        let session = SessionHandle::new(Arc::clone(&registry));
+        let root = session.exact("person").expect("person binding");
+        let shape = session.positional([root.one()]).expect("shape");
+        let name = root.field("name").expect("name field");
+        let mut query = session.query(shape).expect("query");
+        for index in 0..38 {
+            let term = name.compare_value(
+                crate::match_request::ComparisonOp::NotEqual,
+                crate::AttributeValue::String(format!("excluded-{index}")),
+            );
+            query = compose(query, term, index);
+        }
+        let validated = query.validate_count_by(&root).expect("valid V1 request");
+        match prepare_remote_model_query_v2(
+            &authority,
+            &registry,
+            validated,
+            b"not an advertisement",
+            RemoteLimitsV2 {
+                deadline_ms: Some(1_000),
+                max_bytes: 4_096,
+                max_items: 10,
+                max_collection_members: 10,
+                max_graph_nodes: 10,
+                max_attribute_values: 10,
+                max_role_players: 10,
+                max_statements: 3,
+            },
+        ) {
+            Err(RemoteModelQueryV2Error::Diagnostic(diagnostic)) => diagnostic,
+            Err(error) => panic!("expected a contract diagnostic, got {error:?}"),
+            Ok(_) => panic!("an undecodable advertisement cannot prepare a request"),
+        }
+    }
+
+    #[test]
+    fn remote_model_preparation_adapts_a_wide_where_conjunction() {
+        // Thirty-eight `where` calls once nested past the canonical codec
+        // depth. Adaptation now succeeds, so the only failure left is the
+        // deliberately undecodable advertisement.
+        let diagnostic = prepare_person_count(|query, term, _| {
+            query.where_predicate(term).expect("attached predicate")
+        });
+        assert_ne!(diagnostic.category(), DiagnosticCategory::ResourceLimit);
+    }
+
+    #[test]
+    fn remote_model_preparation_reports_the_limit_that_refused_adaptation() {
+        // Alternating disjunction and conjunction is real nesting that no
+        // flattening removes.
+        let nested = std::cell::RefCell::new(None::<crate::match_request::PredicateHandle>);
+        let diagnostic = prepare_person_count(|query, term, index| {
+            let combined = match nested.borrow().as_ref() {
+                None => term,
+                Some(previous) if index % 2 == 0 => previous.and(&term).expect("and"),
+                Some(previous) => previous.or(&term).expect("or"),
+            };
+            *nested.borrow_mut() = Some(combined.clone());
+            if index == 37 {
+                query.where_predicate(combined).expect("attached predicate")
+            } else {
+                query
+            }
+        });
+        assert_eq!(diagnostic.category(), DiagnosticCategory::ResourceLimit);
+        assert_eq!(diagnostic.code().as_str(), "canonical_json_too_deep");
+        assert_eq!(
+            diagnostic.details().get("maximum_depth"),
+            Some(&type_bridge_contract::diagnostic::DiagnosticDetailValue::Long(64))
+        );
     }
 
     #[test]
