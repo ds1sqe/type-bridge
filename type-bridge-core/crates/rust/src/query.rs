@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use type_bridge_contract::codec::from_canonical_json;
 use type_bridge_contract::decimal::parse_decimal;
 use type_bridge_contract::id::{FunctionId, TypeId, TypeKind};
+use type_bridge_contract::limits::QueryLimits;
 use type_bridge_contract::projection::ProjectionHandler;
 use type_bridge_contract::query_plan::CompatibilityValueV2;
 use type_bridge_contract::temporal::{
@@ -717,6 +718,35 @@ impl<'db, S: Schema> QuerySession<'db, S> {
     #[must_use]
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
+    }
+
+    /// Validate, encode, and execute every query of this session under
+    /// `limits` instead of the canonical query limits.
+    ///
+    /// Call this before creating any binding: bindings belong to the limits
+    /// they were created under. `limits` is admitted by the shared engine,
+    /// so an unsupported value fails here rather than at the first query.
+    pub fn with_query_limits(mut self, limits: QueryLimits) -> Result<Self> {
+        if !self.bindings.is_empty() {
+            return Err(Error::model_validation(
+                ModelValidationPhase::Input,
+                "query_limits_after_binding",
+                vec![],
+                "query limits must be set before the session creates a binding",
+                None,
+            ));
+        }
+        let limits = limits.validate().map_err(|error| {
+            Error::model_validation(
+                ModelValidationPhase::Input,
+                "query_limits_invalid",
+                vec![],
+                error.to_string(),
+                None,
+            )
+        })?;
+        self.session = OrmSessionHandle::with_limits(Arc::clone(&self.registry), limits);
+        Ok(self)
     }
 
     fn push_binding<M: ThingModel<Schema = S>, Mode: SelectionMode>(

@@ -67,6 +67,7 @@ pub use session::{
 pub use transaction::{
     ReadTransaction, TransactionEntityManager, TransactionRelationManager, WriteTransaction,
 };
+pub use type_bridge_contract::limits::{QueryLimits, QueryLimitsError};
 pub use type_bridge_orm::{
     AnswerCancellation, MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
     MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS, MAX_QUERY_STATEMENTS,

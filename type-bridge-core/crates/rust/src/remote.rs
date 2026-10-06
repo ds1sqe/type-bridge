@@ -1573,6 +1573,39 @@ mod tests {
         assert_eq!(cancelled_error.category(), crate::ErrorCategory::Cancelled);
         assert_eq!(cancelled_error.code(), Some("provider_cancelled"));
 
+        // A session's own query limits bound what it may prepare: a plan
+        // ceiling of one byte refuses before the caller's transport.
+        let mut limited_session = remote
+            .query_with_resources(
+                QueryExecutionResourceLimits::default(),
+                AnswerCancellation::default(),
+            )
+            .unwrap()
+            .with_query_limits(
+                crate::QueryLimits::from_overrides([("canonical_bytes", 1)]).unwrap(),
+            )
+            .unwrap();
+        let limited_person = limited_session.exact::<Person>().unwrap();
+        let limited_error = limited_session
+            .query(limited_person)
+            .unwrap()
+            .count()
+            .await
+            .expect_err("a lowered plan ceiling must reject before caller transport");
+        assert_eq!(
+            limited_error.category(),
+            crate::ErrorCategory::ResourceLimit
+        );
+        assert_eq!(limited_error.code(), Some("canonical_json_too_large"));
+        assert_eq!(
+            limited_session
+                .with_query_limits(crate::QueryLimits::CANONICAL)
+                .err()
+                .expect("limits cannot change once a binding exists")
+                .code(),
+            Some("query_limits_after_binding"),
+        );
+
         let terminal_resources =
             QueryExecutionResourceLimits::tightened(10_000, 20, 900_000, 100, 70, 80, 50, 1);
         let mut tightened_session = remote
