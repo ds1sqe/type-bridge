@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         PyProjectedModelManager,
         PyRuntimeProjection,
         QueryCancellation,
+        QueryLimits,
     )
 
     from type_bridge.session import Database, TransactionContext
@@ -217,10 +218,15 @@ class ModelBase:
         return ProjectedModelManager(cls, native)
 
     @classmethod
-    def query(cls, connection: Database | TransactionContext) -> QuerySession:
+    def query(
+        cls,
+        connection: Database | TransactionContext,
+        *,
+        query_limits: QueryLimits | None = None,
+    ) -> QuerySession:
         from ._query import QuerySession
 
-        return QuerySession(cls.__runtime_projection__, connection)
+        return QuerySession(cls.__runtime_projection__, connection, query_limits=query_limits)
 
     def runtime_values(self) -> dict[str, object]:
         return self._values

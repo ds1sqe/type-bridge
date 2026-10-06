@@ -2,7 +2,7 @@ from collections.abc import Callable, Mapping, Sequence
 from enum import Enum, StrEnum
 from typing import Any, Literal, Never, TypedDict, Unpack, overload
 
-from type_bridge_core import PyRuntimeProjection, QueryCancellation
+from type_bridge_core import PyRuntimeProjection, QueryCancellation, QueryLimits
 
 from type_bridge._runtime_projection import GeneratedEntityProjection, GeneratedRelationProjection
 from type_bridge.session import Database, TransactionContext
@@ -72,6 +72,8 @@ class ModelBase:
     def query[ModelT: ModelBase](
         cls: type[ModelT],
         connection: Database | TransactionContext,
+        *,
+        query_limits: QueryLimits | None = ...,
     ) -> QuerySession: ...
     def runtime_values(self) -> dict[str, object]: ...
     def encode_create(self, **options: Unpack[_CanonicalCodecOptions]) -> bytes: ...
