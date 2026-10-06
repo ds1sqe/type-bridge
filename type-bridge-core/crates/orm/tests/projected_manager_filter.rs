@@ -414,16 +414,15 @@ fn validated_exact_count_query_converts_but_richer_predicates_do_not() {
     let base = session.query(shape).unwrap();
     let identifier = root.field("identifier").unwrap();
     let exact = base
-        .where_predicates_in_order([
-            identifier.compare_value(
-                ComparisonOp::Equal,
-                type_bridge_orm::AttributeValue::String("ada".into()),
-            ),
-            identifier.compare_value(
-                ComparisonOp::NotEqual,
-                type_bridge_orm::AttributeValue::String("grace".into()),
-            ),
-        ])
+        .where_predicate(identifier.compare_value(
+            ComparisonOp::Equal,
+            type_bridge_orm::AttributeValue::String("ada".into()),
+        ))
+        .unwrap()
+        .where_predicate(identifier.compare_value(
+            ComparisonOp::NotEqual,
+            type_bridge_orm::AttributeValue::String("grace".into()),
+        ))
         .unwrap()
         .validate_count_by(&root)
         .unwrap();
@@ -486,7 +485,7 @@ fn manager_query_validation_flattens_the_full_boolean_term_ceiling() {
             ))
             .unwrap();
     }
-    let validated = query.validate_manager_count_by(&root).unwrap();
+    let validated = query.validate_count_by(&root).unwrap();
     let converted =
         ProjectedManagerFilter::try_from_validated_exact_query(&installed, &validated).unwrap();
     assert_eq!(
@@ -500,11 +499,11 @@ fn manager_query_validation_flattens_the_full_boolean_term_ceiling() {
             type_bridge_orm::AttributeValue::String("one-too-many".into()),
         ))
         .unwrap()
-        .validate_manager_count_by(&root)
+        .validate_count_by(&root)
         .unwrap_err();
     assert!(
         over_limit
             .to_string()
-            .contains("manager_filter_predicate_limit")
+            .contains("structural_limit_exceeded")
     );
 }

@@ -64,10 +64,6 @@ fn handle_error(code: &'static str, message: impl Into<String>) -> OrmError {
     MatchError::new(MatchErrorCategory::InvalidPlan, code, message).into()
 }
 
-fn manager_filter_resource_error(code: &'static str, message: &'static str) -> OrmError {
-    MatchError::new(MatchErrorCategory::ResourceLimit, code, message).into()
-}
-
 fn function_value_package_mismatch() -> OrmError {
     handle_error(
         "generated_token_package_mismatch",
@@ -1342,27 +1338,35 @@ impl PredicateHandle {
     }
 
     /// Combine two predicates with conjunction in source order.
+    ///
+    /// An operand that is already a conjunction contributes its terms, so
+    /// repeated combination yields one n-ary node rather than a tree whose
+    /// depth grows with the number of terms.
     pub fn and(&self, other: &Self) -> Result<Self> {
         require_same_session(self.session_id, other.session_id)?;
-        Ok(Self::new(
-            self.session_id,
-            HandleExpr::And(vec![
-                Arc::clone(&self.expression),
-                Arc::clone(&other.expression),
-            ]),
-        ))
+        let mut terms = Vec::new();
+        for expression in [&self.expression, &other.expression] {
+            match expression.as_ref() {
+                HandleExpr::And(children) => terms.extend(children.iter().cloned()),
+                _ => terms.push(Arc::clone(expression)),
+            }
+        }
+        Ok(Self::new(self.session_id, HandleExpr::And(terms)))
     }
 
     /// Combine two predicates with disjunction in source order.
+    ///
+    /// An operand that is already a disjunction contributes its branches.
     pub fn or(&self, other: &Self) -> Result<Self> {
         require_same_session(self.session_id, other.session_id)?;
-        Ok(Self::new(
-            self.session_id,
-            HandleExpr::Or(vec![
-                Arc::clone(&self.expression),
-                Arc::clone(&other.expression),
-            ]),
-        ))
+        let mut branches = Vec::new();
+        for expression in [&self.expression, &other.expression] {
+            match expression.as_ref() {
+                HandleExpr::Or(children) => branches.extend(children.iter().cloned()),
+                _ => branches.push(Arc::clone(expression)),
+            }
+        }
+        Ok(Self::new(self.session_id, HandleExpr::Or(branches)))
     }
 
     /// Negate this predicate without mutating its lineage.
@@ -1616,38 +1620,6 @@ impl QueryHandle {
         Ok(validate_match_request(&self.0.session.registry, request)?)
     }
 
-    /// Validate one generated-manager count lineage after flattening only its
-    /// conjunction spine in authored order.
-    ///
-    /// Generated C manager filters persist through repeated public
-    /// `where_predicate` transitions. Those transitions intentionally retain
-    /// the generic query builder's binary tree, while the manager contract
-    /// admits the full flat boolean-term ceiling. This hidden terminal seam
-    /// removes that representational depth without changing ordinary query
-    /// construction or admitting any additional predicate leaf kind.
-    #[doc(hidden)]
-    pub fn validate_manager_count_by(&self, root: &BindingHandle) -> Result<ValidatedMatchRequest> {
-        let Some(predicate) = &self.0.predicate else {
-            return self.validate_count_by(root);
-        };
-        let expressions = flatten_manager_conjunction(&predicate.expression)?;
-        let expression = if expressions.len() == 1 {
-            Arc::clone(&expressions[0])
-        } else {
-            Arc::new(HandleExpr::And(expressions))
-        };
-        let flattened = self.with_state(
-            self.0.hidden.clone(),
-            Some(PredicateHandle {
-                session_id: predicate.session_id,
-                expression,
-                bindings: predicate.bindings.clone(),
-            }),
-            self.0.allowed_cross_joins.clone(),
-        );
-        flattened.validate_count_by(root)
-    }
-
     /// Canonically validate one distinct-root existence terminal.
     #[doc(hidden)]
     pub fn validate_exists_by(&self, root: &BindingHandle) -> Result<ValidatedMatchRequest> {
@@ -1699,69 +1671,6 @@ impl QueryHandle {
             Some(existing) => existing.and(&predicate)?,
             None => predicate,
         };
-        Ok(self.with_state(
-            self.0.hidden.clone(),
-            Some(predicate),
-            self.0.allowed_cross_joins.clone(),
-        ))
-    }
-
-    /// Attach one authored sequence as a flat conjunction.
-    ///
-    /// This hidden generated-manager seam avoids turning a bounded list of
-    /// independent field comparisons into a depth-linear predicate tree. The
-    /// returned lineage remains persistent and every child retains its exact
-    /// source position.
-    #[doc(hidden)]
-    pub fn where_predicates_in_order(
-        &self,
-        predicates: impl IntoIterator<Item = PredicateHandle>,
-    ) -> Result<Self> {
-        let predicates = predicates.into_iter().collect::<Vec<_>>();
-        if predicates.is_empty() {
-            return Ok(self.clone());
-        }
-        if predicates.len() > MAX_BOOLEAN_TERMS {
-            return Err(handle_error(
-                "boolean_term_limit",
-                "flat conjunction exceeds the canonical boolean-term ceiling",
-            ));
-        }
-        for predicate in &predicates {
-            self.require_session(predicate.session_id)?;
-            if predicate
-                .bindings
-                .iter()
-                .any(|token| !self.is_attached(*token))
-            {
-                return Err(handle_error(
-                    "unattached_binding",
-                    "predicate references a binding not attached to this query",
-                ));
-            }
-        }
-        let mut expressions = Vec::new();
-        expressions
-            .try_reserve(
-                predicates
-                    .len()
-                    .saturating_add(usize::from(self.0.predicate.is_some())),
-            )
-            .map_err(|_| {
-                handle_error(
-                    "predicate_allocation_exhausted",
-                    "flat conjunction could not reserve bounded predicate storage",
-                )
-            })?;
-        if let Some(existing) = &self.0.predicate {
-            expressions.push(Arc::clone(&existing.expression));
-        }
-        expressions.extend(
-            predicates
-                .into_iter()
-                .map(|predicate| Arc::clone(&predicate.expression)),
-        );
-        let predicate = PredicateHandle::new(self.0.session.id, HandleExpr::And(expressions));
         Ok(self.with_state(
             self.0.hidden.clone(),
             Some(predicate),
@@ -2134,66 +2043,6 @@ impl QueryHandle {
             })
             .collect()
     }
-}
-
-fn flatten_manager_conjunction(expression: &Arc<HandleExpr>) -> Result<Vec<Arc<HandleExpr>>> {
-    let mut pending = Vec::new();
-    pending.try_reserve(1).map_err(|_| {
-        manager_filter_resource_error(
-            "manager_filter_allocation_exhausted",
-            "manager conjunction traversal could not reserve bounded storage",
-        )
-    })?;
-    pending.push((Arc::clone(expression), 1_usize));
-    let mut flattened = Vec::new();
-    let mut visited = 0_usize;
-    while let Some((expression, depth)) = pending.pop() {
-        visited = visited.saturating_add(1);
-        if visited > MAX_PREDICATE_NODES || depth > MAX_BOOLEAN_TERMS {
-            return Err(manager_filter_resource_error(
-                "manager_filter_predicate_limit",
-                "manager conjunction exceeds the canonical boolean-term ceiling",
-            ));
-        }
-        match expression.as_ref() {
-            HandleExpr::And(expressions) => {
-                pending.try_reserve(expressions.len()).map_err(|_| {
-                    manager_filter_resource_error(
-                        "manager_filter_allocation_exhausted",
-                        "manager conjunction traversal could not reserve bounded storage",
-                    )
-                })?;
-                pending.extend(
-                    expressions
-                        .iter()
-                        .rev()
-                        .map(|expression| (Arc::clone(expression), depth.saturating_add(1))),
-                );
-            }
-            _ => {
-                if flattened.len() == MAX_BOOLEAN_TERMS {
-                    return Err(manager_filter_resource_error(
-                        "manager_filter_predicate_limit",
-                        "manager conjunction exceeds the canonical boolean-term ceiling",
-                    ));
-                }
-                flattened.try_reserve(1).map_err(|_| {
-                    manager_filter_resource_error(
-                        "manager_filter_allocation_exhausted",
-                        "manager conjunction could not reserve bounded predicate storage",
-                    )
-                })?;
-                flattened.push(expression);
-            }
-        }
-    }
-    if flattened.is_empty() {
-        return Err(handle_error(
-            "empty_predicate",
-            "manager conjunction must contain at least one predicate",
-        ));
-    }
-    Ok(flattened)
 }
 
 struct LoweredQuery {

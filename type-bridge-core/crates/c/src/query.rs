@@ -3775,7 +3775,7 @@ pub unsafe extern "C" fn type_bridge_query_terminal_open_v1(
             let root = root
                 .as_ref()
                 .expect("manager terminal exact-root lane was validated");
-            let validated = match query.handle.validate_manager_count_by(root) {
+            let validated = match query.handle.validate_count_by(root) {
                 Ok(value) => value,
                 Err(error) => return return_execution_error(lower(error), out_diagnostics),
             };
@@ -8554,7 +8554,7 @@ mod tests {
         assert!(built.terminal.is_null());
         assert_eq!(
             unsafe { diagnostic_code(diagnostics) },
-            "manager_filter_predicate_limit"
+            "structural_limit_exceeded"
         );
         unsafe { close_diagnostics(&mut diagnostics) };
     }

@@ -1055,9 +1055,12 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         let query = session
             .query(shape)
             .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
-        let query = query
-            .where_predicates_in_order(self.build_predicates(filter, &root)?)
-            .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
+        let mut query = query;
+        for predicate in self.build_predicates(filter, &root)? {
+            query = query
+                .where_predicate(predicate)
+                .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
+        }
         let request = if exists {
             query.validate_exists_by(&root)
         } else {
