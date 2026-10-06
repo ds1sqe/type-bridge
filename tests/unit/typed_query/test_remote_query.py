@@ -217,6 +217,7 @@ def test_public_direct_and_remote_order_iterables_stop_at_first_excess_term() ->
             "actual": {"kind": "count", "value": 65},
             "limit": {"kind": "query_identity", "value": "order_terms"},
             "maximum": {"kind": "count", "value": 64},
+            "source": {"kind": "query_identity", "value": "default"},
         },
     )
     assert direct_orders.consumed == 65
@@ -798,6 +799,7 @@ def test_native_remote_order_sequences_are_bounded_at_the_raw_ffi_boundary() -> 
             "actual": {"kind": "count", "value": 65},
             "limit": {"kind": "query_identity", "value": "order_terms"},
             "maximum": {"kind": "count", "value": 64},
+            "source": {"kind": "query_identity", "value": "default"},
         }
 
 
