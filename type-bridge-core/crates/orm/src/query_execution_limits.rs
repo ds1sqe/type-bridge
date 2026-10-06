@@ -234,19 +234,7 @@ impl QueryExecutionResourceLimits {
         cancellation: AnswerCancellation,
         deadline: QueryExecutionDeadline,
     ) -> MatchExecutionLimits {
-        let this = self.effective();
-        MatchExecutionLimits::tightened(
-            this.items,
-            this.bytes,
-            Duration::from_millis(this.timeout_milliseconds),
-            cancellation,
-        )
-        .with_absolute_deadline(deadline)
-        .with_max_hydrated_things(this.graph_nodes)
-        .with_max_attribute_values(this.attribute_values)
-        .with_max_collected_concepts(this.collection_members)
-        .with_max_role_players(this.role_players)
-        .with_max_statements(u8::try_from(this.statements).unwrap_or(u8::MAX))
+        MatchExecutionLimits::from_policy(self, cancellation).with_absolute_deadline(deadline)
     }
 
     /// Derive all-or-nothing projected result limits.

@@ -47,6 +47,12 @@ All notable changes to TypeBridge will be documented in this file.
   run queries; it is refused with `schema_authority_required`. Every
   generator has embedded the authority since 2.1.0, so this affects only
   packages generated before that release: regenerate them.
+- `Database::execute_match` and `TransactionContext::execute_match` run
+  under the common answer policy by default: 65,536 items, 32 MiB, and
+  65,536 graph nodes, attribute values, collection members, and role
+  players. The executor previously had ceilings of its own (100,000 items,
+  64 MiB, one to four million hydrated values), so a request could return
+  more direct than through a proxy.
 - Generated manager `all` and `first` run as complete fetches on the same
   executor. Results and the `manager_first_identity_not_unique` refusal are
   unchanged.

@@ -14,16 +14,13 @@ use super::error::{MatchError, MatchErrorCategory, MatchErrorPath, MatchErrorPat
 use super::ids::{DescriptorId, FieldId};
 use super::provider_order::check_provider_orders;
 use super::result::ValidatedMatchResult;
-use super::result_validation::{
-    MAX_COLLECTED_CONCEPTS, MAX_HYDRATED_ATTRIBUTE_VALUES, MAX_HYDRATED_THINGS,
-    exactly_one_cardinality_error, validated_match_result_from_v2,
-};
+use super::result_validation::{exactly_one_cardinality_error, validated_match_result_from_v2};
 use super::validation::ValidatedMatchRequest;
 #[cfg(test)]
 use super::{ReducedValue, Reduction};
 use crate::_registry::DescriptorRegistry;
 use crate::error::OrmError;
-use crate::query_execution_limits::QueryExecutionDeadline;
+use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
 use crate::query_v2::{
     QueryV2ExecutionError, execute_validated_model_query_borrowed,
     execute_validated_model_query_with_statement_limit,
@@ -36,48 +33,53 @@ use crate::session::backend::{
 };
 use crate::session::{Database, Transaction, TransactionContext};
 
-const MAX_PROCESSED_ITEMS: u64 = 100_000;
-const MAX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_TRANSACTION_DURATION: Duration = Duration::from_secs(30);
 const OWNED_TRANSACTION_CLOSE_GRACE: Duration = Duration::from_secs(1);
-const MAX_STATEMENTS: u8 = 3;
 
-/// Caller policy clamped to the selected executor's hard ceilings.
+/// One invocation's answer policy with the deadline and cancellation it
+/// runs under.
+///
+/// The eight budget dimensions are [`QueryExecutionResourceLimits`]: the
+/// executor has no ceilings of its own, so a direct execution and a proxy
+/// execution of the same request run under the same values.
 #[derive(Debug, Clone)]
 pub struct MatchExecutionLimits {
-    max_items: u64,
-    max_bytes: u64,
-    timeout: Duration,
+    policy: QueryExecutionResourceLimits,
     absolute_deadline: Option<QueryExecutionDeadline>,
     cancellation: AnswerCancellation,
-    max_hydrated_things: u64,
-    max_attribute_values: u64,
-    max_collected_concepts: u64,
-    max_role_players: u64,
-    max_statements: u8,
 }
 
 impl MatchExecutionLimits {
-    /// Construct an execution policy that may only tighten hard ceilings.
+    /// Run under one answer policy.
+    #[must_use]
+    pub fn from_policy(
+        policy: QueryExecutionResourceLimits,
+        cancellation: AnswerCancellation,
+    ) -> Self {
+        Self {
+            policy: policy.effective(),
+            absolute_deadline: None,
+            cancellation,
+        }
+    }
+
+    /// Run under the default answer policy with tighter items, bytes, and
+    /// timeout.
     pub fn tightened(
         max_items: u64,
         max_bytes: u64,
         timeout: Duration,
         cancellation: AnswerCancellation,
     ) -> Self {
-        let max_items = max_items.min(MAX_PROCESSED_ITEMS);
-        Self {
-            max_items,
-            max_bytes: max_bytes.min(MAX_RESPONSE_BYTES),
-            timeout: timeout.min(MAX_TRANSACTION_DURATION),
-            absolute_deadline: None,
+        let default = QueryExecutionResourceLimits::default();
+        Self::from_policy(
+            QueryExecutionResourceLimits {
+                timeout_milliseconds: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+                items: max_items,
+                bytes: max_bytes,
+                ..default
+            },
             cancellation,
-            max_hydrated_things: u64::try_from(MAX_HYDRATED_THINGS).unwrap_or(u64::MAX),
-            max_attribute_values: u64::try_from(MAX_HYDRATED_ATTRIBUTE_VALUES).unwrap_or(u64::MAX),
-            max_collected_concepts: u64::try_from(MAX_COLLECTED_CONCEPTS).unwrap_or(u64::MAX),
-            max_role_players: u64::try_from(MAX_HYDRATED_THINGS).unwrap_or(u64::MAX),
-            max_statements: MAX_STATEMENTS,
-        }
+        )
     }
 
     /// Bind execution to one deadline captured before semantic construction.
@@ -93,49 +95,62 @@ impl MatchExecutionLimits {
             .map(QueryExecutionDeadline::instant)
             .or_else(|| {
                 tokio::time::Instant::now()
-                    .checked_add(self.timeout)
+                    .checked_add(Duration::from_millis(self.policy.timeout_milliseconds))
                     .map(tokio::time::Instant::into_std)
             })
     }
 
     /// Further tighten the hydrated-thing ceiling, including nested role players.
     pub fn with_max_hydrated_things(mut self, max_hydrated_things: u64) -> Self {
-        self.max_hydrated_things = max_hydrated_things.min(self.max_hydrated_things);
+        self.policy.graph_nodes = max_hydrated_things.min(self.policy.graph_nodes);
         self
     }
 
     /// Further tighten the hydrated attribute-value ceiling.
     pub fn with_max_attribute_values(mut self, max_attribute_values: u64) -> Self {
-        self.max_attribute_values = max_attribute_values.min(self.max_attribute_values);
+        self.policy.attribute_values = max_attribute_values.min(self.policy.attribute_values);
         self
     }
 
     /// Further tighten the page collection-concept ceiling.
     pub fn with_max_collected_concepts(mut self, max_collected_concepts: u64) -> Self {
-        self.max_collected_concepts = max_collected_concepts.min(self.max_collected_concepts);
+        self.policy.collection_members = max_collected_concepts.min(self.policy.collection_members);
         self
     }
 
     /// Further tighten the hydrated relation-role-player reference ceiling.
     pub fn with_max_role_players(mut self, max_role_players: u64) -> Self {
-        self.max_role_players = max_role_players.min(self.max_role_players);
+        self.policy.role_players = max_role_players.min(self.policy.role_players);
         self
     }
 
     /// Further tighten the number of provider statements in one execution.
     pub fn with_max_statements(mut self, max_statements: u8) -> Self {
-        self.max_statements = max_statements.min(self.max_statements);
+        self.policy.statements = u32::from(max_statements).min(self.policy.statements);
         self
+    }
+
+    fn max_statements(&self) -> u8 {
+        u8::try_from(self.policy.statements).unwrap_or(u8::MAX)
     }
 
     #[cfg(test)]
     pub(crate) const fn resource_dimensions(&self) -> (u64, u64, u64, u64, u8) {
         (
-            self.max_hydrated_things,
-            self.max_attribute_values,
-            self.max_collected_concepts,
-            self.max_role_players,
-            self.max_statements,
+            self.policy.graph_nodes,
+            self.policy.attribute_values,
+            self.policy.collection_members,
+            self.policy.role_players,
+            self.policy.statements as u8,
+        )
+    }
+}
+
+impl Default for MatchExecutionLimits {
+    fn default() -> Self {
+        Self::from_policy(
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
         )
     }
 }
@@ -286,17 +301,6 @@ async fn close_after_execution_panic(transaction: Transaction) {
     }
 }
 
-impl Default for MatchExecutionLimits {
-    fn default() -> Self {
-        Self::tightened(
-            MAX_PROCESSED_ITEMS,
-            MAX_RESPONSE_BYTES,
-            MAX_TRANSACTION_DURATION,
-            AnswerCancellation::default(),
-        )
-    }
-}
-
 /// Internal selected-row executor used by owned and borrowed public entry seams.
 pub(crate) struct SelectedResultExecutor<'a> {
     registry: &'a DescriptorRegistry,
@@ -443,7 +447,7 @@ impl<'a> SelectedResultExecutor<'a> {
                 "provider transaction deadline expired",
             ));
         }
-        if self.limits.max_statements == 0 {
+        if self.limits.policy.statements == 0 {
             return Err(resource_error(
                 "statement_count_limit",
                 "match execution requires at least one provider statement",
@@ -558,7 +562,7 @@ impl<'a> SelectedResultExecutor<'a> {
             &invocation,
             limits,
             reply_limits,
-            self.limits.max_statements,
+            self.limits.max_statements(),
         )
         .await
         .map_err(compatibility_execution_error)?;
@@ -585,7 +589,7 @@ impl<'a> SelectedResultExecutor<'a> {
             &invocation,
             limits,
             reply_limits,
-            self.limits.max_statements,
+            self.limits.max_statements(),
         )
         .await
         .map_err(compatibility_execution_error)?;
@@ -599,20 +603,20 @@ impl<'a> SelectedResultExecutor<'a> {
         (
             QueryV2AnswerLimits {
                 answer: BoundedAnswerLimits {
-                    max_items: self.limits.max_items,
-                    max_bytes: self.limits.max_bytes,
+                    max_items: self.limits.policy.items,
+                    max_bytes: self.limits.policy.bytes,
                     deadline,
                     cancellation: self.limits.cancellation.clone(),
                 },
-                max_collection_members: self.limits.max_collected_concepts,
+                max_collection_members: self.limits.policy.collection_members,
             },
             RemoteReplyDecodeLimitsV2 {
-                max_bytes: self.limits.max_bytes,
-                max_items: self.limits.max_items,
-                max_collection_members: self.limits.max_collected_concepts,
-                max_graph_nodes: self.limits.max_hydrated_things,
-                max_attribute_values: self.limits.max_attribute_values,
-                max_role_players: self.limits.max_role_players,
+                max_bytes: self.limits.policy.bytes,
+                max_items: self.limits.policy.items,
+                max_collection_members: self.limits.policy.collection_members,
+                max_graph_nodes: self.limits.policy.graph_nodes,
+                max_attribute_values: self.limits.policy.attribute_values,
+                max_role_players: self.limits.policy.role_players,
             },
         )
     }
@@ -1181,6 +1185,7 @@ mod tests {
     use crate::_descriptor::{
         EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor,
     };
+    use crate::query_execution_limits::MAX_QUERY_ITEMS;
 
     use crate::_entity::Annotation;
     use crate::MatchErrorPath;
@@ -1268,17 +1273,30 @@ mod tests {
             .with_max_attribute_values(7)
             .with_max_collected_concepts(2)
             .with_max_collected_concepts(5)
+            .with_max_role_players(8)
+            .with_max_role_players(9)
             .with_max_statements(1)
-            .with_max_statements(MAX_STATEMENTS);
+            .with_max_statements(u8::MAX);
+        assert_eq!(limits.resource_dimensions(), (3, 4, 2, 8, 1));
+    }
+
+    #[test]
+    fn default_execution_limits_are_the_common_answer_policy() {
+        let default = QueryExecutionResourceLimits::default();
+        let limits = MatchExecutionLimits::default();
         assert_eq!(
-            (
-                limits.max_hydrated_things,
-                limits.max_attribute_values,
-                limits.max_collected_concepts,
-                limits.max_statements,
-            ),
-            (3, 4, 2, 1)
+            (limits.policy.items, limits.policy.bytes),
+            (65_536, 32 * 1024 * 1024)
         );
+        assert_eq!(limits.policy, default);
+        // A caller cannot widen the policy through the tightening constructor.
+        let widened = MatchExecutionLimits::tightened(
+            u64::MAX,
+            u64::MAX,
+            Duration::from_secs(3600),
+            AnswerCancellation::default(),
+        );
+        assert_eq!(widened.policy, default);
     }
 
     #[tokio::test]
@@ -3381,7 +3399,7 @@ mod tests {
         assert_eq!(events.root_statements.len(), 2);
         assert!(events.root_statements[0].order.is_empty());
         assert_eq!(events.root_statements[0].offset, None);
-        assert_eq!(events.root_statements[0].limit, Some(MAX_PROCESSED_ITEMS));
+        assert_eq!(events.root_statements[0].limit, Some(MAX_QUERY_ITEMS));
         assert!(events.root_statements[1].order.is_empty());
         assert_eq!(events.root_statements[1].offset, None);
         assert_eq!(events.root_statements[1].limit, Some(1));
@@ -3947,7 +3965,7 @@ mod tests {
                 let total = &events.root_statements[0];
                 assert!(total.order.is_empty());
                 assert_eq!(total.offset, None);
-                assert_eq!(total.limit, Some(MAX_PROCESSED_ITEMS));
+                assert_eq!(total.limit, Some(MAX_QUERY_ITEMS));
             }
             assert_eq!(
                 events.rematch_statements[0].root_concept_ids,
@@ -5255,7 +5273,7 @@ mod tests {
         };
         window.offset = 2;
         let validated = validate_match_request(&registry, request).unwrap();
-        let solutions = (1..=MAX_PROCESSED_ITEMS + 1)
+        let solutions = (1..=MAX_QUERY_ITEMS + 1)
             .map(|index| {
                 let concept_id = format!("0x{index:x}");
                 solution(&[(0, &concept_id)], &[])
