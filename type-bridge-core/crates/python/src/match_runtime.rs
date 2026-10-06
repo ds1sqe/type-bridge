@@ -313,7 +313,7 @@ impl PyQueryCancellation {
 /// admits the values; an unknown name or an unsupported value is refused
 /// here, before any session exists.
 #[pyclass(name = "QueryLimits", frozen, from_py_object)]
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct PyQueryLimits {
     inner: QueryLimits,
 }

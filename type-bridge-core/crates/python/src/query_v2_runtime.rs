@@ -20,8 +20,7 @@ use type_bridge_contract::codec::{from_canonical_json, to_canonical_json};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::fingerprint::Fingerprint;
 use type_bridge_contract::limits::{
-    MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES, MAX_QUERY_INVOCATION_BYTES,
-    MAX_REMOTE_ENVELOPE_BYTES,
+    MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES, MAX_REMOTE_ENVELOPE_BYTES,
 };
 use type_bridge_contract::query_remote::{
     RemoteLimits, checked_remote_deadline, checked_remote_limit, remote_deadline_limit,

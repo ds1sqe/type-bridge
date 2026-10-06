@@ -1597,14 +1597,11 @@ mod tests {
             crate::ErrorCategory::ResourceLimit
         );
         assert_eq!(limited_error.code(), Some("canonical_json_too_large"));
-        assert_eq!(
-            limited_session
-                .with_query_limits(crate::QueryLimits::CANONICAL)
-                .err()
-                .expect("limits cannot change once a binding exists")
-                .code(),
-            Some("query_limits_after_binding"),
-        );
+        let Err(after_binding) = limited_session.with_query_limits(crate::QueryLimits::CANONICAL)
+        else {
+            panic!("limits cannot change once a binding exists");
+        };
+        assert_eq!(after_binding.code(), Some("query_limits_after_binding"));
 
         let terminal_resources =
             QueryExecutionResourceLimits::tightened(10_000, 20, 900_000, 100, 70, 80, 50, 1);
