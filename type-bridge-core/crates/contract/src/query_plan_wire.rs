@@ -5,9 +5,9 @@ use serde_json::Value;
 
 use crate::capability::CapabilitySet;
 use crate::codec::from_canonical_json_with_limits;
-use crate::limits::QueryLimits;
 use crate::diagnostic::{Diagnostic, DiagnosticCategory};
 use crate::id::{AttributeId, FunctionId, Label};
+use crate::limits::QueryLimits;
 use crate::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
 use crate::migration_assertion_wire::{
     AssertionRolePlayerWire, FingerprintWire, RoleIdWire, TypeIdWire, ValueComparatorWire,
@@ -21,7 +21,10 @@ use crate::query_plan::{
 use crate::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use crate::value::{CanonicalValue, ValueTypeTag};
 
-pub(crate) fn decode_query_plan(bytes: &[u8], limits: QueryLimits) -> Result<QueryPlan, Diagnostic> {
+pub(crate) fn decode_query_plan(
+    bytes: &[u8],
+    limits: QueryLimits,
+) -> Result<QueryPlan, Diagnostic> {
     // Inspect only canonical JSON and the discriminator before deserializing
     // any version-specific DTO. A V2 payload can never partially reconstruct
     // through V1 types, and an unknown version cannot select a permissive
@@ -40,10 +43,12 @@ pub(crate) fn decode_query_plan(bytes: &[u8], limits: QueryLimits) -> Result<Que
         })?;
     let trusted = match format {
         QUERY_PLAN_FORMAT_V1 => {
-            from_canonical_json_with_limits::<QueryPlanWire>(bytes, limits.codec)?.rebuild(limits)?
+            from_canonical_json_with_limits::<QueryPlanWire>(bytes, limits.codec)?
+                .rebuild(limits)?
         }
         QUERY_PLAN_FORMAT_V2 => {
-            from_canonical_json_with_limits::<QueryPlanWireV2>(bytes, limits.codec)?.rebuild(limits)?
+            from_canonical_json_with_limits::<QueryPlanWireV2>(bytes, limits.codec)?
+                .rebuild(limits)?
         }
         _ => {
             return Err(failure(

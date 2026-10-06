@@ -1510,7 +1510,10 @@ pub(crate) fn prepare_validated_remote_query_v2_with_budget(
         prepared_at_unix_ms,
     )?;
     check_remote_execution_budget(deadline, cancellation)?;
-    let request_envelope = RemoteQueryRequestV2::decode(&request)?;
+    // Re-read the request under the limits it was prepared under; a
+    // canonical decode would refuse what the session legitimately built.
+    let request_envelope =
+        RemoteQueryRequestV2::decode_with_limits(&request, validated.plan().limits())?;
     let request_fingerprint = RemoteRequestFingerprintV2::compute(&request)?;
     let advertisement_fingerprint = advertisement.fingerprint()?;
     let trusted_key = advertisement.reply_key();

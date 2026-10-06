@@ -1,6 +1,6 @@
 //! Canonical implementation-independent codec ceilings.
 
-use crate::diagnostic::{Diagnostic, DiagnosticCategory};
+use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticDetailValue};
 
 /// Maximum canonical artifact size: 16 MiB.
 pub const MAX_CANONICAL_BYTES: usize = 16 * 1024 * 1024;
@@ -246,8 +246,11 @@ pub struct QueryLimits {
     pub codec: CodecLimits,
     /// Typed-plan structural ceilings.
     pub structural: StructuralLimits,
-    /// Maximum bytes in one remote request or reply envelope.
-    pub remote_envelope_bytes: usize,
+    /// Maximum bytes in one remote request envelope.
+    ///
+    /// Reply size is not a query limit: it belongs to the caller's answer
+    /// budget and the executor's answer ceilings.
+    pub remote_request_bytes: usize,
 }
 
 /// Why a [`QueryLimits`] value was refused.
@@ -317,23 +320,55 @@ macro_rules! query_limit_fields {
 
 query_limit_fields![
     ("canonical_bytes", codec.max_bytes, usize::MAX),
-    ("canonical_depth", codec.max_depth, MAX_SUPPORTED_CANONICAL_DEPTH),
-    ("canonical_collection_len", codec.max_collection_len, usize::MAX),
+    (
+        "canonical_depth",
+        codec.max_depth,
+        MAX_SUPPORTED_CANONICAL_DEPTH
+    ),
+    (
+        "canonical_collection_len",
+        codec.max_collection_len,
+        usize::MAX
+    ),
     ("canonical_string_bytes", codec.max_string_bytes, usize::MAX),
-    ("selected_slots", structural.selected_slots, MAX_SUPPORTED_SELECTED_SLOTS),
+    (
+        "selected_slots",
+        structural.selected_slots,
+        MAX_SUPPORTED_SELECTED_SLOTS
+    ),
     ("bindings", structural.bindings, MAX_SUPPORTED_BINDINGS),
     ("predicate_nodes", structural.predicate_nodes, usize::MAX),
-    ("predicate_depth", structural.predicate_depth, MAX_SUPPORTED_CANONICAL_DEPTH),
+    (
+        "predicate_depth",
+        structural.predicate_depth,
+        MAX_SUPPORTED_CANONICAL_DEPTH
+    ),
     ("boolean_terms", structural.boolean_terms, usize::MAX),
-    ("allowed_cross_joins", structural.allowed_cross_joins, usize::MAX),
+    (
+        "allowed_cross_joins",
+        structural.allowed_cross_joins,
+        usize::MAX
+    ),
     ("order_terms", structural.order_terms, usize::MAX),
-    ("collection_order_terms", structural.collection_order_terms, usize::MAX),
+    (
+        "collection_order_terms",
+        structural.collection_order_terms,
+        usize::MAX
+    ),
     ("input_rows", structural.input_rows, usize::MAX),
     ("input_bytes", structural.input_bytes, usize::MAX),
-    ("output_name_bytes", structural.output_name_bytes, usize::MAX),
-    ("semantic_id_bytes", structural.semantic_id_bytes, usize::MAX),
+    (
+        "output_name_bytes",
+        structural.output_name_bytes,
+        usize::MAX
+    ),
+    (
+        "semantic_id_bytes",
+        structural.semantic_id_bytes,
+        usize::MAX
+    ),
     ("diagnostic_bytes", structural.diagnostic_bytes, usize::MAX),
-    ("remote_envelope_bytes", remote_envelope_bytes, usize::MAX),
+    ("remote_request_bytes", remote_request_bytes, usize::MAX),
 ];
 
 impl QueryLimits {
@@ -341,7 +376,7 @@ impl QueryLimits {
     pub const CANONICAL: Self = Self {
         codec: CodecLimits::CANONICAL,
         structural: StructuralLimits::CANONICAL,
-        remote_envelope_bytes: MAX_REMOTE_ENVELOPE_BYTES,
+        remote_request_bytes: MAX_REMOTE_ENVELOPE_BYTES,
     };
 
     /// Admit one untrusted limits value.
@@ -385,17 +420,8 @@ impl QueryLimits {
     #[must_use]
     pub const fn remote_request_codec(self) -> CodecLimits {
         CodecLimits {
-            max_bytes: self.remote_envelope_bytes,
+            max_bytes: self.remote_request_bytes,
             max_depth: self.codec.max_depth + 1,
-            ..self.codec
-        }
-    }
-
-    /// Codec limits for remote replies and capability advertisements.
-    #[must_use]
-    pub const fn remote_envelope_codec(self) -> CodecLimits {
-        CodecLimits {
-            max_bytes: self.remote_envelope_bytes,
             ..self.codec
         }
     }
@@ -460,7 +486,7 @@ const LIMIT_BY_DIAGNOSTIC_CODE: &[(&str, &str)] = &[
     ("query_plan_v2_reachable_expansion_limit", "predicate_nodes"),
     ("query_plan_v2_reducer_limit", "selected_slots"),
     ("query_plan_v2_reduction_group_limit", "selected_slots"),
-    ("query_remote_v2_envelope_too_large", "remote_envelope_bytes"),
+    ("query_remote_v2_envelope_too_large", "remote_request_bytes"),
     ("query_v2_adapter_literal_byte_limit", "canonical_bytes"),
     ("query_v2_lowered_typeql_byte_limit", "canonical_bytes"),
     ("query_v2_reachable_expansion_limit", "predicate_nodes"),
@@ -495,6 +521,31 @@ impl QueryLimits {
             return diagnostic;
         };
         self.annotate_limit(diagnostic, limit)
+    }
+
+    /// [`Self::annotate`] for limits merged from a caller's own and an
+    /// executor's advertisement.
+    ///
+    /// `self` is the merged value. Where the advertisement is the stricter
+    /// side for the refused limit, `source` says so: raising the caller's
+    /// own setting would not help.
+    #[must_use]
+    pub fn annotate_negotiated(self, configured: Self, diagnostic: Diagnostic) -> Diagnostic {
+        self.mark_advertised(configured, self.annotate(diagnostic))
+    }
+
+    /// Set `source` to advertised on an annotated refusal whose limit the
+    /// advertisement tightened below the caller's own value.
+    #[must_use]
+    pub fn mark_advertised(self, configured: Self, diagnostic: Diagnostic) -> Diagnostic {
+        let Some(DiagnosticDetailValue::Text(limit)) = diagnostic.details().get("limit") else {
+            return diagnostic;
+        };
+        if self.get(limit) < configured.get(limit) {
+            diagnostic.with_detail("source", LIMIT_SOURCE_ADVERTISED)
+        } else {
+            diagnostic
+        }
     }
 
     /// [`Self::annotate`] for a diagnostic whose limit the caller knows
@@ -539,7 +590,6 @@ mod query_limits_tests {
     fn canonical_limits_are_the_released_constants_and_validate() {
         let limits = QueryLimits::CANONICAL.validate().expect("canonical limits");
         assert_eq!(limits.remote_request_codec(), REMOTE_REQUEST_CODEC_LIMITS);
-        assert_eq!(limits.remote_envelope_codec(), REMOTE_ENVELOPE_CODEC_LIMITS);
         assert_eq!(limits.invocation_bytes(), MAX_QUERY_INVOCATION_BYTES);
         assert_eq!(QueryLimits::default(), limits);
     }
@@ -588,9 +638,11 @@ mod query_limits_tests {
 
         let mut raised = QueryLimits::CANONICAL;
         raised.codec.max_bytes = 64 * 1024 * 1024;
-        raised.remote_envelope_bytes = 128 * 1024 * 1024;
+        raised.remote_request_bytes = 128 * 1024 * 1024;
         raised.codec.max_depth = MAX_SUPPORTED_CANONICAL_DEPTH;
-        raised.validate().expect("limits above canonical are admissible");
+        raised
+            .validate()
+            .expect("limits above canonical are admissible");
     }
 
     #[test]
@@ -607,7 +659,11 @@ mod query_limits_tests {
     fn annotation_names_the_limit_its_value_and_its_source() {
         use crate::diagnostic::{DiagnosticCode, DiagnosticDetailValue};
         let raise = |code: &str, category| {
-            Diagnostic::new(category, DiagnosticCode::new(code).expect("code"), "refused")
+            Diagnostic::new(
+                category,
+                DiagnosticCode::new(code).expect("code"),
+                "refused",
+            )
         };
         let mut limits = QueryLimits::CANONICAL;
         limits.structural.boolean_terms = 8;
@@ -659,18 +715,21 @@ mod query_limits_tests {
         left.structural.bindings = 8;
         let mut right = QueryLimits::CANONICAL;
         right.structural.bindings = 512;
-        right.remote_envelope_bytes = 1024;
+        right.remote_request_bytes = 1024;
         let merged = left.min(right);
         assert_eq!(merged.codec.max_depth, 64);
         assert_eq!(merged.structural.bindings, 8);
-        assert_eq!(merged.remote_envelope_bytes, 1024);
+        assert_eq!(merged.remote_request_bytes, 1024);
     }
 
     #[test]
     fn the_supported_depth_is_what_the_parser_decodes_inside_a_request_frame() {
         let mut limits = QueryLimits::CANONICAL;
         limits.codec.max_depth = MAX_SUPPORTED_CANONICAL_DEPTH;
-        let request = limits.validate().expect("supported depth").remote_request_codec();
+        let request = limits
+            .validate()
+            .expect("supported depth")
+            .remote_request_codec();
         let deepest = nested(MAX_SUPPORTED_CANONICAL_DEPTH + 1);
         let bytes = to_canonical_json_with_limits(&deepest, request).expect("encodes");
         from_canonical_json_with_limits::<serde_json::Value>(&bytes, request)

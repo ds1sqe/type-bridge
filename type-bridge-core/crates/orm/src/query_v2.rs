@@ -372,10 +372,10 @@ fn lower_validated_query_with_execution_limits(
 
     if typeql.len() > plan.limits().codec.max_bytes {
         return Err(plan.limits().annotate(failure(
-                DiagnosticCategory::ResourceLimit,
-                "query_v2_lowered_typeql_byte_limit",
-                "lowered TypeQL exceeds the canonical protocol byte ceiling",
-            )));
+            DiagnosticCategory::ResourceLimit,
+            "query_v2_lowered_typeql_byte_limit",
+            "lowered TypeQL exceeds the canonical protocol byte ceiling",
+        )));
     }
 
     Ok(LoweredQuery {

@@ -258,11 +258,7 @@ pub fn prepare_remote_model_query_v2_with_budget(
     preflight_released_match_execution(&registry, &request)?;
     check_prepare_budget(deadline, cancellation)?;
 
-    let adapted = match adapt_match_request(
-        &request,
-        &registry,
-        &authority.context(),
-        )? {
+    let adapted = match adapt_match_request(&request, &registry, &authority.context())? {
         MatchRequestAdaptation::Adapted(adapted) => adapted,
         // No V1 wire format exists, so the limit that refused V2 adaptation
         // is the caller's answer.
@@ -534,14 +530,15 @@ functions:
         assert!(error.details().is_empty());
     }
 
-    fn prepare_person_count(
+    fn try_prepare_person_count(
         limits: QueryLimits,
+        advertisement_bytes: &[u8],
         compose: impl Fn(
             crate::match_request::QueryHandle,
             crate::match_request::PredicateHandle,
             usize,
         ) -> crate::match_request::QueryHandle,
-    ) -> RemoteModelQueryV2Error {
+    ) -> Result<(PendingRemoteModelQueryV2, QueryAuthority), RemoteModelQueryV2Error> {
         let registry = Arc::new(nullable_order_registry());
         let authority = matching_authority(&registry);
         let session = SessionHandle::with_limits(Arc::clone(&registry), limits);
@@ -558,14 +555,14 @@ functions:
         }
         let validated = match query.validate_count_by(&root) {
             Ok(validated) => validated,
-            Err(crate::OrmError::Match(error)) => return error.into(),
+            Err(crate::OrmError::Match(error)) => return Err(error.into()),
             Err(error) => panic!("unexpected validation failure: {error:?}"),
         };
-        match prepare_remote_model_query_v2(
+        prepare_remote_model_query_v2(
             &authority,
             &registry,
             validated,
-            b"not an advertisement",
+            advertisement_bytes,
             RemoteLimitsV2 {
                 deadline_ms: Some(1_000),
                 max_bytes: 4_096,
@@ -576,7 +573,19 @@ functions:
                 max_role_players: 10,
                 max_statements: 3,
             },
-        ) {
+        )
+        .map(|pending| (pending, authority))
+    }
+
+    fn prepare_person_count(
+        limits: QueryLimits,
+        compose: impl Fn(
+            crate::match_request::QueryHandle,
+            crate::match_request::PredicateHandle,
+            usize,
+        ) -> crate::match_request::QueryHandle,
+    ) -> RemoteModelQueryV2Error {
+        match try_prepare_person_count(limits, b"not an advertisement", compose) {
             Err(error) => error,
             Ok(_) => panic!("an undecodable advertisement cannot prepare a request"),
         }
@@ -594,8 +603,18 @@ functions:
     /// Alternating disjunction and conjunction is real nesting that no
     /// flattening removes: thirty-eight terms nest thirty-seven levels deep.
     fn nested_person_count(limits: QueryLimits) -> RemoteModelQueryV2Error {
+        match try_nested_person_count(limits, b"not an advertisement") {
+            Err(error) => error,
+            Ok(_) => panic!("an undecodable advertisement cannot prepare a request"),
+        }
+    }
+
+    fn try_nested_person_count(
+        limits: QueryLimits,
+        advertisement_bytes: &[u8],
+    ) -> Result<(PendingRemoteModelQueryV2, QueryAuthority), RemoteModelQueryV2Error> {
         let nested = std::cell::RefCell::new(None::<crate::match_request::PredicateHandle>);
-        prepare_person_count(limits, |query, term, index| {
+        try_prepare_person_count(limits, advertisement_bytes, |query, term, index| {
             let combined = match nested.borrow().as_ref() {
                 None => term,
                 Some(previous) if index % 2 == 0 => previous.and(&term).expect("and"),
@@ -629,7 +648,10 @@ functions:
         assert_eq!(diagnostic.code().as_str(), "canonical_json_too_deep");
         use type_bridge_contract::diagnostic::DiagnosticDetailValue;
         let detail = |key: &str| diagnostic.details().get(key).cloned();
-        assert_eq!(detail("maximum_depth"), Some(DiagnosticDetailValue::Long(64)));
+        assert_eq!(
+            detail("maximum_depth"),
+            Some(DiagnosticDetailValue::Long(64))
+        );
         assert_eq!(
             detail("limit"),
             Some(DiagnosticDetailValue::Text("canonical_depth".into()))
@@ -680,6 +702,91 @@ functions:
             Some(crate::match_request::MatchErrorDetailValue::Text(
                 "configured".into()
             ))
+        );
+    }
+
+    fn executor_advertisement(limits: QueryLimits) -> RemoteCapabilities {
+        let mut capabilities = query_plan_v2_capability_vocabulary()
+            .iter()
+            .cloned()
+            .collect::<QueryCapabilitySet>();
+        for capability in query_remote_v2_required_capabilities(false) {
+            capabilities.insert(capability);
+        }
+        RemoteCapabilities::new(
+            capabilities,
+            RemoteExecutorBinding::new("remote-limits-executor", "epoch-00000000001")
+                .expect("executor binding"),
+            RemoteReplySigningKey::from_secret_bytes([0x62; 32]).public_key(),
+        )
+        .with_query_limits(limits)
+        .expect("advertised limits")
+    }
+
+    fn raised_depth_limits() -> QueryLimits {
+        let mut raised = QueryLimits::CANONICAL;
+        raised.codec.max_depth = type_bridge_contract::limits::MAX_SUPPORTED_CANONICAL_DEPTH;
+        raised.validate().expect("raised limits")
+    }
+
+    #[test]
+    fn an_executor_admits_what_it_advertises_and_a_default_receiver_refuses_it() {
+        let raised = raised_depth_limits();
+        let advertisement = executor_advertisement(raised);
+        let (pending, authority) = try_nested_person_count(
+            raised,
+            &advertisement.encode().expect("advertisement bytes"),
+        )
+        .unwrap_or_else(|error| panic!("matching limits prepare the request: {error:?}"));
+
+        // The executor decodes and validates under its own advertisement.
+        crate::query_v2_remote::preflight_remote_request_v2(
+            pending.request_bytes(),
+            &authority.context(),
+            &advertisement,
+            crate::session::backend::QueryV2AnswerLimits {
+                answer: crate::session::backend::BoundedAnswerLimits {
+                    max_items: 100,
+                    max_bytes: 1 << 20,
+                    deadline: None,
+                    cancellation: AnswerCancellation::default(),
+                },
+                max_collection_members: 1 << 16,
+            },
+        )
+        .unwrap_or_else(|_| panic!("the executor admits a plan within its advertised limits"));
+
+        // The same bytes are beyond a receiver holding the default limits,
+        // whatever the sender was configured with.
+        let refused = type_bridge_contract::query_remote_v2::RemoteQueryRequestV2::decode(
+            pending.request_bytes(),
+        )
+        .expect_err("a default receiver refuses the deeper request");
+        assert_eq!(refused.code().as_str(), "canonical_json_too_deep");
+    }
+
+    #[test]
+    fn a_raised_session_is_refused_before_sending_by_a_default_advertisement() {
+        let advertisement = executor_advertisement(QueryLimits::CANONICAL);
+        let error = try_nested_person_count(
+            raised_depth_limits(),
+            &advertisement.encode().expect("advertisement bytes"),
+        )
+        .err()
+        .expect("the advertisement is stricter than the session");
+        let diagnostic = contract_diagnostic(error);
+        use type_bridge_contract::diagnostic::DiagnosticDetailValue;
+        assert_eq!(diagnostic.category(), DiagnosticCategory::ResourceLimit);
+        assert_eq!(diagnostic.code().as_str(), "canonical_json_too_deep");
+        let detail = |key: &str| diagnostic.details().get(key).cloned();
+        assert_eq!(
+            detail("limit"),
+            Some(DiagnosticDetailValue::Text("canonical_depth".into()))
+        );
+        assert_eq!(detail("maximum"), Some(DiagnosticDetailValue::Long(64)));
+        assert_eq!(
+            detail("source"),
+            Some(DiagnosticDetailValue::Text("advertised".into()))
         );
     }
 

@@ -305,7 +305,9 @@ async fn build_v2_state(
             resolved,
         ),
     }
-    .map_err(|error| format!("v2 executor advertisement rejected: {error:?}"))?;
+    .map_err(|error| format!("v2 executor advertisement rejected: {error:?}"))?
+    .with_query_limits(config.v2.resolved_query_limits()?)
+    .map_err(|error| format!("v2 query limits rejected: {error:?}"))?;
     state
         .verify_startup_authority()
         .await

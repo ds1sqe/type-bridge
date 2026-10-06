@@ -244,6 +244,30 @@ pub struct V2Section {
     /// Exact authority contract; defaults to `managed`.
     #[serde(default)]
     pub authority_mode: V2AuthorityMode,
+    /// Query limits this executor advertises and enforces, by stable limit
+    /// name. A limit left out keeps its canonical default.
+    #[serde(default)]
+    pub query_limits: std::collections::BTreeMap<String, u64>,
+}
+
+impl V2Section {
+    /// Resolve the configured query limits, refusing unknown names and
+    /// values the implementation does not support.
+    pub fn resolved_query_limits(
+        &self,
+    ) -> Result<type_bridge_contract::limits::QueryLimits, String> {
+        let mut limits = type_bridge_contract::limits::QueryLimits::CANONICAL;
+        for (name, value) in &self.query_limits {
+            let value = usize::try_from(*value)
+                .map_err(|_| format!("v2.query_limits.{name} does not fit this platform"))?;
+            if !limits.set(name, value) {
+                return Err(format!("v2.query_limits.{name} is not a known query limit"));
+            }
+        }
+        limits
+            .validate()
+            .map_err(|error| format!("v2.query_limits is rejected: {error}"))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -620,6 +644,8 @@ struct RuntimeV2SectionWire {
     schema_authority_file: String,
     #[serde(default)]
     authority_mode: V2AuthorityMode,
+    #[serde(default)]
+    query_limits: std::collections::BTreeMap<String, u64>,
 }
 
 impl From<RuntimeSchemaSectionWire> for SchemaSection {
@@ -663,6 +689,7 @@ impl From<RuntimeV2SectionWire> for V2Section {
             enabled: wire.enabled,
             schema_authority_file: wire.schema_authority_file,
             authority_mode: wire.authority_mode,
+            query_limits: wire.query_limits,
         }
     }
 }
@@ -3366,6 +3393,44 @@ enabled = ["audit-log", "rate-limiter", "custom"]
             default_http_port(),
             core_version::DEFAULT_HTTP_PORT,
             "server default_http_port() must equal core DEFAULT_HTTP_PORT"
+        );
+    }
+    #[test]
+    fn v2_query_limits_resolve_by_name_and_refuse_unknown_or_unsupported_values() {
+        use type_bridge_contract::limits::QueryLimits;
+
+        let section = |entries: &[(&str, u64)]| V2Section {
+            query_limits: entries
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), *value))
+                .collect(),
+            ..V2Section::default()
+        };
+        assert_eq!(
+            section(&[]).resolved_query_limits().expect("defaults"),
+            QueryLimits::CANONICAL
+        );
+        let raised = section(&[
+            ("canonical_bytes", 64 << 20),
+            ("remote_request_bytes", 128 << 20),
+        ])
+        .resolved_query_limits()
+        .expect("raised limits");
+        assert_eq!(raised.codec.max_bytes, 64 << 20);
+        assert_eq!(raised.remote_request_bytes, 128 << 20);
+        assert_eq!(raised.structural, QueryLimits::CANONICAL.structural);
+
+        assert!(
+            section(&[("made_up", 1)])
+                .resolved_query_limits()
+                .unwrap_err()
+                .contains("not a known query limit")
+        );
+        assert!(
+            section(&[("canonical_depth", 1_000)])
+                .resolved_query_limits()
+                .unwrap_err()
+                .contains("canonical_depth")
         );
     }
 }

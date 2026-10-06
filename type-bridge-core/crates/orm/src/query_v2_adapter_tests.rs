@@ -559,11 +559,10 @@ fn production_adapter_provider_asts_are_band_neutral_for_every_released_operatio
     for (plan, operation) in cases {
         let validated = validate_match_request(&registry, MatchRequest::v1(plan, operation))
             .expect("released operation validates");
-        let MatchRequestAdaptation::Adapted(adapted) = adapt_match_request(
-            &validated,
-            &registry,
-            &authority.context())
-        .expect("released operation adapts") else {
+        let MatchRequestAdaptation::Adapted(adapted) =
+            adapt_match_request(&validated, &registry, &authority.context())
+                .expect("released operation adapts")
+        else {
             panic!("small released operation must not take the artifact-size fallback")
         };
         assert_provider_ast_parity(&registry, &validated, &adapted);
@@ -841,11 +840,10 @@ fn production_authority_round_trips_aliases_subtypes_and_inherited_roles() {
     ] {
         let validated = validate_match_request(&registry, MatchRequest::v1(plan, operation))
             .expect("released request validates");
-        let MatchRequestAdaptation::Adapted(adapted) = adapt_match_request(
-            &validated,
-            &registry,
-            &authority.context())
-        .expect("production authority adapts its own validated registry") else {
+        let MatchRequestAdaptation::Adapted(adapted) =
+            adapt_match_request(&validated, &registry, &authority.context())
+                .expect("production authority adapts its own validated registry")
+        else {
             panic!("small released request must not use the resource fallback");
         };
         let invocation =
@@ -886,11 +884,10 @@ fn subtype_hydration_is_canonical_when_a_child_sorts_before_its_parent() {
         MatchRequest::v1(representative_plan(), fetch_rows_operation()),
     )
     .expect("subtype-inclusive released request validates");
-    let MatchRequestAdaptation::Adapted(adapted) = adapt_match_request(
-        &validated,
-        &registry,
-        &authority.context())
-    .expect("lexical subtype order is canonicalized") else {
+    let MatchRequestAdaptation::Adapted(adapted) =
+        adapt_match_request(&validated, &registry, &authority.context())
+            .expect("lexical subtype order is canonicalized")
+    else {
         panic!("small released request must not use the resource fallback");
     };
     let Some(ModelQueryV2::Rows { hydration, .. }) = adapted
@@ -981,11 +978,10 @@ fn exact_subtype_binding_adapts_through_base_declared_role_authority() {
     let validated =
         validate_match_request(&registry, MatchRequest::v1(plan, fetch_rows_operation()))
             .expect("released V1 validation accepts an exact subtype for a base-declared role");
-    let MatchRequestAdaptation::Adapted(adapted) = adapt_match_request(
-        &validated,
-        &registry,
-        &authority.context())
-    .expect("the exact subtype request adapts") else {
+    let MatchRequestAdaptation::Adapted(adapted) =
+        adapt_match_request(&validated, &registry, &authority.context())
+            .expect("the exact subtype request adapts")
+    else {
         panic!("small released request must not use the resource fallback");
     };
     let Some(ModelQueryV2::Rows { hydration, .. }) = adapted
@@ -1174,11 +1170,8 @@ fn production_authority_accepts_released_annotation_and_role_specialization_shap
     let validated = validate_match_request(&registry, MatchRequest::v1(plan, operation))
         .expect("released annotated shape validates");
     assert!(matches!(
-        adapt_match_request(
-            &validated,
-            &registry,
-            &authority.context())
-        .expect("annotated shape adapts"),
+        adapt_match_request(&validated, &registry, &authority.context())
+            .expect("annotated shape adapts"),
         MatchRequestAdaptation::Adapted(_)
     ));
 }
@@ -1676,7 +1669,8 @@ fn only_the_fixed_v2_artifact_envelope_uses_the_legacy_executor() {
         adapt_match_request(
             &validated,
             &registry,
-            &MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed))
+            &MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed),
+        )
         .expect("resource mismatch is a typed disposition, not a semantic error")
     };
 
@@ -1687,7 +1681,10 @@ fn only_the_fixed_v2_artifact_envelope_uses_the_legacy_executor() {
 
     let literal = cause("x".repeat(16 * 1024 * 1024 + 1));
     assert_eq!(literal.category(), DiagnosticCategory::ResourceLimit);
-    assert_eq!(literal.code().as_str(), "query_v2_adapter_literal_byte_limit");
+    assert_eq!(
+        literal.code().as_str(),
+        "query_v2_adapter_literal_byte_limit"
+    );
     assert_eq!(
         literal.details().get("actual_bytes"),
         Some(&DiagnosticDetailValue::Long(16 * 1024 * 1024 + 1))
@@ -1721,7 +1718,8 @@ fn conjunction_request(predicate: MatchExpr) -> MatchRequestAdaptation {
     adapt_match_request(
         &validated,
         &registry,
-        &MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed))
+        &MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed),
+    )
     .expect("resource mismatch is a typed disposition, not a semantic error")
 }
 

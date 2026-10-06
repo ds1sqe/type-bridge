@@ -8,24 +8,25 @@
 //! rejected before any host object is constructed. Envelope formats are
 //! versioned independently of the plan format.
 
+use std::collections::BTreeMap;
+
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::codec::{
-    from_canonical_json_with_limits, to_canonical_json, to_canonical_json_with_limits,
-};
+use crate::codec::{from_canonical_json_with_limits, to_canonical_json_with_limits};
 use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use crate::fingerprint::{
     CanonicalizationVersion, Fingerprint, FingerprintDigest, FingerprintDomain,
 };
 use crate::id::TypeId;
 use crate::limits::{
-    MAX_CANONICAL_COLLECTION_LEN, MAX_REMOTE_ENVELOPE_BYTES, REMOTE_ENVELOPE_CODEC_LIMITS,
-    REMOTE_REQUEST_CODEC_LIMITS,
+    MAX_CANONICAL_COLLECTION_LEN, MAX_REMOTE_ENVELOPE_BYTES, QueryLimits,
+    REMOTE_ENVELOPE_CODEC_LIMITS,
 };
 use crate::query_plan::{
-    InputRow, QueryInvocation, QueryOperation, QueryPlan, QueryPlanFingerprint, decode_query_plan,
+    InputRow, QueryInvocation, QueryOperation, QueryPlan, QueryPlanFingerprint,
+    decode_query_plan_with_limits,
 };
 use crate::value::CanonicalValue;
 
@@ -133,6 +134,14 @@ pub struct RemoteQueryRequest {
     // object itself, so local and remote share one plan size limit.
     plan: serde_json::Value,
     prepared_at_unix_ms: u64,
+    // The limits this request was prepared or decoded under; never wire
+    // state, because each peer applies its own.
+    #[serde(skip)]
+    query_limits: QueryLimits,
+    // The preparing caller's own limits, kept only to say whether a refusal
+    // came from them or from the advertisement.
+    #[serde(skip)]
+    configured_limits: QueryLimits,
     rows: Vec<Vec<Option<CanonicalValue>>>,
 }
 
@@ -160,6 +169,7 @@ impl RemoteQueryRequest {
             .checked_add(limits.deadline_ms.unwrap_or(DEFAULT_REMOTE_DEADLINE_MS))
             .ok_or_else(remote_time_invalid)?;
         validate_remote_time_shape(prepared_at_unix_ms, expires_at_unix_ms, limits)?;
+        let query_limits = negotiate_query_limits(plan, advertisement)?;
         let advertisement = advertisement.fingerprint()?.digest_hex();
         // Canonical bytes prove the plan encodes within contract limits;
         // the parsed tree of those exact bytes is what the envelope embeds.
@@ -180,6 +190,8 @@ impl RemoteQueryRequest {
             operation: RemoteOperation::from_operation(invocation.operation()),
             plan: plan_value,
             prepared_at_unix_ms,
+            query_limits,
+            configured_limits: plan.limits(),
             rows: invocation
                 .inputs()
                 .iter()
@@ -190,12 +202,31 @@ impl RemoteQueryRequest {
 
     /// Encode exact canonical envelope bytes.
     pub fn encode(&self) -> Result<Vec<u8>, Diagnostic> {
-        to_canonical_json_with_limits(self, REMOTE_REQUEST_CODEC_LIMITS)
+        to_canonical_json_with_limits(self, self.query_limits.remote_request_codec()).map_err(
+            |diagnostic| {
+                self.query_limits.mark_advertised(
+                    self.configured_limits,
+                    annotate_request_envelope(self.query_limits, diagnostic),
+                )
+            },
+        )
     }
 
     /// Decode one request envelope, rejecting unknown fields and formats.
     pub fn decode(bytes: &[u8]) -> Result<Self, Diagnostic> {
-        let request = from_canonical_json_with_limits::<Self>(bytes, REMOTE_REQUEST_CODEC_LIMITS)?;
+        Self::decode_with_limits(bytes, QueryLimits::CANONICAL)
+    }
+
+    /// Decode one request envelope under the receiver's own limits.
+    ///
+    /// The request and its embedded plan are bounded by `limits` alone;
+    /// nothing the sender wrote can widen them.
+    pub fn decode_with_limits(bytes: &[u8], limits: QueryLimits) -> Result<Self, Diagnostic> {
+        let mut request =
+            from_canonical_json_with_limits::<Self>(bytes, limits.remote_request_codec())
+                .map_err(|diagnostic| annotate_request_envelope(limits, diagnostic))?;
+        request.query_limits = limits;
+        request.configured_limits = limits;
         if request.format != QUERY_REMOTE_REQUEST_FORMAT_V1 {
             return Err(envelope_failure(
                 DiagnosticCategory::InvalidContract,
@@ -233,7 +264,10 @@ impl RemoteQueryRequest {
     /// full plan wire decoder, so every structural plan check applies to
     /// remote plans exactly as it does to local ones.
     pub fn plan(&self) -> Result<QueryPlan, Diagnostic> {
-        decode_query_plan(&to_canonical_json(&self.plan)?)
+        decode_query_plan_with_limits(
+            &to_canonical_json_with_limits(&self.plan, self.query_limits.codec)?,
+            self.query_limits,
+        )
     }
 
     /// Rebuild the validated invocation against the carried plan.
@@ -952,6 +986,12 @@ pub struct RemoteCapabilities {
     // requests prepared for an earlier executor incarnation.
     executor: RemoteExecutorBinding,
     format: String,
+    // The executor's query limits, by stable name, holding only those that
+    // differ from the canonical defaults. An executor with default limits
+    // omits the member, so its advertisement bytes and fingerprint are the
+    // released ones. The executor enforces exactly this statement.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    query_limits: BTreeMap<String, u64>,
     // This key is an explicit caller trust input. Its inclusion in the exact
     // advertisement fingerprint binds every prepared request to one signer.
     reply_key: RemoteSigningPublicKey,
@@ -973,9 +1013,56 @@ impl RemoteCapabilities {
             capabilities,
             executor,
             format: QUERY_REMOTE_CAPABILITIES_FORMAT_V1.to_owned(),
+            query_limits: BTreeMap::new(),
             reply_key,
             reply_key_id,
         }
+    }
+
+    /// Advertise the query limits this executor enforces.
+    ///
+    /// `limits` is admitted through [`QueryLimits::validate`]. Only limits
+    /// that differ from the canonical defaults reach the wire.
+    pub fn with_query_limits(mut self, limits: QueryLimits) -> Result<Self, Diagnostic> {
+        let limits = limits.validate().map_err(|_| advertised_limits_invalid())?;
+        self.query_limits = QueryLimits::FIELDS
+            .iter()
+            .filter_map(|name| {
+                let value = limits.get(name)?;
+                (Some(value) != QueryLimits::CANONICAL.get(name))
+                    .then(|| ((*name).to_owned(), u64::try_from(value).unwrap_or(u64::MAX)))
+            })
+            .collect();
+        Ok(self)
+    }
+
+    /// Return the query limits this executor advertises and enforces.
+    ///
+    /// A limit the advertisement does not name has its canonical default.
+    #[must_use]
+    pub fn query_limits(&self) -> QueryLimits {
+        let mut limits = QueryLimits::CANONICAL;
+        for (name, value) in &self.query_limits {
+            limits.set(name, usize::try_from(*value).unwrap_or(usize::MAX));
+        }
+        limits
+    }
+
+    /// Require the canonical form of the advertised limits: known names,
+    /// no default-valued entry, and a value set validation admits.
+    fn validate_query_limits(&self) -> Result<(), Diagnostic> {
+        for (name, value) in &self.query_limits {
+            let canonical = QueryLimits::CANONICAL
+                .get(name)
+                .ok_or_else(advertised_limits_invalid)?;
+            if usize::try_from(*value).ok() == Some(canonical) || usize::try_from(*value).is_err() {
+                return Err(advertised_limits_invalid());
+            }
+        }
+        self.query_limits()
+            .validate()
+            .map(|_| ())
+            .map_err(|_| advertised_limits_invalid())
     }
 
     /// Encode exact canonical envelope bytes.
@@ -996,6 +1083,7 @@ impl RemoteCapabilities {
         }
         validate_executor_component(advertisement.executor.identity())?;
         validate_executor_component(advertisement.executor.epoch())?;
+        advertisement.validate_query_limits()?;
         if advertisement.reply_key_id != RemoteSigningKeyId::for_public_key(advertisement.reply_key)
         {
             return Err(remote_signature_invalid());
@@ -1043,6 +1131,42 @@ impl RemoteCapabilities {
             &self.encode()?,
         )))
     }
+}
+
+/// Attribute a request-envelope codec failure: its byte ceiling is the
+/// remote request budget, not the plan artifact ceiling the code table names.
+pub(crate) fn annotate_request_envelope(limits: QueryLimits, diagnostic: Diagnostic) -> Diagnostic {
+    if diagnostic.code().as_str() == "canonical_json_too_large" {
+        limits.annotate_limit(diagnostic, "remote_request_bytes")
+    } else {
+        limits.annotate(diagnostic)
+    }
+}
+
+/// Hold one plan to an executor's advertised limits before anything is sent.
+///
+/// Returns the merged limits the request must also be encoded under. The
+/// plan is re-decoded only where the advertisement is stricter than the
+/// limits it was built under, which is the same check the executor runs.
+pub(crate) fn negotiate_query_limits(
+    plan: &QueryPlan,
+    advertisement: &RemoteCapabilities,
+) -> Result<QueryLimits, Diagnostic> {
+    let configured = plan.limits();
+    let negotiated = configured.min(advertisement.query_limits());
+    if negotiated != configured {
+        decode_query_plan_with_limits(&plan.canonical_bytes()?, negotiated)
+            .map_err(|diagnostic| negotiated.mark_advertised(configured, diagnostic))?;
+    }
+    Ok(negotiated)
+}
+
+fn advertised_limits_invalid() -> Diagnostic {
+    envelope_failure(
+        DiagnosticCategory::InvalidContract,
+        "query_remote_capabilities_limits_invalid",
+        "remote capability query limits are unknown, redundant, or unsupported",
+    )
 }
 
 /// One decoded remote reply: a typed response or a request-bound failure.

@@ -515,12 +515,8 @@ impl<'a> SelectedResultExecutor<'a> {
         let authority = MatchRequestAdapterAuthority::from_registry(self.registry)
             .map_err(adapter_diagnostic)?;
         self.check_lifecycle_budget()?;
-        match adapt_match_request(
-            validated,
-            self.registry,
-            &authority.context(),
-        )
-        .map_err(adapter_diagnostic)?
+        match adapt_match_request(validated, self.registry, &authority.context())
+            .map_err(adapter_diagnostic)?
         {
             MatchRequestAdaptation::Adapted(adapted) => {
                 self.execute_adapted_owned(database, validated, &adapted)
@@ -581,12 +577,8 @@ impl<'a> SelectedResultExecutor<'a> {
         let authority = MatchRequestAdapterAuthority::from_registry(self.registry)
             .map_err(adapter_diagnostic)?;
         self.check_lifecycle_budget()?;
-        match adapt_match_request(
-            validated,
-            self.registry,
-            &authority.context(),
-        )
-        .map_err(adapter_diagnostic)?
+        match adapt_match_request(validated, self.registry, &authority.context())
+            .map_err(adapter_diagnostic)?
         {
             MatchRequestAdaptation::Adapted(adapted) => {
                 self.execute_adapted_borrowed(context, validated, &adapted)
@@ -2095,7 +2087,9 @@ fn exactly_one_proof_byte_limit(
     selection: &TypedFetchRows,
 ) -> Result<u64, OrmError> {
     let projected_bindings = selection.projection.len();
-    if projected_bindings == 0 || projected_bindings > type_bridge_contract::limits::MAX_SUPPORTED_BINDINGS {
+    if projected_bindings == 0
+        || projected_bindings > type_bridge_contract::limits::MAX_SUPPORTED_BINDINGS
+    {
         return Err(decode_error(
             "tuple_proof_shape_limit",
             "distinct-tuple proof projection exceeds the validated binding ceiling",

@@ -455,7 +455,10 @@ impl SessionHandle {
 }
 
 fn validate_output_name(limits: StructuralLimits, name: &str) -> Result<()> {
-    if name.is_empty() || name.len() > limits.output_name_bytes || name.chars().any(char::is_control) {
+    if name.is_empty()
+        || name.len() > limits.output_name_bytes
+        || name.chars().any(char::is_control)
+    {
         Err(handle_error(
             "invalid_output_name",
             "named output members must be non-empty and within the canonical byte ceiling",
@@ -481,7 +484,11 @@ fn validate_shape_arity(limits: StructuralLimits, count: usize) -> Result<()> {
     Ok(())
 }
 
-fn validate_reachability_bounds(limits: StructuralLimits, min_depth: u8, max_depth: u8) -> Result<()> {
+fn validate_reachability_bounds(
+    limits: StructuralLimits,
+    min_depth: u8,
+    max_depth: u8,
+) -> Result<()> {
     if min_depth > max_depth {
         return Err(handle_error(
             "reachable_bounds",

@@ -1242,11 +1242,10 @@ impl QueryPlan {
     /// Encode exact canonical bytes.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Diagnostic> {
         match self.format.as_str() {
-            QUERY_PLAN_FORMAT_V1 => to_canonical_json_with_limits(
-                &QueryPlanV1Projection::new(self)?,
-                self.limits.codec,
-            )
-            .map_err(|diagnostic| self.limits.annotate(diagnostic)),
+            QUERY_PLAN_FORMAT_V1 => {
+                to_canonical_json_with_limits(&QueryPlanV1Projection::new(self)?, self.limits.codec)
+                    .map_err(|diagnostic| self.limits.annotate(diagnostic))
+            }
             QUERY_PLAN_FORMAT_V2 => to_canonical_json_with_limits(self, self.limits.codec)
                 .map_err(|diagnostic| self.limits.annotate(diagnostic)),
             _ => Err(failure(

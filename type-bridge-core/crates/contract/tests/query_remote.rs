@@ -1598,3 +1598,73 @@ fn limit_conversion_rejects_the_signed_and_oversized_ranges() {
         "query_remote_deadline_limit",
     );
 }
+
+#[test]
+fn advertised_query_limits_are_omitted_at_default_and_canonical_otherwise() {
+    use type_bridge_contract::limits::QueryLimits;
+
+    let default = advertisement();
+    let default_bytes = default.encode().expect("default advertisement");
+    assert_eq!(default.query_limits(), QueryLimits::CANONICAL);
+    // Advertising the defaults explicitly changes neither bytes nor identity.
+    let explicit = advertisement()
+        .with_query_limits(QueryLimits::CANONICAL)
+        .expect("default limits");
+    assert_eq!(explicit.encode().expect("explicit default"), default_bytes);
+    assert!(!String::from_utf8_lossy(&default_bytes).contains("query_limits"));
+
+    let mut raised = QueryLimits::CANONICAL;
+    raised.codec.max_bytes = 64 * 1024 * 1024;
+    raised.remote_request_bytes = 128 * 1024 * 1024;
+    raised.structural.boolean_terms = 8;
+    let advertised = advertisement()
+        .with_query_limits(raised)
+        .expect("admissible limits");
+    let bytes = advertised.encode().expect("raised advertisement");
+    let decoded = RemoteCapabilities::decode(&bytes).expect("canonical raised advertisement");
+    assert_eq!(decoded, advertised);
+    assert_eq!(decoded.query_limits(), raised);
+    assert_ne!(
+        decoded.fingerprint().expect("raised fingerprint"),
+        default.fingerprint().expect("default fingerprint"),
+        "a request cannot bind one advertisement and be admitted under another's limits"
+    );
+
+    let mut unsupported = QueryLimits::CANONICAL;
+    unsupported.codec.max_depth = 1_000;
+    assert_eq!(
+        advertisement()
+            .with_query_limits(unsupported)
+            .expect_err("unsupported limits cannot be advertised")
+            .code()
+            .as_str(),
+        "query_remote_capabilities_limits_invalid",
+    );
+
+    let forged = |mutate: fn(&mut Value)| {
+        let mut wire: Value = serde_json::from_slice(&bytes).expect("advertisement JSON");
+        mutate(&mut wire);
+        RemoteCapabilities::decode(&serde_json::to_vec(&wire).expect("forged advertisement"))
+            .expect_err("forged limits are refused")
+            .code()
+            .as_str()
+            .to_owned()
+    };
+    // An unknown name, a redundant default, and an unsupported value.
+    assert_eq!(
+        forged(|wire| wire["query_limits"]["made_up"] = Value::from(1)),
+        "query_remote_capabilities_limits_invalid",
+    );
+    assert_eq!(
+        forged(|wire| wire["query_limits"]["bindings"] = Value::from(256)),
+        "query_remote_capabilities_limits_invalid",
+    );
+    assert_eq!(
+        forged(|wire| wire["query_limits"]["canonical_depth"] = Value::from(1_000)),
+        "query_remote_capabilities_limits_invalid",
+    );
+    assert_eq!(
+        forged(|wire| wire["query_limits"]["boolean_terms"] = Value::from(0)),
+        "query_remote_capabilities_limits_invalid",
+    );
+}

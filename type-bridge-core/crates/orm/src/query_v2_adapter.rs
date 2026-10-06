@@ -316,7 +316,9 @@ pub(crate) fn adapt_match_request(
     ) {
         Ok(validated) => validated,
         Err(error) if error.category() == DiagnosticCategory::ResourceLimit => {
-            return Ok(MatchRequestAdaptation::LegacyRequired(limits.annotate(error)));
+            return Ok(MatchRequestAdaptation::LegacyRequired(
+                limits.annotate(error),
+            ));
         }
         Err(error) => return Err(error),
     };
@@ -326,9 +328,9 @@ pub(crate) fn adapt_match_request(
             operation,
             validated: Box::new(validated),
         })),
-        Err(error) if error.category() == DiagnosticCategory::ResourceLimit => {
-            Ok(MatchRequestAdaptation::LegacyRequired(limits.annotate(error)))
-        }
+        Err(error) if error.category() == DiagnosticCategory::ResourceLimit => Ok(
+            MatchRequestAdaptation::LegacyRequired(limits.annotate(error)),
+        ),
         Err(error) => Err(error),
     }
 }

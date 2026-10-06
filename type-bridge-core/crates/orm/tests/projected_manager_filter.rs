@@ -501,9 +501,5 @@ fn manager_query_validation_flattens_the_full_boolean_term_ceiling() {
         .unwrap()
         .validate_count_by(&root)
         .unwrap_err();
-    assert!(
-        over_limit
-            .to_string()
-            .contains("structural_limit_exceeded")
-    );
+    assert!(over_limit.to_string().contains("structural_limit_exceeded"));
 }

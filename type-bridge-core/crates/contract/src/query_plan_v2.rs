@@ -2226,7 +2226,10 @@ fn validate_pattern(
                     "reachability requires relation-owned roles and canonical inclusive bounds",
                 ));
             }
-            if !limits.structural.allows_predicate_depth(usize::from(*max_depth)) {
+            if !limits
+                .structural
+                .allows_predicate_depth(usize::from(*max_depth))
+            {
                 return Err(failure(
                     DiagnosticCategory::ResourceLimit,
                     "query_plan_v2_reachable_depth",
@@ -2653,11 +2656,12 @@ fn validate_model_output(
             return;
         }
         if let QueryModelOutputSlotV2::Collect { binding, order, .. } = slot {
-            if let Err(order_error) =
-                validate_stable_order(order, binding_count, limits.structural.collection_order_terms)
-                    .map_err(|diagnostic| {
-                        limits.annotate_limit(diagnostic, "collection_order_terms")
-                    })
+            if let Err(order_error) = validate_stable_order(
+                order,
+                binding_count,
+                limits.structural.collection_order_terms,
+            )
+            .map_err(|diagnostic| limits.annotate_limit(diagnostic, "collection_order_terms"))
             {
                 error = Some(order_error);
             } else if let Err(order_error) =

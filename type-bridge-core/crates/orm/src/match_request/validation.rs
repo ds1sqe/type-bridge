@@ -29,12 +29,12 @@ use super::ids::{
     SchemaFingerprint,
 };
 use super::limits::StructuralLimits;
-use type_bridge_contract::limits::QueryLimits;
 use super::model::{
     ComparisonOp, FetchShape, FetchSlot, MatchExpr, MatchFunctionArgument, MatchFunctionCall,
     MatchMode, MatchOperation, MatchOrder, MatchRequest, MatchRequestVersion, MatchScalarOperand,
     RowCardinality, SortDirection, ThingKind,
 };
+use type_bridge_contract::limits::QueryLimits;
 
 static NEXT_REQUEST_TOKEN: AtomicU64 = AtomicU64::new(1);
 
@@ -252,7 +252,8 @@ pub fn validate_match_request_with_limits(
 
 fn validate_version_and_structure(
     limits: StructuralLimits,
-    request: &MatchRequest) -> Result<(), MatchError> {
+    request: &MatchRequest,
+) -> Result<(), MatchError> {
     if request.version != MatchRequestVersion::V1 {
         return Err(invalid(
             "unsupported_request_version",
@@ -555,7 +556,8 @@ fn inspect_function_call_structure(
 
 fn validate_operation_structure(
     limits: StructuralLimits,
-    request: &MatchRequest) -> Result<(), MatchError> {
+    request: &MatchRequest,
+) -> Result<(), MatchError> {
     let (output, order, window) = match &request.operation {
         MatchOperation::FetchRows {
             output,
@@ -634,8 +636,11 @@ fn validate_operation_structure(
                 .at(MatchErrorPathSegment::Operation)
                 .with_detail("actual", usize_detail(groups.len()))
                 .with_detail("maximum", usize_detail(limits.selected_slots))
-            .with_detail("limit", "selected_slots")
-            .with_detail("source", limit_source("selected_slots", limits.selected_slots)));
+                .with_detail("limit", "selected_slots")
+                .with_detail(
+                    "source",
+                    limit_source("selected_slots", limits.selected_slots),
+                ));
             }
             let mut unique = BTreeSet::new();
             for group in groups {
@@ -692,7 +697,10 @@ fn validate_operation_structure(
             .with_detail("actual", usize_detail(count))
             .with_detail("maximum", usize_detail(limits.selected_slots))
             .with_detail("limit", "selected_slots")
-            .with_detail("source", limit_source("selected_slots", limits.selected_slots)));
+            .with_detail(
+                "source",
+                limit_source("selected_slots", limits.selected_slots),
+            ));
         }
         let mut selected = BTreeSet::new();
         output.for_each_slot(|slot| {
@@ -754,7 +762,8 @@ fn validate_operation_structure(
 
 fn validate_reducer_structure(
     limits: StructuralLimits,
-    reducers: &[super::model::ReduceTerm]) -> Result<(), MatchError> {
+    reducers: &[super::model::ReduceTerm],
+) -> Result<(), MatchError> {
     if reducers.is_empty() {
         return Err(invalid(
             "empty_reducers",
@@ -770,8 +779,11 @@ fn validate_reducer_structure(
         .at(MatchErrorPathSegment::Operation)
         .with_detail("actual", usize_detail(reducers.len()))
         .with_detail("maximum", usize_detail(limits.selected_slots))
-            .with_detail("limit", "selected_slots")
-            .with_detail("source", limit_source("selected_slots", limits.selected_slots)));
+        .with_detail("limit", "selected_slots")
+        .with_detail(
+            "source",
+            limit_source("selected_slots", limits.selected_slots),
+        ));
     }
     for term in reducers {
         match (&term.input, term.reduction.requires_input()) {
@@ -2063,8 +2075,14 @@ pub(super) const fn request_token_for_test(bytes: [u8; 16]) -> RequestToken {
 
 fn validate_bound_field_id(
     limits: StructuralLimits,
-    field: &BoundFieldId) -> Result<(), MatchError> {
-    validate_qualified_member(limits, "field", field.field.owner.as_str(), &field.field.name)
+    field: &BoundFieldId,
+) -> Result<(), MatchError> {
+    validate_qualified_member(
+        limits,
+        "field",
+        field.field.owner.as_str(),
+        &field.field.name,
+    )
 }
 
 fn validate_qualified_member(
@@ -2093,7 +2111,9 @@ fn validate_qualified_member(
 
 fn validate_semantic_id(
     limits: StructuralLimits,
-    label: &'static str, value: &str) -> Result<(), MatchError> {
+    label: &'static str,
+    value: &str,
+) -> Result<(), MatchError> {
     if value.is_empty()
         || value.len() > limits.semantic_id_bytes
         || value.chars().any(char::is_control)
@@ -2150,7 +2170,10 @@ pub fn validate_public_order_term_count(actual: usize) -> Result<(), MatchError>
 }
 
 /// [`validate_public_order_term_count`] under one session's limits.
-pub fn validate_order_term_count(actual: usize, limits: StructuralLimits) -> Result<(), MatchError> {
+pub fn validate_order_term_count(
+    actual: usize,
+    limits: StructuralLimits,
+) -> Result<(), MatchError> {
     check_limit(
         "order_terms",
         actual,
@@ -2253,7 +2276,8 @@ mod tests {
 
     #[test]
     fn public_order_preflight_matches_request_validation_ceiling() {
-        validate_public_order_term_count(StructuralLimits::CANONICAL.order_terms).expect("canonical maximum");
+        validate_public_order_term_count(StructuralLimits::CANONICAL.order_terms)
+            .expect("canonical maximum");
         let error = validate_public_order_term_count(StructuralLimits::CANONICAL.order_terms + 1)
             .expect_err("first excess term must fail before FFI materialization");
         assert_eq!(error.category(), MatchErrorCategory::ResourceLimit);

@@ -207,6 +207,10 @@ pub struct RemoteQueryRequestV2 {
     // state, because each peer applies its own.
     #[serde(skip)]
     query_limits: QueryLimits,
+    // The preparing caller's own limits, kept only to say whether a refusal
+    // came from them or from the advertisement.
+    #[serde(skip)]
+    configured_limits: QueryLimits,
     result: RemoteResultKindV2,
     rows: Vec<Vec<Option<CanonicalValue>>>,
 }
@@ -253,7 +257,8 @@ impl RemoteQueryRequestV2 {
             .checked_add(limits.deadline_ms.unwrap_or(DEFAULT_REMOTE_DEADLINE_MS))
             .ok_or_else(remote_time_invalid_v2)?;
         validate_remote_time_shape_v2(prepared_at_unix_ms, expires_at_unix_ms, limits)?;
-        let query_limits = plan.limits();
+        let configured_limits = plan.limits();
+        let query_limits = crate::query_remote::negotiate_query_limits(plan, advertisement)?;
         let plan = serde_json::from_slice::<serde_json::Value>(&plan.canonical_bytes()?).map_err(
             |_| {
                 remote_v2_failure(
@@ -272,6 +277,7 @@ impl RemoteQueryRequestV2 {
             plan,
             prepared_at_unix_ms,
             query_limits,
+            configured_limits,
             result,
             rows: invocation
                 .inputs()
@@ -283,8 +289,14 @@ impl RemoteQueryRequestV2 {
 
     /// Encode exact canonical V2 request bytes.
     pub fn encode(&self) -> Result<Vec<u8>, Diagnostic> {
-        to_canonical_json_with_limits(self, self.query_limits.remote_request_codec())
-            .map_err(|diagnostic| annotate_envelope(self.query_limits, diagnostic))
+        to_canonical_json_with_limits(self, self.query_limits.remote_request_codec()).map_err(
+            |diagnostic| {
+                self.query_limits.mark_advertised(
+                    self.configured_limits,
+                    crate::query_remote::annotate_request_envelope(self.query_limits, diagnostic),
+                )
+            },
+        )
     }
 
     /// Decode one canonical V2 request, rejecting V1 and unknown versions
@@ -302,13 +314,15 @@ impl RemoteQueryRequestV2 {
             bytes,
             QUERY_REMOTE_REQUEST_FORMAT_V2,
             "remote request",
-            limits.remote_envelope_bytes,
+            limits.remote_request_bytes,
         )
         .map_err(|diagnostic| limits.annotate(diagnostic))?;
         let mut request =
-            from_canonical_json_with_limits::<Self>(bytes, limits.remote_request_codec())
-                .map_err(|diagnostic| annotate_envelope(limits, diagnostic))?;
+            from_canonical_json_with_limits::<Self>(bytes, limits.remote_request_codec()).map_err(
+                |diagnostic| crate::query_remote::annotate_request_envelope(limits, diagnostic),
+            )?;
         request.query_limits = limits;
+        request.configured_limits = limits;
         check_nonce_v2(&request.nonce)?;
         validate_remote_limits_v2(request.limits)?;
         FingerprintDigest::from_hex(&request.advertisement).map_err(|_| {
@@ -1339,7 +1353,12 @@ impl RemoteQueryResponseV2 {
         limits: RemoteReplyDecodeLimitsV2,
         plan: Option<&QueryPlan>,
     ) -> Result<Self, Diagnostic> {
-        require_format(bytes, QUERY_REMOTE_RESPONSE_FORMAT_V2, "remote response", MAX_REMOTE_ENVELOPE_BYTES)?;
+        require_format(
+            bytes,
+            QUERY_REMOTE_RESPONSE_FORMAT_V2,
+            "remote response",
+            MAX_REMOTE_ENVELOPE_BYTES,
+        )?;
         let output_width = match expected_result {
             RemoteResultKindV2::Rows | RemoteResultKindV2::Documents => {
                 plan.and_then(low_level_output_width)
@@ -1513,7 +1532,12 @@ impl RemoteQueryFailureV2 {
 
     /// Decode an already authenticated V2 failure payload.
     pub fn decode_payload(bytes: &[u8]) -> Result<Self, Diagnostic> {
-        require_format(bytes, QUERY_REMOTE_FAILURE_FORMAT_V2, "remote failure", MAX_REMOTE_ENVELOPE_BYTES)?;
+        require_format(
+            bytes,
+            QUERY_REMOTE_FAILURE_FORMAT_V2,
+            "remote failure",
+            MAX_REMOTE_ENVELOPE_BYTES,
+        )?;
         let maximum = MAX_DIAGNOSTIC_BYTES.saturating_add(FAILURE_FRAMING_ALLOWANCE_BYTES);
         if bytes.len() > maximum {
             return Err(remote_v2_failure(
@@ -1729,16 +1753,6 @@ pub fn decode_signed_remote_failure_v2(
 struct FormatPeek<'wire> {
     #[serde(borrow)]
     format: &'wire str,
-}
-
-/// Attribute an envelope codec failure: its byte ceiling is the remote
-/// envelope budget, not the plan artifact ceiling the code table names.
-fn annotate_envelope(limits: QueryLimits, diagnostic: Diagnostic) -> Diagnostic {
-    if diagnostic.code().as_str() == "canonical_json_too_large" {
-        limits.annotate_limit(diagnostic, "remote_envelope_bytes")
-    } else {
-        limits.annotate(diagnostic)
-    }
 }
 
 fn require_format(

@@ -23,7 +23,6 @@ use type_bridge_contract::codec::to_canonical_json_with_limits;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::limits::{
     MAX_CANONICAL_COLLECTION_LEN, MAX_REMOTE_ENVELOPE_BYTES, REMOTE_ENVELOPE_CODEC_LIMITS,
-    StructuralLimits,
 };
 use type_bridge_contract::query_plan::{QueryInvocation, QueryOperation, QueryPlanFingerprint};
 use type_bridge_contract::query_remote::{
@@ -147,7 +146,14 @@ const REMOTE_REQUEST_FORMAT_V2_FIELD: &[u8] =
 /// reordered, or malformed format prefixes retain the historical V1 path.
 #[must_use]
 pub fn remote_request_format(bytes: &[u8]) -> RemoteRequestFormat {
-    if bytes.len() > MAX_REMOTE_ENVELOPE_BYTES {
+    remote_request_format_within(bytes, MAX_REMOTE_ENVELOPE_BYTES)
+}
+
+/// [`remote_request_format`] for an executor whose advertised request budget
+/// is `maximum_bytes`.
+#[must_use]
+pub fn remote_request_format_within(bytes: &[u8], maximum_bytes: usize) -> RemoteRequestFormat {
+    if bytes.len() > maximum_bytes {
         return RemoteRequestFormat::V1;
     }
     let prefix = &bytes[..bytes.len().min(REMOTE_REQUEST_FORMAT_PREFIX_BYTES)];
@@ -1098,7 +1104,9 @@ fn preflight_remote_request_with_clock(
     ceilings: QueryV2AnswerLimits,
     clock: PreflightClockSample,
 ) -> Result<AdmittedRemoteRequest, RemoteRejection> {
-    let request = RemoteQueryRequest::decode(request_bytes)
+    // The executor enforces exactly the limits it advertises.
+    let query_limits = advertisement.query_limits();
+    let request = RemoteQueryRequest::decode_with_limits(request_bytes, query_limits)
         .map_err(|diagnostic| RemoteRejection::new(None, diagnostic))?;
     let nonce = request.nonce().to_owned();
     // Bind every post-decode rejection and all later evidence to the exact
@@ -1152,8 +1160,7 @@ fn preflight_remote_request_with_clock(
             )));
         }
     }
-    let validated =
-        validate_query_plan(&plan, context, StructuralLimits::CANONICAL).map_err(&fail)?;
+    let validated = validate_query_plan(&plan, context, query_limits.structural).map_err(&fail)?;
     let invocation = request.invocation(&plan).map_err(&fail)?;
     // Multi-row batches need the native given transport; an executor that
     // cannot transport rows must reject here, not after opening a
@@ -1260,7 +1267,10 @@ fn preflight_remote_request_v2_with_clock(
     ceilings: QueryV2AnswerLimits,
     clock: PreflightClockSample,
 ) -> Result<AdmittedRemoteRequestV2, RemoteRejectionV2> {
-    let request_envelope = RemoteQueryRequestV2::decode(request_bytes)
+    // The advertisement is this executor's statement of its limits, so it
+    // is also what the executor enforces. Nothing the client sent is trusted.
+    let query_limits = advertisement.query_limits();
+    let request_envelope = RemoteQueryRequestV2::decode_with_limits(request_bytes, query_limits)
         .map_err(|diagnostic| RemoteRejectionV2::new(None, diagnostic))?;
     let nonce = request_envelope.nonce().to_owned();
     let request_fingerprint = RemoteRequestFingerprintV2::compute(request_bytes)
@@ -1297,8 +1307,7 @@ fn preflight_remote_request_v2_with_clock(
         })?;
 
     let plan = request_envelope.plan().map_err(&fail)?;
-    let validated =
-        validate_query_plan(&plan, context, StructuralLimits::CANONICAL).map_err(&fail)?;
+    let validated = validate_query_plan(&plan, context, query_limits.structural).map_err(&fail)?;
     let invocation = request_envelope.invocation(&plan).map_err(&fail)?;
     preflight_invocation_transport(&plan, &invocation).map_err(&fail)?;
     let result = remote_result_kind_v2(&validated, &invocation).map_err(&fail)?;
@@ -1499,7 +1508,10 @@ pub fn preflight_remote_request_versioned(
     advertisement: &RemoteCapabilities,
     ceilings: QueryV2AnswerLimits,
 ) -> Result<AdmittedRemoteRequestEnvelope, RemoteRejectionEnvelope> {
-    match remote_request_format(request_bytes) {
+    match remote_request_format_within(
+        request_bytes,
+        advertisement.query_limits().remote_request_bytes,
+    ) {
         RemoteRequestFormat::V1 => {
             preflight_remote_request(request_bytes, context, advertisement, ceilings)
                 .map(AdmittedRemoteRequestEnvelope::V1)

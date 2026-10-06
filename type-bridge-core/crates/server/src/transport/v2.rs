@@ -38,7 +38,7 @@ use type_bridge_orm::query_v2_prepared::{
 use type_bridge_orm::query_v2_remote::Ed25519RemoteReplyVerifier;
 use type_bridge_orm::query_v2_remote::{
     RemoteReplySigningKey, RemoteRequestFormat, execute_admitted_remote_request_versioned,
-    preflight_remote_request_versioned, remote_request_format,
+    preflight_remote_request_versioned, remote_request_format_within,
 };
 use type_bridge_orm::session::backend::{MAX_QUERY_V2_SCHEMA_FENCE_DURATION, QueryV2AnswerLimits};
 use type_bridge_orm::session::database::Database;
@@ -335,6 +335,30 @@ impl V2QueryState {
         Ok(self)
     }
 
+    /// Advertise and enforce `limits` instead of the canonical query limits.
+    ///
+    /// The advertisement is the executor's only statement of its limits and
+    /// admission reads them back from it, so what a client is told and what
+    /// this executor enforces cannot diverge.
+    pub fn with_query_limits(
+        mut self,
+        limits: type_bridge_contract::limits::QueryLimits,
+    ) -> Result<Self, Diagnostic> {
+        let advertisement = self.advertisement.clone().with_query_limits(limits)?;
+        self.advertisement_fingerprint = advertisement.fingerprint()?;
+        self.advertisement = advertisement;
+        Ok(self)
+    }
+
+    /// Largest HTTP body the collector reads: the advertised request budget
+    /// plus framing slack.
+    fn body_limit_bytes(&self) -> usize {
+        self.advertisement
+            .query_limits()
+            .remote_request_bytes
+            .saturating_add(V2_BODY_FRAMING_SLACK_BYTES)
+    }
+
     /// Tighten the mandatory server execution duration.
     #[must_use]
     pub fn with_execution_timeout(mut self, timeout: Duration) -> Self {
@@ -604,13 +628,11 @@ struct V2RouterState {
     query: Arc<V2QueryState>,
 }
 
-/// The remote envelope has its own 32 MiB owning-format budget plus framing
-/// slack for the HTTP body collector.
-const V2_BODY_LIMIT_BYTES: usize =
-    type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES + 64 * 1024;
+/// Framing slack the HTTP body collector allows beyond the request budget.
+const V2_BODY_FRAMING_SLACK_BYTES: usize = 64 * 1024;
 
-fn declared_v2_body_oversized(headers: &HeaderMap) -> bool {
-    let Ok(limit) = u64::try_from(V2_BODY_LIMIT_BYTES) else {
+fn declared_v2_body_oversized(headers: &HeaderMap, limit_bytes: usize) -> bool {
+    let Ok(limit) = u64::try_from(limit_bytes) else {
         return false;
     };
     headers.get_all(CONTENT_LENGTH).iter().any(|value| {
@@ -698,7 +720,7 @@ async fn handle_v2_query(State(state): State<Arc<V2RouterState>>, request: Reque
         }
     }
 
-    if declared_v2_body_oversized(request.headers()) {
+    if declared_v2_body_oversized(request.headers(), state.query.body_limit_bytes()) {
         let failure = state.query.unbound_failure(&body_oversized());
         return finish_v2_failure(
             &state,
@@ -751,7 +773,7 @@ async fn handle_v2_query(State(state): State<Arc<V2RouterState>>, request: Reque
 
     let body = match await_before_deadline(
         mandatory_deadline,
-        to_bytes(request.into_body(), V2_BODY_LIMIT_BYTES),
+        to_bytes(request.into_body(), state.query.body_limit_bytes()),
     )
     .await
     {
@@ -787,7 +809,14 @@ async fn handle_v2_query(State(state): State<Arc<V2RouterState>>, request: Reque
     // before either decoder reconstructs a plan or invocation. Unknown and
     // malformed formats intentionally retain the historical V1 rejection
     // path.
-    let request_format = remote_request_format(&body);
+    let request_format = remote_request_format_within(
+        &body,
+        state
+            .query
+            .advertisement
+            .query_limits()
+            .remote_request_bytes,
+    );
 
     // Contract/schema/capability work is provider-independent and runs in a
     // bounded blocking pool. The owned permit remains in the blocking task if
@@ -2649,7 +2678,10 @@ mod tests {
                     .method("POST")
                     .uri("/v2/query")
                     .header(CONTENT_TYPE, "application/json")
-                    .header(CONTENT_LENGTH, V2_BODY_LIMIT_BYTES + 1)
+                    .header(
+                        CONTENT_LENGTH,
+                        MAX_REMOTE_ENVELOPE_BYTES + V2_BODY_FRAMING_SLACK_BYTES + 1,
+                    )
                     .body(Body::empty())
                     .expect("oversized request declaration"),
             )
