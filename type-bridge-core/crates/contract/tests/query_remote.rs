@@ -1644,11 +1644,15 @@ fn advertised_query_limits_are_omitted_at_default_and_canonical_otherwise() {
     let forged = |mutate: fn(&mut Value)| {
         let mut wire: Value = serde_json::from_slice(&bytes).expect("advertisement JSON");
         mutate(&mut wire);
-        RemoteCapabilities::decode(&serde_json::to_vec(&wire).expect("forged advertisement"))
-            .expect_err("forged limits are refused")
-            .code()
-            .as_str()
-            .to_owned()
+        // Canonical key order, so the forgery reaches the limits check under
+        // every JSON backend instead of failing as non-canonical bytes.
+        RemoteCapabilities::decode(
+            &type_bridge_contract::codec::to_canonical_json(&wire).expect("forged advertisement"),
+        )
+        .expect_err("forged limits are refused")
+        .code()
+        .as_str()
+        .to_owned()
     };
     // An unknown name, a redundant default, and an unsupported value.
     assert_eq!(
