@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::fingerprint::SemanticProfileId;
@@ -2842,4 +2844,452 @@ fn independent_unique_owns_scopes_do_not_prove_a_total_union_order() {
     )
     .expect_err("independent uniqueness scopes cannot order the owner union");
     assert_eq!(error.code().as_str(), "query_plan_window_order_not_total");
+}
+
+/// Exact `[1,1]` cardinality, or `None` for the profile default `[0,1]`.
+type FieldCard = Option<(u64, Option<u64>)>;
+
+const EXACTLY_ONE: FieldCard = Some((1, Some(1)));
+
+/// One entity attribute in a functional-determination fixture.
+struct FieldSpec {
+    owner: &'static str,
+    label: &'static str,
+    value_type: ValueTypeTag,
+    card: FieldCard,
+    key: bool,
+}
+
+const fn field(
+    owner: &'static str,
+    label: &'static str,
+    value_type: ValueTypeTag,
+    card: FieldCard,
+) -> FieldSpec {
+    FieldSpec {
+        owner,
+        label,
+        value_type,
+        card,
+        key: false,
+    }
+}
+
+const fn key_field(owner: &'static str, label: &'static str) -> FieldSpec {
+    FieldSpec {
+        owner,
+        label,
+        value_type: ValueTypeTag::String,
+        card: None,
+        key: true,
+    }
+}
+
+/// Twelve `[1,1]` fields of the kernel #721 CargoType projection, key first.
+const CARGO_FIELDS: [(&str, ValueTypeTag); 12] = [
+    ("cargo_id", ValueTypeTag::String),
+    ("name_en", ValueTypeTag::String),
+    ("name_ko", ValueTypeTag::String),
+    ("category", ValueTypeTag::String),
+    ("fragility", ValueTypeTag::Double),
+    ("cold_chain_required", ValueTypeTag::Boolean),
+    ("hazardous", ValueTypeTag::Boolean),
+    ("maximum_handlings", ValueTypeTag::Long),
+    ("provenance_kind", ValueTypeTag::String),
+    ("provenance_label", ValueTypeTag::String),
+    ("provenance_note", ValueTypeTag::String),
+    ("data_as_of", ValueTypeTag::DateTime),
+];
+
+/// Build CargoType, a vehicle hierarchy and a shipment relation.
+///
+/// `ship_capacity` and `carrier_card` select the cardinality that the
+/// polymorphic and relation-role cases must prove or refuse.
+fn functional_determination_fixture(
+    ship_capacity: FieldCard,
+    carrier_card: FieldCard,
+) -> SchemaFixture {
+    use type_bridge_contract::id::RoleId;
+    use type_bridge_contract::schema::{PlaysFact, PlaysFactId, RelatesFact, RelatesFactId};
+
+    let card = |subject, (min, max)| {
+        SchemaFact::Annotation(
+            AnnotationFact::new(
+                AnnotationFactId::new(subject, AnnotationKindId::Card),
+                SchemaAnnotationValue::Cardinality(Cardinality::new(min, max).expect("card")),
+            )
+            .expect("card annotation"),
+        )
+    };
+    let mut fields = CARGO_FIELDS
+        .iter()
+        .map(|(label, value_type)| match *label {
+            "cargo_id" => key_field("cargo_type", label),
+            _ => field("cargo_type", label, *value_type, EXACTLY_ONE),
+        })
+        .collect::<Vec<_>>();
+    fields.extend([
+        field("cargo_type", "note", ValueTypeTag::String, None),
+        field("cargo_type", "tag", ValueTypeTag::String, Some((1, None))),
+        key_field("vehicle", "vehicle_id"),
+        field("vehicle", "registration", ValueTypeTag::String, EXACTLY_ONE),
+        field("truck", "capacity", ValueTypeTag::Double, EXACTLY_ONE),
+        field("ship", "capacity", ValueTypeTag::Double, ship_capacity),
+        key_field("shipment", "shipment_id"),
+    ]);
+
+    let shipment = type_id(TypeKind::Relation, "shipment");
+    let cargo_role = RoleId::new("shipment", "cargo").expect("role");
+    let carrier_role = RoleId::new("shipment", "carrier").expect("role");
+    let mut facts = Vec::new();
+    for (kind, label) in [
+        (TypeKind::Entity, "cargo_type"),
+        (TypeKind::Entity, "vehicle"),
+        (TypeKind::Entity, "truck"),
+        (TypeKind::Entity, "ship"),
+        (TypeKind::Relation, "shipment"),
+    ] {
+        facts.push(SchemaFact::Type(
+            TypeFact::new(type_id(kind, label)).expect("type"),
+        ));
+    }
+    for subtype in ["truck", "ship"] {
+        facts.push(SchemaFact::Sub(SubFact::new(
+            SubFactId::new(
+                type_id(TypeKind::Entity, subtype),
+                type_id(TypeKind::Entity, "vehicle"),
+            )
+            .expect("sub"),
+        )));
+    }
+    let mut attributes = BTreeSet::new();
+    for spec in &fields {
+        let attribute = AttributeId::new(spec.label).expect("attribute");
+        if attributes.insert(spec.label) {
+            facts.push(SchemaFact::Type(
+                TypeFact::new(type_id(TypeKind::Attribute, spec.label)).expect("attribute"),
+            ));
+            facts.push(SchemaFact::Value(ValueFact::new(
+                ValueFactId::new(attribute.clone()),
+                spec.value_type,
+            )));
+        }
+        let owner_kind = if spec.owner == "shipment" {
+            TypeKind::Relation
+        } else {
+            TypeKind::Entity
+        };
+        let owns = OwnsFactId::new(type_id(owner_kind, spec.owner), attribute).expect("owns");
+        facts.push(SchemaFact::Owns(OwnsFact::new(owns.clone())));
+        if spec.key {
+            facts.push(SchemaFact::Annotation(
+                AnnotationFact::new(
+                    AnnotationFactId::new(
+                        AnnotationSubjectId::Owns(owns.clone()),
+                        AnnotationKindId::Key,
+                    ),
+                    SchemaAnnotationValue::Presence,
+                )
+                .expect("key"),
+            ));
+        }
+        if let Some(bounds) = spec.card {
+            facts.push(card(AnnotationSubjectId::Owns(owns), bounds));
+        }
+    }
+    for (role, role_card) in [(&cargo_role, EXACTLY_ONE), (&carrier_role, carrier_card)] {
+        let relates = RelatesFactId::new(shipment.clone(), role.clone()).expect("relates");
+        facts.push(SchemaFact::Relates(
+            RelatesFact::new(relates.clone(), None).expect("relates fact"),
+        ));
+        if let Some(bounds) = role_card {
+            facts.push(card(AnnotationSubjectId::Relates(relates), bounds));
+        }
+    }
+    facts.push(SchemaFact::Plays(PlaysFact::new(
+        PlaysFactId::new(type_id(TypeKind::Entity, "cargo_type"), cargo_role).expect("plays"),
+    )));
+    facts.push(SchemaFact::Plays(PlaysFact::new(
+        PlaysFactId::new(type_id(TypeKind::Entity, "vehicle"), carrier_role).expect("plays"),
+    )));
+
+    let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+        let byte = u64::try_from(index).expect("byte");
+        let line = u32::try_from(index + 1).expect("line");
+        SourcedSchemaFact::new(
+            fact,
+            SourceSpan::new(
+                DocumentId::new("query-plan-functional-determination").expect("document"),
+                byte,
+                byte + 1,
+                line,
+                1,
+                line,
+                2,
+            )
+            .expect("span"),
+        )
+    });
+    let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
+        .expect("declared schema");
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("query-plan-functional-determination").expect("scope"),
+        profile.clone(),
+        CapabilitySet::new(),
+    );
+    SchemaFixture {
+        managed: managed_schema_state(&declared, &context).expect("managed state"),
+        resolved: resolve(&declared, &profile).expect("resolved schema"),
+    }
+}
+
+fn has(owner: u16, attribute: u16, label: &str) -> QueryPattern {
+    QueryPattern::Has {
+        attribute: binding_id(attribute),
+        attribute_id: AttributeId::new(label).expect("attribute"),
+        owner: binding_id(owner),
+    }
+}
+
+/// Validate `match <patterns>; select <selected>; sort <sorted>; limit 256`.
+///
+/// Binding 0 is the record; bindings 1.. are named after `variables`.
+fn validate_bounded_window(
+    fixture: &SchemaFixture,
+    variables: &[&str],
+    patterns: Vec<QueryPattern>,
+    selected: &[u16],
+    sorted: &[u16],
+) -> Result<type_bridge_query::ValidatedQuery, type_bridge_contract::diagnostic::Diagnostic> {
+    let bindings = variables
+        .iter()
+        .enumerate()
+        .map(|(index, variable)| binding(u16::try_from(index).expect("index"), variable))
+        .collect();
+    let selected = selected.iter().copied().map(binding_id).collect::<Vec<_>>();
+    let plan = QueryPlan::new(
+        bindings,
+        Vec::new(),
+        vec![
+            ReadStage::Match { patterns },
+            ReadStage::Select {
+                bindings: selected.clone(),
+            },
+            ReadStage::Sort {
+                terms: sorted
+                    .iter()
+                    .map(|id| OrderTerm::new(binding_id(*id), OrderDirection::Ascending))
+                    .collect(),
+            },
+            ReadStage::Limit { rows: 256 },
+        ],
+        QueryOutput::Rows { columns: selected },
+        fixture.managed.managed_semantic_schema().clone(),
+    )
+    .expect("structurally valid bounded window");
+    validate_query_plan(
+        &plan,
+        &MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed),
+        StructuralLimits::CANONICAL,
+    )
+}
+
+fn cargo_isa() -> QueryPattern {
+    QueryPattern::Isa {
+        binding: binding_id(0),
+        include_subtypes: false,
+        type_id: type_id(TypeKind::Entity, "cargo_type"),
+    }
+}
+
+fn assert_not_total(
+    result: Result<type_bridge_query::ValidatedQuery, type_bridge_contract::diagnostic::Diagnostic>,
+    reason: &str,
+) {
+    let error = result.expect_err(reason);
+    assert_eq!(
+        error.code().as_str(),
+        "query_plan_window_order_not_total",
+        "{reason}"
+    );
+}
+
+#[test]
+fn unique_keys_determine_mandatory_singleton_fields_of_their_owner() {
+    let fixture = functional_determination_fixture(EXACTLY_ONE, None);
+    let pair = |sorted: &[u16]| {
+        validate_bounded_window(
+            &fixture,
+            &["record", "cargo_id", "fragility"],
+            vec![cargo_isa(), has(0, 1, "cargo_id"), has(0, 2, "fragility")],
+            &[1, 2],
+            sorted,
+        )
+    };
+    // The key identifies the record and the record holds one fragility.
+    pair(&[1]).expect("a unique key determines a [1,1] double through its owner");
+    // A trailing determined double never breaks a tie on its own.
+    pair(&[1, 2]).expect("a determined double may follow the key in the sort tuple");
+    // Signed zeros compare equal: a double alone or first-without-key fails.
+    assert_not_total(pair(&[2]), "a double sort key alone is never total");
+
+    // The complete twelve-field CargoType row from kernel #721.
+    let mut variables = vec!["record"];
+    variables.extend(CARGO_FIELDS.iter().map(|(label, _)| *label));
+    let mut patterns = vec![cargo_isa()];
+    let mut selected = Vec::new();
+    for (index, (label, _)) in CARGO_FIELDS.iter().enumerate() {
+        let id = u16::try_from(index + 1).expect("binding");
+        patterns.push(has(0, id, label));
+        selected.push(id);
+    }
+    validate_bounded_window(&fixture, &variables, patterns.clone(), &selected, &[1])
+        .expect("the key determines every [1,1] field of the complete projection");
+    validate_bounded_window(&fixture, &variables, patterns, &selected, &selected)
+        .expect("sorting every determined column after the key stays total");
+}
+
+#[test]
+fn optional_multivalued_and_unkeyed_fields_stay_undetermined() {
+    let fixture = functional_determination_fixture(EXACTLY_ONE, None);
+    for (label, reason) in [
+        ("note", "a [0,1] field may be absent"),
+        ("tag", "a [1,*] field may hold several values"),
+    ] {
+        assert_not_total(
+            validate_bounded_window(
+                &fixture,
+                &["record", "cargo_id", label],
+                vec![cargo_isa(), has(0, 1, "cargo_id"), has(0, 2, label)],
+                &[1, 2],
+                &[1],
+            ),
+            reason,
+        );
+    }
+    // A [1,1] field inside an optional block does not follow its owner.
+    assert_not_total(
+        validate_bounded_window(
+            &fixture,
+            &["record", "cargo_id", "fragility"],
+            vec![
+                cargo_isa(),
+                has(0, 1, "cargo_id"),
+                QueryPattern::Try {
+                    patterns: vec![has(0, 2, "fragility")],
+                },
+            ],
+            &[1, 2],
+            &[1],
+        ),
+        "optional patterns do not propagate determination",
+    );
+    // Without a unique key the owner itself is never determined.
+    assert_not_total(
+        validate_bounded_window(
+            &fixture,
+            &["record", "name_en", "fragility"],
+            vec![cargo_isa(), has(0, 1, "name_en"), has(0, 2, "fragility")],
+            &[1, 2],
+            &[1],
+        ),
+        "a non-unique sort key determines no owner",
+    );
+}
+
+#[test]
+fn polymorphic_owners_need_singleton_ownership_on_every_member() {
+    let patterns = || {
+        vec![
+            QueryPattern::Isa {
+                binding: binding_id(0),
+                include_subtypes: true,
+                type_id: type_id(TypeKind::Entity, "vehicle"),
+            },
+            has(0, 1, "vehicle_id"),
+            has(0, 2, "registration"),
+            has(0, 3, "capacity"),
+        ]
+    };
+    let variables = ["vehicle", "vehicle_id", "registration", "capacity"];
+
+    // Inherited [1,1] registration and per-subtype [1,1] capacity.
+    let proven = functional_determination_fixture(EXACTLY_ONE, None);
+    validate_bounded_window(&proven, &variables, patterns(), &[1, 2, 3], &[1])
+        .expect("every owner subtype holds exactly one value");
+
+    let unproven = functional_determination_fixture(None, None);
+    assert_not_total(
+        validate_bounded_window(&unproven, &variables, patterns(), &[1, 2, 3], &[1]),
+        "one [0,1] subtype owns leaves the polymorphic value undetermined",
+    );
+}
+
+#[test]
+fn determined_relations_determine_players_of_exact_singleton_roles() {
+    use type_bridge_contract::id::RoleId;
+    use type_bridge_contract::migration_assertion::AssertionRolePlayer;
+
+    let patterns = |role: &str, player_key: &str| {
+        vec![
+            QueryPattern::Isa {
+                binding: binding_id(0),
+                include_subtypes: false,
+                type_id: type_id(TypeKind::Relation, "shipment"),
+            },
+            has(0, 1, "shipment_id"),
+            QueryPattern::Links {
+                players: vec![AssertionRolePlayer::new(
+                    RoleId::new("shipment", role).expect("role"),
+                    binding_id(2),
+                )],
+                relation: binding_id(0),
+                relation_id: type_id(TypeKind::Relation, "shipment"),
+            },
+            has(2, 3, player_key),
+        ]
+    };
+    let variables = ["shipment", "shipment_id", "player", "player_key"];
+
+    let fixture = functional_determination_fixture(EXACTLY_ONE, EXACTLY_ONE);
+    validate_bounded_window(
+        &fixture,
+        &variables,
+        patterns("cargo", "cargo_id"),
+        &[1, 2, 3],
+        &[1],
+    )
+    .expect("a [1,1] role player and its key follow the relation");
+    validate_bounded_window(
+        &fixture,
+        &variables,
+        patterns("carrier", "vehicle_id"),
+        &[1, 2, 3],
+        &[1],
+    )
+    .expect("a [1,1] role over a polymorphic player domain follows the relation");
+
+    let optional_role = functional_determination_fixture(EXACTLY_ONE, None);
+    assert_not_total(
+        validate_bounded_window(
+            &optional_role,
+            &variables,
+            patterns("carrier", "vehicle_id"),
+            &[1, 2, 3],
+            &[1],
+        ),
+        "a [0,1] role player is not determined by its relation",
+    );
+    let multiple = functional_determination_fixture(EXACTLY_ONE, Some((1, None)));
+    assert_not_total(
+        validate_bounded_window(
+            &multiple,
+            &variables,
+            patterns("carrier", "vehicle_id"),
+            &[1, 2, 3],
+            &[1],
+        ),
+        "a [1,*] role may have several players",
+    );
 }

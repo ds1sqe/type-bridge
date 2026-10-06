@@ -4,6 +4,18 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Bounded projections sorted by a unique key now validate when they select
+  mandatory single-valued fields, such as a `[1,1]` Double. The window-order
+  proof derives each `[1,1]` attribute from its determined owner, and each
+  player of a `[1,1]` role from its determined relation; a key it cannot
+  use on its own, such as a Double, may sort alongside the keys that
+  determine it. Optional, negated, and disjunctive patterns do not
+  propagate, and a Double alone is still refused with
+  `query_plan_window_order_not_total`. Plans that validated before keep
+  their canonical bytes (#244).
+
 ## [2.2.2] - 2026-09-14
 
 ### Security
