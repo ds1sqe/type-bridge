@@ -629,11 +629,13 @@ fn validate_operation_structure(
             if groups.len() > limits.selected_slots {
                 return Err(invalid(
                     "field_group_tuple_cap_exceeded",
-                    "tuple-field reductions exceed the canonical sixteen-field ceiling",
+                    "tuple-field reductions exceed the selected-slot ceiling",
                 )
                 .at(MatchErrorPathSegment::Operation)
                 .with_detail("actual", usize_detail(groups.len()))
-                .with_detail("maximum", usize_detail(limits.selected_slots)));
+                .with_detail("maximum", usize_detail(limits.selected_slots))
+            .with_detail("limit", "selected_slots")
+            .with_detail("source", limit_source("selected_slots", limits.selected_slots)));
             }
             let mut unique = BTreeSet::new();
             for group in groups {
@@ -684,11 +686,13 @@ fn validate_operation_structure(
         if count > limits.selected_slots {
             return Err(invalid(
                 "selection_cap_exceeded",
-                "fetch output exceeds the canonical sixteen-slot ceiling",
+                "fetch output exceeds the selected-slot ceiling",
             )
             .at(MatchErrorPathSegment::Output)
             .with_detail("actual", usize_detail(count))
-            .with_detail("maximum", usize_detail(limits.selected_slots)));
+            .with_detail("maximum", usize_detail(limits.selected_slots))
+            .with_detail("limit", "selected_slots")
+            .with_detail("source", limit_source("selected_slots", limits.selected_slots)));
         }
         let mut selected = BTreeSet::new();
         output.for_each_slot(|slot| {
@@ -761,11 +765,13 @@ fn validate_reducer_structure(
     if reducers.len() > limits.selected_slots {
         return Err(invalid(
             "reducer_cap_exceeded",
-            "typed reductions exceed the canonical sixteen-slot ceiling",
+            "typed reductions exceed the selected-slot ceiling",
         )
         .at(MatchErrorPathSegment::Operation)
         .with_detail("actual", usize_detail(reducers.len()))
-        .with_detail("maximum", usize_detail(limits.selected_slots)));
+        .with_detail("maximum", usize_detail(limits.selected_slots))
+            .with_detail("limit", "selected_slots")
+            .with_detail("source", limit_source("selected_slots", limits.selected_slots)));
     }
     for term in reducers {
         match (&term.input, term.reduction.requires_input()) {
@@ -2191,7 +2197,23 @@ fn check_limit(
     .with_path(MatchErrorPath::from_segments([path]))
     .with_detail("limit", label)
     .with_detail("actual", usize_detail(actual))
-    .with_detail("maximum", usize_detail(maximum)))
+    .with_detail("maximum", usize_detail(maximum))
+    .with_detail("source", limit_source(label, maximum)))
+}
+
+/// Report whether a refused limit still has its released default value.
+fn limit_source(label: &str, maximum: usize) -> &'static str {
+    // Schema-function arity shares the boolean-term ceiling.
+    let name = if label == "function_arguments" {
+        "boolean_terms"
+    } else {
+        label
+    };
+    if QueryLimits::CANONICAL.get(name) == Some(maximum) {
+        type_bridge_contract::limits::LIMIT_SOURCE_DEFAULT
+    } else {
+        type_bridge_contract::limits::LIMIT_SOURCE_CONFIGURED
+    }
 }
 
 fn invalid(code: &'static str, message: &'static str) -> MatchError {

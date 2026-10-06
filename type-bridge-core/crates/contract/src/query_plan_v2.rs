@@ -2655,6 +2655,9 @@ fn validate_model_output(
         if let QueryModelOutputSlotV2::Collect { binding, order, .. } = slot {
             if let Err(order_error) =
                 validate_stable_order(order, binding_count, limits.structural.collection_order_terms)
+                    .map_err(|diagnostic| {
+                        limits.annotate_limit(diagnostic, "collection_order_terms")
+                    })
             {
                 error = Some(order_error);
             } else if let Err(order_error) =

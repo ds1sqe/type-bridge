@@ -475,7 +475,7 @@ fn validate_shape_arity(limits: StructuralLimits, count: usize) -> Result<()> {
     if count > limits.selected_slots {
         return Err(handle_error(
             "selection_cap_exceeded",
-            "typed query output exceeds the canonical sixteen-slot ceiling",
+            "typed query output exceeds the selected-slot ceiling",
         ));
     }
     Ok(())

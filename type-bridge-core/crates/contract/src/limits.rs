@@ -1,5 +1,7 @@
 //! Canonical implementation-independent codec ceilings.
 
+use crate::diagnostic::{Diagnostic, DiagnosticCategory};
+
 /// Maximum canonical artifact size: 16 MiB.
 pub const MAX_CANONICAL_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum remote request/response envelope size: 32 MiB.
@@ -193,6 +195,19 @@ impl StructuralLimits {
     }
 }
 
+impl StructuralLimits {
+    /// [`QueryLimits::annotate`] for a stage that holds only the structural
+    /// limits.
+    #[must_use]
+    pub fn annotate(self, diagnostic: Diagnostic) -> Diagnostic {
+        QueryLimits {
+            structural: self,
+            ..QueryLimits::CANONICAL
+        }
+        .annotate(diagnostic)
+    }
+}
+
 impl Default for StructuralLimits {
     fn default() -> Self {
         Self::CANONICAL
@@ -209,6 +224,12 @@ pub const CANONICAL_STRUCTURAL_LIMITS: StructuralLimits = StructuralLimits::CANO
 /// for more. A remote request frames the plan in one extra level, which is
 /// why configured depth stops one short of the parser's own bound.
 pub const MAX_SUPPORTED_CANONICAL_DEPTH: usize = 126;
+
+/// Widest selection the generated typed tuples of every binding can spell.
+///
+/// Generated query, grouping, and aggregate typing is sealed at sixteen
+/// positions, so this limit can be lowered but not raised.
+pub const MAX_SUPPORTED_SELECTED_SLOTS: usize = MAX_SELECTED_SLOTS;
 
 /// Largest binding count addressable by a 16-bit binding identity.
 pub const MAX_SUPPORTED_BINDINGS: usize = 1 << 16;
@@ -299,7 +320,7 @@ query_limit_fields![
     ("canonical_depth", codec.max_depth, MAX_SUPPORTED_CANONICAL_DEPTH),
     ("canonical_collection_len", codec.max_collection_len, usize::MAX),
     ("canonical_string_bytes", codec.max_string_bytes, usize::MAX),
-    ("selected_slots", structural.selected_slots, usize::MAX),
+    ("selected_slots", structural.selected_slots, MAX_SUPPORTED_SELECTED_SLOTS),
     ("bindings", structural.bindings, MAX_SUPPORTED_BINDINGS),
     ("predicate_nodes", structural.predicate_nodes, usize::MAX),
     ("predicate_depth", structural.predicate_depth, MAX_SUPPORTED_CANONICAL_DEPTH),
@@ -391,6 +412,110 @@ impl QueryLimits {
     }
 }
 
+/// `source` detail of a limit left at its released default.
+pub const LIMIT_SOURCE_DEFAULT: &str = "default";
+/// `source` detail of a limit a session or host configured.
+pub const LIMIT_SOURCE_CONFIGURED: &str = "configured";
+/// `source` detail of a limit a remote executor advertised.
+pub const LIMIT_SOURCE_ADVERTISED: &str = "advertised";
+
+/// The limit each query resource-limit diagnostic code reports against.
+///
+/// One table keeps the attribution in step with the codes: a diagnostic is
+/// annotated where the effective limits are known instead of at each of the
+/// sites that can raise it.
+const LIMIT_BY_DIAGNOSTIC_CODE: &[(&str, &str)] = &[
+    ("canonical_json_too_deep", "canonical_depth"),
+    ("canonical_json_too_large", "canonical_bytes"),
+    ("canonical_collection_too_large", "canonical_collection_len"),
+    ("canonical_string_too_large", "canonical_string_bytes"),
+    ("query_builder_authored_binding_limit", "bindings"),
+    ("query_invocation_input_byte_limit", "input_bytes"),
+    ("query_invocation_row_limit", "input_rows"),
+    ("query_plan_binding_limit", "bindings"),
+    ("query_plan_disjunction_term_limit", "boolean_terms"),
+    ("query_plan_function_argument_limit", "boolean_terms"),
+    ("query_plan_input_limit", "bindings"),
+    ("query_plan_local_function_limit", "bindings"),
+    ("query_plan_name_limit", "output_name_bytes"),
+    ("query_plan_negation_term_limit", "boolean_terms"),
+    ("query_plan_output_limit", "selected_slots"),
+    ("query_plan_pattern_depth_limit", "predicate_depth"),
+    ("query_plan_pattern_limit", "boolean_terms"),
+    ("query_plan_pattern_node_limit", "predicate_nodes"),
+    ("query_plan_reachable_depth", "predicate_depth"),
+    ("query_plan_reachable_expansion_limit", "predicate_nodes"),
+    ("query_plan_reduce_term_limit", "boolean_terms"),
+    ("query_plan_role_player_limit", "boolean_terms"),
+    ("query_plan_sort_term_limit", "order_terms"),
+    ("query_plan_try_term_limit", "boolean_terms"),
+    ("query_plan_v2_boolean_term_limit", "boolean_terms"),
+    ("query_plan_v2_compatibility_value_limit", "canonical_bytes"),
+    ("query_plan_v2_cross_join_limit", "allowed_cross_joins"),
+    ("query_plan_v2_order_limit", "order_terms"),
+    ("query_plan_v2_output_limit", "selected_slots"),
+    ("query_plan_v2_pattern_depth_limit", "predicate_depth"),
+    ("query_plan_v2_pattern_node_limit", "predicate_nodes"),
+    ("query_plan_v2_reachable_depth", "predicate_depth"),
+    ("query_plan_v2_reachable_expansion_limit", "predicate_nodes"),
+    ("query_plan_v2_reducer_limit", "selected_slots"),
+    ("query_plan_v2_reduction_group_limit", "selected_slots"),
+    ("query_remote_v2_envelope_too_large", "remote_envelope_bytes"),
+    ("query_v2_adapter_literal_byte_limit", "canonical_bytes"),
+    ("query_v2_lowered_typeql_byte_limit", "canonical_bytes"),
+    ("query_v2_reachable_expansion_limit", "predicate_nodes"),
+];
+
+impl QueryLimits {
+    /// Return whether the named limit is still at its released default.
+    ///
+    /// The answer is the `source` detail of a diagnostic raised against
+    /// that limit. A caller that merged in advertised limits overrides it
+    /// with [`LIMIT_SOURCE_ADVERTISED`] where the advertisement is binding.
+    #[must_use]
+    pub fn source_of(&self, name: &str) -> &'static str {
+        if self.get(name) == Self::CANONICAL.get(name) {
+            LIMIT_SOURCE_DEFAULT
+        } else {
+            LIMIT_SOURCE_CONFIGURED
+        }
+    }
+
+    /// Name the limit a resource-limit diagnostic was raised against.
+    ///
+    /// Adds `limit`, `maximum`, and `source` details to a query
+    /// resource-limit diagnostic that does not carry them yet. Any other
+    /// diagnostic is returned unchanged.
+    #[must_use]
+    pub fn annotate(self, diagnostic: Diagnostic) -> Diagnostic {
+        let Some((_, limit)) = LIMIT_BY_DIAGNOSTIC_CODE
+            .iter()
+            .find(|(code, _)| *code == diagnostic.code().as_str())
+        else {
+            return diagnostic;
+        };
+        self.annotate_limit(diagnostic, limit)
+    }
+
+    /// [`Self::annotate`] for a diagnostic whose limit the caller knows
+    /// better than the code table, such as a codec failure of an envelope.
+    #[must_use]
+    pub fn annotate_limit(self, diagnostic: Diagnostic, limit: &'static str) -> Diagnostic {
+        if diagnostic.category() != DiagnosticCategory::ResourceLimit
+            || diagnostic.details().contains_key("limit")
+        {
+            return diagnostic;
+        }
+        let Some(maximum) = self.get(limit) else {
+            return diagnostic;
+        };
+        diagnostic
+            .with_detail("limit", limit)
+            .with_detail("maximum", i64::try_from(maximum).unwrap_or(i64::MAX))
+            .with_detail("source", self.source_of(limit))
+    }
+}
+
 impl Default for QueryLimits {
     fn default() -> Self {
         Self::CANONICAL
@@ -457,11 +582,74 @@ mod query_limits_tests {
         wide.structural.bindings = MAX_SUPPORTED_BINDINGS + 1;
         assert_eq!(wide.validate().unwrap_err().limit, "bindings");
 
+        let mut slots = QueryLimits::CANONICAL;
+        slots.structural.selected_slots = MAX_SUPPORTED_SELECTED_SLOTS + 1;
+        assert_eq!(slots.validate().unwrap_err().limit, "selected_slots");
+
         let mut raised = QueryLimits::CANONICAL;
         raised.codec.max_bytes = 64 * 1024 * 1024;
         raised.remote_envelope_bytes = 128 * 1024 * 1024;
         raised.codec.max_depth = MAX_SUPPORTED_CANONICAL_DEPTH;
         raised.validate().expect("limits above canonical are admissible");
+    }
+
+    #[test]
+    fn every_attributed_code_names_a_real_limit() {
+        for (code, limit) in LIMIT_BY_DIAGNOSTIC_CODE {
+            assert!(
+                QueryLimits::CANONICAL.get(limit).is_some(),
+                "{code} is attributed to unknown limit {limit}"
+            );
+        }
+    }
+
+    #[test]
+    fn annotation_names_the_limit_its_value_and_its_source() {
+        use crate::diagnostic::{DiagnosticCode, DiagnosticDetailValue};
+        let raise = |code: &str, category| {
+            Diagnostic::new(category, DiagnosticCode::new(code).expect("code"), "refused")
+        };
+        let mut limits = QueryLimits::CANONICAL;
+        limits.structural.boolean_terms = 8;
+
+        let configured = limits.annotate(raise(
+            "query_plan_v2_boolean_term_limit",
+            DiagnosticCategory::ResourceLimit,
+        ));
+        assert_eq!(
+            configured.details().get("limit"),
+            Some(&DiagnosticDetailValue::Text("boolean_terms".into()))
+        );
+        assert_eq!(
+            configured.details().get("maximum"),
+            Some(&DiagnosticDetailValue::Long(8))
+        );
+        assert_eq!(
+            configured.details().get("source"),
+            Some(&DiagnosticDetailValue::Text("configured".into()))
+        );
+
+        let default = limits.annotate(raise(
+            "canonical_json_too_deep",
+            DiagnosticCategory::ResourceLimit,
+        ));
+        assert_eq!(
+            default.details().get("source"),
+            Some(&DiagnosticDetailValue::Text("default".into()))
+        );
+        assert_eq!(
+            default.details().get("maximum"),
+            Some(&DiagnosticDetailValue::Long(64))
+        );
+
+        // Not a resource limit, and not an attributed code: both unchanged.
+        let invalid = limits.annotate(raise(
+            "canonical_json_too_deep",
+            DiagnosticCategory::InvalidContract,
+        ));
+        assert!(invalid.details().is_empty());
+        let unknown = limits.annotate(raise("some_other_limit", DiagnosticCategory::ResourceLimit));
+        assert!(unknown.details().is_empty());
     }
 
     #[test]

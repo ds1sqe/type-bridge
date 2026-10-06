@@ -627,9 +627,17 @@ functions:
         let diagnostic = contract_diagnostic(nested_person_count(QueryLimits::CANONICAL));
         assert_eq!(diagnostic.category(), DiagnosticCategory::ResourceLimit);
         assert_eq!(diagnostic.code().as_str(), "canonical_json_too_deep");
+        use type_bridge_contract::diagnostic::DiagnosticDetailValue;
+        let detail = |key: &str| diagnostic.details().get(key).cloned();
+        assert_eq!(detail("maximum_depth"), Some(DiagnosticDetailValue::Long(64)));
         assert_eq!(
-            diagnostic.details().get("maximum_depth"),
-            Some(&type_bridge_contract::diagnostic::DiagnosticDetailValue::Long(64))
+            detail("limit"),
+            Some(DiagnosticDetailValue::Text("canonical_depth".into()))
+        );
+        assert_eq!(detail("maximum"), Some(DiagnosticDetailValue::Long(64)));
+        assert_eq!(
+            detail("source"),
+            Some(DiagnosticDetailValue::Text("default".into()))
         );
     }
 
@@ -656,6 +664,23 @@ functions:
         };
         assert_eq!(error.category(), MatchErrorCategory::ResourceLimit);
         assert_eq!(error.code().as_str(), "structural_limit_exceeded");
+        let detail = |key: &str| error.details().get(key).cloned();
+        assert_eq!(
+            detail("limit"),
+            Some(crate::match_request::MatchErrorDetailValue::Text(
+                "boolean_terms".into()
+            ))
+        );
+        assert_eq!(
+            detail("maximum"),
+            Some(crate::match_request::MatchErrorDetailValue::Unsigned(8))
+        );
+        assert_eq!(
+            detail("source"),
+            Some(crate::match_request::MatchErrorDetailValue::Text(
+                "configured".into()
+            ))
+        );
     }
 
     #[test]

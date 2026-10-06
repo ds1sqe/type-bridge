@@ -915,6 +915,33 @@ impl QueryPlan {
         managed_semantics: ManagedSemanticSchemaFingerprint,
         limits: QueryLimits,
     ) -> Result<Self, Diagnostic> {
+        Self::build(
+            bindings,
+            functions,
+            inputs,
+            pipeline,
+            output,
+            compatibility,
+            managed_semantics,
+            limits,
+        )
+        .map_err(|diagnostic| limits.annotate(diagnostic))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the shared constructor receives every independently versioned plan component"
+    )]
+    fn build(
+        bindings: Vec<AssertionBinding>,
+        functions: Vec<LocalFunction>,
+        inputs: Vec<InputColumn>,
+        pipeline: Vec<ReadStage>,
+        output: QueryOutput,
+        compatibility: Option<QueryPlanV2Compatibility>,
+        managed_semantics: ManagedSemanticSchemaFingerprint,
+        limits: QueryLimits,
+    ) -> Result<Self, Diagnostic> {
         if compatibility.is_none() {
             validate_v1_reachability(&pipeline)?;
         }
@@ -960,6 +987,10 @@ impl QueryPlan {
     /// aggregate predicate-node budget — so a caller passing stricter
     /// [`StructuralLimits`] gets every field enforced, not a subset.
     pub fn check_structural_limits(&self, limits: StructuralLimits) -> Result<(), Diagnostic> {
+        let limits = QueryLimits {
+            structural: limits,
+            ..self.limits
+        };
         Self::validate_plan_structure(
             &self.bindings,
             &self.functions,
@@ -967,11 +998,9 @@ impl QueryPlan {
             &self.pipeline,
             &self.output,
             self.compatibility.as_ref(),
-            QueryLimits {
-                structural: limits,
-                ..self.limits
-            },
+            limits,
         )
+        .map_err(|diagnostic| limits.annotate(diagnostic))
     }
 
     /// Return the limits this plan was constructed or decoded under.
@@ -1216,8 +1245,10 @@ impl QueryPlan {
             QUERY_PLAN_FORMAT_V1 => to_canonical_json_with_limits(
                 &QueryPlanV1Projection::new(self)?,
                 self.limits.codec,
-            ),
-            QUERY_PLAN_FORMAT_V2 => to_canonical_json_with_limits(self, self.limits.codec),
+            )
+            .map_err(|diagnostic| self.limits.annotate(diagnostic)),
+            QUERY_PLAN_FORMAT_V2 => to_canonical_json_with_limits(self, self.limits.codec)
+                .map_err(|diagnostic| self.limits.annotate(diagnostic)),
             _ => Err(failure(
                 DiagnosticCategory::InvalidContract,
                 "query_plan_format_unsupported",
@@ -1579,6 +1610,7 @@ impl QueryInvocation {
         inputs: Vec<InputRow>,
     ) -> Result<Self, Diagnostic> {
         Self::new_with_limits(plan, operation, inputs, plan.limits().structural)
+            .map_err(|diagnostic| plan.limits().annotate(diagnostic))
     }
 
     fn new_with_limits(
@@ -1757,6 +1789,7 @@ pub fn decode_query_plan_with_limits(
     limits: QueryLimits,
 ) -> Result<QueryPlan, Diagnostic> {
     crate::query_plan_wire::decode_query_plan(bytes, limits)
+        .map_err(|diagnostic| limits.annotate(diagnostic))
 }
 
 /// Decode exact canonical invocation bytes and bind them to one trusted plan.

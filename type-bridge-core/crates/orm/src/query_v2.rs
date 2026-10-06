@@ -90,11 +90,11 @@ fn lower_validated_query_with_execution_limits(
         invocation.operation(),
     )? {
         if compatibility.typeql().len() > plan.limits().codec.max_bytes {
-            return Err(failure(
+            return Err(plan.limits().annotate(failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_v2_lowered_typeql_byte_limit",
                 "lowered TypeQL exceeds the canonical protocol byte ceiling",
-            ));
+            )));
         }
         return Ok(LoweredQuery {
             given: None,
@@ -371,11 +371,11 @@ fn lower_validated_query_with_execution_limits(
     }
 
     if typeql.len() > plan.limits().codec.max_bytes {
-        return Err(failure(
-            DiagnosticCategory::ResourceLimit,
-            "query_v2_lowered_typeql_byte_limit",
-            "lowered TypeQL exceeds the canonical protocol byte ceiling",
-        ));
+        return Err(plan.limits().annotate(failure(
+                DiagnosticCategory::ResourceLimit,
+                "query_v2_lowered_typeql_byte_limit",
+                "lowered TypeQL exceeds the canonical protocol byte ceiling",
+            )));
     }
 
     Ok(LoweredQuery {

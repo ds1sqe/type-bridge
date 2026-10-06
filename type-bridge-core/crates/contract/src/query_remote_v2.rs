@@ -284,6 +284,7 @@ impl RemoteQueryRequestV2 {
     /// Encode exact canonical V2 request bytes.
     pub fn encode(&self) -> Result<Vec<u8>, Diagnostic> {
         to_canonical_json_with_limits(self, self.query_limits.remote_request_codec())
+            .map_err(|diagnostic| annotate_envelope(self.query_limits, diagnostic))
     }
 
     /// Decode one canonical V2 request, rejecting V1 and unknown versions
@@ -302,9 +303,11 @@ impl RemoteQueryRequestV2 {
             QUERY_REMOTE_REQUEST_FORMAT_V2,
             "remote request",
             limits.remote_envelope_bytes,
-        )?;
+        )
+        .map_err(|diagnostic| limits.annotate(diagnostic))?;
         let mut request =
-            from_canonical_json_with_limits::<Self>(bytes, limits.remote_request_codec())?;
+            from_canonical_json_with_limits::<Self>(bytes, limits.remote_request_codec())
+                .map_err(|diagnostic| annotate_envelope(limits, diagnostic))?;
         request.query_limits = limits;
         check_nonce_v2(&request.nonce)?;
         validate_remote_limits_v2(request.limits)?;
@@ -1726,6 +1729,16 @@ pub fn decode_signed_remote_failure_v2(
 struct FormatPeek<'wire> {
     #[serde(borrow)]
     format: &'wire str,
+}
+
+/// Attribute an envelope codec failure: its byte ceiling is the remote
+/// envelope budget, not the plan artifact ceiling the code table names.
+fn annotate_envelope(limits: QueryLimits, diagnostic: Diagnostic) -> Diagnostic {
+    if diagnostic.code().as_str() == "canonical_json_too_large" {
+        limits.annotate_limit(diagnostic, "remote_envelope_bytes")
+    } else {
+        limits.annotate(diagnostic)
+    }
 }
 
 fn require_format(

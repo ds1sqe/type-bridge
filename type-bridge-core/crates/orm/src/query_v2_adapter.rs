@@ -210,14 +210,16 @@ pub(crate) fn adapt_match_request(
         .and_then(|predicate| artifact_sized_literal_bytes(predicate, limits.codec.max_bytes))
     {
         return Ok(MatchRequestAdaptation::LegacyRequired(
-            Diagnostic::new(
-                DiagnosticCategory::ResourceLimit,
-                DiagnosticCode::new("query_v2_adapter_literal_byte_limit")
-                    .expect("static adapter diagnostic code"),
-                "a predicate literal exceeds the canonical artifact byte ceiling",
-            )
-            .with_detail("actual_bytes", byte_count(actual))
-            .with_detail("maximum_bytes", byte_count(limits.codec.max_bytes)),
+            limits.annotate(
+                Diagnostic::new(
+                    DiagnosticCategory::ResourceLimit,
+                    DiagnosticCode::new("query_v2_adapter_literal_byte_limit")
+                        .expect("static adapter diagnostic code"),
+                    "a predicate literal exceeds the canonical artifact byte ceiling",
+                )
+                .with_detail("actual_bytes", byte_count(actual))
+                .with_detail("maximum_bytes", byte_count(limits.codec.max_bytes)),
+            ),
         ));
     }
 
@@ -314,7 +316,7 @@ pub(crate) fn adapt_match_request(
     ) {
         Ok(validated) => validated,
         Err(error) if error.category() == DiagnosticCategory::ResourceLimit => {
-            return Ok(MatchRequestAdaptation::LegacyRequired(error));
+            return Ok(MatchRequestAdaptation::LegacyRequired(limits.annotate(error)));
         }
         Err(error) => return Err(error),
     };
@@ -325,7 +327,7 @@ pub(crate) fn adapt_match_request(
             validated: Box::new(validated),
         })),
         Err(error) if error.category() == DiagnosticCategory::ResourceLimit => {
-            Ok(MatchRequestAdaptation::LegacyRequired(error))
+            Ok(MatchRequestAdaptation::LegacyRequired(limits.annotate(error)))
         }
         Err(error) => Err(error),
     }
