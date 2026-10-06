@@ -50,7 +50,7 @@ use crate::query_v2::{
     execute_validated_model_query_with_statement_limit,
 };
 use crate::query_v2_adapter::{
-    AdaptedMatchRequest, MatchRequestAdaptation, MatchRequestAdapterAuthority, adapt_match_request,
+    AdaptedMatchRequest, MatchRequestAdapterAuthority, adapt_match_request,
 };
 use crate::session::backend::{
     AnswerCancellation, AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits,
@@ -515,17 +515,10 @@ impl<'a> SelectedResultExecutor<'a> {
         let authority = MatchRequestAdapterAuthority::from_registry(self.registry)
             .map_err(adapter_diagnostic)?;
         self.check_lifecycle_budget()?;
-        match adapt_match_request(validated, self.registry, &authority.context())
-            .map_err(adapter_diagnostic)?
-        {
-            MatchRequestAdaptation::Adapted(adapted) => {
-                self.execute_adapted_owned(database, validated, &adapted)
-                    .await
-            }
-            MatchRequestAdaptation::LegacyRequired(_) => {
-                self.execute_owned(database, validated).await
-            }
-        }
+        let adapted = adapt_match_request(validated, self.registry, &authority.context())
+            .map_err(adapter_diagnostic)?;
+        self.execute_adapted_owned(database, validated, &adapted)
+            .await
     }
 
     /// Borrowed counterpart of [`Self::execute_compatible_owned`].
@@ -577,17 +570,10 @@ impl<'a> SelectedResultExecutor<'a> {
         let authority = MatchRequestAdapterAuthority::from_registry(self.registry)
             .map_err(adapter_diagnostic)?;
         self.check_lifecycle_budget()?;
-        match adapt_match_request(validated, self.registry, &authority.context())
-            .map_err(adapter_diagnostic)?
-        {
-            MatchRequestAdaptation::Adapted(adapted) => {
-                self.execute_adapted_borrowed(context, validated, &adapted)
-                    .await
-            }
-            MatchRequestAdaptation::LegacyRequired(_) => {
-                self.execute_borrowed(context, validated).await
-            }
-        }
+        let adapted = adapt_match_request(validated, self.registry, &authority.context())
+            .map_err(adapter_diagnostic)?;
+        self.execute_adapted_borrowed(context, validated, &adapted)
+            .await
     }
 
     fn preflight_compatibility(&self, validated: &ValidatedMatchRequest) -> Result<(), OrmError> {
@@ -4135,9 +4121,23 @@ fn adapter_diagnostic(diagnostic: Diagnostic) -> OrmError {
         DiagnosticCategory::Cancelled => MatchErrorCategory::Cancelled,
         DiagnosticCategory::Integrity => MatchErrorCategory::ResultDecode,
     };
-    MatchError::new(category, diagnostic.code().as_str(), diagnostic.message())
-        .at(MatchErrorPathSegment::Operation)
-        .into()
+    let mut error = MatchError::new(category, diagnostic.code().as_str(), diagnostic.message())
+        .at(MatchErrorPathSegment::Operation);
+    // Keep what a refusal says about its limit: which one, its value, and
+    // where that value came from.
+    for (key, value) in diagnostic.details() {
+        error = match value {
+            DiagnosticDetailValue::Text(value) => error.with_detail(key.clone(), value.clone()),
+            DiagnosticDetailValue::Long(value) => match u64::try_from(*value) {
+                Ok(unsigned) => error.with_detail(key.clone(), unsigned),
+                Err(_) => {
+                    error.with_detail(key.clone(), crate::MatchErrorDetailValue::Signed(*value))
+                }
+            },
+            DiagnosticDetailValue::Boolean(_) | DiagnosticDetailValue::TextList(_) => error,
+        };
+    }
+    error.into()
 }
 
 fn compatibility_execution_error(error: QueryV2ExecutionError) -> OrmError {
@@ -4840,6 +4840,36 @@ mod tests {
             assert!(events.hydration_statements.is_empty());
         }
         context.close().await.unwrap();
+    }
+
+    #[test]
+    fn an_adaptation_refusal_keeps_its_limit_details_on_the_direct_path() {
+        let refusal =
+            type_bridge_contract::limits::QueryLimits::CANONICAL.annotate(Diagnostic::new(
+                DiagnosticCategory::ResourceLimit,
+                type_bridge_contract::diagnostic::DiagnosticCode::new("canonical_json_too_deep")
+                    .expect("static code"),
+                "canonical JSON exceeds the nesting-depth ceiling",
+            ));
+        let OrmError::Match(error) = adapter_diagnostic(refusal) else {
+            panic!("an adaptation refusal is a match error");
+        };
+        assert_eq!(error.category(), MatchErrorCategory::ResourceLimit);
+        assert_eq!(error.code().as_str(), "canonical_json_too_deep");
+        assert_eq!(
+            error.details().get("limit"),
+            Some(&crate::MatchErrorDetailValue::Text(
+                "canonical_depth".into()
+            ))
+        );
+        assert_eq!(
+            error.details().get("maximum"),
+            Some(&crate::MatchErrorDetailValue::Unsigned(64))
+        );
+        assert_eq!(
+            error.details().get("source"),
+            Some(&crate::MatchErrorDetailValue::Text("default".into()))
+        );
     }
 
     #[test]

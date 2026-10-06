@@ -35,6 +35,10 @@ All notable changes to TypeBridge will be documented in this file.
   is removed.
 - A generated manager filter with more than 256 predicates is refused with
   `structural_limit_exceeded` instead of `manager_filter_predicate_limit`.
+- Direct execution through a dynamic descriptor registry no longer falls back
+  to the V1 executor when a request does not fit the V2 query limits. The
+  request is refused with the same resource-limit diagnostic the remote path
+  reports; raise the session's query limits to run it.
 - `selected_slots` validation messages no longer spell the number sixteen;
   the ceiling is reported in the `maximum` detail.
 - A client older than this release cannot decode a capability advertisement

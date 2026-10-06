@@ -1020,7 +1020,7 @@ fn source_public_builder_operations() -> BTreeSet<String> {
                     .expect("public function declaration")
                     .0,
             );
-            (!matches!(name, "new" | "finalized_plan")).then(|| name.to_owned())
+            (!matches!(name, "new" | "finalized_plan" | "limits")).then(|| name.to_owned())
         })
         .collect()
 }

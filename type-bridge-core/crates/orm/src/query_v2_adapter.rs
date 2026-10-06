@@ -6,13 +6,11 @@
 //! compatibility lowering. Schema-aware validation recomputes the hydration
 //! graph and rejects any second native semantic program before provider I/O.
 //!
-//! Arbitrary V1 strings predate the fixed V2 canonical artifact ceiling. A
-//! request whose exact V2 representation cannot fit that envelope receives a
-//! typed, non-error legacy disposition carrying the resource-limit cause, so
-//! the released direct executor can preserve its behavior and every other
-//! caller can report the limit that was hit. This fallback is decided only
-//! after V1 validation and registry recheck; decoded V2 input can never
-//! request it.
+//! Arbitrary V1 strings predate the V2 canonical artifact ceiling. A request
+//! whose exact V2 representation does not fit the session's query limits is
+//! refused with a resource-limit diagnostic naming the limit, on the direct
+//! path and the remote path alike. There is no fallback executor: a caller
+//! whose request legitimately needs more raises the limit.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -128,17 +126,6 @@ impl MatchRequestAdapterAuthority {
     }
 }
 
-/// Result of production V1-to-V2 adaptation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum MatchRequestAdaptation {
-    /// Execute the schema-validated ordinary V2 plan.
-    Adapted(AdaptedMatchRequest),
-    /// The request does not fit the V2 resource limits. The direct executor
-    /// preserves released behavior through the already-validated V1 path; a
-    /// caller without that path reports the carried resource-limit cause.
-    LegacyRequired(Diagnostic),
-}
-
 /// The V2 program one V1 request adapts to.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AdaptedMatchRequest {
@@ -171,12 +158,12 @@ impl AdaptedMatchRequest {
 ///
 /// Semantic translation failures are diagnostics and indicate a bridge bug or
 /// stale/contradictory authority. Only a fixed V2 representation-envelope
-/// mismatch returns [`MatchRequestAdaptation::LegacyRequired`].
+/// mismatch is refused with a resource-limit diagnostic naming the limit.
 pub(crate) fn adapt_match_request(
     validated: &ValidatedMatchRequest,
     registry: &DescriptorRegistry,
     context: &MigrationAssertionValidationContext<'_>,
-) -> Result<MatchRequestAdaptation, Diagnostic> {
+) -> Result<AdaptedMatchRequest, Diagnostic> {
     // The limits V1 validation ran under govern the adapted plan too.
     let limits = validated.limits();
     validated.recheck_schema(registry).map_err(|_| {
@@ -209,17 +196,15 @@ pub(crate) fn adapt_match_request(
         .as_ref()
         .and_then(|predicate| artifact_sized_literal_bytes(predicate, limits.codec.max_bytes))
     {
-        return Ok(MatchRequestAdaptation::LegacyRequired(
-            limits.annotate(
-                Diagnostic::new(
-                    DiagnosticCategory::ResourceLimit,
-                    DiagnosticCode::new("query_v2_adapter_literal_byte_limit")
-                        .expect("static adapter diagnostic code"),
-                    "a predicate literal exceeds the canonical artifact byte ceiling",
-                )
-                .with_detail("actual_bytes", byte_count(actual))
-                .with_detail("maximum_bytes", byte_count(limits.codec.max_bytes)),
-            ),
+        return Err(limits.annotate(
+            Diagnostic::new(
+                DiagnosticCategory::ResourceLimit,
+                DiagnosticCode::new("query_v2_adapter_literal_byte_limit")
+                    .expect("static adapter diagnostic code"),
+                "a predicate literal exceeds the canonical artifact byte ceiling",
+            )
+            .with_detail("actual_bytes", byte_count(actual))
+            .with_detail("maximum_bytes", byte_count(limits.codec.max_bytes)),
         ));
     }
 
@@ -301,7 +286,7 @@ pub(crate) fn adapt_match_request(
         ReadStage::Distinct,
     ];
     let compatibility = QueryPlanV2Compatibility::new(predicate, cross_joins, Some(model_query));
-    let validated = match QueryPlanBuilder::finalize_compatibility(
+    let validated = QueryPlanBuilder::finalize_compatibility(
         QueryCompatibilityPlanInput::new(
             bindings,
             inputs,
@@ -313,26 +298,19 @@ pub(crate) fn adapt_match_request(
         ),
         context,
         limits,
-    ) {
-        Ok(validated) => validated,
-        Err(error) if error.category() == DiagnosticCategory::ResourceLimit => {
-            return Ok(MatchRequestAdaptation::LegacyRequired(
-                limits.annotate(error),
-            ));
-        }
-        Err(error) => return Err(error),
-    };
-    match validated.plan().canonical_bytes() {
-        Ok(_) => Ok(MatchRequestAdaptation::Adapted(AdaptedMatchRequest {
-            inputs: invocation_inputs,
-            operation,
-            validated: Box::new(validated),
-        })),
-        Err(error) if error.category() == DiagnosticCategory::ResourceLimit => Ok(
-            MatchRequestAdaptation::LegacyRequired(limits.annotate(error)),
-        ),
-        Err(error) => Err(error),
-    }
+    )
+    .map_err(|error| limits.annotate(error))?;
+    // The plan must also encode: a remote peer and the model executor both
+    // read its canonical bytes.
+    validated
+        .plan()
+        .canonical_bytes()
+        .map_err(|error| limits.annotate(error))?;
+    Ok(AdaptedMatchRequest {
+        inputs: invocation_inputs,
+        operation,
+        validated: Box::new(validated),
+    })
 }
 
 /// Compile-time completeness guard for the released provider vocabulary.

@@ -791,20 +791,20 @@
       {
         "family": "python_ffi_canonical_limits",
         "needles": [
-          "MAX_BOOLEAN_TERMS",
-          "MAX_SELECTED_SLOTS",
-          "MAX_INPUT_ROWS",
-          "MAX_INPUT_BYTES"
+          "limits().structural.boolean_terms",
+          "limits().structural.selected_slots",
+          "limits.input_rows",
+          "limits.input_bytes"
         ],
         "path": "type-bridge-core/crates/python/src/query_v2_builder_runtime.rs"
       },
       {
         "family": "node_ffi_canonical_limits",
         "needles": [
-          "MAX_BOOLEAN_TERMS",
-          "MAX_SELECTED_SLOTS",
-          "MAX_INPUT_ROWS",
-          "MAX_INPUT_BYTES"
+          "limits().structural.boolean_terms",
+          "limits().structural.selected_slots",
+          "limits.input_rows",
+          "limits.input_bytes"
         ],
         "path": "type-bridge-core/crates/node/src/query_v2_builder_runtime.rs"
       }

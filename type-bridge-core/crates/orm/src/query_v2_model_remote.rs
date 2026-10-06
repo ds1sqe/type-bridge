@@ -23,7 +23,7 @@ use crate::match_request::{
 };
 use crate::query_execution_limits::QueryExecutionDeadline;
 use crate::query_v2::failure;
-use crate::query_v2_adapter::{MatchRequestAdaptation, adapt_match_request};
+use crate::query_v2_adapter::adapt_match_request;
 use crate::query_v2_prepared::{
     ClaimedRemoteReplyV2, PendingRemoteQueryV2, QueryAuthority,
     prepare_validated_remote_query_v2_with_budget,
@@ -258,12 +258,9 @@ pub fn prepare_remote_model_query_v2_with_budget(
     preflight_released_match_execution(&registry, &request)?;
     check_prepare_budget(deadline, cancellation)?;
 
-    let adapted = match adapt_match_request(&request, &registry, &authority.context())? {
-        MatchRequestAdaptation::Adapted(adapted) => adapted,
-        // No V1 wire format exists, so the limit that refused V2 adaptation
-        // is the caller's answer.
-        MatchRequestAdaptation::LegacyRequired(cause) => return Err(cause.into()),
-    };
+    // A request that does not fit the session's limits is refused here,
+    // before anything is sent.
+    let adapted = adapt_match_request(&request, &registry, &authority.context())?;
     check_prepare_budget(deadline, cancellation)?;
     let invocation = QueryInvocation::new(
         adapted.validated().plan(),

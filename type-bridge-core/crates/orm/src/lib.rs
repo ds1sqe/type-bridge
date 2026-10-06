@@ -85,30 +85,19 @@ pub mod integration_test_support {
     use crate::_registry::DescriptorRegistry;
     use crate::match_request::ValidatedMatchRequest;
     use crate::query_v2::failure;
-    use crate::query_v2_adapter::{
-        MatchRequestAdaptation, MatchRequestAdapterAuthority, adapt_match_request,
-    };
+    use crate::query_v2_adapter::{MatchRequestAdapterAuthority, adapt_match_request};
 
     /// Adapt a validated V1 request through the production registry authority.
     ///
     /// Deriving the authority here keeps the live parity gate on the same
-    /// descriptor projection as public execution and proves that its V2 side
-    /// cannot silently take the retained `LegacyRequired` fallback.
+    /// descriptor projection as public execution.
     pub fn adapt_match_request_for_live_test(
         validated: &ValidatedMatchRequest,
         registry: &DescriptorRegistry,
     ) -> Result<(ValidatedQuery, QueryOperation), Diagnostic> {
         let authority = MatchRequestAdapterAuthority::from_registry(registry)?;
-        match adapt_match_request(validated, registry, &authority.context())? {
-            MatchRequestAdaptation::Adapted(adapted) => {
-                Ok((adapted.validated().clone(), adapted.operation()))
-            }
-            MatchRequestAdaptation::LegacyRequired(_) => Err(failure(
-                type_bridge_contract::diagnostic::DiagnosticCategory::ResourceLimit,
-                "query_v2_adapter_test_resource_envelope",
-                "the live V2 parity fixture cannot fit the canonical V2 artifact envelope",
-            )),
-        }
+        let adapted = adapt_match_request(validated, registry, &authority.context())?;
+        Ok((adapted.validated().clone(), adapted.operation()))
     }
 }
 
