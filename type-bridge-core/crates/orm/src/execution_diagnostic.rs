@@ -445,6 +445,7 @@ fn is_admissible_query_identity_detail(key: &str) -> bool {
             | "identity_kind"
             | "limit"
             | "scope"
+            | "source"
     )
 }
 

@@ -1,4 +1,5 @@
 import { loadNative } from "./native.js";
+import type { QueryLimits } from "./runtime-projection.js";
 import {
   queryV2AuthorityHandle,
   queryV2NativeCall,
@@ -720,6 +721,25 @@ export class QueryV2Authority {
         loadNative().queryV2Authority(declaredSchema, scope, profile),
       ),
     );
+  }
+
+  /**
+   * Derive an authority over the same schema whose plans are authored,
+   * decoded, and validated under `queryLimits`.
+   */
+  withQueryLimits(queryLimits: QueryLimits): QueryV2Authority {
+    const native = queryV2AuthorityHandle(this);
+    if (native === undefined) {
+      throw new TypeError("query authority is not installed by this package");
+    }
+    const authority = Object.create(
+      QueryV2Authority.prototype,
+    ) as QueryV2Authority;
+    registerQueryV2AuthorityHandle(
+      authority,
+      queryV2NativeCall(() => native.withQueryLimits(queryLimits.nativeHandle())),
+    );
+    return authority;
   }
 
   static queryOnly(

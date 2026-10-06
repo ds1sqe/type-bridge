@@ -26,7 +26,8 @@ pub use match_runtime::{
     NodeMatchFunctionCallHandle, NodeMatchFunctionHandle, NodeMatchFunctionValueHandle,
     NodeMatchOrderHandle, NodeMatchPredicateHandle, NodeMatchQueryHandle, NodeMatchRoleHandle,
     NodeMatchSelectionHandle, NodeMatchSessionHandle, NodeMatchShapeHandle, NodeQueryCancellation,
-    NodeQueryExecutionResources, NodeValidatedMatchResultHandle, NodeValidatedThingHandle,
+    NodeQueryExecutionResources, NodeQueryLimits, NodeValidatedMatchResultHandle,
+    NodeValidatedThingHandle,
 };
 pub use migration_catalog_runtime::{
     NodeMigrationApprovalBuilder, NodeMigrationApprovalSet, NodeMigrationBackfillObservation,

@@ -42,6 +42,7 @@ const PUBLIC_QUERY_NAMES: &[&str] = &[
     "Query",
     "QueryCancellation",
     "QueryExecutionResourceLimits",
+    "QueryLimits",
     "QueryOrder",
     "QuerySession",
     "RemoteQuery",
@@ -178,6 +179,7 @@ fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> Str
          from ._query import Query as Query\n\
          from ._query import QueryCancellation as QueryCancellation\n\
          from ._query import QueryExecutionResourceLimits as QueryExecutionResourceLimits\n\
+         from ._query import QueryLimits as QueryLimits\n\
          from ._query import QueryOrder as QueryOrder\n\
          from ._query import QuerySession as QuerySession\n\
          from ._query import RemoteGroupedQuery as RemoteGroupedQuery\n\

@@ -72,6 +72,21 @@ impl NodeQueryV2Authority {
     }
 }
 
+#[napi]
+impl NodeQueryV2Authority {
+    /// Derive an authority over the same schema whose plans are authored,
+    /// decoded, and validated under `query_limits`.
+    #[napi(js_name = "withQueryLimits")]
+    pub fn with_query_limits(
+        &self,
+        query_limits: &crate::match_runtime::NodeQueryLimits,
+    ) -> NodeQueryV2Authority {
+        NodeQueryV2Authority {
+            authority: Arc::new(self.authority.rebound_with_limits(query_limits.inner())),
+        }
+    }
+}
+
 /// One prepared request with an atomic one-shot reply decoder.
 #[napi]
 pub struct NodePendingQueryV2Remote {
@@ -586,7 +601,7 @@ pub fn query_v2_execute_local<'env>(
     let invocation_json = bounded_string(
         &env,
         invocation_json,
-        MAX_QUERY_INVOCATION_BYTES,
+        authority.authority.limits().invocation_bytes(),
         invocation_input_too_large,
     )?;
     let deadline = checked_remote_deadline(
@@ -613,7 +628,8 @@ pub fn query_v2_execute_local<'env>(
     };
     let (database, runtime) = database.handles();
     let authority = Arc::clone(&authority.authority);
-    let plan = bounded_response_snapshot(&plan, MAX_CANONICAL_BYTES.saturating_add(1));
+    let plan =
+        bounded_response_snapshot(&plan, authority.limits().codec.max_bytes.saturating_add(1));
     let (deferred, promise) = env.create_deferred::<String, _>()?;
 
     let execution = runtime.spawn(async move {
@@ -707,7 +723,7 @@ pub fn query_v2_prepare_remote(
     let invocation_json = bounded_string(
         &env,
         invocation_json,
-        MAX_QUERY_INVOCATION_BYTES,
+        authority.authority.limits().invocation_bytes(),
         invocation_input_too_large,
     )?;
     let advertisement = non_shared_buffer(&env, advertisement)?;
@@ -719,7 +735,15 @@ pub fn query_v2_prepare_remote(
     )?;
     let pending = prepare_remote_query(
         &authority.authority,
-        bounded_buffer(&plan, MAX_CANONICAL_BYTES.saturating_add(1)),
+        bounded_buffer(
+            &plan,
+            authority
+                .authority
+                .limits()
+                .codec
+                .max_bytes
+                .saturating_add(1),
+        ),
         &invocation_json,
         bounded_buffer(&advertisement, MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1)),
         limits,

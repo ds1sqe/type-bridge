@@ -199,6 +199,7 @@ assert.deepEqual(Object.keys(runtimeProjection).sort(), [
   "InstalledRuntimeProjection",
   "QueryCancellation",
   "QueryExecutionResourceLimits",
+  "QueryLimits",
   "installGeneratedSchemaAuthority",
   "installRuntimeProjection",
   "projectedManagerNativeCall",

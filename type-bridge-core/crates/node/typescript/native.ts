@@ -348,6 +348,11 @@ interface NativeValidatedThingHandle {
 
 interface NativeRemoteModelQueryContext {}
 
+export interface NativeQueryLimits {
+  names(): string[];
+  get(name: string): bigint;
+}
+
 export interface NativeQueryExecutionResources {
   readonly timeoutMilliseconds: bigint;
   readonly items: bigint;
@@ -383,6 +388,7 @@ interface NativeRemoteModelQueryModule {
     statements: bigint,
   ) => NativeQueryExecutionResources;
   NodeQueryCancellation: new () => NativeQueryCancellation;
+  NodeQueryLimits: new (names: string[], values: bigint[]) => NativeQueryLimits;
   queryV2RemoteModelContext(
     authority: ReturnType<NativeModule["queryV2Authority"]>,
     advertisement: Uint8Array,
@@ -472,6 +478,7 @@ interface NativeRuntimeProjectionHandle {
   matchSessionWithResources(
     resources: NativeQueryExecutionResources,
     cancellation: NativeQueryCancellation,
+    queryLimits?: NativeQueryLimits | null,
   ): NativeMatchSessionHandle;
   matchModelType(typeKey: string): string;
   validateAttributeValueJson(typeKey: string, valueJson: string): void;

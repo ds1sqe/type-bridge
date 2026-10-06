@@ -21,7 +21,7 @@ use type_bridge_orm::{
     AnswerCancellation, ClaimedRemoteModelReplyV2, PendingRemoteModelQueryV2,
     QueryExecutionDeadline, QueryExecutionResourceLimits, RemoteModelQueryV2Error, Window,
     lower_remote_query_diagnostic, prepare_remote_model_query_v2_with_budget,
-    validate_public_order_term_count,
+    validate_order_term_count,
 };
 
 use crate::match_runtime::{
@@ -247,7 +247,7 @@ pub fn query_v2_prepare_remote_model_rows(
     cardinality: String,
 ) -> napi::Result<NodePendingRemoteModelQuery> {
     let (deadline, cancellation) = begin_remote_invocation(query, context)?;
-    let orders = bounded_order_handles(&orders)?;
+    let orders = bounded_order_handles(&orders, query.inner().limits())?;
     let request = query
         .inner()
         .validate_fetch_rows(
@@ -278,7 +278,7 @@ pub fn query_v2_prepare_remote_model_page(
     include_total: Unknown,
 ) -> napi::Result<NodePendingRemoteModelQuery> {
     let (deadline, cancellation) = begin_remote_invocation(query, context)?;
-    let orders = bounded_order_handles(&orders)?;
+    let orders = bounded_order_handles(&orders, query.inner().limits())?;
     let request = query
         .inner()
         .validate_page_by(
@@ -499,9 +499,12 @@ fn node_bool(value: Unknown, argument: &'static str) -> napi::Result<bool> {
     })
 }
 
-fn bounded_order_handles(orders: &Array) -> napi::Result<Vec<type_bridge_orm::OrderHandle>> {
+fn bounded_order_handles(
+    orders: &Array,
+    limits: type_bridge_contract::limits::QueryLimits,
+) -> napi::Result<Vec<type_bridge_orm::OrderHandle>> {
     let length = usize::try_from(orders.len()).unwrap_or(usize::MAX);
-    validate_public_order_term_count(length).map_err(napi_match_error)?;
+    validate_order_term_count(length, limits.structural).map_err(napi_match_error)?;
     let mut references = Vec::with_capacity(length);
     for index in 0..orders.len() {
         references.push(

@@ -14,6 +14,7 @@ use pythonize::pythonize;
 use serde_json::{Value, json};
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{FunctionId, TypeId};
+use type_bridge_contract::limits::QueryLimits;
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticDetailValue, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
 };
@@ -304,6 +305,73 @@ impl PyQueryCancellation {
     }
 }
 
+/// Query limits one generated session validates, encodes, and executes
+/// under.
+///
+/// Construct with keyword overrides of the canonical defaults, named exactly
+/// as [`type_bridge_contract::limits::QueryLimits::FIELDS`] lists them. Rust
+/// admits the values; an unknown name or an unsupported value is refused
+/// here, before any session exists.
+#[pyclass(name = "QueryLimits", frozen, from_py_object)]
+#[derive(Clone, Copy)]
+pub(crate) struct PyQueryLimits {
+    inner: QueryLimits,
+}
+
+impl PyQueryLimits {
+    pub(crate) const fn inner(&self) -> QueryLimits {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyQueryLimits {
+    #[new]
+    #[pyo3(signature = (**overrides))]
+    fn new(overrides: Option<&Bound<'_, pyo3::types::PyDict>>) -> PyResult<Self> {
+        let mut named = Vec::new();
+        if let Some(overrides) = overrides {
+            for (name, value) in overrides.iter() {
+                let name = name
+                    .cast_exact::<pyo3::types::PyString>()
+                    .map_err(|_| PyTypeError::new_err("query limit names must be exact str"))?
+                    .to_str()?
+                    .to_owned();
+                let value = python_optional_resource_limit(Some(&value), 0, &name)?;
+                named.push((name, value));
+            }
+        }
+        QueryLimits::from_overrides(named.iter().map(|(name, value)| (name.as_str(), *value)))
+            .map(|inner| Self { inner })
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    /// Return the stable names of every query limit.
+    #[staticmethod]
+    fn names() -> Vec<&'static str> {
+        QueryLimits::FIELDS.to_vec()
+    }
+
+    /// Return the effective value of one named limit.
+    fn get(&self, name: &str) -> PyResult<u64> {
+        self.inner
+            .get(name)
+            .map(|value| u64::try_from(value).unwrap_or(u64::MAX))
+            .ok_or_else(|| PyValueError::new_err(format!("`{name}` is not a known query limit")))
+    }
+
+    fn __repr__(&self) -> String {
+        let overrides = QueryLimits::FIELDS
+            .iter()
+            .filter_map(|name| {
+                let value = self.inner.get(name)?;
+                (Some(value) != QueryLimits::CANONICAL.get(name)).then(|| format!("{name}={value}"))
+            })
+            .collect::<Vec<_>>();
+        format!("QueryLimits({})", overrides.join(", "))
+    }
+}
+
 fn python_optional_resource_limit(
     value: Option<&Bound<'_, PyAny>>,
     default: u64,
@@ -396,7 +464,7 @@ impl PyMatchSessionHandle {
         cancellation: AnswerCancellation,
     ) -> Self {
         Self {
-            inner: SessionHandle::new(registry),
+            inner: SessionHandle::with_limits(registry, QueryLimits::CANONICAL),
             installed: None,
             resources: resources.effective(),
             cancellation,
@@ -409,9 +477,10 @@ impl PyMatchSessionHandle {
         registry: Arc<DescriptorRegistry>,
         resources: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
+        query_limits: QueryLimits,
     ) -> Self {
         Self {
-            inner: SessionHandle::new(registry),
+            inner: SessionHandle::with_limits(registry, query_limits),
             installed: Some(installed),
             resources: resources.effective(),
             cancellation,
@@ -1813,6 +1882,7 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyMatchShapeHandle>()?;
     module.add_class::<PyMatchQueryHandle>()?;
     module.add_class::<PyQueryExecutionResourceLimits>()?;
+    module.add_class::<PyQueryLimits>()?;
     module.add_class::<PyQueryCancellation>()?;
     crate::validated_result_runtime::register(module)?;
     module.add_function(wrap_pyfunction!(revalidate_match_diagnostic, module)?)?;

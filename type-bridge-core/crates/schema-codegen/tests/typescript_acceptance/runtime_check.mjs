@@ -27,6 +27,7 @@ import {
   PlayerStats,
   QueryCancellation,
   QueryExecutionResourceLimits,
+  QueryLimits,
   QuerySession,
   RUNTIME_PROJECTION_JSON,
   RemoteQuerySession,
@@ -1035,6 +1036,58 @@ function emitSdkV3PackageProofFragment() {
   const descriptor = openSync(destination, "wx", 0o600);
   try { writeSync(descriptor, payload); fsyncSync(descriptor); } finally { closeSync(descriptor); }
 }
+
+// Query limits belong to the session. Rust admits them, and a lowered
+// boolean-term ceiling refuses a two-clause query before any exchange, naming
+// the limit it enforced and that the caller configured it.
+assert(new QueryLimits().names().includes("boolean_terms"));
+assert.equal(new QueryLimits().get("boolean_terms"), 256n);
+assert.equal(new QueryLimits({ boolean_terms: 1n }).get("boolean_terms"), 1n);
+for (const rejected of [
+  { made_up: 1n },
+  { canonical_depth: 1000n },
+  { boolean_terms: 0n },
+]) {
+  assert.throws(() => new QueryLimits(rejected));
+}
+const limitedRemoteExchangesBefore = generatedRemoteExchanges;
+const limitedRemoteSession = new RemoteQuerySession(
+  generatedAdvertisement,
+  async () => {
+    generatedRemoteExchanges += 1;
+    return new Uint8Array();
+  },
+  {
+    maxItems: 11n,
+    maxBytes: 1n << 20n,
+    maxCollectionMembers: 12n,
+    maxGraphNodes: 13n,
+    maxAttributeValues: 14n,
+    maxRolePlayers: 15n,
+  },
+  undefined,
+  new QueryLimits({ boolean_terms: 1n }),
+);
+const limitedRemotePerson = limitedRemoteSession.exact(Person);
+await assert.rejects(
+  async () =>
+    limitedRemoteSession
+      .query(limitedRemotePerson)
+      .where(
+        limitedRemotePerson.field(Person.score).gte(Score.create(1n)),
+        limitedRemotePerson.field(Person.score).gte(Score.create(2n)),
+      )
+      .one(),
+  (error) => {
+    assert.equal(error.code, "structural_limit_exceeded");
+    const limitedDetails = JSON.stringify(error.details);
+    assert.match(limitedDetails, /boolean_terms/, limitedDetails);
+    assert.match(limitedDetails, /configured/, limitedDetails);
+    return true;
+  },
+);
+assert.equal(generatedRemoteExchanges, limitedRemoteExchangesBefore);
+limitedRemoteSession.close();
 
 const remoteLifecycle = generatedRemoteSession.query(generatedRemotePerson);
 const remoteLifecycleClone = remoteLifecycle.clone();

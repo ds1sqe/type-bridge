@@ -1,3 +1,4 @@
+import type { QueryLimits } from "./runtime-projection.js";
 import { type NativeQueryV2Authority, type NativeQueryV2BuilderRuntime } from "./query-v2-internals.js";
 export { QueryV2Error } from "./query-v2-internals.js";
 export type { QueryV2ErrorCategory, QueryV2ErrorDetail, QueryV2ErrorPathSegment, } from "./query-v2-internals.js";
@@ -372,6 +373,11 @@ export declare function ensureDatabase(address: string, database: string, option
 export declare class QueryV2Authority {
     #private;
     constructor(declaredSchema: Uint8Array, scope: string, profile: string);
+    /**
+     * Derive an authority over the same schema whose plans are authored,
+     * decoded, and validated under `queryLimits`.
+     */
+    withQueryLimits(queryLimits: QueryLimits): QueryV2Authority;
     static queryOnly(database: RustDatabase, declaredSchema: Uint8Array, scope: string, profile: string): QueryV2Authority;
 }
 export interface QueryV2RemoteLimits {

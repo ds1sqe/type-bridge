@@ -1608,6 +1608,15 @@ struct QueryState {
 pub struct QueryHandle(Arc<QueryState>);
 
 impl QueryHandle {
+    /// Return the limits of the session this query belongs to.
+    ///
+    /// A binding reads these to bound a foreign sequence before it
+    /// materializes it, so its early refusals match request validation.
+    #[must_use]
+    pub fn limits(&self) -> QueryLimits {
+        self.0.session.limits
+    }
+
     /// Canonically validate one selected-row terminal without serializing its
     /// semantic request. Intended for native language-binding entry seams.
     #[doc(hidden)]

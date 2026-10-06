@@ -108,6 +108,14 @@ impl PyQueryV2Authority {
 
 #[pymethods]
 impl PyQueryV2Authority {
+    /// Derive an authority over the same schema whose plans are authored,
+    /// decoded, and validated under `query_limits`.
+    fn with_query_limits(&self, query_limits: &crate::match_runtime::PyQueryLimits) -> Self {
+        Self {
+            authority: Arc::new(self.authority.rebound_with_limits(query_limits.inner())),
+        }
+    }
+
     /// Build one authority from canonical declared-schema bytes.
     #[new]
     fn new(
@@ -471,8 +479,9 @@ pub fn query_v2_execute_local(
     let plan = PythonBytes::extract(plan, "plan")?;
     let invocation_json = PythonString::extract(invocation_json, "invocation_json")?;
     let limits = local_limits(deadline_ms)?;
-    let plan = plan.bounded_snapshot(MAX_CANONICAL_BYTES.saturating_add(1));
-    let invocation_json = invocation_json.bounded_snapshot(MAX_QUERY_INVOCATION_BYTES)?;
+    let query_limits = authority.authority.limits();
+    let plan = plan.bounded_snapshot(query_limits.codec.max_bytes.saturating_add(1));
+    let invocation_json = invocation_json.bounded_snapshot(query_limits.invocation_bytes())?;
     let (db, runtime) = database.handles();
     let authority = Arc::clone(&authority.authority);
     contain_local_worker_panic(|| {
@@ -544,8 +553,9 @@ pub fn query_v2_prepare_remote(
     let invocation_json = PythonString::extract(invocation_json, "invocation_json")?;
     let advertisement = PythonBytes::extract(advertisement, "advertisement")?;
     let limits = remote_limits(max_items, max_bytes, max_collection_members, deadline_ms)?;
-    let plan = plan.bounded_snapshot(MAX_CANONICAL_BYTES.saturating_add(1));
-    let invocation_json = invocation_json.bounded_snapshot(MAX_QUERY_INVOCATION_BYTES)?;
+    let query_limits = authority.authority.limits();
+    let plan = plan.bounded_snapshot(query_limits.codec.max_bytes.saturating_add(1));
+    let invocation_json = invocation_json.bounded_snapshot(query_limits.invocation_bytes())?;
     let advertisement = advertisement.bounded_snapshot(MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1));
     let authority = Arc::clone(&authority.authority);
     let pending = py

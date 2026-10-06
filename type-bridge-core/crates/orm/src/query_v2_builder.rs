@@ -1259,6 +1259,13 @@ impl AuthoredQueryPlan {
     pub fn input_columns(&self) -> &[InputColumn] {
         self.plan.inputs()
     }
+
+    /// Return the limits this plan was authored under.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn limits(&self) -> QueryLimits {
+        self.plan.limits()
+    }
 }
 
 /// One immutable typed invocation bound to an authored plan fingerprint.
@@ -1441,6 +1448,15 @@ impl QueryPlanBuilder {
             context,
             limits,
         )
+    }
+
+    /// Return the limits this builder authors under.
+    ///
+    /// A binding reads these to bound foreign input before materializing it,
+    /// so its early refusals use the same ceilings as the builder's own.
+    #[must_use]
+    pub const fn limits(&self) -> QueryLimits {
+        self.limits
     }
 
     /// Return the first finalized value, if finalization succeeded.

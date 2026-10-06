@@ -149,6 +149,10 @@ interface NativeValidatedThingHandle {
 }
 interface NativeRemoteModelQueryContext {
 }
+export interface NativeQueryLimits {
+    names(): string[];
+    get(name: string): bigint;
+}
 export interface NativeQueryExecutionResources {
     readonly timeoutMilliseconds: bigint;
     readonly items: bigint;
@@ -172,6 +176,7 @@ interface NativePendingRemoteModelQuery {
 interface NativeRemoteModelQueryModule {
     NodeQueryExecutionResources: new (timeoutMilliseconds: bigint, items: bigint, bytes: bigint, graphNodes: bigint, attributeValues: bigint, collectionMembers: bigint, rolePlayers: bigint, statements: bigint) => NativeQueryExecutionResources;
     NodeQueryCancellation: new () => NativeQueryCancellation;
+    NodeQueryLimits: new (names: string[], values: bigint[]) => NativeQueryLimits;
     queryV2RemoteModelContext(authority: ReturnType<NativeModule["queryV2Authority"]>, advertisement: Uint8Array, maxItems: bigint, maxBytes: bigint, maxCollectionMembers: bigint, maxGraphNodes: bigint, maxAttributeValues: bigint, maxRolePlayers: bigint, deadlineMs?: bigint | null): NativeRemoteModelQueryContext;
     queryV2RemoteModelContextWithResources(authority: ReturnType<NativeModule["queryV2Authority"]>, advertisement: Uint8Array, resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation): NativeRemoteModelQueryContext;
     queryV2PrepareRemoteModelRows(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): NativePendingRemoteModelQuery;
@@ -187,7 +192,7 @@ interface NativeRuntimeProjectionHandle {
     managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
     managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
     matchSession(): NativeMatchSessionHandle;
-    matchSessionWithResources(resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation): NativeMatchSessionHandle;
+    matchSessionWithResources(resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation, queryLimits?: NativeQueryLimits | null): NativeMatchSessionHandle;
     matchModelType(typeKey: string): string;
     validateAttributeValueJson(typeKey: string, valueJson: string): void;
     validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;

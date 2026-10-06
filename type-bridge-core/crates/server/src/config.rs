@@ -256,17 +256,12 @@ impl V2Section {
     pub fn resolved_query_limits(
         &self,
     ) -> Result<type_bridge_contract::limits::QueryLimits, String> {
-        let mut limits = type_bridge_contract::limits::QueryLimits::CANONICAL;
-        for (name, value) in &self.query_limits {
-            let value = usize::try_from(*value)
-                .map_err(|_| format!("v2.query_limits.{name} does not fit this platform"))?;
-            if !limits.set(name, value) {
-                return Err(format!("v2.query_limits.{name} is not a known query limit"));
-            }
-        }
-        limits
-            .validate()
-            .map_err(|error| format!("v2.query_limits is rejected: {error}"))
+        type_bridge_contract::limits::QueryLimits::from_overrides(
+            self.query_limits
+                .iter()
+                .map(|(name, value)| (name.as_str(), *value)),
+        )
+        .map_err(|error| format!("v2.query_limits is rejected: {error}"))
     }
 }
 

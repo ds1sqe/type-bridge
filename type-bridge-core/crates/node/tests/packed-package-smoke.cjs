@@ -67,6 +67,7 @@ function verifyInstalledPackage(installedRoot) {
     "InstalledRuntimeProjection",
     "QueryCancellation",
     "QueryExecutionResourceLimits",
+    "QueryLimits",
     "installGeneratedSchemaAuthority",
     "installRuntimeProjection",
     "projectedManagerNativeCall",

@@ -254,25 +254,51 @@ pub struct QueryLimits {
 }
 
 /// Why a [`QueryLimits`] value was refused.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct QueryLimitsError {
-    /// The stable name of the offending limit.
-    pub limit: &'static str,
-    /// The refused value.
-    pub value: usize,
-    /// The smallest admissible value.
-    pub minimum: usize,
-    /// The largest admissible value.
-    pub maximum: usize,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueryLimitsError {
+    /// No limit has this name.
+    Unknown {
+        /// The unrecognized name.
+        name: String,
+    },
+    /// A limit is zero or beyond what the implementation supports.
+    OutOfRange {
+        /// The stable name of the offending limit.
+        limit: &'static str,
+        /// The refused value.
+        value: u64,
+        /// The smallest admissible value.
+        minimum: u64,
+        /// The largest admissible value.
+        maximum: u64,
+    },
+}
+
+impl QueryLimitsError {
+    /// Return the name of the limit this error is about.
+    #[must_use]
+    pub fn limit(&self) -> &str {
+        match self {
+            Self::Unknown { name } => name,
+            Self::OutOfRange { limit, .. } => limit,
+        }
+    }
 }
 
 impl std::fmt::Display for QueryLimitsError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "query limit `{}` is {}; it must be between {} and {}",
-            self.limit, self.value, self.minimum, self.maximum
-        )
+        match self {
+            Self::Unknown { name } => write!(formatter, "`{name}` is not a known query limit"),
+            Self::OutOfRange {
+                limit,
+                value,
+                minimum,
+                maximum,
+            } => write!(
+                formatter,
+                "query limit `{limit}` is {value}; it must be between {minimum} and {maximum}"
+            ),
+        }
     }
 }
 
@@ -389,15 +415,47 @@ impl QueryLimits {
             let value = self.get(name).expect("listed limit exists");
             let maximum = Self::supported_maximum(name).expect("listed limit exists");
             if value == 0 || value > maximum {
-                return Err(QueryLimitsError {
+                return Err(QueryLimitsError::OutOfRange {
                     limit: name,
-                    value,
+                    value: u64::try_from(value).unwrap_or(u64::MAX),
                     minimum: 1,
-                    maximum,
+                    maximum: u64::try_from(maximum).unwrap_or(u64::MAX),
                 });
             }
         }
         Ok(self)
+    }
+
+    /// Build validated limits from named overrides of the canonical
+    /// defaults.
+    ///
+    /// This is the one entry point for limits that arrive as untrusted
+    /// name/value pairs: a host configuration, a language binding, or a
+    /// server file. A limit that is not named keeps its default.
+    pub fn from_overrides<'name>(
+        overrides: impl IntoIterator<Item = (&'name str, u64)>,
+    ) -> Result<Self, QueryLimitsError> {
+        let mut limits = Self::CANONICAL;
+        for (name, value) in overrides {
+            let Some(listed) = Self::FIELDS.iter().find(|listed| **listed == name) else {
+                return Err(QueryLimitsError::Unknown {
+                    name: name.to_owned(),
+                });
+            };
+            let Ok(value) = usize::try_from(value) else {
+                return Err(QueryLimitsError::OutOfRange {
+                    limit: listed,
+                    value,
+                    minimum: 1,
+                    maximum: u64::try_from(
+                        Self::supported_maximum(listed).expect("listed limit exists"),
+                    )
+                    .unwrap_or(u64::MAX),
+                });
+            };
+            limits.set(listed, value);
+        }
+        limits.validate()
     }
 
     /// Return the stricter of two limits, field by field.
@@ -523,6 +581,25 @@ impl QueryLimits {
         self.annotate_limit(diagnostic, limit)
     }
 
+    /// Annotate a refusal raised by a stage that holds only the one ceiling
+    /// it checked, such as a binding bounding a foreign sequence before it
+    /// materializes it.
+    ///
+    /// `maximum` is the ceiling that stage enforced. `source` is derived by
+    /// comparing it with the canonical default of the limit the code names.
+    #[must_use]
+    pub fn annotate_refusal(diagnostic: Diagnostic, maximum: usize) -> Diagnostic {
+        let Some((_, limit)) = LIMIT_BY_DIAGNOSTIC_CODE
+            .iter()
+            .find(|(code, _)| *code == diagnostic.code().as_str())
+        else {
+            return diagnostic;
+        };
+        let mut limits = Self::CANONICAL;
+        limits.set(limit, maximum);
+        limits.annotate_limit(diagnostic, limit)
+    }
+
     /// [`Self::annotate`] for limits merged from a caller's own and an
     /// executor's advertisement.
     ///
@@ -620,21 +697,21 @@ mod query_limits_tests {
     fn validation_refuses_zero_and_unsupported_values_by_name() {
         let mut zero = QueryLimits::CANONICAL;
         zero.structural.boolean_terms = 0;
-        assert_eq!(zero.validate().unwrap_err().limit, "boolean_terms");
+        assert_eq!(zero.validate().unwrap_err().limit(), "boolean_terms");
 
         let mut deep = QueryLimits::CANONICAL;
         deep.codec.max_depth = MAX_SUPPORTED_CANONICAL_DEPTH + 1;
         let error = deep.validate().unwrap_err();
-        assert_eq!(error.limit, "canonical_depth");
-        assert_eq!(error.maximum, MAX_SUPPORTED_CANONICAL_DEPTH);
+        assert_eq!(error.limit(), "canonical_depth");
+        assert!(error.to_string().contains("between 1 and 126"));
 
         let mut wide = QueryLimits::CANONICAL;
         wide.structural.bindings = MAX_SUPPORTED_BINDINGS + 1;
-        assert_eq!(wide.validate().unwrap_err().limit, "bindings");
+        assert_eq!(wide.validate().unwrap_err().limit(), "bindings");
 
         let mut slots = QueryLimits::CANONICAL;
         slots.structural.selected_slots = MAX_SUPPORTED_SELECTED_SLOTS + 1;
-        assert_eq!(slots.validate().unwrap_err().limit, "selected_slots");
+        assert_eq!(slots.validate().unwrap_err().limit(), "selected_slots");
 
         let mut raised = QueryLimits::CANONICAL;
         raised.codec.max_bytes = 64 * 1024 * 1024;
@@ -706,6 +783,57 @@ mod query_limits_tests {
         assert!(invalid.details().is_empty());
         let unknown = limits.annotate(raise("some_other_limit", DiagnosticCategory::ResourceLimit));
         assert!(unknown.details().is_empty());
+    }
+
+    #[test]
+    fn named_overrides_build_validated_limits() {
+        let limits = QueryLimits::from_overrides([("canonical_bytes", 64 << 20), ("bindings", 8)])
+            .expect("named overrides");
+        assert_eq!(limits.codec.max_bytes, 64 << 20);
+        assert_eq!(limits.structural.bindings, 8);
+        assert_eq!(limits.structural.boolean_terms, MAX_BOOLEAN_TERMS);
+        assert_eq!(
+            QueryLimits::from_overrides([]).expect("no overrides"),
+            QueryLimits::CANONICAL
+        );
+        assert_eq!(
+            QueryLimits::from_overrides([("made_up", 1)]).unwrap_err(),
+            QueryLimitsError::Unknown {
+                name: "made_up".into()
+            }
+        );
+        assert_eq!(
+            QueryLimits::from_overrides([("canonical_depth", 1_000)])
+                .unwrap_err()
+                .limit(),
+            "canonical_depth"
+        );
+    }
+
+    #[test]
+    fn a_refusal_is_annotated_from_the_ceiling_its_stage_enforced() {
+        use crate::diagnostic::{DiagnosticCode, DiagnosticDetailValue};
+        let refusal = || {
+            Diagnostic::new(
+                DiagnosticCategory::ResourceLimit,
+                DiagnosticCode::new("query_plan_sort_term_limit").expect("code"),
+                "refused",
+            )
+        };
+        let default = QueryLimits::annotate_refusal(refusal(), MAX_ORDER_TERMS);
+        assert_eq!(
+            default.details().get("source"),
+            Some(&DiagnosticDetailValue::Text("default".into()))
+        );
+        let configured = QueryLimits::annotate_refusal(refusal(), 4);
+        assert_eq!(
+            configured.details().get("maximum"),
+            Some(&DiagnosticDetailValue::Long(4))
+        );
+        assert_eq!(
+            configured.details().get("source"),
+            Some(&DiagnosticDetailValue::Text("configured".into()))
+        );
     }
 
     #[test]

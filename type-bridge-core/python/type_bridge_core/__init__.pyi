@@ -121,6 +121,7 @@ class PyAdoptionDirectoryAuthority:
 # against the unsigned 64-bit wire contract.
 class QueryV2Authority:
     def __init__(self, declared_schema: bytes, scope: str, profile: str) -> None: ...
+    def with_query_limits(self, query_limits: QueryLimits) -> QueryV2Authority: ...
     @staticmethod
     def query_only(
         database: PyRustDatabase,
@@ -677,6 +678,13 @@ class DynamicValue:
     def duration(value: str) -> DynamicValue: ...
 
 @final
+class QueryLimits:
+    def __init__(self, **overrides: int) -> None: ...
+    @staticmethod
+    def names() -> list[str]: ...
+    def get(self, name: str) -> int: ...
+
+@final
 class QueryExecutionResourceLimits:
     def __init__(
         self,
@@ -1168,6 +1176,7 @@ class PyRuntimeProjection:
         self,
         resources: QueryExecutionResourceLimits,
         cancellation: QueryCancellation,
+        query_limits: QueryLimits | None = ...,
     ) -> MatchSessionHandle: ...
     def hydrate_thing(self, thing: ValidatedMatchThingHandle) -> object: ...
 

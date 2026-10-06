@@ -10,6 +10,7 @@ import { loadNative } from "./native.js";
 import type {
   NativeQueryCancellation,
   NativeQueryExecutionResources,
+  NativeQueryLimits,
 } from "./native.js";
 import {
   queryV2AuthorityHandle,
@@ -131,6 +132,58 @@ export class QueryExecutionResourceLimits {
 
   /** @internal Exact native policy owner. */
   nativeHandle(): NativeQueryExecutionResources { return this.#native; }
+}
+
+/** Stable names of the query limits a session can override. */
+export type QueryLimitName =
+  | "canonical_bytes"
+  | "canonical_depth"
+  | "canonical_collection_len"
+  | "canonical_string_bytes"
+  | "selected_slots"
+  | "bindings"
+  | "predicate_nodes"
+  | "predicate_depth"
+  | "boolean_terms"
+  | "allowed_cross_joins"
+  | "order_terms"
+  | "collection_order_terms"
+  | "input_rows"
+  | "input_bytes"
+  | "output_name_bytes"
+  | "semantic_id_bytes"
+  | "diagnostic_bytes"
+  | "remote_request_bytes";
+
+/** Overrides of the canonical query limits, keyed by stable limit name. */
+export type QueryLimitOverrides = Readonly<Partial<Record<QueryLimitName, bigint>>>;
+
+/**
+ * Query limits one generated session validates, encodes, and executes under.
+ *
+ * Rust admits the overrides: an unknown name or an unsupported value throws
+ * here, before any session exists. A limit left out keeps its default.
+ */
+export class QueryLimits {
+  readonly #native: NativeQueryLimits;
+
+  constructor(overrides: QueryLimitOverrides = {}) {
+    const entries = Object.entries(overrides) as [string, bigint][];
+    this.#native = new (loadNative().NodeQueryLimits)(
+      entries.map(([name]) => name),
+      entries.map(([, value]) => value),
+    );
+    Object.freeze(this);
+  }
+
+  /** Stable names of every query limit. */
+  names(): readonly string[] { return this.#native.names(); }
+
+  /** Effective value of one named limit. */
+  get(name: QueryLimitName): bigint { return this.#native.get(name); }
+
+  /** @internal Exact native limits owner. */
+  nativeHandle(): NativeQueryLimits { return this.#native; }
 }
 
 /** Caller-owned cooperative cancellation for one or more query sessions. */
@@ -382,6 +435,7 @@ interface NativeProjectionHandle {
   matchSessionWithResources(
     resources: NativeQueryExecutionResources,
     cancellation: NativeQueryCancellation,
+    queryLimits?: NativeQueryLimits | null,
   ): RuntimeProjectionMatchSession;
   matchModelType(typeKey: string): string;
   validateAttributeValueJson(typeKey: string, valueJson: string): void;
@@ -519,8 +573,9 @@ export class InstalledRuntimeProjection {
   matchSession(
     resources?: QueryExecutionResourceLimits,
     cancellation?: QueryCancellation,
+    queryLimits?: QueryLimits,
   ): RuntimeProjectionMatchSession {
-    if (resources === undefined && cancellation === undefined) {
+    if (resources === undefined && cancellation === undefined && queryLimits === undefined) {
       return this.#native.matchSession();
     }
     resources ??= new QueryExecutionResourceLimits();
@@ -528,6 +583,7 @@ export class InstalledRuntimeProjection {
     return this.#native.matchSessionWithResources(
       resources.nativeHandle(),
       cancellation.nativeHandle(),
+      queryLimits?.nativeHandle() ?? null,
     );
   }
 

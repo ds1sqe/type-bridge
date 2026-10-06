@@ -20,7 +20,7 @@ use type_bridge_orm::{
     AnswerCancellation, OrderHandle, PendingRemoteModelQueryV2, ProjectedQueryOrigin,
     QueryExecutionDeadline, QueryExecutionResourceLimits, RemoteModelQueryV2Error, Window,
     lower_remote_query_diagnostic, prepare_remote_model_query_v2_with_budget,
-    validate_public_order_term_count,
+    validate_order_term_count,
 };
 
 use crate::match_runtime::{
@@ -221,7 +221,7 @@ pub(crate) fn query_v2_prepare_remote_model_rows(
     let limit = python_unsigned(limit)?;
     let query = query.inner().clone();
     let registry = query.registry_arc();
-    let order = bounded_order_handles(py, order)?;
+    let order = bounded_order_handles(py, order, query.limits())?;
     let cardinality = parse_cardinality(cardinality)?;
     let request = py
         .detach(move || query.validate_fetch_rows(&order, Window { offset, limit }, cardinality))
@@ -262,7 +262,7 @@ pub(crate) fn query_v2_prepare_remote_model_page(
     let query = query.inner().clone();
     let registry = query.registry_arc();
     let root = root.inner().clone();
-    let order = bounded_order_handles(py, order)?;
+    let order = bounded_order_handles(py, order, query.limits())?;
     let request = py
         .detach(move || {
             query.validate_page_by(&root, &order, Window { offset, limit }, include_total)
@@ -523,9 +523,13 @@ fn python_bool(value: &Bound<'_, PyAny>, argument: &'static str) -> PyResult<boo
         .map_err(|_| PyTypeError::new_err(format!("argument '{argument}' must be bool")))
 }
 
-fn bounded_order_handles(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Vec<OrderHandle>> {
+fn bounded_order_handles(
+    py: Python<'_>,
+    values: &Bound<'_, PyAny>,
+    limits: type_bridge_contract::limits::QueryLimits,
+) -> PyResult<Vec<OrderHandle>> {
     let values = values.cast::<PyList>()?;
-    validate_public_order_term_count(values.len()).map_err(py_match_error)?;
+    validate_order_term_count(values.len(), limits.structural).map_err(py_match_error)?;
     let handles = values
         .iter()
         .map(|value| {

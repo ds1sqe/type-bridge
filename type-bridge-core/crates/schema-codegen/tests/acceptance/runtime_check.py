@@ -46,6 +46,7 @@ from generated_v2 import (
     ProjectedModelManager,
     QueryCancellation,
     QueryExecutionResourceLimits,
+    QueryLimits,
     RemoteQueryLimits,
     RemoteQuerySession,
     Robot,
@@ -1026,6 +1027,52 @@ finally:
     )
 assert generated_remote_exchanges == 1
 assert len(captured_failure_pending) == 1
+
+# Query limits belong to the session. Rust admits them, and a lowered
+# boolean-term ceiling refuses a two-clause query before any exchange, naming
+# the limit it enforced and that the caller configured it.
+assert "boolean_terms" in QueryLimits.names()
+assert QueryLimits().get("boolean_terms") == 256
+assert QueryLimits(boolean_terms=1).get("boolean_terms") == 1
+for rejected_query_limits in ({"made_up": 1}, {"canonical_depth": 1000}, {"boolean_terms": 0}):
+    try:
+        QueryLimits(**rejected_query_limits)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unknown or unsupported query limits must be refused")
+limited_remote_session = RemoteQuerySession(
+    generated_advertisement,
+    generated_failure_exchange,
+    RemoteQueryLimits(
+        max_items=11,
+        max_bytes=1 << 20,
+        max_collection_members=12,
+        max_graph_nodes=13,
+        max_attribute_values=14,
+        max_role_players=15,
+    ),
+    query_limits=QueryLimits(boolean_terms=1),
+)
+limited_remote_person = limited_remote_session.exact(Person)
+try:
+    asyncio.run(
+        limited_remote_session.query(limited_remote_person)
+        .where(
+            limited_remote_person.field(Person.score).gte(Score(1)),
+            limited_remote_person.field(Person.score).gte(Score(2)),
+        )
+        .rows(limit=1)
+    )
+except MatchRequestError as error:
+    assert error.category == "resource_limit"
+    assert error.code == "structural_limit_exceeded"
+    assert "boolean_terms" in repr(error.details["limit"])
+    assert "configured" in repr(error.details["source"])
+else:
+    raise AssertionError("a lowered session limit must refuse the wider query")
+assert generated_remote_exchanges == 1
+limited_remote_session.close()
 assert generated_failure_reply is not None
 try:
     getattr(captured_failure_pending[0], "decode_reply")(generated_failure_reply)

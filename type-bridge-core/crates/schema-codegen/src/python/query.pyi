@@ -10,6 +10,9 @@ from type_bridge_core import (
 from type_bridge_core import (
     QueryExecutionResourceLimits as QueryExecutionResourceLimits,
 )
+from type_bridge_core import (
+    QueryLimits as QueryLimits,
+)
 
 from type_bridge.session import Database, TransactionContext
 
@@ -2471,6 +2474,7 @@ class QuerySession:
         *,
         resources: QueryExecutionResourceLimits | None = ...,
         cancellation: QueryCancellation | None = ...,
+        query_limits: QueryLimits | None = ...,
     ) -> None: ...
     @property
     def is_closed(self) -> bool: ...
@@ -5081,6 +5085,7 @@ class RemoteQuerySession:
         limits: RemoteQueryLimits | QueryExecutionResourceLimits,
         *,
         cancellation: QueryCancellation | None = ...,
+        query_limits: QueryLimits | None = ...,
     ) -> None: ...
     @property
     def is_closed(self) -> bool: ...

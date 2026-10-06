@@ -108,6 +108,7 @@ pub struct QueryAuthority {
     control_policy: QueryAuthorityControlPolicy,
 }
 
+#[derive(Clone)]
 enum QueryAuthorityControlPolicy {
     Managed,
     QueryOnly(DatabaseExecutionIdentity),
@@ -209,6 +210,24 @@ impl QueryAuthority {
     pub fn with_limits(mut self, limits: QueryLimits) -> Self {
         self.limits = limits;
         self
+    }
+
+    /// Derive a distinct authority over the same schema that holds its plans
+    /// to `limits`.
+    ///
+    /// The result has a fresh identity: handles and plans authored under one
+    /// limits policy cannot be replayed under another.
+    #[must_use]
+    pub fn rebound_with_limits(&self, limits: QueryLimits) -> Self {
+        Self {
+            declared: self.declared.clone(),
+            delta_context: self.delta_context.clone(),
+            identity: QueryAuthorityIdentity::fresh(),
+            limits,
+            managed: self.managed.clone(),
+            resolved: self.resolved.clone(),
+            control_policy: self.control_policy.clone(),
+        }
     }
 
     /// Return the limits plans of this authority are held to.

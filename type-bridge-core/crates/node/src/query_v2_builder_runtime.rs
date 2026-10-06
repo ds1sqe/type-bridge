@@ -15,8 +15,7 @@ use type_bridge_contract::id::{
     AttributeId, FunctionId, MAX_LABEL_BYTES, RoleId, TypeId, TypeKind,
 };
 use type_bridge_contract::limits::{
-    MAX_BINDINGS, MAX_BOOLEAN_TERMS, MAX_CANONICAL_STRING_BYTES, MAX_INPUT_BYTES, MAX_INPUT_ROWS,
-    MAX_ORDER_TERMS, MAX_OUTPUT_NAME_BYTES, MAX_SELECTED_SLOTS,
+    MAX_CANONICAL_STRING_BYTES, MAX_OUTPUT_NAME_BYTES, QueryLimits,
 };
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use type_bridge_orm::query_v2_builder::{
@@ -200,7 +199,10 @@ fn bounded_array_shape<'env>(
     let array = value.coerce_to_object()?;
     let length = array.get_array_length_unchecked()?;
     if usize::try_from(length).unwrap_or(usize::MAX) > limit {
-        return Err(napi_error(&oversized()));
+        return Err(napi_error(&QueryLimits::annotate_refusal(
+            oversized(),
+            limit,
+        )));
     }
     Ok((array, length))
 }
@@ -262,21 +264,11 @@ fn pattern_handles(
         .collect()
 }
 
-fn pattern_branches(branches: Unknown) -> napi::Result<Vec<Vec<QueryPatternHandle>>> {
-    bounded_array(
-        branches,
-        MAX_BOOLEAN_TERMS,
-        query_builder_disjunction_term_limit_error,
-    )?
-    .into_iter()
-    .map(|branch| {
-        pattern_handles(
-            branch,
-            MAX_BOOLEAN_TERMS,
-            query_builder_disjunction_term_limit_error,
-        )
-    })
-    .collect()
+fn pattern_branches(limit: usize, branches: Unknown) -> napi::Result<Vec<Vec<QueryPatternHandle>>> {
+    bounded_array(branches, limit, query_builder_disjunction_term_limit_error)?
+        .into_iter()
+        .map(|branch| pattern_handles(branch, limit, query_builder_disjunction_term_limit_error))
+        .collect()
 }
 
 fn invocation_rows(
@@ -284,10 +276,11 @@ fn invocation_rows(
     plan: &AuthoredQueryPlan,
     rows: Unknown,
 ) -> napi::Result<Vec<Vec<Option<CanonicalValue>>>> {
+    let limits = plan.limits().structural;
     let columns = plan.input_columns();
     let (rows, row_count) = bounded_array_shape(
         rows,
-        MAX_INPUT_ROWS,
+        limits.input_rows,
         query_builder_invocation_row_limit_error,
     )?;
     if columns.is_empty() {
@@ -300,8 +293,11 @@ fn invocation_rows(
     let mut input_bytes = 2usize;
     for row_index in 0..row_count {
         let row = rows.get_element::<Unknown>(row_index)?;
-        let (row, value_count) =
-            bounded_array_shape(row, MAX_BINDINGS, query_builder_invocation_row_arity_error)?;
+        let (row, value_count) = bounded_array_shape(
+            row,
+            limits.bindings,
+            query_builder_invocation_row_arity_error,
+        )?;
         if usize::try_from(value_count).unwrap_or(usize::MAX) != columns.len() {
             return Err(napi_error(&query_builder_invocation_row_arity_error()));
         }
@@ -309,10 +305,11 @@ fn invocation_rows(
         input_bytes = input_bytes
             .saturating_add(usize::from(row_index > 0))
             .saturating_add(2);
-        if input_bytes > MAX_INPUT_BYTES {
-            return Err(napi_error(
-                &query_builder_invocation_input_byte_limit_error(),
-            ));
+        if input_bytes > limits.input_bytes {
+            return Err(napi_error(&QueryLimits::annotate_refusal(
+                query_builder_invocation_input_byte_limit_error(),
+                limits.input_bytes,
+            )));
         }
         let mut converted_row = Vec::with_capacity(values.len().min(columns.len()));
         for (column_index, (value, column)) in values.into_iter().zip(columns).enumerate() {
@@ -321,15 +318,20 @@ fn invocation_rows(
             } else {
                 Some(node_scalar(env, column.value_type(), value)?)
             };
-            let encoded = serde_json::to_vec(&value)
-                .map_err(|_| napi_error(&query_builder_invocation_input_byte_limit_error()))?;
+            let encoded = serde_json::to_vec(&value).map_err(|_| {
+                napi_error(&QueryLimits::annotate_refusal(
+                    query_builder_invocation_input_byte_limit_error(),
+                    limits.input_bytes,
+                ))
+            })?;
             input_bytes = input_bytes
                 .saturating_add(usize::from(column_index > 0))
                 .saturating_add(encoded.len());
-            if input_bytes > MAX_INPUT_BYTES {
-                return Err(napi_error(
-                    &query_builder_invocation_input_byte_limit_error(),
-                ));
+            if input_bytes > limits.input_bytes {
+                return Err(napi_error(&QueryLimits::annotate_refusal(
+                    query_builder_invocation_input_byte_limit_error(),
+                    limits.input_bytes,
+                )));
             }
             converted_row.push(value);
         }
@@ -636,7 +638,7 @@ impl NodeQueryPlanBuilder {
         let relation_id = diagnostic(TypeId::new(TypeKind::Relation, relation_label.clone()))?;
         let roles = bounded_array(
             roles,
-            MAX_BOOLEAN_TERMS,
+            self.inner.limits().structural.boolean_terms,
             query_builder_role_player_limit_error,
         )?
         .into_iter()
@@ -648,7 +650,7 @@ impl NodeQueryPlanBuilder {
             roles,
             binding_handles(
                 players,
-                MAX_BOOLEAN_TERMS,
+                self.inner.limits().structural.boolean_terms,
                 query_builder_role_player_limit_error,
             )?,
         ))?;
@@ -674,7 +676,7 @@ impl NodeQueryPlanBuilder {
     pub fn not_pattern(&self, patterns: Unknown) -> napi::Result<NodeQueryV2PatternHandle> {
         diagnostic(self.inner.not(pattern_handles(
             patterns,
-            MAX_BOOLEAN_TERMS,
+            self.inner.limits().structural.boolean_terms,
             query_builder_negation_term_limit_error,
         )?))
         .map(|inner| NodeQueryV2PatternHandle { inner })
@@ -683,8 +685,11 @@ impl NodeQueryPlanBuilder {
     /// Create a disjunction.
     #[napi(js_name = "or")]
     pub fn or_pattern(&self, branches: Unknown) -> napi::Result<NodeQueryV2PatternHandle> {
-        diagnostic(self.inner.or(pattern_branches(branches)?))
-            .map(|inner| NodeQueryV2PatternHandle { inner })
+        diagnostic(self.inner.or(pattern_branches(
+            self.inner.limits().structural.boolean_terms,
+            branches,
+        )?))
+        .map(|inner| NodeQueryV2PatternHandle { inner })
     }
 
     /// Create a root-only optional conjunction.
@@ -692,7 +697,7 @@ impl NodeQueryPlanBuilder {
     pub fn try_pattern(&self, patterns: Unknown) -> napi::Result<NodeQueryV2PatternHandle> {
         diagnostic(self.inner.r#try(pattern_handles(
             patterns,
-            MAX_BOOLEAN_TERMS,
+            self.inner.limits().structural.boolean_terms,
             query_builder_try_term_limit_error,
         )?))
         .map(|inner| NodeQueryV2PatternHandle { inner })
@@ -752,7 +757,7 @@ impl NodeQueryPlanBuilder {
             target,
             operand_handles(
                 arguments,
-                MAX_BOOLEAN_TERMS,
+                self.inner.limits().structural.boolean_terms,
                 query_builder_function_argument_limit_error,
             )?,
         ))
@@ -817,7 +822,7 @@ impl NodeQueryPlanBuilder {
         let name = diagnostic(FunctionId::new(name.into_inner()))?;
         let parameter_labels = bounded_array(
             parameter_labels,
-            MAX_BINDINGS,
+            self.inner.limits().structural.bindings,
             query_builder_local_binding_limit_error,
         )?
         .into_iter()
@@ -827,7 +832,7 @@ impl NodeQueryPlanBuilder {
         let parameters = diagnostic(query_builder_local_parameters(
             binding_handles(
                 parameter_bindings,
-                MAX_BINDINGS,
+                self.inner.limits().structural.bindings,
                 query_builder_local_binding_limit_error,
             )?,
             parameter_labels,
@@ -836,13 +841,13 @@ impl NodeQueryPlanBuilder {
             name,
             binding_handles(
                 bindings,
-                MAX_BINDINGS,
+                self.inner.limits().structural.bindings,
                 query_builder_local_binding_limit_error,
             )?,
             parameters,
             pattern_handles(
                 body,
-                MAX_BOOLEAN_TERMS,
+                self.inner.limits().structural.boolean_terms,
                 query_builder_local_body_limit_error,
             )?,
             &returns.inner,
@@ -855,7 +860,7 @@ impl NodeQueryPlanBuilder {
     pub fn match_stage(&mut self, patterns: Unknown) -> napi::Result<()> {
         diagnostic(self.inner.r#match(pattern_handles(
             patterns,
-            MAX_BOOLEAN_TERMS,
+            self.inner.limits().structural.boolean_terms,
             query_builder_root_pattern_limit_error,
         )?))
     }
@@ -865,7 +870,7 @@ impl NodeQueryPlanBuilder {
     pub fn select(&mut self, bindings: Unknown) -> napi::Result<()> {
         diagnostic(self.inner.select(binding_handles(
             bindings,
-            MAX_BINDINGS,
+            self.inner.limits().structural.bindings,
             query_builder_binding_limit_error,
         )?))
     }
@@ -875,7 +880,7 @@ impl NodeQueryPlanBuilder {
     pub fn require(&mut self, bindings: Unknown) -> napi::Result<()> {
         diagnostic(self.inner.require(binding_handles(
             bindings,
-            MAX_BINDINGS,
+            self.inner.limits().structural.bindings,
             query_builder_binding_limit_error,
         )?))
     }
@@ -891,7 +896,7 @@ impl NodeQueryPlanBuilder {
     pub fn reduce(&mut self, assignments: Unknown, groups: Unknown) -> napi::Result<()> {
         let assignments = bounded_array(
             assignments,
-            MAX_BOOLEAN_TERMS,
+            self.inner.limits().structural.boolean_terms,
             query_builder_reduce_term_limit_error,
         )?
         .into_iter()
@@ -902,20 +907,27 @@ impl NodeQueryPlanBuilder {
         .collect::<napi::Result<Vec<_>>>()?;
         diagnostic(self.inner.reduce(
             assignments,
-            binding_handles(groups, MAX_BINDINGS, query_builder_binding_limit_error)?,
+            binding_handles(
+                groups,
+                self.inner.limits().structural.bindings,
+                query_builder_binding_limit_error,
+            )?,
         ))
     }
 
     /// Attach a total sort.
     #[napi]
     pub fn sort(&mut self, terms: Unknown) -> napi::Result<()> {
-        let terms = bounded_array(terms, MAX_ORDER_TERMS, query_builder_sort_term_limit_error)?
-            .into_iter()
-            .map(|term| {
-                Reference::<NodeQueryV2OrderHandle>::from_unknown(term)
-                    .map(|term| term.inner.clone())
-            })
-            .collect::<napi::Result<Vec<_>>>()?;
+        let terms = bounded_array(
+            terms,
+            self.inner.limits().structural.order_terms,
+            query_builder_sort_term_limit_error,
+        )?
+        .into_iter()
+        .map(|term| {
+            Reference::<NodeQueryV2OrderHandle>::from_unknown(term).map(|term| term.inner.clone())
+        })
+        .collect::<napi::Result<Vec<_>>>()?;
         diagnostic(self.inner.sort(terms))
     }
 
@@ -966,7 +978,7 @@ impl NodeQueryPlanBuilder {
     pub fn finalize_rows(&mut self, columns: Unknown) -> napi::Result<NodeAuthoredQueryPlan> {
         diagnostic(self.inner.finalize_rows(binding_handles(
             columns,
-            MAX_SELECTED_SLOTS,
+            self.inner.limits().structural.selected_slots,
             query_builder_row_output_limit_error,
         )?))
         .map(|inner| NodeAuthoredQueryPlan { inner })
@@ -977,7 +989,7 @@ impl NodeQueryPlanBuilder {
     pub fn finalize_documents(&mut self, fields: Unknown) -> napi::Result<NodeAuthoredQueryPlan> {
         let fields = bounded_array(
             fields,
-            MAX_SELECTED_SLOTS,
+            self.inner.limits().structural.selected_slots,
             query_builder_document_output_limit_error,
         )?
         .into_iter()

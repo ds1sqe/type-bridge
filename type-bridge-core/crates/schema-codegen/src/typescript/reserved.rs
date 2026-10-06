@@ -34,6 +34,7 @@ pub(super) const PUBLIC_RUNTIME_NAMES: &[&str] = &[
     "Query",
     "QueryCancellation",
     "QueryExecutionResourceLimits",
+    "QueryLimits",
     "QueryModelToken",
     "QueryOrder",
     "QuerySession",

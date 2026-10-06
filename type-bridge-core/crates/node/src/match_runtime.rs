@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{FunctionId, TypeId};
+use type_bridge_contract::limits::QueryLimits;
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCategory, SdkDiagnosticDetailValue, SdkDiagnosticPathSegment,
     SdkExecutionDiagnostic,
@@ -327,6 +328,66 @@ pub(crate) fn revalidate_diagnostic(
         .map_err(|_| Error::new(Status::GenericFailure, "diagnostic JSON was not UTF-8"))
 }
 
+/// Query limits one generated session validates, encodes, and executes
+/// under.
+///
+/// Constructed from parallel name and value arrays of overrides of the
+/// canonical defaults. Rust admits them: an unknown name or an unsupported
+/// value is refused here, before any session exists.
+#[napi]
+pub struct NodeQueryLimits {
+    inner: QueryLimits,
+}
+
+impl NodeQueryLimits {
+    pub(crate) const fn inner(&self) -> QueryLimits {
+        self.inner
+    }
+}
+
+#[napi]
+impl NodeQueryLimits {
+    #[napi(constructor)]
+    pub fn new(names: Vec<String>, values: Vec<BigInt>) -> Result<Self> {
+        if names.len() != values.len() {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "query limit names and values must have the same length",
+            ));
+        }
+        let mut named = Vec::with_capacity(names.len());
+        for (name, value) in names.iter().zip(&values) {
+            named.push((name.as_str(), bigint_u64(value, name)?));
+        }
+        QueryLimits::from_overrides(named)
+            .map(|inner| Self { inner })
+            .map_err(|error| Error::new(Status::InvalidArg, error.to_string()))
+    }
+
+    /// Return the stable names of every query limit.
+    #[napi]
+    pub fn names(&self) -> Vec<String> {
+        QueryLimits::FIELDS
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect()
+    }
+
+    /// Return the effective value of one named limit.
+    #[napi]
+    pub fn get(&self, name: String) -> Result<BigInt> {
+        self.inner
+            .get(&name)
+            .map(|value| u64_bigint(u64::try_from(value).unwrap_or(u64::MAX)))
+            .ok_or_else(|| {
+                Error::new(
+                    Status::InvalidArg,
+                    format!("`{name}` is not a known query limit"),
+                )
+            })
+    }
+}
+
 /// Canonical cross-binding generated-query execution budgets.
 #[napi]
 pub struct NodeQueryExecutionResources {
@@ -494,9 +555,10 @@ impl NodeMatchSessionHandle {
         registry: Arc<DescriptorRegistry>,
         resources: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
+        query_limits: QueryLimits,
     ) -> Self {
         Self {
-            inner: SessionHandle::new(registry),
+            inner: SessionHandle::with_limits(registry, query_limits),
             installed: Some(installed),
             resources: resources.effective(),
             cancellation,
@@ -3206,6 +3268,7 @@ plays:
             Arc::clone(&registry),
             QueryExecutionResourceLimits::default(),
             AnswerCancellation::default(),
+            QueryLimits::CANONICAL,
         );
         let person = session.inner.exact("person").unwrap();
         let shape = session.inner.positional([person.one()]).unwrap();

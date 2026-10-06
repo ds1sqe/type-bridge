@@ -70,7 +70,8 @@ use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vo
 use type_bridge_schema_codegen::{PythonEmitter, verify_projection_evidence};
 
 use crate::match_runtime::{
-    PyMatchSessionHandle, PyQueryCancellation, PyQueryExecutionResourceLimits, py_sdk_diagnostic,
+    PyMatchSessionHandle, PyQueryCancellation, PyQueryExecutionResourceLimits, PyQueryLimits,
+    py_sdk_diagnostic,
 };
 use crate::orm_runtime::{
     PyRustDatabase, PyRustTransactionContext, provider_block_on, provider_block_on_with_gil,
@@ -2149,15 +2150,21 @@ impl PyRuntimeProjection {
             Arc::new(registry),
             type_bridge_orm::QueryExecutionResourceLimits::default(),
             type_bridge_orm::AnswerCancellation::default(),
+            type_bridge_contract::limits::QueryLimits::CANONICAL,
         ))
     }
 
     /// Build a match session with one common direct/remote resource policy
     /// and caller-owned cooperative cancellation owner.
+    ///
+    /// `query_limits` replaces the canonical query limits for every query of
+    /// the session; left out, the session keeps the defaults.
+    #[pyo3(signature = (resources, cancellation, query_limits=None))]
     fn match_session_with_resources(
         &self,
         resources: PyRef<'_, PyQueryExecutionResourceLimits>,
         cancellation: PyRef<'_, PyQueryCancellation>,
+        query_limits: Option<PyRef<'_, PyQueryLimits>>,
     ) -> PyResult<PyMatchSessionHandle> {
         let registry = self
             .package
@@ -2169,6 +2176,10 @@ impl PyRuntimeProjection {
             Arc::new(registry),
             resources.inner(),
             cancellation.inner(),
+            query_limits.map_or(
+                type_bridge_contract::limits::QueryLimits::CANONICAL,
+                |limits| limits.inner(),
+            ),
         ))
     }
 

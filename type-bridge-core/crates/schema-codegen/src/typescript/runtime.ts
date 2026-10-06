@@ -23,10 +23,12 @@ import {
   type RuntimeProjectionRemoteLimits,
   QueryCancellation,
   QueryExecutionResourceLimits,
+  QueryLimits,
 } from "@type-bridge/node/runtime-projection";
 export {
   QueryCancellation,
   QueryExecutionResourceLimits,
+  QueryLimits,
 } from "@type-bridge/node/runtime-projection";
 import type { QueryV2Authority } from "@type-bridge/node/query-v2";
 import type { RustDatabase } from "@type-bridge/node";
@@ -2943,6 +2945,7 @@ export class QuerySession {
     options?: Readonly<{
       resources?: QueryExecutionResourceLimits;
       cancellation?: QueryCancellation;
+      queryLimits?: QueryLimits;
     }>,
   );
   constructor(
@@ -2950,6 +2953,7 @@ export class QuerySession {
     options: Readonly<{
       resources?: QueryExecutionResourceLimits;
       cancellation?: QueryCancellation;
+      queryLimits?: QueryLimits;
     }> = {},
   ) {
     this.#projection = requireProjection();
@@ -2962,6 +2966,7 @@ export class QuerySession {
     this.#session = this.#projection.matchSession(
       options.resources,
       options.cancellation,
+      options.queryLimits,
     );
     Object.freeze(this);
   }
@@ -3559,6 +3564,7 @@ export class RemoteQuerySession {
     exchange: RemoteQueryExchange,
     limits: RemoteQueryLimits,
     cancellation?: QueryCancellation,
+    queryLimits?: QueryLimits,
   ) {
     const projection = requireProjection();
     const resources =
@@ -3592,15 +3598,19 @@ export class RemoteQuerySession {
       options: Readonly<{
         resources?: QueryExecutionResourceLimits;
         cancellation?: QueryCancellation;
+        queryLimits?: QueryLimits;
       }>,
     ) => QuerySession;
     this.#direct = new Constructor(
       REMOTE_QUERY_SESSION,
       legacyDefaults
-        ? {}
+        ? queryLimits === undefined
+          ? {}
+          : { queryLimits }
         : {
             resources,
             cancellation: cancellationOwner ?? new QueryCancellation(),
+            ...(queryLimits === undefined ? {} : { queryLimits }),
           },
     );
     this.var = this.#direct.var.bind(this.#direct) as QuerySession["var"];

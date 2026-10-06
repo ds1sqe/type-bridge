@@ -1,8 +1,10 @@
+import type { NativeQueryLimits } from "./native.js";
 /** Shared, package-private machinery for the prepared and authored V2 facades. */
 declare const nativeQueryV2AuthorityKind: unique symbol;
 /** Opaque N-API authority. Public callers use the stable QueryV2Authority class. */
 export interface NativeQueryV2Authority {
     readonly [nativeQueryV2AuthorityKind]: "query-v2-authority";
+    withQueryLimits(queryLimits: NativeQueryLimits): NativeQueryV2Authority;
 }
 declare const nativeQueryV2BuilderHandleKind: unique symbol;
 interface NativeOpaqueClass<Instance> {

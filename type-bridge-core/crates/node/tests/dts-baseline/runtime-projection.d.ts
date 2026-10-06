@@ -1,6 +1,6 @@
 import { QueryV2Authority, type NativeRustDatabase, type NativeRustTransactionContext, type RustDatabase, type RustTransactionContext } from "./index.js";
 import { loadNative } from "./native.js";
-import type { NativeQueryCancellation, NativeQueryExecutionResources } from "./native.js";
+import type { NativeQueryCancellation, NativeQueryExecutionResources, NativeQueryLimits } from "./native.js";
 type NativeModule = ReturnType<typeof loadNative>;
 type NativeRuntimeProjection = InstanceType<NativeModule["NodeRuntimeProjection"]>;
 export type RuntimeProjectionMatchSession = ReturnType<NativeRuntimeProjection["matchSession"]>;
@@ -77,6 +77,26 @@ export declare class QueryExecutionResourceLimits {
     get statements(): bigint;
     /** @internal Exact native policy owner. */
     nativeHandle(): NativeQueryExecutionResources;
+}
+/** Stable names of the query limits a session can override. */
+export type QueryLimitName = "canonical_bytes" | "canonical_depth" | "canonical_collection_len" | "canonical_string_bytes" | "selected_slots" | "bindings" | "predicate_nodes" | "predicate_depth" | "boolean_terms" | "allowed_cross_joins" | "order_terms" | "collection_order_terms" | "input_rows" | "input_bytes" | "output_name_bytes" | "semantic_id_bytes" | "diagnostic_bytes" | "remote_request_bytes";
+/** Overrides of the canonical query limits, keyed by stable limit name. */
+export type QueryLimitOverrides = Readonly<Partial<Record<QueryLimitName, bigint>>>;
+/**
+ * Query limits one generated session validates, encodes, and executes under.
+ *
+ * Rust admits the overrides: an unknown name or an unsupported value throws
+ * here, before any session exists. A limit left out keeps its default.
+ */
+export declare class QueryLimits {
+    #private;
+    constructor(overrides?: QueryLimitOverrides);
+    /** Stable names of every query limit. */
+    names(): readonly string[];
+    /** Effective value of one named limit. */
+    get(name: QueryLimitName): bigint;
+    /** @internal Exact native limits owner. */
+    nativeHandle(): NativeQueryLimits;
 }
 /** Caller-owned cooperative cancellation for one or more query sessions. */
 export declare class QueryCancellation {
@@ -183,7 +203,7 @@ interface NativeProjectionHandle {
     managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
     managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
     matchSession(): RuntimeProjectionMatchSession;
-    matchSessionWithResources(resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation): RuntimeProjectionMatchSession;
+    matchSessionWithResources(resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation, queryLimits?: NativeQueryLimits | null): RuntimeProjectionMatchSession;
     matchModelType(typeKey: string): string;
     validateAttributeValueJson(typeKey: string, valueJson: string): void;
     validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;
@@ -242,7 +262,7 @@ export declare class InstalledRuntimeProjection {
     /** @internal Bind one generated token without exposing its native handle. */
     manager(typeKey: string, connection: RuntimeProjectionConnection): NativeProjectedManager;
     /** @internal Create an opaque query session from verified projection evidence. */
-    matchSession(resources?: QueryExecutionResourceLimits, cancellation?: QueryCancellation): RuntimeProjectionMatchSession;
+    matchSession(resources?: QueryExecutionResourceLimits, cancellation?: QueryCancellation, queryLimits?: QueryLimits): RuntimeProjectionMatchSession;
     /** @internal Resolve one exact generated model token to its provider label. */
     matchModelType(typeKey: string): string;
     /** @internal Validate one generated attribute scalar against projected constraints. */

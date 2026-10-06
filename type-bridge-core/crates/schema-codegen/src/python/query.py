@@ -27,6 +27,7 @@ from type_bridge_core import (
     PyRuntimeProjection,
     QueryCancellation,
     QueryExecutionResourceLimits,
+    QueryLimits,
     RemoteModelQueryContext,
     ValidatedMatchResultHandle,
     ValidatedMatchRowHandle,
@@ -1230,10 +1231,13 @@ class QuerySession(_Frozen):
         *,
         resources: QueryExecutionResourceLimits | None = None,
         cancellation: QueryCancellation | None = None,
+        query_limits: QueryLimits | None = None,
     ) -> None:
         if not _is_connection(connection):
             raise TypeError("generated QuerySession requires a Database or TransactionContext")
-        use_legacy_defaults = resources is None and cancellation is None
+        if query_limits is not None and type(query_limits) is not QueryLimits:
+            raise TypeError("generated query limits must be QueryLimits")
+        use_legacy_defaults = resources is None and cancellation is None and query_limits is None
         effective_resources = QueryExecutionResourceLimits() if resources is None else resources
         effective_cancellation = QueryCancellation() if cancellation is None else cancellation
         if type(effective_resources) is not QueryExecutionResourceLimits:
@@ -1246,7 +1250,7 @@ class QuerySession(_Frozen):
             projection.match_session()
             if use_legacy_defaults
             else projection.match_session_with_resources(
-                effective_resources, effective_cancellation
+                effective_resources, effective_cancellation, query_limits
             )
         )
         object.__setattr__(self, "_QuerySession__handle", handle)
@@ -1265,18 +1269,21 @@ class QuerySession(_Frozen):
         projection: PyRuntimeProjection,
         resources: QueryExecutionResourceLimits | None = None,
         cancellation: QueryCancellation | None = None,
+        query_limits: QueryLimits | None = None,
     ) -> QuerySession:
         session = cls.__new__(cls)
         object.__setattr__(session, "_QuerySession__projection", projection)
         object.__setattr__(session, "_QuerySession__connection", None)
-        use_legacy_defaults = resources is None and cancellation is None
+        use_legacy_defaults = resources is None and cancellation is None and query_limits is None
         effective_resources = QueryExecutionResourceLimits() if resources is None else resources
         effective_cancellation = QueryCancellation() if cancellation is None else cancellation
         handle = (
             projection.match_session()
             if use_legacy_defaults
             else (
-                projection.match_session_with_resources(effective_resources, effective_cancellation)
+                projection.match_session_with_resources(
+                    effective_resources, effective_cancellation, query_limits
+                )
             )
         )
         object.__setattr__(session, "_QuerySession__handle", handle)
@@ -1864,7 +1871,10 @@ class RemoteQuerySession(_Frozen):
         limits: object,
         *,
         cancellation: QueryCancellation | None = None,
+        query_limits: QueryLimits | None = None,
     ) -> None:
+        if query_limits is not None and type(query_limits) is not QueryLimits:
+            raise TypeError("generated query limits must be QueryLimits")
         if type(advertisement) is not bytes:
             raise TypeError("generated remote advertisement must be exact bytes")
         if not _is_exchange(exchange):
@@ -1928,6 +1938,7 @@ class RemoteQuerySession(_Frozen):
                 _installed_projection(),
                 None if use_legacy_defaults else resources,
                 None if use_legacy_defaults else cancellation,
+                query_limits,
             ),
         )
 
@@ -2253,6 +2264,7 @@ __all__ = [
     "QueryOrder",
     "QueryCancellation",
     "QueryExecutionResourceLimits",
+    "QueryLimits",
     "QuerySession",
     "GroupedQuery",
     "Page",

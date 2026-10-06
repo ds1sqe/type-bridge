@@ -65,7 +65,8 @@ use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vo
 use type_bridge_schema_codegen::{TypeScriptEmitter, verify_projection_evidence};
 
 use crate::match_runtime::{
-    NodeQueryCancellation, NodeQueryExecutionResources, napi_sdk_diagnostic, revalidate_diagnostic,
+    NodeQueryCancellation, NodeQueryExecutionResources, NodeQueryLimits, napi_sdk_diagnostic,
+    revalidate_diagnostic,
 };
 use crate::{
     NodeMatchSessionHandle, NodeRustDatabase, NodeRustTransactionContext, NodeValidatedThingHandle,
@@ -1908,16 +1909,21 @@ impl NodeRuntimeProjection {
             Arc::new(registry),
             QueryExecutionResourceLimits::default(),
             AnswerCancellation::default(),
+            type_bridge_contract::limits::QueryLimits::CANONICAL,
         ))
     }
 
     /// Build an opaque match session carrying the common resource policy and
     /// caller-owned cooperative cancellation signal.
+    ///
+    /// `query_limits` replaces the canonical query limits for every query of
+    /// the session; left out, the session keeps the defaults.
     #[napi(js_name = "matchSessionWithResources")]
     pub fn match_session_with_resources(
         &self,
         resources: &NodeQueryExecutionResources,
         cancellation: &NodeQueryCancellation,
+        query_limits: Option<&NodeQueryLimits>,
     ) -> napi::Result<NodeMatchSessionHandle> {
         let registry = self
             .package
@@ -1929,6 +1935,10 @@ impl NodeRuntimeProjection {
             Arc::new(registry),
             resources.inner(),
             cancellation.inner(),
+            query_limits.map_or(
+                type_bridge_contract::limits::QueryLimits::CANONICAL,
+                NodeQueryLimits::inner,
+            ),
         ))
     }
 
