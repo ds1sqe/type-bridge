@@ -10,7 +10,6 @@ use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
-use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::query_plan::{QueryInvocation, query_given_rows_capability};
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
@@ -263,8 +262,7 @@ pub fn prepare_remote_model_query_v2_with_budget(
         &request,
         &registry,
         &authority.context(),
-        StructuralLimits::CANONICAL,
-    )? {
+        )? {
         MatchRequestAdaptation::Adapted(adapted) => adapted,
         // No V1 wire format exists, so the limit that refused V2 adaptation
         // is the caller's answer.
@@ -343,6 +341,8 @@ mod tests {
     use type_bridge_contract::value::CanonicalValue;
     use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
     use type_bridge_schema_compat::released_typeql_to_declared_projection;
+
+    use type_bridge_contract::limits::{QueryLimits, StructuralLimits};
 
     use super::*;
     use crate::_attribute::ValueType;
@@ -535,15 +535,16 @@ functions:
     }
 
     fn prepare_person_count(
+        limits: QueryLimits,
         compose: impl Fn(
             crate::match_request::QueryHandle,
             crate::match_request::PredicateHandle,
             usize,
         ) -> crate::match_request::QueryHandle,
-    ) -> Diagnostic {
+    ) -> RemoteModelQueryV2Error {
         let registry = Arc::new(nullable_order_registry());
         let authority = matching_authority(&registry);
-        let session = SessionHandle::new(Arc::clone(&registry));
+        let session = SessionHandle::with_limits(Arc::clone(&registry), limits);
         let root = session.exact("person").expect("person binding");
         let shape = session.positional([root.one()]).expect("shape");
         let name = root.field("name").expect("name field");
@@ -555,7 +556,11 @@ functions:
             );
             query = compose(query, term, index);
         }
-        let validated = query.validate_count_by(&root).expect("valid V1 request");
+        let validated = match query.validate_count_by(&root) {
+            Ok(validated) => validated,
+            Err(crate::OrmError::Match(error)) => return error.into(),
+            Err(error) => panic!("unexpected validation failure: {error:?}"),
+        };
         match prepare_remote_model_query_v2(
             &authority,
             &registry,
@@ -572,29 +577,25 @@ functions:
                 max_statements: 3,
             },
         ) {
-            Err(RemoteModelQueryV2Error::Diagnostic(diagnostic)) => diagnostic,
-            Err(error) => panic!("expected a contract diagnostic, got {error:?}"),
+            Err(error) => error,
             Ok(_) => panic!("an undecodable advertisement cannot prepare a request"),
         }
     }
 
-    #[test]
-    fn remote_model_preparation_adapts_a_wide_where_conjunction() {
-        // Thirty-eight `where` calls once nested past the canonical codec
-        // depth. Adaptation now succeeds, so the only failure left is the
-        // deliberately undecodable advertisement.
-        let diagnostic = prepare_person_count(|query, term, _| {
-            query.where_predicate(term).expect("attached predicate")
-        });
-        assert_ne!(diagnostic.category(), DiagnosticCategory::ResourceLimit);
+    fn contract_diagnostic(error: RemoteModelQueryV2Error) -> Diagnostic {
+        match error {
+            RemoteModelQueryV2Error::Diagnostic(diagnostic) => diagnostic,
+            RemoteModelQueryV2Error::Match(error) => {
+                panic!("expected a contract diagnostic, got {error:?}")
+            }
+        }
     }
 
-    #[test]
-    fn remote_model_preparation_reports_the_limit_that_refused_adaptation() {
-        // Alternating disjunction and conjunction is real nesting that no
-        // flattening removes.
+    /// Alternating disjunction and conjunction is real nesting that no
+    /// flattening removes: thirty-eight terms nest thirty-seven levels deep.
+    fn nested_person_count(limits: QueryLimits) -> RemoteModelQueryV2Error {
         let nested = std::cell::RefCell::new(None::<crate::match_request::PredicateHandle>);
-        let diagnostic = prepare_person_count(|query, term, index| {
+        prepare_person_count(limits, |query, term, index| {
             let combined = match nested.borrow().as_ref() {
                 None => term,
                 Some(previous) if index % 2 == 0 => previous.and(&term).expect("and"),
@@ -606,13 +607,55 @@ functions:
             } else {
                 query
             }
-        });
+        })
+    }
+
+    #[test]
+    fn remote_model_preparation_adapts_a_wide_where_conjunction() {
+        // Thirty-eight `where` calls once nested past the canonical codec
+        // depth. Adaptation now succeeds, so the only failure left is the
+        // deliberately undecodable advertisement.
+        let diagnostic = contract_diagnostic(prepare_person_count(
+            QueryLimits::CANONICAL,
+            |query, term, _| query.where_predicate(term).expect("attached predicate"),
+        ));
+        assert_ne!(diagnostic.category(), DiagnosticCategory::ResourceLimit);
+    }
+
+    #[test]
+    fn remote_model_preparation_reports_the_limit_that_refused_adaptation() {
+        let diagnostic = contract_diagnostic(nested_person_count(QueryLimits::CANONICAL));
         assert_eq!(diagnostic.category(), DiagnosticCategory::ResourceLimit);
         assert_eq!(diagnostic.code().as_str(), "canonical_json_too_deep");
         assert_eq!(
             diagnostic.details().get("maximum_depth"),
             Some(&type_bridge_contract::diagnostic::DiagnosticDetailValue::Long(64))
         );
+    }
+
+    #[test]
+    fn a_session_with_raised_depth_prepares_the_plan_default_limits_refuse() {
+        let mut raised = QueryLimits::CANONICAL;
+        raised.codec.max_depth = type_bridge_contract::limits::MAX_SUPPORTED_CANONICAL_DEPTH;
+        let raised = raised.validate().expect("raised limits");
+        // Adaptation and encoding pass; only the advertisement is undecodable.
+        let diagnostic = contract_diagnostic(nested_person_count(raised));
+        assert_ne!(diagnostic.category(), DiagnosticCategory::ResourceLimit);
+    }
+
+    #[test]
+    fn a_session_with_lowered_limits_refuses_what_default_limits_accept() {
+        let mut lowered = QueryLimits::CANONICAL;
+        lowered.structural.boolean_terms = 8;
+        let lowered = lowered.validate().expect("lowered limits");
+        let error = prepare_person_count(lowered, |query, term, _| {
+            query.where_predicate(term).expect("attached predicate")
+        });
+        let RemoteModelQueryV2Error::Match(error) = error else {
+            panic!("a lowered structural limit refuses at request validation");
+        };
+        assert_eq!(error.category(), MatchErrorCategory::ResourceLimit);
+        assert_eq!(error.code().as_str(), "structural_limit_exceeded");
     }
 
     #[test]

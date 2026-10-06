@@ -84,7 +84,7 @@ async fn assert_result_parity(
 ) -> MatchResult {
     let validated = validate_match_request(&fixture.registry, request)
         .expect("corpus request passes V1 validation");
-    adapt_match_request_for_live_test(&validated, &fixture.registry, StructuralLimits::CANONICAL)
+    adapt_match_request_for_live_test(&validated, &fixture.registry)
         .unwrap_or_else(|error| panic!("{case} must take the adapted V2 path: {error}"));
     let legacy = db
         .execute_match_v1_legacy_for_live_test(&fixture.registry, &validated)
@@ -112,7 +112,7 @@ async fn assert_error_parity(
 ) -> MatchError {
     let validated = validate_match_request(&fixture.registry, request)
         .expect("error corpus request passes V1 validation");
-    adapt_match_request_for_live_test(&validated, &fixture.registry, StructuralLimits::CANONICAL)
+    adapt_match_request_for_live_test(&validated, &fixture.registry)
         .unwrap_or_else(|error| panic!("{case} must take the adapted V2 path: {error}"));
     let legacy = db
         .execute_match_v1_legacy_for_live_test(&fixture.registry, &validated)

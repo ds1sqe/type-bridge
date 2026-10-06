@@ -26,12 +26,13 @@ use crate::fingerprint::{
 use crate::id::{AttributeId, RoleId, TypeId, TypeKind, is_canonical_thing_iid};
 use crate::limits::{
     MAX_CANONICAL_COLLECTION_LEN, MAX_DIAGNOSTIC_BYTES, MAX_REMOTE_ENVELOPE_BYTES,
-    MAX_SELECTED_SLOTS, REMOTE_ENVELOPE_CODEC_LIMITS, REMOTE_REQUEST_CODEC_LIMITS,
+    MAX_SELECTED_SLOTS, QueryLimits, REMOTE_ENVELOPE_CODEC_LIMITS,
 };
 use crate::migration_assertion::BindingId;
 use crate::query_plan::{
     CompatibilityValueV2, InputRow, QueryInvocation, QueryOperation, QueryOutput, QueryPlan,
-    QueryPlanFingerprint, QueryReductionGroupV2, QueryReductionTermV2, decode_query_plan,
+    QueryPlanFingerprint, QueryReductionGroupV2, QueryReductionTermV2,
+    decode_query_plan_with_limits,
 };
 use crate::query_remote::{
     DEFAULT_REMOTE_DEADLINE_MS, MAX_REMOTE_CLOCK_SKEW_MS, MAX_REMOTE_DEADLINE_MS,
@@ -202,6 +203,10 @@ pub struct RemoteQueryRequestV2 {
     nonce: String,
     plan: serde_json::Value,
     prepared_at_unix_ms: u64,
+    // The limits this request was prepared or decoded under; never wire
+    // state, because each peer applies its own.
+    #[serde(skip)]
+    query_limits: QueryLimits,
     result: RemoteResultKindV2,
     rows: Vec<Vec<Option<CanonicalValue>>>,
 }
@@ -248,6 +253,7 @@ impl RemoteQueryRequestV2 {
             .checked_add(limits.deadline_ms.unwrap_or(DEFAULT_REMOTE_DEADLINE_MS))
             .ok_or_else(remote_time_invalid_v2)?;
         validate_remote_time_shape_v2(prepared_at_unix_ms, expires_at_unix_ms, limits)?;
+        let query_limits = plan.limits();
         let plan = serde_json::from_slice::<serde_json::Value>(&plan.canonical_bytes()?).map_err(
             |_| {
                 remote_v2_failure(
@@ -265,6 +271,7 @@ impl RemoteQueryRequestV2 {
             nonce,
             plan,
             prepared_at_unix_ms,
+            query_limits,
             result,
             rows: invocation
                 .inputs()
@@ -276,14 +283,29 @@ impl RemoteQueryRequestV2 {
 
     /// Encode exact canonical V2 request bytes.
     pub fn encode(&self) -> Result<Vec<u8>, Diagnostic> {
-        to_canonical_json_with_limits(self, REMOTE_REQUEST_CODEC_LIMITS)
+        to_canonical_json_with_limits(self, self.query_limits.remote_request_codec())
     }
 
     /// Decode one canonical V2 request, rejecting V1 and unknown versions
     /// before reconstructing the embedded plan.
     pub fn decode(bytes: &[u8]) -> Result<Self, Diagnostic> {
-        require_format(bytes, QUERY_REMOTE_REQUEST_FORMAT_V2, "remote request")?;
-        let request = from_canonical_json_with_limits::<Self>(bytes, REMOTE_REQUEST_CODEC_LIMITS)?;
+        Self::decode_with_limits(bytes, QueryLimits::CANONICAL)
+    }
+
+    /// Decode one canonical V2 request under the receiver's own limits.
+    ///
+    /// The request and its embedded plan are bounded by `limits` alone;
+    /// nothing the sender wrote can widen them.
+    pub fn decode_with_limits(bytes: &[u8], limits: QueryLimits) -> Result<Self, Diagnostic> {
+        require_format(
+            bytes,
+            QUERY_REMOTE_REQUEST_FORMAT_V2,
+            "remote request",
+            limits.remote_envelope_bytes,
+        )?;
+        let mut request =
+            from_canonical_json_with_limits::<Self>(bytes, limits.remote_request_codec())?;
+        request.query_limits = limits;
         check_nonce_v2(&request.nonce)?;
         validate_remote_limits_v2(request.limits)?;
         FingerprintDigest::from_hex(&request.advertisement).map_err(|_| {
@@ -313,7 +335,10 @@ impl RemoteQueryRequestV2 {
 
     /// Rebuild the trusted V2 plan from the embedded canonical document.
     pub fn plan(&self) -> Result<QueryPlan, Diagnostic> {
-        let plan = decode_query_plan(&to_canonical_json(&self.plan)?)?;
+        let plan = decode_query_plan_with_limits(
+            &to_canonical_json_with_limits(&self.plan, self.query_limits.codec)?,
+            self.query_limits,
+        )?;
         if !is_query_plan_v2(&plan) {
             return Err(remote_v2_failure(
                 DiagnosticCategory::InvalidContract,
@@ -1311,7 +1336,7 @@ impl RemoteQueryResponseV2 {
         limits: RemoteReplyDecodeLimitsV2,
         plan: Option<&QueryPlan>,
     ) -> Result<Self, Diagnostic> {
-        require_format(bytes, QUERY_REMOTE_RESPONSE_FORMAT_V2, "remote response")?;
+        require_format(bytes, QUERY_REMOTE_RESPONSE_FORMAT_V2, "remote response", MAX_REMOTE_ENVELOPE_BYTES)?;
         let output_width = match expected_result {
             RemoteResultKindV2::Rows | RemoteResultKindV2::Documents => {
                 plan.and_then(low_level_output_width)
@@ -1485,7 +1510,7 @@ impl RemoteQueryFailureV2 {
 
     /// Decode an already authenticated V2 failure payload.
     pub fn decode_payload(bytes: &[u8]) -> Result<Self, Diagnostic> {
-        require_format(bytes, QUERY_REMOTE_FAILURE_FORMAT_V2, "remote failure")?;
+        require_format(bytes, QUERY_REMOTE_FAILURE_FORMAT_V2, "remote failure", MAX_REMOTE_ENVELOPE_BYTES)?;
         let maximum = MAX_DIAGNOSTIC_BYTES.saturating_add(FAILURE_FRAMING_ALLOWANCE_BYTES);
         if bytes.len() > maximum {
             return Err(remote_v2_failure(
@@ -1703,8 +1728,13 @@ struct FormatPeek<'wire> {
     format: &'wire str,
 }
 
-fn require_format(bytes: &[u8], expected: &str, subject: &str) -> Result<(), Diagnostic> {
-    if bytes.len() > MAX_REMOTE_ENVELOPE_BYTES {
+fn require_format(
+    bytes: &[u8],
+    expected: &str,
+    subject: &str,
+    maximum_bytes: usize,
+) -> Result<(), Diagnostic> {
+    if bytes.len() > maximum_bytes {
         return Err(remote_v2_failure(
             DiagnosticCategory::ResourceLimit,
             "query_remote_v2_envelope_too_large",

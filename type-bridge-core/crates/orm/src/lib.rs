@@ -97,10 +97,9 @@ pub mod integration_test_support {
     pub fn adapt_match_request_for_live_test(
         validated: &ValidatedMatchRequest,
         registry: &DescriptorRegistry,
-        limits: StructuralLimits,
     ) -> Result<(ValidatedQuery, QueryOperation), Diagnostic> {
         let authority = MatchRequestAdapterAuthority::from_registry(registry)?;
-        match adapt_match_request(validated, registry, &authority.context(), limits)? {
+        match adapt_match_request(validated, registry, &authority.context())? {
             MatchRequestAdaptation::Adapted(adapted) => {
                 Ok((adapted.validated().clone(), adapted.operation()))
             }

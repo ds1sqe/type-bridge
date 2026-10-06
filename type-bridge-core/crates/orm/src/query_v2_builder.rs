@@ -15,7 +15,7 @@ use type_bridge_contract::diagnostic::{
 };
 use type_bridge_contract::id::{AttributeId, FunctionId, Label, RoleId, TypeId, TypeKind};
 use type_bridge_contract::limits::{
-    MAX_BOOLEAN_TERMS, MAX_PREDICATE_DEPTH, MAX_PREDICATE_NODES, StructuralLimits,
+    QueryLimits, StructuralLimits,
 };
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, AssertionRolePlayer, BindingId, QueryVariable, ValueComparator,
@@ -776,7 +776,9 @@ impl PatternMetrics {
         root_only: Some(RootOnlyPattern::FunctionCall),
     };
 
-    fn composite(children: impl IntoIterator<Item = Self>) -> Result<Self, Diagnostic> {
+    fn composite(
+        limits: StructuralLimits,
+        children: impl IntoIterator<Item = Self>) -> Result<Self, Diagnostic> {
         let mut depth = 1usize;
         let mut nodes = 1usize;
         for child in children {
@@ -788,19 +790,19 @@ impl PatternMetrics {
             nodes,
             root_only: None,
         };
-        metrics.ensure_bounded()?;
+        metrics.ensure_bounded(limits)?;
         Ok(metrics)
     }
 
-    fn ensure_bounded(self) -> Result<(), Diagnostic> {
-        if self.depth > MAX_PREDICATE_DEPTH {
+    fn ensure_bounded(self, limits: StructuralLimits) -> Result<(), Diagnostic> {
+        if self.depth > limits.predicate_depth {
             return Err(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_pattern_depth_limit",
                 "plan pattern depth exceeds the structural ceiling",
             ));
         }
-        if self.nodes > MAX_PREDICATE_NODES {
+        if self.nodes > limits.predicate_nodes {
             return Err(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_pattern_node_limit",
@@ -1330,6 +1332,7 @@ pub struct QueryPlanBuilder {
     bindings: Vec<BindingDeclaration>,
     functions: Vec<LocalFunction>,
     inputs: Vec<InputColumn>,
+    limits: QueryLimits,
     owner: HandleOwner,
     pattern_nodes: usize,
     pipeline: Vec<AuthoredStage>,
@@ -1403,12 +1406,14 @@ impl QueryPlanBuilder {
     /// Start one builder under exactly one schema authority.
     #[must_use]
     pub fn new(authority: Arc<QueryAuthority>) -> Self {
+        let limits = authority.limits();
         let owner = HandleOwner::new(authority.identity());
         Self {
             authority,
             bindings: Vec::new(),
             functions: Vec::new(),
             inputs: Vec::new(),
+            limits,
             owner,
             pattern_nodes: 0,
             pipeline: Vec::new(),
@@ -1423,7 +1428,7 @@ impl QueryPlanBuilder {
     pub(crate) fn finalize_compatibility(
         input: QueryCompatibilityPlanInput,
         context: &MigrationAssertionValidationContext<'_>,
-        limits: StructuralLimits,
+        limits: QueryLimits,
     ) -> Result<ValidatedQuery, Diagnostic> {
         validate_components(
             QueryPlanComponents {
@@ -1454,7 +1459,7 @@ impl QueryPlanBuilder {
         variable: impl Into<String>,
     ) -> Result<QueryBindingHandle, Diagnostic> {
         self.ensure_active()?;
-        if !StructuralLimits::CANONICAL.allows_bindings(self.bindings.len() + 1) {
+        if !self.limits.structural.allows_bindings(self.bindings.len() + 1) {
             return Err(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_builder_authored_binding_limit",
@@ -1481,7 +1486,7 @@ impl QueryPlanBuilder {
         optional: bool,
     ) -> Result<QueryInputHandle, Diagnostic> {
         self.ensure_active()?;
-        if !StructuralLimits::CANONICAL.allows_bindings(self.inputs.len() + 1) {
+        if !self.limits.structural.allows_bindings(self.inputs.len() + 1) {
             return Err(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_input_limit",
@@ -1596,7 +1601,7 @@ impl QueryPlanBuilder {
     ) -> Result<QueryPatternHandle, Diagnostic> {
         self.ensure_active()?;
         self.ensure_owner(&relation.owner)?;
-        if players.is_empty() || players.len() > MAX_BOOLEAN_TERMS {
+        if players.is_empty() || players.len() > self.limits.structural.boolean_terms {
             return Err(query_builder_role_player_limit_error());
         }
         let mut authored = Vec::with_capacity(players.len());
@@ -1632,11 +1637,11 @@ impl QueryPlanBuilder {
     pub fn not(&self, patterns: Vec<QueryPatternHandle>) -> Result<QueryPatternHandle, Diagnostic> {
         self.ensure_active()?;
         self.ensure_pattern_owners(&patterns)?;
-        if patterns.is_empty() || patterns.len() > MAX_BOOLEAN_TERMS {
+        if patterns.is_empty() || patterns.len() > self.limits.structural.boolean_terms {
             return Err(query_builder_negation_term_limit_error());
         }
         self.ensure_patterns_nestable(&patterns)?;
-        let metrics = PatternMetrics::composite(patterns.iter().map(|pattern| pattern.metrics))?;
+        let metrics = PatternMetrics::composite(self.limits.structural, patterns.iter().map(|pattern| pattern.metrics))?;
         let patterns = patterns
             .into_iter()
             .map(|pattern| pattern.pattern)
@@ -1650,21 +1655,21 @@ impl QueryPlanBuilder {
         branches: Vec<Vec<QueryPatternHandle>>,
     ) -> Result<QueryPatternHandle, Diagnostic> {
         self.ensure_active()?;
-        if branches.is_empty() || branches.len() > MAX_BOOLEAN_TERMS {
+        if branches.is_empty() || branches.len() > self.limits.structural.boolean_terms {
             return Err(query_builder_disjunction_term_limit_error());
         }
         let mut authored = Vec::with_capacity(branches.len());
         let mut child_metrics = Vec::new();
         for branch in branches {
             self.ensure_pattern_owners(&branch)?;
-            if branch.is_empty() || branch.len() > MAX_BOOLEAN_TERMS {
+            if branch.is_empty() || branch.len() > self.limits.structural.boolean_terms {
                 return Err(query_builder_disjunction_term_limit_error());
             }
             self.ensure_patterns_nestable(&branch)?;
             child_metrics.extend(branch.iter().map(|pattern| pattern.metrics));
             authored.push(branch.into_iter().map(|pattern| pattern.pattern).collect());
         }
-        let metrics = PatternMetrics::composite(child_metrics)?;
+        let metrics = PatternMetrics::composite(self.limits.structural, child_metrics)?;
         self.pattern_with_metrics(AuthoredPattern::Or { branches: authored }, metrics)
     }
 
@@ -1675,7 +1680,7 @@ impl QueryPlanBuilder {
     ) -> Result<QueryPatternHandle, Diagnostic> {
         self.ensure_active()?;
         self.ensure_pattern_owners(&patterns)?;
-        if patterns.is_empty() || patterns.len() > MAX_BOOLEAN_TERMS {
+        if patterns.is_empty() || patterns.len() > self.limits.structural.boolean_terms {
             return Err(query_builder_try_term_limit_error());
         }
         if patterns.iter().any(|pattern| !pattern.pattern.is_flat()) {
@@ -1686,7 +1691,7 @@ impl QueryPlanBuilder {
             ));
         }
         let mut metrics =
-            PatternMetrics::composite(patterns.iter().map(|pattern| pattern.metrics))?;
+            PatternMetrics::composite(self.limits.structural, patterns.iter().map(|pattern| pattern.metrics))?;
         metrics.root_only = Some(RootOnlyPattern::Try);
         let patterns = patterns
             .into_iter()
@@ -1720,7 +1725,7 @@ impl QueryPlanBuilder {
                 "reachability minimum depth must not exceed its maximum depth",
             ));
         }
-        if usize::from(max_depth) > MAX_PREDICATE_DEPTH {
+        if usize::from(max_depth) > self.limits.structural.predicate_depth {
             return Err(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_reachable_depth",
@@ -1728,7 +1733,7 @@ impl QueryPlanBuilder {
             ));
         }
         let expanded = reachability_nodes(min_depth, max_depth);
-        if expanded > MAX_PREDICATE_NODES {
+        if expanded > self.limits.structural.predicate_nodes {
             return Err(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_reachable_expansion_limit",
@@ -1762,7 +1767,7 @@ impl QueryPlanBuilder {
     ) -> Result<QueryPatternHandle, Diagnostic> {
         self.ensure_active()?;
         self.ensure_owner(&assigned.owner)?;
-        if arguments.len() > MAX_BOOLEAN_TERMS {
+        if arguments.len() > self.limits.structural.boolean_terms {
             return Err(query_builder_function_argument_limit_error());
         }
         let function = match function {
@@ -1900,14 +1905,14 @@ impl QueryPlanBuilder {
                 "a plan-local function cannot shadow a schema function",
             ));
         }
-        if !StructuralLimits::CANONICAL.allows_bindings(self.functions.len() + 1) {
+        if !self.limits.structural.allows_bindings(self.functions.len() + 1) {
             return Err(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_local_function_limit",
                 "plan-local function count exceeds the structural ceiling",
             ));
         }
-        if bindings.is_empty() || !StructuralLimits::CANONICAL.allows_bindings(bindings.len()) {
+        if bindings.is_empty() || !self.limits.structural.allows_bindings(bindings.len()) {
             return Err(query_builder_local_binding_limit_error());
         }
         if parameters.is_empty() || parameters.len() > bindings.len() {
@@ -1917,7 +1922,7 @@ impl QueryPlanBuilder {
                 "parameters must be a non-empty subset of local bindings",
             ));
         }
-        if body.is_empty() || body.len() > MAX_BOOLEAN_TERMS {
+        if body.is_empty() || body.len() > self.limits.structural.boolean_terms {
             return Err(query_builder_local_body_limit_error());
         }
 
@@ -1972,7 +1977,7 @@ impl QueryPlanBuilder {
             ));
         }
         let aggregate_nodes = self.pattern_nodes.saturating_add(body.len());
-        if !StructuralLimits::CANONICAL.allows_predicate_nodes(aggregate_nodes) {
+        if !self.limits.structural.allows_predicate_nodes(aggregate_nodes) {
             return Err(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_pattern_node_limit",
@@ -2054,9 +2059,9 @@ impl QueryPlanBuilder {
             return Err(stage_order_failure());
         }
         let patterns = self.pattern_values(patterns)?;
-        let root_nodes = validate_root_patterns(&patterns)?;
+        let root_nodes = validate_root_patterns(self.limits.structural, &patterns)?;
         let aggregate_nodes = self.pattern_nodes.saturating_add(root_nodes);
-        if !StructuralLimits::CANONICAL.allows_predicate_nodes(aggregate_nodes) {
+        if !self.limits.structural.allows_predicate_nodes(aggregate_nodes) {
             return Err(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_pattern_node_limit",
@@ -2137,7 +2142,7 @@ impl QueryPlanBuilder {
         groups: Vec<QueryBindingHandle>,
     ) -> Result<(), Diagnostic> {
         self.preflight_stage(4)?;
-        if assignments.is_empty() || assignments.len() > MAX_BOOLEAN_TERMS {
+        if assignments.is_empty() || assignments.len() > self.limits.structural.boolean_terms {
             return Err(query_builder_reduce_term_limit_error());
         }
         let groups = self.sorted_binding_handles(groups, false)?;
@@ -2216,7 +2221,7 @@ impl QueryPlanBuilder {
     /// Attach one ordered total-sort stage.
     pub fn sort(&mut self, terms: Vec<QueryOrderHandle>) -> Result<(), Diagnostic> {
         self.preflight_stage(5)?;
-        if terms.is_empty() || !StructuralLimits::CANONICAL.allows_order_terms(terms.len()) {
+        if terms.is_empty() || !self.limits.structural.allows_order_terms(terms.len()) {
             return Err(query_builder_sort_term_limit_error());
         }
         let mut symbols = BTreeSet::new();
@@ -2304,7 +2309,7 @@ impl QueryPlanBuilder {
     ) -> Result<AuthoredQueryPlan, Diagnostic> {
         self.ensure_active()?;
         self.ensure_match_attached()?;
-        if columns.is_empty() || !StructuralLimits::CANONICAL.allows_selected_slots(columns.len()) {
+        if columns.is_empty() || !self.limits.structural.allows_selected_slots(columns.len()) {
             return Err(query_builder_row_output_limit_error());
         }
         let mut seen = BTreeSet::new();
@@ -2338,7 +2343,7 @@ impl QueryPlanBuilder {
     ) -> Result<AuthoredQueryPlan, Diagnostic> {
         self.ensure_active()?;
         self.ensure_match_attached()?;
-        if fields.is_empty() || !StructuralLimits::CANONICAL.allows_selected_slots(fields.len()) {
+        if fields.is_empty() || !self.limits.structural.allows_selected_slots(fields.len()) {
             return Err(query_builder_document_output_limit_error());
         }
         let mut keys = BTreeSet::new();
@@ -2389,7 +2394,7 @@ impl QueryPlanBuilder {
                 (binding.scope == Some(BindingScope::Root)).then_some(AuthoredBindingId(index))
             })
             .collect::<Vec<_>>();
-        if root_order.is_empty() || !StructuralLimits::CANONICAL.allows_bindings(root_order.len()) {
+        if root_order.is_empty() || !self.limits.structural.allows_bindings(root_order.len()) {
             return Err(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_binding_limit",
@@ -2422,7 +2427,7 @@ impl QueryPlanBuilder {
                 compatibility: QueryPlanV2Compatibility::native(),
             },
             &self.authority.context(),
-            StructuralLimits::CANONICAL,
+            self.limits,
         )?;
         let plan = validated.plan().clone();
         let canonical_bytes = plan.canonical_bytes()?;
@@ -2465,7 +2470,7 @@ impl QueryPlanBuilder {
         pattern: AuthoredPattern,
         metrics: PatternMetrics,
     ) -> Result<QueryPatternHandle, Diagnostic> {
-        metrics.ensure_bounded()?;
+        metrics.ensure_bounded(self.limits.structural)?;
         Ok(QueryPatternHandle {
             metrics,
             owner: self.owner.clone(),
@@ -2558,7 +2563,7 @@ impl QueryPlanBuilder {
                     .then_some(id)
             })
             .collect::<Vec<_>>();
-        if root_order.is_empty() || !StructuralLimits::CANONICAL.allows_bindings(root_order.len()) {
+        if root_order.is_empty() || !self.limits.structural.allows_bindings(root_order.len()) {
             return Err(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_binding_limit",
@@ -2600,7 +2605,7 @@ impl QueryPlanBuilder {
                 compatibility: QueryPlanV2Compatibility::native(),
             },
             &self.authority.context(),
-            StructuralLimits::CANONICAL,
+            self.limits,
         )?;
         Ok(())
     }
@@ -2690,7 +2695,7 @@ impl QueryPlanBuilder {
             }
         }
         if scope == BindingScope::Root
-            && !StructuralLimits::CANONICAL.allows_bindings(prospective_count)
+            && !self.limits.structural.allows_bindings(prospective_count)
         {
             return Err(query_builder_binding_limit_error());
         }
@@ -3112,31 +3117,34 @@ impl AuthoredOperand {
     }
 }
 
-fn validate_root_patterns(patterns: &[Arc<AuthoredPattern>]) -> Result<usize, Diagnostic> {
-    if patterns.is_empty() || patterns.len() > MAX_BOOLEAN_TERMS {
+fn validate_root_patterns(
+    limits: StructuralLimits,
+    patterns: &[Arc<AuthoredPattern>]) -> Result<usize, Diagnostic> {
+    if patterns.is_empty() || patterns.len() > limits.boolean_terms {
         return Err(query_builder_root_pattern_limit_error());
     }
     let mut nodes = 0usize;
     for pattern in patterns {
-        inspect_authored_pattern(pattern, 1, &mut nodes)?;
+        inspect_authored_pattern(limits, pattern, 1, &mut nodes)?;
     }
     Ok(nodes)
 }
 
 fn inspect_authored_pattern(
+    limits: StructuralLimits,
     pattern: &AuthoredPattern,
     depth: usize,
     nodes: &mut usize,
 ) -> Result<(), Diagnostic> {
     *nodes = nodes.saturating_add(1);
-    if *nodes > MAX_PREDICATE_NODES {
+    if *nodes > limits.predicate_nodes {
         return Err(builder_failure(
             DiagnosticCategory::ResourceLimit,
             "query_plan_pattern_node_limit",
             "plan pattern count exceeds the structural ceiling",
         ));
     }
-    if depth > MAX_PREDICATE_DEPTH {
+    if depth > limits.predicate_depth {
         return Err(builder_failure(
             DiagnosticCategory::ResourceLimit,
             "query_plan_pattern_depth_limit",
@@ -3147,13 +3155,13 @@ fn inspect_authored_pattern(
         AuthoredPattern::Or { branches } => {
             for branch in branches {
                 for child in branch {
-                    inspect_authored_pattern(child, depth + 1, nodes)?;
+                    inspect_authored_pattern(limits, child, depth + 1, nodes)?;
                 }
             }
         }
         AuthoredPattern::Not { patterns } => {
             for child in patterns {
-                inspect_authored_pattern(child, depth + 1, nodes)?;
+                inspect_authored_pattern(limits, child, depth + 1, nodes)?;
             }
         }
         AuthoredPattern::Try { patterns } => {
@@ -3165,7 +3173,7 @@ fn inspect_authored_pattern(
                 ));
             }
             for child in patterns {
-                inspect_authored_pattern(child, depth + 1, nodes)?;
+                inspect_authored_pattern(limits, child, depth + 1, nodes)?;
             }
         }
         AuthoredPattern::Reachable {
@@ -3181,7 +3189,7 @@ fn inspect_authored_pattern(
                 ));
             }
             *nodes = nodes.saturating_add(reachability_nodes(*min_depth, *max_depth) - 1);
-            if *nodes > MAX_PREDICATE_NODES {
+            if *nodes > limits.predicate_nodes {
                 return Err(builder_failure(
                     DiagnosticCategory::ResourceLimit,
                     "query_plan_reachable_expansion_limit",
@@ -3227,9 +3235,9 @@ fn pattern_bindings(patterns: &[Arc<AuthoredPattern>]) -> BTreeSet<AuthoredBindi
 fn validate_components(
     components: QueryPlanComponents,
     context: &MigrationAssertionValidationContext<'_>,
-    limits: StructuralLimits,
+    limits: QueryLimits,
 ) -> Result<ValidatedQuery, Diagnostic> {
-    let plan = QueryPlan::new_v2_with_functions(
+    let plan = QueryPlan::new_v2_with_functions_and_limits(
         components.bindings,
         components.functions,
         components.inputs,
@@ -3237,8 +3245,9 @@ fn validate_components(
         components.output,
         components.compatibility,
         context.managed_state().managed_semantic_schema().clone(),
+        limits,
     )?;
-    validate_query_plan(&plan, context, limits)
+    validate_query_plan(&plan, context, limits.structural)
 }
 
 fn dense_binding_map(

@@ -16,7 +16,7 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::id::{
     AttributeId, MAX_THING_IID_HEX_DIGITS, RoleId, TypeId, TypeKind, is_canonical_thing_iid,
 };
-use type_bridge_contract::limits::MAX_BINDINGS;
+use type_bridge_contract::limits::MAX_SUPPORTED_BINDINGS;
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::{
     CompatibilityValueV2, HydrationBindingV2, HydrationDescriptorV2, HydrationFieldV2,
@@ -977,7 +977,7 @@ fn exactly_one_proof_byte_limit(
     selection: &TypedFetchRows,
 ) -> ExecResult<u64> {
     let projected_bindings = selection.projection.len();
-    if projected_bindings == 0 || projected_bindings > MAX_BINDINGS {
+    if projected_bindings == 0 || projected_bindings > MAX_SUPPORTED_BINDINGS {
         return Err(evidence_error(
             "query_v2_model_tuple_evidence",
             "distinct-tuple proof projection exceeds the validated binding ceiling",

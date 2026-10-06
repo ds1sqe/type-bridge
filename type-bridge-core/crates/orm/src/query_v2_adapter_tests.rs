@@ -395,7 +395,7 @@ fn adapt(
     let validated = validate_match_request(&registry, MatchRequest::v1(plan, operation))
         .expect("corpus request passes V1 validation");
     let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
-    match adapt_match_request(&validated, &registry, &context, StructuralLimits::CANONICAL)? {
+    match adapt_match_request(&validated, &registry, &context)? {
         MatchRequestAdaptation::Adapted(adapted) => Ok(adapted),
         MatchRequestAdaptation::LegacyRequired(reason) => panic!(
             "small adapter fixture unexpectedly requires the V1 resource fallback: {reason:?}"
@@ -562,9 +562,7 @@ fn production_adapter_provider_asts_are_band_neutral_for_every_released_operatio
         let MatchRequestAdaptation::Adapted(adapted) = adapt_match_request(
             &validated,
             &registry,
-            &authority.context(),
-            StructuralLimits::CANONICAL,
-        )
+            &authority.context())
         .expect("released operation adapts") else {
             panic!("small released operation must not take the artifact-size fallback")
         };
@@ -827,7 +825,7 @@ fn a_foreign_registry_rejects_before_plan_construction() {
     let foreign = DescriptorRegistry::new();
     let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
 
-    let error = adapt_match_request(&validated, &foreign, &context, StructuralLimits::CANONICAL)
+    let error = adapt_match_request(&validated, &foreign, &context)
         .expect_err("foreign registry must not relabel a validated request");
     assert_eq!(error.code().as_str(), "query_v2_adapter_registry_mismatch");
 }
@@ -846,9 +844,7 @@ fn production_authority_round_trips_aliases_subtypes_and_inherited_roles() {
         let MatchRequestAdaptation::Adapted(adapted) = adapt_match_request(
             &validated,
             &registry,
-            &authority.context(),
-            StructuralLimits::CANONICAL,
-        )
+            &authority.context())
         .expect("production authority adapts its own validated registry") else {
             panic!("small released request must not use the resource fallback");
         };
@@ -893,9 +889,7 @@ fn subtype_hydration_is_canonical_when_a_child_sorts_before_its_parent() {
     let MatchRequestAdaptation::Adapted(adapted) = adapt_match_request(
         &validated,
         &registry,
-        &authority.context(),
-        StructuralLimits::CANONICAL,
-    )
+        &authority.context())
     .expect("lexical subtype order is canonicalized") else {
         panic!("small released request must not use the resource fallback");
     };
@@ -990,9 +984,7 @@ fn exact_subtype_binding_adapts_through_base_declared_role_authority() {
     let MatchRequestAdaptation::Adapted(adapted) = adapt_match_request(
         &validated,
         &registry,
-        &authority.context(),
-        StructuralLimits::CANONICAL,
-    )
+        &authority.context())
     .expect("the exact subtype request adapts") else {
         panic!("small released request must not use the resource fallback");
     };
@@ -1185,9 +1177,7 @@ fn production_authority_accepts_released_annotation_and_role_specialization_shap
         adapt_match_request(
             &validated,
             &registry,
-            &authority.context(),
-            StructuralLimits::CANONICAL,
-        )
+            &authority.context())
         .expect("annotated shape adapts"),
         MatchRequestAdaptation::Adapted(_)
     ));
@@ -1686,9 +1676,7 @@ fn only_the_fixed_v2_artifact_envelope_uses_the_legacy_executor() {
         adapt_match_request(
             &validated,
             &registry,
-            &MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed),
-            StructuralLimits::CANONICAL,
-        )
+            &MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed))
         .expect("resource mismatch is a typed disposition, not a semantic error")
     };
 
@@ -1733,9 +1721,7 @@ fn conjunction_request(predicate: MatchExpr) -> MatchRequestAdaptation {
     adapt_match_request(
         &validated,
         &registry,
-        &MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed),
-        StructuralLimits::CANONICAL,
-    )
+        &MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed))
     .expect("resource mismatch is a typed disposition, not a semantic error")
 }
 

@@ -17,13 +17,11 @@ use serde::de::{Error as _, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::limits::{
-    MAX_QUERY_INVOCATION_BYTES, MAX_REMOTE_ENVELOPE_BYTES, StructuralLimits,
-};
+use type_bridge_contract::limits::{MAX_REMOTE_ENVELOPE_BYTES, QueryLimits};
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::query_plan::{
     InputRow, QueryInvocation, QueryOperation, QueryPlan, decode_query_invocation,
-    decode_query_plan,
+    decode_query_plan_with_limits,
 };
 use type_bridge_contract::query_remote::{
     DEFAULT_REMOTE_DEADLINE_MS, RemoteCapabilities, RemoteCapabilitiesFingerprint, RemoteLimits,
@@ -104,6 +102,7 @@ pub struct QueryAuthority {
     declared: DeclaredSchema,
     delta_context: ManagedDeltaContext,
     identity: QueryAuthorityIdentity,
+    limits: QueryLimits,
     managed: ManagedSchemaState,
     resolved: ResolvedSchema,
     control_policy: QueryAuthorityControlPolicy,
@@ -194,10 +193,28 @@ impl QueryAuthority {
             declared,
             delta_context,
             identity: QueryAuthorityIdentity::fresh(),
+            limits: QueryLimits::CANONICAL,
             managed,
             resolved,
             control_policy,
         })
+    }
+
+    /// Author, decode, and validate every plan of this authority under
+    /// `limits` instead of the canonical defaults.
+    ///
+    /// The caller admits untrusted values with [`QueryLimits::validate`]
+    /// first.
+    #[must_use]
+    pub fn with_limits(mut self, limits: QueryLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Return the limits plans of this authority are held to.
+    #[must_use]
+    pub const fn limits(&self) -> QueryLimits {
+        self.limits
     }
 
     /// Borrow the validation context this authority represents.
@@ -213,8 +230,8 @@ impl QueryAuthority {
     }
 
     fn validate(&self, plan_bytes: &[u8]) -> Result<(QueryPlan, ValidatedQuery), Diagnostic> {
-        let plan = decode_query_plan(plan_bytes)?;
-        let validated = validate_query_plan(&plan, &self.context(), StructuralLimits::CANONICAL)?;
+        let plan = decode_query_plan_with_limits(plan_bytes, self.limits)?;
+        let validated = validate_query_plan(&plan, &self.context(), self.limits.structural)?;
         Ok((plan, validated))
     }
 }
@@ -422,8 +439,8 @@ fn parse_invocation(
     invocation_json: &str,
 ) -> Result<QueryInvocation, Diagnostic> {
     let bytes = invocation_json.as_bytes();
-    let within_legacy_limit = StructuralLimits::CANONICAL.allows_input_bytes(bytes.len());
-    if bytes.len() > MAX_QUERY_INVOCATION_BYTES {
+    let within_legacy_limit = plan.limits().structural.allows_input_bytes(bytes.len());
+    if bytes.len() > plan.limits().invocation_bytes() {
         return Err(invocation_input_byte_limit());
     }
     if within_legacy_limit
@@ -1612,6 +1629,9 @@ mod tests {
         encode_declared_schema,
     };
     use type_bridge_schema_compat::MANAGED_FENCE_SCHEMA_TYPEQL;
+
+    use type_bridge_contract::limits::StructuralLimits;
+    use type_bridge_contract::query_plan::decode_query_plan;
 
     use super::*;
     use crate::error::OrmError;

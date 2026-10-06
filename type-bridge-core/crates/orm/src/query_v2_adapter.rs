@@ -16,11 +16,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
-use type_bridge_contract::limits::{MAX_CANONICAL_BYTES, StructuralLimits};
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
@@ -178,8 +176,9 @@ pub(crate) fn adapt_match_request(
     validated: &ValidatedMatchRequest,
     registry: &DescriptorRegistry,
     context: &MigrationAssertionValidationContext<'_>,
-    limits: StructuralLimits,
 ) -> Result<MatchRequestAdaptation, Diagnostic> {
+    // The limits V1 validation ran under govern the adapted plan too.
+    let limits = validated.limits();
     validated.recheck_schema(registry).map_err(|_| {
         reject(
             "query_v2_adapter_registry_mismatch",
@@ -208,7 +207,7 @@ pub(crate) fn adapt_match_request(
         .plan
         .predicate
         .as_ref()
-        .and_then(artifact_sized_literal_bytes)
+        .and_then(|predicate| artifact_sized_literal_bytes(predicate, limits.codec.max_bytes))
     {
         return Ok(MatchRequestAdaptation::LegacyRequired(
             Diagnostic::new(
@@ -218,7 +217,7 @@ pub(crate) fn adapt_match_request(
                 "a predicate literal exceeds the canonical artifact byte ceiling",
             )
             .with_detail("actual_bytes", byte_count(actual))
-            .with_detail("maximum_bytes", byte_count(MAX_CANONICAL_BYTES)),
+            .with_detail("maximum_bytes", byte_count(limits.codec.max_bytes)),
         ));
     }
 
@@ -319,7 +318,7 @@ pub(crate) fn adapt_match_request(
         }
         Err(error) => return Err(error),
     };
-    match to_canonical_json(validated.plan()) {
+    match validated.plan().canonical_bytes() {
         Ok(_) => Ok(MatchRequestAdaptation::Adapted(AdaptedMatchRequest {
             inputs: invocation_inputs,
             operation,
@@ -1278,15 +1277,15 @@ pub(crate) fn adapt_value(value: &AttributeValue) -> Result<CompatibilityValueV2
 }
 
 /// Return the byte length of the first literal larger than a whole artifact.
-fn artifact_sized_literal_bytes(expression: &MatchExpr) -> Option<usize> {
+fn artifact_sized_literal_bytes(expression: &MatchExpr, maximum: usize) -> Option<usize> {
     match expression {
         MatchExpr::FieldValue { value, .. } => textual_value(value)
             .map(str::len)
-            .filter(|bytes| *bytes > MAX_CANONICAL_BYTES),
-        MatchExpr::And { expressions } | MatchExpr::Or { expressions } => {
-            expressions.iter().find_map(artifact_sized_literal_bytes)
-        }
-        MatchExpr::Not { expression } => artifact_sized_literal_bytes(expression),
+            .filter(|bytes| *bytes > maximum),
+        MatchExpr::And { expressions } | MatchExpr::Or { expressions } => expressions
+            .iter()
+            .find_map(|child| artifact_sized_literal_bytes(child, maximum)),
+        MatchExpr::Not { expression } => artifact_sized_literal_bytes(expression, maximum),
         MatchExpr::FieldComparison { .. }
         | MatchExpr::ScalarComparison { .. }
         | MatchExpr::FieldPresence { .. }

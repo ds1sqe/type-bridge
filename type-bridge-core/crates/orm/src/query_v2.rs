@@ -9,7 +9,7 @@
 use std::fmt::Write as _;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use type_bridge_contract::limits::{MAX_CANONICAL_BYTES, MAX_CANONICAL_COLLECTION_LEN};
+use type_bridge_contract::limits::MAX_CANONICAL_COLLECTION_LEN;
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::{
     InputRow, QueryInvocation, QueryOperand, QueryOperation, QueryOutput, QueryPattern, QueryPlan,
@@ -89,7 +89,7 @@ fn lower_validated_query_with_execution_limits(
         invocation,
         invocation.operation(),
     )? {
-        if compatibility.typeql().len() > MAX_CANONICAL_BYTES {
+        if compatibility.typeql().len() > plan.limits().codec.max_bytes {
             return Err(failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_v2_lowered_typeql_byte_limit",
@@ -370,7 +370,7 @@ fn lower_validated_query_with_execution_limits(
         typeql.push_str("};\n");
     }
 
-    if typeql.len() > MAX_CANONICAL_BYTES {
+    if typeql.len() > plan.limits().codec.max_bytes {
         return Err(failure(
             DiagnosticCategory::ResourceLimit,
             "query_v2_lowered_typeql_byte_limit",

@@ -10,7 +10,6 @@ use serde::Deserialize;
 use serde_json::Value;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticDetailValue};
 use type_bridge_contract::id::MAX_THING_IID_HEX_DIGITS;
-use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::query_plan::QueryInvocation;
 use type_bridge_contract::query_remote_v2::RemoteReplyDecodeLimitsV2;
 use type_bridge_core_lib::ast::{
@@ -520,7 +519,6 @@ impl<'a> SelectedResultExecutor<'a> {
             validated,
             self.registry,
             &authority.context(),
-            StructuralLimits::CANONICAL,
         )
         .map_err(adapter_diagnostic)?
         {
@@ -587,7 +585,6 @@ impl<'a> SelectedResultExecutor<'a> {
             validated,
             self.registry,
             &authority.context(),
-            StructuralLimits::CANONICAL,
         )
         .map_err(adapter_diagnostic)?
         {
@@ -2098,7 +2095,7 @@ fn exactly_one_proof_byte_limit(
     selection: &TypedFetchRows,
 ) -> Result<u64, OrmError> {
     let projected_bindings = selection.projection.len();
-    if projected_bindings == 0 || projected_bindings > super::limits::MAX_BINDINGS {
+    if projected_bindings == 0 || projected_bindings > type_bridge_contract::limits::MAX_SUPPORTED_BINDINGS {
         return Err(decode_error(
             "tuple_proof_shape_limit",
             "distinct-tuple proof projection exceeds the validated binding ceiling",
@@ -4885,13 +4882,7 @@ mod tests {
         let maximum = exactly_one_proof_byte_limit(&registry, &maximum_shape).unwrap();
         assert!(one_binding < 1536);
         assert!(maximum < 400 * 1024);
-        assert!(
-            exactly_one_proof_byte_limit(
-                &registry,
-                &selection("person", super::super::limits::MAX_BINDINGS + 1),
-            )
-            .is_err()
-        );
+        assert!(exactly_one_proof_byte_limit(&registry, &selection("person", 0)).is_err());
 
         let unrelated_registry = person_registry();
         let unrelated_label = format!("unrelated_{}", "x".repeat(4096));
