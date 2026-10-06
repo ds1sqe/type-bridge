@@ -148,6 +148,7 @@ pub fn query_plan_v2_capability_vocabulary() -> CapabilitySet {
                 v2::CAP_OUTPUT_COLLECT_DISTINCT,
                 v2::CAP_OUTPUT_HYDRATED,
                 v2::CAP_EXACTLY_ONE,
+                v2::CAP_COMPLETE_ROWS,
                 v2::CAP_PAGE,
                 v2::CAP_DISTINCT_COUNT,
                 v2::CAP_DISTINCT_EXISTS,

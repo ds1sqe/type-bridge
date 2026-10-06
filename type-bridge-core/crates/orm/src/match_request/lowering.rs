@@ -204,6 +204,16 @@ pub(crate) fn lower_match_execution(
                 evidence,
             })
         }
+        MatchOperation::FetchRows {
+            cardinality: RowCardinality::Complete,
+            ..
+        } => {
+            let mut statement = lower_fetch_rows(registry, validated)?;
+            // One past the accepted count, so an overflow is seen instead
+            // of cut off.
+            statement.limit = statement.limit.saturating_add(1);
+            Ok(LoweredMatchExecution::FetchRows(statement))
+        }
         MatchOperation::FetchRows { .. } => Ok(LoweredMatchExecution::FetchRows(lower_fetch_rows(
             registry, validated,
         )?)),

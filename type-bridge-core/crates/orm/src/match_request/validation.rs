@@ -574,6 +574,14 @@ fn validate_operation_structure(
                 )
                 .at(MatchErrorPathSegment::Operation));
             }
+            if *cardinality == RowCardinality::Complete && (window.offset != 0 || !order.is_empty())
+            {
+                return Err(invalid(
+                    "invalid_complete_rows",
+                    "complete fetches require offset zero and no row order",
+                )
+                .at(MatchErrorPathSegment::Operation));
+            }
             (Some(output), Some(order), Some(window))
         }
         MatchOperation::PageBy {
@@ -1461,13 +1469,15 @@ fn validate_operation(
             }
             let selected: BTreeSet<_> = output_slots(output).map(FetchSlot::binding).collect();
             validate_order_scope(registry, order, bindings, &selected, "selected")?;
-            if *cardinality == RowCardinality::ExactlyOne {
-                Ok((StableOrderSpec::default(), BTreeMap::new()))
-            } else {
+            // Only a window that cuts rows off needs a total order to say
+            // which rows it keeps.
+            if *cardinality == RowCardinality::BoundedMany {
                 Ok((
                     derive_stable_order(registry, order, bindings, selected.iter().copied())?,
                     BTreeMap::new(),
                 ))
+            } else {
+                Ok((StableOrderSpec::default(), BTreeMap::new()))
             }
         }
         MatchOperation::PageBy {

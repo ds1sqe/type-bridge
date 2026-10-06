@@ -17,6 +17,11 @@ All notable changes to TypeBridge will be documented in this file.
   before sending. The standalone server reads `[v2.query_limits]`.
 - Query resource-limit refusals report `limit`, `maximum`, and `source`
   (`default`, `configured`, or `advertised`).
+- A `complete` row cardinality in the request model and the V2 plan: every
+  distinct selected row, or a refusal when there are more than the limit. It
+  needs no order and no unique key. Plans that use it require the new
+  `query.operation.complete-rows` capability, which an executor older than
+  this release does not advertise.
 
 ### Fixed
 
@@ -28,6 +33,17 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
+- A generated package runs direct queries on the executor a proxy uses. Each
+  request is adapted to a V2 plan under the package's embedded schema
+  authority, so the same query is accepted or refused the same way direct and
+  remote. Direct sessions of generated packages now apply the query limits
+  that previously bound only remote sessions; a predicate nested past
+  `canonical_depth` is refused with `canonical_json_too_deep` instead of
+  running. A package generated without a schema authority keeps the previous
+  executor.
+- Generated manager `all` and `first` run as complete fetches on the same
+  executor. Results and the `manager_first_identity_not_unique` refusal are
+  unchanged.
 - Remote model-query preparation reports the resource limit that refused
   adaptation, such as `canonical_json_too_deep` with `maximum_depth`, or
   `query_v2_adapter_literal_byte_limit` with `actual_bytes` and

@@ -588,6 +588,7 @@ fn adapt_operation(
                 .collect::<Result<Vec<_>, _>>()?;
             let (cardinality, order) = match cardinality {
                 RowCardinality::ExactlyOne => (QueryRowCardinalityV2::ExactlyOne, None),
+                RowCardinality::Complete => (QueryRowCardinalityV2::Complete, None),
                 RowCardinality::BoundedMany => (
                     QueryRowCardinalityV2::BoundedMany,
                     Some(adapt_stable_order(

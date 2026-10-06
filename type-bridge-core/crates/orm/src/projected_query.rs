@@ -519,8 +519,7 @@ pub fn materialize_projected_query_result_with_budget(
     })
 }
 
-/// Atomically materialize the complete hydration returned by the private
-/// generated-manager root executor.
+/// Atomically materialize the roots of one generated-manager result.
 #[expect(
     clippy::too_many_arguments,
     reason = "the manager materializer keeps every authority and invocation budget explicit"
@@ -530,7 +529,7 @@ pub(crate) fn materialize_projected_manager_things_with_budget(
     registry: &DescriptorRegistry,
     origin: ProjectedQueryOrigin,
     model: &TypeId,
-    things: &[HydratedThing],
+    things: &[&HydratedThing],
     limits: ProjectedQueryMaterializationLimits,
     cancellation: &AnswerCancellation,
     deadline: Option<QueryExecutionDeadline>,

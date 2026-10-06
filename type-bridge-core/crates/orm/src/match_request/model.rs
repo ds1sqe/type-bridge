@@ -473,6 +473,10 @@ pub enum RowCardinality {
     ExactlyOne,
     /// Return a resource-bounded ordered sequence of selected rows.
     BoundedMany,
+    /// Return every selected row. The window's limit is the most rows the
+    /// caller accepts: more is refused, never cut off, so the rows need no
+    /// order and the selected types need no unique key.
+    Complete,
 }
 
 /// Terminal operation over a typed match plan.

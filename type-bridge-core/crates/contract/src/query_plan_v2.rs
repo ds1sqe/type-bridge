@@ -33,6 +33,7 @@ pub(crate) const CAP_OUTPUT_COLLECT: &str = "query.output.collect";
 pub(crate) const CAP_OUTPUT_COLLECT_DISTINCT: &str = "query.output.collect-distinct";
 pub(crate) const CAP_OUTPUT_HYDRATED: &str = "query.output.hydrated";
 pub(crate) const CAP_EXACTLY_ONE: &str = "query.operation.exactly-one";
+pub(crate) const CAP_COMPLETE_ROWS: &str = "query.operation.complete-rows";
 pub(crate) const CAP_PAGE: &str = "query.operation.page";
 pub(crate) const CAP_DISTINCT_COUNT: &str = "query.operation.distinct-count";
 pub(crate) const CAP_DISTINCT_EXISTS: &str = "query.operation.distinct-exists";
@@ -1530,6 +1531,10 @@ pub enum QueryRowCardinalityV2 {
     ExactlyOne,
     /// Return one bounded stable row window.
     BoundedMany,
+    /// Return every distinct selected-identity tuple, or refuse when there
+    /// are more than the window's limit. Nothing is cut off, so no order
+    /// is required.
+    Complete,
 }
 
 /// The closed reducer vocabulary used by model-compatible V2 terminals.
@@ -2347,6 +2352,15 @@ fn validate_model_query(
                         ));
                     }
                 }
+                QueryRowCardinalityV2::Complete => {
+                    if window.offset() != 0 || order.is_some() {
+                        return Err(failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_plan_v2_complete_rows_contract",
+                            "complete rows require offset zero and no row order",
+                        ));
+                    }
+                }
             }
         }
         ModelQueryV2::Page {
@@ -3093,6 +3107,9 @@ fn add_model_query_capabilities(
                 }
                 QueryRowCardinalityV2::BoundedMany => {
                     insert_capability(capabilities, CAP_STABLE_SELECTED)?;
+                }
+                QueryRowCardinalityV2::Complete => {
+                    insert_capability(capabilities, CAP_COMPLETE_ROWS)?;
                 }
             }
         }

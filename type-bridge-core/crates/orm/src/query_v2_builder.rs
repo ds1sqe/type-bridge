@@ -3492,7 +3492,9 @@ mod completeness_guard {
         }
         fn row_cardinality(value: QueryRowCardinalityV2) {
             match value {
-                QueryRowCardinalityV2::ExactlyOne | QueryRowCardinalityV2::BoundedMany => {}
+                QueryRowCardinalityV2::ExactlyOne
+                | QueryRowCardinalityV2::BoundedMany
+                | QueryRowCardinalityV2::Complete => {}
             }
         }
         fn model_slot(value: &QueryModelOutputSlotV2) {

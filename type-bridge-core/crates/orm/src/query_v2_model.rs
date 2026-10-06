@@ -2367,10 +2367,10 @@ async fn execute_rows(
     let provider_terminal = provider_projection_is_public(&statement);
     let needs_tuple_proof =
         cardinality.is_exactly_one() && !provider_terminal && tuple_proof.is_some();
-    let retain = if cardinality.is_exactly_one() {
-        2
-    } else {
-        offset.saturating_add(limit)
+    let retain = match cardinality {
+        QueryRowCardinalityV2::ExactlyOne => 2,
+        QueryRowCardinalityV2::BoundedMany => offset.saturating_add(limit),
+        QueryRowCardinalityV2::Complete => limit.saturating_add(1),
     };
     statement.offset = 0;
     statement.limit = if provider_terminal {
@@ -2401,6 +2401,14 @@ async fn execute_rows(
         require_exhausted(stats)?;
     }
     let solutions = consumer.finish();
+    if cardinality == QueryRowCardinalityV2::Complete
+        && u64::try_from(solutions.len()).unwrap_or(u64::MAX) > limit
+    {
+        return Err(resource_error(
+            "query_v2_model_complete_rows_exceeded",
+            "more distinct rows matched than the complete fetch accepts",
+        ));
+    }
 
     let authority = HydrationAuthority::new(hydration)?;
     let mut graph = GraphBuilder::new(reply_limits);

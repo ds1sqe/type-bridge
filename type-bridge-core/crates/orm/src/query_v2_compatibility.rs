@@ -12,7 +12,8 @@ use type_bridge_contract::migration_assertion::{BindingId, ValueComparator};
 use type_bridge_contract::query_plan::{
     CompatibilityValueV2, ModelQueryV2, QueryComparatorV2, QueryFieldV2, QueryInvocation,
     QueryMissingOrderV2, QueryModelOutputSlotV2, QueryOperand, QueryOperation,
-    QueryOrderDirectionV2, QueryPattern, QueryPatternV2, QueryPlan, QueryStableOrderV2, ReadStage,
+    QueryOrderDirectionV2, QueryPattern, QueryPatternV2, QueryPlan, QueryRowCardinalityV2,
+    QueryStableOrderV2, ReadStage,
 };
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use type_bridge_core_lib::ast::{
@@ -135,10 +136,14 @@ pub(crate) fn lower_validated_compatibility_query(
                     QueryModelOutputSlotV2::Collect { .. } => None,
                 })
                 .collect();
-            let (order, offset, limit) = if cardinality.is_exactly_one() {
-                (Vec::new(), 0, 2)
-            } else {
-                (
+            let (order, offset, limit) = match cardinality {
+                QueryRowCardinalityV2::ExactlyOne => (Vec::new(), 0, 2),
+                // One past the accepted count, so an overflow is seen
+                // instead of cut off.
+                QueryRowCardinalityV2::Complete => {
+                    (Vec::new(), 0, window.limit().saturating_add(1))
+                }
+                QueryRowCardinalityV2::BoundedMany => (
                     lower_order(
                         order.as_ref().ok_or_else(|| {
                             integrity(
@@ -150,7 +155,7 @@ pub(crate) fn lower_validated_compatibility_query(
                     )?,
                     window.offset(),
                     window.limit(),
-                )
+                ),
             };
             let statement = TypedFetchRows {
                 targets,

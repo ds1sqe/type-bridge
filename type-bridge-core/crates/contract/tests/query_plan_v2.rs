@@ -1202,6 +1202,57 @@ fn hydration_roles_bind_owner_and_declared_to_concrete_player_authority() {
 }
 
 #[test]
+fn complete_rows_need_no_order_and_admit_no_offset() {
+    let (bindings, pipeline, output, managed) = base_parts();
+    let build = |order, window| {
+        QueryPlan::new_v2_with_functions(
+            bindings.clone(),
+            Vec::new(),
+            Vec::new(),
+            pipeline.clone(),
+            output.clone(),
+            QueryPlanV2Compatibility::new(
+                None,
+                Vec::new(),
+                Some(ModelQueryV2::Rows {
+                    cardinality: QueryRowCardinalityV2::Complete,
+                    hydration: hydration(),
+                    order,
+                    output: rich_output(),
+                    window,
+                }),
+            ),
+            managed.clone(),
+        )
+    };
+
+    let plan = build(None, QueryWindowV2::new(0, 10)).expect("complete rows without an order");
+    let required = plan
+        .required_capabilities()
+        .iter()
+        .map(|capability| capability.as_str())
+        .collect::<Vec<_>>();
+    assert!(required.contains(&"query.operation.complete-rows"));
+    assert!(!required.contains(&"query.order.stable-selected"));
+
+    for (order, window) in [
+        (
+            Some(stable_order(person_name(0), 0)),
+            QueryWindowV2::new(0, 10),
+        ),
+        (None, QueryWindowV2::new(5, 10)),
+    ] {
+        assert_eq!(
+            build(order, window)
+                .expect_err("complete rows with an order or an offset")
+                .code()
+                .as_str(),
+            "query_plan_v2_complete_rows_contract",
+        );
+    }
+}
+
+#[test]
 fn stable_order_terms_are_provable_from_their_public_response_slots() {
     let (bindings, pipeline, output, managed) = base_parts();
     let build = |model_query| {
@@ -2309,6 +2360,7 @@ fn v2_capability_vocabulary_is_closed_and_deterministic() {
             "query.function.local",
             "query.input.columns",
             "query.input.given-rows",
+            "query.operation.complete-rows",
             "query.operation.distinct-count",
             "query.operation.distinct-exists",
             "query.operation.exactly-one",

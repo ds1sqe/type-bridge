@@ -1343,7 +1343,9 @@ fn validate_rows(
         return Err(error);
     }
 
-    if !apply_window && rows.len() as u64 > window.limit {
+    if (!apply_window || cardinality == RowCardinality::Complete)
+        && rows.len() as u64 > window.limit
+    {
         return Err(resource_error(
             "row_window_exceeded",
             "provider returned more distinct rows than the validated window permits",
@@ -1661,23 +1663,18 @@ fn validate_solutions<'a>(
     Ok(checked)
 }
 
-/// Validate complete exact-model hydration returned by the private
-/// generated-manager root executor.
+/// Check the roots of a generated-manager result against its filter.
 ///
-/// The public `CountBy` request supplies canonical graph and schema authority,
-/// while this seam validates the privately hydrated roots as if each were a
-/// one-binding solution. Repeated predicates on one multivalue field are
-/// evaluated against one shared candidate value, matching the compiler's one
-/// variable per [`BoundFieldId`] semantics instead of independently accepting
-/// different members.
-pub(crate) fn validate_manager_things_with_limits(
-    registry: &DescriptorRegistry,
+/// A manager filter is a conjunction of literal comparisons on fields of one
+/// exact root. The compiler binds one variable per [`BoundFieldId`], so every
+/// comparison on a multivalue field must hold for one shared member. Row
+/// validation accepts each comparison independently; this is the stricter
+/// rule a manager result has to meet.
+pub(crate) fn validate_manager_roots(
     validated: &ValidatedMatchRequest,
     root: BindingId,
-    things: &[HydratedThing],
-    limits: ResultValidationLimits,
+    things: &[&HydratedThing],
 ) -> Result<(), MatchError> {
-    validated.recheck_schema(registry)?;
     let request = validated.request();
     let [binding] = request.plan.bindings.as_slice() else {
         return Err(result_error(
@@ -1686,21 +1683,13 @@ pub(crate) fn validate_manager_things_with_limits(
         )
         .at(MatchErrorPathSegment::Plan));
     };
-    if binding.id != root
-        || binding.match_mode != MatchMode::Exact
-        || !matches!(request.operation, MatchOperation::CountBy { root: operation_root } if operation_root == root)
-    {
+    if binding.id != root || binding.match_mode != MatchMode::Exact {
         return Err(result_error(
             "manager_filter_query_shape_invalid",
-            "generated-manager evidence requires one exact CountBy root",
+            "generated-manager evidence requires one exact root",
         )
-        .at(MatchErrorPathSegment::Operation));
+        .at(MatchErrorPathSegment::Plan));
     }
-
-    let mut budget = EvidenceBudget::new(limits);
-    budget.charge_solutions(things.len())?;
-    let mut identities = BTreeSet::new();
-    let mut consistent = BTreeMap::new();
     let mut grouped = BTreeMap::<BoundFieldId, Vec<(ComparisonOp, &AttributeValue)>>::new();
     if let Some(predicate) = request.plan.predicate.as_ref()
         && !collect_manager_field_predicates(predicate, root, &mut grouped)
@@ -1713,50 +1702,6 @@ pub(crate) fn validate_manager_things_with_limits(
     }
 
     for (index, thing) in things.iter().enumerate() {
-        validate_bound_thing(registry, binding, thing, &mut budget).map_err(|error| {
-            error
-                .at(MatchErrorPathSegment::ProviderEvidence)
-                .at(MatchErrorPathSegment::Index(index))
-                .at(MatchErrorPathSegment::Binding(root))
-        })?;
-        if !identities.insert(thing.concept_id().clone()) {
-            return Err(result_error(
-                "duplicate_manager_root",
-                "generated-manager hydration repeats one exact-model IID",
-            )
-            .at(MatchErrorPathSegment::ProviderEvidence)
-            .at(MatchErrorPathSegment::Index(index))
-            .at(MatchErrorPathSegment::Binding(root)));
-        }
-        budget.charge_result_identity()?;
-        require_global_hydration_consistency(
-            &mut consistent,
-            thing.concept_id(),
-            GlobalHydration::thing(thing),
-        )
-        .map_err(|error| {
-            error
-                .at(MatchErrorPathSegment::ProviderEvidence)
-                .at(MatchErrorPathSegment::Index(index))
-                .at(MatchErrorPathSegment::Binding(root))
-        })?;
-        for role in thing.roles() {
-            for player in role.players() {
-                require_global_hydration_consistency(
-                    &mut consistent,
-                    player.concept_id(),
-                    GlobalHydration::player(player),
-                )
-                .map_err(|error| {
-                    error
-                        .at(MatchErrorPathSegment::ProviderEvidence)
-                        .at(MatchErrorPathSegment::Index(index))
-                        .at(MatchErrorPathSegment::Binding(root))
-                        .at(MatchErrorPathSegment::Role(role.role().clone()))
-                })?;
-            }
-        }
-
         for (field, predicates) in &grouped {
             let values = thing
                 .attributes()
@@ -4657,25 +4602,11 @@ mod tests {
         );
 
         let impossible = request("b");
-        let error = validate_manager_things_with_limits(
-            &registry,
-            &impossible,
-            root,
-            std::slice::from_ref(&hydrated),
-            ResultValidationLimits::DEFAULT,
-        )
-        .unwrap_err();
+        let error = validate_manager_roots(&impossible, root, &[&hydrated]).unwrap_err();
         assert_eq!(error_code(&error), "predicate_evidence_mismatch");
 
         let witnessed = request("d");
-        validate_manager_things_with_limits(
-            &registry,
-            &witnessed,
-            root,
-            &[hydrated],
-            ResultValidationLimits::DEFAULT,
-        )
-        .unwrap();
+        validate_manager_roots(&witnessed, root, &[&hydrated]).unwrap();
     }
 
     #[test]

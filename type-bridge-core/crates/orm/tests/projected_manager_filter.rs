@@ -359,6 +359,34 @@ async fn first_requires_every_effective_key_before_opening_a_transaction() {
 }
 
 #[tokio::test]
+async fn all_admits_a_model_without_a_stable_key() {
+    // `unkeyed` owns only an optional unique attribute, so it has no field a
+    // bounded window could order by. `all` is a complete fetch and needs
+    // none: the request is admitted and stops at the mock's capabilities.
+    let installed = installed(BindingTarget::Python);
+    let filter =
+        ProjectedManagerFilter::try_new(&installed, type_id(TypeKind::Entity, "unkeyed")).unwrap();
+    let backend = MockBackend::new(Vec::new());
+    let queries = backend.queries.clone();
+    let database = Database::with_backend(Box::new(backend), "manager-filter");
+    let error = ProjectedManagerFilterExecutor::new(&installed)
+        .all(
+            &database,
+            &filter,
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.category(),
+        SdkDiagnosticCategory::UnsupportedCapability
+    );
+    assert_eq!(error.code().as_str(), "missing_provider_capability");
+    assert!(queries.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn first_accepts_repeated_semantically_equal_duration_key_evidence() {
     let installed = installed(BindingTarget::Python);
     let duration_keyed = type_id(TypeKind::Entity, "duration-keyed");

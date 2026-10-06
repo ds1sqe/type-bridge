@@ -407,6 +407,14 @@ RowOf[Query<[A, B, ...]>] = readonly [A, B, ...]          # TypeScript
 - One terminal call is one logical executor invocation. It may issue a bounded
   number of statements, all in the same read transaction.
 
+The request model has a third row cardinality beside exactly-one and a bounded
+window: `complete`. A complete fetch returns every distinct selected identity
+tuple and is refused with `row_window_exceeded` when there are more than its
+limit. Nothing is cut off, so it takes no offset and no order, and the selected
+types need no unique key. Generated manager `all` and `first` run as complete
+fetches; no query-builder terminal exposes it yet. A plan that uses it requires
+the `query.operation.complete-rows` capability.
+
 The Python page contract is a frozen envelope with tuple `items`, `offset`,
 `limit`, and `total: int | None`. The TypeScript page is readonly and uses
 `total: bigint | undefined`. `include_total`/`includeTotal` defaults to false,
