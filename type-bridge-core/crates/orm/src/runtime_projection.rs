@@ -25,15 +25,17 @@ use crate::_descriptor::{
 };
 use crate::_dynamic::DynamicAttributeMap;
 use crate::_entity::Annotation;
-use crate::_registry::DescriptorRegistry;
+use crate::_registry::{DescriptorRegistry, InstalledSchemaAuthority};
 use crate::error::{OrmError, Result};
 use crate::value::AttributeValue;
+use type_bridge_schema::VerifiedSchemaAuthority;
 
 /// One package-scoped trusted projection and its provider-facing descriptors.
 pub struct InstalledRuntimeProjection {
     projection: Arc<RuntimeProjection>,
     declared_schema_identity: Option<DeclaredIdentityFingerprint>,
     descriptors: BTreeMap<TypeId, TypeDescriptor>,
+    schema_authority: Option<Arc<InstalledSchemaAuthority>>,
 }
 
 impl InstalledRuntimeProjection {
@@ -53,6 +55,7 @@ impl InstalledRuntimeProjection {
         Ok(Self {
             projection: Arc::new(projection),
             declared_schema_identity: None,
+            schema_authority: None,
             descriptors,
         })
     }
@@ -68,6 +71,24 @@ impl InstalledRuntimeProjection {
         declared_schema_identity: DeclaredIdentityFingerprint,
     ) -> Self {
         self.declared_schema_identity = Some(declared_schema_identity);
+        self
+    }
+
+    /// Bind the package's verified schema authority to this installation.
+    ///
+    /// This supplies the declared-schema identity and the schema context a
+    /// query of this package is adapted under, so direct execution uses the
+    /// same context as a proxy serving the same package.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_schema_authority(mut self, authority: &VerifiedSchemaAuthority) -> Self {
+        self.declared_schema_identity = Some(
+            authority
+                .resolved_schema()
+                .declared_identity_fingerprint()
+                .clone(),
+        );
+        self.schema_authority = Some(Arc::new(InstalledSchemaAuthority::from_verified(authority)));
         self
     }
 
@@ -150,6 +171,7 @@ impl InstalledRuntimeProjection {
             self.projection.target(),
             self.projection.projection_fingerprint().clone(),
             self.projection.functions().clone(),
+            self.schema_authority.clone(),
         );
         for descriptor in self.descriptors.values().cloned() {
             match descriptor {

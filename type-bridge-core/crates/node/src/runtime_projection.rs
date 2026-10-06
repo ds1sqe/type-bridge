@@ -32,7 +32,7 @@ use type_bridge_contract::projection::{
     ProjectedMultiplicity, ProjectedTokenIdentity, ProjectionConfig, RuntimeProjection,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
-use type_bridge_contract::schema::{DeclaredIdentityFingerprint, OwnsFactId};
+use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::sdk_diagnostic::{
     MAX_SDK_DIAGNOSTIC_PATH_SEGMENTS, SdkDiagnosticCategory, SdkDiagnosticCode,
     SdkDiagnosticMessage, SdkDiagnosticName, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
@@ -61,6 +61,7 @@ use type_bridge_orm::{
     ProviderRuntimeOwner, QueryExecutionResourceLimits, ThingKind, TransactionContext,
     TransactionContextState, ValueType, resolve_generated_manager_lookup,
 };
+use type_bridge_schema::VerifiedSchemaAuthority;
 use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
 use type_bridge_schema_codegen::{TypeScriptEmitter, verify_projection_evidence};
 
@@ -1659,7 +1660,7 @@ impl NodeRuntimeProjection {
         projected_batch_materializer: Option<Function<'_, (), ()>>,
         require_projected_batch_materializer: bool,
     ) -> napi::Result<Self> {
-        let (runtime, managed_scope_id, declared_schema_identity) = match schema_authority_json {
+        let (runtime, managed_scope_id, schema_authority_evidence) = match schema_authority_json {
             Some(schema_authority_json) => {
                 let (runtime, scope, declared) = install_authority_backed_projection(
                     &projection_json,
@@ -1793,8 +1794,8 @@ impl NodeRuntimeProjection {
             );
         }
         let mut projection = InstalledRuntimeProjection::try_new(runtime).map_err(orm_error)?;
-        if let Some(declared) = declared_schema_identity {
-            projection = projection.with_declared_schema_identity(declared);
+        if let Some(authority) = &schema_authority_evidence {
+            projection = projection.with_schema_authority(authority);
         }
         let projection = Arc::new(projection);
         Ok(Self {
@@ -3831,11 +3832,7 @@ fn install_authority_backed_projection(
     semantic_fingerprint_json: &str,
     projection_fingerprint_json: &str,
     schema_authority_json: &str,
-) -> napi::Result<(
-    RuntimeProjection,
-    ManagedScopeId,
-    DeclaredIdentityFingerprint,
-)> {
+) -> napi::Result<(RuntimeProjection, ManagedScopeId, VerifiedSchemaAuthority)> {
     let rejection = || projection_evidence_rejection(semantic_fingerprint_json);
     let runtime = decode_runtime_projection_verified(
         projection_json.as_bytes(),
@@ -3853,11 +3850,7 @@ fn install_authority_backed_projection(
     .map_err(|_| rejection())?;
     verify_projection_evidence(&authority, &runtime).map_err(|_| rejection())?;
     let managed_scope_id = authority.managed_scope().id().clone();
-    let declared_schema_identity = authority
-        .resolved_schema()
-        .declared_identity_fingerprint()
-        .clone();
-    Ok((runtime, managed_scope_id, declared_schema_identity))
+    Ok((runtime, managed_scope_id, authority))
 }
 
 fn projection_evidence_mismatch() -> Error {

@@ -509,7 +509,7 @@ impl<'a> SelectedResultExecutor<'a> {
         }
         self.preflight_compatibility(validated)?;
         self.check_lifecycle_budget()?;
-        if self.registry.uses_installed_projection_native_execution() {
+        if self.uses_native_execution() {
             return self.execute_owned(database, validated).await;
         }
         let authority = MatchRequestAdapterAuthority::from_registry(self.registry)
@@ -564,7 +564,7 @@ impl<'a> SelectedResultExecutor<'a> {
             .at(MatchErrorPathSegment::Operation)
             .into());
         }
-        if self.registry.uses_installed_projection_native_execution() {
+        if self.uses_native_execution() {
             return self.execute_borrowed(context, validated).await;
         }
         let authority = MatchRequestAdapterAuthority::from_registry(self.registry)
@@ -618,6 +618,17 @@ impl<'a> SelectedResultExecutor<'a> {
             available_capabilities: self.available_capabilities.clone(),
             limits: self.limits.clone(),
         }
+    }
+
+    /// Whether this request still runs on the native executor.
+    ///
+    /// A registry installed with its package's verified schema authority is
+    /// adapted and run on the same executor a proxy uses. Only a package
+    /// installed without that authority has no schema context to adapt
+    /// under and keeps the native path.
+    fn uses_native_execution(&self) -> bool {
+        self.registry.uses_installed_projection_native_execution()
+            && self.registry.installed_schema_authority().is_none()
     }
 
     async fn execute_adapted_owned(
@@ -4840,6 +4851,118 @@ mod tests {
             assert!(events.hydration_statements.is_empty());
         }
         context.close().await.unwrap();
+    }
+
+    /// A generated package's projection, with or without the verified schema
+    /// authority its package embeds.
+    fn installed_person_registry(with_authority: bool) -> Arc<DescriptorRegistry> {
+        use type_bridge_contract::fingerprint::SemanticProfileId;
+        use type_bridge_contract::managed_scope::ManagedScopeId;
+        use type_bridge_contract::projection::{
+            BindingTarget, ProjectionConfig, ProjectionHandler,
+        };
+        use type_bridge_contract::schema::DocumentId;
+        use type_bridge_schema::{
+            ManagedDeltaContext, SchemaDocumentSet, build_schema_authority, normalize_documents,
+            project, resolve, schema_authority_capability_vocabulary,
+        };
+
+        let documents = SchemaDocumentSet::parse([(
+            DocumentId::new("direct-authority.yaml").expect("document"),
+            "format: typebridge.schema/v2\nattributes:\n  score: { value: integer }\nentities:\n  person:\n    owns:\n      score: { card: 1 }\n",
+        )])
+        .expect("schema documents");
+        let declared = normalize_documents(&documents).expect("normalized schema");
+        let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
+        let resolved = resolve(&declared, &profile).expect("resolved schema");
+        let mut installed = crate::InstalledRuntimeProjection::try_new(
+            project(
+                &resolved,
+                BindingTarget::Python,
+                &ProjectionConfig::python(),
+                &[ProjectionHandler::python_v1()],
+                &[],
+            )
+            .expect("runtime projection"),
+        )
+        .expect("installed projection");
+        if with_authority {
+            let context = ManagedDeltaContext::new(
+                ManagedScopeId::new("direct-authority").expect("scope"),
+                profile,
+                schema_authority_capability_vocabulary(),
+            );
+            let authority =
+                build_schema_authority(&declared, declared.required_capabilities(), &context)
+                    .expect("verified schema authority");
+            installed = installed.with_schema_authority(&authority);
+        }
+        Arc::new(installed.match_registry().expect("match registry"))
+    }
+
+    /// Count persons under a predicate really nested thirty-eight levels
+    /// deep. The shared pipeline refuses it at the canonical encoding depth;
+    /// the native executor never builds a plan and so never notices.
+    fn deeply_nested_count(registry: &Arc<DescriptorRegistry>) -> ValidatedMatchRequest {
+        let session = crate::match_request::SessionHandle::new(Arc::clone(registry));
+        let person = session.exact("person").expect("person");
+        let term = |minimum: i64| {
+            person.field("score").expect("score").compare_value(
+                crate::ComparisonOp::GreaterThanOrEqual,
+                crate::AttributeValue::Long(minimum),
+            )
+        };
+        let mut predicate = term(0);
+        for depth in 1..38 {
+            predicate = if depth % 2 == 0 {
+                predicate.and(&term(depth)).expect("and")
+            } else {
+                predicate.or(&term(depth)).expect("or")
+            };
+        }
+        session
+            .query(session.positional([person.one()]).expect("shape"))
+            .expect("query")
+            .where_predicate(predicate)
+            .expect("where")
+            .validate_count_by(&person)
+            .expect("valid request")
+    }
+
+    #[tokio::test]
+    async fn a_generated_package_with_its_authority_executes_directly_on_the_shared_pipeline() {
+        let registry = installed_person_registry(true);
+        let validated = deeply_nested_count(&registry);
+        let (database, events) = database(CapabilitySet::all(), Vec::new(), Vec::new());
+
+        let error = database
+            .execute_match(&registry, &validated)
+            .await
+            .expect_err("the shared pipeline refuses a plan past the encoding depth");
+        let error = match_error(&error);
+        assert_eq!(error.category(), MatchErrorCategory::ResourceLimit);
+        assert_eq!(error.code().as_str(), "canonical_json_too_deep");
+        assert_eq!(
+            error.details().get("limit"),
+            Some(&crate::MatchErrorDetailValue::Text(
+                "canonical_depth".into()
+            ))
+        );
+        // Refused during adaptation, before any provider work: the same
+        // outcome a proxy gives for this query.
+        assert_eq!(events.lock().unwrap().opens, 0);
+    }
+
+    #[tokio::test]
+    async fn a_generated_package_without_its_authority_keeps_the_native_executor() {
+        let registry = installed_person_registry(false);
+        let validated = deeply_nested_count(&registry);
+        let (database, events) = database(CapabilitySet::all(), Vec::new(), Vec::new());
+
+        // No schema context to adapt under, so no plan is built and the
+        // request reaches the provider.
+        let _ = database.execute_match(&registry, &validated).await;
+        assert_eq!(events.lock().unwrap().opens, 1);
     }
 
     #[test]

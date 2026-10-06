@@ -359,10 +359,6 @@ fn open_owned(
         )));
     }
 
-    let declared_schema_identity = authority
-        .resolved_schema()
-        .declared_identity_fingerprint()
-        .clone();
     let installed_projection =
         type_bridge_orm::InstalledRuntimeProjection::try_new(projection.clone())
             .map_err(|_| {
@@ -372,7 +368,7 @@ fn open_owned(
                     "generated C runtime projection could not be installed",
                 ))
             })?
-            .with_declared_schema_identity(declared_schema_identity);
+            .with_schema_authority(&authority);
 
     Ok(TypeBridgeSchemaPackage {
         state: Arc::new(SchemaPackageState {

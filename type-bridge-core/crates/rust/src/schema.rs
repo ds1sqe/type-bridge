@@ -843,12 +843,7 @@ impl<S: Schema> SchemaPackage<S> {
             )
         })?;
         if let Some(authority) = authority.as_ref() {
-            projection = projection.with_declared_schema_identity(
-                authority
-                    .resolved_schema()
-                    .declared_identity_fingerprint()
-                    .clone(),
-            );
+            projection = projection.with_schema_authority(authority);
         }
         let successor =
             authority_backed || projection_uses_ordered_collections(projection.projection());

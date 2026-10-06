@@ -13,6 +13,7 @@
 //! whose request legitimately needs more raises the limit.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::fingerprint::SemanticProfileId;
@@ -31,7 +32,7 @@ use type_bridge_contract::query_plan::{
     QueryReductionKindV2, QueryReductionTermV2, QueryRowCardinalityV2, QueryStableOrderV2,
     QueryWindowV2, ReadStage,
 };
-use type_bridge_contract::schema::{DocumentId, ManagedSchemaState};
+use type_bridge_contract::schema::DocumentId;
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
 };
@@ -49,7 +50,7 @@ use crate::_descriptor::{
     OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor, TypeDescriptorRef,
 };
 use crate::_entity::Annotation;
-use crate::_registry::DescriptorRegistry;
+use crate::_registry::{DescriptorRegistry, InstalledSchemaAuthority};
 use crate::_schema::{SchemaInfo, generator::generate_define_block};
 use crate::AttributeValue;
 use crate::match_request::{
@@ -69,20 +70,22 @@ const V1_ADAPTER_SEMANTIC_PROFILE: &str = "typedb-3.12.1/v1";
 const V1_ADAPTER_MANAGED_SCOPE: &str = "typebridge-v1-descriptor-registry";
 const V1_ADAPTER_SCHEMA_DOCUMENT: &str = "typebridge-v1-descriptor-registry.tql";
 
-/// Owned schema authority reconstructed from the exact descriptor snapshot
-/// which validated a released request.
+/// The schema authority one validated request is adapted under.
 ///
-/// The registry remains the V1 public authority. This internal projection is
-/// deterministic and performs no provider, filesystem, or transport I/O.
-pub(crate) struct MatchRequestAdapterAuthority {
-    managed: ManagedSchemaState,
-    resolved: ResolvedSchema,
-}
+/// Obtaining it is deterministic and performs no provider, filesystem, or
+/// transport I/O.
+pub(crate) struct MatchRequestAdapterAuthority(Arc<InstalledSchemaAuthority>);
 
 impl MatchRequestAdapterAuthority {
-    /// Reconstruct the strict V2 schema authority represented by one released
-    /// descriptor registry.
+    /// Return the V2 schema authority one registry adapts under.
+    ///
+    /// A registry installed from a generated package carries the package's
+    /// verified authority and uses it as is. A dynamic registry has none, so
+    /// its authority is reconstructed from the registered descriptors.
     pub(crate) fn from_registry(registry: &DescriptorRegistry) -> Result<Self, Diagnostic> {
+        if let Some(installed) = registry.installed_schema_authority() {
+            return Ok(Self(Arc::clone(installed)));
+        }
         let schema = SchemaInfo::from_descriptors(&registry.snapshot());
         let source = generate_define_block(&schema);
         // The registry, not this generated TypeQL, remains the exact released
@@ -117,12 +120,14 @@ impl MatchRequestAdapterAuthority {
                 "validated descriptor registry cannot form managed V2 schema authority",
             )
         })?;
-        Ok(Self { managed, resolved })
+        Ok(Self(Arc::new(InstalledSchemaAuthority::new(
+            resolved, managed,
+        ))))
     }
 
     /// Borrow the ordinary validator context for adaptation.
     pub(crate) fn context(&self) -> MigrationAssertionValidationContext<'_> {
-        MigrationAssertionValidationContext::new(&self.resolved, &self.managed)
+        MigrationAssertionValidationContext::new(self.0.resolved(), self.0.managed())
     }
 }
 

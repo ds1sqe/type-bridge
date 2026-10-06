@@ -8,8 +8,10 @@ use type_bridge_contract::id::FunctionId;
 use type_bridge_contract::projection::{
     BindingProjectionFingerprint, BindingTarget, FunctionProjection,
 };
+use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::schema_fingerprint::SemanticSchemaFingerprint;
 use type_bridge_core_lib::compiler::is_valid_typeql_label;
+use type_bridge_schema::{ResolvedSchema, VerifiedSchemaAuthority};
 
 use crate::_descriptor::{EntityDescriptor, RelationDescriptor, TypeDescriptor, TypeDescriptorRef};
 use crate::error::{OrmError, Result};
@@ -69,6 +71,44 @@ struct InstalledMatchProjectionAuthority {
     target: BindingTarget,
     projection_fingerprint: BindingProjectionFingerprint,
     functions: BTreeMap<FunctionId, FunctionProjection>,
+    schema: Option<Arc<InstalledSchemaAuthority>>,
+}
+
+/// The verified schema semantics a generated package's queries are adapted
+/// and validated under.
+///
+/// A generated package embeds a schema authority and each binding verifies
+/// it at installation. Keeping its resolved schema and managed state with
+/// the registry lets a direct query be adapted under exactly the context a
+/// proxy uses for the same package, instead of one rebuilt from descriptors.
+#[derive(Debug)]
+pub struct InstalledSchemaAuthority {
+    resolved: ResolvedSchema,
+    managed: ManagedSchemaState,
+}
+
+impl InstalledSchemaAuthority {
+    /// Retain the resolved schema and managed state of one verified
+    /// authority.
+    #[must_use]
+    pub fn from_verified(authority: &VerifiedSchemaAuthority) -> Self {
+        Self {
+            resolved: authority.resolved_schema().clone(),
+            managed: authority.managed_state().clone(),
+        }
+    }
+
+    pub(crate) const fn new(resolved: ResolvedSchema, managed: ManagedSchemaState) -> Self {
+        Self { resolved, managed }
+    }
+
+    pub(crate) const fn resolved(&self) -> &ResolvedSchema {
+        &self.resolved
+    }
+
+    pub(crate) const fn managed(&self) -> &ManagedSchemaState {
+        &self.managed
+    }
 }
 
 #[derive(Debug, Default)]
@@ -88,6 +128,7 @@ impl DescriptorRegistry {
         target: BindingTarget,
         projection_fingerprint: BindingProjectionFingerprint,
         functions: BTreeMap<FunctionId, FunctionProjection>,
+        schema: Option<Arc<InstalledSchemaAuthority>>,
     ) -> Self {
         Self {
             descriptors: RwLock::new(HashMap::new()),
@@ -97,8 +138,20 @@ impl DescriptorRegistry {
                     target,
                     projection_fingerprint,
                     functions,
+                    schema,
                 }),
             ),
+        }
+    }
+
+    /// Return the verified schema authority this registry was installed
+    /// with, if its package supplied one.
+    pub(crate) fn installed_schema_authority(&self) -> Option<&Arc<InstalledSchemaAuthority>> {
+        match &self.match_execution_authority {
+            MatchExecutionAuthority::InstalledProjectionNative(authority) => {
+                authority.schema.as_ref()
+            }
+            MatchExecutionAuthority::ReleasedAdapter => None,
         }
     }
 
@@ -930,6 +983,7 @@ mod tests {
             )
             .unwrap(),
             BTreeMap::new(),
+            None,
         );
         let snapshot = registry.owned_registry_snapshot().unwrap();
 

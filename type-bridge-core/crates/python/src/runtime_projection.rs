@@ -28,7 +28,6 @@ use type_bridge_contract::projection::{
     ProjectedMultiplicity, ProjectedTokenIdentity, ProjectionConfig, RuntimeProjection,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
-use type_bridge_contract::schema::DeclaredIdentityFingerprint;
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticDetailValue, SdkDiagnosticMessage, SdkDiagnosticName,
     SdkDiagnosticPathSegment, SdkExecutionDiagnostic, SdkProjectionEvidenceSlotPresence,
@@ -66,6 +65,7 @@ use type_bridge_orm::{
     resolve_generated_manager_lookup,
 };
 use type_bridge_orm::{InstalledRuntimeProjection, ProviderRuntimeOwner};
+use type_bridge_schema::VerifiedSchemaAuthority;
 use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
 use type_bridge_schema_codegen::{PythonEmitter, verify_projection_evidence};
 
@@ -4873,7 +4873,7 @@ fn install_projection_with_structs(
     structs: Vec<Py<PyType>>,
     schema_authority: Option<&[u8]>,
 ) -> PyResult<Arc<InstalledPackage>> {
-    let (runtime, managed_scope_id, declared_schema_identity) = match schema_authority {
+    let (runtime, managed_scope_id, schema_authority_evidence) = match schema_authority {
         Some(schema_authority) => {
             let (runtime, scope, declared) = install_authority_backed_projection(
                 projection_json,
@@ -5039,8 +5039,8 @@ fn install_projection_with_structs(
         registered_structs.insert(id, class);
     }
     let mut installed = InstalledRuntimeProjection::try_new(runtime).map_err(py_orm_error)?;
-    if let Some(declared) = declared_schema_identity {
-        installed = installed.with_declared_schema_identity(declared);
+    if let Some(authority) = &schema_authority_evidence {
+        installed = installed.with_schema_authority(authority);
     }
     let installed = Arc::new(installed);
     let named_zone_marker = ordered_projection
@@ -5568,11 +5568,7 @@ fn install_authority_backed_projection(
     semantic_fingerprint_json: &str,
     projection_fingerprint_json: &str,
     schema_authority: &[u8],
-) -> PyResult<(
-    RuntimeProjection,
-    ManagedScopeId,
-    DeclaredIdentityFingerprint,
-)> {
+) -> PyResult<(RuntimeProjection, ManagedScopeId, VerifiedSchemaAuthority)> {
     let rejection = || projection_evidence_rejection(semantic_fingerprint_json);
     let runtime = decode_runtime_projection_verified(
         projection_json.as_bytes(),
@@ -5588,11 +5584,7 @@ fn install_authority_backed_projection(
             .map_err(|_| rejection())?;
     verify_projection_evidence(&authority, &runtime).map_err(|_| rejection())?;
     let managed_scope_id = authority.managed_scope().id().clone();
-    let declared_schema_identity = authority
-        .resolved_schema()
-        .declared_identity_fingerprint()
-        .clone();
-    Ok((runtime, managed_scope_id, declared_schema_identity))
+    Ok((runtime, managed_scope_id, authority))
 }
 
 fn projection_evidence_mismatch() -> PyErr {
