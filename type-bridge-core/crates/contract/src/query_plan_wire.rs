@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::capability::CapabilitySet;
-use crate::codec::from_canonical_json;
+use crate::codec::from_canonical_json_with_limits;
+use crate::limits::QueryLimits;
 use crate::diagnostic::{Diagnostic, DiagnosticCategory};
 use crate::id::{AttributeId, FunctionId, Label};
 use crate::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
@@ -20,12 +21,12 @@ use crate::query_plan::{
 use crate::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use crate::value::{CanonicalValue, ValueTypeTag};
 
-pub(crate) fn decode_query_plan(bytes: &[u8]) -> Result<QueryPlan, Diagnostic> {
+pub(crate) fn decode_query_plan(bytes: &[u8], limits: QueryLimits) -> Result<QueryPlan, Diagnostic> {
     // Inspect only canonical JSON and the discriminator before deserializing
     // any version-specific DTO. A V2 payload can never partially reconstruct
     // through V1 types, and an unknown version cannot select a permissive
     // fallback.
-    let value = from_canonical_json::<Value>(bytes)?;
+    let value = from_canonical_json_with_limits::<Value>(bytes, limits.codec)?;
     let format = value
         .as_object()
         .and_then(|object| object.get("format"))
@@ -38,8 +39,12 @@ pub(crate) fn decode_query_plan(bytes: &[u8]) -> Result<QueryPlan, Diagnostic> {
             )
         })?;
     let trusted = match format {
-        QUERY_PLAN_FORMAT_V1 => from_canonical_json::<QueryPlanWire>(bytes)?.rebuild()?,
-        QUERY_PLAN_FORMAT_V2 => from_canonical_json::<QueryPlanWireV2>(bytes)?.rebuild()?,
+        QUERY_PLAN_FORMAT_V1 => {
+            from_canonical_json_with_limits::<QueryPlanWire>(bytes, limits.codec)?.rebuild(limits)?
+        }
+        QUERY_PLAN_FORMAT_V2 => {
+            from_canonical_json_with_limits::<QueryPlanWireV2>(bytes, limits.codec)?.rebuild(limits)?
+        }
         _ => {
             return Err(failure(
                 DiagnosticCategory::InvalidContract,
@@ -74,8 +79,8 @@ struct QueryPlanWire {
 }
 
 impl QueryPlanWire {
-    fn rebuild(self) -> Result<QueryPlan, Diagnostic> {
-        let trusted = QueryPlan::new_with_functions(
+    fn rebuild(self, limits: QueryLimits) -> Result<QueryPlan, Diagnostic> {
+        let trusted = QueryPlan::new_with_functions_and_limits(
             self.bindings
                 .into_iter()
                 .map(QueryBindingWire::rebuild)
@@ -94,6 +99,7 @@ impl QueryPlanWire {
                 .collect::<Result<Vec<_>, _>>()?,
             self.output.rebuild()?,
             ManagedSemanticSchemaFingerprint::from_wire(self.managed_semantics.rebuild()?)?,
+            limits,
         )?;
         if self.required_capabilities != *trusted.required_capabilities() {
             return Err(failure(
@@ -121,8 +127,8 @@ struct QueryPlanWireV2 {
 }
 
 impl QueryPlanWireV2 {
-    fn rebuild(self) -> Result<QueryPlan, Diagnostic> {
-        let trusted = QueryPlan::new_v2_with_functions(
+    fn rebuild(self, limits: QueryLimits) -> Result<QueryPlan, Diagnostic> {
+        let trusted = QueryPlan::new_v2_with_functions_and_limits(
             self.bindings
                 .into_iter()
                 .map(QueryBindingWire::rebuild)
@@ -142,6 +148,7 @@ impl QueryPlanWireV2 {
             self.output.rebuild()?,
             self.compatibility,
             ManagedSemanticSchemaFingerprint::from_wire(self.managed_semantics.rebuild()?)?,
+            limits,
         )?;
         if self.format != QUERY_PLAN_FORMAT_V2 {
             return Err(failure(

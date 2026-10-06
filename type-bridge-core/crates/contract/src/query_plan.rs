@@ -19,11 +19,11 @@ use std::fmt;
 use serde::Serialize;
 
 use crate::capability::{CapabilityId, CapabilitySet};
-use crate::codec::to_canonical_json;
+use crate::codec::to_canonical_json_with_limits;
 use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use crate::fingerprint::{CanonicalizationVersion, Fingerprint, FingerprintDomain};
 use crate::id::{AttributeId, FunctionId, Label, RoleId, TypeId};
-use crate::limits::StructuralLimits;
+use crate::limits::{QueryLimits, StructuralLimits};
 use crate::migration_assertion::{
     AssertionBinding, AssertionRolePlayer, BindingId, QueryVariable, ValueComparator,
 };
@@ -749,6 +749,10 @@ pub struct QueryPlan {
     format: String,
     functions: Vec<LocalFunction>,
     inputs: Vec<InputColumn>,
+    // The limits this plan was constructed or decoded under. They are not
+    // wire state: every peer applies its own.
+    #[serde(skip)]
+    limits: QueryLimits,
     managed_semantics: ManagedSemanticSchemaFingerprint,
     output: QueryOutput,
     pipeline: Vec<ReadStage>,
@@ -772,7 +776,7 @@ impl QueryPlan {
             output,
             None,
             managed_semantics,
-            StructuralLimits::CANONICAL,
+            QueryLimits::CANONICAL,
         )
     }
 
@@ -793,7 +797,7 @@ impl QueryPlan {
             output,
             None,
             managed_semantics,
-            StructuralLimits::CANONICAL,
+            QueryLimits::CANONICAL,
         )
     }
 
@@ -838,7 +842,62 @@ impl QueryPlan {
             output,
             Some(compatibility),
             managed_semantics,
-            StructuralLimits::CANONICAL,
+            QueryLimits::CANONICAL,
+        )
+    }
+
+    /// Validate and construct one V1 plan under explicit limits.
+    ///
+    /// The plan keeps `limits` and applies them to its canonical encoding
+    /// and to every invocation bound to it.
+    pub fn new_with_functions_and_limits(
+        bindings: Vec<AssertionBinding>,
+        functions: Vec<LocalFunction>,
+        inputs: Vec<InputColumn>,
+        pipeline: Vec<ReadStage>,
+        output: QueryOutput,
+        managed_semantics: ManagedSemanticSchemaFingerprint,
+        limits: QueryLimits,
+    ) -> Result<Self, Diagnostic> {
+        Self::new_with_limits(
+            bindings,
+            functions,
+            inputs,
+            pipeline,
+            output,
+            None,
+            managed_semantics,
+            limits,
+        )
+    }
+
+    /// Validate and construct one V2 plan under explicit limits.
+    ///
+    /// The plan keeps `limits` and applies them to its canonical encoding
+    /// and to every invocation bound to it.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the constructor receives every independently versioned plan component"
+    )]
+    pub fn new_v2_with_functions_and_limits(
+        bindings: Vec<AssertionBinding>,
+        functions: Vec<LocalFunction>,
+        inputs: Vec<InputColumn>,
+        pipeline: Vec<ReadStage>,
+        output: QueryOutput,
+        compatibility: QueryPlanV2Compatibility,
+        managed_semantics: ManagedSemanticSchemaFingerprint,
+        limits: QueryLimits,
+    ) -> Result<Self, Diagnostic> {
+        Self::new_with_limits(
+            bindings,
+            functions,
+            inputs,
+            pipeline,
+            output,
+            Some(compatibility),
+            managed_semantics,
+            limits,
         )
     }
 
@@ -854,7 +913,7 @@ impl QueryPlan {
         output: QueryOutput,
         compatibility: Option<QueryPlanV2Compatibility>,
         managed_semantics: ManagedSemanticSchemaFingerprint,
-        limits: StructuralLimits,
+        limits: QueryLimits,
     ) -> Result<Self, Diagnostic> {
         if compatibility.is_none() {
             validate_v1_reachability(&pipeline)?;
@@ -886,6 +945,7 @@ impl QueryPlan {
             format: format.to_owned(),
             functions,
             inputs,
+            limits,
             managed_semantics,
             output,
             pipeline,
@@ -907,8 +967,17 @@ impl QueryPlan {
             &self.pipeline,
             &self.output,
             self.compatibility.as_ref(),
-            limits,
+            QueryLimits {
+                structural: limits,
+                ..self.limits
+            },
         )
+    }
+
+    /// Return the limits this plan was constructed or decoded under.
+    #[must_use]
+    pub const fn limits(&self) -> QueryLimits {
+        self.limits
     }
 
     /// The construction-time structural traversal, shared with
@@ -921,8 +990,10 @@ impl QueryPlan {
         pipeline: &[ReadStage],
         output: &QueryOutput,
         compatibility: Option<&QueryPlanV2Compatibility>,
-        limits: StructuralLimits,
+        limits: QueryLimits,
     ) -> Result<(), Diagnostic> {
+        let query_limits = limits;
+        let limits = limits.structural;
         if bindings.is_empty() || !limits.allows_bindings(bindings.len()) {
             return Err(failure(
                 DiagnosticCategory::ResourceLimit,
@@ -1077,7 +1148,7 @@ impl QueryPlan {
             ));
         }
         if let Some(compatibility) = compatibility {
-            compatibility.validate(bindings.len(), limits)?;
+            compatibility.validate(bindings.len(), query_limits)?;
         }
 
         Ok(())
@@ -1142,8 +1213,11 @@ impl QueryPlan {
     /// Encode exact canonical bytes.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Diagnostic> {
         match self.format.as_str() {
-            QUERY_PLAN_FORMAT_V1 => to_canonical_json(&QueryPlanV1Projection::new(self)?),
-            QUERY_PLAN_FORMAT_V2 => to_canonical_json(self),
+            QUERY_PLAN_FORMAT_V1 => to_canonical_json_with_limits(
+                &QueryPlanV1Projection::new(self)?,
+                self.limits.codec,
+            ),
+            QUERY_PLAN_FORMAT_V2 => to_canonical_json_with_limits(self, self.limits.codec),
             _ => Err(failure(
                 DiagnosticCategory::InvalidContract,
                 "query_plan_format_unsupported",
@@ -1504,7 +1578,7 @@ impl QueryInvocation {
         operation: QueryOperation,
         inputs: Vec<InputRow>,
     ) -> Result<Self, Diagnostic> {
-        Self::new_with_limits(plan, operation, inputs, StructuralLimits::CANONICAL)
+        Self::new_with_limits(plan, operation, inputs, plan.limits().structural)
     }
 
     fn new_with_limits(
@@ -1672,7 +1746,17 @@ impl QueryPlanFingerprint {
 
 /// Decode canonical bytes through private constructor-rebuilding wire types.
 pub fn decode_query_plan(bytes: &[u8]) -> Result<QueryPlan, Diagnostic> {
-    crate::query_plan_wire::decode_query_plan(bytes)
+    decode_query_plan_with_limits(bytes, QueryLimits::CANONICAL)
+}
+
+/// Decode canonical plan bytes under the receiver's own limits.
+///
+/// The decoded plan keeps `limits`; nothing in the bytes can widen them.
+pub fn decode_query_plan_with_limits(
+    bytes: &[u8],
+    limits: QueryLimits,
+) -> Result<QueryPlan, Diagnostic> {
+    crate::query_plan_wire::decode_query_plan(bytes, limits)
 }
 
 /// Decode exact canonical invocation bytes and bind them to one trusted plan.
