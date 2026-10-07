@@ -10,7 +10,7 @@
     }
   },
   "peerDependencies": {
-    "@type-bridge/node": "^2.2.2"
+    "@type-bridge/node": "^2.2.3"
   },
   "files": [
     "dist",

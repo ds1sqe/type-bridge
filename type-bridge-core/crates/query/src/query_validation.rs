@@ -15,9 +15,9 @@ use type_bridge_contract::query_plan::{
     DocumentSource, LocalFunction, QueryOperand, QueryOutput, QueryPattern, QueryPatternV2,
     QueryPlan, ReadStage, Reducer,
 };
-use type_bridge_contract::schema::{AnnotationKindId, SchemaAnnotationValue};
+use type_bridge_contract::schema::{AnnotationKindId, CollectionMode, SchemaAnnotationValue};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
-use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
+use type_bridge_contract::value::{CanonicalValue, Cardinality, ValueTypeTag};
 
 use crate::engine::{self, EngineCode, EngineCodes};
 use crate::query_v2_claims::validate_v2_schema_claims;
@@ -547,8 +547,12 @@ pub fn validate_query_plan(
     // provider iteration among tied rows. Every binding visible at the
     // window must be determined by the sort tuple. Besides identity-total
     // sort keys, the proof admits owners identified by one unique attribute,
-    // deterministic plan-local function results over determined arguments,
-    // and reducer results once the complete group tuple is determined. A
+    // attribute values an owner holds with exactly `[1,1]` cardinality,
+    // players of a `[1,1]` role in a determined relation, deterministic
+    // plan-local function results over determined arguments, and reducer
+    // results once the complete group tuple is determined. Only root-level
+    // conjuncts propagate: optional, negated or disjunctive patterns do not
+    // fix one value per row. A
     // global reduce is already at most one row, so its order is vacuously
     // total (the structural contract still requires an explicit Sort stage).
     let windowed = plan
@@ -599,12 +603,15 @@ pub fn validate_query_plan(
         let global_reduce = reduce.is_some_and(|(_, groups)| groups.is_empty());
         if !global_reduce {
             let mut determined = BTreeSet::new();
+            // Only identity-total keys seed the proof. A key without that
+            // proof (a double, say) is still admitted when the rest of the
+            // tuple determines it: rows it cannot separate, such as signed
+            // zeros, are then separated by the keys that determine it.
             for binding in &sort_keys {
                 let domain = binding_domains.get(binding).ok_or_else(&not_total)?;
-                if !sort_key_domain_is_identity_total(domain, schema) {
-                    return Err(not_total());
+                if sort_key_domain_is_identity_total(domain, schema) {
+                    determined.insert(*binding);
                 }
-                determined.insert(*binding);
             }
 
             loop {
@@ -628,6 +635,36 @@ pub fn validate_query_plan(
                                 )
                             {
                                 determined.insert(*owner);
+                            }
+                        }
+                        QueryPattern::Has {
+                            owner,
+                            attribute,
+                            attribute_id,
+                        } if determined.contains(owner)
+                            && binding_domains.get(owner).is_some_and(|domain| {
+                                singleton_owns_covers_domain(
+                                    domain.type_ids(),
+                                    attribute_id,
+                                    schema,
+                                )
+                            }) =>
+                        {
+                            determined.insert(*attribute);
+                        }
+                        QueryPattern::Links {
+                            players, relation, ..
+                        } if determined.contains(relation) => {
+                            let relation_domain =
+                                binding_domains.get(relation).ok_or_else(&not_total)?;
+                            for player in players {
+                                if singleton_relates_covers_domain(
+                                    relation_domain.type_ids(),
+                                    player.role(),
+                                    schema,
+                                ) {
+                                    determined.insert(player.player());
+                                }
                             }
                         }
                         QueryPattern::FunctionCall {
@@ -661,6 +698,7 @@ pub fn validate_query_plan(
 
             if window_environment
                 .iter()
+                .chain(&sort_keys)
                 .any(|binding| !determined.contains(binding))
             {
                 return Err(not_total());
@@ -902,6 +940,57 @@ fn one_unique_owns_scope_covers_domain(
         }
     }
     origin.is_some()
+}
+
+const fn is_exactly_one(cardinality: Cardinality) -> bool {
+    cardinality.min() == 1 && matches!(cardinality.max(), Some(1))
+}
+
+/// Prove every owner in the domain holds exactly one value of the attribute.
+///
+/// A `[1,1]` unordered owns fact, direct or inherited, makes the attribute
+/// value a function of its owner. An empty domain or any member lacking that
+/// exact evidence fails closed.
+fn singleton_owns_covers_domain(
+    domain: &BTreeSet<TypeId>,
+    attribute: &type_bridge_contract::id::AttributeId,
+    schema: &type_bridge_schema::ResolvedSchema,
+) -> bool {
+    !domain.is_empty()
+        && domain.iter().all(|type_id| {
+            schema
+                .types()
+                .get(type_id)
+                .and_then(|resolved| resolved.owns().get(attribute))
+                .is_some_and(|owns| {
+                    owns.collection_mode() == CollectionMode::Unordered
+                        && is_exactly_one(owns.cardinality())
+                })
+        })
+}
+
+/// Prove every relation in the domain has exactly one player in the role.
+///
+/// The role must be effective with `[1,1]` unordered cardinality on each
+/// relation type and not replaced there by a specializing role, whose
+/// players would also match the inherited role.
+fn singleton_relates_covers_domain(
+    domain: &BTreeSet<TypeId>,
+    role: &type_bridge_contract::id::RoleId,
+    schema: &type_bridge_schema::ResolvedSchema,
+) -> bool {
+    !domain.is_empty()
+        && domain.iter().all(|type_id| {
+            schema.types().get(type_id).is_some_and(|resolved| {
+                resolved.relates().get(role).is_some_and(|relates| {
+                    relates.collection_mode() == CollectionMode::Unordered
+                        && is_exactly_one(relates.cardinality())
+                }) && !resolved
+                    .relates()
+                    .values()
+                    .any(|relates| relates.replaced_roles().contains(role))
+            })
+        })
 }
 
 fn typeql_builtin_function_collision() -> Diagnostic {

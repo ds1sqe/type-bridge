@@ -54,18 +54,38 @@ def test_server_image_build_and_runtime_are_immutable_and_least_privilege() -> N
         "debian:bookworm-slim@"
         "sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818"
     ) in source
-    for architecture, checksum in (
-        ("amd64", "81c5502941118a24d47af69a17b8b0b9548d75cc6d72b3eb3fe01047b46fa10e"),
-        ("arm64", "d178d33697eef877c2c27733141b7f8520fee66a329ae5809e8c8eae3709efa3"),
+    for package_path, architecture, checksum in (
+        (
+            "pcre2/libpcre2-8-0_10.42-1+deb12u2",
+            "amd64",
+            "d2f7edfcc7689b9e0761c2742cc824ac86a20768bc5e8057818dc6875291fe76",
+        ),
+        (
+            "pcre2/libpcre2-8-0_10.42-1+deb12u2",
+            "arm64",
+            "8498d2c0bd6747dfc2fc6eec62774a86967079555f7043d5a7b78ee4efbbc0fb",
+        ),
+        (
+            "perl/perl-base_5.36.0-7+deb12u4",
+            "amd64",
+            "d7d1943aec9597629bf73075efcc5ef6dc9bda96d78e80d843156ecd448478b8",
+        ),
+        (
+            "perl/perl-base_5.36.0-7+deb12u4",
+            "arm64",
+            "03d979b849a1a0a8955eee28b988dbc25a407fd3a0581df5c94e6ae7bcc01ddf",
+        ),
     ):
         assert f"ADD --checksum=sha256:{checksum}" in source
         assert (
-            "https://security.debian.org/debian-security/pool/updates/main/p/pcre2/"
-            f"libpcre2-8-0_10.42-1+deb12u1_{architecture}.deb"
+            "https://security.debian.org/debian-security/pool/updates/main/p/"
+            f"{package_path}_{architecture}.deb"
         ) in source
     assert "COPY --from=runtime-security /security/libpcre2-${TARGETARCH}.deb" in source
-    assert "dpkg --install /tmp/libpcre2.deb" in source
-    assert "rm -f /tmp/libpcre2.deb /var/log/dpkg.log /var/cache/ldconfig/aux-cache" in source
+    assert "COPY --from=runtime-security /security/perl-base-${TARGETARCH}.deb" in source
+    assert "dpkg --install /tmp/libpcre2.deb /tmp/perl-base.deb" in source
+    assert "rm -f /tmp/libpcre2.deb /tmp/perl-base.deb /var/log/dpkg.log" in source
+    assert "/var/cache/ldconfig/aux-cache" in source
     assert "cargo build --locked --release -p type-bridge-server --no-default-features" in source
     assert "--features band8,band9,v2-query" in source
     assert "&& chage --lastday 0 typebridge" in source
@@ -237,9 +257,9 @@ def _write_oci_archive(
     labels = {
         **oci_validator.EXPECTED_LABELS,
         "org.opencontainers.image.revision": REVISION,
-        "org.opencontainers.image.version": "2.2.2",
+        "org.opencontainers.image.version": "2.2.3",
         "org.opencontainers.image.created": CREATED,
-        "io.type-bridge.release-identity": f"v2.2.2@{REVISION}",
+        "io.type-bridge.release-identity": f"v2.2.3@{REVISION}",
     }
     config = _json_bytes(
         {
@@ -319,10 +339,10 @@ def _validator_args(archive: Path) -> argparse.Namespace:
         archive=str(archive),
         created=CREATED,
         platform="linux/amd64",
-        release_identity=f"v2.2.2@{REVISION}",
+        release_identity=f"v2.2.3@{REVISION}",
         report=str(archive.with_suffix(".json")),
         revision=REVISION,
-        version="2.2.2",
+        version="2.2.3",
     )
 
 
@@ -546,7 +566,7 @@ def test_pinned_skopeo_runner_scopes_offline_output_and_registry_credentials(
         group_id=5678,
     )
     registry_command = run_pinned_skopeo.build_command(
-        ["inspect", "docker://ghcr.io/ds1sqe/type-bridge-server:2.2.2"],
+        ["inspect", "docker://ghcr.io/ds1sqe/type-bridge-server:2.2.3"],
         registry_auth=True,
         working_directory=working_directory,
         environment={"DOCKER_CONFIG": str(docker_config)},
@@ -577,7 +597,7 @@ def test_pinned_skopeo_runner_scopes_offline_output_and_registry_credentials(
     assert any(str(auth_file) in argument for argument in registry_command)
     assert registry_command[-2:] == [
         "inspect",
-        "docker://ghcr.io/ds1sqe/type-bridge-server:2.2.2",
+        "docker://ghcr.io/ds1sqe/type-bridge-server:2.2.3",
     ]
 
 
@@ -592,7 +612,7 @@ def test_pinned_skopeo_runner_rejects_symlinked_registry_auth(tmp_path: Path) ->
 
     with pytest.raises(run_pinned_skopeo.RunnerError, match="missing or unsafe"):
         run_pinned_skopeo.build_command(
-            ["inspect", "docker://ghcr.io/ds1sqe/type-bridge-server:2.2.2"],
+            ["inspect", "docker://ghcr.io/ds1sqe/type-bridge-server:2.2.3"],
             registry_auth=True,
             working_directory=working_directory,
             environment={"DOCKER_CONFIG": str(docker_config)},
