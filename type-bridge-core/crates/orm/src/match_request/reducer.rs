@@ -652,7 +652,7 @@ mod tests {
                 .into_iter()
                 .map(|(binding, thing)| BoundConceptEvidence::new(BindingId::new(binding), thing)),
         );
-        ProviderSolutionEvidence::new(evidence, Vec::new())
+        ProviderSolutionEvidence::new(evidence)
     }
 
     fn count_term() -> LoweredReduceTerm {

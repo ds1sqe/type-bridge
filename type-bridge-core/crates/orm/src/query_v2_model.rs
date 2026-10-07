@@ -2976,7 +2976,7 @@ fn provider_reduction_solution(
             ))
         })
         .collect::<ExecResult<Vec<_>>>()?;
-    Ok(ProviderSolutionEvidence::new(bindings, Vec::new()))
+    Ok(ProviderSolutionEvidence::new(bindings))
 }
 
 fn descriptor_id(value: &TypeId) -> ExecResult<DescriptorId> {

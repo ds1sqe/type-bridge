@@ -692,6 +692,11 @@ fn canonical_provider_error(code: &'static str, message: &'static str) -> OrmErr
 }
 
 fn adapter_diagnostic(diagnostic: Diagnostic) -> OrmError {
+    adapter_match_error(diagnostic).into()
+}
+
+/// Map a V1-to-V2 adapter diagnostic onto the released match error.
+pub(super) fn adapter_match_error(diagnostic: Diagnostic) -> MatchError {
     let category = match diagnostic.category() {
         DiagnosticCategory::InvalidContract => MatchErrorCategory::InvalidPlan,
         DiagnosticCategory::UnsupportedCapability => MatchErrorCategory::UnsupportedCapability,
@@ -715,7 +720,7 @@ fn adapter_diagnostic(diagnostic: Diagnostic) -> OrmError {
             DiagnosticDetailValue::Boolean(_) | DiagnosticDetailValue::TextList(_) => error,
         };
     }
-    error.into()
+    error
 }
 
 fn compatibility_execution_error(error: QueryV2ExecutionError) -> OrmError {

@@ -1392,6 +1392,7 @@ mod tests {
 
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::id::{RoleId as ProjectedRoleId, TypeId, TypeKind};
+    use type_bridge_contract::managed_scope::ManagedScopeId;
     use type_bridge_contract::projection::{
         BindingTarget, CSymbolPrefix, ProjectionConfig, ProjectionHandler,
     };
@@ -1400,16 +1401,19 @@ mod tests {
         SdkDiagnosticCategory, SdkDiagnosticDetailValue, SdkDiagnosticName,
     };
     use type_bridge_contract::value::CanonicalValue;
-    use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+    use type_bridge_schema::{
+        ManagedDeltaContext, SchemaDocumentSet, build_schema_authority, normalize_documents,
+        project, resolve, schema_authority_capability_vocabulary,
+    };
 
     use super::*;
     use crate::OrmError;
     use crate::ProjectedCrudExecutor;
-    use crate::match_request::result::{
-        BoundConceptEvidence, ConceptId, HydratedRole, ProviderResultEvidence,
-        ProviderSolutionEvidence, ReductionRow,
+    use crate::match_request::result::{ConceptId, HydratedRole, ReductionRow};
+    use crate::match_request::result_validation::validated_match_result_from_v2;
+    use crate::match_request::v2_outcome_fixture::{
+        distinct_count, distinct_exists, hydrated_page, hydrated_rows, model_reduction,
     };
-    use crate::match_request::result_validation::validate_provider_result;
     use crate::match_request::{
         BindingPair, ComparisonOp, MatchBinding, MatchPlan, MatchRequest, ReduceTerm, Reduction,
         RowCardinality, SessionHandle, ThingKind, validate_match_request,
@@ -1445,11 +1449,9 @@ plays:
         let documents =
             SchemaDocumentSet::parse([(DocumentId::new("projected-query.yaml").unwrap(), SCHEMA)])
                 .unwrap();
-        let resolved = resolve(
-            &normalize_documents(&documents).unwrap(),
-            &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
-        )
-        .unwrap();
+        let declared = normalize_documents(&documents).unwrap();
+        let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+        let resolved = resolve(&declared, &profile).unwrap();
         let projection = project(
             &resolved,
             BindingTarget::C,
@@ -1458,7 +1460,21 @@ plays:
             &[],
         )
         .unwrap();
-        let installed = InstalledRuntimeProjection::try_new(projection).unwrap();
+        // A generated package embeds its verified schema authority; reduction
+        // outcomes echo the contract adapted under it.
+        let authority = build_schema_authority(
+            &declared,
+            declared.required_capabilities(),
+            &ManagedDeltaContext::new(
+                ManagedScopeId::new("projected-query").unwrap(),
+                profile,
+                schema_authority_capability_vocabulary(),
+            ),
+        )
+        .unwrap();
+        let installed = InstalledRuntimeProjection::try_new(projection)
+            .unwrap()
+            .with_schema_authority(&authority);
         let registry = installed.match_registry().unwrap();
         (installed, registry)
     }
@@ -1565,28 +1581,20 @@ plays:
         }
     }
 
-    fn solution(values: Vec<(u16, HydratedThing)>) -> ProviderSolutionEvidence {
-        ProviderSolutionEvidence::new(
-            values
-                .into_iter()
-                .map(|(binding, thing)| BoundConceptEvidence::new(BindingId::new(binding), thing))
-                .collect(),
-            Vec::new(),
-        )
+    /// One released row holding a single singular slot.
+    fn one(thing: HydratedThing) -> Vec<SlotValue> {
+        vec![SlotValue::One(thing)]
     }
 
     fn validate_rows(
         registry: &DescriptorRegistry,
         request: MatchRequest,
-        solutions: Vec<ProviderSolutionEvidence>,
+        rows: Vec<Vec<SlotValue>>,
     ) -> (ValidatedMatchRequest, ValidatedMatchResult) {
         let request = validate_match_request(registry, request).unwrap();
-        let evidence = ProviderResultEvidence::rows(
-            request.request_token(),
-            request.shape_id().clone(),
-            solutions,
-        );
-        let result = validate_provider_result(registry, &request, evidence).unwrap();
+        let result =
+            validated_match_result_from_v2(registry, &request, hydrated_rows(registry, rows))
+                .unwrap();
         (request, result)
     }
 
@@ -1643,12 +1651,12 @@ plays:
         installed: &InstalledRuntimeProjection,
         registry: &DescriptorRegistry,
         request: MatchRequest,
-        solutions: Vec<ProviderSolutionEvidence>,
+        rows: Vec<Vec<SlotValue>>,
         limits: ProjectedQueryMaterializationLimits,
         code: &str,
         actual: u64,
     ) {
-        let (request, result) = validate_rows(registry, request, solutions);
+        let (request, result) = validate_rows(registry, request, rows);
         let error = materialize_projected_query_result(
             installed,
             registry,
@@ -1674,14 +1682,10 @@ plays:
         let (installed, registry) = fixture();
         let request_a = validate_match_request(&registry, one_rows_request(&registry)).unwrap();
         let result_for_a = || {
-            validate_provider_result(
+            validated_match_result_from_v2(
                 &registry,
                 &request_a,
-                ProviderResultEvidence::rows(
-                    request_a.request_token(),
-                    request_a.shape_id().clone(),
-                    Vec::new(),
-                ),
+                hydrated_rows(&registry, Vec::new()),
             )
             .unwrap()
         };
@@ -1811,16 +1815,12 @@ plays:
                 RowCardinality::ExactlyOne,
             )
             .unwrap();
-        let result = validate_provider_result(
+        let result = validated_match_result_from_v2(
             &registry,
             &request,
-            ProviderResultEvidence::rows(
-                request.request_token(),
-                request.shape_id().clone(),
-                vec![solution(vec![(
-                    0,
-                    employee(&registry, "0x1", "person", "ada", 7),
-                )])],
+            hydrated_rows(
+                &registry,
+                vec![one(employee(&registry, "0x1", "person", "ada", 7))],
             ),
         )
         .unwrap();
@@ -1917,10 +1917,7 @@ plays:
         let (request, result) = validate_rows(
             &registry,
             request,
-            vec![solution(vec![(
-                0,
-                minimal_employee(&registry, "0x1", "employee", "ada"),
-            )])],
+            vec![one(minimal_employee(&registry, "0x1", "employee", "ada"))],
         );
         let projected = materialize_projected_query_result(
             &installed,
@@ -1989,11 +1986,7 @@ plays:
             Vec::new(),
             Vec::new(),
         );
-        let (request, result) = validate_rows(
-            &registry,
-            request,
-            vec![solution(vec![(0, empty_relation)])],
-        );
+        let (request, result) = validate_rows(&registry, request, vec![one(empty_relation)]);
         let projected = materialize_projected_query_result(
             &installed,
             &registry,
@@ -2077,21 +2070,20 @@ plays:
             .unwrap();
             let root = employee(&registry, "0x1", "person", "root", 1);
             let member = employee(&registry, "0x2", "person", "member", 2);
-            let evidence = ProviderResultEvidence::page(
-                request.request_token(),
-                request.shape_id().clone(),
+            let outcome = hydrated_page(
+                &registry,
                 BindingId::new(0),
-                vec![
-                    solution(vec![(0, root.clone()), (1, member.clone())]),
-                    solution(vec![(0, root), (1, member)]),
-                ],
                 Window {
                     offset: 2,
                     limit: 1,
                 },
                 Some(3),
+                vec![vec![
+                    SlotValue::One(root),
+                    SlotValue::Many(vec![member.clone(), member]),
+                ]],
             );
-            let result = validate_provider_result(&registry, &request, evidence).unwrap();
+            let result = validated_match_result_from_v2(&registry, &request, outcome).unwrap();
             (request, result)
         };
         let (request, result) = make();
@@ -2274,26 +2266,25 @@ plays:
                 },
             )
         };
-        let evidence_for = |request: &ValidatedMatchRequest| {
-            ProviderResultEvidence::rows(
-                request.request_token(),
-                request.shape_id().clone(),
-                vec![solution(vec![(
-                    0,
-                    relation(
+        let result_for = |request: &ValidatedMatchRequest| {
+            validated_match_result_from_v2(
+                &registry,
+                request,
+                hydrated_rows(
+                    &registry,
+                    vec![one(relation(
                         &registry,
                         "0x10",
                         employee(&registry, "0x1", "person", "ada", 7),
-                    ),
-                )])],
+                    ))],
+                ),
             )
+            .unwrap()
         };
 
         let database = Database::with_backend(Box::new(NullBackend), "origin-db");
         let direct_request = validate_match_request(&registry, request_for()).unwrap();
-        let direct_result =
-            validate_provider_result(&registry, &direct_request, evidence_for(&direct_request))
-                .unwrap();
+        let direct_result = result_for(&direct_request);
         let direct = materialize_projected_query_result(
             &installed,
             &registry,
@@ -2326,9 +2317,7 @@ plays:
         assert_eq!(direct.resource_measure().attribute_values(), 3);
 
         let remote_request = validate_match_request(&registry, request_for()).unwrap();
-        let remote_result =
-            validate_provider_result(&registry, &remote_request, evidence_for(&remote_request))
-                .unwrap();
+        let remote_result = result_for(&remote_request);
         let remote = materialize_projected_query_result(
             &installed,
             &registry,
@@ -2382,9 +2371,7 @@ plays:
         assert_eq!(measure.attribute_values(), 3);
 
         let exact_request = validate_match_request(&registry, request_for()).unwrap();
-        let exact_result =
-            validate_provider_result(&registry, &exact_request, evidence_for(&exact_request))
-                .unwrap();
+        let exact_result = result_for(&exact_request);
         assert_eq!(
             materialize_projected_query_result(
                 &installed,
@@ -2400,9 +2387,7 @@ plays:
         );
 
         let limited_request = validate_match_request(&registry, request_for()).unwrap();
-        let limited_result =
-            validate_provider_result(&registry, &limited_request, evidence_for(&limited_request))
-                .unwrap();
+        let limited_result = result_for(&limited_request);
         let error = materialize_projected_query_result(
             &installed,
             &registry,
@@ -2435,12 +2420,7 @@ plays:
     #[test]
     fn row_resource_limits_accept_exact_measure_and_reject_every_one_below_boundary() {
         let (installed, registry) = fixture();
-        let make = || {
-            vec![solution(vec![(
-                0,
-                employee(&registry, "0x1", "person", "ada", 7),
-            )])]
-        };
+        let make = || vec![one(employee(&registry, "0x1", "person", "ada", 7))];
         let (request, result) = validate_rows(&registry, one_rows_request(&registry), make());
         let baseline = materialize_projected_query_result(
             &installed,
@@ -2569,15 +2549,10 @@ plays:
 
         let count_request =
             reduction_request(&registry, |root, _| MatchOperation::CountBy { root });
-        let count_result = validate_provider_result(
+        let count_result = validated_match_result_from_v2(
             &registry,
             &count_request,
-            ProviderResultEvidence::count(
-                count_request.request_token(),
-                count_request.shape_id().clone(),
-                root,
-                u64::MAX,
-            ),
+            distinct_count(root, u64::MAX),
         )
         .unwrap();
         let count = materialize_projected_query_result(
@@ -2599,17 +2574,9 @@ plays:
 
         let exists_request =
             reduction_request(&registry, |root, _| MatchOperation::ExistsBy { root });
-        let exists_result = validate_provider_result(
-            &registry,
-            &exists_request,
-            ProviderResultEvidence::exists(
-                exists_request.request_token(),
-                exists_request.shape_id().clone(),
-                root,
-                true,
-            ),
-        )
-        .unwrap();
+        let exists_result =
+            validated_match_result_from_v2(&registry, &exists_request, distinct_exists(root, true))
+                .unwrap();
         let exists = materialize_projected_query_result(
             &installed,
             &registry,
@@ -2639,14 +2606,12 @@ plays:
                     },
                 ],
             });
-        let ungrouped_result = validate_provider_result(
+        let ungrouped_result = validated_match_result_from_v2(
             &registry,
             &ungrouped_request,
-            ProviderResultEvidence::reduction(
-                ungrouped_request.request_token(),
-                ungrouped_request.shape_id().clone(),
-                root,
-                None,
+            model_reduction(
+                &registry,
+                &ungrouped_request,
                 vec![ReductionRow::new(
                     None,
                     vec![ReducedValue::Count(0), ReducedValue::Double(None)],
@@ -2704,14 +2669,12 @@ plays:
             ),
         )
         .unwrap();
-        let grouped_result = validate_provider_result(
+        let grouped_result = validated_match_result_from_v2(
             &registry,
             &grouped_request,
-            ProviderResultEvidence::reduction(
-                grouped_request.request_token(),
-                grouped_request.shape_id().clone(),
-                root,
-                Some(group),
+            model_reduction(
+                &registry,
+                &grouped_request,
                 vec![ReductionRow::new(
                     Some(employee(&registry, "0x9", "employee", "group", 9)),
                     vec![ReducedValue::Count(4)],
@@ -2752,17 +2715,12 @@ plays:
                 },
             ],
         });
-        let MatchOperation::ReduceByField { group, .. } = &request.request().operation else {
-            unreachable!()
-        };
-        let result = validate_provider_result(
+        let result = validated_match_result_from_v2(
             &registry,
             &request,
-            ProviderResultEvidence::field_reduction(
-                request.request_token(),
-                request.shape_id().clone(),
-                root,
-                group.clone(),
+            model_reduction(
+                &registry,
+                &request,
                 vec![ReductionRow::new_field(
                     AttributeValue::Long(7),
                     vec![ReducedValue::Count(2), ReducedValue::Double(Some(double))],
@@ -2818,14 +2776,12 @@ plays:
             ),
         )
         .unwrap();
-        let tuple_result = validate_provider_result(
+        let tuple_result = validated_match_result_from_v2(
             &registry,
             &tuple_request,
-            ProviderResultEvidence::field_tuple_reduction(
-                tuple_request.request_token(),
-                tuple_request.shape_id().clone(),
-                root,
-                vec![score, name],
+            model_reduction(
+                &registry,
+                &tuple_request,
                 vec![ReductionRow::new_fields(
                     vec![
                         AttributeValue::Long(7),
@@ -2877,14 +2833,12 @@ plays:
             ),
         )
         .unwrap();
-        let tuple_result = validate_provider_result(
+        let tuple_result = validated_match_result_from_v2(
             &registry,
             &tuple_request,
-            ProviderResultEvidence::field_tuple_reduction(
-                tuple_request.request_token(),
-                tuple_request.shape_id().clone(),
-                root,
-                vec![score, name],
+            model_reduction(
+                &registry,
+                &tuple_request,
                 vec![ReductionRow::new_fields(
                     vec![
                         AttributeValue::Long(7),
@@ -2919,11 +2873,8 @@ plays:
         let (installed, registry) = fixture();
         let make = || {
             let request = one_rows_request(&registry);
-            let solutions = vec![solution(vec![(
-                0,
-                employee(&registry, "0xcancel", "person", "cancelled", 1),
-            )])];
-            validate_rows(&registry, request, solutions)
+            let rows = vec![one(employee(&registry, "0xca", "person", "cancelled", 1))];
+            validate_rows(&registry, request, rows)
         };
         let (request, result) = make();
         let cancellation = AnswerCancellation::default();
