@@ -1852,6 +1852,8 @@ fn require_format(
         )
     })?;
     if peek.format != expected {
+        // The one envelope: a V1 or unknown format is refused here, and the
+        // refusal names the format the executor does accept.
         return Err(remote_v2_failure(
             DiagnosticCategory::InvalidContract,
             "query_remote_v2_format_unsupported",
@@ -1861,6 +1863,10 @@ fn require_format(
                 "remote failure" => "remote failure is not the V2 wire format",
                 _ => "remote envelope is not the expected V2 wire format",
             },
+        )
+        .with_detail(
+            "supported",
+            DiagnosticDetailValue::Text(expected.to_owned()),
         ));
     }
     Ok(())

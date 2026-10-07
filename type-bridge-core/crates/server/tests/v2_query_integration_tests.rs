@@ -29,7 +29,11 @@ use type_bridge_contract::query_plan::{
     OrderDirection, OrderTerm, QueryInvocation, QueryOperation, QueryOutput, QueryPattern,
     QueryPlan, ReadStage, query_plan_v2_capability_vocabulary,
 };
-use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteLimits};
+use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteValue};
+use type_bridge_contract::query_remote_v2::{
+    RemoteLimitsV2, RemoteOutcomeV2, RemoteQueryRequestV2, RemoteReplyDecodeLimitsV2,
+    RemoteRequestFingerprintV2,
+};
 use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact,
     TypeFact, ValueFact, ValueFactId,
@@ -38,8 +42,7 @@ use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use type_bridge_core_lib::version::semantic_profile_id;
 use type_bridge_orm::TxType;
-use type_bridge_orm::query_v2::{QueryRowValue, QueryV2Outcome};
-use type_bridge_orm::query_v2_remote::{decode_remote_outcome, encode_remote_request};
+use type_bridge_orm::query_v2_remote::{decode_remote_outcome_v2, encode_remote_request_v2};
 use type_bridge_orm::session::backend::QueryV2AnswerLimits;
 use type_bridge_orm::session::database::Database;
 use type_bridge_orm::session::real_driver::{
@@ -242,14 +245,14 @@ async fn live_query_fixture(test_name: &str) -> LiveQueryFixture {
     }
 }
 
-fn assert_names(outcome: &QueryV2Outcome) {
-    let QueryV2Outcome::Rows(rows) = outcome else {
+fn assert_names(outcome: &RemoteOutcomeV2) {
+    let RemoteOutcomeV2::Rows { rows } = outcome else {
         panic!("rows outcome: {outcome:?}");
     };
     let names = rows
         .iter()
-        .map(|row| match &row.values()[1] {
-            QueryRowValue::Attribute {
+        .map(|row| match &row[1] {
+            RemoteValue::Attribute {
                 value: CanonicalValue::String(value),
                 ..
             } => value.as_str().to_owned(),
@@ -590,17 +593,29 @@ async fn v2_envelope_endpoints_serve_beside_v1() {
 
     // The envelope executes through the versioned endpoint.
     let nonce = "server-v2-nonce-0123456789";
-    let limits = RemoteLimits {
+    let limits = RemoteLimitsV2 {
         deadline_ms: Some(30_000),
         max_bytes: 1 << 20,
         max_items: 100,
         max_collection_members: 1 << 16,
+        max_graph_nodes: 0,
+        max_attribute_values: 0,
+        max_role_players: 0,
+        max_statements: 3,
     };
-    let request = encode_remote_request(&validated, &invocation, &advertised, limits, nonce)
+    let reply_limits = RemoteReplyDecodeLimitsV2 {
+        max_bytes: limits.max_bytes,
+        max_items: limits.max_items,
+        max_collection_members: limits.max_collection_members,
+        max_graph_nodes: limits.max_graph_nodes,
+        max_attribute_values: limits.max_attribute_values,
+        max_role_players: limits.max_role_players,
+    };
+    let request = encode_remote_request_v2(&validated, &invocation, &advertised, limits, nonce)
         .expect("request envelope");
+    let request_envelope = RemoteQueryRequestV2::decode(&request).expect("request envelope");
     let expected_request =
-        type_bridge_contract::query_remote::RemoteRequestFingerprint::compute(&request)
-            .expect("request fingerprint");
+        RemoteRequestFingerprintV2::compute(&request).expect("request fingerprint");
     let response = router
         .clone()
         .oneshot(
@@ -616,15 +631,14 @@ async fn v2_envelope_endpoints_serve_beside_v1() {
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let advertisement_fingerprint = advertised.fingerprint().expect("advertisement fingerprint");
-    let outcome = decode_remote_outcome(
+    let outcome = decode_remote_outcome_v2(
         &bytes,
+        &request_envelope,
         &validated,
-        QueryOperation::Rows,
-        nonce,
         &expected_request,
         &advertisement_fingerprint,
         advertised.reply_key(),
-        limits,
+        reply_limits,
     )
     .expect("typed outcome");
     assert_names(&outcome);
@@ -644,15 +658,14 @@ async fn v2_envelope_endpoints_serve_beside_v1() {
         .unwrap();
     let replay = replay.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(
-        decode_remote_outcome(
+        decode_remote_outcome_v2(
             &replay,
+            &request_envelope,
             &validated,
-            QueryOperation::Rows,
-            nonce,
             &expected_request,
             &advertisement_fingerprint,
             advertised.reply_key(),
-            limits,
+            reply_limits,
         )
         .expect_err("exact replay must be rejected")
         .code()
@@ -799,17 +812,29 @@ async fn production_binary_serves_v1_health_and_v2_query() {
     }
 
     let nonce = "production-server-v2-nonce-0123456789";
-    let limits = RemoteLimits {
+    let limits = RemoteLimitsV2 {
         deadline_ms: Some(30_000),
         max_bytes: 1 << 20,
         max_items: 100,
         max_collection_members: 1 << 16,
+        max_graph_nodes: 0,
+        max_attribute_values: 0,
+        max_role_players: 0,
+        max_statements: 3,
     };
-    let request = encode_remote_request(&validated, &invocation, &advertised, limits, nonce)
+    let reply_limits = RemoteReplyDecodeLimitsV2 {
+        max_bytes: limits.max_bytes,
+        max_items: limits.max_items,
+        max_collection_members: limits.max_collection_members,
+        max_graph_nodes: limits.max_graph_nodes,
+        max_attribute_values: limits.max_attribute_values,
+        max_role_players: limits.max_role_players,
+    };
+    let request = encode_remote_request_v2(&validated, &invocation, &advertised, limits, nonce)
         .expect("production request envelope");
+    let request_envelope = RemoteQueryRequestV2::decode(&request).expect("request envelope");
     let expected_request =
-        type_bridge_contract::query_remote::RemoteRequestFingerprint::compute(&request)
-            .expect("production request fingerprint");
+        RemoteRequestFingerprintV2::compute(&request).expect("production request fingerprint");
     let response = client
         .post(format!("{base_url}/v2/query"))
         .header("content-type", "application/json")
@@ -823,15 +848,14 @@ async fn production_binary_serves_v1_health_and_v2_query() {
     let advertisement_fingerprint = advertised
         .fingerprint()
         .expect("production advertisement fingerprint");
-    let outcome = decode_remote_outcome(
+    let outcome = decode_remote_outcome_v2(
         &response,
+        &request_envelope,
         &validated,
-        QueryOperation::Rows,
-        nonce,
         &expected_request,
         &advertisement_fingerprint,
         advertised.reply_key(),
-        limits,
+        reply_limits,
     )
     .expect("nonce- and request-fingerprint-bound production response");
     assert_names(&outcome);

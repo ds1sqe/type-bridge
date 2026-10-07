@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::fingerprint::SemanticProfileId;
@@ -16,16 +17,19 @@ use type_bridge_contract::query_plan::{
 };
 use type_bridge_contract::query_remote::{
     DEFAULT_REMOTE_DEADLINE_MS, MAX_REMOTE_CLOCK_SKEW_MS, MAX_REMOTE_DEADLINE_MS,
-    RemoteCapabilities, RemoteExecutorBinding, RemoteFieldValue, RemoteLimits, RemoteOutcome,
-    RemoteOutcomeShape, RemoteQueryFailure, RemoteQueryRequest, RemoteQueryResponse, RemoteReply,
-    RemoteReplyDecodeLimits, RemoteReplySignature, RemoteReplySigner, RemoteReplySigningDigest,
-    RemoteReplyVerifier, RemoteRequestFingerprint, RemoteSigningPublicKey, RemoteValue,
-    checked_remote_deadline, checked_remote_limit, decode_remote_reply,
-    decode_signed_remote_failure,
+    RemoteCapabilities, RemoteExecutorBinding, RemoteReplySignature, RemoteReplySigner,
+    RemoteReplySigningDigest, RemoteReplyVerifier, RemoteSigningPublicKey, RemoteValue,
+    checked_remote_deadline, checked_remote_limit,
+};
+use type_bridge_contract::query_remote_v2::{
+    CAP_QUERY_PLAN_V2, CAP_QUERY_REMOTE_ENVELOPE_V2, CAP_QUERY_REMOTE_STRUCTURED_DIAGNOSTIC,
+    RemoteLimitsV2, RemoteOutcomeV2, RemoteQueryFailureV2, RemoteQueryRequestV2,
+    RemoteQueryResponseV2, RemoteReplyDecodeLimitsV2, RemoteReplyV2, RemoteRequestFingerprintV2,
+    RemoteResultKindV2, decode_remote_reply_v2, decode_signed_remote_failure_v2,
 };
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use type_bridge_contract::temporal::{CanonicalDateTimeTz, TimeZoneDesignator};
-use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
+use type_bridge_contract::value::{CanonicalString, CanonicalValue, DecimalValue, ValueTypeTag};
 use type_bridge_contract::{query_given_rows_capability, query_plan_capability_vocabulary};
 
 fn binding(id: u16, variable: &str) -> AssertionBinding {
@@ -62,13 +66,86 @@ fn person_name_patterns() -> Vec<QueryPattern> {
     ]
 }
 
-fn limits() -> RemoteLimits {
-    RemoteLimits {
+/// Request budgets: the byte budget sits at the wire ceiling so the reply
+/// decode budgets below can be tightened without widening the request.
+fn limits() -> RemoteLimitsV2 {
+    RemoteLimitsV2 {
         deadline_ms: None,
-        max_bytes: 1 << 20,
+        max_bytes: u64::try_from(MAX_REMOTE_ENVELOPE_BYTES).expect("wire ceiling"),
         max_items: 100,
         max_collection_members: 1 << 16,
+        max_graph_nodes: 1 << 16,
+        max_attribute_values: 1 << 16,
+        max_role_players: 1 << 16,
+        max_statements: 3,
     }
+}
+
+fn decode_limits(max_bytes: u64) -> RemoteReplyDecodeLimitsV2 {
+    RemoteReplyDecodeLimitsV2 {
+        max_bytes,
+        max_items: 100,
+        max_collection_members: 100,
+        max_graph_nodes: 100,
+        max_attribute_values: 100,
+        max_role_players: 100,
+    }
+}
+
+fn request(
+    plan: &QueryPlan,
+    invocation: &QueryInvocation,
+    advertisement: &RemoteCapabilities,
+    limits: RemoteLimitsV2,
+) -> RemoteQueryRequestV2 {
+    let result = match invocation.operation() {
+        QueryOperation::Rows => RemoteResultKindV2::Rows,
+        QueryOperation::Count => RemoteResultKindV2::Count,
+        QueryOperation::Exists => RemoteResultKindV2::Exists,
+    };
+    RemoteQueryRequestV2::new(
+        plan,
+        invocation,
+        result,
+        advertisement,
+        limits,
+        NONCE,
+        NOW_MS,
+    )
+    .expect("request")
+}
+
+/// The `ada` single-row input invocation most envelope tests ride on.
+fn ada_invocation(plan: &QueryPlan, operation: QueryOperation) -> QueryInvocation {
+    QueryInvocation::new(plan, operation, vec![string_row("ada")]).expect("invocation")
+}
+
+fn signed_count_response(
+    plan: &QueryPlan,
+    request: &RemoteQueryRequestV2,
+    advertisement: &RemoteCapabilities,
+    nonce: &str,
+) -> Vec<u8> {
+    RemoteQueryResponseV2::new(
+        nonce,
+        plan,
+        &request_fingerprint(request),
+        RemoteResultKindV2::Count,
+        RemoteOutcomeV2::Count { value: 1 },
+    )
+    .expect("response")
+    .encode_signed(
+        &advertisement
+            .fingerprint()
+            .expect("advertisement fingerprint"),
+        &TestSigner,
+    )
+    .expect("signed response")
+}
+
+fn request_fingerprint(request: &RemoteQueryRequestV2) -> RemoteRequestFingerprintV2 {
+    RemoteRequestFingerprintV2::compute(&request.encode().expect("request bytes"))
+        .expect("request fingerprint")
 }
 
 const NONCE: &str = "remote-nonce-0123456789abcdef";
@@ -128,35 +205,62 @@ impl RemoteReplyVerifier for CountingVerifier {
     }
 }
 
+/// The plan vocabulary plus the three transport capabilities a V2 request
+/// requires of its executor.
+fn capabilities() -> CapabilitySet {
+    let mut capabilities = query_plan_capability_vocabulary();
+    for capability in [
+        CAP_QUERY_PLAN_V2,
+        CAP_QUERY_REMOTE_ENVELOPE_V2,
+        CAP_QUERY_REMOTE_STRUCTURED_DIAGNOSTIC,
+    ] {
+        capabilities.insert(CapabilityId::new(capability).expect("transport capability"));
+    }
+    capabilities
+}
+
 fn advertisement() -> RemoteCapabilities {
     RemoteCapabilities::new(
-        query_plan_capability_vocabulary(),
+        capabilities(),
         executor("contract-executor-identity", "contract-executor-epoch"),
         TestSigner.public_key(),
     )
 }
 
-fn decode_count_reply(
+fn decode_reply(
     bytes: &[u8],
+    request: &RemoteQueryRequestV2,
     plan: &QueryPlanFingerprint,
-    request: &RemoteRequestFingerprint,
     advertisement: &RemoteCapabilities,
-) -> Result<type_bridge_contract::query_remote::RemoteReply, Diagnostic> {
-    decode_remote_reply(
+    limits: RemoteReplyDecodeLimitsV2,
+    verifier: &impl RemoteReplyVerifier,
+) -> Result<RemoteReplyV2, Diagnostic> {
+    decode_remote_reply_v2(
         bytes,
-        NONCE,
-        plan,
         request,
+        plan,
+        &request_fingerprint(request),
         &advertisement
             .fingerprint()
             .expect("advertisement fingerprint"),
         advertisement.reply_key(),
-        RemoteReplyDecodeLimits {
-            shape: RemoteOutcomeShape::Count,
-            max_bytes: u64::try_from(MAX_REMOTE_ENVELOPE_BYTES).expect("wire ceiling"),
-            max_items: 100,
-            max_collection_members: 100,
-        },
+        limits,
+        verifier,
+    )
+}
+
+fn decode_reply_at_ceiling(
+    bytes: &[u8],
+    request: &RemoteQueryRequestV2,
+    plan: &QueryPlanFingerprint,
+    advertisement: &RemoteCapabilities,
+) -> Result<RemoteReplyV2, Diagnostic> {
+    decode_reply(
+        bytes,
+        request,
+        plan,
+        advertisement,
+        decode_limits(u64::try_from(MAX_REMOTE_ENVELOPE_BYTES).expect("wire ceiling")),
         &TestSigner,
     )
 }
@@ -226,6 +330,10 @@ fn oversized_plan() -> QueryPlan {
 }
 
 fn input_plan() -> QueryPlan {
+    typed_input_plan(ValueTypeTag::String)
+}
+
+fn typed_input_plan(input_type: ValueTypeTag) -> QueryPlan {
     let mut patterns = person_name_patterns();
     patterns.push(QueryPattern::Value {
         comparator: ValueComparator::Equal,
@@ -241,7 +349,7 @@ fn input_plan() -> QueryPlan {
         vec![InputColumn::new(
             InputColumnId::new(0),
             QueryVariable::new("wanted_name").expect("input name"),
-            ValueTypeTag::String,
+            input_type,
             false,
         )],
         vec![ReadStage::Match { patterns }],
@@ -307,21 +415,13 @@ fn canonical_depth_boundary_plan_rides_one_request_framing_level() {
 
     let invocation =
         QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).expect("invocation");
-    let request = RemoteQueryRequest::new(
-        &plan,
-        &invocation,
-        &advertisement(),
-        limits(),
-        NONCE,
-        NOW_MS,
-    )
-    .expect("request");
+    let request = request(&plan, &invocation, &advertisement(), limits());
     let request_bytes = request
         .encode()
         .expect("request framing adds one admitted depth level");
     let request_json: Value = serde_json::from_slice(&request_bytes).expect("request JSON");
     assert_eq!(json_depth(&request_json), MAX_CANONICAL_DEPTH + 1);
-    let decoded = RemoteQueryRequest::decode(&request_bytes).expect("request decodes");
+    let decoded = RemoteQueryRequestV2::decode(&request_bytes).expect("request decodes");
     assert_eq!(decoded.plan().expect("embedded plan revalidates"), plan);
 
     let beyond = nested_value_plan(29);
@@ -351,84 +451,85 @@ fn plans_beyond_the_string_ceiling_ride_the_request_envelope() {
     let invocation =
         QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).expect("invocation");
 
-    let request = RemoteQueryRequest::new(
-        &plan,
-        &invocation,
-        &advertisement(),
-        limits(),
-        NONCE,
-        NOW_MS,
-    )
-    .expect("request envelope");
+    let request = request(&plan, &invocation, &advertisement(), limits());
     let bytes = request.encode().expect("request bytes");
-    let decoded = RemoteQueryRequest::decode(&bytes).expect("request decodes");
+    let decoded = RemoteQueryRequestV2::decode(&bytes).expect("request decodes");
     assert_eq!(decoded.plan().expect("embedded plan decodes"), plan);
 }
 
 #[test]
 fn requests_reject_nested_scalar_normalization() {
     let plan = input_plan();
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("ada")])
-        .expect("invocation");
-    let bytes = RemoteQueryRequest::new(
-        &plan,
-        &invocation,
-        &advertisement(),
-        limits(),
-        NONCE,
-        NOW_MS,
-    )
-    .expect("request")
-    .encode()
-    .expect("request bytes");
-    let request: Value = serde_json::from_slice(&bytes).expect("request JSON");
+    let invocation = ada_invocation(&plan, QueryOperation::Rows);
+    let bytes = request(&plan, &invocation, &advertisement(), limits())
+        .encode()
+        .expect("request bytes");
+    let request_json: Value = serde_json::from_slice(&bytes).expect("request JSON");
 
-    let mut unknown = request.clone();
+    let mut unknown = request_json;
     unknown["rows"][0][0]["unknown"] = Value::Null;
     let unknown = to_canonical_json(&unknown).expect("canonical unknown-field request");
     assert_eq!(
-        RemoteQueryRequest::decode(&unknown)
+        RemoteQueryRequestV2::decode(&unknown)
             .expect_err("unknown CanonicalValue members must not disappear during decode")
             .code()
             .as_str(),
-        "query_remote_request_wire_mismatch",
+        "query_remote_v2_request_wire_mismatch",
     );
 
-    let mut normalizing = request;
+    // The decoder types the input against the plan before comparing bytes,
+    // so the normalizing spelling must sit in a column of its own type.
+    let decimal_plan = typed_input_plan(ValueTypeTag::Decimal);
+    let decimal_row = InputRow::new(vec![Some(CanonicalValue::Decimal(
+        DecimalValue::new("1.23").expect("canonical decimal"),
+    ))]);
+    let decimal_invocation =
+        QueryInvocation::new(&decimal_plan, QueryOperation::Rows, vec![decimal_row])
+            .expect("decimal invocation");
+    let decimal_bytes = request(
+        &decimal_plan,
+        &decimal_invocation,
+        &advertisement(),
+        limits(),
+    )
+    .encode()
+    .expect("decimal request bytes");
+    let mut normalizing: Value = serde_json::from_slice(&decimal_bytes).expect("request JSON");
     normalizing["rows"][0][0] = serde_json::json!({"kind": "decimal", "value": "+001.2300dec"});
     let normalizing = to_canonical_json(&normalizing).expect("canonical normalizing request");
     assert_eq!(
-        RemoteQueryRequest::decode(&normalizing)
+        RemoteQueryRequestV2::decode(&normalizing)
             .expect_err("normalizing scalar spellings must not change request identity")
             .code()
             .as_str(),
-        "query_remote_request_wire_mismatch",
+        "query_remote_v2_request_wire_mismatch",
     );
 }
 
 #[test]
 fn signed_responses_reject_nested_scalar_normalization() {
     let plan = input_plan();
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("ada")])
-        .expect("invocation");
+    let invocation = ada_invocation(&plan, QueryOperation::Rows);
     let advertisement = advertisement();
-    let request =
-        RemoteQueryRequest::new(&plan, &invocation, &advertisement, limits(), NONCE, NOW_MS)
-            .expect("request");
-    let request_fingerprint =
-        RemoteRequestFingerprint::compute(&request.encode().expect("request bytes"))
-            .expect("request fingerprint");
+    let request = request(&plan, &invocation, &advertisement, limits());
     let plan_fingerprint = QueryPlanFingerprint::compute(&plan).expect("plan fingerprint");
-    let response = RemoteQueryResponse::new(
+    let response = RemoteQueryResponseV2::new(
         NONCE,
-        &plan_fingerprint,
-        &request_fingerprint,
-        RemoteOutcome::Rows {
-            rows: vec![vec![RemoteValue::Value {
-                value: CanonicalValue::String(
-                    CanonicalString::new("ada").expect("canonical response value"),
-                ),
-            }]],
+        &plan,
+        &request_fingerprint(&request),
+        RemoteResultKindV2::Rows,
+        RemoteOutcomeV2::Rows {
+            rows: vec![vec![
+                RemoteValue::Thing {
+                    iid: "0x1".to_owned(),
+                    type_id: TypeId::new(TypeKind::Entity, "person").expect("type id"),
+                },
+                RemoteValue::Value {
+                    value: CanonicalValue::String(
+                        CanonicalString::new("ada").expect("canonical response value"),
+                    ),
+                },
+            ]],
         },
     )
     .expect("response")
@@ -439,30 +540,13 @@ fn signed_responses_reject_nested_scalar_normalization() {
         &TestSigner,
     )
     .expect("signed response");
-    let decode = |bytes: &[u8]| {
-        decode_remote_reply(
-            bytes,
-            NONCE,
-            &plan_fingerprint,
-            &request_fingerprint,
-            &advertisement
-                .fingerprint()
-                .expect("advertisement fingerprint"),
-            advertisement.reply_key(),
-            RemoteReplyDecodeLimits {
-                shape: RemoteOutcomeShape::Rows { width: 1 },
-                max_bytes: u64::try_from(MAX_REMOTE_ENVELOPE_BYTES).expect("wire ceiling"),
-                max_items: 100,
-                max_collection_members: 100,
-            },
-            &TestSigner,
-        )
-    };
+    let decode =
+        |bytes: &[u8]| decode_reply_at_ceiling(bytes, &request, &plan_fingerprint, &advertisement);
     let outer: Value = serde_json::from_slice(&response).expect("response JSON");
     let payload = outer["payload"].clone();
 
     let mut unknown = payload.clone();
-    unknown["outcome"]["rows"][0][0]["value"]["unknown"] = Value::Null;
+    unknown["outcome"]["rows"][0][1]["value"]["unknown"] = Value::Null;
     let unknown = to_canonical_json(&unknown).expect("canonical unknown-field response");
     let unknown = sign_raw_payload(&response, &unknown);
     assert_eq!(
@@ -470,11 +554,11 @@ fn signed_responses_reject_nested_scalar_normalization() {
             .expect_err("unknown CanonicalValue members must not disappear during decode")
             .code()
             .as_str(),
-        "query_remote_response_wire_mismatch",
+        "query_remote_v2_response_wire_mismatch",
     );
 
     let mut normalizing = payload;
-    normalizing["outcome"]["rows"][0][0]["value"] =
+    normalizing["outcome"]["rows"][0][1]["value"] =
         serde_json::json!({"kind": "decimal", "value": "+001.2300dec"});
     let normalizing =
         to_canonical_json(&normalizing).expect("canonical normalizing response payload");
@@ -484,52 +568,43 @@ fn signed_responses_reject_nested_scalar_normalization() {
             .expect_err("normalizing scalar spellings must not change response identity")
             .code()
             .as_str(),
-        "query_remote_response_wire_mismatch",
+        "query_remote_v2_response_wire_mismatch",
     );
 }
 
 #[test]
 fn remote_failures_require_nonce_and_whole_request_binding() {
     let plan = input_plan();
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("ada")])
-        .expect("invocation");
-    let request = RemoteQueryRequest::new(
-        &plan,
-        &invocation,
-        &advertisement(),
-        limits(),
-        NONCE,
-        NOW_MS,
-    )
-    .expect("request");
-    let request_fingerprint =
-        RemoteRequestFingerprint::compute(&request.encode().expect("request bytes"))
-            .expect("request fingerprint");
+    let invocation = ada_invocation(&plan, QueryOperation::Rows);
+    let request = request(&plan, &invocation, &advertisement(), limits());
+    let request_fingerprint = request_fingerprint(&request);
     let diagnostic = Diagnostic::new(
         DiagnosticCategory::Integrity,
         DiagnosticCode::new("provider_unavailable").expect("diagnostic code"),
         "provider unavailable",
     );
 
-    let unbound = RemoteQueryFailure::new(None, &diagnostic);
+    let unbound = RemoteQueryFailureV2::new(None, &diagnostic).expect("unbound failure");
     assert_eq!(
         unbound
             .verify_binding(NONCE, &request_fingerprint)
             .expect_err("missing nonce and request are never request-bound")
             .code()
             .as_str(),
-        "query_remote_failure_unbound",
+        "query_remote_v2_failure_unbound",
     );
-    let nonce_only = RemoteQueryFailure::new(Some(NONCE.to_owned()), &diagnostic);
+    let nonce_only =
+        RemoteQueryFailureV2::new(Some(NONCE.to_owned()), &diagnostic).expect("nonce-only failure");
     assert_eq!(
         nonce_only
             .verify_binding(NONCE, &request_fingerprint)
             .expect_err("a nonce alone does not bind an invocation")
             .code()
             .as_str(),
-        "query_remote_failure_unbound",
+        "query_remote_v2_failure_unbound",
     );
-    RemoteQueryFailure::bound(NONCE, &request_fingerprint, &diagnostic)
+    RemoteQueryFailureV2::bound(NONCE, &request_fingerprint, &diagnostic)
+        .expect("bound failure")
         .verify_binding(NONCE, &request_fingerprint)
         .expect("fully bound failure verifies");
 }
@@ -537,103 +612,47 @@ fn remote_failures_require_nonce_and_whole_request_binding() {
 #[test]
 fn signature_is_verified_before_binding_or_outcome_materialization() {
     let plan = input_plan();
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("ada")])
-        .expect("invocation");
+    let invocation = ada_invocation(&plan, QueryOperation::Count);
     let advertisement = advertisement();
-    let request =
-        RemoteQueryRequest::new(&plan, &invocation, &advertisement, limits(), NONCE, NOW_MS)
-            .expect("request");
-    let request_fingerprint =
-        RemoteRequestFingerprint::compute(&request.encode().expect("request bytes"))
-            .expect("request fingerprint");
+    let request = request(&plan, &invocation, &advertisement, limits());
     let plan_fingerprint = QueryPlanFingerprint::compute(&plan).expect("plan fingerprint");
-    let response = RemoteQueryResponse::new(
-        NONCE,
-        &plan_fingerprint,
-        &request_fingerprint,
-        RemoteOutcome::Count { value: 1 },
-    )
-    .expect("response")
-    .encode_signed(
-        &advertisement
-            .fingerprint()
-            .expect("advertisement fingerprint"),
-        &TestSigner,
-    )
-    .expect("response bytes");
+    let response = signed_count_response(&plan, &request, &advertisement, NONCE);
     let mut forged: Value = serde_json::from_slice(&response).expect("response JSON");
     forged["payload"]["nonce"] = Value::String("foreign-nonce-0123456789abcdef".to_owned());
     forged["payload"]["outcome"] = Value::String("x".repeat(512 * 1024));
     let forged = serde_json::to_vec(&forged).expect("canonical forged signed response");
 
     assert_eq!(
-        decode_count_reply(
-            &forged,
-            &plan_fingerprint,
-            &request_fingerprint,
-            &advertisement,
-        )
-        .expect_err("tampered payload must reject before binding or typed outcome decode")
-        .code()
-        .as_str(),
+        decode_reply_at_ceiling(&forged, &request, &plan_fingerprint, &advertisement)
+            .expect_err("tampered payload must reject before binding or typed outcome decode")
+            .code()
+            .as_str(),
         "query_remote_signature_invalid",
     );
 
-    let foreign = RemoteQueryResponse::new(
+    let foreign = signed_count_response(
+        &plan,
+        &request,
+        &advertisement,
         "foreign-nonce-0123456789abcdef",
-        &plan_fingerprint,
-        &request_fingerprint,
-        RemoteOutcome::Count { value: 1 },
-    )
-    .expect("foreign response")
-    .encode_signed(
-        &advertisement
-            .fingerprint()
-            .expect("advertisement fingerprint"),
-        &TestSigner,
-    )
-    .expect("signed foreign response");
+    );
     assert_eq!(
-        decode_count_reply(
-            &foreign,
-            &plan_fingerprint,
-            &request_fingerprint,
-            &advertisement,
-        )
-        .expect_err("an authenticated foreign binding remains rejected")
-        .code()
-        .as_str(),
-        "query_remote_nonce_mismatch",
+        decode_reply_at_ceiling(&foreign, &request, &plan_fingerprint, &advertisement)
+            .expect_err("an authenticated foreign binding remains rejected")
+            .code()
+            .as_str(),
+        "query_remote_v2_nonce_mismatch",
     );
 }
 
 #[test]
 fn every_authenticated_outer_identity_field_is_signature_bound() {
     let plan = input_plan();
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("ada")])
-        .expect("invocation");
+    let invocation = ada_invocation(&plan, QueryOperation::Count);
     let advertisement = advertisement();
-    let request =
-        RemoteQueryRequest::new(&plan, &invocation, &advertisement, limits(), NONCE, NOW_MS)
-            .expect("request");
-    let request_fingerprint =
-        RemoteRequestFingerprint::compute(&request.encode().expect("request bytes"))
-            .expect("request fingerprint");
+    let request = request(&plan, &invocation, &advertisement, limits());
     let plan_fingerprint = QueryPlanFingerprint::compute(&plan).expect("plan fingerprint");
-    let response = RemoteQueryResponse::new(
-        NONCE,
-        &plan_fingerprint,
-        &request_fingerprint,
-        RemoteOutcome::Count { value: 1 },
-    )
-    .expect("response")
-    .encode_signed(
-        &advertisement
-            .fingerprint()
-            .expect("advertisement fingerprint"),
-        &TestSigner,
-    )
-    .expect("signed response");
+    let response = signed_count_response(&plan, &request, &advertisement, NONCE);
 
     for field in ["advertisement", "key", "key_id", "signature"] {
         let mut forged: Value = serde_json::from_slice(&response).expect("response JSON");
@@ -646,15 +665,10 @@ fn every_authenticated_outer_identity_field_is_signature_bound() {
         forged[field] = Value::String(replacement);
         let forged = serde_json::to_vec(&forged).expect("forged outer reply");
         assert_eq!(
-            decode_count_reply(
-                &forged,
-                &plan_fingerprint,
-                &request_fingerprint,
-                &advertisement,
-            )
-            .expect_err("every fixed outer identity field is authenticated")
-            .code()
-            .as_str(),
+            decode_reply_at_ceiling(&forged, &request, &plan_fingerprint, &advertisement)
+                .expect_err("every fixed outer identity field is authenticated")
+                .code()
+                .as_str(),
             "query_remote_signature_invalid",
             "field {field}",
         );
@@ -664,47 +678,20 @@ fn every_authenticated_outer_identity_field_is_signature_bound() {
 #[test]
 fn caller_success_byte_budget_does_not_hide_authenticated_failures() {
     let plan = input_plan();
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("ada")])
-        .expect("invocation");
+    let invocation = ada_invocation(&plan, QueryOperation::Count);
     let advertisement = advertisement();
-    let request =
-        RemoteQueryRequest::new(&plan, &invocation, &advertisement, limits(), NONCE, NOW_MS)
-            .expect("request");
-    let request_fingerprint =
-        RemoteRequestFingerprint::compute(&request.encode().expect("request bytes"))
-            .expect("request fingerprint");
+    let request = request(&plan, &invocation, &advertisement, limits());
+    let request_fingerprint = request_fingerprint(&request);
     let plan_fingerprint = QueryPlanFingerprint::compute(&plan).expect("plan fingerprint");
-    let response = RemoteQueryResponse::new(
-        NONCE,
-        &plan_fingerprint,
-        &request_fingerprint,
-        RemoteOutcome::Count { value: 1 },
-    )
-    .expect("response")
-    .encode_signed(
-        &advertisement
-            .fingerprint()
-            .expect("advertisement fingerprint"),
-        &TestSigner,
-    )
-    .expect("signed response");
+    let response = signed_count_response(&plan, &request, &advertisement, NONCE);
     let verifier = CountingVerifier::default();
     let decode = |bytes: &[u8], max_bytes| {
-        decode_remote_reply(
+        decode_reply(
             bytes,
-            NONCE,
+            &request,
             &plan_fingerprint,
-            &request_fingerprint,
-            &advertisement
-                .fingerprint()
-                .expect("advertisement fingerprint"),
-            advertisement.reply_key(),
-            RemoteReplyDecodeLimits {
-                shape: RemoteOutcomeShape::Count,
-                max_bytes,
-                max_items: 100,
-                max_collection_members: 100,
-            },
+            &advertisement,
+            decode_limits(max_bytes),
             &verifier,
         )
     };
@@ -724,13 +711,14 @@ fn caller_success_byte_budget_does_not_hide_authenticated_failures() {
         "the signed reply kind is authenticated before applying the success-only budget",
     );
 
-    let foreign_request = RemoteRequestFingerprint::compute(b"foreign remote request")
+    let foreign_request = RemoteRequestFingerprintV2::compute(b"foreign remote request")
         .expect("foreign request fingerprint");
-    let wrong_request = RemoteQueryResponse::new(
+    let wrong_request = RemoteQueryResponseV2::new(
         NONCE,
-        &plan_fingerprint,
+        &plan,
         &foreign_request,
-        RemoteOutcome::Count { value: 1 },
+        RemoteResultKindV2::Count,
+        RemoteOutcomeV2::Count { value: 1 },
     )
     .expect("wrong-request response")
     .encode_signed(
@@ -745,7 +733,7 @@ fn caller_success_byte_budget_does_not_hide_authenticated_failures() {
             .expect_err("request correlation wins before the success-data budget")
             .code()
             .as_str(),
-        "query_remote_request_mismatch",
+        "query_remote_v2_request_mismatch",
     );
     assert_eq!(
         verifier.calls(),
@@ -774,7 +762,8 @@ fn caller_success_byte_budget_does_not_hide_authenticated_failures() {
         DiagnosticCode::new("query_remote_response_oversized").expect("diagnostic code"),
         "the typed response exceeds the effective byte budget",
     );
-    let failure = RemoteQueryFailure::bound(NONCE, &request_fingerprint, &server_failure)
+    let failure = RemoteQueryFailureV2::bound(NONCE, &request_fingerprint, &server_failure)
+        .expect("bound failure")
         .encode_signed(
             &advertisement
                 .fingerprint()
@@ -784,12 +773,12 @@ fn caller_success_byte_budget_does_not_hide_authenticated_failures() {
         .expect("signed bound failure");
     assert!(matches!(
         decode(&failure, 0).expect("zero success budget still admits a typed failure"),
-        RemoteReply::Failure(_),
+        RemoteReplyV2::Failure(_),
     ));
     assert_eq!(verifier.calls(), 4);
 
     assert_eq!(
-        decode_signed_remote_failure(
+        decode_signed_remote_failure_v2(
             &response,
             &advertisement
                 .fingerprint()
@@ -809,12 +798,17 @@ fn caller_success_byte_budget_does_not_hide_authenticated_failures() {
         "the explicit uncorrelated-failure budget still bypasses verification",
     );
 
+    // The request budget caps the decode budget, so the ceiling is the
+    // largest success budget a caller can still name here.
     let over_wire_ceiling = vec![b'{'; MAX_REMOTE_ENVELOPE_BYTES + 1];
     assert_eq!(
-        decode(&over_wire_ceiling, u64::MAX)
-            .expect_err("the global wire ceiling is also checked before parsing")
-            .code()
-            .as_str(),
+        decode(
+            &over_wire_ceiling,
+            u64::try_from(MAX_REMOTE_ENVELOPE_BYTES).expect("wire ceiling")
+        )
+        .expect_err("the global wire ceiling is also checked before parsing")
+        .code()
+        .as_str(),
         "query_remote_envelope_too_large",
     );
     assert_eq!(
@@ -825,371 +819,20 @@ fn caller_success_byte_budget_does_not_hide_authenticated_failures() {
 }
 
 #[test]
-fn shape_preflight_rejects_under_width_wrong_kind_and_malformed_documents() {
-    let plan = input_plan();
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("ada")])
-        .expect("invocation");
-    let advertisement = advertisement();
-    let request =
-        RemoteQueryRequest::new(&plan, &invocation, &advertisement, limits(), NONCE, NOW_MS)
-            .expect("request");
-    let request_fingerprint =
-        RemoteRequestFingerprint::compute(&request.encode().expect("request bytes"))
-            .expect("request fingerprint");
-    let plan_fingerprint = QueryPlanFingerprint::compute(&plan).expect("plan fingerprint");
-    let sign = |outcome| {
-        RemoteQueryResponse::new(NONCE, &plan_fingerprint, &request_fingerprint, outcome)
-            .expect("response")
-            .encode_signed(
-                &advertisement
-                    .fingerprint()
-                    .expect("advertisement fingerprint"),
-                &TestSigner,
-            )
-            .expect("signed response")
-    };
-    let decode_with_max_items = |bytes: &[u8], shape, max_items| {
-        decode_remote_reply(
-            bytes,
-            NONCE,
-            &plan_fingerprint,
-            &request_fingerprint,
-            &advertisement
-                .fingerprint()
-                .expect("advertisement fingerprint"),
-            advertisement.reply_key(),
-            RemoteReplyDecodeLimits {
-                shape,
-                max_bytes: u64::try_from(MAX_REMOTE_ENVELOPE_BYTES).expect("wire ceiling"),
-                max_items,
-                max_collection_members: 100,
-            },
-            &TestSigner,
-        )
-    };
-    let decode = |bytes: &[u8], shape| decode_with_max_items(bytes, shape, 100);
-
-    for (bytes, shape) in [
-        (
-            sign(RemoteOutcome::Rows { rows: vec![vec![]] }),
-            RemoteOutcomeShape::Rows { width: 1 },
-        ),
-        (
-            sign(RemoteOutcome::Documents {
-                documents: vec![vec![]],
-            }),
-            RemoteOutcomeShape::Documents { width: 1 },
-        ),
-    ] {
-        assert_eq!(
-            decode(&bytes, shape)
-                .expect_err("under-width evidence is rejected by the shape scan")
-                .code()
-                .as_str(),
-            "query_remote_evidence_mismatch",
-        );
-    }
-
-    let wrong_kind = sign(RemoteOutcome::Count { value: 1 });
-    assert_eq!(
-        decode(&wrong_kind, RemoteOutcomeShape::Rows { width: 1 })
-            .expect_err("wrong outcome kind cannot bypass the shape scan")
-            .code()
-            .as_str(),
-        "query_remote_outcome_mismatch",
-    );
-
-    let document = sign(RemoteOutcome::Documents {
-        documents: vec![vec![RemoteFieldValue::List { values: vec![] }]],
-    });
-    let outer: Value = serde_json::from_slice(&document).expect("document outer");
-    let payload = serde_json::to_string(&outer["payload"]).expect("document payload");
-    let duplicated = payload.replace(
-        "{\"kind\":\"list\",\"values\":[]}",
-        "{\"kind\":\"list\",\"values\":[],\"values\":[]}",
-    );
-    assert_ne!(duplicated, payload, "fixture replacement must apply");
-    let duplicated = sign_raw_payload(&document, duplicated.as_bytes());
-    assert_eq!(
-        decode(&duplicated, RemoteOutcomeShape::Documents { width: 1 })
-            .expect_err("duplicate list payload is rejected before typed allocation")
-            .code()
-            .as_str(),
-        "query_remote_evidence_mismatch",
-    );
-
-    for (name, malformed, expected) in [
-        (
-            "unknown document member",
-            payload.replace(
-                "{\"kind\":\"list\",\"values\":[]}",
-                "{\"extra\":null,\"kind\":\"list\",\"values\":[]}",
-            ),
-            "query_remote_evidence_mismatch",
-        ),
-        (
-            "duplicate document kind",
-            payload.replace(
-                "{\"kind\":\"list\",\"values\":[]}",
-                "{\"kind\":\"list\",\"kind\":\"list\",\"values\":[]}",
-            ),
-            "query_remote_evidence_mismatch",
-        ),
-        (
-            "unknown outcome member",
-            payload.replace(
-                "\"kind\":\"documents\"}",
-                "\"extra\":null,\"kind\":\"documents\"}",
-            ),
-            "query_remote_outcome_mismatch",
-        ),
-        (
-            "duplicate outcome member",
-            payload.replace(
-                "\"outcome\":{\"documents\":",
-                "\"outcome\":{\"documents\":[],\"documents\":",
-            ),
-            "query_remote_outcome_mismatch",
-        ),
-    ] {
-        assert_ne!(malformed, payload, "{name}: fixture replacement must apply");
-        let malformed = sign_raw_payload(&document, malformed.as_bytes());
-        assert_eq!(
-            decode(&malformed, RemoteOutcomeShape::Documents { width: 1 })
-                .expect_err(name)
-                .code()
-                .as_str(),
-            expected,
-            "{name}",
-        );
-    }
-
-    let unknown_response_field = format!(
-        "{},\"unknown\":null}}",
-        payload.strip_suffix('}').expect("response payload object")
-    );
-    let duplicate_response_field =
-        payload.replace(",\"request\":", ",\"request\":null,\"request\":");
-    for (name, malformed, expected) in [
-        (
-            "unknown response field",
-            unknown_response_field,
-            "invalid_canonical_value",
-        ),
-        (
-            "duplicate response field",
-            duplicate_response_field,
-            "query_remote_reply_malformed",
-        ),
-    ] {
-        assert_ne!(malformed, payload, "{name}: fixture replacement must apply");
-        let malformed = sign_raw_payload(&document, malformed.as_bytes());
-        assert_eq!(
-            decode(&malformed, RemoteOutcomeShape::Documents { width: 1 })
-                .expect_err(name)
-                .code()
-                .as_str(),
-            expected,
-            "{name}",
-        );
-    }
-
-    let count = sign(RemoteOutcome::Count { value: 1 });
-    decode(&count, RemoteOutcomeShape::Count).expect("exact count shape");
-    let count_at_limit = sign(RemoteOutcome::Count { value: 100 });
-    decode(&count_at_limit, RemoteOutcomeShape::Count)
-        .expect("a count equal to the caller item budget is accepted");
-    let count_over_limit = sign(RemoteOutcome::Count { value: 101 });
-    assert_eq!(
-        decode(&count_over_limit, RemoteOutcomeShape::Count)
-            .expect_err("a count above the caller item budget is rejected")
-            .code()
-            .as_str(),
-        "query_remote_response_oversized",
-    );
-    let outer: Value = serde_json::from_slice(&count).expect("count outer");
-    let count_payload = serde_json::to_string(&outer["payload"]).expect("count payload");
-    for (name, malformed, expected) in [
-        (
-            "count value has the wrong scalar type",
-            count_payload.replace("\"value\":1", "\"value\":true"),
-            "query_remote_evidence_mismatch",
-        ),
-        (
-            "count value is duplicated",
-            count_payload.replace("\"value\":1", "\"value\":1,\"value\":1"),
-            "query_remote_outcome_mismatch",
-        ),
-        (
-            "count carries an unknown member",
-            count_payload.replace("{\"kind\":\"count\"", "{\"extra\":null,\"kind\":\"count\""),
-            "query_remote_outcome_mismatch",
-        ),
-        (
-            "count omits its value",
-            count_payload.replace(",\"value\":1", ""),
-            "query_remote_outcome_mismatch",
-        ),
-        (
-            "count claims the exists kind",
-            count_payload.replace("\"kind\":\"count\"", "\"kind\":\"exists\""),
-            "query_remote_outcome_mismatch",
-        ),
-    ] {
-        assert_ne!(
-            malformed, count_payload,
-            "{name}: fixture replacement must apply"
-        );
-        let malformed = sign_raw_payload(&count, malformed.as_bytes());
-        assert_eq!(
-            decode(&malformed, RemoteOutcomeShape::Count)
-                .expect_err(name)
-                .code()
-                .as_str(),
-            expected,
-            "{name}",
-        );
-    }
-
-    let exists = sign(RemoteOutcome::Exists { value: true });
-    decode(&exists, RemoteOutcomeShape::Exists).expect("exact exists shape");
-    let absent = sign(RemoteOutcome::Exists { value: false });
-    decode_with_max_items(&absent, RemoteOutcomeShape::Exists, 0)
-        .expect("false existence evidence consumes no answer item");
-    decode_with_max_items(&exists, RemoteOutcomeShape::Exists, 1)
-        .expect("true existence evidence fits one answer item");
-    assert_eq!(
-        decode_with_max_items(&exists, RemoteOutcomeShape::Exists, 0)
-            .expect_err("true existence evidence exceeds a zero-item budget")
-            .code()
-            .as_str(),
-        "query_remote_response_oversized",
-    );
-    let outer: Value = serde_json::from_slice(&exists).expect("exists outer");
-    let exists_payload = serde_json::to_string(&outer["payload"]).expect("exists payload");
-    for (name, malformed, expected) in [
-        (
-            "exists value has the wrong scalar type",
-            exists_payload.replace("\"value\":true", "\"value\":0"),
-            "query_remote_evidence_mismatch",
-        ),
-        (
-            "exists kind is duplicated",
-            exists_payload.replace(
-                "\"kind\":\"exists\"",
-                "\"kind\":\"exists\",\"kind\":\"exists\"",
-            ),
-            "query_remote_outcome_mismatch",
-        ),
-    ] {
-        assert_ne!(
-            malformed, exists_payload,
-            "{name}: fixture replacement must apply"
-        );
-        let malformed = sign_raw_payload(&exists, malformed.as_bytes());
-        assert_eq!(
-            decode(&malformed, RemoteOutcomeShape::Exists)
-                .expect_err(name)
-                .code()
-                .as_str(),
-            expected,
-            "{name}",
-        );
-    }
-}
-
-#[test]
-fn unencodable_failures_use_a_nonempty_signed_bound_fallback() {
-    let plan = input_plan();
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("ada")])
-        .expect("invocation");
-    let advertisement = advertisement();
-    let request =
-        RemoteQueryRequest::new(&plan, &invocation, &advertisement, limits(), NONCE, NOW_MS)
-            .expect("request");
-    let request_fingerprint =
-        RemoteRequestFingerprint::compute(&request.encode().expect("request bytes"))
-            .expect("request fingerprint");
-    let plan_fingerprint = QueryPlanFingerprint::compute(&plan).expect("plan fingerprint");
-    let oversized = Diagnostic::new(
-        DiagnosticCategory::Integrity,
-        DiagnosticCode::new("provider_unavailable").expect("diagnostic code"),
-        "x".repeat(type_bridge_contract::limits::MAX_CANONICAL_STRING_BYTES + 1),
-    );
-    let bytes = RemoteQueryFailure::bound(NONCE, &request_fingerprint, &oversized)
-        .encode_signed_or_fallback(
-            &advertisement
-                .fingerprint()
-                .expect("advertisement fingerprint"),
-            &TestSigner,
-        );
-    assert!(!bytes.is_empty());
-    let reply = decode_remote_reply(
-        &bytes,
-        NONCE,
-        &plan_fingerprint,
-        &request_fingerprint,
-        &advertisement
-            .fingerprint()
-            .expect("advertisement fingerprint"),
-        advertisement.reply_key(),
-        RemoteReplyDecodeLimits {
-            shape: RemoteOutcomeShape::Count,
-            max_bytes: u64::try_from(MAX_REMOTE_ENVELOPE_BYTES).expect("wire ceiling"),
-            max_items: 100,
-            max_collection_members: 100,
-        },
-        &TestSigner,
-    )
-    .expect("fallback is authenticated and bound");
-    let RemoteReply::Failure(failure) = reply else {
-        panic!("fallback must remain a failure");
-    };
-    assert_eq!(
-        failure.diagnostic().expect("diagnostic").code().as_str(),
-        "query_remote_internal_failure",
-    );
-}
-
-#[test]
 fn bound_noncanonical_replies_keep_the_canonical_codec_diagnostic() {
     let plan = input_plan();
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("ada")])
-        .expect("invocation");
+    let invocation = ada_invocation(&plan, QueryOperation::Count);
     let advertisement = advertisement();
-    let request =
-        RemoteQueryRequest::new(&plan, &invocation, &advertisement, limits(), NONCE, NOW_MS)
-            .expect("request");
-    let request_fingerprint =
-        RemoteRequestFingerprint::compute(&request.encode().expect("request bytes"))
-            .expect("request fingerprint");
+    let request = request(&plan, &invocation, &advertisement, limits());
     let plan_fingerprint = QueryPlanFingerprint::compute(&plan).expect("plan fingerprint");
-    let mut response = RemoteQueryResponse::new(
-        NONCE,
-        &plan_fingerprint,
-        &request_fingerprint,
-        RemoteOutcome::Count { value: 1 },
-    )
-    .expect("response")
-    .encode_signed(
-        &advertisement
-            .fingerprint()
-            .expect("advertisement fingerprint"),
-        &TestSigner,
-    )
-    .expect("response bytes");
+    let mut response = signed_count_response(&plan, &request, &advertisement, NONCE);
     response.push(b'\n');
 
     assert_eq!(
-        decode_count_reply(
-            &response,
-            &plan_fingerprint,
-            &request_fingerprint,
-            &advertisement,
-        )
-        .expect_err("bound non-canonical bytes must reach the canonical decoder")
-        .code()
-        .as_str(),
+        decode_reply_at_ceiling(&response, &request, &plan_fingerprint, &advertisement)
+            .expect_err("bound non-canonical bytes must reach the canonical decoder")
+            .code()
+            .as_str(),
         "non_canonical_json",
     );
 }
@@ -1197,43 +840,37 @@ fn bound_noncanonical_replies_keep_the_canonical_codec_diagnostic() {
 #[test]
 fn string_embedded_plans_are_rejected() {
     let plan = input_plan();
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("ada")])
-        .expect("invocation");
-    let bytes = RemoteQueryRequest::new(
-        &plan,
-        &invocation,
-        &advertisement(),
-        limits(),
-        NONCE,
-        NOW_MS,
-    )
-    .expect("request envelope")
-    .encode()
-    .expect("request bytes");
+    let invocation = ada_invocation(&plan, QueryOperation::Rows);
+    let bytes = request(&plan, &invocation, &advertisement(), limits())
+        .encode()
+        .expect("request bytes");
 
     // Re-embed the plan in the retired string form and re-encode
-    // canonically; the envelope decodes but the plan accessor must
-    // fail closed instead of accepting the old wire shape.
+    // canonically; the V2 decoder reconstructs the plan while decoding,
+    // so the envelope itself must fail closed instead of accepting the
+    // old wire shape.
     let mut envelope: Value = serde_json::from_slice(&bytes).expect("envelope JSON");
     let plan_text = serde_json::to_string(&envelope["plan"]).expect("plan text");
     envelope["plan"] = Value::String(plan_text);
     let stringified = serde_json::to_vec(&envelope).expect("stringified envelope");
 
-    let decoded = RemoteQueryRequest::decode(&stringified).expect("envelope still decodes");
-    assert!(decoded.plan().is_err(), "string plan must not decode");
+    assert_eq!(
+        RemoteQueryRequestV2::decode(&stringified)
+            .expect_err("string plan must not decode")
+            .code()
+            .as_str(),
+        "invalid_canonical_value",
+    );
 }
 
 #[test]
 fn request_binds_exact_executor_epoch_and_absolute_expiry() {
     let plan = input_plan();
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("ada")])
-        .expect("invocation");
+    let invocation = ada_invocation(&plan, QueryOperation::Rows);
     let mut bounded = limits();
     bounded.deadline_ms = Some(30_000);
     let advertisement = advertisement();
-    let request =
-        RemoteQueryRequest::new(&plan, &invocation, &advertisement, bounded, NONCE, NOW_MS)
-            .expect("request");
+    let request = request(&plan, &invocation, &advertisement, bounded);
 
     assert!(
         request
@@ -1241,7 +878,7 @@ fn request_binds_exact_executor_epoch_and_absolute_expiry() {
             .expect("binding")
     );
     let restarted = RemoteCapabilities::new(
-        query_plan_capability_vocabulary(),
+        capabilities(),
         executor("contract-executor-identity", "contract-restarted-epoch"),
         TestSigner.public_key(),
     );
@@ -1259,24 +896,15 @@ fn request_binds_exact_executor_epoch_and_absolute_expiry() {
             .expect_err("expiry is exclusive")
             .code()
             .as_str(),
-        "query_remote_request_expired",
+        "query_remote_v2_request_expired",
     );
 }
 
 #[test]
 fn absolute_expiry_must_equal_the_declared_or_default_deadline() {
     let plan = input_plan();
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("ada")])
-        .expect("invocation");
-    let default_request = RemoteQueryRequest::new(
-        &plan,
-        &invocation,
-        &advertisement(),
-        limits(),
-        NONCE,
-        NOW_MS,
-    )
-    .expect("default-bounded request");
+    let invocation = ada_invocation(&plan, QueryOperation::Rows);
+    let default_request = request(&plan, &invocation, &advertisement(), limits());
     assert_eq!(
         default_request.expires_at_unix_ms(),
         NOW_MS + DEFAULT_REMOTE_DEADLINE_MS,
@@ -1284,45 +912,42 @@ fn absolute_expiry_must_equal_the_declared_or_default_deadline() {
     );
 
     let default_bytes = default_request.encode().expect("default request bytes");
-    RemoteQueryRequest::decode(&default_bytes).expect("matching default timestamps decode");
+    RemoteQueryRequestV2::decode(&default_bytes).expect("matching default timestamps decode");
 
     let mut forged_declared: Value = serde_json::from_slice(&default_bytes).expect("request JSON");
     forged_declared["limits"]["deadline_ms"] = Value::from(1_u64);
     let forged_declared = serde_json::to_vec(&forged_declared).expect("forged request bytes");
     assert_eq!(
-        RemoteQueryRequest::decode(&forged_declared)
+        RemoteQueryRequestV2::decode(&forged_declared)
             .expect_err("a one-millisecond declaration cannot retain the default expiry")
             .code()
             .as_str(),
-        "query_remote_time_invalid",
+        "query_remote_v2_time_invalid",
     );
 
     let mut forged_default: Value = serde_json::from_slice(&default_bytes).expect("request JSON");
     forged_default["expires_at_unix_ms"] = Value::from(NOW_MS + MAX_REMOTE_DEADLINE_MS);
     let forged_default = serde_json::to_vec(&forged_default).expect("forged request bytes");
     assert_eq!(
-        RemoteQueryRequest::decode(&forged_default)
+        RemoteQueryRequestV2::decode(&forged_default)
             .expect_err("an omitted deadline cannot claim the protocol maximum")
             .code()
             .as_str(),
-        "query_remote_time_invalid",
+        "query_remote_v2_time_invalid",
     );
 }
 
 #[test]
 fn malformed_future_and_expired_times_have_stable_rejections() {
     let plan = input_plan();
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![string_row("ada")])
-        .expect("invocation");
+    let invocation = ada_invocation(&plan, QueryOperation::Rows);
     let mut bounded = limits();
     bounded.deadline_ms = Some(30_000);
-    let bytes =
-        RemoteQueryRequest::new(&plan, &invocation, &advertisement(), bounded, NONCE, NOW_MS)
-            .expect("request")
-            .encode()
-            .expect("request bytes");
+    let bytes = request(&plan, &invocation, &advertisement(), bounded)
+        .encode()
+        .expect("request bytes");
 
-    let future = RemoteQueryRequest::decode(&bytes).expect("request");
+    let future = RemoteQueryRequestV2::decode(&bytes).expect("request");
     assert!(
         future
             .remaining_lifetime_ms(NOW_MS - MAX_REMOTE_CLOCK_SKEW_MS)
@@ -1348,29 +973,29 @@ fn malformed_future_and_expired_times_have_stable_rejections() {
             .expect_err("future request")
             .code()
             .as_str(),
-        "query_remote_time_future",
+        "query_remote_v2_time_future",
     );
 
     let mut malformed: Value = serde_json::from_slice(&bytes).expect("request JSON");
     malformed["expires_at_unix_ms"] = Value::from(NOW_MS - 1);
     let malformed = serde_json::to_vec(&malformed).expect("canonical JSON");
     assert_eq!(
-        RemoteQueryRequest::decode(&malformed)
+        RemoteQueryRequestV2::decode(&malformed)
             .expect_err("expiry before preparation")
             .code()
             .as_str(),
-        "query_remote_time_invalid",
+        "query_remote_v2_time_invalid",
     );
 
     let mut overlong: Value = serde_json::from_slice(&bytes).expect("request JSON");
     overlong["expires_at_unix_ms"] = Value::from(NOW_MS + MAX_REMOTE_DEADLINE_MS + 1);
     let overlong = serde_json::to_vec(&overlong).expect("canonical JSON");
     assert_eq!(
-        RemoteQueryRequest::decode(&overlong)
+        RemoteQueryRequestV2::decode(&overlong)
             .expect_err("overlong lifetime")
             .code()
             .as_str(),
-        "query_remote_time_invalid",
+        "query_remote_v2_time_invalid",
     );
 }
 
