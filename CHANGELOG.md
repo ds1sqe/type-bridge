@@ -6,6 +6,14 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [2.2.3] - 2026-10-07
 
+### Security
+
+- Install Debian's fixed Bookworm PCRE2 (`10.42-1+deb12u2`) and Perl
+  (`perl-base 5.36.0-7+deb12u4`) packages in the server image for both
+  architectures, pinned by checksum. The pinned base image predates fixes
+  for CVE-2026-103111, CVE-2026-13221, CVE-2026-42496, CVE-2026-8376,
+  CVE-2026-42497, CVE-2026-48962, CVE-2026-57432, and CVE-2026-57433.
+
 ### Fixed
 
 - Bounded projections sorted by a unique key now validate when they select

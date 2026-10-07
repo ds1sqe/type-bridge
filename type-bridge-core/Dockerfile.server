@@ -7,12 +7,16 @@ ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441
 
 FROM ${RUST_BUILDER_IMAGE} AS runtime-security
 
-# The base image predates Debian's PCRE2 security update. Keep each package
-# immutable until the next reviewed base-image refresh incorporates it.
-ADD --checksum=sha256:81c5502941118a24d47af69a17b8b0b9548d75cc6d72b3eb3fe01047b46fa10e \
-    https://security.debian.org/debian-security/pool/updates/main/p/pcre2/libpcre2-8-0_10.42-1+deb12u1_amd64.deb /security/libpcre2-amd64.deb
-ADD --checksum=sha256:d178d33697eef877c2c27733141b7f8520fee66a329ae5809e8c8eae3709efa3 \
-    https://security.debian.org/debian-security/pool/updates/main/p/pcre2/libpcre2-8-0_10.42-1+deb12u1_arm64.deb /security/libpcre2-arm64.deb
+# The base image predates Debian's PCRE2 and Perl security updates. Keep each
+# package immutable until the next reviewed base-image refresh incorporates it.
+ADD --checksum=sha256:d2f7edfcc7689b9e0761c2742cc824ac86a20768bc5e8057818dc6875291fe76 \
+    https://security.debian.org/debian-security/pool/updates/main/p/pcre2/libpcre2-8-0_10.42-1+deb12u2_amd64.deb /security/libpcre2-amd64.deb
+ADD --checksum=sha256:8498d2c0bd6747dfc2fc6eec62774a86967079555f7043d5a7b78ee4efbbc0fb \
+    https://security.debian.org/debian-security/pool/updates/main/p/pcre2/libpcre2-8-0_10.42-1+deb12u2_arm64.deb /security/libpcre2-arm64.deb
+ADD --checksum=sha256:d7d1943aec9597629bf73075efcc5ef6dc9bda96d78e80d843156ecd448478b8 \
+    https://security.debian.org/debian-security/pool/updates/main/p/perl/perl-base_5.36.0-7+deb12u4_amd64.deb /security/perl-base-amd64.deb
+ADD --checksum=sha256:03d979b849a1a0a8955eee28b988dbc25a407fd3a0581df5c94e6ae7bcc01ddf \
+    https://security.debian.org/debian-security/pool/updates/main/p/perl/perl-base_5.36.0-7+deb12u4_arm64.deb /security/perl-base-arm64.deb
 
 FROM ${RUST_BUILDER_IMAGE} AS builder
 
@@ -49,11 +53,13 @@ LABEL org.opencontainers.image.title="TypeBridge Server" \
       io.type-bridge.release-identity="${RELEASE_IDENTITY}"
 
 COPY --from=runtime-security /security/libpcre2-${TARGETARCH}.deb /tmp/libpcre2.deb
+COPY --from=runtime-security /security/perl-base-${TARGETARCH}.deb /tmp/perl-base.deb
 
 # Remove package-install logs and inode-dependent loader caches. Normalize
 # the password-aging value, which SOURCE_DATE_EPOCH cannot rewrite.
-RUN dpkg --install /tmp/libpcre2.deb \
-    && rm -f /tmp/libpcre2.deb /var/log/dpkg.log /var/cache/ldconfig/aux-cache \
+RUN dpkg --install /tmp/libpcre2.deb /tmp/perl-base.deb \
+    && rm -f /tmp/libpcre2.deb /tmp/perl-base.deb /var/log/dpkg.log \
+      /var/cache/ldconfig/aux-cache \
     && groupadd --gid 10001 typebridge \
     && useradd --uid 10001 --gid 10001 --no-create-home \
       --home-dir /nonexistent --shell /usr/sbin/nologin typebridge \
