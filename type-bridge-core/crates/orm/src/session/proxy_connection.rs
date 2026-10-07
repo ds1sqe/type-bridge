@@ -145,6 +145,8 @@ impl ProxyHttpTransport {
     }
 }
 
+const BLOCKING_GRACE: Duration = Duration::from_secs(1);
+
 async fn run(
     deadline: QueryExecutionDeadline,
     cancellation: &AnswerCancellation,
@@ -152,9 +154,11 @@ async fn run(
     call: impl FnOnce(Duration) -> Result<Vec<u8>, ProxyHttpError> + Send + 'static,
 ) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
     deadline.check(cancellation)?;
-    // The blocking call gets the remaining budget as its own timeout, so the
-    // worker thread does not outlive an abandoned invocation by long.
-    let timeout = Duration::from_millis(deadline.remaining_milliseconds());
+    // The blocking call gets the remaining budget, plus a grace period so the
+    // deadline below always fires first and reports the interruption, as its
+    // own timeout: the worker thread does not outlive an abandoned
+    // invocation by long.
+    let timeout = Duration::from_millis(deadline.remaining_milliseconds()) + BLOCKING_GRACE;
     let blocking = tokio::task::spawn_blocking(move || call(timeout));
     let result = tokio::select! {
         biased;
