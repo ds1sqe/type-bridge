@@ -36,7 +36,7 @@ use type_bridge_orm::{
     AnswerCancellation, AttributeValue, DynamicEntityRow, DynamicRelationRow, DynamicRolePlayer,
     InstalledRuntimeProjection, ProjectedAttributeValue, ProjectedQueryOrigin, ProjectedQueryRow,
     ProjectedQuerySlotValue, ProjectedQueryValue, ProjectedReducedValue, ProjectedReductionGroup,
-    ProjectedThing, QueryExecutionDeadline, QueryExecutionResourceLimits,
+    ProjectedThing, QueryExecutionDeadline, QueryExecutionResourceLimits, QueryTarget,
 };
 
 use crate::__codegen::{
@@ -3502,30 +3502,9 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
         self.ensure_open(ModelValidationPhase::Input)?;
         self.session
             .check_invocation(deadline, ModelValidationPhase::Input)?;
-        let result = match &self.session.execution {
-            QueryExecution::Borrowed(transaction) => {
-                transaction
-                    .execute_match_with_limits(
-                        &self.session.registry,
-                        &validated,
-                        self.session
-                            .resources
-                            .direct_with_deadline(self.session.cancellation.clone(), deadline),
-                    )
-                    .await
-            }
-            QueryExecution::Local(database) => {
-                database
-                    .inner_orm()
-                    .execute_match_with_limits(
-                        &self.session.registry,
-                        &validated,
-                        self.session
-                            .resources
-                            .direct_with_deadline(self.session.cancellation.clone(), deadline),
-                    )
-                    .await
-            }
+        let target = match &self.session.execution {
+            QueryExecution::Borrowed(transaction) => QueryTarget::Transaction(transaction),
+            QueryExecution::Local(database) => QueryTarget::Database(database.inner_orm()),
             QueryExecution::Remote(remote) => {
                 let result = remote
                     .execute_match(
@@ -3540,10 +3519,19 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
                 return Ok(result);
             }
         };
+        let result = target
+            .execute(
+                &self.session.registry,
+                validated,
+                self.session.resources,
+                &self.session.cancellation,
+                deadline,
+            )
+            .await;
         self.session
             .check_invocation(deadline, ModelValidationPhase::Hydration)?;
         self.ensure_open(ModelValidationPhase::Hydration)?;
-        Ok((validated, result.map_err(Error::from_orm_hydration)?))
+        result.map_err(crate::remote::target_error)
     }
 }
 

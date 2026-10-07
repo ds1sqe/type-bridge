@@ -53,6 +53,7 @@ pub mod projected_model;
 mod projected_query;
 pub mod provider_runtime;
 pub mod query;
+mod query_connection;
 mod query_execution_limits;
 pub mod query_v2;
 mod query_v2_adapter;
@@ -160,6 +161,7 @@ pub use projected_query::{
 };
 pub use provider_runtime::ProviderRuntimeOwner;
 pub use query::{EntityQuery, GroupByEntityQuery, GroupByRelationQuery, RelationQuery};
+pub use query_connection::{ProxyQueryConnection, QueryTarget, QueryTargetError};
 pub use query_execution_limits::{
     DEFAULT_QUERY_ATTRIBUTE_VALUES, DEFAULT_QUERY_BYTES, DEFAULT_QUERY_COLLECTION_MEMBERS,
     DEFAULT_QUERY_GRAPH_NODES, DEFAULT_QUERY_ITEMS, DEFAULT_QUERY_ROLE_PLAYERS,

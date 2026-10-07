@@ -12,9 +12,9 @@ use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::query_v2_prepared::QueryAuthority;
 use type_bridge_orm::{
     AnswerCancellation, InstalledRuntimeProjection, ProxyEndpoint, ProxyHttpTransport,
-    QueryExecutionDeadline, QueryExecutionResourceLimits, RemoteModelQueryV2Error,
-    ValidatedMatchRequest, ValidatedMatchResult, lower_remote_query_diagnostic,
-    prepare_remote_model_query_v2_with_budget,
+    ProxyQueryConnection, QueryExecutionDeadline, QueryExecutionResourceLimits, QueryTarget,
+    QueryTargetError, RemoteModelQueryV2Error, ValidatedMatchRequest, ValidatedMatchResult,
+    lower_remote_query_diagnostic,
 };
 
 use crate::Result;
@@ -123,10 +123,9 @@ impl ProxyConnectionPolicy {
 }
 
 struct RemoteRuntime {
-    advertisement: Vec<u8>,
-    authority: Arc<QueryAuthority>,
-    resources: QueryExecutionResourceLimits,
-    route: ProxyRoute,
+    connection: ProxyQueryConnection,
+    // `None` when the built-in route performs the exchange.
+    exchange: Option<Arc<dyn ProxyExchange>>,
 }
 
 /// A proxy connection branded by schema `S`: generated queries only, each
@@ -257,14 +256,25 @@ impl ProxyDatabase<Unbound> {
                 source: None,
             });
         }
+        let advertisement = options.advertisement.ok_or_else(|| Error::Other {
+            message: "remote capability advertisement is unavailable".into(),
+            source: None,
+        })?;
+        let (http, exchange) = match options.route {
+            ProxyRoute::Http(http) => (Some(http), None),
+            ProxyRoute::Exchange(exchange) => (None, Some(exchange)),
+            ProxyRoute::Endpoint(_) => unreachable!("the endpoint is opened when connecting"),
+        };
+        let connection = ProxyQueryConnection::new(
+            http,
+            advertisement,
+            Arc::new(authority),
+            options.answer_limits,
+        )
+        .map_err(connect_error)?;
         let runtime = Arc::new(RemoteRuntime {
-            advertisement: options.advertisement.ok_or_else(|| Error::Other {
-                message: "remote capability advertisement is unavailable".into(),
-                source: None,
-            })?,
-            authority: Arc::new(authority),
-            resources: options.answer_limits,
-            route: options.route,
+            connection,
+            exchange,
         });
         Ok(ProxyDatabase {
             options: None,
@@ -280,7 +290,10 @@ impl<S: Schema> ProxyDatabase<S> {
     /// Start one owner-branded query session over this proxy connection.
     pub fn query(&self) -> Result<QuerySession<'_, S>> {
         let runtime = self.runtime.as_ref().ok_or_else(remote_not_bound)?;
-        self.query_with_resources(runtime.resources, AnswerCancellation::default())
+        self.query_with_resources(
+            runtime.connection.answer_limits(),
+            AnswerCancellation::default(),
+        )
     }
 
     /// Start one query session whose resources are `resources` constrained
@@ -298,7 +311,7 @@ impl<S: Schema> ProxyDatabase<S> {
             installed,
             Arc::clone(registry),
             self,
-            resources.constrained_by(runtime.resources),
+            resources.constrained_by(runtime.connection.answer_limits()),
             cancellation,
         ))
     }
@@ -312,55 +325,24 @@ impl<S: Schema> ProxyDatabase<S> {
         deadline: QueryExecutionDeadline,
     ) -> Result<(ValidatedMatchRequest, ValidatedMatchResult)> {
         let runtime = self.runtime.as_ref().ok_or_else(remote_not_bound)?;
-        check_remote_execution_budget(&cancellation, deadline)?;
-        let pending = prepare_remote_model_query_v2_with_budget(
-            &runtime.authority,
-            registry,
-            validated,
-            &runtime.advertisement,
-            resources.remote(),
-            deadline,
-            &cancellation,
-        )
-        .map_err(remote_model_input_error)?;
-        check_remote_execution_budget(&cancellation, deadline)?;
-        let request = pending.request_bytes().to_vec();
-        let response = match &runtime.route {
-            ProxyRoute::Http(http) => http
-                .exchange(
-                    request,
-                    type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES,
-                    deadline,
-                    &cancellation,
-                )
+        let Some(exchange) = &runtime.exchange else {
+            return QueryTarget::Proxy(&runtime.connection)
+                .execute(registry, validated, resources, &cancellation, deadline)
                 .await
-                .map_err(|error| {
-                    Error::from_sdk_execution(error, crate::ModelValidationPhase::Input)
-                })?,
-            ProxyRoute::Exchange(exchange) => {
-                await_proxy(exchange.exchange(&request), &cancellation, deadline).await?
-            }
-            ProxyRoute::Endpoint(_) => unreachable!("the endpoint is opened when connecting"),
+                .map_err(target_error);
         };
-        check_remote_execution_budget(&cancellation, deadline)?;
-        let claimed = pending
-            .claim_reply_with_cancellation(&cancellation)
-            .map_err(remote_model_hydration_error)?;
-        if response.len() > claimed.response_snapshot_limit() {
-            return Err(Error::classified(
-                crate::ErrorCategory::ResourceLimit,
-                None,
-                "remote_response_limit",
-                Vec::new(),
-                "remote query reply exceeds the authenticated response ceiling",
-                None,
-            ));
-        }
-        let (request, result, _registry) = claimed
-            .decode_with_cancellation(&response, &cancellation)
-            .map_err(remote_model_hydration_error)?;
-        check_remote_execution_budget(&cancellation, deadline)?;
-        Ok((request, result))
+        let pending = runtime
+            .connection
+            .prepare(registry, validated, resources, &cancellation, deadline)
+            .map_err(target_error)?;
+        let response = await_proxy(
+            exchange.exchange(pending.request_bytes()),
+            &cancellation,
+            deadline,
+        )
+        .await?;
+        ProxyQueryConnection::finish(&pending, &response, &cancellation, deadline)
+            .map_err(target_error)
     }
 }
 
@@ -423,6 +405,18 @@ fn remote_not_bound() -> Error {
         path: vec![],
         message: "remote database is not schema-bound".into(),
         source: None,
+    }
+}
+
+/// Lower a terminal failure, keeping the phase it happened in.
+pub(crate) fn target_error(error: QueryTargetError) -> Error {
+    match error {
+        QueryTargetError::Direct(error) => Error::from_orm_hydration(error),
+        QueryTargetError::Prepare(error) => remote_model_input_error(error),
+        QueryTargetError::Reply(error) => remote_model_hydration_error(error),
+        QueryTargetError::Interrupted(error) => {
+            Error::from_sdk_execution(error, crate::ModelValidationPhase::Input)
+        }
     }
 }
 
@@ -873,7 +867,7 @@ mod tests {
     }
 
     fn unconnected_remote(mut options: ProxyConnectionPolicy) -> ProxyDatabase<Unbound> {
-        options.advertisement = Some(Vec::new());
+        options.advertisement = Some(sdk_v2_transport(0x70).0.advertisement);
         ProxyDatabase {
             options: Some(options),
             runtime: None,
