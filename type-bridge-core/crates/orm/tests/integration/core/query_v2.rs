@@ -10,7 +10,7 @@ use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
-use type_bridge_contract::limits::{MAX_REMOTE_ENVELOPE_BYTES, StructuralLimits};
+use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
@@ -22,7 +22,7 @@ use type_bridge_contract::query_plan::{
 use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
 use type_bridge_contract::query_remote_v2::{
     RemoteLimitsV2, RemoteQueryFailureV2, RemoteQueryRequestV2, RemoteReplyDecodeLimitsV2,
-    RemoteRequestFingerprintV2, decode_signed_remote_failure_v2,
+    RemoteReplyV2, RemoteRequestFingerprintV2, decode_remote_reply_v2,
     query_remote_v2_required_capabilities,
 };
 use type_bridge_contract::schema::{
@@ -99,21 +99,32 @@ fn request_binding(request: &[u8]) -> (RemoteQueryRequestV2, RemoteRequestFinger
     )
 }
 
-fn decode_authenticated_failure(
+/// Authenticate a failure the executor bound to `request`.
+fn decode_bound_failure(
     bytes: &[u8],
+    request: &[u8],
+    validated: &ValidatedQuery,
     advertisement: &RemoteCapabilities,
+    limits: RemoteLimitsV2,
 ) -> RemoteQueryFailureV2 {
-    let advertisement_fingerprint = advertisement
-        .fingerprint()
-        .expect("advertisement fingerprint");
-    decode_signed_remote_failure_v2(
+    let (envelope, fingerprint) = request_binding(request);
+    let reply = decode_remote_reply_v2(
         bytes,
-        &advertisement_fingerprint,
+        &envelope,
+        &validated.plan().fingerprint().expect("plan fingerprint"),
+        &fingerprint,
+        &advertisement
+            .fingerprint()
+            .expect("advertisement fingerprint"),
         advertisement.reply_key(),
-        u64::try_from(MAX_REMOTE_ENVELOPE_BYTES).expect("remote envelope ceiling fits u64"),
+        reply_limits(limits),
         &Ed25519RemoteReplyVerifier,
     )
-    .expect("authenticated failure envelope")
+    .expect("authenticated failure envelope");
+    match reply {
+        RemoteReplyV2::Failure(failure) => failure,
+        RemoteReplyV2::Response(_) => panic!("expected a failure reply"),
+    }
 }
 
 fn binding(id: u16, variable: &str) -> AssertionBinding {
@@ -2753,7 +2764,13 @@ async fn deadlines_and_cancellation_bound_both_executors_live() {
         .fingerprint()
         .expect("advertisement fingerprint");
     let response = rejection.into_failure_envelope(&advertisement_fingerprint, &signer);
-    let failure = decode_authenticated_failure(&response, &advertisement);
+    let failure = decode_bound_failure(
+        &response,
+        &request,
+        &validated,
+        &advertisement,
+        caller_limits,
+    );
     assert_eq!(failure.nonce(), Some(nonce));
     failure
         .verify_binding(nonce, &expected_request)

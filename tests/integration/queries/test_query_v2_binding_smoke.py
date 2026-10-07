@@ -312,7 +312,7 @@ def test_prepared_plan_executes_locally_and_remotely() -> None:
             assert str(error.value) == (
                 "processed_item_limit: provider answer exceeded the processed-item ceiling"
             )
-            with pytest.raises(ValueError, match="query_remote_reply_replayed"):
+            with pytest.raises(ValueError, match="query_remote_v2_reply_replayed"):
                 limited.decode_reply(limited_body)
 
             # A failure drains and closes its own request transaction; a fresh
@@ -331,7 +331,7 @@ def test_prepared_plan_executes_locally_and_remotely() -> None:
             body = post_remote(request)
             remote = pending.decode_reply(body)
             assert remote == local
-            with pytest.raises(ValueError, match="query_remote_reply_replayed"):
+            with pytest.raises(ValueError, match="query_remote_v2_reply_replayed"):
                 pending.decode_reply(body)
         finally:
             server.kill()

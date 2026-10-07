@@ -405,7 +405,7 @@ test("prepared plan executes locally and remotely", { skip: smokeSkip }, async (
       );
       await assert.rejects(
         limited.decodeReply(limitedBody),
-        /query_remote_reply_replayed/,
+        /query_remote_v2_reply_replayed/,
       );
 
       // A failure drains and closes its request transaction; a fresh
@@ -460,7 +460,7 @@ test("prepared plan executes locally and remotely", { skip: smokeSkip }, async (
       assert.equal(remote, local);
       await assert.rejects(
         pending.decodeReply(body),
-        /query_remote_reply_replayed/,
+        /query_remote_v2_reply_replayed/,
       );
     } finally {
       // Wait for the server process to die before deleting the shared
