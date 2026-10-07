@@ -661,6 +661,37 @@ exchanged only between peers that both raised the limit.
 The proxy keeps one bound of its own: a request lives at most five minutes,
 so a longer `timeout_milliseconds` shortens to that through a proxy.
 
+## Remote Envelope
+
+One request format and one reply format cross the proxy boundary, whatever
+the query: an authored low-level plan, a generated model query, or a
+reduction.
+
+| Wire value | Format |
+| --- | --- |
+| Request | `typebridge.query-remote-request/v2` |
+| Response | `typebridge.query-remote-response/v2` |
+| Failure | `typebridge.query-remote-failure/v2` |
+| Signed outer reply | `typebridge.query-remote-signed-reply/v1` |
+| Capability advertisement | `typebridge.query-remote-capabilities/v1` |
+
+The request carries the exact canonical plan bytes (either released plan
+format), the invocation, the result kind, the caller's answer budget, the
+advertisement fingerprint, a nonce, and an absolute bounded expiry. Every
+reply is signed with the executor's advertised key and binds the nonce, the
+plan fingerprint, and the fingerprint of the whole request, so a replayed or
+foreign reply is refused before any host object is built. A failure carries
+the complete structured diagnostic: category, code, message, path, and
+details.
+
+An executor advertises the envelope with three capabilities, `query.plan.v2`,
+`query.remote.envelope-v2`, and `query.remote.structured-diagnostic`; a client
+refuses to prepare a request for an advertisement that lacks one with
+`unsupported_required_capability` and the `missing` names. A request in
+another format is refused by the executor with
+`query_remote_v2_format_unsupported`, whose `supported` detail names the
+request format it accepts.
+
 ## Stable Error Categories
 
 | Category | Meaning | Executor invoked? | Data statements? |

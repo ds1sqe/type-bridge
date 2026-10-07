@@ -205,6 +205,12 @@ Low-level callers must obtain `trustedDeclaredSchemaBytes` through an explicit
 trust boundary. Canonical JSON is an internal codec, not a user-maintained
 schema source; generated applications use the embedded authority instead.
 
+An authored plan and a generated model query travel in the same remote
+envelope (`typebridge.query-remote-request/v2`); the executor must advertise
+`query.plan.v2`, `query.remote.envelope-v2`, and
+`query.remote.structured-diagnostic`, and a remote failure carries its
+complete structured diagnostic.
+
 Each pending request accepts exactly one reply. A second `decodeReply` call is
 rejected before parsing the supplied bytes, including when the first reply was
 a remote failure. Reply parsing and typed evidence validation run on a worker

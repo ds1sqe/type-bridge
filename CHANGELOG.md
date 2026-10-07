@@ -4,13 +4,78 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Breaking changes
+
+2.3.0 removes the duplicate query paths that let one query behave
+differently direct and through a proxy. Each entry says what to do instead.
+
+- Generated packages need their embedded schema authority. A package
+  installed without one is refused with `schema_authority_required`. Every
+  generator has embedded it since 2.1.0; regenerate older packages.
+- Direct queries now apply the same limits as remote ones, because every
+  match request, direct or remote, from a generated package or a dynamic
+  registry, runs on one executor:
+  - Query limits: a predicate nested past `canonical_depth` is refused with
+    `canonical_json_too_deep` instead of running, and a dynamic descriptor
+    registry no longer falls back to the old executor when a request does
+    not fit. Raise the session's `QueryLimits` to run such a query.
+  - Answer limits: `Database::execute_match` and
+    `TransactionContext::execute_match` default to 65,536 items, 32 MiB, and
+    65,536 graph nodes, attribute values, collection members, and role
+    players, down from 100,000 items, 64 MiB, and one to four million
+    hydrated values. Raise `QueryExecutionResourceLimits` to return more.
+- `QueryExecutionResourceLimits` constructors in Python, TypeScript/Node, and
+  C no longer clamp a value above the default: they keep it, and refuse a
+  timeout past one day or more than 3 statements. Pass the values you mean.
+- Renamed Rust constants: `MAX_QUERY_ITEMS`, `MAX_QUERY_BYTES`,
+  `MAX_QUERY_GRAPH_NODES`, `MAX_QUERY_ATTRIBUTE_VALUES`,
+  `MAX_QUERY_COLLECTION_MEMBERS`, and `MAX_QUERY_ROLE_PLAYERS` are
+  `DEFAULT_QUERY_*`; they are defaults, no longer ceilings.
+  `DEFAULT_QUERY_TIMEOUT_MILLISECONDS` and `DEFAULT_QUERY_STATEMENTS` are the
+  defaults of the two dimensions that keep a maximum
+  (`MAX_QUERY_TIMEOUT_MILLISECONDS`, `MAX_QUERY_STATEMENTS`).
+- `ProjectedQueryMaterializationLimits::tightened` is replaced by `new`, and
+  the `MAX_PROJECTED_QUERY_*` constants are removed; materialization takes
+  its bounds from the answer policy.
+- Changed refusal codes:
+  - remote model-query preparation reports the limit that refused
+    adaptation, such as `canonical_json_too_deep` with `maximum_depth` or
+    `query_v2_adapter_literal_byte_limit` with `actual_bytes` and
+    `maximum_bytes`, instead of `query_remote_v2_model_artifact_limit`;
+  - a generated manager filter with more than 256 predicates is refused
+    with `structural_limit_exceeded` instead of
+    `manager_filter_predicate_limit`;
+  - replies to authored low-level plans (`query_v2_prepare_remote`,
+    `queryV2PrepareRemote`) are refused with `query_remote_v2_*` codes, and
+    a missing executor capability with `unsupported_required_capability`.
+- The V1 remote envelope is removed (`typebridge.query-remote-request/v1`,
+  `-response/v1`, `-failure/v1`). Authored low-level plans now travel in the
+  `typebridge.query-remote-request/v2` envelope that model queries already
+  used; their binding API keeps its shape, and a failure carries the
+  complete structured diagnostic. Removed Rust API: `RemoteQueryRequest`,
+  `RemoteQueryResponse`, `RemoteQueryFailure`, `RemoteLimits`,
+  `RemoteReplyDecodeLimits`, `decode_remote_reply`, and the orm's
+  `prepare_remote_query`, `preflight_remote_request`, and
+  `execute_admitted_remote_request`; use the `*_v2` items. The capability
+  advertisement and the signed outer reply are unchanged.
+- Mixed versions: clients and executors must both be 2.3.
+  - A 2.3 executor refuses a V1-format request with
+    `query_remote_v2_format_unsupported` and a `supported` detail naming the
+    accepted format.
+  - A 2.3 client prepares authored plans only for an executor that
+    advertises `query.plan.v2`, `query.remote.envelope-v2`, and
+    `query.remote.structured-diagnostic`.
+  - A client older than 2.3 cannot decode the advertisement of an executor
+    configured with non-default query or answer limits.
+
 ### Added
 
 - Configurable query limits. `QueryLimits` replaces the fixed ceilings on a
   query's encoded size, nesting depth, and structure, and a session can lower
   or raise them, including plans larger than 16 MiB. Python, TypeScript/Node,
   and Rust sessions accept it (`query_limits`, `queryLimits`,
-  `with_query_limits`); C gains
+  `with_query_limits`); the C runtime header adds
+  `type_bridge_query_limit_override_v1_t` and
   `type_bridge_query_session_open_with_limits_v1`. Defaults are unchanged.
 - Remote executors advertise the query limits they enforce. A client holds a
   request to the stricter of its own and the advertised limits and refuses
@@ -44,62 +109,17 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
-- The answer-policy constants `MAX_QUERY_ITEMS`, `MAX_QUERY_BYTES`,
-  `MAX_QUERY_GRAPH_NODES`, `MAX_QUERY_ATTRIBUTE_VALUES`,
-  `MAX_QUERY_COLLECTION_MEMBERS`, and `MAX_QUERY_ROLE_PLAYERS` are renamed
-  `DEFAULT_QUERY_*`: they are defaults, no longer ceilings.
-  `DEFAULT_QUERY_TIMEOUT_MILLISECONDS` and `DEFAULT_QUERY_STATEMENTS` are the
-  defaults of the two dimensions that keep a maximum
-  (`MAX_QUERY_TIMEOUT_MILLISECONDS`, `MAX_QUERY_STATEMENTS`).
-- `QueryExecutionResourceLimits` constructors in Python, TypeScript/Node, and
-  C no longer clamp a value above the default; they keep it, or refuse it
-  when it is past the supported maximum. `tightened` in Rust still clamps to
-  the defaults.
-- `ProjectedQueryMaterializationLimits::tightened` is replaced by `new`, and
-  the `MAX_PROJECTED_QUERY_*` constants are removed: materialization takes
-  its bounds from the answer policy.
-- A hydration graph and a row sequence in a reply are no longer capped at
-  65,536 by the container; the caller's budget bounds them.
 - A generated package runs direct queries on the executor a proxy uses. Each
   request is adapted to a V2 plan under the package's embedded schema
   authority, so the same query is accepted or refused the same way direct and
-  remote. Direct sessions of generated packages now apply the query limits
-  that previously bound only remote sessions; a predicate nested past
-  `canonical_depth` is refused with `canonical_json_too_deep` instead of
-  running.
-- The second selected-row executor is removed. Every match request, direct
-  or remote, from a generated package or a dynamic registry, is adapted to a
-  V2 plan and run on one executor.
-- A generated package installed without a schema authority can no longer
-  run queries; it is refused with `schema_authority_required`. Every
-  generator has embedded the authority since 2.1.0, so this affects only
-  packages generated before that release: regenerate them.
-- `Database::execute_match` and `TransactionContext::execute_match` run
-  under the common answer policy by default: 65,536 items, 32 MiB, and
-  65,536 graph nodes, attribute values, collection members, and role
-  players. The executor previously had ceilings of its own (100,000 items,
-  64 MiB, one to four million hydrated values), so a request could return
-  more direct than through a proxy.
+  remote. The second selected-row executor is removed.
 - Generated manager `all` and `first` run as complete fetches on the same
   executor. Results and the `manager_first_identity_not_unique` refusal are
   unchanged.
-- Remote model-query preparation reports the resource limit that refused
-  adaptation, such as `canonical_json_too_deep` with `maximum_depth`, or
-  `query_v2_adapter_literal_byte_limit` with `actual_bytes` and
-  `maximum_bytes`. The catch-all `query_remote_v2_model_artifact_limit` code
-  is removed.
-- A generated manager filter with more than 256 predicates is refused with
-  `structural_limit_exceeded` instead of `manager_filter_predicate_limit`.
-- Direct execution through a dynamic descriptor registry no longer falls back
-  to the V1 executor when a request does not fit the V2 query limits. The
-  request is refused with the same resource-limit diagnostic the remote path
-  reports; raise the session's query limits to run it.
+- A hydration graph and a row sequence in a reply are no longer capped at
+  65,536 by the container; the caller's budget bounds them.
 - `selected_slots` validation messages no longer spell the number sixteen;
   the ceiling is reported in the `maximum` detail.
-- A client older than this release cannot decode a capability advertisement
-  from an executor configured with non-default query limits.
-- The C runtime header adds `type_bridge_query_limit_override_v1_t` and
-  `type_bridge_query_session_open_with_limits_v1`.
 
 ## [2.2.6] - 2026-10-16
 
