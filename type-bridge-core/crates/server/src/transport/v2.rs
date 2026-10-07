@@ -1973,7 +1973,8 @@ mod tests {
             .expect("validated query");
         let invocation =
             QueryInvocation::new(&plan, operation, Vec::new()).expect("query invocation");
-        let bytes = encode_remote_request_v2(&validated, &invocation, advertisement, limits, nonce)?;
+        let bytes =
+            encode_remote_request_v2(&validated, &invocation, advertisement, limits, nonce)?;
         let plan_fingerprint = QueryPlanFingerprint::compute(&plan).expect("plan fingerprint");
         let envelope = RemoteQueryRequestV2::decode(&bytes).expect("request envelope");
         let request_fingerprint =
