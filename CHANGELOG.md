@@ -4,6 +4,8 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.3] - 2026-10-07
+
 ### Fixed
 
 - Bounded projections sorted by a unique key now validate when they select
