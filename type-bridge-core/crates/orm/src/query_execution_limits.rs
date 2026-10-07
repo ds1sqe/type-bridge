@@ -78,6 +78,14 @@ impl QueryExecutionDeadline {
         Self { deadline }
     }
 
+    /// The earlier of this deadline and `other`.
+    #[must_use]
+    pub fn earliest(self, other: Self) -> Self {
+        Self {
+            deadline: self.deadline.min(other.deadline),
+        }
+    }
+
     /// Return whether the absolute deadline has elapsed.
     #[must_use]
     pub fn is_expired(self) -> bool {

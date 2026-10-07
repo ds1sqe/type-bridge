@@ -234,9 +234,9 @@ impl QueryTarget<'_> {
         }
     }
 
-    /// Run one validated request under `resources`, which this call
-    /// constrains by the connection's ceiling again, so a caller cannot
-    /// exceed it.
+    /// Run one validated request under `resources` and `deadline`, both of
+    /// which this call constrains by the connection's ceiling again, so a
+    /// caller cannot exceed it.
     ///
     /// # Errors
     ///
@@ -252,6 +252,12 @@ impl QueryTarget<'_> {
         deadline: QueryExecutionDeadline,
     ) -> Result<(ValidatedMatchRequest, ValidatedMatchResult), QueryTargetError> {
         let resources = self.constrain(resources);
+        // A session constrained when it was created already has this
+        // deadline; one that was not still cannot outlive the ceiling.
+        let deadline = match self.answer_limits() {
+            Some(ceiling) => deadline.earliest(QueryExecutionDeadline::for_limits(ceiling)),
+            None => deadline,
+        };
         match self {
             Self::Database(database) => {
                 let result = database
