@@ -1156,7 +1156,7 @@
               "mode": "live",
               "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
               "anchors": [
-                "RemoteDatabase<AppSchema>",
+                "ProxyDatabase<AppSchema>",
                 "F4 remote collected page",
                 "assert_eq!(observed_page, expected_page)",
                 "F4 public selected/read/remote lifecycle: passed"

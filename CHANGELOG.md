@@ -58,6 +58,17 @@ differently direct and through a proxy. Each entry says what to do instead.
   `prepare_remote_query`, `preflight_remote_request`, and
   `execute_admitted_remote_request`; use the `*_v2` items. The capability
   advertisement and the signed outer reply are unchanged.
+- Rust connections: `SchemaPackage::connect(policy)` takes a
+  `DirectConnectionPolicy` or a `ProxyConnectionPolicy` and returns
+  `Connection<S>` (`Direct(Database<S>)` or `Proxy(ProxyDatabase<S>)`)
+  instead of `Database<S>`; match `Connection::Direct` for CRUD managers.
+  Renamed: `RemoteDatabase` to `ProxyDatabase`, `RemoteQueryTransport` to
+  `ProxyExchange`, `RemoteConnectionOptions` to `ProxyConnectionPolicy`
+  (`generated(limits, transport)` is
+  `with_exchange(transport).answer_limits(limits)`; `new(scope, profile,
+  limits, transport)` adds `.authority(scope, profile)`), and `DirectTls` to
+  `TlsPolicy`. `RemoteQueryLimits` is removed; pass
+  `QueryExecutionResourceLimits`.
 - Mixed versions: clients and executors must both be 2.3.
   - A 2.3 executor refuses a V1-format request with
     `query_remote_v2_format_unsupported` and a `supported` detail naming the
@@ -80,6 +91,13 @@ differently direct and through a proxy. Each entry says what to do instead.
 - Remote executors advertise the query limits they enforce. A client holds a
   request to the stricter of its own and the advertised limits and refuses
   before sending. The standalone server reads `[v2.query_limits]`.
+- A built-in HTTP transport for proxy connections. In Rust,
+  `ProxyConnectionPolicy::new(ProxyEndpoint::new(url))` reaches a
+  TypeBridge server's `/v2/capabilities` and `/v2/query` routes over
+  plaintext or TLS (`TlsPolicy`: native roots or a custom root bundle), with
+  optional request headers such as `Authorization`, and an advertisement can
+  be pinned instead of fetched. It follows no redirects and ignores proxy
+  environment variables.
 - Query resource-limit refusals report `limit`, `maximum`, and `source`
   (`default`, `configured`, or `advertised`).
 - Configurable answer limits. How much a query may return is one policy,

@@ -181,13 +181,13 @@ pub use session::database::is_identity_safe_provider_address;
 pub use session::embedded_driver_versions;
 #[cfg(feature = "typedb")]
 pub use session::{
-    ConnectOptions, DirectConnectionPolicy, DirectTls, PreparedSecureConnectOptions,
-    SecureConnectError, SecureConnectOptions, SecureResult, TlsMode,
+    ConnectOptions, DirectConnectionPolicy, PreparedSecureConnectOptions, SecureConnectError,
+    SecureConnectOptions, SecureResult, TlsMode,
 };
 pub use session::{
-    Database, DatabaseConnectionAuthority, GivenRowsSpec, GivenValue, Transaction,
-    TransactionContext, TxType, require_legacy_writer_open,
-    require_legacy_writer_open_in_transaction,
+    Database, DatabaseConnectionAuthority, GivenRowsSpec, GivenValue, ProxyEndpoint,
+    ProxyHttpTransport, TlsPolicy, Transaction, TransactionContext, TxType,
+    require_legacy_writer_open, require_legacy_writer_open_in_transaction,
 };
 #[cfg(feature = "typedb")]
 pub use session::{

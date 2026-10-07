@@ -292,7 +292,7 @@ forms.
 Classify Rust SDK failures through `Error::category()`, `code()`, `path()`,
 and `model_validation_phase()`; do not parse display messages. Preserve those
 fields across direct and remote execution. In a caller-owned
-`RemoteQueryTransport`, wrap transport failures with `Error::remote` and a
+`ProxyExchange`, wrap transport failures with `Error::remote` and a
 stable lowercase snake-case code.
 
 Use the server container only with the configuration, TLS, generated

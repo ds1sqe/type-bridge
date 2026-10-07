@@ -529,7 +529,7 @@ struct RemoteOriginTransport {
     signer: type_bridge_orm::query_v2_remote::RemoteReplySigningKey,
 }
 
-impl crate::remote::RemoteQueryTransport for RemoteOriginTransport {
+impl crate::remote::ProxyExchange for RemoteOriginTransport {
     fn capabilities(&self) -> Pin<Box<dyn Future<Output = crate::Result<Vec<u8>>> + Send + '_>> {
         let advertisement = self.advertisement.clone();
         Box::pin(async move { Ok(advertisement) })
@@ -990,17 +990,25 @@ async fn successor_direct_and_borrowed_queries_retain_the_database_origin() {
 
 #[tokio::test]
 async fn successor_authenticated_remote_query_is_explicitly_unbound() {
-    use crate::remote::{RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits};
+    use crate::QueryExecutionResourceLimits;
+    use crate::remote::{ProxyConnectionPolicy, ProxyDatabase};
     use type_bridge_contract::id::{RoleId, TypeId, TypeKind};
     use type_bridge_orm::{ProjectedCreate, ProjectedCrudExecutor, ProjectedReference};
 
     let (transport, exchanges) = remote_origin_transport();
-    let remote = RemoteDatabase::connect(RemoteConnectionOptions::new(
-        "query-origin-test",
-        "typedb-3.12.1/v1",
-        RemoteQueryLimits::new(8, 1 << 20, 16, 16, 64, 32),
-        transport,
-    ))
+    let remote = ProxyDatabase::connect(
+        ProxyConnectionPolicy::with_exchange(transport)
+            .authority("query-origin-test", "typedb-3.12.1/v1")
+            .answer_limits(QueryExecutionResourceLimits {
+                items: 8,
+                bytes: 1 << 20,
+                collection_members: 16,
+                graph_nodes: 16,
+                attribute_values: 64,
+                role_players: 32,
+                ..QueryExecutionResourceLimits::default()
+            }),
+    )
     .await
     .unwrap()
     .with_schema(successor_package())

@@ -236,7 +236,7 @@ async fn canonical_manager_filters_compile(
 
 struct RemoteTransport;
 
-impl type_bridge::RemoteQueryTransport for RemoteTransport {
+impl type_bridge::ProxyExchange for RemoteTransport {
     fn capabilities(
         &self,
     ) -> std::pin::Pin<
@@ -266,12 +266,19 @@ impl type_bridge::RemoteQueryTransport for RemoteTransport {
 }
 
 async fn remote_generated_outputs_compile() -> type_bridge::Result<()> {
-    let options = type_bridge::RemoteConnectionOptions::generated(
-        type_bridge::RemoteQueryLimits::new(100, 1 << 20, 100, 1000, 1000, 1000),
-        RemoteTransport,
+    let options = type_bridge::ProxyConnectionPolicy::with_exchange(RemoteTransport).answer_limits(
+        type_bridge::QueryExecutionResourceLimits {
+            items: 100,
+            bytes: 1 << 20,
+            collection_members: 100,
+            graph_nodes: 1000,
+            attribute_values: 1000,
+            role_players: 1000,
+            ..type_bridge::QueryExecutionResourceLimits::default()
+        },
     );
-    let remote: type_bridge::RemoteDatabase<AppSchema> =
-        type_bridge::RemoteDatabase::connect(options)
+    let remote: type_bridge::ProxyDatabase<AppSchema> =
+        type_bridge::ProxyDatabase::connect(options)
             .await?
             .with_schema(SCHEMA)?;
     let mut session = remote.query()?;

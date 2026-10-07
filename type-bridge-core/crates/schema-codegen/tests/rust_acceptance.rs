@@ -424,8 +424,8 @@ fn generated_direct_connection_policy_compiles_with_legacy_compatibility() {
 
 use generated::{AppSchema, SCHEMA};
 use type_bridge::{
-    AnswerCancellation, ConnectionOptions, Database, DirectConnectionPolicy, DirectTls,
-    QueryExecutionResourceLimits, Unbound,
+    AnswerCancellation, Connection, ConnectionOptions, Database, DirectConnectionPolicy,
+    ProxyConnectionPolicy, ProxyEndpoint, QueryExecutionResourceLimits, TlsPolicy, Unbound,
 };
 
 fn limits() -> QueryExecutionResourceLimits {
@@ -433,7 +433,7 @@ fn limits() -> QueryExecutionResourceLimits {
 }
 
 fn canonical_policy() -> DirectConnectionPolicy {
-    let trust = DirectTls::custom_root(PathBuf::from("root-ca.pem")).unwrap();
+    let trust = TlsPolicy::custom_root(PathBuf::from("root-ca.pem")).unwrap();
     DirectConnectionPolicy::new(
         "localhost:1729",
         "app",
@@ -446,15 +446,31 @@ fn canonical_policy() -> DirectConnectionPolicy {
     .answer_limits(limits())
 }
 
+fn proxy_policy() -> ProxyConnectionPolicy {
+    let endpoint = ProxyEndpoint::new("https://bridge.example:8443")
+        .tls(TlsPolicy::native_roots())
+        .header("authorization", "Bearer token");
+    ProxyConnectionPolicy::new(endpoint)
+        .connection_limits(limits())
+        .answer_limits(limits())
+}
+
 async fn canonical_connection() -> type_bridge::Result<()> {
     let cancellation = AnswerCancellation::default();
-    let database: Database<AppSchema> = SCHEMA
+    let connection: Connection<AppSchema> = SCHEMA
         .connect_with_cancellation(canonical_policy(), cancellation)
         .await?;
-    database.close()?;
+    if let Connection::Direct(database) = connection {
+        database.close()?;
+    }
 
-    let database: Database<AppSchema> = SCHEMA.connect(canonical_policy()).await?;
-    database.close()
+    for connection in [
+        SCHEMA.connect(canonical_policy()).await?,
+        SCHEMA.connect(proxy_policy()).await?,
+    ] {
+        let _session = connection.query_with_resources(limits(), AnswerCancellation::default())?;
+    }
+    Ok(())
 }
 
 async fn released_connection_compatibility() -> type_bridge::Result<()> {
@@ -468,8 +484,8 @@ async fn released_connection_compatibility() -> type_bridge::Result<()> {
 }
 
 fn main() {
-    let _ = DirectTls::disabled();
-    let _ = DirectTls::native_roots();
+    let _ = TlsPolicy::disabled();
+    let _ = TlsPolicy::native_roots();
     let _ = canonical_connection;
     let _ = released_connection_compatibility;
 }
@@ -516,7 +532,7 @@ fn main() {
         (
             "direct-connect-preserves-package-authority",
             r#"use generated::{AppSchema, SCHEMA};
-use type_bridge::{Database, DirectConnectionPolicy, Schema};
+use type_bridge::{Connection, DirectConnectionPolicy, Schema};
 
 struct ForeignSchema;
 impl type_bridge::schema::sealed::Sealed for ForeignSchema {}
@@ -526,7 +542,7 @@ async fn check() {
     let policy = DirectConnectionPolicy::new(
         "localhost:1729", "app", "admin", "password",
     );
-    let _: Database<ForeignSchema> = SCHEMA.connect(policy).await.unwrap();
+    let _: Connection<ForeignSchema> = SCHEMA.connect(policy).await.unwrap();
 }
 
 fn main() {
@@ -534,15 +550,15 @@ fn main() {
 }"#,
             &[
                 "mismatched types",
-                "Database<ForeignSchema>",
-                "Database<AppSchema>",
+                "Connection<ForeignSchema>",
+                "Connection<AppSchema>",
             ],
         ),
         (
             "direct-tls-rejects-inline-trust-bytes",
-            r#"use type_bridge::DirectTls;
+            r#"use type_bridge::TlsPolicy;
 fn main() {
-    let _ = DirectTls::custom_root(vec![b'x']);
+    let _ = TlsPolicy::custom_root(vec![b'x']);
 }"#,
             &["AsRef", "Path", "Vec<u8>"],
         ),

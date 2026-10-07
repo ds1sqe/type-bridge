@@ -1605,12 +1605,12 @@ impl InstalledPackage {
 fn direct_tls_from_node(
     tls_mode: &str,
     tls_root_ca: Option<String>,
-) -> napi::Result<type_bridge_orm::DirectTls> {
+) -> napi::Result<type_bridge_orm::TlsPolicy> {
     match (tls_mode, tls_root_ca) {
-        ("disabled", None) => Ok(type_bridge_orm::DirectTls::disabled()),
-        ("native_roots", None) => Ok(type_bridge_orm::DirectTls::native_roots()),
+        ("disabled", None) => Ok(type_bridge_orm::TlsPolicy::disabled()),
+        ("native_roots", None) => Ok(type_bridge_orm::TlsPolicy::native_roots()),
         ("custom_root", Some(path)) => {
-            type_bridge_orm::DirectTls::custom_root(path).map_err(napi_sdk_diagnostic)
+            type_bridge_orm::TlsPolicy::custom_root(path).map_err(napi_sdk_diagnostic)
         }
         ("custom_root", None) => Err(invalid_error("custom_root TLS requires tlsRootCa")),
         ("disabled" | "native_roots", Some(_)) => Err(invalid_error(

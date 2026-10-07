@@ -11,6 +11,7 @@ extern crate self as type_bridge;
 pub mod __codegen;
 pub mod aggregate;
 mod canonical_codec;
+mod connection;
 #[allow(dead_code)]
 mod entity_codec;
 mod entity_manager;
@@ -32,6 +33,7 @@ mod transaction;
 pub mod value;
 
 pub use canonical_codec::{CanonicalCodecLimits, CanonicalCodecOptions};
+pub use connection::{Connection, ConnectionPolicy};
 pub use entity_manager::{EntityManager, EntitySubtypeManager};
 pub use error::{
     Error, ErrorCategory, ErrorDetail, ErrorDiagnostic, ErrorPathSegment, ModelValidationPhase,
@@ -55,9 +57,7 @@ pub use query::{
     Subtypes,
 };
 pub use relation_manager::{RelationManager, RelationSubtypeManager};
-pub use remote::{
-    RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits, RemoteQueryTransport,
-};
+pub use remote::{ProxyConnectionPolicy, ProxyDatabase, ProxyExchange};
 pub use schema::{Schema, SchemaPackage, Unbound};
 pub use session::{ConnectionOptions, Database, DatabaseCreateOutcome, DatabaseDeleteOutcome};
 #[cfg(feature = "typedb")]
@@ -68,6 +68,8 @@ pub use transaction::{
     ReadTransaction, TransactionEntityManager, TransactionRelationManager, WriteTransaction,
 };
 pub use type_bridge_contract::limits::{QueryLimits, QueryLimitsError};
+#[cfg(feature = "typedb")]
+pub use type_bridge_orm::DirectConnectionPolicy;
 pub use type_bridge_orm::{
     AnswerCancellation, DEFAULT_QUERY_ATTRIBUTE_VALUES, DEFAULT_QUERY_BYTES,
     DEFAULT_QUERY_COLLECTION_MEMBERS, DEFAULT_QUERY_GRAPH_NODES, DEFAULT_QUERY_ITEMS,
@@ -76,8 +78,7 @@ pub use type_bridge_orm::{
     QueryExecutionDeadline, QueryExecutionLimitOutOfRange, QueryExecutionLimitsError,
     QueryExecutionResourceLimits,
 };
-#[cfg(feature = "typedb")]
-pub use type_bridge_orm::{DirectConnectionPolicy, DirectTls};
+pub use type_bridge_orm::{ProxyEndpoint, TlsPolicy};
 pub use type_bridge_orm_derive::SelectedRow;
 #[cfg(feature = "typedb")]
 pub use type_bridge_schema_migration::{

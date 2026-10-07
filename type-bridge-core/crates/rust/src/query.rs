@@ -168,7 +168,7 @@ pub struct QuerySession<'db, S: Schema> {
 enum QueryExecution<'db, S: Schema> {
     Local(&'db Database<S>),
     Borrowed(&'db type_bridge_orm::session::context::TransactionContext),
-    Remote(&'db crate::remote::RemoteDatabase<S>),
+    Remote(&'db crate::remote::ProxyDatabase<S>),
 }
 
 impl<S: Schema> std::fmt::Debug for QuerySession<'_, S> {
@@ -623,7 +623,7 @@ impl<'db, S: Schema> QuerySession<'db, S> {
     pub(crate) fn remote(
         installed: &'db InstalledRuntimeProjection,
         registry: Arc<DescriptorRegistry>,
-        remote: &'db crate::remote::RemoteDatabase<S>,
+        remote: &'db crate::remote::ProxyDatabase<S>,
         resources: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Self {

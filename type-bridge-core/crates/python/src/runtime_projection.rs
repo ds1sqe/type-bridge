@@ -1133,12 +1133,12 @@ impl InstalledPackage {
 fn direct_tls_from_python(
     tls_mode: &str,
     tls_root_ca: Option<std::path::PathBuf>,
-) -> PyResult<type_bridge_orm::DirectTls> {
+) -> PyResult<type_bridge_orm::TlsPolicy> {
     match (tls_mode, tls_root_ca) {
-        ("disabled", None) => Ok(type_bridge_orm::DirectTls::disabled()),
-        ("native_roots", None) => Ok(type_bridge_orm::DirectTls::native_roots()),
+        ("disabled", None) => Ok(type_bridge_orm::TlsPolicy::disabled()),
+        ("native_roots", None) => Ok(type_bridge_orm::TlsPolicy::native_roots()),
         ("custom_root", Some(path)) => {
-            type_bridge_orm::DirectTls::custom_root(path).map_err(py_sdk_diagnostic)
+            type_bridge_orm::TlsPolicy::custom_root(path).map_err(py_sdk_diagnostic)
         }
         ("custom_root", None) => Err(pyo3::exceptions::PyValueError::new_err(
             "custom_root TLS requires tls_root_ca",

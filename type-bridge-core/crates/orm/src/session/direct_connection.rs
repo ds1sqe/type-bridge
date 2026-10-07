@@ -1,7 +1,6 @@
 //! Binding-neutral generated-package direct connection policy.
 
 use std::fmt;
-use std::path::{Path, PathBuf};
 
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic, SdkProviderOperation,
@@ -12,6 +11,7 @@ use super::backend::AnswerCancellation;
 use super::real_driver::{
     PreparedSecureConnectOptions, SecureConnectError, SecureConnectOptions, TlsMode,
 };
+use super::tls_policy::{TlsPolicy, TlsPolicyKind};
 use crate::error::OrmError;
 use crate::execution_diagnostic::lower_execution_error;
 use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
@@ -21,68 +21,6 @@ const MAX_ENDPOINT_BYTES: usize = 4 * 1024;
 const MAX_DATABASE_BYTES: usize = 256;
 const MAX_USERNAME_BYTES: usize = 4 * 1024;
 const MAX_PASSWORD_BYTES: usize = 64 * 1024;
-
-#[derive(Clone)]
-enum DirectTlsKind {
-    Disabled,
-    NativeRoots,
-    CustomRoot(PathBuf),
-}
-
-/// Closed TLS policy for one generated-package direct connection.
-///
-/// The variants are intentionally private so contradictory trust input cannot
-/// be represented. Custom-root paths are opened and snapshotted only when a
-/// connection invocation begins, after package authority and noncredential
-/// configuration have passed validation.
-#[derive(Clone)]
-pub struct DirectTls {
-    kind: DirectTlsKind,
-}
-
-impl DirectTls {
-    /// Select plaintext HTTP and gRPC.
-    #[must_use]
-    pub const fn disabled() -> Self {
-        Self {
-            kind: DirectTlsKind::Disabled,
-        }
-    }
-
-    /// Select TLS using the operating system's native trust roots.
-    #[must_use]
-    pub const fn native_roots() -> Self {
-        Self {
-            kind: DirectTlsKind::NativeRoots,
-        }
-    }
-
-    /// Select TLS using one custom-root path snapshotted at connect time.
-    pub fn custom_root(path: impl AsRef<Path>) -> Result<Self, SdkExecutionDiagnostic> {
-        let path = path.as_ref();
-        if path.as_os_str().is_empty() {
-            return Err(invalid_input(
-                "direct_tls_custom_root_path_empty",
-                "Custom-root TLS requires a nonempty trust path",
-            ));
-        }
-        Ok(Self {
-            kind: DirectTlsKind::CustomRoot(path.to_path_buf()),
-        })
-    }
-}
-
-impl Default for DirectTls {
-    fn default() -> Self {
-        Self::disabled()
-    }
-}
-
-impl fmt::Debug for DirectTls {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("DirectTls([REDACTED])")
-    }
-}
 
 /// Immutable generated-package direct connection policy.
 ///
@@ -97,7 +35,7 @@ pub struct DirectConnectionPolicy {
     username: String,
     password: String,
     http_port: u16,
-    tls: DirectTls,
+    tls: TlsPolicy,
     connection_limits: QueryExecutionResourceLimits,
     answer_limits: QueryExecutionResourceLimits,
 }
@@ -117,7 +55,7 @@ impl DirectConnectionPolicy {
             username: username.into(),
             password: password.into(),
             http_port: DEFAULT_HTTP_PORT,
-            tls: DirectTls::disabled(),
+            tls: TlsPolicy::disabled(),
             connection_limits: QueryExecutionResourceLimits::default(),
             answer_limits: QueryExecutionResourceLimits::default(),
         }
@@ -132,7 +70,7 @@ impl DirectConnectionPolicy {
 
     /// Set the closed TLS policy.
     #[must_use]
-    pub fn tls(mut self, tls: DirectTls) -> Self {
+    pub fn tls(mut self, tls: TlsPolicy) -> Self {
         self.tls = tls;
         self
     }
@@ -219,9 +157,9 @@ pub(super) fn prepare_direct_connection(
     }
 
     let tls_mode = match &policy.tls.kind {
-        DirectTlsKind::Disabled => TlsMode::Disabled,
-        DirectTlsKind::NativeRoots => TlsMode::NativeRoots,
-        DirectTlsKind::CustomRoot(path) => TlsMode::CustomRootCa(path.clone()),
+        TlsPolicyKind::Disabled => TlsMode::Disabled,
+        TlsPolicyKind::NativeRoots => TlsMode::NativeRoots,
+        TlsPolicyKind::CustomRoot(path) => TlsMode::CustomRootCa(path.clone()),
     };
     let transport = SecureConnectOptions {
         http_port: policy.http_port,
@@ -422,7 +360,7 @@ mod tests {
             "hostile-user",
             "hostile-password",
         )
-        .tls(DirectTls::custom_root("/hostile/root.pem").unwrap());
+        .tls(TlsPolicy::custom_root("/hostile/root.pem").unwrap());
         let diagnostic = format!("{policy:?}");
 
         assert_eq!(diagnostic, "DirectConnectionPolicy([REDACTED])");

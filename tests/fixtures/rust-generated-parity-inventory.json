@@ -149,7 +149,7 @@
       "evidence": [
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
-          "anchors": ["RemoteDatabase<AppSchema>", "assert_eq!(observed_page, expected_page)", "F4 public selected/read/remote lifecycle: passed"]
+          "anchors": ["ProxyDatabase<AppSchema>", "assert_eq!(observed_page, expected_page)", "F4 public selected/read/remote lifecycle: passed"]
         },
         {
           "path": "type-bridge-core/crates/rust/src/remote.rs",
@@ -422,7 +422,7 @@
       "rust": [
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
-          "anchors": ["generated_relation_query_and_remote_lifecycle", "RemoteDatabase<AppSchema>", "F4 remote distinct root count", "assert_eq!(observed_page, expected_page)"]
+          "anchors": ["generated_relation_query_and_remote_lifecycle", "ProxyDatabase<AppSchema>", "F4 remote distinct root count", "assert_eq!(observed_page, expected_page)"]
         },
         {
           "path": "type-bridge-core/crates/rust/src/remote.rs",

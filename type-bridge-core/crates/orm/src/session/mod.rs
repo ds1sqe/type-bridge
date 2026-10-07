@@ -10,6 +10,8 @@ pub mod database;
 #[cfg(feature = "typedb")]
 mod direct_connection;
 pub mod legacy_writer;
+mod proxy_connection;
+mod tls_policy;
 pub mod transaction;
 
 #[cfg(feature = "typedb")]
@@ -23,8 +25,10 @@ pub use database::{
     Database, DatabaseConnectionAuthority, DatabaseCreateOutcome, DatabaseDeleteOutcome,
 };
 #[cfg(feature = "typedb")]
-pub use direct_connection::{DirectConnectionPolicy, DirectTls};
+pub use direct_connection::DirectConnectionPolicy;
 pub use legacy_writer::{require_legacy_writer_open, require_legacy_writer_open_in_transaction};
+pub use proxy_connection::{ProxyEndpoint, ProxyHttpTransport};
+pub use tls_policy::TlsPolicy;
 pub use transaction::Transaction;
 
 #[cfg(feature = "typedb")]

@@ -39,6 +39,8 @@ pub mod ast;
 pub mod compiler;
 /// Canonical TypeDB decimal parsing and semantic comparison.
 pub mod decimal;
+/// Plaintext or TLS HTTP client for a TypeBridge proxy's `/v2` routes.
+pub mod proxy_http;
 /// Parses a TypeQL query string into the AST.
 pub mod query_parser;
 /// TypeQL reserved-word detection.

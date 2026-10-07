@@ -21,8 +21,7 @@ use type_bridge::{
     AnswerCancellation, ConnectionOptions, Database, Error, ErrorCategory, ErrorDetail,
     ErrorPathSegment, DEFAULT_QUERY_ITEMS, PageOptions, ProjectedManagerComparison,
     QueryDiagnosticCategory, QueryDiagnosticPathKind, QueryExecutionResourceLimits, QuerySession,
-    RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits, RemoteQueryTransport, RowsOptions,
-    aggregate,
+    ProxyConnectionPolicy, ProxyDatabase, ProxyEndpoint, ProxyExchange, RowsOptions, aggregate,
 };
 use type_bridge_generated_schema::{
     Actor, ActorType, Aliases, AppSchema, CanonicalDouble, Container, ContainerCreate,
@@ -158,31 +157,26 @@ impl type_bridge::LifecycleHook for RecordingLifecycleHook {
     }
 }
 
+/// An HTTP exchange that counts its `/v2/query` requests, for journeys that
+/// assert how many exchanges a terminal performs. Connections that only need
+/// a working proxy use the built-in transport through [`ProxyEndpoint`].
 struct HttpTransport {
     client: reqwest::Client,
     base_url: String,
-    exchange_count: Option<Arc<AtomicUsize>>,
+    exchange_count: Arc<AtomicUsize>,
 }
 
 impl HttpTransport {
-    fn new(base_url: String) -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            base_url,
-            exchange_count: None,
-        }
-    }
-
     fn recording(base_url: String, exchange_count: Arc<AtomicUsize>) -> Self {
         Self {
             client: reqwest::Client::new(),
             base_url,
-            exchange_count: Some(exchange_count),
+            exchange_count,
         }
     }
 }
 
-impl RemoteQueryTransport for HttpTransport {
+impl ProxyExchange for HttpTransport {
     fn capabilities(
         &self,
     ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + '_>> {
@@ -218,9 +212,7 @@ impl RemoteQueryTransport for HttpTransport {
         request: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + 'a>> {
         Box::pin(async move {
-            if let Some(exchange_count) = &self.exchange_count {
-                exchange_count.fetch_add(1, Ordering::SeqCst);
-            }
+            self.exchange_count.fetch_add(1, Ordering::SeqCst);
             Ok(self
                 .client
                 .post(format!("{}/v2/query", self.base_url))
@@ -243,7 +235,7 @@ struct CancelBeforeDecodeTransport {
     response_completed: Arc<AtomicBool>,
 }
 
-impl RemoteQueryTransport for CancelBeforeDecodeTransport {
+impl ProxyExchange for CancelBeforeDecodeTransport {
     fn capabilities(
         &self,
     ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + '_>> {
@@ -267,7 +259,7 @@ struct CallerAbortProbeTransport {
     cancellation: AnswerCancellation,
 }
 
-impl RemoteQueryTransport for CallerAbortProbeTransport {
+impl ProxyExchange for CallerAbortProbeTransport {
     fn capabilities(
         &self,
     ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + '_>> {
@@ -301,6 +293,20 @@ impl RemoteQueryTransport for CallerAbortProbeTransport {
 
 fn transport_error(error: reqwest::Error) -> type_bridge::Error {
     type_bridge::Error::remote("remote_transport", error.to_string(), Some(Box::new(error)))
+}
+
+/// The answer-limit ceiling of the remote journeys.
+fn remote_answer_limits() -> QueryExecutionResourceLimits {
+    QueryExecutionResourceLimits {
+        timeout_milliseconds: 30_000,
+        items: 100,
+        bytes: 8 << 20,
+        collection_members: 1000,
+        graph_nodes: 1000,
+        attribute_values: 1000,
+        role_players: 1000,
+        ..QueryExecutionResourceLimits::default()
+    }
 }
 
 fn connection_options() -> ConnectionOptions {
@@ -2025,7 +2031,7 @@ fn sdk_v2_cancellation_error(error: &Error, partial_result: bool) -> Value {
 }
 
 async fn sdk_v2_remote_cancellation(
-    remote: &RemoteDatabase<AppSchema>,
+    remote: &ProxyDatabase<AppSchema>,
     exchange_count: &Arc<AtomicUsize>,
     remote_url: &str,
 ) -> Value {
@@ -2054,9 +2060,8 @@ async fn sdk_v2_remote_cancellation(
     let decode_cancellation = AnswerCancellation::default();
     let decode_exchange_count = Arc::new(AtomicUsize::new(0));
     let response_completed = Arc::new(AtomicBool::new(false));
-    let decode_remote: RemoteDatabase<AppSchema> =
-        RemoteDatabase::connect(RemoteConnectionOptions::generated(
-            QueryExecutionResourceLimits::default(),
+    let decode_remote: ProxyDatabase<AppSchema> =
+        ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(
             CancelBeforeDecodeTransport {
                 inner: HttpTransport::recording(
                     remote_url.to_owned(),
@@ -2470,11 +2475,14 @@ async fn run_sdk_journey(db: &Database<AppSchema>) {
 
     let exchange_count = Arc::new(AtomicUsize::new(0));
     let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("sdk remote server URL");
-    let remote: RemoteDatabase<AppSchema> =
-        RemoteDatabase::connect(RemoteConnectionOptions::generated(
-            RemoteQueryLimits::new(100, 8 << 20, 1000, 1000, 1000, 1000).deadline_ms(30_000),
-            HttpTransport::recording(remote_url, Arc::clone(&exchange_count)),
-        ))
+    let remote: ProxyDatabase<AppSchema> =
+        ProxyDatabase::connect(
+            ProxyConnectionPolicy::with_exchange(HttpTransport::recording(
+                remote_url,
+                Arc::clone(&exchange_count),
+            ))
+            .answer_limits(remote_answer_limits()),
+        )
         .await
         .expect("sdk remote database connects")
         .with_schema(SCHEMA)
@@ -2845,9 +2853,8 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
 
     let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("sdk-v2 remote URL");
     let exchange_count = Arc::new(AtomicUsize::new(0));
-    let remote: RemoteDatabase<AppSchema> =
-        RemoteDatabase::connect(RemoteConnectionOptions::generated(
-            QueryExecutionResourceLimits::default(),
+    let remote: ProxyDatabase<AppSchema> =
+        ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(
             HttpTransport::recording(remote_url.clone(), Arc::clone(&exchange_count)),
         ))
         .await
@@ -4880,11 +4887,11 @@ async fn generated_relation_query_and_remote_lifecycle() {
     }
 
     let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("F4 remote server URL");
-    let remote: RemoteDatabase<AppSchema> =
-        RemoteDatabase::connect(RemoteConnectionOptions::generated(
-            RemoteQueryLimits::new(100, 8 << 20, 1000, 1000, 1000, 1000).deadline_ms(30_000),
-            HttpTransport::new(remote_url),
-        ))
+    let remote: ProxyDatabase<AppSchema> =
+        ProxyDatabase::connect(
+            ProxyConnectionPolicy::new(ProxyEndpoint::new(remote_url))
+                .answer_limits(remote_answer_limits()),
+        )
         .await
         .expect("F4 remote database connects")
         .with_schema(SCHEMA)
@@ -6066,14 +6073,14 @@ async fn generated_canonical_serialization_v5_live() {
         .expect("V5 direct employment snapshot encodes");
 
     let exchange_count = Arc::new(AtomicUsize::new(0));
-    let remote: RemoteDatabase<AppSchema> =
-        RemoteDatabase::connect(RemoteConnectionOptions::generated(
-            RemoteQueryLimits::new(100, 8 << 20, 1000, 1000, 1000, 1000).deadline_ms(30_000),
-            HttpTransport::recording(
+    let remote: ProxyDatabase<AppSchema> =
+        ProxyDatabase::connect(
+            ProxyConnectionPolicy::with_exchange(HttpTransport::recording(
                 env::var("TYPE_BRIDGE_REMOTE_URL").expect("V5 remote URL"),
                 Arc::clone(&exchange_count),
-            ),
-        ))
+            ))
+            .answer_limits(remote_answer_limits()),
+        )
         .await
         .expect("V5 remote connects")
         .with_schema(SCHEMA)

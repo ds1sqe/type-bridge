@@ -554,40 +554,54 @@ impl<S: Schema> SchemaPackage<S> {
         Ok(())
     }
 
-    /// Verify this generated package and open an already schema-bound direct
-    /// database through the canonical connection policy.
+    /// Verify this generated package and open a schema-bound connection,
+    /// direct or proxy as `policy` says.
     ///
-    /// Server compatibility is discovered authoritatively; callers cannot
-    /// supply or override the server version used for admission.
-    #[cfg(feature = "typedb")]
+    /// A direct connection discovers server compatibility authoritatively;
+    /// callers cannot supply or override the server version used for
+    /// admission. A proxy connection fetches and validates the server's
+    /// advertisement unless the policy pins one.
     pub async fn connect(
         self,
-        policy: type_bridge_orm::DirectConnectionPolicy,
-    ) -> Result<crate::session::Database<S>> {
+        policy: impl Into<crate::ConnectionPolicy>,
+    ) -> Result<crate::Connection<S>> {
         self.connect_with_cancellation(policy, type_bridge_orm::AnswerCancellation::default())
             .await
     }
 
-    /// Verify this generated package and open an already schema-bound direct
-    /// database with one wakeable connection-cancellation owner.
-    #[cfg(feature = "typedb")]
+    /// [`Self::connect`] with one wakeable connection-cancellation owner.
     pub async fn connect_with_cancellation(
         self,
-        policy: type_bridge_orm::DirectConnectionPolicy,
+        policy: impl Into<crate::ConnectionPolicy>,
         cancellation: type_bridge_orm::AnswerCancellation,
-    ) -> Result<crate::session::Database<S>> {
-        let (installed, authority) = self.verify_and_install_with_authority()?;
-        let match_registry = crate::session::build_match_registry(&installed)?;
-        let inner =
-            type_bridge_orm::Database::connect_direct(installed.as_ref(), &policy, cancellation)
+    ) -> Result<crate::Connection<S>> {
+        match policy.into() {
+            #[cfg(feature = "typedb")]
+            crate::ConnectionPolicy::Direct(policy) => {
+                let (installed, authority) = self.verify_and_install_with_authority()?;
+                let match_registry = crate::session::build_match_registry(&installed)?;
+                let inner = type_bridge_orm::Database::connect_direct(
+                    installed.as_ref(),
+                    &policy,
+                    cancellation,
+                )
                 .await
                 .map_err(Error::from_direct_connection)?;
-        Ok(crate::session::Database::from_bound_parts(
-            inner,
-            installed,
-            match_registry,
-            authority.map(|authority| authority.managed_scope().id().clone()),
-        ))
+                Ok(crate::Connection::Direct(
+                    crate::session::Database::from_bound_parts(
+                        inner,
+                        installed,
+                        match_registry,
+                        authority.map(|authority| authority.managed_scope().id().clone()),
+                    ),
+                ))
+            }
+            crate::ConnectionPolicy::Proxy(policy) => {
+                let proxy =
+                    crate::ProxyDatabase::connect_with_cancellation(policy, cancellation).await?;
+                Ok(crate::Connection::Proxy(proxy.with_schema(self)?))
+            }
+        }
     }
 
     /// Install the package's exact projection for generated successor-runtime validation.

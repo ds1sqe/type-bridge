@@ -1264,7 +1264,7 @@ impl RetainedCustomRootCa {
         }
     }
 
-    fn root_store(&self) -> rustls::RootCertStore {
+    pub(crate) fn root_store(&self) -> rustls::RootCertStore {
         self.0.roots.clone()
     }
 
@@ -1285,14 +1285,16 @@ fn native_root_store_from_loaded(
     Ok(roots)
 }
 
-fn native_root_store() -> Result<rustls::RootCertStore, TlsConfigurationError> {
+pub(crate) fn native_root_store() -> Result<rustls::RootCertStore, TlsConfigurationError> {
     // Platform stores are often heterogeneous. Individual unreadable or
     // malformed entries are not fatal when the same load produced at least
     // one certificate rustls can use.
     native_root_store_from_loaded(rustls_native_certs::load_native_certs())
 }
 
-fn tls_agent(roots: rustls::RootCertStore) -> Result<ureq::Agent, TlsConfigurationError> {
+pub(crate) fn tls_agent(
+    roots: rustls::RootCertStore,
+) -> Result<ureq::Agent, TlsConfigurationError> {
     // ureq's default rustls feature uses webpki roots.  Build the client
     // explicitly so `NativeRoots` means the operating-system store and a
     // custom mode trusts only the supplied PEM bundle.
@@ -1310,7 +1312,7 @@ fn tls_agent(roots: rustls::RootCertStore) -> Result<ureq::Agent, TlsConfigurati
         .build())
 }
 
-fn plaintext_agent() -> ureq::Agent {
+pub(crate) fn plaintext_agent() -> ureq::Agent {
     // The returned version authorizes the matching gRPC endpoint. Redirects
     // and ambient proxies could otherwise substitute a different authority.
     ureq::builder()

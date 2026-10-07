@@ -252,28 +252,39 @@ drop(session);
 read.close().await?;
 ```
 
-## Remote execution
+## Direct or proxy
 
-Implement `RemoteQueryTransport` with the application's authenticated HTTP
-client. `capabilities()` fetches `/v2/capabilities`; `exchange()` performs
-exactly one `POST /v2/query` for each terminal. Then bind the same generated
-schema:
+A program that queries through a `Connection` runs unchanged against TypeDB
+or a TypeBridge server; only the policy passed to `SCHEMA.connect` differs:
 
 ```rust
 use models::{AppSchema, Person, SCHEMA};
 use type_bridge::{
-    RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits,
+    Connection, ConnectionPolicy, DirectConnectionPolicy, ProxyConnectionPolicy,
+    ProxyEndpoint, QueryExecutionResourceLimits, TlsPolicy,
 };
 
-let options = RemoteConnectionOptions::generated(
-    RemoteQueryLimits::new(100, 8 << 20, 1_000, 1_000, 1_000, 1_000)
-        .deadline_ms(30_000),
-    transport,
-);
-let remote: RemoteDatabase<AppSchema> =
-    RemoteDatabase::connect(options).await?.with_schema(SCHEMA)?;
+fn policy(proxy: bool) -> ConnectionPolicy {
+    if proxy {
+        ProxyConnectionPolicy::new(
+            ProxyEndpoint::new("https://typebridge.example.com")
+                .tls(TlsPolicy::native_roots())
+                .header("Authorization", "Bearer <token>"),
+        )
+        .into()
+    } else {
+        DirectConnectionPolicy::new("localhost:1729", "example", "admin", "password").into()
+    }
+}
 
-let mut session = remote.query()?;
+let connection: Connection<AppSchema> = SCHEMA.connect(policy(use_proxy)).await?;
+let mut session = connection.query_with_resources(
+    QueryExecutionResourceLimits {
+        items: 100,
+        ..QueryExecutionResourceLimits::default()
+    },
+    type_bridge::AnswerCancellation::default(),
+)?;
 let person = session.exact::<Person>()?;
 let rows: Vec<Person> = session
     .query(person)?
@@ -281,10 +292,25 @@ let rows: Vec<Person> = session
     .await?;
 ```
 
-The transport owns authentication and authenticated TLS. The SDK binds
-capability discovery, the scope and semantic profile embedded in `SCHEMA`,
-nonce, request fingerprint, deadline, limits, and reply identity before
-materializing the same generated model types used by local execution.
+Both policies take `answer_limits(..)`, the ceiling every session of the
+connection is constrained by, and `connection_limits(..)`, the deadline for
+connecting. A session's resources are the stricter of its own and the
+ceiling, on either transport.
+
+A proxy connection fetches the server's signed `/v2/capabilities`
+advertisement when it connects, or uses the exact bytes pinned with
+`.advertisement(bytes)`. Fetch it only over TLS you trust, or pin it: the
+advertisement carries the key every reply is verified with. Each terminal
+then performs exactly one `POST /v2/query`. The SDK binds the scope and
+semantic profile embedded in `SCHEMA`, the nonce, request fingerprint,
+deadline, limits, and reply identity before it materializes the same model
+types as a direct connection.
+
+A host that routes or authenticates requests itself implements
+`ProxyExchange` (`capabilities()` and `exchange()`) and passes it to
+`ProxyConnectionPolicy::with_exchange`. `Connection::Direct` also gives the
+`Database` with CRUD managers and transactions, which a proxy connection
+does not offer.
 
 ## Classified errors
 
@@ -321,6 +347,6 @@ through `details()`. Generated manager and projected-batch failures additionally
 retain the binding-neutral category through `sdk_category()`; for example,
 `wrong_scalar_domain` reports `Some("invalid_input")` even though the released
 Rust compatibility category remains `ErrorCategory::ModelValidation`.
-Implementations of `RemoteQueryTransport` should wrap
+Implementations of `ProxyExchange` should wrap
 application-owned transport failures with
 `Error::remote("stable_snake_case_code", message, source)`.
