@@ -1,14 +1,15 @@
 # TypeBridge Server Container
 
-**Security update:** The 2.2.1 prebuilt distributions use a rustls version
-affected by [RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc).
-A corrective release is in preparation; see the
-[post-release notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1).
+**Security update:** Upgrade to TypeBridge 2.2.2. Its prebuilt distributions
+use rustls 0.23.45, which fixes
+[RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc).
+The [2.2.1 post-release notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1)
+records the affected earlier release.
 
 The TypeBridge container product is the V2-capable standalone query server:
 
 ```text
-ghcr.io/ds1sqe/type-bridge-server:2.2.1
+ghcr.io/ds1sqe/type-bridge-server:2.2.2
 ```
 
 The image contains retained V1 routes and the public `v2-query` capability.
@@ -25,14 +26,14 @@ Release notes record the accepted multi-platform digest. Prefer it for
 deployments:
 
 ```bash
-export TYPE_BRIDGE_SERVER_IMAGE='ghcr.io/ds1sqe/type-bridge-server@sha256:<digest-from-v2.2.1-release>'
+export TYPE_BRIDGE_SERVER_IMAGE='ghcr.io/ds1sqe/type-bridge-server@sha256:83cbbbff5b9f177d9d18cda61d4023c54440da0f6cae004b154b5c13e89ee668'
 docker pull "$TYPE_BRIDGE_SERVER_IMAGE"
 ```
 
-The stable `2.2.1` tag points to the same digest. After acceptance, `2.2`,
+The stable `2.2.2` tag points to the same digest. After acceptance, `2.2`,
 `2`, and `latest` are aliases of that exact stable manifest. Manual candidate
-workflows validate the exact `2.2.1` stable bytes without publishing them or
-moving aliases. Publication requires the annotated `v2.2.1` tag push.
+workflows validate the exact `2.2.2` stable bytes without publishing them or
+moving aliases. Publication requires the annotated `v2.2.2` tag push.
 
 Published platforms are `linux/amd64` and `linux/arm64`.
 
@@ -154,18 +155,18 @@ docker run --rm "$TYPE_BRIDGE_SERVER_IMAGE" --version
 
 The image deliberately has no shell `HEALTHCHECK`. `/health.version` remains
 the frozen V1 compatibility value `1.5.11`, while `--version`, the exact tag,
-and the OCI version label report `2.2.1`.
+and the OCI version label report `2.2.2`.
 
 ## Verify supply-chain evidence
 
 The stable digest has keyless signatures, per-platform SPDX JSON SBOMs, and
-GitHub publication-recovery attestations that bind the original build to the
-reviewed recovery run. Verify the original tag signature with Cosign:
+GitHub build-provenance attestations for the accepted release source.
+Verify the tag signature with Cosign:
 
 ```bash
 cosign verify \
   --certificate-identity \
-    'https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2.2.1' \
+    'https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2.2.2' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   "$TYPE_BRIDGE_SERVER_IMAGE"
 ```
@@ -175,18 +176,21 @@ per-platform digests plus attestation URLs. Release acceptance also reports
 the compressed layer size, installed runtime packages, closed runtime file
 set, and the vulnerability/secret scan result.
 
-The original 2.2.1 run accepted these bytes but stopped at a stale certificate
-identity check. Recovery preserved the tag, source, and artifact bytes. Its
-`publication-recovery/v1` predicate records the original source and artifacts
-separately from recovery control commit
-`102209173d70951805185709664bddad752e671b`. The release metadata embeds that
-record and links the recovery and SBOM attestations.
-Verify the recovery identity and predicate before relying on that evidence:
+The build-provenance attestations bind the image to release source
+`ec5e0814feb65a43909f0cec0ae12d2a7a64323c` and its tagged release workflow.
+Verify the source and signing identity:
 
 ```bash
 gh attestation verify "oci://$TYPE_BRIDGE_SERVER_IMAGE" \
   --repo ds1sqe/type-bridge \
-  --cert-identity 'https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/heads/master' \
-  --source-digest 102209173d70951805185709664bddad752e671b \
-  --predicate-type 'https://github.com/ds1sqe/type-bridge/attestations/publication-recovery/v1'
+  --cert-identity 'https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2.2.2' \
+  --cert-oidc-issuer https://token.actions.githubusercontent.com \
+  --source-digest ec5e0814feb65a43909f0cec0ae12d2a7a64323c \
+  --source-ref refs/tags/v2.2.2 \
+  --predicate-type 'https://slsa.dev/provenance/v1'
 ```
+
+The historical 2.2.1 release used publication-recovery attestations. Its
+original evidence remains available in that release; the
+[release procedure](../development/c-release.md#protected-promotion)
+describes the distinction.
