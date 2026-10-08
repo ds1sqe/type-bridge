@@ -24,6 +24,8 @@ pub mod query_v2_model_remote_runtime;
 pub mod query_v2_runtime;
 pub mod runtime_projection;
 pub mod schema;
+#[cfg(test)]
+mod test_isolation;
 pub mod transpiler;
 mod validated_result_runtime;
 pub mod version;

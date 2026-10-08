@@ -15937,8 +15937,18 @@ entities:
         });
     }
 
+    // Batch tests on parallel threads toggle the interpreter-wide collector
+    // flag, so the tests that assert it run in a process of their own.
     #[test]
     fn successor_batch_gc_guard_restores_state_and_defers_cyclic_finalizers() {
+        crate::test_isolation::run_isolated(
+            module_path!(),
+            "successor_batch_gc_guard_restores_state_and_defers_cyclic_finalizers",
+            assert_successor_batch_gc_guard_restores_state_and_defers_cyclic_finalizers,
+        );
+    }
+
+    fn assert_successor_batch_gc_guard_restores_state_and_defers_cyclic_finalizers() {
         Python::initialize();
         Python::attach(|py| {
             let initially_enabled = unsafe { pyo3::ffi::PyGC_IsEnabled() } != 0;
@@ -16012,6 +16022,14 @@ class CyclicFinalizer:
 
     #[test]
     fn python_mapper_panic_restores_facades_gc_and_marks_borrowed_public_commit() {
+        crate::test_isolation::run_isolated(
+            module_path!(),
+            "python_mapper_panic_restores_facades_gc_and_marks_borrowed_public_commit",
+            assert_python_mapper_panic_restores_facades_gc_and_marks_borrowed_public_commit,
+        );
+    }
+
+    fn assert_python_mapper_panic_restores_facades_gc_and_marks_borrowed_public_commit() {
         Python::initialize();
         Python::attach(|py| {
             let initially_enabled = unsafe { pyo3::ffi::PyGC_IsEnabled() } != 0;
