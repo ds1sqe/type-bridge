@@ -5,7 +5,7 @@ projection. It provides the same supported application outcomes in Python,
 TypeScript/Node, and Rust without routing generated models through handwritten
 model descriptors.
 
-## Start a direct session
+## Start a session
 
 ```python
 from app_models import Age, Employment, Person
@@ -15,9 +15,11 @@ person = session.exact(Person)
 employment = session.exact(Employment)
 ```
 
-`Person.query(db)` and the package's `QuerySession` constructor produce the same
-package-scoped direct session. A transaction can be supplied instead of a
-database.
+`Person.query(db)` and the package's `QuerySession(db)` constructor produce the
+same package-scoped session. The connection decides where terminals run: a
+direct `Database` or `TransactionContext`, or a proxy connection (see
+[Proxy connections](#proxy-connections)). Composition is synchronous; every
+terminal is a coroutine on every connection, so Python code awaits it.
 
 Use `exact(Model)` for exactly one schema type and `subtypes(Model)` for a
 polymorphic binding. Concrete result evidence determines the generated class
@@ -89,7 +91,7 @@ bounded reachability path. An intentional Cartesian product must be declared:
 left = session.exact(Person)
 right = session.exact(Person)
 
-rows = (
+rows = await (
     session.query(left, right)
     .allow_cross_join(left, right)
     .rows(limit=10)
@@ -115,7 +117,7 @@ path = session.reachable(
     max_depth=3,
 )
 
-connected = session.query(source, target).where(path).rows(limit=100)
+connected = await session.query(source, target).where(path).rows(limit=100)
 ```
 
 The relation and both role tokens are generated evidence. Depth bounds are
@@ -126,8 +128,8 @@ mandatory and validated before execution.
 One binding produces one model; multiple bindings produce a tuple:
 
 ```python
-one_person = session.query(person).one()
-pairs = session.query(person, employment).where(employee).rows(limit=100)
+one_person = await session.query(person).one()
+pairs = await session.query(person, employment).where(employee).rows(limit=100)
 ```
 
 Generated Python and TypeScript support positional selections through 16 slots.
@@ -144,7 +146,7 @@ class EmploymentRow:
     employments: tuple[Employment, ...]
 
 
-page = (
+page = await (
     session.query_as(
         EmploymentRow,
         person=person,
@@ -161,12 +163,12 @@ pagination distinct from collection membership.
 ## Terminals
 
 ```python
-query.one()
-query.first(order_by=(person.field(Person.person_id).asc(),))
-query.rows(limit=100, offset=0)
-query.page_by(person, limit=25, include_total=True)
-query.count_by(person)
-query.exists_by(person)
+await query.one()
+await query.first(order_by=(person.field(Person.person_id).asc(),))
+await query.rows(limit=100, offset=0)
+await query.page_by(person, limit=25, include_total=True)
+await query.count_by(person)
+await query.exists_by(person)
 ```
 
 `one` requires exactly one result. `first` returns `None` when empty. Materialized
@@ -179,14 +181,14 @@ generated contract.
 from app_models import aggregate
 
 score = person.field(Person.score)
-count, total, mean = session.query(person).aggregate(
+count, total, mean = await session.query(person).aggregate(
     person,
     aggregate.count(),
     aggregate.sum(score),
     aggregate.mean(score),
 )
 
-grouped = (
+grouped = await (
     session.query(person, employment)
     .where(employee)
     .group_by(person, employment)
@@ -197,39 +199,50 @@ grouped = (
 Reducer inputs are owner/scalar checked. Grouping returns exact generated group
 values plus typed reducer tuples.
 
-## Remote queries
+## Proxy connections
 
-The generated package also exports `RemoteQuerySession`. It reconstructs Query
-V2 authority from private, verified package evidence. The caller supplies exact
-advertisement bytes, a one-exchange transport callback, and resource limits—no
-authority file or low-level `QueryV2Authority` argument:
+A proxy connection runs the same session against a TypeBridge server instead of
+TypeDB. Only the connection object changes; the query program is the same:
 
 ```python
-from app_models import Person, RemoteQueryLimits, RemoteQuerySession
+from app_models import ExchangeConnection, Person, QueryExecutionResourceLimits, connect_proxy
 
-remote = RemoteQuerySession(
-    advertisement_bytes,
-    exchange,
-    RemoteQueryLimits(
-        max_items=100,
-        max_bytes=8_388_608,
-        max_collection_members=1_000,
-        max_graph_nodes=1_000,
-        max_attribute_values=1_000,
-        max_role_players=1_000,
-        deadline_ms=30_000,
-    ),
+# The built-in HTTP route to the server's /v2/capabilities and /v2/query.
+session = Person.query(connect_proxy("https://typebridge.example"))
+
+# Or a host-owned transport that routes and authenticates itself.
+session = Person.query(
+    ExchangeConnection(advertisement_bytes, exchange),
+    resources=QueryExecutionResourceLimits(items=100, timeout_milliseconds=30_000),
 )
-person = remote.exact(Person)
-rows = await remote.query(person).rows(limit=50)
+person = session.exact(Person)
+rows = await session.query(person).rows(limit=50)
 ```
+
+Both connections reconstruct Query V2 authority from private, verified package
+evidence; no authority file or low-level `QueryV2Authority` argument is
+involved. `connect_proxy` fetches the advertisement over the configured TLS
+connection, or takes a pinned `advertisement=`; `headers=` carries caller
+authentication. `ExchangeConnection(advertisement, exchange)` takes
+advertisement bytes and a coroutine that sends one request and returns its
+reply; the caller owns transport, credentials, and retry policy. Either takes
+`answer_limits=`, the ceiling every session on the connection runs under.
 
 TypeScript uses the equivalent
 `new RemoteQuerySession(advertisementBytes, exchange, limits)` constructor.
-Authenticate the advertisement for the intended server or pin it out of band;
-the caller owns transport, credentials, and retry policy. Composition remains
-local; one terminal performs one exchange and materializes through the same
-package projection as direct execution.
+Composition remains local; one terminal performs one exchange and materializes
+through the same package projection as direct execution.
+
+Scripts without an event loop wrap a session in `type_bridge_core.blocking`,
+which runs each terminal to completion on a private event-loop thread:
+
+```python
+from type_bridge_core import blocking
+
+session = blocking(Person.query(db))
+person = session.exact(Person)
+rows = session.query(person).rows(limit=50)
+```
 
 Supported remote terminals are `one`, `first`, bounded `rows`, `page_by`,
 `count_by`, `exists_by`, and typed `aggregate`/`group_by`, including exact/subtype
@@ -272,8 +285,8 @@ let session = db
     .with_query_limits(QueryLimits::from_overrides([("canonical_bytes", 64 << 20)])?)?;
 ```
 
-`RemoteQuerySession` takes the same value (`query_limits=` in Python, a fifth
-constructor argument in TypeScript). C callers use
+Proxy sessions take the same value (`query_limits=` in Python, a fifth
+`RemoteQuerySession` constructor argument in TypeScript). C callers use
 `<prefix>_query_session_open_with_limits` with an array of named overrides.
 
 Limits are named identically in every language. The engine validates them, so

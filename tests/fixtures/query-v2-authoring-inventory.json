@@ -230,7 +230,7 @@
       {
         "family": "python_authenticated_structured_remote_diagnostic",
         "needles": [
-          "generated_remote_session = RemoteQuerySession(",
+          "generated_remote_session = QuerySession(",
           "assert error.code == \"remote_application_failure\"",
           "\"kind\": \"text_list\"",
           "assert generated_remote_exchanges == 1"

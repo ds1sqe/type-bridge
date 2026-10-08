@@ -96,12 +96,7 @@ variables.
 <!-- typed-query-example: python-selection-arities -->
 ```python
 one_person: Query[Person] = session.query(person)
-assert_type(one_person.one(), Person)
-assert_type(one_person.rows(limit=20), list[Person])
-
 two_slots: Query[Person, Event] = session.query(person, event).where(subject)
-assert_type(two_slots.one(), tuple[Person, Event])
-assert_type(two_slots.rows(limit=20), list[tuple[Person, Event]])
 
 colleague = session.exact(Person)
 other_event = session.exact(Event)
@@ -117,10 +112,6 @@ five_slots: Query[Person, Event, Container, Event, Person] = session.query(
     other_event.role(Event.subject).connects(colleague),
     container.role(Container.item).connects(other_event),
 )
-assert_type(
-    five_slots.rows(limit=20),
-    list[tuple[Person, Event, Container, Event, Person]],
-)
 
 person_pair: Query[Person, Person] = (
     session.query(person, colleague)
@@ -132,7 +123,20 @@ person_pair: Query[Person, Person] = (
         container.role(Container.item).connects(other_event),
     )
 )
-assert_type(person_pair.rows(limit=20), list[tuple[Person, Person]])
+
+
+# Terminals are coroutines on every connection; composition is synchronous.
+async def selection_shapes() -> None:
+    assert_type(await one_person.one(), Person)
+    assert_type(await one_person.rows(limit=20), list[Person])
+    assert_type(await two_slots.one(), tuple[Person, Event])
+    assert_type(await two_slots.rows(limit=20), list[tuple[Person, Event]])
+    assert_type(
+        await five_slots.rows(limit=20),
+        list[tuple[Person, Event, Container, Event, Person]],
+    )
+    assert_type(await person_pair.rows(limit=20), list[tuple[Person, Person]])
+
 
 # Generated QuerySession.query has checked overloads through 16 selections. A
 # seventeenth selection is a static diagnostic and Rust rejects forged input.
@@ -169,15 +173,6 @@ identity. Counts and existence do not inherit row/page order or windows.
 
 <!-- typed-query-example: python-terminals-and-collections -->
 ```python
-ordered_people = one_person.rows(
-    limit=50,
-    offset=0,
-    order_by=(person.field(Person.identifier).asc(),),
-)
-
-person_count: int = two_slots.count_by(person)
-any_person: bool = two_slots.exists_by(person)
-
 @dataclass(frozen=True, slots=True)
 class PersonEvents:
     person: Person
@@ -190,15 +185,28 @@ work: Query[PersonEvents] = session.query_as(
     events=event.collect().distinct(),
 ).where(subject)
 
-page: Page[PersonEvents] = work.page_by(
-    person,
-    limit=50,
-    offset=0,
-    order_by=(person.field(Person.identifier).asc(),),
-    include_total=True,
-)
-assert_type(page.items, tuple[PersonEvents, ...])
-assert_type(page.total, int | None)
+
+async def terminals() -> None:
+    ordered_people = await one_person.rows(
+        limit=50,
+        offset=0,
+        order_by=(person.field(Person.identifier).asc(),),
+    )
+    assert_type(ordered_people, list[Person])
+
+    person_count: int = await two_slots.count_by(person)
+    any_person: bool = await two_slots.exists_by(person)
+    assert_type((person_count, any_person), tuple[int, bool])
+
+    page: Page[PersonEvents] = await work.page_by(
+        person,
+        limit=50,
+        offset=0,
+        order_by=(person.field(Person.identifier).asc(),),
+        include_total=True,
+    )
+    assert_type(page.items, tuple[PersonEvents, ...])
+    assert_type(page.total, int | None)
 ```
 
 A database-backed terminal owns its read transaction. A caller-owned read
@@ -207,17 +215,19 @@ nor closes it.
 
 <!-- typed-query-example: python-transaction-ownership -->
 ```python
-# Owned: rows() opens one read transaction and closes it on success or error.
-owned = Person.query(db)
-owned_person = owned.exact(Person)
-owned_rows = owned.query(owned_person).rows(limit=10)
+async def ownership() -> None:
+    # Owned: rows() opens one read transaction and closes it on success or error.
+    owned = Person.query(db)
+    owned_person = owned.exact(Person)
+    assert_type(await owned.query(owned_person).rows(limit=10), list[Person])
 
-# Borrowed: the surrounding context owns lifecycle and may run more work.
-with db.transaction("read") as tx:
-    borrowed = Person.query(tx)
-    borrowed_person = borrowed.exact(Person)
-    first_page = borrowed.query(borrowed_person).rows(limit=10)
-    second_page = borrowed.query(borrowed_person).rows(limit=10, offset=10)
+    # Borrowed: the surrounding context owns lifecycle and may run more work.
+    with db.transaction("read") as tx:
+        borrowed = Person.query(tx)
+        borrowed_person = borrowed.exact(Person)
+        first_page = await borrowed.query(borrowed_person).rows(limit=10)
+        second_page = await borrowed.query(borrowed_person).rows(limit=10, offset=10)
+        assert_type(first_page + second_page, list[Person])
 ```
 
 ## Complete TypeScript Example

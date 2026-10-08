@@ -1124,7 +1124,7 @@
               "mode": "live",
               "path": "tests/integration/schema/test_generated_projection_live.py",
               "anchors": [
-                "generated.RemoteQuerySession",
+                "generated.ExchangeConnection(advertisement, exchange)",
                 "remote_people.one()",
                 "remote_people.rows(",
                 "remote_people.page_by(",
@@ -1177,7 +1177,7 @@
               "mode": "offline",
               "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py",
               "anchors": [
-                "generated_remote_session = RemoteQuerySession(",
+                "generated_remote_session = QuerySession(",
                 "except MatchRequestError as error:",
                 "assert error.code == \"remote_application_failure\"",
                 "\"kind\": \"text_list\"",

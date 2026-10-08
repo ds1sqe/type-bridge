@@ -645,16 +645,15 @@ async def _hydrate_exact(
             root_node,
         )
 
-    session = package.RemoteQuerySession(
-        advertisement,
-        exchange,
-        package.RemoteQueryLimits(
-            max_items=8,
-            max_bytes=1 << 20,
-            max_collection_members=16,
-            max_graph_nodes=16,
-            max_attribute_values=128,
-            max_role_players=64,
+    session = package.QuerySession(
+        package.ExchangeConnection(advertisement, exchange),
+        resources=package.QueryExecutionResourceLimits(
+            items=8,
+            bytes=1 << 20,
+            collection_members=16,
+            graph_nodes=16,
+            attribute_values=128,
+            role_players=64,
         ),
     )
     original_materializer = package.Query.materialize_row

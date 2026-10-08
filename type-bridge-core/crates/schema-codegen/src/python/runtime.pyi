@@ -2,12 +2,17 @@ from collections.abc import Callable, Mapping, Sequence
 from enum import Enum, StrEnum
 from typing import Any, Literal, Never, TypedDict, Unpack, overload
 
-from type_bridge_core import PyRuntimeProjection, QueryCancellation, QueryLimits
+from type_bridge_core import (
+    PyRuntimeProjection,
+    QueryCancellation,
+    QueryExecutionResourceLimits,
+    QueryLimits,
+)
 
 from type_bridge._runtime_projection import GeneratedEntityProjection, GeneratedRelationProjection
 from type_bridge.session import Database, TransactionContext
 
-from ._query import QuerySession
+from ._query import QueryConnection, QuerySession
 
 type _OwnerLookup = Literal[
     "eq",
@@ -71,8 +76,10 @@ class ModelBase:
     @classmethod
     def query[ModelT: ModelBase](
         cls: type[ModelT],
-        connection: Database | TransactionContext,
+        connection: QueryConnection,
         *,
+        resources: QueryExecutionResourceLimits | None = ...,
+        cancellation: QueryCancellation | None = ...,
         query_limits: QueryLimits | None = ...,
     ) -> QuerySession: ...
     def runtime_values(self) -> dict[str, object]: ...

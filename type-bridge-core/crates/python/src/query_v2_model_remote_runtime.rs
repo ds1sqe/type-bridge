@@ -164,26 +164,32 @@ pub(crate) fn query_v2_remote_model_context(
         authority,
         advertisement,
         resources,
+        resources,
         AnswerCancellation::default(),
     )
 }
 
 /// Build the same remote context from the common direct/remote resource and
-/// cancellation owners.
+/// cancellation owners. `answer_limits` is the caller-exchanged connection's
+/// ceiling; left out, the session's own resources are the ceiling.
 #[pyfunction]
+#[pyo3(signature = (authority, advertisement, resources, cancellation, *, answer_limits=None))]
 pub(crate) fn query_v2_remote_model_context_with_resources(
     py: Python<'_>,
     authority: &PyQueryV2Authority,
     advertisement: &Bound<'_, PyAny>,
     resources: PyRef<'_, PyQueryExecutionResourceLimits>,
     cancellation: PyRef<'_, PyQueryCancellation>,
+    answer_limits: Option<PyRef<'_, PyQueryExecutionResourceLimits>>,
 ) -> PyResult<PyRemoteModelQueryContext> {
     let advertisement = advertisement_snapshot(advertisement)?;
+    let resources = resources.inner();
     remote_context(
         py,
         authority,
         advertisement,
-        resources.inner(),
+        answer_limits.map_or(resources, |limits| limits.inner()),
+        resources,
         cancellation.inner(),
     )
 }
@@ -193,18 +199,21 @@ fn advertisement_snapshot(advertisement: &Bound<'_, PyAny>) -> PyResult<Vec<u8>>
         .bounded_snapshot(MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1)))
 }
 
-/// A caller-exchanged connection whose ceiling is the caller's own policy,
-/// and the session resources constrained by it.
+/// A caller-exchanged connection with the `answer_limits` ceiling, and the
+/// session resources constrained by it.
 fn remote_context(
     py: Python<'_>,
     authority: &PyQueryV2Authority,
     advertisement: Vec<u8>,
+    answer_limits: QueryExecutionResourceLimits,
     resources: QueryExecutionResourceLimits,
     cancellation: AnswerCancellation,
 ) -> PyResult<PyRemoteModelQueryContext> {
     let authority = authority.authority();
     let connection = py
-        .detach(move || ProxyQueryConnection::with_exchange(advertisement, authority, resources))
+        .detach(move || {
+            ProxyQueryConnection::with_exchange(advertisement, authority, answer_limits)
+        })
         .map_err(py_sdk_diagnostic)?;
     let resources = QueryTarget::Proxy(&connection).constrain(resources);
     Ok(PyRemoteModelQueryContext {

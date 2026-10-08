@@ -125,8 +125,10 @@ def test_documented_remote_contract_has_runtime_acceptance() -> None:
         encoding="utf-8"
     )
 
-    assert "RemoteQuerySession" in guide
-    assert "RemoteQuerySession" in runtime
+    assert "ExchangeConnection" in guide
+    assert "ExchangeConnection" in runtime
+    assert "connect_proxy" in guide
+    assert "connect_proxy" in live
     for terminal in ("rows", "page_by", "count_by", "exists_by"):
         assert f"`{terminal}`" in guide
         assert f".{terminal}(" in runtime

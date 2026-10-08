@@ -32,6 +32,7 @@ from generated_v2 import (
     Employment,
     Event,
     EventRef,
+    ExchangeConnection,
     FieldToken,
     FooBar,
     Identifier,
@@ -47,8 +48,7 @@ from generated_v2 import (
     QueryCancellation,
     QueryExecutionResourceLimits,
     QueryLimits,
-    RemoteQueryLimits,
-    RemoteQuerySession,
+    QuerySession,
     Robot,
     RobotId,
     RoleToken,
@@ -66,7 +66,7 @@ from generated_v2 import (
     qualifying_score,
 )
 from generated_variant import Person as VariantPerson
-from type_bridge_core import MatchRequestError
+from type_bridge_core import MatchRequestError, blocking
 
 from type_bridge.query import QueryBuilder
 from type_bridge.session import Database
@@ -596,7 +596,9 @@ projection = json.loads(RUNTIME_PROJECTION_JSON)
 assert json.loads(SEMANTIC_SCHEMA_FINGERPRINT_JSON) == projection["semantic_fingerprint"]
 assert json.loads(PROJECTION_FINGERPRINT_JSON) == projection["projection_fingerprint"]
 
-match_session = Person.__runtime_projection__.match_session()
+match_session = Person.__runtime_projection__.match_session_with_resources(
+    QueryExecutionResourceLimits(), QueryCancellation()
+)
 assert match_session.exact("person")
 assert match_session.subtypes("party")
 try:
@@ -937,24 +939,21 @@ async def generated_failure_exchange(request: bytes) -> bytes:
     return generated_failure_reply
 
 
-generated_remote_session = RemoteQuerySession(
-    generated_advertisement,
-    generated_failure_exchange,
-    RemoteQueryLimits(
-        max_items=11,
-        max_bytes=1 << 20,
-        max_collection_members=12,
-        max_graph_nodes=13,
-        max_attribute_values=14,
-        max_role_players=15,
+generated_remote_session = QuerySession(
+    ExchangeConnection(generated_advertisement, generated_failure_exchange),
+    resources=QueryExecutionResourceLimits(
+        items=11,
+        bytes=1 << 20,
+        collection_members=12,
+        graph_nodes=13,
+        attribute_values=14,
+        role_players=15,
     ),
 )
 generated_remote_person = generated_remote_session.exact(Person)
 captured_failure_pending: list[object] = []
-original_prepare_remote_rows = getattr(
-    generated_query_module,
-    "query_v2_prepare_remote_model_rows",
-)
+fetch_rows_terminal = getattr(generated_query_module, "_FETCH_ROWS")
+original_prepare_remote_rows = fetch_rows_terminal.prepare
 
 
 def capture_failure_pending(*args: object, **kwargs: object) -> object:
@@ -963,11 +962,7 @@ def capture_failure_pending(*args: object, **kwargs: object) -> object:
     return pending
 
 
-setattr(
-    generated_query_module,
-    "query_v2_prepare_remote_model_rows",
-    capture_failure_pending,
-)
+fetch_rows_terminal.prepare = capture_failure_pending
 remote_diagnostic_observation: dict[str, object]
 try:
     asyncio.run(generated_remote_session.query(generated_remote_person).one())
@@ -1020,11 +1015,7 @@ except MatchRequestError as error:
 else:
     raise AssertionError("generated remote query accepted an authenticated application failure")
 finally:
-    setattr(
-        generated_query_module,
-        "query_v2_prepare_remote_model_rows",
-        original_prepare_remote_rows,
-    )
+    fetch_rows_terminal.prepare = original_prepare_remote_rows
 assert generated_remote_exchanges == 1
 assert len(captured_failure_pending) == 1
 
@@ -1041,16 +1032,15 @@ for rejected_query_limits in ({"made_up": 1}, {"canonical_depth": 1000}, {"boole
         pass
     else:
         raise AssertionError("unknown or unsupported query limits must be refused")
-limited_remote_session = RemoteQuerySession(
-    generated_advertisement,
-    generated_failure_exchange,
-    RemoteQueryLimits(
-        max_items=11,
-        max_bytes=1 << 20,
-        max_collection_members=12,
-        max_graph_nodes=13,
-        max_attribute_values=14,
-        max_role_players=15,
+limited_remote_session = QuerySession(
+    ExchangeConnection(generated_advertisement, generated_failure_exchange),
+    resources=QueryExecutionResourceLimits(
+        items=11,
+        bytes=1 << 20,
+        collection_members=12,
+        graph_nodes=13,
+        attribute_values=14,
+        role_players=15,
     ),
     query_limits=QueryLimits(boolean_terms=1),
 )
@@ -1088,16 +1078,15 @@ async def wide_remote_exchange(request: bytes) -> bytes:
     return b"{}"
 
 
-wide_remote_session = RemoteQuerySession(
-    generated_advertisement,
-    wide_remote_exchange,
-    RemoteQueryLimits(
-        max_items=11,
-        max_bytes=1 << 20,
-        max_collection_members=12,
-        max_graph_nodes=13,
-        max_attribute_values=14,
-        max_role_players=15,
+wide_remote_session = QuerySession(
+    ExchangeConnection(generated_advertisement, wide_remote_exchange),
+    resources=QueryExecutionResourceLimits(
+        items=11,
+        bytes=1 << 20,
+        collection_members=12,
+        graph_nodes=13,
+        attribute_values=14,
+        role_players=15,
     ),
 )
 wide_remote_person = wide_remote_session.exact(Person)
@@ -1155,10 +1144,8 @@ async def _cancelled_before_remote_exchange() -> tuple[int, str, str]:
         exchanges += 1
         raise AssertionError("pre-cancelled remote query reached caller transport")
 
-    session = RemoteQuerySession(
-        generated_advertisement,
-        unexpected_exchange,
-        QueryExecutionResourceLimits(),
+    session = QuerySession(
+        ExchangeConnection(generated_advertisement, unexpected_exchange),
         cancellation=cancellation,
     )
     person = session.exact(Person)
@@ -1199,10 +1186,8 @@ async def _cancelled_after_remote_exchange() -> tuple[int, bool, str, str]:
         asyncio.get_running_loop().call_soon(cancellation.cancel)
         return reply
 
-    session = RemoteQuerySession(
-        generated_advertisement,
-        completed_exchange,
-        QueryExecutionResourceLimits(),
+    session = QuerySession(
+        ExchangeConnection(generated_advertisement, completed_exchange),
         cancellation=cancellation,
     )
     person = session.exact(Person)
@@ -1228,10 +1213,8 @@ async def _cancelled_remote_transport() -> tuple[bool, str, str]:
             exchange_cancelled = True
             raise
 
-    session = RemoteQuerySession(
-        generated_advertisement,
-        blocked_exchange,
-        QueryExecutionResourceLimits(),
+    session = QuerySession(
+        ExchangeConnection(generated_advertisement, blocked_exchange),
         cancellation=cancellation,
     )
     person = session.exact(Person)
@@ -1637,26 +1620,42 @@ async def fake_exchange(request: bytes) -> bytes:
     return b"generated-remote-response"
 
 
-remote_names = (
-    "query_v2_remote_model_context",
-    "query_v2_prepare_remote_model_rows",
-    "query_v2_prepare_remote_model_page",
-    "query_v2_prepare_remote_model_count",
-    "query_v2_prepare_remote_model_exists",
-    "query_v2_prepare_remote_model_reduce",
-)
-saved_remote = {name: getattr(generated_query_module, name) for name in remote_names}
+for rejected_connection in (object(), "localhost:1729", None):
+    try:
+        QuerySession(rejected_connection)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("generated QuerySession accepted an unknown connection kind")
+for rejected_exchange in (
+    lambda: ExchangeConnection(bytearray(b"advertisement"), fake_exchange),
+    lambda: ExchangeConnection(b"advertisement", object()),
+):
+    try:
+        rejected_exchange()
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("generated ExchangeConnection accepted an invalid argument")
+
+
+remote_terminals = {
+    name: getattr(generated_query_module, name)
+    for name in ("_FETCH_ROWS", "_PAGE_BY", "_COUNT_BY", "_EXISTS_BY", "_REDUCE_BY")
+}
+saved_prepare = {name: terminal.prepare for name, terminal in remote_terminals.items()}
+saved_context = generated_query_module.query_v2_remote_model_context_with_resources
 saved_row_materializer = generated_query_module.Query.materialize_row
 saved_page_materializer = generated_query_module.Query.materialize_page
 saved_reduction_materializer = generated_query_module.Query.materialize_reduction
 reduce_calls: list[tuple[object, ...]] = []
 try:
-    generated_query_module.query_v2_remote_model_context = lambda *arguments: object()
-    generated_query_module.query_v2_prepare_remote_model_rows = lambda *arguments: FakePending()
-    generated_query_module.query_v2_prepare_remote_model_page = lambda *arguments: FakePending()
-    generated_query_module.query_v2_prepare_remote_model_count = lambda *arguments: FakePending()
-    generated_query_module.query_v2_prepare_remote_model_exists = lambda *arguments: FakePending()
-    generated_query_module.query_v2_prepare_remote_model_reduce = lambda *arguments: (
+    generated_query_module.query_v2_remote_model_context_with_resources = (
+        lambda *arguments, **keywords: object()
+    )
+    for terminal_name in ("_FETCH_ROWS", "_PAGE_BY", "_COUNT_BY", "_EXISTS_BY"):
+        remote_terminals[terminal_name].prepare = lambda *arguments: FakePending()
+    remote_terminals["_REDUCE_BY"].prepare = lambda *arguments: (
         reduce_calls.append(arguments),
         FakePending(),
     )[1]
@@ -1674,16 +1673,15 @@ try:
         if group is not None
         else tuple(range(1, term_count + 1))
     )
-    remote_session = RemoteQuerySession(
-        b"generated-advertisement",
-        fake_exchange,
-        RemoteQueryLimits(
-            max_items=10,
-            max_bytes=1 << 20,
-            max_collection_members=10,
-            max_graph_nodes=10,
-            max_attribute_values=10,
-            max_role_players=10,
+    remote_session = QuerySession(
+        ExchangeConnection(b"generated-advertisement", fake_exchange),
+        resources=QueryExecutionResourceLimits(
+            items=10,
+            bytes=1 << 20,
+            collection_members=10,
+            graph_nodes=10,
+            attribute_values=10,
+            role_players=10,
         ),
     )
     remote_person = remote_session.exact(Person)
@@ -1721,9 +1719,18 @@ try:
             pass
         else:
             raise AssertionError("generated remote aggregate accepted invalid term cardinality")
+    # The blocking facade runs the same coroutine terminals to completion.
+    blocking_query = blocking(remote_session).query(remote_person)
+    assert blocking_query.one() is person
+    assert blocking_query.rows(limit=1) == [person]
+    assert blocking_query.count_by(remote_person) == 1
+    assert blocking_query.group_by(remote_person, remote_person).aggregate(aggregate.count()) == (
+        (person, (1,)),
+    )
 finally:
-    for name, value in saved_remote.items():
-        setattr(generated_query_module, name, value)
+    for name, prepare in saved_prepare.items():
+        remote_terminals[name].prepare = prepare
+    generated_query_module.query_v2_remote_model_context_with_resources = saved_context
     generated_query_module.Query.materialize_row = saved_row_materializer
     generated_query_module.Query.materialize_page = saved_page_materializer
     generated_query_module.Query.materialize_reduction = saved_reduction_materializer

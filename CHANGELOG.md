@@ -69,6 +69,26 @@ differently direct and through a proxy. Each entry says what to do instead.
   limits, transport)` adds `.authority(scope, profile)`), and `DirectTls` to
   `TlsPolicy`. `RemoteQueryLimits` is removed; pass
   `QueryExecutionResourceLimits`.
+- Generated Python packages have one async session. `QuerySession`,
+  `Query`, and `GroupedQuery` run on every connection, and every terminal
+  (`one`, `first`, `rows`, `page_by`, `count_by`, `exists_by`, `aggregate`,
+  grouped `aggregate`) is a coroutine, direct included; composition stays
+  synchronous. `QuerySession(connection, *, resources, cancellation,
+  query_limits)` takes the connection first and no projection, and
+  `Model.query(connection, ...)` accepts the same options. Removed:
+  `RemoteQuerySession`, `RemoteQuery`, `RemoteGroupedQuery`,
+  `RemoteQueryLimits`, `QuerySession.remote_factory`, and the native
+  `PyRuntimeProjection.match_session()` (use
+  `match_session_with_resources`). To migrate:
+  - `await` each terminal; a script without an event loop wraps the session
+    in `type_bridge_core.blocking(session)`, which runs each terminal to
+    completion on a private thread.
+  - `RemoteQuerySession(advertisement, exchange, limits)` is
+    `QuerySession(ExchangeConnection(advertisement, exchange),
+    resources=limits)`, or `QuerySession(connect_proxy(url))` for the
+    built-in HTTP route. `RemoteQueryLimits(max_items=..., ...)` is
+    `QueryExecutionResourceLimits(items=..., ...)`; its defaults are the
+    statement count and deadline the flat limits used.
 - Mixed versions: clients and executors must both be 2.3.
   - A 2.3 executor refuses a V1-format request with
     `query_remote_v2_format_unsupported` and a `supported` detail naming the
@@ -101,6 +121,14 @@ differently direct and through a proxy. Each entry says what to do instead.
 - Python and Node native `ProxyConnection`: the same built-in HTTP route
   for the bindings, with `execute_*_proxy` terminals (Python) and
   Promise terminals (Node).
+- Generated Python proxy connections: `connect_proxy(endpoint, ...)` opens
+  the built-in route with the package's embedded authority, and
+  `ExchangeConnection(advertisement, exchange, *, answer_limits=None)` is
+  the host-owned transport; both take an `answer_limits` ceiling. Pass
+  either to `QuerySession` or `Model.query`.
+- `type_bridge_core.blocking(obj)`: a blocking view of an object with
+  coroutine methods, such as a generated session, for code without an event
+  loop.
 - Query resource-limit refusals report `limit`, `maximum`, and `source`
   (`default`, `configured`, or `advertised`).
 - Configurable answer limits. How much a query may return is one policy,

@@ -27,7 +27,12 @@ from typing import Any, Protocol
 from urllib import request as urllib_request
 
 import pytest
-from type_bridge_core import MatchRequestError, QueryCancellation, QueryExecutionResourceLimits
+from type_bridge_core import (
+    MatchRequestError,
+    QueryCancellation,
+    QueryExecutionResourceLimits,
+    blocking,
+)
 
 from type_bridge import Database
 
@@ -72,6 +77,61 @@ class _GeneratedPerson(Protocol):
     nickname: _StringValue | None
     score: _IntegerValue
     aliases: list[_StringValue] | tuple[_StringValue, ...]
+
+
+# The answer policy every caller-exchanged session in this module runs under.
+_REMOTE_RESOURCES = QueryExecutionResourceLimits(
+    timeout_milliseconds=30_000,
+    items=10,
+    bytes=1 << 20,
+    graph_nodes=30,
+    attribute_values=1_000,
+    collection_members=100,
+    role_players=30,
+)
+
+
+async def _one_program(generated: ModuleType, connection: object) -> dict[str, object]:
+    """One query program; the connection is the only thing that differs."""
+    session = generated.Person.query(connection, resources=_REMOTE_RESOURCES)
+    person = session.exact(generated.Person)
+    identifier = person.field(generated.Person.identifier)
+    score = person.field(generated.Person.score)
+    ordered = (identifier.asc(),)
+    people = session.query(person)
+    one = await people.where(identifier.eq(generated.Identifier("person-1"))).one()
+    first = await people.first(order_by=ordered)
+    rows = await people.rows(limit=10, order_by=ordered)
+    page = await people.page_by(person, limit=2, order_by=ordered, include_total=True)
+    count = await people.count_by(person)
+    exists = await people.exists_by(person)
+    totals = await people.aggregate(
+        person,
+        generated.aggregate.count(),
+        generated.aggregate.sum(score),
+        generated.aggregate.max(score),
+    )
+    grouped = await people.group_by(person, person.field(generated.Person.val_bool)).aggregate(
+        generated.aggregate.count()
+    )
+    employment = session.exact(generated.Employment)
+    pair_person, pair_employment = await (
+        session.query(person, employment)
+        .where(employment.role(generated.Employment.employee).connects(person))
+        .one()
+    )
+    session.close()
+    return {
+        "one": one.iid,
+        "first": None if first is None else first.iid,
+        "rows": [row.iid for row in rows],
+        "page": ([item.iid for item in page.items], page.offset, page.limit, page.total),
+        "count": count,
+        "exists": exists,
+        "aggregate": totals,
+        "grouped": [(group.value, values) for group, values in grouped],
+        "pair": (pair_person.iid, pair_employment.iid),
+    }
 
 
 def _load_json_object(path: Path) -> tuple[bytes, dict[str, object]]:
@@ -524,7 +584,7 @@ def _run_sdk_journey(
         assert stored_membership is not None
         assert stored_membership.member.identifier.value == membership_record["player"]["key"]
 
-        direct_session = generated.Membership.query(clean_db)
+        direct_session = blocking(generated.Membership.query(clean_db))
         direct_relation_var = direct_session.exact(generated.Membership)
         direct_person_var = direct_session.exact(generated.Person)
         direct_relation, direct_person = (
@@ -682,74 +742,6 @@ def _sdk_v2_reducers(
     field = query.group_by(person, score).aggregate(generated.aggregate.count())
     score_gte = person.field(generated.Person.score__gte)
     field_tuple = query.group_by(person, score, score_gte).aggregate(generated.aggregate.count())
-
-    def bits(value: object) -> str:
-        assert type(value) is float
-        return struct.pack(">d", value).hex()
-
-    return {
-        "reducers": {
-            "count": values[0],
-            "sum": values[1],
-            "min": values[2],
-            "max": values[3],
-            "mean_bits": bits(values[4]),
-            "median_bits": bits(values[5]),
-            "std_bits": bits(values[6]),
-        },
-        "groups": {
-            "binding": [
-                {
-                    "model": "person",
-                    "key": group.identifier.value,
-                    "count": group_values[0],
-                }
-                for group, group_values in binding
-            ],
-            "field": [
-                {"key": group.value, "count": group_values[0]} for group, group_values in field
-            ],
-            "field_tuple": [
-                {
-                    "key": [score_group.value, score_gte_group.value],
-                    "count": group_values[0],
-                }
-                for (score_group, score_gte_group), group_values in field_tuple
-            ],
-        },
-    }
-
-
-async def _sdk_v2_remote_reducers(
-    generated: ModuleType,
-    session: Any,
-    query: Any,
-    person: Any,
-) -> dict[str, object]:
-    score = person.field(generated.Person.score)
-    values = await query.aggregate(
-        person,
-        generated.aggregate.count(),
-        generated.aggregate.sum(score),
-        generated.aggregate.min(score),
-        generated.aggregate.max(score),
-        generated.aggregate.mean(score),
-        generated.aggregate.median(score),
-        generated.aggregate.std(score),
-    )
-    group_person = session.exact(generated.Person)
-    group_identifier = group_person.field(generated.Person.identifier)
-    binding = await (
-        query.match(group_person)
-        .where(person.field(generated.Person.identifier).eq_field(group_identifier))
-        .group_by(person, group_person)
-        .aggregate(generated.aggregate.count())
-    )
-    field = await query.group_by(person, score).aggregate(generated.aggregate.count())
-    score_gte = person.field(generated.Person.score__gte)
-    field_tuple = await query.group_by(person, score, score_gte).aggregate(
-        generated.aggregate.count()
-    )
 
     def bits(value: object) -> str:
         assert type(value) is float
@@ -959,15 +951,12 @@ def _sdk_v2_resource_limits(
 
     def limited_session(*, remote: bool) -> Any:
         limits = generated.QueryExecutionResourceLimits(role_players=0)
-        if remote:
-            return generated.RemoteQuerySession(
-                remote_advertisement,
-                remote_exchange,
-                limits,
-            )
-        return generated.QuerySession(
-            generated.Person.__runtime_projection__, clean_db, resources=limits
+        connection = (
+            generated.ExchangeConnection(remote_advertisement, remote_exchange)
+            if remote
+            else clean_db
         )
+        return generated.QuerySession(connection, resources=limits)
 
     errors: list[tuple[str, str, str]] = []
     for remote in (False, True):
@@ -975,10 +964,7 @@ def _sdk_v2_resource_limits(
         relation = session.exact(generated.Membership)
         query = session.query(relation).where(relation.iid(membership_iid))
         try:
-            if remote:
-                asyncio.run(query.one())
-            else:
-                query.one()
+            asyncio.run(query.one())
         except MatchRequestError as error:
             errors.append(_sdk_v2_error_category(error))
         else:
@@ -1008,54 +994,8 @@ def _sdk_v2_lifecycle(
     remote_exchange: Any,
     remote_requests: list[bytes],
 ) -> dict[str, object]:
-    def direct_lane() -> tuple[dict[str, bool | int], object]:
-        session = generated.Person.query(clean_db)
-        person = session.exact(generated.Person)
-        identifier = person.field(generated.Person.identifier)
-        scope = identifier.eq(generated.Identifier("query-ada"))
-        ancestor = session.query(person).where(scope)
-        sibling = ancestor.clone()
-        closed_descendant = ancestor.where(
-            person.field(generated.Person.score).gte(generated.Score(1))
-        )
-        closed_descendant.close()
-        closed_descendant.close()
-        ancestor_usable = _sdk_v2_key(ancestor.one()) == "query-ada"
-        descendant = ancestor.where(person.field(generated.Person.score).gte(generated.Score(1)))
-        result = descendant.one()
-        ancestor.close()
-        ancestor.close()
-        rejected = False
-        try:
-            ancestor.one()
-        except MatchRequestError as error:
-            rejected = error.code == "query_resource_closed"
-        descendant_usable = _sdk_v2_key(descendant.one()) == "query-ada"
-        sibling_usable = _sdk_v2_key(sibling.one()) == "query-ada"
-        session_usable = _sdk_v2_key(session.query(person).where(scope).one()) == "query-ada"
-        descendant.close()
-        sibling.close()
-        session.close()
-        return (
-            {
-                "ancestor_usable_after_descendant_close": ancestor_usable,
-                "close_idempotent": ancestor.is_closed and closed_descendant.is_closed,
-                "descendant_usable_after_ancestor_close": descendant_usable,
-                "handle_invalidated": ancestor.is_closed,
-                "post_close_io_count": 0,
-                "post_close_rejected": rejected,
-                "session_usable_after_query_close": session_usable,
-                "sibling_usable": sibling_usable,
-            },
-            result,
-        )
-
-    async def remote_lane() -> tuple[dict[str, bool | int], object]:
-        session = generated.RemoteQuerySession(
-            remote_advertisement,
-            remote_exchange,
-            generated.QueryExecutionResourceLimits(),
-        )
+    async def lane(connection: object) -> tuple[dict[str, bool | int], object]:
+        session = generated.Person.query(connection)
         person = session.exact(generated.Person)
         identifier = person.field(generated.Person.identifier)
         scope = identifier.eq(generated.Identifier("query-ada"))
@@ -1099,8 +1039,10 @@ def _sdk_v2_lifecycle(
             result,
         )
 
-    direct, direct_result = direct_lane()
-    remote, remote_result = asyncio.run(remote_lane())
+    direct, direct_result = asyncio.run(lane(clean_db))
+    remote, remote_result = asyncio.run(
+        lane(generated.ExchangeConnection(remote_advertisement, remote_exchange))
+    )
     assert direct == remote
     return {
         "lanes": ["direct", "remote"],
@@ -1188,7 +1130,7 @@ def _run_sdk_v2_journey(
         entity_read_after_create = person_manager.get_by_iid(person_iids[0]) is not None
         relation_read_after_create = membership_manager.get_by_iid(membership_iid) is not None
 
-        direct_session = generated.Person.query(clean_db)
+        direct_session = blocking(generated.Person.query(clean_db))
         direct_person = direct_session.exact(generated.Person)
         direct_identifier = direct_person.field(generated.Person.identifier)
         scoped = direct_identifier.eq(generated.Identifier("query-ada")) | direct_identifier.eq(
@@ -1778,13 +1720,11 @@ def _run_sdk_v2_journey(
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
-        remote_reducers = asyncio.run(
-            _sdk_v2_remote_reducers(
-                generated,
-                remote_session,
-                remote_query,
-                remote_person,
-            )
+        remote_reducers = _sdk_v2_reducers(
+            generated,
+            remote_session,
+            blocking(remote_query),
+            remote_person,
         )
         assert remote_reducers == direct_reducers
 
@@ -2318,7 +2258,7 @@ def generated_data_model_runtime_v3_live(
             raise RuntimeError("V3 rollback sentinel")
     assert not person_manager.filter(identifier=generated.Identifier("data-rollback")).exists()
 
-    resource_session = generated.Person.query(clean_db)
+    resource_session = blocking(generated.Person.query(clean_db))
     resource_person = resource_session.exact(generated.Person)
     filter_resource = resource_session.query(resource_person).where(
         resource_person.field(generated.Person.identifier).eq(generated.Identifier("data-ada"))
@@ -2649,7 +2589,7 @@ def test_generated_canonical_serialization_v5_live(
     person_manager.insert(person)
     employment_manager.insert(employment)
 
-    direct_session = generated.Employment.query(clean_db)
+    direct_session = blocking(generated.Employment.query(clean_db))
     direct_employment_var = direct_session.exact(generated.Employment)
     direct_person_var = direct_session.exact(generated.Person)
     direct_employment, direct_person = (
@@ -2719,18 +2659,9 @@ def test_generated_canonical_serialization_v5_live(
 
             return await asyncio.to_thread(post)
 
-        remote_session = generated.RemoteQuerySession(
-            advertisement,
-            exchange,
-            generated.RemoteQueryLimits(
-                max_items=10,
-                max_bytes=1 << 20,
-                max_collection_members=100,
-                max_graph_nodes=30,
-                max_attribute_values=1_000,
-                max_role_players=30,
-                deadline_ms=30_000,
-            ),
+        remote_session = generated.QuerySession(
+            generated.ExchangeConnection(advertisement, exchange),
+            resources=_REMOTE_RESOURCES,
         )
         remote_employment_var = remote_session.exact(generated.Employment)
         remote_person_var = remote_session.exact(generated.Person)
@@ -3355,7 +3286,7 @@ def test_generated_projection_round_trips_live_models(
     assert person_manager.put(person) is person
     assert person.iid
 
-    query_session = generated.Person.query(clean_db)
+    query_session = blocking(generated.Person.query(clean_db))
     person_var = query_session.exact(generated.Person)
 
     scalar_predicates = (
@@ -3594,7 +3525,7 @@ def test_generated_projection_round_trips_live_models(
     )
 
     with clean_db.transaction("read") as transaction:
-        transaction_session = generated.Person.query(transaction)
+        transaction_session = blocking(generated.Person.query(transaction))
         transaction_person_var = transaction_session.exact(generated.Person)
         transaction_query = transaction_session.query(transaction_person_var).where(
             transaction_person_var.field(generated.Person.identifier).eq(
@@ -3744,7 +3675,7 @@ def test_generated_projection_round_trips_live_models(
     assert type(stored_membership.member) is generated.Person
     assert stored_membership.member.iid == person.iid
 
-    membership_session = generated.Membership.query(clean_db)
+    membership_session = blocking(generated.Membership.query(clean_db))
     membership_var = membership_session.exact(generated.Membership)
     # Membership is intentionally keyless. The shared Query V2 contract permits
     # singular execution but rejects bounded-many windows without a stable key.
@@ -3889,7 +3820,7 @@ def test_generated_projection_round_trips_live_models(
     assert stored_employment.employee.iid == person.iid
     assert not hasattr(stored_employment, "member")
 
-    employment_session = generated.Employment.query(clean_db)
+    employment_session = blocking(generated.Employment.query(clean_db))
     employment_var = employment_session.exact(generated.Employment)
     queried_employment = employment_session.query(employment_var).one()
     assert type(queried_employment) is generated.Employment
@@ -3998,7 +3929,7 @@ def test_generated_projection_round_trips_live_models(
     assert relation_attribute_owners[0].origin.iid == person.iid
     assert relation_attribute_owners[0].destination.iid == batch_people[0].iid
 
-    network_session = generated.NetworkLink.query(clean_db)
+    network_session = blocking(generated.NetworkLink.query(clean_db))
     network_var = network_session.exact(generated.NetworkLink)
     queried_network = (
         network_session.query(network_var)
@@ -4106,7 +4037,7 @@ def test_generated_projection_round_trips_live_models(
     assert not isinstance(stored_event, generated.Event)
     assert stored_event.iid == event.iid
 
-    container_session = generated.Container.query(clean_db)
+    container_session = blocking(generated.Container.query(clean_db))
     container_var = container_session.exact(generated.Container)
     queried_container = container_session.query(container_var).one()
     assert type(queried_container) is generated.Container
@@ -4182,18 +4113,9 @@ def test_generated_projection_round_trips_live_models(
 
             return await asyncio.to_thread(post)
 
-        remote_session = generated.RemoteQuerySession(
-            advertisement,
-            exchange,
-            generated.RemoteQueryLimits(
-                max_items=10,
-                max_bytes=1 << 20,
-                max_collection_members=100,
-                max_graph_nodes=30,
-                max_attribute_values=1_000,
-                max_role_players=30,
-                deadline_ms=30_000,
-            ),
+        remote_session = generated.QuerySession(
+            generated.ExchangeConnection(advertisement, exchange),
+            resources=_REMOTE_RESOURCES,
         )
         remote_person = remote_session.exact(generated.Person)
         remote_people = remote_session.query(remote_person).where(
@@ -4440,6 +4362,22 @@ def test_generated_projection_round_trips_live_models(
         assert tuple(candidate.iid for candidate in remote_cross_pair) == tuple(
             candidate.iid for candidate in cross_pair
         )
+
+        # One program under the direct database, the built-in proxy route,
+        # and a caller exchange: only the connection object differs.
+        requests_before_program = len(remote_requests)
+        program_results = [
+            asyncio.run(_one_program(generated, connection))
+            for connection in (
+                clean_db,
+                generated.connect_proxy(f"http://127.0.0.1:{remote_port}"),
+                generated.ExchangeConnection(advertisement, exchange),
+            )
+        ]
+        assert program_results[0]["one"] == person.iid
+        assert program_results[1] == program_results[0]
+        assert program_results[2] == program_results[0]
+        assert len(remote_requests) - requests_before_program == 9
 
         if sdk_catalog is not None and sdk_journey is not None:
             sdk_results = _run_sdk_journey(

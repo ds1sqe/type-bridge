@@ -1158,6 +1158,38 @@ pub struct PyRuntimeProjection {
     package: Arc<InstalledPackage>,
 }
 
+impl PyRuntimeProjection {
+    /// Build an opaque match session from this exact installed projection.
+    fn match_session(
+        &self,
+        resources: type_bridge_orm::QueryExecutionResourceLimits,
+        cancellation: type_bridge_orm::AnswerCancellation,
+        query_limits: type_bridge_contract::limits::QueryLimits,
+    ) -> PyResult<PyMatchSessionHandle> {
+        let registry = self
+            .package
+            .projection
+            .match_registry()
+            .map_err(py_orm_error)?;
+        Ok(PyMatchSessionHandle::from_installed(
+            Arc::clone(&self.package.projection),
+            Arc::new(registry),
+            resources,
+            cancellation,
+            query_limits,
+        ))
+    }
+
+    #[cfg(test)]
+    fn default_match_session(&self) -> PyResult<PyMatchSessionHandle> {
+        self.match_session(
+            type_bridge_orm::QueryExecutionResourceLimits::default(),
+            type_bridge_orm::AnswerCancellation::default(),
+            type_bridge_contract::limits::QueryLimits::CANONICAL,
+        )
+    }
+}
+
 #[pymethods]
 impl PyRuntimeProjection {
     /// Verify canonical projection bytes and install their exact generated classes.
@@ -2138,22 +2170,6 @@ impl PyRuntimeProjection {
         )
     }
 
-    /// Build an opaque match session from this exact installed projection only.
-    fn match_session(&self) -> PyResult<PyMatchSessionHandle> {
-        let registry = self
-            .package
-            .projection
-            .match_registry()
-            .map_err(py_orm_error)?;
-        Ok(PyMatchSessionHandle::from_installed(
-            Arc::clone(&self.package.projection),
-            Arc::new(registry),
-            type_bridge_orm::QueryExecutionResourceLimits::default(),
-            type_bridge_orm::AnswerCancellation::default(),
-            type_bridge_contract::limits::QueryLimits::CANONICAL,
-        ))
-    }
-
     /// Build a match session with one common direct/remote resource policy
     /// and caller-owned cooperative cancellation owner.
     ///
@@ -2166,21 +2182,14 @@ impl PyRuntimeProjection {
         cancellation: PyRef<'_, PyQueryCancellation>,
         query_limits: Option<PyRef<'_, PyQueryLimits>>,
     ) -> PyResult<PyMatchSessionHandle> {
-        let registry = self
-            .package
-            .projection
-            .match_registry()
-            .map_err(py_orm_error)?;
-        Ok(PyMatchSessionHandle::from_installed(
-            Arc::clone(&self.package.projection),
-            Arc::new(registry),
+        self.match_session(
             resources.inner(),
             cancellation.inner(),
             query_limits.map_or(
                 type_bridge_contract::limits::QueryLimits::CANONICAL,
                 |limits| limits.inner(),
             ),
-        ))
+        )
     }
 
     /// Hydrate one proof-backed query result through this exact package projection.
@@ -12271,7 +12280,7 @@ class StructBase:
                 !PyRuntimeProjection {
                     package: Arc::clone(&package),
                 }
-                .match_session()
+                .default_match_session()
                 .unwrap()
                 .projected_companion_enabled(),
                 "legacy unordered queries must keep the released hydration path",
@@ -12391,7 +12400,7 @@ class StructBase:
             let (_, package) = install_ordered(py);
             assert!(
                 PyRuntimeProjection { package }
-                    .match_session()
+                    .default_match_session()
                     .unwrap()
                     .projected_companion_enabled(),
             );

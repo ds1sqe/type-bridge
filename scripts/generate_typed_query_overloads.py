@@ -28,12 +28,6 @@ GROUP_BY_START = "    # BEGIN GENERATED GROUP BY OVERLOADS"
 GROUP_BY_END = "    # END GENERATED GROUP BY OVERLOADS"
 GROUPED_AGGREGATE_START = "    # BEGIN GENERATED GROUPED AGGREGATE OVERLOADS"
 GROUPED_AGGREGATE_END = "    # END GENERATED GROUPED AGGREGATE OVERLOADS"
-REMOTE_AGGREGATE_START = "    # BEGIN GENERATED REMOTE AGGREGATE OVERLOADS"
-REMOTE_AGGREGATE_END = "    # END GENERATED REMOTE AGGREGATE OVERLOADS"
-REMOTE_GROUP_BY_START = "    # BEGIN GENERATED REMOTE GROUP BY OVERLOADS"
-REMOTE_GROUP_BY_END = "    # END GENERATED REMOTE GROUP BY OVERLOADS"
-REMOTE_GROUPED_AGGREGATE_START = "    # BEGIN GENERATED REMOTE GROUPED AGGREGATE OVERLOADS"
-REMOTE_GROUPED_AGGREGATE_END = "    # END GENERATED REMOTE GROUPED AGGREGATE OVERLOADS"
 
 
 def render_query_overloads(
@@ -135,8 +129,8 @@ def render_aggregate_overloads(
     return "\n\n".join(blocks)
 
 
-def render_group_by_overloads(*, remote: bool = False) -> str:
-    grouped_type = "RemoteGroupedQuery" if remote else "GroupedQuery"
+def render_group_by_overloads() -> str:
+    grouped_type = "GroupedQuery"
     blocks = [
         "    @overload\n"
         "    def group_by[RootT: ModelBase, GroupT: ModelBase](\n"
@@ -219,29 +213,13 @@ def main() -> None:
         expected_generated_python,
         PAGE_START,
         PAGE_END,
-        render_page_overloads(model_bound="ModelBase"),
-    )
-    expected_generated_python = updated_source(
-        expected_generated_python,
-        REMOTE_QUERY_START,
-        REMOTE_QUERY_END,
-        render_query_overloads("RemoteQuery"),
-    )
-    expected_generated_python = updated_source(
-        expected_generated_python,
-        REMOTE_PAGE_START,
-        REMOTE_PAGE_END,
-        render_page_overloads(
-            "RemoteQuery",
-            asynchronous=True,
-            model_bound="ModelBase",
-        ),
+        render_page_overloads(asynchronous=True, model_bound="ModelBase"),
     )
     expected_generated_python = updated_source(
         expected_generated_python,
         AGGREGATE_START,
         AGGREGATE_END,
-        render_aggregate_overloads(),
+        render_aggregate_overloads(asynchronous=True),
     )
     expected_generated_python = updated_source(
         expected_generated_python,
@@ -253,24 +231,6 @@ def main() -> None:
         expected_generated_python,
         GROUPED_AGGREGATE_START,
         GROUPED_AGGREGATE_END,
-        render_aggregate_overloads(grouped=True),
-    )
-    expected_generated_python = updated_source(
-        expected_generated_python,
-        REMOTE_AGGREGATE_START,
-        REMOTE_AGGREGATE_END,
-        render_aggregate_overloads(asynchronous=True),
-    )
-    expected_generated_python = updated_source(
-        expected_generated_python,
-        REMOTE_GROUP_BY_START,
-        REMOTE_GROUP_BY_END,
-        render_group_by_overloads(remote=True),
-    )
-    expected_generated_python = updated_source(
-        expected_generated_python,
-        REMOTE_GROUPED_AGGREGATE_START,
-        REMOTE_GROUPED_AGGREGATE_END,
         render_aggregate_overloads(grouped=True, asynchronous=True),
     )
     if arguments.write:

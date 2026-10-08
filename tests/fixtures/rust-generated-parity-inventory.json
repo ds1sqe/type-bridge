@@ -410,7 +410,7 @@
       "python": [
         {
           "path": "tests/integration/schema/test_generated_projection_live.py",
-          "anchors": ["generated.RemoteQuerySession", "remote_people.one()", "remote_people.page_by(", "remote_named_network.participants"]
+          "anchors": ["generated.ExchangeConnection(advertisement, exchange)", "remote_people.one()", "remote_people.page_by(", "remote_named_network.participants"]
         }
       ],
       "node": [

@@ -30,12 +30,13 @@ if TYPE_CHECKING:
         PyProjectedModelManager,
         PyRuntimeProjection,
         QueryCancellation,
+        QueryExecutionResourceLimits,
         QueryLimits,
     )
 
     from type_bridge.session import Database, TransactionContext
 
-    from ._query import QuerySession
+    from ._query import QueryConnection, QuerySession
 
 
 logger = logging.getLogger(__name__)
@@ -220,13 +221,20 @@ class ModelBase:
     @classmethod
     def query(
         cls,
-        connection: Database | TransactionContext,
+        connection: QueryConnection,
         *,
+        resources: QueryExecutionResourceLimits | None = None,
+        cancellation: QueryCancellation | None = None,
         query_limits: QueryLimits | None = None,
     ) -> QuerySession:
         from ._query import QuerySession
 
-        return QuerySession(cls.__runtime_projection__, connection, query_limits=query_limits)
+        return QuerySession(
+            connection,
+            resources=resources,
+            cancellation=cancellation,
+            query_limits=query_limits,
+        )
 
     def runtime_values(self) -> dict[str, object]:
         return self._values

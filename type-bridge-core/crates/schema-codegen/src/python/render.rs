@@ -34,23 +34,23 @@ const PUBLIC_QUERY_NAMES: &[&str] = &[
     "BoundRole",
     "BoundVar",
     "Collected",
+    "ExchangeConnection",
     "FunctionCall",
     "FunctionInput",
     "GroupedQuery",
     "Page",
     "Predicate",
+    "ProxyConnection",
     "Query",
     "QueryCancellation",
+    "QueryConnection",
     "QueryExecutionResourceLimits",
     "QueryLimits",
     "QueryOrder",
     "QuerySession",
-    "RemoteQuery",
-    "RemoteGroupedQuery",
-    "RemoteQueryLimits",
-    "RemoteQuerySession",
     "SubtypeBoundVar",
     "aggregate",
+    "connect_proxy",
 ];
 const PUBLIC_SCHEMA_NAMES: &[&str] = &[
     "MIGRATION_HISTORY_RESOURCE",
@@ -171,23 +171,23 @@ fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> Str
          from ._query import BoundRole as BoundRole\n\
          from ._query import BoundVar as BoundVar\n\
          from ._query import Collected as Collected\n\
+         from ._query import ExchangeConnection as ExchangeConnection\n\
          from ._query import FunctionCall as FunctionCall\n\
          from ._query import FunctionInput as FunctionInput\n\
          from ._query import GroupedQuery as GroupedQuery\n\
          from ._query import Page as Page\n\
          from ._query import Predicate as Predicate\n\
+         from ._query import ProxyConnection as ProxyConnection\n\
          from ._query import Query as Query\n\
          from ._query import QueryCancellation as QueryCancellation\n\
+         from ._query import QueryConnection as QueryConnection\n\
          from ._query import QueryExecutionResourceLimits as QueryExecutionResourceLimits\n\
          from ._query import QueryLimits as QueryLimits\n\
          from ._query import QueryOrder as QueryOrder\n\
          from ._query import QuerySession as QuerySession\n\
-         from ._query import RemoteGroupedQuery as RemoteGroupedQuery\n\
-         from ._query import RemoteQuery as RemoteQuery\n\
-         from ._query import RemoteQueryLimits as RemoteQueryLimits\n\
-         from ._query import RemoteQuerySession as RemoteQuerySession\n\
          from ._query import SubtypeBoundVar as SubtypeBoundVar\n\
-         from ._query import aggregate as aggregate\n";
+         from ._query import aggregate as aggregate\n\
+         from ._query import connect_proxy as connect_proxy\n";
     if stub || !ordered {
         output.push_str(query_imports);
     }
@@ -567,9 +567,6 @@ fn render_model_query_imports(output: &mut String, body: &str) {
     }
     if body.contains("_QuerySession") {
         query.push("QuerySession as _QuerySession");
-    }
-    if body.contains("_RemoteQuerySession") {
-        query.push("RemoteQuerySession as _RemoteQuerySession");
     }
     if !query.is_empty() {
         let _ = writeln!(output, "from ._query import {}", query.join(", "));
@@ -1079,14 +1076,14 @@ fn render_function(
                 if stub {
                     let _ = writeln!(
                         output,
-                        "type {alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession | _RemoteQuerySession, value: {}) -> {alias}: ...",
+                        "type {alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession, value: {}) -> {alias}: ...",
                         scalar_type(domain),
                         python_attribute_base(domain)
                     );
                 } else {
                     let _ = writeln!(
                         output,
-                        "{alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession | _RemoteQuerySession, value: {}) -> {alias}:\n    return session._function_input(value, {})",
+                        "{alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession, value: {}) -> {alias}:\n    return session._function_input(value, {})",
                         scalar_type(domain),
                         python_attribute_base(domain),
                         scalar_type(domain)
@@ -1131,7 +1128,7 @@ fn render_function(
             .map(|parameter| parameter.target_name().as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        let signature = std::iter::once("session: _QuerySession | _RemoteQuerySession".to_owned())
+        let signature = std::iter::once("session: _QuerySession".to_owned())
             .chain(function_parameters)
             .collect::<Vec<_>>()
             .join(", ");

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib
 import json
@@ -536,7 +537,7 @@ def _run_manager_journey(package: ModuleType, database: Database) -> dict[str, o
         sibling_query = session.query(person).where(
             person.field(package.Person.identifier).eq(package.Identifier("data-ada"))
         )
-        if sibling_query.count_by(person) != 1:
+        if asyncio.run(sibling_query.count_by(person)) != 1:
             raise ProducerError(
                 "borrowed_read_reuse", "sibling query sibling query did not remain usable"
             )
