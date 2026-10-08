@@ -5,8 +5,8 @@ and the `x86_64-unknown-linux-gnu` shared runtime built and consumed on
 Ubuntu 24.04. C17 and C++17 applications use the installed runtime through
 CMake or pkg-config. Public C support for this matrix was established with
 2.2.0 on 2026-09-14. The 2.2.2 artifacts completed promotion and independent public
-verification on 2026-09-14. The 2.2.3 artifacts must complete promotion and
-the independent public verification below before support is claimed.
+verification on 2026-09-14. The 2.2.3 artifacts completed promotion and
+independent public verification on 2026-10-07.
 
 The standalone CLI, native runtime and generated sdk example are
 separate archives. Application owners generate and distribute their own
@@ -151,3 +151,14 @@ retains the signed evidence, verification receipt, promotion record, and
 Sigstore bundles. Public archive signatures, provenance, clean installation,
 and the complete C application journeys passed against the downloaded bytes.
 This release includes patched rustls 0.23.45 for RUSTSEC-2026-0285.
+
+The 2.2.3 public artifacts were independently verified on 2026-10-07.
+They bind source `50691fde386ecbd30d873f78a04cce69802ec995`,
+[CI run 37570930469](https://github.com/ds1sqe/type-bridge/actions/runs/37570930469),
+[C verification run 37577237787](https://github.com/ds1sqe/type-bridge/actions/runs/37577237787),
+and [promotion run 37592022992](https://github.com/ds1sqe/type-bridge/actions/runs/37592022992).
+The [2.2.3 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.3)
+retains the signed evidence, verification receipt, promotion record, and
+Sigstore bundles. Public archive signatures, provenance, clean installation,
+and the complete C application journeys passed against the downloaded bytes.
+This release keeps C ABI 1.6.0 and includes the #244 window-order fix.
