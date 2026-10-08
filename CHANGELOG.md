@@ -4,16 +4,23 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.4] - 2026-10-08
+
 ### Fixed
 
 - Closing a transaction after a bounded query stops early no longer wedges
   the TypeDB server. Bounded queries asked the server to stream one answer
-  per batch; with that prefetch, TypeDB 3.11 and 3.12 could deadlock while
+  per batch; with that prefetch, TypeDB 3.11 to 3.13 could deadlock while
   closing the paused stream whenever the driver's latency estimate rounded
   to 0 ms. The close then never completed, the transaction never timed out,
   and its database stayed "in use" until the server restarted. Bounded
   queries now request two answers per batch, which leaves room for the
   stream's trailing messages.
+- Python batches running on several threads no longer leave the garbage
+  collector disabled. Each batch disabled the collector and restored the
+  state it had seen on entry, so batches ending out of order could turn
+  collection back on mid-batch or leave it off for the rest of the process.
+  The collector is now restored only when the last running batch ends.
 
 ## [2.2.3] - 2026-10-07
 

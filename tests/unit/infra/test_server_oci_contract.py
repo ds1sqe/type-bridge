@@ -257,9 +257,9 @@ def _write_oci_archive(
     labels = {
         **oci_validator.EXPECTED_LABELS,
         "org.opencontainers.image.revision": REVISION,
-        "org.opencontainers.image.version": "2.2.3",
+        "org.opencontainers.image.version": "2.2.4",
         "org.opencontainers.image.created": CREATED,
-        "io.type-bridge.release-identity": f"v2.2.3@{REVISION}",
+        "io.type-bridge.release-identity": f"v2.2.4@{REVISION}",
     }
     config = _json_bytes(
         {
@@ -339,10 +339,10 @@ def _validator_args(archive: Path) -> argparse.Namespace:
         archive=str(archive),
         created=CREATED,
         platform="linux/amd64",
-        release_identity=f"v2.2.3@{REVISION}",
+        release_identity=f"v2.2.4@{REVISION}",
         report=str(archive.with_suffix(".json")),
         revision=REVISION,
-        version="2.2.3",
+        version="2.2.4",
     )
 
 
@@ -566,7 +566,7 @@ def test_pinned_skopeo_runner_scopes_offline_output_and_registry_credentials(
         group_id=5678,
     )
     registry_command = run_pinned_skopeo.build_command(
-        ["inspect", "docker://ghcr.io/ds1sqe/type-bridge-server:2.2.3"],
+        ["inspect", "docker://ghcr.io/ds1sqe/type-bridge-server:2.2.4"],
         registry_auth=True,
         working_directory=working_directory,
         environment={"DOCKER_CONFIG": str(docker_config)},
@@ -597,7 +597,7 @@ def test_pinned_skopeo_runner_scopes_offline_output_and_registry_credentials(
     assert any(str(auth_file) in argument for argument in registry_command)
     assert registry_command[-2:] == [
         "inspect",
-        "docker://ghcr.io/ds1sqe/type-bridge-server:2.2.3",
+        "docker://ghcr.io/ds1sqe/type-bridge-server:2.2.4",
     ]
 
 
@@ -612,7 +612,7 @@ def test_pinned_skopeo_runner_rejects_symlinked_registry_auth(tmp_path: Path) ->
 
     with pytest.raises(run_pinned_skopeo.RunnerError, match="missing or unsafe"):
         run_pinned_skopeo.build_command(
-            ["inspect", "docker://ghcr.io/ds1sqe/type-bridge-server:2.2.3"],
+            ["inspect", "docker://ghcr.io/ds1sqe/type-bridge-server:2.2.4"],
             registry_auth=True,
             working_directory=working_directory,
             environment={"DOCKER_CONFIG": str(docker_config)},

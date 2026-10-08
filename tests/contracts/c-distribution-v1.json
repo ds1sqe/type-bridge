@@ -171,14 +171,14 @@
     "protected_signature": {
       "cosign_version": "3.0.6",
       "issuer": "https://token.actions.githubusercontent.com",
-      "identity_regexp": "^https://github\\.com/ds1sqe/type-bridge/\\.github/workflows/c-release\\.yml@refs/tags/v2\\.2\\.3$",
+      "identity_regexp": "^https://github\\.com/ds1sqe/type-bridge/\\.github/workflows/c-release\\.yml@refs/tags/v2\\.2\\.4$",
       "artifact_signatures": "forbidden-before-authorization"
     }
   },
   "source_authorities": [
     {
       "path": "type-bridge-core/crates/c/Cargo.toml",
-      "sha256": "a186eb7507180c3150bc88e9bfcc18cadc4c3de4c2288156fa65566ddcd0ff3d"
+      "sha256": "4f45f76fcac274adf085a84178c479deddec5b6e94e039ee9b5f04ab2a06b28d"
     },
     {
       "path": "type-bridge-core/crates/c/CMakeLists.txt",
