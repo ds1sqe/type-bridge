@@ -155,8 +155,11 @@ async fn delete_owned_database_after_force_close(
     context: &LiveTlsContext,
     database: &str,
 ) -> SecureResult<()> {
-    await_live_tls_stage("raw-stop/delete-after-force-close", async {
+    let started = std::time::Instant::now();
+    let mut attempts = 0_u32;
+    let released = tokio::time::timeout(LIVE_TLS_STAGE_TIMEOUT, async {
         loop {
+            attempts += 1;
             let result = delete_database_secure(
                 &context.address,
                 database,
@@ -181,7 +184,16 @@ async fn delete_owned_database_after_force_close(
             }
         }
     })
-    .await
+    .await;
+    released.unwrap_or_else(|_| {
+        // A server-side close that never completes keeps the database in use
+        // indefinitely; report how long the in-use diagnostic persisted.
+        panic!(
+            "live TLS stage `raw-stop/delete-after-force-close` timed out after {:?} \
+             and {attempts} delete attempts",
+            started.elapsed()
+        )
+    })
 }
 
 #[test]
@@ -541,6 +553,111 @@ async fn custom_root_raw_stop_requires_force_close_before_delete_live() {
     )
     .await
     .expect("TLS raw-stop fixture cleans up");
+}
+
+/// A transaction closed while a bounded stream is paused must complete its
+/// server-side close: the close acknowledgement arrives and the database is
+/// deletable on the first attempt. TypeDB can wedge that close when bounded
+/// queries request a prefetch of one (see `BOUNDED_QUERY_PREFETCH_SIZE`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn custom_root_close_after_early_stop_releases_database_live() {
+    let Some(context) = live_tls_context() else {
+        eprintln!(
+            "skipping live TLS early-stop close test: set TYPEDB_TLS_ADDRESS, \
+             TYPEDB_TLS_HTTP_PORT, and TYPEDB_TLS_ROOT_CA"
+        );
+        return;
+    };
+    let database = unique_database("tb_tls_early_stop_close");
+    let runtime = await_live_tls_stage(
+        "early-stop/connect",
+        TypeDBRuntime::connect_secure(
+            &context.address,
+            &context.username,
+            &context.password,
+            context.custom_root_options(),
+        ),
+    )
+    .await
+    .expect("early-stop runtime connects over TLS");
+    await_live_tls_stage("early-stop/create", runtime.create_database(&database))
+        .await
+        .expect("early-stop database is created over TLS");
+
+    let mut schema = await_live_tls_stage(
+        "early-stop/open-schema",
+        runtime.open_transaction(&database, TxType::Schema),
+    )
+    .await
+    .expect("early-stop schema transaction opens");
+    await_live_tls_stage(
+        "early-stop/define",
+        schema.query("define entity tls-early-stop-person;"),
+    )
+    .await
+    .expect("early-stop schema is defined");
+    await_live_tls_stage("early-stop/commit-schema", schema.commit())
+        .await
+        .expect("early-stop schema commits");
+    drop(schema);
+
+    let mut write = await_live_tls_stage(
+        "early-stop/open-write",
+        runtime.open_transaction(&database, TxType::Write),
+    )
+    .await
+    .expect("early-stop write transaction opens");
+    await_live_tls_stage(
+        "early-stop/insert",
+        write.query(
+            "insert $a isa tls-early-stop-person; $b isa tls-early-stop-person; \
+             $c isa tls-early-stop-person; $d isa tls-early-stop-person; \
+             $e isa tls-early-stop-person;",
+        ),
+    )
+    .await
+    .expect("early-stop rows are inserted");
+    await_live_tls_stage("early-stop/commit-write", write.commit())
+        .await
+        .expect("early-stop rows commit");
+    drop(write);
+
+    let mut read = await_live_tls_stage(
+        "early-stop/open-read",
+        runtime.open_transaction(&database, TxType::Read),
+    )
+    .await
+    .expect("early-stop read transaction opens");
+    let mut stop_after_first = |_item| Ok(RuntimeAnswerControl::Stop);
+    let stats = await_live_tls_stage(
+        "early-stop/query",
+        read.query_bounded(
+            "match $person isa tls-early-stop-person; select $person;",
+            RuntimeAnswerLimits {
+                max_items: 5,
+                max_bytes: 1024 * 1024,
+                deadline: None,
+                cancellation: RuntimeAnswerCancellation::default(),
+            },
+            &mut stop_after_first,
+        ),
+    )
+    .await
+    .expect("bounded TLS query delivers its first row");
+    assert!(stats.stopped_early);
+    await_live_tls_stage("early-stop/close", read.close())
+        .await
+        .expect("the server acknowledges closing a paused bounded stream");
+    drop(read);
+
+    // The close acknowledgement follows the server's release of the
+    // transaction, so deletion needs no release retry.
+    await_live_tls_stage("early-stop/delete", runtime.delete_database(&database))
+        .await
+        .expect("the database is free immediately after the acknowledged close");
+    runtime
+        .force_close()
+        .expect("early-stop connection closes after its transaction is released");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

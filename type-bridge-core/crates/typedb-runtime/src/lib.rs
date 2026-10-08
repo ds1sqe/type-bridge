@@ -335,6 +335,21 @@ impl RuntimeConnectionControl {
     }
 }
 
+/// Answers the server may stream ahead of a bounded consumer per batch.
+///
+/// Keep this at two or more. When a transaction closes while a query stream
+/// is paused, TypeDB 3.11/3.12 interrupts the query worker, re-arms one batch
+/// of `prefetch_size` messages, then waits for the worker to exit. The
+/// worker's queue to that batch holds `prefetch_size` messages, and after
+/// the interrupt it may still owe one in-flight answer plus a final status
+/// message. With a prefetch of one, the second of those blocks forever
+/// whenever the client's latency estimate rounds to 0 ms (the batch then
+/// ends without a latency window): the close never completes, the read
+/// transaction never times out, and the database stays "in use" until the
+/// server restarts. Two leaves room for both trailing messages.
+const BOUNDED_QUERY_PREFETCH_SIZE: u64 = 2;
+const _: () = assert!(BOUNDED_QUERY_PREFETCH_SIZE >= 2);
+
 /// Hard limits checked while polling a real driver answer stream.
 #[derive(Debug, Clone)]
 pub struct RuntimeAnswerLimits {
@@ -2771,7 +2786,8 @@ impl RuntimeTransaction {
                             let options = if limits.is_unbounded() {
                                 driver_b8::QueryOptions::new()
                             } else {
-                                driver_b8::QueryOptions::new().prefetch_size(1)
+                                driver_b8::QueryOptions::new()
+                                    .prefetch_size(BOUNDED_QUERY_PREFETCH_SIZE)
                             };
                             tx.query_with_options(&tql, options)
                                 .await
@@ -2862,7 +2878,8 @@ impl RuntimeTransaction {
                             let options = if limits.is_unbounded() {
                                 driver_b9::QueryOptions::new()
                             } else {
-                                driver_b9::QueryOptions::new().prefetch_size(1)
+                                driver_b9::QueryOptions::new()
+                                    .prefetch_size(BOUNDED_QUERY_PREFETCH_SIZE)
                             };
                             tx.query_with_options(&tql, options)
                                 .await
@@ -2995,7 +3012,8 @@ impl RuntimeTransaction {
                             let options = if limits.is_unbounded() {
                                 driver_b9::QueryOptions::new()
                             } else {
-                                driver_b9::QueryOptions::new().prefetch_size(1)
+                                driver_b9::QueryOptions::new()
+                                    .prefetch_size(BOUNDED_QUERY_PREFETCH_SIZE)
                             };
                             tx.query_with_options_and_rows(&tql, options, Some(given_rows))
                                 .await

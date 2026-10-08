@@ -4,6 +4,17 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Closing a transaction after a bounded query stops early no longer wedges
+  the TypeDB server. Bounded queries asked the server to stream one answer
+  per batch; with that prefetch, TypeDB 3.11 and 3.12 could deadlock while
+  closing the paused stream whenever the driver's latency estimate rounded
+  to 0 ms. The close then never completed, the transaction never timed out,
+  and its database stayed "in use" until the server restarted. Bounded
+  queries now request two answers per batch, which leaves room for the
+  stream's trailing messages.
+
 ## [2.2.3] - 2026-10-07
 
 ### Security
