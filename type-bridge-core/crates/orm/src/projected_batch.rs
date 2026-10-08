@@ -5,6 +5,7 @@ use std::cmp::Ordering;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 use type_bridge_contract::id::{TypeId, TypeKind, is_canonical_thing_iid};
+use type_bridge_contract::limits::MAX_CANONICAL_COLLECTION_LEN;
 use type_bridge_contract::projection::ModelProjection;
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticDetailValue, SdkDiagnosticMessage, SdkDiagnosticName,
@@ -476,6 +477,17 @@ impl ProjectedBatch {
     #[doc(hidden)]
     pub fn validate_binding_row_count(row_count: usize) -> Result<(), SdkExecutionDiagnostic> {
         validate_row_count(row_count, DEFAULT_QUERY_ITEMS).map(|_| ())
+    }
+
+    /// Validate the number of input proofs a binding reads for one row
+    /// against the canonical collection ceiling before it reserves storage
+    /// for them.
+    #[doc(hidden)]
+    pub fn validate_binding_proof_count(proof_count: usize) -> Result<(), SdkExecutionDiagnostic> {
+        if proof_count > MAX_CANONICAL_COLLECTION_LEN {
+            return Err(Self::binding_allocation_failure());
+        }
+        Ok(())
     }
 
     /// Validate and normalize one homogeneous projected batch.

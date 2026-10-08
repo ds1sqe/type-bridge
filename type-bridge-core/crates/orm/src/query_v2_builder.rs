@@ -558,6 +558,109 @@ pub fn query_builder_invocation_input_byte_limit_error() -> Diagnostic {
     )
 }
 
+/// Bound the length of a host collection before a binding materializes it.
+///
+/// `length` is what the host reported, or `None` when the host could not
+/// represent it. A length above `maximum` is refused with `oversized`,
+/// annotated with the ceiling that refused it.
+#[doc(hidden)]
+pub fn query_builder_bounded_len(
+    length: Option<usize>,
+    maximum: usize,
+    oversized: fn() -> Diagnostic,
+) -> Result<usize, Diagnostic> {
+    match length {
+        Some(length) if length <= maximum => Ok(length),
+        _ => Err(QueryLimits::annotate_refusal(oversized(), maximum)),
+    }
+}
+
+/// The structural budget of the invocation rows a binding reads from host
+/// values for one authored plan.
+///
+/// A binding reads rows and values one at a time and checks each here before
+/// keeping it, so an oversized invocation is refused before the host
+/// collection is materialized. Bytes are counted as the canonical JSON array
+/// of row arrays the invocation encodes to.
+#[doc(hidden)]
+pub struct QueryInvocationRowBudget<'plan> {
+    plan: &'plan AuthoredQueryPlan,
+    input_bytes: usize,
+}
+
+impl<'plan> QueryInvocationRowBudget<'plan> {
+    /// Start an empty budget (`[]`) for `plan`.
+    #[must_use]
+    pub const fn new(plan: &'plan AuthoredQueryPlan) -> Self {
+        Self {
+            plan,
+            input_bytes: 2,
+        }
+    }
+
+    /// The columns each row must carry, in order.
+    #[must_use]
+    pub fn columns(&self) -> &'plan [InputColumn] {
+        self.plan.input_columns()
+    }
+
+    /// Bound the host-reported row count by the plan's `input_rows`.
+    pub fn row_count(&self, length: Option<usize>) -> Result<usize, Diagnostic> {
+        query_builder_bounded_len(
+            length,
+            self.plan.limits().structural.input_rows,
+            query_builder_invocation_row_limit_error,
+        )
+    }
+
+    /// Admit row `row_index` with the host-reported number of values.
+    ///
+    /// The row must carry exactly one value per column; its brackets and
+    /// separator are charged to the byte budget.
+    pub fn open_row(
+        &mut self,
+        row_index: usize,
+        value_count: Option<usize>,
+    ) -> Result<usize, Diagnostic> {
+        let limits = self.plan.limits().structural;
+        let value_count = query_builder_bounded_len(
+            value_count,
+            limits.bindings,
+            query_builder_invocation_row_arity_error,
+        )?;
+        if value_count != self.columns().len() {
+            return Err(query_builder_invocation_row_arity_error());
+        }
+        self.charge(usize::from(row_index > 0).saturating_add(2))?;
+        Ok(value_count)
+    }
+
+    /// Charge value `column_index` of the open row (`None` is JSON `null`).
+    pub fn add_value(
+        &mut self,
+        column_index: usize,
+        value: &Option<CanonicalValue>,
+    ) -> Result<(), Diagnostic> {
+        let encoded = serde_json::to_vec(value).map_err(|_| self.refusal())?;
+        self.charge(usize::from(column_index > 0).saturating_add(encoded.len()))
+    }
+
+    fn charge(&mut self, bytes: usize) -> Result<(), Diagnostic> {
+        self.input_bytes = self.input_bytes.saturating_add(bytes);
+        if self.input_bytes > self.plan.limits().structural.input_bytes {
+            return Err(self.refusal());
+        }
+        Ok(())
+    }
+
+    fn refusal(&self) -> Diagnostic {
+        QueryLimits::annotate_refusal(
+            query_builder_invocation_input_byte_limit_error(),
+            self.plan.limits().structural.input_bytes,
+        )
+    }
+}
+
 /// Convert an exact host integer into a bounded reachability depth.
 #[doc(hidden)]
 pub fn query_builder_depth(value: i128) -> Result<u8, Diagnostic> {

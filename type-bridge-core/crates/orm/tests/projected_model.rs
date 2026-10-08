@@ -1721,3 +1721,73 @@ fn total_payload_bytes_are_bounded_before_a_create_value_is_returned() {
         "projected_model_byte_limit_exceeded",
     );
 }
+
+// Python `__set__` and TypeScript `create` check a member's count through
+// this entry before any value is encoded; it must refuse exactly as encoding.
+#[test]
+fn eager_member_counts_refuse_exactly_as_encoding() {
+    use type_bridge_orm::validate_projected_create_member_count;
+
+    let projection = installed(BindingTarget::Python, SCHEMA);
+    let membership = type_id(TypeKind::Relation, "membership");
+    let member = RoleId::new("membership", "member").unwrap();
+    let observer = RoleId::new("membership", "observer").unwrap();
+    let person = type_id(TypeKind::Entity, "person");
+    let encoded = ProjectedCreate::try_new(
+        &projection,
+        membership.clone(),
+        vec![],
+        vec![
+            (
+                member.clone(),
+                vec![iid_reference(&projection, person.clone(), "0x1")],
+            ),
+            (
+                observer,
+                vec![
+                    iid_reference(&projection, person.clone(), "0x1"),
+                    iid_reference(&projection, person.clone(), "0x2"),
+                    iid_reference(&projection, person.clone(), "0x3"),
+                ],
+            ),
+        ],
+    )
+    .unwrap_err();
+    let eager = validate_projected_create_member_count(&projection, &membership, "observer", 3)
+        .unwrap_err();
+    assert_eq!(eager, encoded);
+    assert_eq!(eager.code().as_str(), "role_cardinality_violation");
+    validate_projected_create_member_count(&projection, &membership, "observer", 2).unwrap();
+    let missing =
+        validate_projected_create_member_count(&projection, &membership, "member", 0).unwrap_err();
+    assert_code(
+        &missing,
+        SdkDiagnosticCategory::InvalidInput,
+        "missing_required_role",
+    );
+
+    let constrained = installed(BindingTarget::Python, CONSTRAINT_SCHEMA);
+    let person = type_id(TypeKind::Entity, "person");
+    let field_violation =
+        validate_projected_create_member_count(&constrained, &person, "handle", 3).unwrap_err();
+    assert_code(
+        &field_violation,
+        SdkDiagnosticCategory::InvalidInput,
+        "field_cardinality_violation",
+    );
+    assert_eq!(
+        field_violation.path(),
+        [
+            SdkDiagnosticPathSegment::Type(person.clone()),
+            SdkDiagnosticPathSegment::Field(field(&person, "handle")),
+        ]
+    );
+    let unknown =
+        validate_projected_create_member_count(&constrained, &person, "no_such_member", 1)
+            .unwrap_err();
+    assert_code(
+        &unknown,
+        SdkDiagnosticCategory::InvalidInput,
+        "projected_member_unknown",
+    );
+}

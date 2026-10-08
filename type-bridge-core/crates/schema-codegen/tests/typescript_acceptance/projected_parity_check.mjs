@@ -1150,7 +1150,8 @@ function constraintObservation(package_, constructed) {
     "plain activity lost its inherited role identity",
   );
   rejected("inherited_relates", () => package_.PlainActivity.create({}), {
-    names: ["RangeError"],
+    category: "invalid_input",
+    code: "missing_required_role",
   });
   rejected(
     "invalid_player_type",
@@ -1178,13 +1179,14 @@ function constraintObservation(package_, constructed) {
     valDuration: constructed.ada.valDuration,
   };
   rejected("key", () => package_.Person.create(personWithoutKey), {
-    names: ["RangeError"],
+    category: "invalid_input",
+    code: "missing_required_field",
   });
 
   rejected(
     "maximum_cardinality",
     () => makePerson(package_, { aliases: ["one", "two", "three", "four"] }),
-    { names: ["RangeError"] },
+    { category: "invalid_input", code: "field_cardinality_violation" },
   );
   const playerDuplicate = rejected(
     "ordered_distinct_player",
@@ -1214,7 +1216,7 @@ function constraintObservation(package_, constructed) {
   rejected(
     "ownership_cardinality",
     () => package_.Person.create(personWithoutScore),
-    { names: ["RangeError"] },
+    { category: "invalid_input", code: "missing_required_field" },
   );
   const rangeError = rejected(
     "range",
@@ -1226,7 +1228,8 @@ function constraintObservation(package_, constructed) {
     code: "regex_constraint_violation",
   });
   rejected("required_cardinality", () => package_.Counter.create({}), {
-    names: ["RangeError"],
+    category: "invalid_input",
+    code: "missing_required_field",
   });
   rejected(
     "role_cardinality",
@@ -1238,7 +1241,7 @@ function constraintObservation(package_, constructed) {
           package_.Event.reference("0x03", {}),
         ],
       }),
-    { names: ["RangeError"] },
+    { category: "invalid_input", code: "role_cardinality_violation" },
   );
   requireCondition(
     !package_.Employment.metadata.create.roles.some(

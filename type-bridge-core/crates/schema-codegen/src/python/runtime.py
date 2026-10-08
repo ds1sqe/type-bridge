@@ -939,6 +939,17 @@ class _ProjectedField:
             raise AttributeError(f"{self.name} is read-only")
         multiplicity = _mapping(self.create["multiplicity"])
         normalized = _normalize(value, multiplicity)
+        if _string(multiplicity["container"]) == "sequence":
+            count = len(cast(tuple[object, ...], normalized))
+        else:
+            count = 0 if normalized is None else 1
+        # The core decides the cardinality rule and raises its structured
+        # ProjectedCardinalityError (a ValueError).
+        type(instance).__runtime_projection__.validate_member_cardinality(
+            type(instance),
+            self.name,
+            count,
+        )
         _validate_projected(normalized, self.create, role=self.role)
         if not self.role and normalized is not None:
             values = normalized if _is_object_tuple(normalized) else (normalized,)
@@ -975,20 +986,10 @@ def _normalize(
     multiplicity: Mapping[str, object],
 ) -> object:
     if _string(multiplicity["container"]) == "scalar":
-        if value is None and _boolean(multiplicity["required"]):
-            raise ValueError("required projected value is absent")
         return value
     if isinstance(value, (str, bytes)) or not _is_object_sequence(value):
         raise TypeError("projected multi-value field requires a sequence")
-    values: tuple[object, ...] = tuple(value)
-    cardinality = _mapping(multiplicity["cardinality"])
-    minimum = int(_string(cardinality["min"]))
-    maximum = _string(cardinality["max"])
-    if len(values) < minimum:
-        raise ValueError("projected value is below its cardinality minimum")
-    if maximum != "unbounded" and len(values) > int(maximum):
-        raise ValueError("projected value exceeds its cardinality maximum")
-    return values
+    return tuple(value)
 
 
 def _validate_projected(

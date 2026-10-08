@@ -562,21 +562,6 @@ function validateMultiplicity(
   if (multiplicity.container === "scalar" && Array.isArray(value)) {
     throw new TypeError(`${name} must be scalar`);
   }
-  const count =
-    value === undefined || value === null
-      ? 0
-      : Array.isArray(value)
-        ? value.length
-        : 1;
-  const actual = BigInt(count);
-  const minimum = BigInt(multiplicity.cardinality.min);
-  const maximum =
-    multiplicity.cardinality.max === "unbounded"
-      ? null
-      : BigInt(multiplicity.cardinality.max);
-  if (actual < minimum || (maximum !== null && actual > maximum)) {
-    throw new RangeError(`${name} violates projected cardinality`);
-  }
 }
 
 function validateAccepted(
@@ -687,6 +672,7 @@ export function defineModel<
     members: readonly CreateMemberDefinition[],
     context: string,
   ): Complete => {
+    const createInput = members === definition.createMembers;
     if (iid !== null && (typeof iid !== "string" || iid.length === 0)) {
       throw new TypeError(`${context} iid must be a non-empty string`);
     }
@@ -713,6 +699,9 @@ export function defineModel<
       for (const member of members) {
         const value = input[member.name];
         validateMultiplicity(member.name, value, member.multiplicity);
+        if (createInput) {
+          validateCreateMemberCount(definition.typeKey, member.name, value);
+        }
         if (member.accepted !== undefined) {
           validateAccepted(member.name, value, member.accepted);
         }
@@ -1049,6 +1038,24 @@ export function defineModel<
   runtimeModels.set(definition.typeKey, { token: modelToken, definition });
   Object.freeze(modelToken);
   return modelToken;
+}
+
+// The core decides the cardinality rule; a refusal is its structured error.
+// Hydrated complete members are not checked here: the core hydrated them.
+function validateCreateMemberCount(
+  typeKey: string,
+  name: string,
+  value: unknown,
+): void {
+  const count =
+    value === undefined || value === null
+      ? 0
+      : Array.isArray(value)
+        ? value.length
+        : 1;
+  coreCall(() =>
+    requireProjection().validateMemberCardinality(typeKey, name, count),
+  );
 }
 
 function validateOwnedMember(

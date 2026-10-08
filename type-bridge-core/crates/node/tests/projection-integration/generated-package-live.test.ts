@@ -1149,6 +1149,18 @@ async function sdkV2QueryLane(
     .or(identifier.eq(Identifier.create("query-dana")));
   const query = session.query(person).where(scope);
   assertUnknownEnumValue(() => identifier.asc("none" as never), "missing_order");
+  // The core checks a create member's count at construction, with its code.
+  assert.throws(
+    () => Person.create({ identifier: Identifier.create("query-cardinality") }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.name, "QueryV2Error");
+      const diagnostic = error as QueryV2Error;
+      assert.equal(diagnostic.category, "invalid_input");
+      assert.equal(diagnostic.code, "missing_required_field");
+      return true;
+    },
+  );
   const keys = (await query.rows({
     limit: 2n,
     orderBy: [identifier.asc()],

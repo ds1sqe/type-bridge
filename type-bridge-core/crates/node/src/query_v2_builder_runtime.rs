@@ -14,24 +14,21 @@ use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::{
     AttributeId, FunctionId, MAX_LABEL_BYTES, RoleId, TypeId, TypeKind,
 };
-use type_bridge_contract::limits::{
-    MAX_CANONICAL_STRING_BYTES, MAX_OUTPUT_NAME_BYTES, QueryLimits,
-};
+use type_bridge_contract::limits::{MAX_CANONICAL_STRING_BYTES, MAX_OUTPUT_NAME_BYTES};
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use type_bridge_orm::query_v2_builder::{
     AuthoredQueryInvocation, AuthoredQueryPlan, QueryAuthorityIdentity, QueryBindingHandle,
-    QueryBuilderScalarInput, QueryDocumentFieldHandle, QueryInputHandle, QueryLocalFunctionHandle,
-    QueryLocalReturnHandle, QueryOperandHandle, QueryOrderHandle, QueryPatternHandle,
-    QueryPlanBuilder, QueryReduceAssignmentHandle, query_builder_binding_limit_error,
-    query_builder_boolean_host_type_error, query_builder_comparator, query_builder_depth,
+    QueryBuilderScalarInput, QueryDocumentFieldHandle, QueryInputHandle, QueryInvocationRowBudget,
+    QueryLocalFunctionHandle, QueryLocalReturnHandle, QueryOperandHandle, QueryOrderHandle,
+    QueryPatternHandle, QueryPlanBuilder, QueryReduceAssignmentHandle,
+    query_builder_binding_limit_error, query_builder_boolean_host_type_error,
+    query_builder_bounded_len, query_builder_comparator, query_builder_depth,
     query_builder_depth_error, query_builder_disjunction_term_limit_error,
     query_builder_document_output_limit_error, query_builder_function_argument_limit_error,
     query_builder_function_target, query_builder_host_collection_type_error,
-    query_builder_invocation_input_byte_limit_error, query_builder_invocation_row_arity_error,
-    query_builder_invocation_row_limit_error, query_builder_local_binding_limit_error,
-    query_builder_local_body_limit_error, query_builder_local_parameters,
-    query_builder_negation_term_limit_error, query_builder_order_direction,
-    query_builder_reduce_term_limit_error, query_builder_reducer,
+    query_builder_local_binding_limit_error, query_builder_local_body_limit_error,
+    query_builder_local_parameters, query_builder_negation_term_limit_error,
+    query_builder_order_direction, query_builder_reduce_term_limit_error, query_builder_reducer,
     query_builder_role_player_limit_error, query_builder_role_players,
     query_builder_root_pattern_limit_error, query_builder_row_output_limit_error,
     query_builder_scalar, query_builder_scalar_host_type_error,
@@ -188,29 +185,28 @@ fn node_u64(value: Unknown) -> napi::Result<u64> {
     Ok(value)
 }
 
-fn bounded_array_shape<'env>(
-    value: Unknown<'env>,
-    limit: usize,
-    oversized: fn() -> Diagnostic,
-) -> napi::Result<(Object<'env>, u32)> {
+/// Read a host array and its length; the bound itself is the core's
+/// (`query_builder_bounded_len`).
+fn host_array(value: Unknown<'_>) -> napi::Result<(Object<'_>, Option<usize>)> {
     if !value.is_array()? {
         return Err(napi_error(&query_builder_host_collection_type_error()));
     }
     let array = value.coerce_to_object()?;
     let length = array.get_array_length_unchecked()?;
-    if usize::try_from(length).unwrap_or(usize::MAX) > limit {
-        return Err(napi_error(&QueryLimits::annotate_refusal(
-            oversized(),
-            limit,
-        )));
-    }
-    Ok((array, length))
+    Ok((array, usize::try_from(length).ok()))
 }
 
-fn array_elements<'env>(array: &Object<'env>, length: u32) -> napi::Result<Vec<Unknown<'env>>> {
+fn array_elements<'env>(array: &Object<'env>, length: usize) -> napi::Result<Vec<Unknown<'env>>> {
     (0..length)
-        .map(|index| array.get_element::<Unknown>(index))
+        .map(|index| array_element(array, index))
         .collect()
+}
+
+fn array_element<'env>(array: &Object<'env>, index: usize) -> napi::Result<Unknown<'env>> {
+    // A bounded length is at most the u32 array length it was read from.
+    let index =
+        u32::try_from(index).map_err(|_| napi::Error::from_reason("array index overflow"))?;
+    array.get_element::<Unknown>(index)
 }
 
 fn bounded_array<'env>(
@@ -218,7 +214,8 @@ fn bounded_array<'env>(
     limit: usize,
     oversized: fn() -> Diagnostic,
 ) -> napi::Result<Vec<Unknown<'env>>> {
-    let (array, length) = bounded_array_shape(value, limit, oversized)?;
+    let (array, length) = host_array(value)?;
+    let length = diagnostic(query_builder_bounded_len(length, limit, oversized))?;
     array_elements(&array, length)
 }
 
@@ -276,63 +273,26 @@ fn invocation_rows(
     plan: &AuthoredQueryPlan,
     rows: Unknown,
 ) -> napi::Result<Vec<Vec<Option<CanonicalValue>>>> {
-    let limits = plan.limits().structural;
-    let columns = plan.input_columns();
-    let (rows, row_count) = bounded_array_shape(
-        rows,
-        limits.input_rows,
-        query_builder_invocation_row_limit_error,
-    )?;
+    let mut budget = QueryInvocationRowBudget::new(plan);
+    let (rows, row_count) = host_array(rows)?;
+    let row_count = diagnostic(budget.row_count(row_count))?;
+    let columns = budget.columns();
     if columns.is_empty() {
-        return Ok(vec![
-            Vec::new();
-            usize::try_from(row_count).unwrap_or(usize::MAX)
-        ]);
+        return Ok(vec![Vec::new(); row_count]);
     }
-    let mut converted = Vec::with_capacity(usize::try_from(row_count).unwrap_or(usize::MAX));
-    let mut input_bytes = 2usize;
+    let mut converted = Vec::with_capacity(row_count);
     for row_index in 0..row_count {
-        let row = rows.get_element::<Unknown>(row_index)?;
-        let (row, value_count) = bounded_array_shape(
-            row,
-            limits.bindings,
-            query_builder_invocation_row_arity_error,
-        )?;
-        if usize::try_from(value_count).unwrap_or(usize::MAX) != columns.len() {
-            return Err(napi_error(&query_builder_invocation_row_arity_error()));
-        }
+        let (row, value_count) = host_array(array_element(&rows, row_index)?)?;
+        let value_count = diagnostic(budget.open_row(row_index, value_count))?;
         let values = array_elements(&row, value_count)?;
-        input_bytes = input_bytes
-            .saturating_add(usize::from(row_index > 0))
-            .saturating_add(2);
-        if input_bytes > limits.input_bytes {
-            return Err(napi_error(&QueryLimits::annotate_refusal(
-                query_builder_invocation_input_byte_limit_error(),
-                limits.input_bytes,
-            )));
-        }
-        let mut converted_row = Vec::with_capacity(values.len().min(columns.len()));
+        let mut converted_row = Vec::with_capacity(columns.len());
         for (column_index, (value, column)) in values.into_iter().zip(columns).enumerate() {
             let value = if matches!(value.get_type()?, ValueType::Null) {
                 None
             } else {
                 Some(node_scalar(env, column.value_type(), value)?)
             };
-            let encoded = serde_json::to_vec(&value).map_err(|_| {
-                napi_error(&QueryLimits::annotate_refusal(
-                    query_builder_invocation_input_byte_limit_error(),
-                    limits.input_bytes,
-                ))
-            })?;
-            input_bytes = input_bytes
-                .saturating_add(usize::from(column_index > 0))
-                .saturating_add(encoded.len());
-            if input_bytes > limits.input_bytes {
-                return Err(napi_error(&QueryLimits::annotate_refusal(
-                    query_builder_invocation_input_byte_limit_error(),
-                    limits.input_bytes,
-                )));
-            }
+            diagnostic(budget.add_value(column_index, &value))?;
             converted_row.push(value);
         }
         converted.push(converted_row);

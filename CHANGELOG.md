@@ -186,6 +186,20 @@ differently direct and through a proxy. Each entry says what to do instead.
     `QueryV2Error`.
   The cases in `tests/contracts/diagnostic-json-v1.json` are checked to be
   identical in Rust, Python, Node, and (for the contract form) C.
+- Generated Python and TypeScript packages no longer check a model member's
+  cardinality themselves; the Rust core checks it at the same call (Python
+  field assignment and construction, TypeScript `create` and
+  `decodeCreate`) with the rule and codes encoding uses: no value for a
+  required member is `missing_required_field` / `missing_required_role`,
+  any other count outside the cardinality is `field_cardinality_violation`
+  / `role_cardinality_violation`, with `actual_count`, `minimum_count`, and
+  `maximum_count` details.
+  - Python raises the new `type_bridge_core.ProjectedCardinalityError`, a
+    subclass of both `MatchRequestError` and `ValueError`, so
+    `except ValueError` still catches it; the old message texts are gone.
+  - TypeScript raises the structured error with that `code` instead of a
+    `RangeError`. Hydrated values are no longer re-checked in TypeScript;
+    the core checked them when it hydrated them.
 - Mixed versions: clients and executors must both be 2.3.
   - A 2.3 executor refuses a V1-format request with
     `query_remote_v2_format_unsupported` and a `supported` detail naming the

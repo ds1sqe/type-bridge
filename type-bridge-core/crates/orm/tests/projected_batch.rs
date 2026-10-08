@@ -1811,3 +1811,14 @@ fn preparation_preserves_the_control_deadline_captured_before_batch_work() {
 fn name(value: &'static str) -> SdkDiagnosticName {
     SdkDiagnosticName::new(value).unwrap()
 }
+
+#[test]
+fn binding_proof_count_is_bounded_by_the_canonical_collection_ceiling() {
+    use type_bridge_contract::limits::MAX_CANONICAL_COLLECTION_LEN;
+
+    ProjectedBatch::validate_binding_proof_count(MAX_CANONICAL_COLLECTION_LEN).unwrap();
+    assert_eq!(
+        ProjectedBatch::validate_binding_proof_count(MAX_CANONICAL_COLLECTION_LEN + 1).unwrap_err(),
+        ProjectedBatch::binding_allocation_failure()
+    );
+}

@@ -200,6 +200,7 @@ interface NativeProjectionHandle {
     validateAttributeValueJson(typeKey: string, valueJson: string): void;
     validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;
     validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
+    validateMemberCardinality(typeKey: string, memberName: string, count: number): void;
     validateCreateJson(typeKey: string, valueJson: string): void;
     encodeAttributeJson(typeKey: string, valueJson: string): Uint8Array;
     decodeAttributeJson(typeKey: string, bytes: Uint8Array): string;
@@ -263,6 +264,8 @@ export declare class InstalledRuntimeProjection {
     validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;
     /** @internal Validate one generated owned-field scalar against projected constraints. */
     validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
+    /** @internal Check one generated create member's value count against its projected cardinality. */
+    validateMemberCardinality(typeKey: string, memberName: string, count: number): void;
     /** @internal Validate one complete generated create payload. */
     validateCreateJson(typeKey: string, valueJson: string): void;
     /** @internal Encode one exact generated attribute value to canonical bytes. */

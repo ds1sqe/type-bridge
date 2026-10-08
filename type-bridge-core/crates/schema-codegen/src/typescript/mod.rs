@@ -1307,15 +1307,15 @@ mod tests {
     #[test]
     fn legacy_runtime_source_remains_byte_exact() {
         assert_eq!(runtime_source(false).unwrap(), RUNTIME_SOURCE);
-        assert_eq!(RUNTIME_SOURCE.len(), 120_626);
+        assert_eq!(RUNTIME_SOURCE.len(), 120_797);
         assert_eq!(
             format!("{:x}", Sha256::digest(RUNTIME_SOURCE)),
-            "3a0686c23cb5726747a97b5a4aed7ea5f981f4b2254b85f0f237ba67b6443e2d"
+            "e18a65b722572a6de5322405b89feed2f751622b4f835c3a9162d953db3388c2"
         );
         let resource = CodeResourceDigest::from_bytes(RUNTIME_SOURCE_ID, RUNTIME_SOURCE).unwrap();
         assert_eq!(
             resource.content_fingerprint().digest().to_hex(),
-            "32d5bb704352b1c1baad2901409e11a39f97acb7cde6441ea71c4b505c85de9d"
+            "7801d499f91c28694f9b3234b1003ab0fa36a11f9da3fde5e19a08f98fc418b2"
         );
     }
 
@@ -1470,7 +1470,6 @@ mod tests {
             BTreeSet::from([
                 "BigInt".to_owned(),
                 "Date".to_owned(),
-                "RangeError".to_owned(),
                 "TypeError".to_owned(),
                 "assertRecord".to_owned(),
                 "defineProperty".to_owned(),

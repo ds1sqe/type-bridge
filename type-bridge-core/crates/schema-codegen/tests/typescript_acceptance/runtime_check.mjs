@@ -197,7 +197,7 @@ assert.throws(
     Container.create({
       item: [eventReference, eventReference, eventReference],
     }),
-  RangeError,
+  { code: "role_cardinality_violation" },
 );
 assert.throws(() => Employment.create({ employee: event }), TypeError);
 assert.throws(

@@ -29,6 +29,7 @@ from urllib import request as urllib_request
 import pytest
 from type_bridge_core import (
     MatchRequestError,
+    ProjectedCardinalityError,
     QueryCancellation,
     QueryExecutionResourceLimits,
     UnknownEnumValueError,
@@ -3398,6 +3399,17 @@ def test_generated_projection_round_trips_live_models(
         val_duration=generated.ValDuration(timedelta(seconds=3)),
     )
     assert person_manager.put(person) is person
+    # The core checks the member count at assignment, with its own code.
+    with pytest.raises(ProjectedCardinalityError) as too_many_aliases:
+        person.aliases = [generated.Aliases(name) for name in ("a", "b", "c", "d")]
+    assert isinstance(too_many_aliases.value, ValueError)
+    assert too_many_aliases.value.code == "field_cardinality_violation"
+    assert too_many_aliases.value.details["actual_count"] == {"kind": "count", "value": "4"}
+    assert too_many_aliases.value.details["maximum_count"] == {"kind": "count", "value": "3"}
+    with pytest.raises(ProjectedCardinalityError) as missing_score:
+        person.score = None
+    assert missing_score.value.code == "missing_required_field"
+    assert len(person.aliases) == 2
     assert person.iid
 
     query_session = blocking(generated.Person.query(clean_db))

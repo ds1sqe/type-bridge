@@ -152,6 +152,7 @@ pub use projected_model::{
     MAX_PROJECTED_MODEL_BYTES, MAX_PROJECTED_MODEL_MEMBERS, ProjectedAttributeValue,
     ProjectedCreate, ProjectedCreateBudget, ProjectedReference, ProjectedReferenceOrigin,
     ProjectedResourceMeasure, ProjectedRolePlayer, ProjectedThing,
+    validate_projected_create_member_count,
 };
 #[doc(hidden)]
 pub use projected_query::{

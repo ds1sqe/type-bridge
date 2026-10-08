@@ -1033,7 +1033,9 @@ def _constraint_observation(
     rejected(
         "maximum_cardinality",
         lambda: _make_person(package, aliases=("one", "two", "three", "four")),
-        exception_names=("ValueError",),
+        exception_names=("ProjectedCardinalityError",),
+        category="invalid_input",
+        code="field_cardinality_violation",
     )
     player_duplicate = rejected(
         "ordered_distinct_player",
@@ -1095,7 +1097,9 @@ def _constraint_observation(
                 package.EventRef("0x03"),
             )
         ),
-        exception_names=("ValueError",),
+        exception_names=("ProjectedCardinalityError",),
+        category="invalid_input",
+        code="role_cardinality_violation",
     )
     if "member" in inspect.signature(package.Employment).parameters:
         raise AssertionError("employment exposed its specialized-away role")
@@ -1243,9 +1247,14 @@ def _duplicate_observation(error: Exception) -> tuple[int, int]:
         raise AssertionError("ordered duplicate diagnostic changed its index domains")
     first_value = first.get("value")
     duplicate_value = duplicate.get("value")
-    if type(first_value) is not int or type(duplicate_value) is not int:
-        raise AssertionError("ordered duplicate diagnostic indices are not exact integers")
-    return first_value, duplicate_value
+    # Count details are decimal strings in the host form (one representation
+    # in every binding).
+    if not all(
+        type(value) is str and value.isascii() and value.isdigit()
+        for value in (first_value, duplicate_value)
+    ):
+        raise AssertionError("ordered duplicate diagnostic indices are not decimal counts")
+    return int(first_value), int(duplicate_value)
 
 
 def _build_report(root: Path, package: Any, foreign: Any) -> dict[str, object]:

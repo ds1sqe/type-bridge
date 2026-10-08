@@ -14,24 +14,21 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, Diagnosti
 use type_bridge_contract::id::{
     AttributeId, FunctionId, MAX_LABEL_BYTES, RoleId, TypeId, TypeKind,
 };
-use type_bridge_contract::limits::{
-    MAX_CANONICAL_STRING_BYTES, MAX_OUTPUT_NAME_BYTES, QueryLimits,
-};
+use type_bridge_contract::limits::{MAX_CANONICAL_STRING_BYTES, MAX_OUTPUT_NAME_BYTES};
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use type_bridge_orm::query_v2_builder::{
     AuthoredQueryInvocation, AuthoredQueryPlan, QueryAuthorityIdentity, QueryBindingHandle,
-    QueryBuilderScalarInput, QueryDocumentFieldHandle, QueryInputHandle, QueryLocalFunctionHandle,
-    QueryLocalReturnHandle, QueryOperandHandle, QueryOrderHandle, QueryPatternHandle,
-    QueryPlanBuilder, QueryReduceAssignmentHandle, query_builder_binding_limit_error,
-    query_builder_boolean_host_type_error, query_builder_comparator, query_builder_depth,
+    QueryBuilderScalarInput, QueryDocumentFieldHandle, QueryInputHandle, QueryInvocationRowBudget,
+    QueryLocalFunctionHandle, QueryLocalReturnHandle, QueryOperandHandle, QueryOrderHandle,
+    QueryPatternHandle, QueryPlanBuilder, QueryReduceAssignmentHandle,
+    query_builder_binding_limit_error, query_builder_boolean_host_type_error,
+    query_builder_bounded_len, query_builder_comparator, query_builder_depth,
     query_builder_depth_error, query_builder_disjunction_term_limit_error,
     query_builder_document_output_limit_error, query_builder_function_argument_limit_error,
     query_builder_function_target, query_builder_host_collection_type_error,
-    query_builder_invocation_input_byte_limit_error, query_builder_invocation_row_arity_error,
-    query_builder_invocation_row_limit_error, query_builder_local_binding_limit_error,
-    query_builder_local_body_limit_error, query_builder_local_parameters,
-    query_builder_negation_term_limit_error, query_builder_order_direction,
-    query_builder_reduce_term_limit_error, query_builder_reducer,
+    query_builder_local_binding_limit_error, query_builder_local_body_limit_error,
+    query_builder_local_parameters, query_builder_negation_term_limit_error,
+    query_builder_order_direction, query_builder_reduce_term_limit_error, query_builder_reducer,
     query_builder_role_player_limit_error, query_builder_role_players,
     query_builder_root_pattern_limit_error, query_builder_row_output_limit_error,
     query_builder_scalar, query_builder_scalar_host_type_error,
@@ -154,11 +151,9 @@ fn python_unsigned(value: &Bound<'_, PyAny>) -> PyResult<u64> {
     )?))
 }
 
-fn sequence_length(
-    value: &Bound<'_, PyAny>,
-    limit: usize,
-    oversized: fn() -> Diagnostic,
-) -> PyResult<usize> {
+/// Read the length of a host sequence. `None` is a length Python cannot
+/// represent; the bound itself is the core's (`query_builder_bounded_len`).
+fn host_sequence_len(value: &Bound<'_, PyAny>) -> PyResult<Option<usize>> {
     if value.is_instance_of::<PyString>()
         || value.is_instance_of::<PyBytes>()
         || value.is_instance_of::<PyByteArray>()
@@ -169,26 +164,14 @@ fn sequence_length(
         return Err(value_error(&query_builder_host_collection_type_error()));
     }
 
-    let length = match value.len() {
-        Ok(length) => length,
-        Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => {
-            return Err(value_error(&QueryLimits::annotate_refusal(
-                oversized(),
-                limit,
-            )));
-        }
+    match value.len() {
+        Ok(length) => Ok(Some(length)),
+        Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => Ok(None),
         Err(error) if error.is_instance_of::<PyTypeError>(value.py()) => {
-            return Err(value_error(&query_builder_host_collection_type_error()));
+            Err(value_error(&query_builder_host_collection_type_error()))
         }
-        Err(error) => return Err(error),
-    };
-    if length > limit {
-        return Err(value_error(&QueryLimits::annotate_refusal(
-            oversized(),
-            limit,
-        )));
+        Err(error) => Err(error),
     }
-    Ok(length)
 }
 
 fn sequence_items_with_length<'py>(
@@ -203,7 +186,11 @@ fn sequence_items<'py>(
     limit: usize,
     oversized: fn() -> Diagnostic,
 ) -> PyResult<Vec<Bound<'py, PyAny>>> {
-    let length = sequence_length(value, limit, oversized)?;
+    let length = diagnostic(query_builder_bounded_len(
+        host_sequence_len(value)?,
+        limit,
+        oversized,
+    ))?;
     sequence_items_with_length(value, length)
 }
 
@@ -281,60 +268,25 @@ fn invocation_rows(
     plan: &AuthoredQueryPlan,
     rows: &Bound<'_, PyAny>,
 ) -> PyResult<Vec<Vec<Option<CanonicalValue>>>> {
-    let limits = plan.limits().structural;
-    let columns = plan.input_columns();
-    let row_count = sequence_length(
-        rows,
-        limits.input_rows,
-        query_builder_invocation_row_limit_error,
-    )?;
+    let mut budget = QueryInvocationRowBudget::new(plan);
+    let row_count = diagnostic(budget.row_count(host_sequence_len(rows)?))?;
+    let columns = budget.columns();
     if columns.is_empty() {
         return Ok(vec![Vec::new(); row_count]);
     }
     let mut converted = Vec::with_capacity(row_count);
-    let mut input_bytes = 2usize;
     for row_index in 0..row_count {
         let row = rows.get_item(row_index)?;
-        let value_count = sequence_length(
-            &row,
-            limits.bindings,
-            query_builder_invocation_row_arity_error,
-        )?;
-        if value_count != columns.len() {
-            return Err(value_error(&query_builder_invocation_row_arity_error()));
-        }
+        let value_count = diagnostic(budget.open_row(row_index, host_sequence_len(&row)?))?;
         let values = sequence_items_with_length(&row, value_count)?;
-        input_bytes = input_bytes
-            .saturating_add(usize::from(row_index > 0))
-            .saturating_add(2);
-        if input_bytes > limits.input_bytes {
-            return Err(value_error(&QueryLimits::annotate_refusal(
-                query_builder_invocation_input_byte_limit_error(),
-                limits.input_bytes,
-            )));
-        }
-        let mut converted_row = Vec::with_capacity(values.len().min(columns.len()));
+        let mut converted_row = Vec::with_capacity(columns.len());
         for (column_index, (value, column)) in values.into_iter().zip(columns).enumerate() {
             let value = if value.is_none() {
                 None
             } else {
                 Some(python_scalar(column.value_type(), &value)?)
             };
-            let encoded = serde_json::to_vec(&value).map_err(|_| {
-                value_error(&QueryLimits::annotate_refusal(
-                    query_builder_invocation_input_byte_limit_error(),
-                    limits.input_bytes,
-                ))
-            })?;
-            input_bytes = input_bytes
-                .saturating_add(usize::from(column_index > 0))
-                .saturating_add(encoded.len());
-            if input_bytes > limits.input_bytes {
-                return Err(value_error(&QueryLimits::annotate_refusal(
-                    query_builder_invocation_input_byte_limit_error(),
-                    limits.input_bytes,
-                )));
-            }
+            diagnostic(budget.add_value(column_index, &value))?;
             converted_row.push(value);
         }
         converted.push(converted_row);

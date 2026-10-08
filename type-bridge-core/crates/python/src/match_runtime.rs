@@ -1819,44 +1819,80 @@ where
 }
 
 pub(crate) fn py_unknown_enum_value(error: UnknownEnumValue) -> PyErr {
-    Python::attach(|py| {
-        let diagnostic = SdkExecutionDiagnostic::from(error);
-        match unknown_enum_value_error_type(py) {
-            Ok(error_type) => structured_py_error(
-                py,
-                PyErr::from_type(error_type.clone(), diagnostic.message().as_str()),
-                &diagnostic,
-            ),
-            Err(error) => error,
-        }
+    py_value_error_diagnostic(
+        &UNKNOWN_ENUM_VALUE_ERROR,
+        &SdkExecutionDiagnostic::from(error),
+    )
+}
+
+/// Raise a projected member-count refusal as `ProjectedCardinalityError`.
+pub(crate) fn py_projected_cardinality(diagnostic: SdkExecutionDiagnostic) -> PyErr {
+    py_value_error_diagnostic(&PROJECTED_CARDINALITY_ERROR, &diagnostic)
+}
+
+fn py_value_error_diagnostic(
+    error_type: &'static ValueErrorType,
+    diagnostic: &SdkExecutionDiagnostic,
+) -> PyErr {
+    Python::attach(|py| match error_type.get(py) {
+        Ok(error_type) => structured_py_error(
+            py,
+            PyErr::from_type(error_type.clone(), diagnostic.message().as_str()),
+            diagnostic,
+        ),
+        Err(error) => error,
     })
 }
 
-static UNKNOWN_ENUM_VALUE_ERROR: PyOnceLock<Py<PyType>> = PyOnceLock::new();
-
-/// `UnknownEnumValueError(MatchRequestError, ValueError)`: a structured SDK
-/// diagnostic that code catching the earlier `ValueError` still catches.
-fn unknown_enum_value_error_type(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
-    UNKNOWN_ENUM_VALUE_ERROR
-        .get_or_try_init(py, || {
-            let namespace = PyDict::new(py);
-            namespace.set_item("__module__", "type_bridge_core")?;
-            namespace.set_item(
-                "__doc__",
-                "A spelling no core enum parser accepts (code `unknown_enum_value`).",
-            )?;
-            let bases = (
-                py.get_type::<MatchRequestError>(),
-                py.get_type::<PyValueError>(),
-            );
-            py.get_type::<PyType>()
-                .call1(("UnknownEnumValueError", bases, namespace))?
-                .cast_into::<PyType>()
-                .map(Bound::unbind)
-                .map_err(PyErr::from)
-        })
-        .map(|error_type| error_type.bind(py))
+/// A structured SDK diagnostic class deriving from both `MatchRequestError`
+/// and `ValueError`, so code that caught the earlier host `ValueError` still
+/// catches the core's refusal.
+struct ValueErrorType {
+    name: &'static str,
+    doc: &'static str,
+    cell: PyOnceLock<Py<PyType>>,
 }
+
+impl ValueErrorType {
+    const fn new(name: &'static str, doc: &'static str) -> Self {
+        Self {
+            name,
+            doc,
+            cell: PyOnceLock::new(),
+        }
+    }
+
+    fn get<'py>(&'static self, py: Python<'py>) -> PyResult<&'py Bound<'py, PyType>> {
+        self.cell
+            .get_or_try_init(py, || {
+                let namespace = PyDict::new(py);
+                namespace.set_item("__module__", "type_bridge_core")?;
+                namespace.set_item("__doc__", self.doc)?;
+                let bases = (
+                    py.get_type::<MatchRequestError>(),
+                    py.get_type::<PyValueError>(),
+                );
+                py.get_type::<PyType>()
+                    .call1((self.name, bases, namespace))?
+                    .cast_into::<PyType>()
+                    .map(Bound::unbind)
+                    .map_err(PyErr::from)
+            })
+            .map(|error_type| error_type.bind(py))
+    }
+}
+
+static UNKNOWN_ENUM_VALUE_ERROR: ValueErrorType = ValueErrorType::new(
+    "UnknownEnumValueError",
+    "A spelling no core enum parser accepts (code `unknown_enum_value`).",
+);
+
+static PROJECTED_CARDINALITY_ERROR: ValueErrorType = ValueErrorType::new(
+    "ProjectedCardinalityError",
+    "A generated model member holds a value count outside its projected \
+     cardinality (codes `missing_required_field`, `field_cardinality_violation`, \
+     `missing_required_role`, `role_cardinality_violation`).",
+);
 
 /// Check `value` against the core enum named by `kind`; return its canonical
 /// spelling.
@@ -1967,7 +2003,11 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(canonical_enum_spelling, module)?)?;
     module.add(
         "UnknownEnumValueError",
-        unknown_enum_value_error_type(module.py())?,
+        UNKNOWN_ENUM_VALUE_ERROR.get(module.py())?,
+    )?;
+    module.add(
+        "ProjectedCardinalityError",
+        PROJECTED_CARDINALITY_ERROR.get(module.py())?,
     )?;
     Ok(())
 }

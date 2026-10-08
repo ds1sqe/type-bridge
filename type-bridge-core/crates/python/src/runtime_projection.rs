@@ -14,7 +14,6 @@ use pyo3::types::{
 };
 use pythonize::pythonize;
 use type_bridge_contract::codec::to_canonical_json;
-use type_bridge_contract::decimal::parse_decimal;
 use type_bridge_contract::id::{TypeId, TypeKind, is_canonical_thing_iid};
 use type_bridge_contract::limits::{
     CodecLimits, MAX_CANONICAL_COLLECTION_LEN, MAX_CANONICAL_DEPTH, MAX_CANONICAL_STRING_BYTES,
@@ -61,7 +60,7 @@ use type_bridge_orm::{
     ProjectedCrudExecutor, ProjectedManagerComparison, ProjectedManagerFilter,
     ProjectedManagerFilterExecutor, ProjectedReference, ProjectedReferenceOrigin,
     ProjectedRolePlayer, ProjectedThing, QueryExecutionResourceLimits, ThingKind,
-    resolve_generated_manager_lookup,
+    resolve_generated_manager_lookup, validate_projected_create_member_count,
 };
 use type_bridge_orm::{InstalledRuntimeProjection, ProviderRuntimeOwner};
 use type_bridge_schema::VerifiedSchemaAuthority;
@@ -70,7 +69,7 @@ use type_bridge_schema_codegen::{PythonEmitter, verify_projection_evidence};
 
 use crate::match_runtime::{
     PyMatchSessionHandle, PyQueryCancellation, PyQueryExecutionResourceLimits, PyQueryLimits,
-    parse_enum, py_sdk_diagnostic, py_unknown_enum_value,
+    parse_enum, py_projected_cardinality, py_sdk_diagnostic, py_unknown_enum_value,
 };
 use crate::orm_runtime::{
     PyRustDatabase, PyRustTransactionContext, provider_block_on, provider_block_on_with_gil,
@@ -1420,6 +1419,20 @@ impl PyRuntimeProjection {
             .projection
             .validate_canonical_field_value(&id, field.id(), projected.value())
             .map_err(py_sdk_diagnostic)
+    }
+
+    /// Check how many values a generated model's create member holds against
+    /// its projected cardinality; a refusal is `ProjectedCardinalityError`.
+    fn validate_member_cardinality(
+        &self,
+        py: Python<'_>,
+        model: Py<PyType>,
+        member_name: &str,
+        count: usize,
+    ) -> PyResult<()> {
+        let id = self.package.model_id_for_class(py, &model)?;
+        validate_projected_create_member_count(&self.package.projection, &id, member_name, count)
+            .map_err(py_projected_cardinality)
     }
 
     /// Encode one exact generated attribute wrapper as canonical record bytes.
@@ -8395,16 +8408,15 @@ fn canonical_projected_decimal(
     hydration: &ProjectedScalarHydration,
     operation_path: &[SdkDiagnosticPathSegment],
 ) -> PyResult<DecimalValue> {
-    const MAX_DECIMAL_INPUT_BYTES: usize = 43;
     let wrong = || py_sdk_diagnostic(wrong_scalar_diagnostic(operation_path));
     if !value.get_type().is(hydration.decimal_type.bind(py)) {
         return Err(wrong());
     }
     let rendered = value.str().map_err(|_| wrong())?;
     let text = rendered.to_str().map_err(|_| wrong())?;
-    if text.len() > MAX_DECIMAL_INPUT_BYTES || parse_decimal(text).is_none() {
-        return Err(wrong());
-    }
+    // The core parser bounds every spelling `str(Decimal)` can produce: at
+    // most 19 significant whole digits within the i64 range and at most 19
+    // fraction digits.
     DecimalValue::new(text).map_err(|_| wrong())
 }
 

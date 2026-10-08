@@ -61,6 +61,7 @@ use type_bridge_orm::{
     ProjectedReference, ProjectedRolePlayer, ProjectedStructValue, ProjectedThing,
     ProviderRuntimeOwner, QueryExecutionResourceLimits, ThingKind, TransactionContext,
     TransactionContextState, ValueType, resolve_generated_manager_lookup,
+    validate_projected_create_member_count,
 };
 use type_bridge_schema::VerifiedSchemaAuthority;
 use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
@@ -702,11 +703,8 @@ fn raw_projected_input_proofs(
         unsafe { sys::napi_get_array_length(env, value, &mut length) },
         "failed to inspect projected proof array length",
     )?;
-    if length as usize > MAX_CANONICAL_COLLECTION_LEN {
-        return Err(RawProjectedBindingError::Diagnostic(
-            ProjectedBatch::binding_allocation_failure(),
-        ));
-    }
+    ProjectedBatch::validate_binding_proof_count(length as usize)
+        .map_err(RawProjectedBindingError::Diagnostic)?;
     let mut proofs = reserved_projected_proof_slots(length as usize)
         .map_err(RawProjectedBindingError::Diagnostic)?;
     for index in 0..length {
@@ -2067,6 +2065,26 @@ impl NodeRuntimeProjection {
                 .validate_field_value(&id, &field_name, &value)
                 .map_err(|error| invalid_error(error.to_string()))
         }
+    }
+
+    /// Check how many values a generated model's create member holds against
+    /// its projected cardinality. A refusal is the core's structured
+    /// diagnostic.
+    #[napi(js_name = "validateMemberCardinality")]
+    pub fn validate_member_cardinality(
+        &self,
+        type_key: String,
+        member_name: String,
+        count: u32,
+    ) -> napi::Result<()> {
+        let id = type_id_from_key(&type_key)?;
+        validate_projected_create_member_count(
+            &self.package.projection,
+            &id,
+            &member_name,
+            count as usize,
+        )
+        .map_err(napi_sdk_diagnostic)
     }
 
     /// Encode one exact generated attribute wire through the shared canonical record contract.

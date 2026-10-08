@@ -351,8 +351,11 @@ try:
             EventRef("event-3"),
         ]
     )
-except ValueError:
-    pass
+except ValueError as error:
+    # The core's refusal: ProjectedCardinalityError is a ValueError.
+    assert type(error).__name__ == "ProjectedCardinalityError"
+    assert getattr(error, "code", None) == "role_cardinality_violation"
+    assert getattr(error, "details", {}).get("actual_count") == {"kind": "count", "value": "3"}
 else:
     raise AssertionError("role maximum cardinality was not enforced")
 
