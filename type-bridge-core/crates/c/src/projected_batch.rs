@@ -1354,7 +1354,7 @@ mod tests {
         BoxFuture, DriverBackend, GivenRowsSpec, QueryResult, TransactionOps,
     };
     use type_bridge_orm::{
-        ClassifiedCommitError, CommitFailureCertainty, Database, OrmError, ProjectedAttributeValue,
+        ClassifiedCommitError, CommitFailureCertainty, OrmError, ProjectedAttributeValue,
         ProjectedCreate, ProjectedReference, TransactionContextState, TxType,
     };
     use type_bridge_schema::{
@@ -1651,18 +1651,18 @@ plays:
             responses: responses.into(),
             ..RecordingState::default()
         }));
-        let database = Database::with_backend(
+        let database = crate::runtime::test_orm_database(
             Box::new(RecordingBackend {
                 state: Arc::clone(&state),
                 commit,
             }),
             "projected-batch-c",
+            ceiling,
         );
         (
-            Box::new(TypeBridgeDatabase::from_test_database_with_answer_ceiling(
+            Box::new(TypeBridgeDatabase::from_test_database(
                 Arc::clone(&package.state),
                 database,
-                ceiling,
             )),
             state,
         )
@@ -2339,9 +2339,7 @@ plays:
                     .open_transaction_context(TxType::Write)
                     .expect("borrowed write transaction opens");
                 let mut transaction = Box::into_raw(Box::new(
-                    TypeBridgeWriteTransaction::from_test_context_with_answer_ceiling(
-                        &database, context, None,
-                    ),
+                    TypeBridgeWriteTransaction::from_test_context(&database, context),
                 ));
                 let mut result = ptr::dangling_mut();
                 assert_eq!(
@@ -2456,14 +2454,10 @@ plays:
         }
 
         let context = database
-            .open_transaction_context(TxType::Write)
+            .open_transaction_context_with_answer_limits(TxType::Write, ceiling)
             .expect("borrowed empty transaction opens");
         let mut transaction = Box::into_raw(Box::new(
-            TypeBridgeWriteTransaction::from_test_context_with_answer_ceiling(
-                &database,
-                context,
-                Some(ceiling),
-            ),
+            TypeBridgeWriteTransaction::from_test_context(&database, context),
         ));
         let cause = SdkExecutionDiagnostic::internal_failure();
         unsafe { &*transaction }.block_on(
@@ -2666,9 +2660,7 @@ plays:
             .open_transaction_context(TxType::Write)
             .expect("poisoned borrowed transaction opens");
         let mut transaction = Box::into_raw(Box::new(
-            TypeBridgeWriteTransaction::from_test_context_with_answer_ceiling(
-                &database, context, None,
-            ),
+            TypeBridgeWriteTransaction::from_test_context(&database, context),
         ));
         // SAFETY: the transaction remains owned by this test until rollback.
         unsafe { &*transaction }.mark_poisoned();
@@ -2765,9 +2757,7 @@ plays:
             .open_transaction_context(TxType::Write)
             .expect("borrowed failure transaction opens");
         let mut transaction = Box::into_raw(Box::new(
-            TypeBridgeWriteTransaction::from_test_context_with_answer_ceiling(
-                &database, context, None,
-            ),
+            TypeBridgeWriteTransaction::from_test_context(&database, context),
         ));
         assert_eq!(
             // SAFETY: transaction, batch, and outputs remain live.

@@ -121,16 +121,12 @@ pub(crate) fn parse_common_limits(
     .map_err(|_| invalid_limits())
 }
 
-/// Parse one optional limits descriptor under an immutable enclosing ceiling.
-pub(crate) fn parse_limits_constrained(
+/// Parse one optional limits descriptor and capture its absolute deadline.
+pub(crate) fn parse_limits(
     value: Option<TypeBridgeQueryExecutionLimitsV1>,
     cancellation: &AnswerCancellation,
-    ceiling: Option<QueryExecutionResourceLimits>,
 ) -> Result<ParsedLimits, SdkExecutionDiagnostic> {
-    let mut resources = parse_common_limits(value)?;
-    if let Some(ceiling) = ceiling {
-        resources = resources.constrained_by(ceiling);
-    }
+    let resources = parse_common_limits(value)?;
     let deadline = QueryExecutionDeadline::for_limits(resources);
     deadline.check(cancellation)?;
     Ok(ParsedLimits {

@@ -233,20 +233,19 @@ impl Database {
         let prepared =
             super::direct_connection::prepare_direct_connection(installed, policy, &cancellation)?;
         let transport = prepared.transport.with_generated_3_12_3_requirement();
-        let mut database = Self::connect_prepared_secure_with_control(
+        Self::connect_prepared_secure_with_control(
             &prepared.endpoint,
             &prepared.database,
             &prepared.username,
             &prepared.password,
             transport,
             prepared.connection_limits,
+            prepared.answer_limits,
             prepared.deadline,
             cancellation,
         )
         .await
-        .map_err(super::direct_connection::lower_secure_connection)?;
-        database.answer_limits = Some(prepared.answer_limits);
-        Ok(database)
+        .map_err(super::direct_connection::lower_secure_connection)
     }
 
     /// Create a Database with a custom backend (for testing).
@@ -274,6 +273,23 @@ impl Database {
             connection_authority,
             database_name: database_name.into(),
             answer_limits: None,
+        }
+    }
+
+    /// Create a custom-backend database bound to an immutable answer ceiling.
+    ///
+    /// The custom-backend counterpart of a controlled connection: every
+    /// operation on this handle and every transaction it opens runs under
+    /// `answer_limits`, exactly as on [`Self::connect_direct`].
+    #[doc(hidden)]
+    pub fn with_backend_answer_limits(
+        backend: Box<dyn DriverBackend>,
+        database_name: impl Into<String>,
+        answer_limits: QueryExecutionResourceLimits,
+    ) -> Self {
+        Self {
+            answer_limits: Some(answer_limits.effective()),
+            ..Self::with_backend(backend, database_name)
         }
     }
 
@@ -368,10 +384,11 @@ impl Database {
     /// Connect through prepared trust using one common bounded invocation.
     ///
     /// The caller must capture `deadline` before any credential resolution or
-    /// provider work. Only connection-applicable dimensions are forwarded:
-    /// items, bytes, and statements. Graph, attribute, collection, and role
-    /// ceilings remain uncharged because opening a connection performs none of
-    /// that work.
+    /// provider work. Only connection-applicable dimensions of `limits` are
+    /// forwarded: items, bytes, and statements. Graph, attribute, collection,
+    /// and role ceilings remain uncharged because opening a connection
+    /// performs none of that work. `answer_limits` becomes the immutable
+    /// answer ceiling of the returned handle and every transaction it opens.
     #[cfg(feature = "typedb")]
     #[doc(hidden)]
     #[allow(clippy::too_many_arguments)]
@@ -382,6 +399,7 @@ impl Database {
         password: &str,
         options: super::real_driver::PreparedSecureConnectOptions,
         limits: QueryExecutionResourceLimits,
+        answer_limits: QueryExecutionResourceLimits,
         deadline: QueryExecutionDeadline,
         cancellation: AnswerCancellation,
     ) -> super::real_driver::SecureResult<Self> {
@@ -403,6 +421,10 @@ impl Database {
             options.with_connection_control(control),
         )
         .await
+        .map(|database| Self {
+            answer_limits: Some(answer_limits.effective()),
+            ..database
+        })
     }
 
     /// Open a read transaction.
@@ -458,7 +480,36 @@ impl Database {
     }
 
     /// Create a shared [`TransactionContext`] for grouping operations.
+    ///
+    /// The transaction inherits this handle's answer ceiling.
     pub async fn transaction_context(&self, tx_type: TxType) -> Result<TransactionContext> {
+        self.open_transaction_context(tx_type, self.answer_limits)
+            .await
+    }
+
+    /// Create a [`TransactionContext`] whose answer ceiling is `limits`
+    /// tightened by this handle's ceiling.
+    ///
+    /// A transaction can narrow, never widen, its connection's ceiling.
+    #[doc(hidden)]
+    pub async fn transaction_context_with_answer_limits(
+        &self,
+        tx_type: TxType,
+        limits: QueryExecutionResourceLimits,
+    ) -> Result<TransactionContext> {
+        let answer_limits = match self.answer_limits {
+            Some(ceiling) => limits.constrained_by(ceiling),
+            None => limits.effective(),
+        };
+        self.open_transaction_context(tx_type, Some(answer_limits))
+            .await
+    }
+
+    async fn open_transaction_context(
+        &self,
+        tx_type: TxType,
+        answer_limits: Option<QueryExecutionResourceLimits>,
+    ) -> Result<TransactionContext> {
         let capabilities = self.backend.match_capabilities();
         let tx = self
             .backend
@@ -470,7 +521,7 @@ impl Database {
             capabilities,
             self.server_version(),
             self.execution_identity(),
-            self.answer_limits,
+            answer_limits,
         ))
     }
 
@@ -945,6 +996,7 @@ mod tests {
             SENTINEL,
             options,
             limits,
+            limits,
             deadline,
             cancellation,
         )
@@ -988,6 +1040,7 @@ mod tests {
             SENTINEL,
             options,
             limits,
+            QueryExecutionResourceLimits::default(),
             deadline,
             AnswerCancellation::default(),
         )
@@ -1005,5 +1058,81 @@ mod tests {
             )
         ));
         assert!(!error.to_string().contains(SENTINEL));
+    }
+
+    struct NoopTransaction;
+
+    impl super::super::backend::TransactionOps for NoopTransaction {
+        fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult>> {
+            Box::pin(async { Err(OrmError::QueryExecution("unused fixture query".into())) })
+        }
+
+        fn commit(&mut self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn rollback(&mut self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn close(&mut self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    struct TransactionBackend;
+
+    impl DriverBackend for TransactionBackend {
+        fn open_transaction(
+            &self,
+            _database: &str,
+            _tx_type: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn super::super::backend::TransactionOps>>> {
+            Box::pin(async {
+                Ok(Box::new(NoopTransaction) as Box<dyn super::super::backend::TransactionOps>)
+            })
+        }
+
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn transactions_inherit_and_can_only_narrow_the_connection_answer_ceiling() {
+        let ceiling = QueryExecutionResourceLimits::tightened(9_000, 11, 101, 13, 17, 19, 23, 2);
+        let database =
+            Database::with_backend_answer_limits(Box::new(TransactionBackend), "ceiling", ceiling);
+        assert_eq!(database.answer_limits(), Some(ceiling));
+
+        let inherited = database.transaction_context(TxType::Read).await.unwrap();
+        assert_eq!(inherited.answer_limits(), Some(ceiling));
+        inherited.close().await.unwrap();
+
+        // A request wider in some dimensions and narrower in others keeps the
+        // tighter value of each.
+        let requested = QueryExecutionResourceLimits::tightened(8_000, 7, 1_000, 11, 13, 17, 19, 1);
+        let narrowed = database
+            .transaction_context_with_answer_limits(TxType::Write, requested)
+            .await
+            .unwrap();
+        assert_eq!(
+            narrowed.answer_limits(),
+            Some(requested.constrained_by(ceiling))
+        );
+        assert_eq!(narrowed.answer_limits().unwrap().bytes, ceiling.bytes);
+        narrowed.close().await.unwrap();
+
+        let unbounded = Database::with_backend(Box::new(TransactionBackend), "unbounded");
+        assert_eq!(unbounded.answer_limits(), None);
+        let plain = unbounded.transaction_context(TxType::Read).await.unwrap();
+        assert_eq!(plain.answer_limits(), None);
+        plain.close().await.unwrap();
+        let bounded = unbounded
+            .transaction_context_with_answer_limits(TxType::Read, requested)
+            .await
+            .unwrap();
+        assert_eq!(bounded.answer_limits(), Some(requested.effective()));
+        bounded.close().await.unwrap();
     }
 }

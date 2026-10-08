@@ -610,9 +610,14 @@ impl ProjectedManagerFilterInvocationControl {
             .map_err(|diagnostic| at_path(diagnostic, type_path(model)))
     }
 
+    /// Tighten resources and the absolute deadline by a connection ceiling,
+    /// as [`crate::QueryTarget::budget`] does for every other terminal.
     fn constrained_by(mut self, ceiling: Option<QueryExecutionResourceLimits>) -> Self {
         if let Some(ceiling) = ceiling {
             self.limits = self.limits.constrained_by(ceiling);
+            self.deadline = self
+                .deadline
+                .earliest(QueryExecutionDeadline::for_limits(ceiling));
         }
         self
     }
@@ -1428,5 +1433,33 @@ mod compatibility_lookup_tests {
         });
         assert_eq!(unsupported.field_name(), "score");
         assert_eq!(unsupported.lookup(), "unsupported");
+    }
+}
+
+#[cfg(test)]
+mod invocation_control_tests {
+    use super::*;
+
+    #[test]
+    fn connection_ceiling_tightens_resources_and_the_captured_deadline() {
+        let requested = QueryExecutionResourceLimits::default();
+        let control = ProjectedManagerFilterInvocationControl::from_parts(
+            requested,
+            QueryExecutionDeadline::for_limits(requested),
+            AnswerCancellation::default(),
+        );
+        let ceiling = QueryExecutionResourceLimits {
+            timeout_milliseconds: 0,
+            items: 3,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let model = TypeId::new(TypeKind::Entity, "person").unwrap();
+
+        assert!(control.checkpoint(&model).is_ok());
+        let control = control.constrained_by(Some(ceiling));
+        assert_eq!(control.limits, requested.constrained_by(ceiling));
+        // The ceiling's zero timeout must bind the absolute deadline the
+        // binding captured with its wider request.
+        assert!(control.checkpoint(&model).is_err());
     }
 }

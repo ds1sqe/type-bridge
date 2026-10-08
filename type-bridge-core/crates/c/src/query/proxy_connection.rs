@@ -62,12 +62,6 @@ pub struct TypeBridgeProxyConnection {
     runtime: tokio::runtime::Runtime,
 }
 
-impl TypeBridgeProxyConnection {
-    fn answer_ceiling(&self) -> Option<QueryExecutionResourceLimits> {
-        Some(self.connection.answer_limits())
-    }
-}
-
 struct CopiedOptions {
     endpoint: ProxyEndpoint,
     advertisement: Option<Vec<u8>>,
@@ -405,7 +399,6 @@ pub unsafe extern "C" fn type_bridge_proxy_query_execute_v1(
             |preflight, proxy: &TypeBridgeProxyConnection| {
                 preflight.check_package_borrowed_ranges(&proxy.package)
             },
-            TypeBridgeProxyConnection::answer_ceiling,
             terminal,
             limits,
             cancellation,

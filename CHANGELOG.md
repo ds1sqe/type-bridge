@@ -191,6 +191,9 @@ differently direct and through a proxy. Each entry says what to do instead.
   when connecting). They used only the session's own limits, so a session
   could return more, or run longer, than its connection allowed. Rust and
   C already applied the ceiling; every binding now shares one rule.
+- Generated manager filters in every binding now stop at the connection
+  ceiling's timeout. They tightened resources to the ceiling but kept the
+  deadline captured before it.
 - Build repeated `where` clauses and chained `and`/`or` predicates as one flat
   conjunction or disjunction in every language binding. A query with more than
   about thirty clauses previously nested past the canonical JSON depth of 64,

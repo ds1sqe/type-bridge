@@ -767,6 +767,54 @@ run_interaction_batches(const type_bridge_schema_package_t *package,
   return 0;
 }
 
+/* A V2 database's answer ceiling binds every call on it: a default-limit
+ * count on a zero-timeout ceiling refuses before provider work, with the
+ * same refusal a zero-timeout call limit yields on an unbounded database. */
+static int check_answer_ceiling_binds_calls(
+    type_bridge_runtime_t *runtime, const type_bridge_schema_package_t *package,
+    const type_bridge_database_t *database,
+    const type_bridge_database_config_v2_t *base_config,
+    const type_bridge_query_execution_limits_v1_t *limits) {
+  type_bridge_database_config_v2_t config = *base_config;
+  type_bridge_query_execution_limits_v1_t zero_timeout = *limits;
+  type_bridge_database_t *bounded = NULL;
+  type_bridge_execution_diagnostics_t *diagnostics = NULL;
+  type_bridge_execution_diagnostic_view_v1_t ceiling_refusal;
+  type_bridge_execution_diagnostic_view_v1_t call_refusal;
+  type_bridge_execution_diagnostics_t *call_diagnostics = NULL;
+  uint64_t count = 0u;
+
+  memset(&ceiling_refusal, 0, sizeof(ceiling_refusal));
+  memset(&call_refusal, 0, sizeof(call_refusal));
+  zero_timeout.timeout_milliseconds = 0u;
+  config.answer_limits = zero_timeout;
+  CHECK(type_bridge_database_open_v2(runtime, package, &config, NULL, &bounded,
+                                     &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_database_count_v2(bounded, limits, NULL, &count,
+                                         &diagnostics) ==
+        TYPE_BRIDGE_STATUS_RESOURCE_LIMIT);
+  CHECK(type_bridge_execution_diagnostics_get_v1(
+            diagnostics, 0u, &ceiling_refusal) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_database_count_v2(database, &zero_timeout, NULL, &count,
+                                         &call_diagnostics) ==
+        TYPE_BRIDGE_STATUS_RESOURCE_LIMIT);
+  CHECK(type_bridge_execution_diagnostics_get_v1(
+            call_diagnostics, 0u, &call_refusal) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(ceiling_refusal.category == call_refusal.category &&
+        ceiling_refusal.code.length == call_refusal.code.length &&
+        memcmp(ceiling_refusal.code.data, call_refusal.code.data,
+               call_refusal.code.length) == 0 &&
+        ceiling_refusal.detail_count == call_refusal.detail_count);
+  CHECK(type_bridge_execution_diagnostics_close(&call_diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_execution_diagnostics_close(&diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_database_close(&bounded, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(bounded == NULL && diagnostics == NULL);
+  return 0;
+}
+
 int main(void) {
   const char *address = getenv("TYPEDB_ADDRESS");
   const char *database_name = getenv("TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE");
@@ -861,6 +909,8 @@ int main(void) {
                                                 NULL, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(write_transaction == NULL && diagnostics == NULL);
+  CHECK(check_answer_ceiling_binds_calls(runtime, package, database,
+                                         &database_config, &limits) == 0);
   puts("ABI 1.6 database and transaction policy entries: passed");
 
   CHECK(open_person_create(package, "query-target", &person_create,

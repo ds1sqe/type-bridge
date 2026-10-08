@@ -537,16 +537,16 @@ functions:
         let token = model_token(&package, TypeId::new(TypeKind::Entity, "person").unwrap());
         let create = person_create(&package);
         let state = FakeState::new(responses, commit);
-        let database = Database::with_backend(
+        let database = crate::runtime::test_orm_database(
             Box::new(FakeBackend {
                 state: Arc::clone(&state),
             }),
             "sdk",
+            answer_ceiling,
         );
-        let database = Box::new(TypeBridgeDatabase::from_test_database_with_answer_ceiling(
+        let database = Box::new(TypeBridgeDatabase::from_test_database(
             Arc::clone(&package.state),
             database,
-            answer_ceiling,
         ));
         Fixture {
             database,
@@ -634,16 +634,16 @@ functions:
         );
         let create = relation_create(&package, TypeKind::Entity, "person", "0x10");
         let state = FakeState::new(responses, commit);
-        let database = Database::with_backend(
+        let database = crate::runtime::test_orm_database(
             Box::new(FakeBackend {
                 state: Arc::clone(&state),
             }),
             "sdk",
+            answer_ceiling,
         );
-        let database = Box::new(TypeBridgeDatabase::from_test_database_with_answer_ceiling(
+        let database = Box::new(TypeBridgeDatabase::from_test_database(
             Arc::clone(&package.state),
             database,
-            answer_ceiling,
         ));
         RelationFixture {
             database,

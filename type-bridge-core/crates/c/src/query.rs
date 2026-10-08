@@ -46,7 +46,7 @@ use crate::execution_diagnostic::{
     TypeBridgeExecutionDiagnostics, initialize_execution_outputs, return_execution_error,
 };
 use crate::generated_preflight::{DirectOutputPreflight, direct_output_preflight};
-use crate::policy::{ParsedLimits, parse_common_limits, parse_limits_constrained};
+use crate::policy::{ParsedLimits, parse_common_limits, parse_limits};
 use crate::projected_model::{
     TypeBridgeProjectedThing, check_projected_attribute_value_ranges, check_projected_thing_ranges,
 };
@@ -4076,7 +4076,7 @@ fn check_database_query_borrowed_ranges(
     preflight: &DirectOutputPreflight,
     database: &TypeBridgeDatabase,
 ) -> Result<(), TypeBridgeStatus> {
-    if database.policy_answer_ceiling().is_some() {
+    if database.answer_limits().is_some() {
         check_database_borrowed_ranges(preflight, database)
     } else {
         preflight.check_package_borrowed_ranges(database.package_state())
@@ -4087,7 +4087,7 @@ fn check_read_transaction_query_borrowed_ranges(
     preflight: &DirectOutputPreflight,
     transaction: &TypeBridgeReadTransaction,
 ) -> Result<(), TypeBridgeStatus> {
-    if transaction.policy_answer_ceiling().is_some() {
+    if transaction.answer_limits().is_some() {
         check_read_transaction_borrowed_ranges(preflight, transaction)
     } else {
         preflight.check_package_borrowed_ranges(transaction.package_state())
@@ -4098,7 +4098,6 @@ fn check_read_transaction_query_borrowed_ranges(
 unsafe fn execute_preflight<T>(
     target: *const T,
     target_borrowed_ranges: impl FnOnce(&DirectOutputPreflight, &T) -> Result<(), TypeBridgeStatus>,
-    target_policy_ceiling: impl FnOnce(&T) -> Option<QueryExecutionResourceLimits>,
     terminal: *const TypeBridgeQueryTerminal,
     limits: *const TypeBridgeQueryExecutionLimitsV1,
     cancellation: *const TypeBridgeCancellation,
@@ -4128,18 +4127,11 @@ unsafe fn execute_preflight<T>(
         // caller retains it immutable throughout this invocation.
         unsafe { &*cancellation }.answer_cancellation()
     };
-    let target_ceiling = if target.is_null() {
-        None
-    } else {
-        // SAFETY: complete-object preflight above proved the target readable;
-        // this snapshots only immutable policy before any provider work.
-        unsafe { target_policy_ceiling(&*target) }
-    };
-    // Capture the one absolute invocation budget after intersecting any V2
-    // target ceiling and before potentially large borrowed-range walks.
-    // Interruption errors are retained until those read-only walks prove
-    // outputs cannot alias live input bytes.
-    let parsed = parse_limits_constrained(limits_snapshot, &answer, target_ceiling);
+    // Capture the one absolute invocation budget before potentially large
+    // borrowed-range walks. The target's connection ceiling is applied by
+    // `QueryTarget::budget` at execution. Interruption errors are retained
+    // until those read-only walks prove outputs cannot alias live input bytes.
+    let parsed = parse_limits(limits_snapshot, &answer);
     #[cfg(test)]
     QUERY_PREFLIGHT_DELAY_MILLISECONDS.with(|delay| {
         let delay = delay.replace(0);
@@ -4490,7 +4482,6 @@ pub unsafe extern "C" fn type_bridge_database_query_execute_v1(
         execute_preflight(
             database,
             check_database_query_borrowed_ranges,
-            TypeBridgeDatabase::policy_answer_ceiling,
             terminal,
             limits,
             cancellation,
@@ -4623,7 +4614,6 @@ pub unsafe extern "C" fn type_bridge_read_transaction_query_execute_v1(
         execute_preflight(
             transaction,
             check_read_transaction_query_borrowed_ranges,
-            TypeBridgeReadTransaction::policy_answer_ceiling,
             terminal,
             limits,
             cancellation,
@@ -6681,7 +6671,7 @@ mod tests {
         answer_ceiling: QueryExecutionResourceLimits,
     ) -> FakeDatabase {
         let events = Arc::new(Events::default());
-        let database = Database::with_backend(
+        let database = Database::with_backend_answer_limits(
             Box::new(FakeBackend {
                 events: Arc::clone(&events),
                 queries: Arc::new(Mutex::new(queries.into())),
@@ -6690,12 +6680,12 @@ mod tests {
                 open_pending: false,
             }),
             "query-c-abi-policy",
+            answer_ceiling,
         );
         FakeDatabase {
-            value: Box::new(TypeBridgeDatabase::from_test_database_with_answer_ceiling(
+            value: Box::new(TypeBridgeDatabase::from_test_database(
                 Arc::clone(package.state()),
                 database,
-                Some(answer_ceiling),
             )),
             events,
         }
@@ -12055,14 +12045,10 @@ mod tests {
         let transaction_database = fake_database(&package, Vec::new(), Vec::new());
         let context = transaction_database
             .value
-            .open_transaction_context(TxType::Read)
+            .open_transaction_context_with_answer_limits(TxType::Read, ceiling)
             .expect("the fake read transaction opens");
         let mut transaction = Box::into_raw(Box::new(
-            TypeBridgeReadTransaction::from_test_context_with_answer_ceiling(
-                &transaction_database.value,
-                context,
-                Some(ceiling),
-            ),
+            TypeBridgeReadTransaction::from_test_context(&transaction_database.value, context),
         ));
         assert_eq!(
             unsafe {
@@ -12093,6 +12079,116 @@ mod tests {
             TypeBridgeStatus::Ok,
         );
         assert!(diagnostics.is_null());
+    }
+
+    /// Execute one manager `All` terminal over two provider rows and return
+    /// the refusal code, or `None` on success.
+    fn manager_all_refusal(
+        database: &FakeDatabase,
+        all: &BuiltQuery,
+        limits: &TypeBridgeQueryExecutionLimitsV1,
+    ) -> Option<String> {
+        let mut result = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        // SAFETY: fixture owns every live handle and the writable outputs.
+        let status = unsafe {
+            type_bridge_database_query_execute_v1(
+                &*database.value,
+                all.terminal,
+                TERMINAL_ROWS,
+                limits,
+                ptr::null(),
+                &mut result,
+                &mut diagnostics,
+            )
+        };
+        if status == TypeBridgeStatus::Ok {
+            assert_eq!(
+                // SAFETY: success transferred one owned result handle.
+                unsafe { type_bridge_query_result_close(&mut result) },
+                TypeBridgeStatus::Ok,
+            );
+            return None;
+        }
+        assert_eq!(status, TypeBridgeStatus::ResourceLimit);
+        assert!(result.is_null());
+        // SAFETY: the failed call retained one diagnostics handle.
+        let code = unsafe { diagnostic_code(diagnostics) };
+        unsafe { close_diagnostics(&mut diagnostics) };
+        Some(code)
+    }
+
+    #[test]
+    fn direct_execution_runs_under_the_orm_connection_ceiling_whatever_the_call_asks() {
+        let package = ordered_package("queryormceiling");
+        // SAFETY: fixture owns exact generated handles.
+        let mut all = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        let descriptor = manager_terminal_descriptor(&all, ManagerTerminalKind::All);
+        unsafe { replace_terminal(&mut all, &descriptor) };
+        let rows = || {
+            (
+                vec![Response::Items(vec![solution("0x01"), solution("0x02")])],
+                vec![Response::Items(vec![
+                    hydration(&package, "0x01", "Ada"),
+                    hydration(&package, "0x02", "Bob"),
+                ])],
+            )
+        };
+        let raised = TypeBridgeQueryExecutionLimitsV1 {
+            items: DEFAULT_QUERY_ITEMS * 2,
+            ..default_limits()
+        };
+        let one_item = TypeBridgeQueryExecutionLimitsV1 {
+            items: 1,
+            ..default_limits()
+        };
+        let zero_timeout = TypeBridgeQueryExecutionLimitsV1 {
+            timeout_milliseconds: 0,
+            ..default_limits()
+        };
+
+        // Without a ceiling the raised call runs, and the call's own
+        // one-item or zero-timeout limit fixes the refusal codes.
+        let (queries, hydrations) = rows();
+        let unbounded = fake_database(&package, queries, hydrations);
+        assert_eq!(manager_all_refusal(&unbounded, &all, &raised), None);
+        let (queries, hydrations) = rows();
+        let unbounded = fake_database(&package, queries, hydrations);
+        let item_code =
+            manager_all_refusal(&unbounded, &all, &one_item).expect("one item refuses two rows");
+        let unbounded = fake_database(&package, Vec::new(), Vec::new());
+        let timeout_code =
+            manager_all_refusal(&unbounded, &all, &zero_timeout).expect("a zero timeout refuses");
+        assert_eq!(unbounded.events.opens.load(Ordering::Acquire), 0);
+
+        // The same raised call on a connection whose orm ceiling is one item,
+        // or a zero timeout, refuses exactly as the narrow call did.
+        let (queries, hydrations) = rows();
+        let one_item_ceiling = QueryExecutionResourceLimits {
+            items: 1,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let bounded =
+            fake_database_with_answer_ceiling(&package, queries, hydrations, one_item_ceiling);
+        assert_eq!(
+            manager_all_refusal(&bounded, &all, &raised),
+            Some(item_code)
+        );
+        let zero_timeout_ceiling = QueryExecutionResourceLimits {
+            timeout_milliseconds: 0,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let bounded = fake_database_with_answer_ceiling(
+            &package,
+            Vec::new(),
+            Vec::new(),
+            zero_timeout_ceiling,
+        );
+        assert_eq!(
+            manager_all_refusal(&bounded, &all, &raised),
+            Some(timeout_code)
+        );
+        assert_eq!(bounded.events.opens.load(Ordering::Acquire), 0);
     }
 
     #[test]
@@ -12322,11 +12418,7 @@ mod tests {
             .open_transaction_context(TxType::Read)
             .expect("the fake read transaction opens");
         let mut transaction = Box::into_raw(Box::new(
-            TypeBridgeReadTransaction::from_test_context_with_answer_ceiling(
-                &database.value,
-                context,
-                Some(answer_ceiling),
-            ),
+            TypeBridgeReadTransaction::from_test_context(&database.value, context),
         ));
         assert_eq!(
             unsafe {

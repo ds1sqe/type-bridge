@@ -357,17 +357,17 @@ impl LegacyPolicyTarget {
             Self::Database(pointer) => {
                 !pointer.is_null()
                     // SAFETY: the caller retains the complete database handle.
-                    && unsafe { &*pointer }.policy_answer_ceiling().is_some()
+                    && unsafe { &*pointer }.answer_limits().is_some()
             }
             Self::ReadTransaction(pointer) => {
                 !pointer.is_null()
                     // SAFETY: the caller retains the complete read-transaction handle.
-                    && unsafe { &*pointer }.policy_answer_ceiling().is_some()
+                    && unsafe { &*pointer }.answer_limits().is_some()
             }
             Self::WriteTransaction(pointer) => {
                 !pointer.is_null()
                     // SAFETY: the caller retains the complete write-transaction handle.
-                    && unsafe { &*pointer }.policy_answer_ceiling().is_some()
+                    && unsafe { &*pointer }.answer_limits().is_some()
             }
         }
     }
@@ -613,10 +613,10 @@ impl WriteTarget<'_> {
         }
     }
 
-    fn policy_answer_ceiling(&self) -> Option<QueryExecutionResourceLimits> {
+    fn answer_limits(&self) -> Option<QueryExecutionResourceLimits> {
         match self {
-            Self::Database(handle) => handle.policy_answer_ceiling(),
-            Self::Transaction(handle) => handle.policy_answer_ceiling(),
+            Self::Database(handle) => handle.answer_limits(),
+            Self::Transaction(handle) => handle.answer_limits(),
         }
     }
 
@@ -1030,11 +1030,11 @@ impl ReadTarget<'_> {
         }
     }
 
-    fn policy_answer_ceiling(&self) -> Option<QueryExecutionResourceLimits> {
+    fn answer_limits(&self) -> Option<QueryExecutionResourceLimits> {
         match self {
-            Self::Database(handle) => handle.policy_answer_ceiling(),
-            Self::ReadTransaction(handle) => handle.policy_answer_ceiling(),
-            Self::WriteTransaction(handle) => handle.policy_answer_ceiling(),
+            Self::Database(handle) => handle.answer_limits(),
+            Self::ReadTransaction(handle) => handle.answer_limits(),
+            Self::WriteTransaction(handle) => handle.answer_limits(),
         }
     }
 
@@ -1779,7 +1779,7 @@ pub(crate) unsafe fn run_write_thing_call(
         diagnostics: out_diagnostics,
     } = prepared;
     guarded(|| {
-        let policy_control = target.policy_answer_ceiling().map(|limits| {
+        let policy_control = target.answer_limits().map(|limits| {
             ProjectedBatchInvocationControl::capture(limits, AnswerCancellation::default())
         });
         // SAFETY: generated token storage is caller-readable for this call.
@@ -1853,7 +1853,7 @@ pub(crate) unsafe fn run_put_call(
         diagnostics: out_diagnostics,
     } = prepared;
     guarded(|| {
-        let policy_control = target.policy_answer_ceiling().map(|limits| {
+        let policy_control = target.answer_limits().map(|limits| {
             ProjectedBatchInvocationControl::capture(limits, AnswerCancellation::default())
         });
         // SAFETY: generated token storage is caller-readable for this call.
@@ -1916,7 +1916,7 @@ pub(crate) unsafe fn run_get_call(
         diagnostics: out_diagnostics,
     } = prepared;
     guarded(|| {
-        let policy_control = target.policy_answer_ceiling().map(|limits| {
+        let policy_control = target.answer_limits().map(|limits| {
             ProjectedCrudInvocationControl::capture(limits, AnswerCancellation::default())
         });
         // SAFETY: generated token storage is caller-readable for this call.
@@ -1970,7 +1970,7 @@ pub(crate) unsafe fn run_delete_call(
 ) -> TypeBridgeStatus {
     let out_diagnostics = prepared.diagnostics;
     guarded(|| {
-        let policy_control = target.policy_answer_ceiling().map(|limits| {
+        let policy_control = target.answer_limits().map(|limits| {
             ProjectedBatchInvocationControl::capture(limits, AnswerCancellation::default())
         });
         // SAFETY: generated token storage is caller-readable for this call.
@@ -2015,7 +2015,7 @@ pub(crate) unsafe fn run_count_call(
         diagnostics: out_diagnostics,
     } = prepared;
     guarded(|| {
-        let policy_control = target.policy_answer_ceiling().map(|limits| {
+        let policy_control = target.answer_limits().map(|limits| {
             ProjectedCrudInvocationControl::capture(limits, AnswerCancellation::default())
         });
         // SAFETY: generated token storage is caller-readable for this call.
