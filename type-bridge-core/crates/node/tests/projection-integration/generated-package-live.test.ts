@@ -836,6 +836,19 @@ function sdkV2HydratedResult(
   };
 }
 
+/** The core's one enum parser refuses `operation` with `unknown_enum_value`. */
+function assertUnknownEnumValue(operation: () => unknown, kind: string): void {
+  assert.throws(operation, (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.equal(error.name, "QueryV2Error");
+    const diagnostic = error as QueryV2Error;
+    assert.equal(diagnostic.category, "invalid_input");
+    assert.equal(diagnostic.code, "unknown_enum_value");
+    assert.deepEqual(diagnostic.details.kind, { kind: "query_identity", value: kind });
+    return true;
+  });
+}
+
 function sdkV2CardinalityDiagnostic(error: any): Record<string, unknown> {
   assert.ok(error instanceof Error);
   assert.equal(error.name, "QueryV2Error");
@@ -1135,6 +1148,7 @@ async function sdkV2QueryLane(
   const scope = identifier.eq(Identifier.create("query-ada"))
     .or(identifier.eq(Identifier.create("query-dana")));
   const query = session.query(person).where(scope);
+  assertUnknownEnumValue(() => identifier.asc("none" as never), "missing_order");
   const keys = (await query.rows({
     limit: 2n,
     orderBy: [identifier.asc()],
@@ -2026,6 +2040,10 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     assert.deepEqual(
       personManager.filter({ scoreGte__eq: ScoreGte.create(8n) }).all().map((candidate) => candidate.iid),
       [insertedPerson.iid],
+    );
+    assertUnknownEnumValue(
+      () => personManager.filter({ score__iexact: Score.create(3n) } as never),
+      "manager_lookup",
     );
     assert.deepEqual(
       personManager.filter({ fooBar: FooBar.create(7n) }).all().map((candidate) => candidate.iid),

@@ -3540,6 +3540,110 @@ impl CodeResourceDigest {
         })
     }
 }
+/// One generated-manager filter lookup (`field__lookup=value`).
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ManagerLookup {
+    /// Equality; also spelled `exact`.
+    Eq,
+    /// Inequality.
+    Ne,
+    /// Strictly greater than.
+    Gt,
+    /// Greater than or equal.
+    Gte,
+    /// Strictly less than.
+    Lt,
+    /// Less than or equal.
+    Lte,
+    /// String containment.
+    Contains,
+    /// String prefix.
+    StartsWith,
+    /// String suffix.
+    EndsWith,
+    /// Regular-expression match; also spelled `like`.
+    Regex,
+    /// Equality with any listed value.
+    In,
+    /// Presence (`false`) or absence (`true`) of the field.
+    IsNull,
+}
+
+crate::enum_spellings!(ManagerLookup, "manager_lookup", canonical {
+    "eq" => Eq,
+    "ne" => Ne,
+    "gt" => Gt,
+    "gte" => Gte,
+    "lt" => Lt,
+    "lte" => Lte,
+    "contains" => Contains,
+    "startswith" => StartsWith,
+    "endswith" => EndsWith,
+    "regex" => Regex,
+    "in" => In,
+    "isnull" => IsNull,
+}, aliases {
+    "exact" => Eq,
+    "like" => Regex,
+});
+
+impl ManagerLookup {
+    /// Whether this lookup applies only to string fields.
+    #[must_use]
+    pub const fn requires_text(self) -> bool {
+        matches!(
+            self,
+            Self::Contains | Self::StartsWith | Self::EndsWith | Self::Regex
+        )
+    }
+}
+
+/// One generated owner lookup (`Model.has(attribute, value, lookup=...)`).
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum OwnerLookup {
+    /// Equality; also spelled `exact`.
+    Eq,
+    /// Inequality.
+    Ne,
+    /// Strictly greater than.
+    Gt,
+    /// Greater than or equal.
+    Gte,
+    /// Strictly less than.
+    Lt,
+    /// Less than or equal.
+    Lte,
+    /// String containment.
+    Contains,
+    /// String prefix.
+    StartsWith,
+    /// String suffix.
+    EndsWith,
+    /// Regular-expression match.
+    Regex,
+    /// Equality with any listed value.
+    In,
+    /// The owner has the attribute; takes no value.
+    Present,
+}
+
+crate::enum_spellings!(OwnerLookup, "owner_lookup", canonical {
+    "eq" => Eq,
+    "ne" => Ne,
+    "gt" => Gt,
+    "gte" => Gte,
+    "lt" => Lt,
+    "lte" => Lte,
+    "contains" => Contains,
+    "startswith" => StartsWith,
+    "endswith" => EndsWith,
+    "regex" => Regex,
+    "in" => In,
+    "present" => Present,
+}, aliases {
+    "exact" => Eq,
+});
+
 /// One compatibility lookup resolved against generated field names.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GeneratedManagerLookup<'a> {
@@ -3554,10 +3658,15 @@ impl<'a> GeneratedManagerLookup<'a> {
         self.field_name
     }
 
-    /// Return the normalized lookup operator.
+    /// Return the lookup spelling as written (`eq` when none was written).
     #[must_use]
     pub const fn lookup(self) -> &'a str {
         self.lookup
+    }
+
+    /// Parse the lookup spelling with the one [`ManagerLookup`] parser.
+    pub fn operator(self) -> Result<ManagerLookup, crate::enum_spelling::UnknownEnumValue> {
+        self.lookup.parse()
     }
 }
 
@@ -3574,22 +3683,7 @@ pub fn resolve_generated_manager_lookup<'a>(
     let parsed = key.rsplit_once("__");
     match parsed {
         Some((field_name, lookup))
-            if matches!(
-                lookup,
-                "eq" | "exact"
-                    | "ne"
-                    | "gt"
-                    | "gte"
-                    | "lt"
-                    | "lte"
-                    | "contains"
-                    | "startswith"
-                    | "endswith"
-                    | "regex"
-                    | "like"
-                    | "in"
-                    | "isnull"
-            ) && has_field(field_name) =>
+            if lookup.parse::<ManagerLookup>().is_ok() && has_field(field_name) =>
         {
             GeneratedManagerLookup { field_name, lookup }
         }

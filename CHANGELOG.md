@@ -138,6 +138,32 @@ differently direct and through a proxy. Each entry says what to do instead.
   integer from 0 to 255 is a native argument error (it was a `RangeError`).
   These are the same on every connection: a caller-exchanged session no
   longer reports a malformed window as `query_remote_limit_invalid`.
+- Every enum the native modules accept as text (comparison operator, sort
+  direction, missing-key order, row cardinality, reducer, transaction type,
+  value type, record kind, manager lookup and comparison, owner lookup) is
+  parsed by the Rust core. An unknown spelling is one structured diagnostic
+  in every language: category `invalid_input`, code `unknown_enum_value`,
+  details `kind`, `accepted`, and `value` (the rejected text, left out when
+  it is not a bounded identifier). Python raises the new
+  `type_bridge_core.UnknownEnumValueError`, a subclass of both
+  `MatchRequestError` and `ValueError`, so `except ValueError` still
+  catches it; TypeScript raises the structured error with that `code`
+  instead of a plain native argument error. The old message texts are gone.
+  Accepted spellings changed:
+  - transaction types are exact lowercase (`read`, `write`, `schema`); the
+    native `transaction()` / `execute_with_rows()` no longer trim or
+    case-fold (`"READ"` is refused);
+  - Node `compareValueJson` / `functionValueJson` take the scalar-domain
+    spelling `datetime_tz` only (generated code always sent it); the
+    TypeQL spelling `datetime-tz` there was an alias and is refused;
+  - row cardinality also accepts `complete`, which the core validates;
+  - the manager lookup aliases `exact` (for `eq`) and `like` (for `regex`)
+    and the owner lookup alias `exact` remain, now defined by the core.
+
+  Rust: `ValueType::parse` (returned `Option`) is replaced by
+  `str::parse::<ValueType>()`; the core enums gain `FromStr`, `ACCEPTED`,
+  `KIND`, and `spelling()`, and `ValueType` / `ValueTypeTag` convert with
+  `From`.
 - Mixed versions: clients and executors must both be 2.3.
   - A 2.3 executor refuses a V1-format request with
     `query_remote_v2_format_unsupported` and a `supported` detail naming the
@@ -177,6 +203,13 @@ differently direct and through a proxy. Each entry says what to do instead.
   these defaults or of the codec byte ceilings; an omitted
   `QueryExecutionResourceLimits` dimension takes the core default in every
   language.
+- `type_bridge_core.canonical_enum_spelling(kind, value)` and the native
+  Node `canonicalEnumSpelling(kind, value)`: check a spelling against the
+  core enum named by `kind` and return its canonical spelling (`exact`
+  becomes `eq`). Generated Python owner lookups (`has()`, `owners()`) use
+  it instead of their own list. The cases in
+  `tests/contracts/enum-spellings-v1.json` are checked in Rust, Python, and
+  Node.
 - One connection, direct or proxy, chosen by configuration, in every
   language; the same query program runs on either and returns the same
   results and refusals. A proxy connection uses a built-in HTTP route to a

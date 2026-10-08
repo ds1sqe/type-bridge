@@ -821,7 +821,7 @@ impl PyRustDatabase {
         column_types: Vec<String>,
         rows: Bound<'_, PyAny>,
     ) -> PyResult<Py<PyAny>> {
-        let tx_type = parse_tx_type(transaction_type)?;
+        let tx_type = crate::match_runtime::parse_enum::<TxType>(transaction_type)?;
         let spec = given_rows_from_py(variables, &column_types, &rows)?;
         let query = query.to_owned();
         let result = provider_block_on(
@@ -1028,7 +1028,7 @@ impl PyRustDatabase {
         py: Python<'_>,
         transaction_type: &str,
     ) -> PyResult<PyRustTransactionContext> {
-        let tx_type = parse_tx_type(transaction_type)?;
+        let tx_type = crate::match_runtime::parse_enum::<TxType>(transaction_type)?;
         let context = provider_block_on(
             py,
             self.runtime.as_ref(),
@@ -1129,7 +1129,7 @@ impl PyRustTransactionContext {
 
     /// Return this transaction's type name.
     fn transaction_type(&self) -> &'static str {
-        tx_type_name(self.context.tx_type())
+        self.context.tx_type().spelling()
     }
 }
 
@@ -1975,10 +1975,8 @@ fn role_players_from_json(
                 let value_type = obj
                     .get("key_value_type")
                     .and_then(Value::as_str)
-                    .and_then(ValueType::parse)
-                    .ok_or_else(|| {
-                        py_value_error("key_value_type must be one of the TypeDB value types")
-                    })?;
+                    .ok_or_else(|| py_value_error("key_value_type must be a string"))
+                    .and_then(crate::match_runtime::parse_enum::<ValueType>)?;
                 Some((
                     key_attr.to_string(),
                     attribute_value_from_json(key_value, value_type)?,
@@ -2146,17 +2144,6 @@ fn py_to_json(value: Bound<'_, PyAny>) -> PyResult<Value> {
         .map_err(|error| py_value_error(format!("Expected JSON-compatible value: {error}")))
 }
 
-fn parse_tx_type(value: &str) -> PyResult<TxType> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "read" => Ok(TxType::Read),
-        "write" => Ok(TxType::Write),
-        "schema" => Ok(TxType::Schema),
-        other => Err(py_value_error(format!(
-            "transaction_type must be 'read', 'write', or 'schema', got {other:?}"
-        ))),
-    }
-}
-
 /// Marshal Python given rows into the ORM's [`GivenRowsSpec`].
 ///
 /// `column_types` drives exact per-cell extraction so Python's numeric subtype
@@ -2244,14 +2231,6 @@ fn exact_given_string(cell: &Bound<'_, PyAny>, column_type: &str) -> PyResult<St
             ))
         })?
         .extract()
-}
-
-fn tx_type_name(tx_type: TxType) -> &'static str {
-    match tx_type {
-        TxType::Read => "read",
-        TxType::Write => "write",
-        TxType::Schema => "schema",
-    }
 }
 
 fn required_string(obj: &Map<String, Value>, key: &str) -> PyResult<String> {

@@ -31,6 +31,7 @@ from type_bridge_core import (
     MatchRequestError,
     QueryCancellation,
     QueryExecutionResourceLimits,
+    UnknownEnumValueError,
     blocking,
 )
 
@@ -3587,6 +3588,10 @@ def test_generated_projection_round_trips_live_models(
         person_manager.filter(score__gte=generated.Identifier("wrong-wrapper"))
     with pytest.raises(ValueError, match="unsupported generated manager lookup"):
         person_manager.filter(score__contains=generated.Score(3))
+    with pytest.raises(UnknownEnumValueError) as unknown_lookup:
+        person_manager.filter(score__iexact=generated.Score(3))
+    assert unknown_lookup.value.code == "unknown_enum_value"
+    assert unknown_lookup.value.details["kind"]["value"] == "manager_lookup"
 
     stored_person = person_manager.get_by_iid(person.iid)
     assert type(stored_person) is generated.Person
@@ -4018,6 +4023,9 @@ def test_generated_projection_round_trips_live_models(
         generated.Identifier,
         lookup="present",
     )
+    with pytest.raises(UnknownEnumValueError) as unknown_owner_lookup:
+        generated.Party.has(clean_db, generated.Identifier, lookup="like")  # pyright: ignore[reportArgumentType]
+    assert unknown_owner_lookup.value.details["kind"]["value"] == "owner_lookup"
     assert [type(candidate) for candidate in party_attribute_owners] == [
         generated.Employee,
         generated.Manager,

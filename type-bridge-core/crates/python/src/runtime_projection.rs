@@ -22,6 +22,7 @@ use type_bridge_contract::limits::{
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::projected_record::{
     MAX_PROJECTED_ARCHIVE_BYTES, MAX_PROJECTED_ARCHIVE_RECORDS, MAX_PROJECTED_DECODED_WEIGHT,
+    ProjectedRecordKind,
 };
 use type_bridge_contract::projection::{
     BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectedModelUse,
@@ -37,9 +38,7 @@ use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration, CanonicalTime,
     TimeZoneDesignator,
 };
-use type_bridge_contract::value::{
-    CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue, ValueTypeTag,
-};
+use type_bridge_contract::value::{CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue};
 use type_bridge_core_lib::ast::{Clause, Constraint, Pattern, RolePlayer, Statement};
 use type_bridge_core_lib::compiler::QueryCompiler;
 use type_bridge_orm::_attribute::ValueType;
@@ -55,7 +54,7 @@ use type_bridge_orm::projected_batch::ProjectedBatchBindingBudget;
 use type_bridge_orm::session::{Database, TransactionContext, TransactionContextState};
 use type_bridge_orm::value::AttributeValue;
 use type_bridge_orm::{
-    AnswerCancellation, HydratedAttribute, HydratedRolePlayer, HydratedThing,
+    AnswerCancellation, HydratedAttribute, HydratedRolePlayer, HydratedThing, ManagerLookup,
     ProjectedAttributeValue, ProjectedBatch, ProjectedBatchExecutor,
     ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchResult,
     ProjectedBatchRow, ProjectedCodecValue, ProjectedCreate, ProjectedCreateBudget,
@@ -71,7 +70,7 @@ use type_bridge_schema_codegen::{PythonEmitter, verify_projection_evidence};
 
 use crate::match_runtime::{
     PyMatchSessionHandle, PyQueryCancellation, PyQueryExecutionResourceLimits, PyQueryLimits,
-    py_sdk_diagnostic,
+    parse_enum, py_sdk_diagnostic, py_unknown_enum_value,
 };
 use crate::orm_runtime::{
     PyRustDatabase, PyRustTransactionContext, provider_block_on, provider_block_on_with_gil,
@@ -1359,7 +1358,7 @@ impl PyRuntimeProjection {
         let value = canonical_attribute_value_from_py(
             py,
             &value,
-            projected_value_type(value_type),
+            ValueType::from(value_type),
             self.package.named_zone_marker.as_ref(),
         )?;
         ProjectedAttributeValue::try_from_attribute_value(&self.package.projection, id, &value)
@@ -1420,7 +1419,7 @@ impl PyRuntimeProjection {
         let scalar = canonical_attribute_value_from_py(
             py,
             &scalar,
-            projected_value_type(value_type),
+            ValueType::from(value_type),
             self.package.named_zone_marker.as_ref(),
         )?;
         let projected = ProjectedAttributeValue::try_from_attribute_value(
@@ -1675,7 +1674,7 @@ impl PyRuntimeProjection {
                 canonical_attribute_value_from_py(
                     py,
                     &value,
-                    projected_value_type(field.value_type()),
+                    ValueType::from(field.value_type()),
                     self.package.named_zone_marker.as_ref(),
                 )
                 .and_then(canonical_struct_scalar)
@@ -1753,6 +1752,7 @@ impl PyRuntimeProjection {
         max_depth: Option<usize>,
         max_members: Option<usize>,
     ) -> PyResult<Bound<'py, PyBytes>> {
+        let record_kind = parse_enum::<ProjectedRecordKind>(record_kind)?;
         let control = PythonCanonicalControl::capture(
             cancellation,
             timeout_milliseconds,
@@ -1764,12 +1764,11 @@ impl PyRuntimeProjection {
         )?;
         control.check()?;
         let bytes = match record_kind {
-            "attribute" => self.encode_attribute(py, target, instance),
-            "create" => self.encode_create(py, target, instance),
-            "reference" => self.encode_reference(py, target, instance),
-            "snapshot" => self.encode_snapshot(py, target, instance),
-            "struct" => self.encode_struct(py, target, instance),
-            _ => Err(py_value_error("unsupported canonical record kind")),
+            ProjectedRecordKind::Attribute => self.encode_attribute(py, target, instance),
+            ProjectedRecordKind::Create => self.encode_create(py, target, instance),
+            ProjectedRecordKind::Reference => self.encode_reference(py, target, instance),
+            ProjectedRecordKind::Snapshot => self.encode_snapshot(py, target, instance),
+            ProjectedRecordKind::Struct => self.encode_struct(py, target, instance),
         }?;
         control.check()?;
         let record = type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
@@ -1805,6 +1804,7 @@ impl PyRuntimeProjection {
         max_depth: Option<usize>,
         max_members: Option<usize>,
     ) -> PyResult<Py<PyAny>> {
+        let record_kind = parse_enum::<ProjectedRecordKind>(record_kind)?;
         let control = PythonCanonicalControl::capture(
             cancellation,
             timeout_milliseconds,
@@ -1831,12 +1831,11 @@ impl PyRuntimeProjection {
         control.check()?;
         let canonical = PyBytes::new(py, &canonical);
         let value = match record_kind {
-            "attribute" => self.decode_attribute(py, target, &canonical),
-            "create" => self.decode_create(py, target, &canonical),
-            "reference" => self.decode_reference(py, target, &canonical),
-            "snapshot" => self.decode_snapshot(py, target, &canonical),
-            "struct" => self.decode_struct(py, target, &canonical),
-            _ => Err(py_value_error("unsupported canonical record kind")),
+            ProjectedRecordKind::Attribute => self.decode_attribute(py, target, &canonical),
+            ProjectedRecordKind::Create => self.decode_create(py, target, &canonical),
+            ProjectedRecordKind::Reference => self.decode_reference(py, target, &canonical),
+            ProjectedRecordKind::Snapshot => self.decode_snapshot(py, target, &canonical),
+            ProjectedRecordKind::Struct => self.decode_struct(py, target, &canonical),
         }?;
         control.check()?;
         Ok(value)
@@ -2265,7 +2264,7 @@ impl PyProjectedManagerFilter {
             ));
         }
         let projected = project_attribute_value(py, self.package.as_ref(), &value, &[])?;
-        let comparison = projected_manager_comparison(comparison)?;
+        let comparison = parse_enum::<ProjectedManagerComparison>(comparison)?;
         let filter = self
             .filter
             .try_and(
@@ -6072,7 +6071,7 @@ fn project_attribute_value(
     let scalar = canonical_projected_value_from_py_at(
         py,
         scalar,
-        projected_value_type(value_type),
+        ValueType::from(value_type),
         scalar_hydration,
         package.named_zone_marker.as_ref(),
         package.named_zone_slots.as_ref(),
@@ -6358,7 +6357,7 @@ fn project_hydrated_attribute_value(
     let scalar = canonical_attribute_value_from_py(
         py,
         &scalar,
-        projected_value_type(value_type),
+        ValueType::from(value_type),
         package.named_zone_marker.as_ref(),
     )?;
     ProjectedAttributeValue::try_from_hydrated_attribute_value(
@@ -6635,15 +6634,13 @@ fn lower_compatibility_filter_kwargs(
                 .any(|descriptor| descriptor.field_name == name || descriptor.attr_name == name)
         };
         let resolved = resolve_generated_manager_lookup(key, has_field);
-        let (field_name, lookup) = (resolved.field_name(), resolved.lookup());
-        let comparison = match lookup {
-            "eq" | "exact" => ProjectedManagerComparison::Eq,
-            "ne" => ProjectedManagerComparison::Ne,
-            "gt" => ProjectedManagerComparison::Gt,
-            "gte" => ProjectedManagerComparison::Gte,
-            "lt" => ProjectedManagerComparison::Lt,
-            "lte" => ProjectedManagerComparison::Lte,
-            _ => return Ok(None),
+        let field_name = resolved.field_name();
+        let Some(comparison) = resolved
+            .operator()
+            .ok()
+            .and_then(|lookup| ProjectedManagerComparison::try_from(lookup).ok())
+        else {
+            return Ok(None);
         };
         let Some(descriptor) = descriptors.iter().find(|descriptor| {
             descriptor.field_name == field_name || descriptor.attr_name == field_name
@@ -6732,37 +6729,13 @@ fn lower_filter_kwargs(
         // lookup wins only when the prefix is also a field, so `score__gte`
         // remains the comparison on `score`. Use `score__gte__eq` to select
         // equality on a field literally named `score__gte`.
-        let parsed_lookup = key.rsplit_once("__");
         let has_field = |name: &str| {
             descriptors
                 .iter()
                 .any(|descriptor| descriptor.field_name == name || descriptor.attr_name == name)
         };
-        let (field_name, lookup) = match parsed_lookup {
-            Some((field_name, lookup))
-                if matches!(
-                    lookup,
-                    "eq" | "exact"
-                        | "ne"
-                        | "gt"
-                        | "gte"
-                        | "lt"
-                        | "lte"
-                        | "contains"
-                        | "startswith"
-                        | "endswith"
-                        | "regex"
-                        | "like"
-                        | "in"
-                        | "isnull"
-                ) && has_field(field_name) =>
-            {
-                (field_name, lookup)
-            }
-            _ if has_field(key) => (key, "eq"),
-            Some((field_name, lookup)) => (field_name, lookup),
-            None => (key, "eq"),
-        };
+        let resolved = resolve_generated_manager_lookup(key, has_field);
+        let field_name = resolved.field_name();
         let descriptor = descriptors
             .iter()
             .find(|descriptor| {
@@ -6771,58 +6744,51 @@ fn lower_filter_kwargs(
             .ok_or_else(|| {
                 py_value_error(format!("unknown generated manager filter {field_name:?}"))
             })?;
-        if matches!(
-            lookup,
-            "contains" | "startswith" | "endswith" | "regex" | "like"
-        ) && descriptor.value_type != ValueType::String
-        {
+        let lookup = resolved.operator().map_err(py_unknown_enum_value)?;
+        if lookup.requires_text() && descriptor.value_type != ValueType::String {
             return Err(py_value_error(format!(
-                "unsupported generated manager lookup {lookup:?} for non-string field {field_name:?}"
+                "unsupported generated manager lookup {:?} for non-string field {field_name:?}",
+                resolved.lookup()
             )));
         }
-        if lookup == "isnull" {
-            let is_null = value
-                .cast_exact::<PyBool>()
-                .map_err(|_| py_type_error("generated manager isnull lookup requires a bool"))?
-                .extract::<bool>()?;
-            lowered.push(DynamicExpr::IsNull {
-                attr_name: descriptor.attr_name.clone(),
-                is_null,
-            });
-            continue;
-        }
-        if lookup == "in" {
-            let exprs = projected_filter_items(&value, "in")?
-                .iter()
-                .map(|item| {
-                    Ok(DynamicExpr::Compare {
-                        attr_name: descriptor.attr_name.clone(),
-                        operator: DynamicComparisonOp::Eq,
-                        value: projected_filter_attribute_value(
-                            py, package, descriptor, field_name, item,
-                        )?,
-                    })
-                })
-                .collect::<PyResult<Vec<_>>>()?;
-            lowered.push(DynamicExpr::Or { exprs });
-            continue;
-        }
         let operator = match lookup {
-            "eq" | "exact" => DynamicComparisonOp::Eq,
-            "ne" => DynamicComparisonOp::Neq,
-            "gt" => DynamicComparisonOp::Gt,
-            "gte" => DynamicComparisonOp::Gte,
-            "lt" => DynamicComparisonOp::Lt,
-            "lte" => DynamicComparisonOp::Lte,
-            "contains" => DynamicComparisonOp::Contains,
-            "startswith" => DynamicComparisonOp::StartsWith,
-            "endswith" => DynamicComparisonOp::EndsWith,
-            "regex" | "like" => DynamicComparisonOp::Like,
-            _ => {
-                return Err(py_value_error(format!(
-                    "unsupported generated manager lookup {lookup:?}; expected exact, eq, ne, gt, gte, lt, lte, contains, startswith, endswith, regex, in, or isnull"
-                )));
+            ManagerLookup::IsNull => {
+                let is_null = value
+                    .cast_exact::<PyBool>()
+                    .map_err(|_| py_type_error("generated manager isnull lookup requires a bool"))?
+                    .extract::<bool>()?;
+                lowered.push(DynamicExpr::IsNull {
+                    attr_name: descriptor.attr_name.clone(),
+                    is_null,
+                });
+                continue;
             }
+            ManagerLookup::In => {
+                let exprs = projected_filter_items(&value, "in")?
+                    .iter()
+                    .map(|item| {
+                        Ok(DynamicExpr::Compare {
+                            attr_name: descriptor.attr_name.clone(),
+                            operator: DynamicComparisonOp::Eq,
+                            value: projected_filter_attribute_value(
+                                py, package, descriptor, field_name, item,
+                            )?,
+                        })
+                    })
+                    .collect::<PyResult<Vec<_>>>()?;
+                lowered.push(DynamicExpr::Or { exprs });
+                continue;
+            }
+            ManagerLookup::Eq => DynamicComparisonOp::Eq,
+            ManagerLookup::Ne => DynamicComparisonOp::Neq,
+            ManagerLookup::Gt => DynamicComparisonOp::Gt,
+            ManagerLookup::Gte => DynamicComparisonOp::Gte,
+            ManagerLookup::Lt => DynamicComparisonOp::Lt,
+            ManagerLookup::Lte => DynamicComparisonOp::Lte,
+            ManagerLookup::Contains => DynamicComparisonOp::Contains,
+            ManagerLookup::StartsWith => DynamicComparisonOp::StartsWith,
+            ManagerLookup::EndsWith => DynamicComparisonOp::EndsWith,
+            ManagerLookup::Regex => DynamicComparisonOp::Like,
         };
         lowered.push(DynamicExpr::Compare {
             attr_name: descriptor.attr_name.clone(),
@@ -8008,7 +7974,7 @@ fn hydrate_projected_attribute_callback_free(
     let id = package.type_by_label(&descriptor.attr_name, TypeKind::Attribute)?;
     let projection = package.projection.projection();
     if value.attribute_type() != id
-        || projected_value_type(value.value().value_type()) != descriptor.value_type
+        || ValueType::from(value.value().value_type()) != descriptor.value_type
         || value.semantic_fingerprint() != projection.semantic_fingerprint()
         || value.binding_target() != projection.target()
         || value.projection_fingerprint() != projection.projection_fingerprint()
@@ -8940,34 +8906,6 @@ fn parse_python_day_time_duration(value: &str) -> Option<(i64, i64, i64)> {
 
 fn py_diagnostic(error: type_bridge_contract::diagnostic::Diagnostic) -> PyErr {
     py_value_error(error.to_string())
-}
-
-fn projected_manager_comparison(value: &str) -> PyResult<ProjectedManagerComparison> {
-    match value {
-        "eq" => Ok(ProjectedManagerComparison::Eq),
-        "ne" => Ok(ProjectedManagerComparison::Ne),
-        "lt" => Ok(ProjectedManagerComparison::Lt),
-        "lte" => Ok(ProjectedManagerComparison::Lte),
-        "gt" => Ok(ProjectedManagerComparison::Gt),
-        "gte" => Ok(ProjectedManagerComparison::Gte),
-        _ => Err(py_value_error(
-            "unsupported canonical manager comparison; expected eq, ne, lt, lte, gt, or gte",
-        )),
-    }
-}
-
-const fn projected_value_type(value: ValueTypeTag) -> ValueType {
-    match value {
-        ValueTypeTag::String => ValueType::String,
-        ValueTypeTag::Long => ValueType::Long,
-        ValueTypeTag::Double => ValueType::Double,
-        ValueTypeTag::Boolean => ValueType::Boolean,
-        ValueTypeTag::Date => ValueType::Date,
-        ValueTypeTag::DateTime => ValueType::DateTime,
-        ValueTypeTag::DateTimeTz => ValueType::DateTimeTz,
-        ValueTypeTag::Decimal => ValueType::Decimal,
-        ValueTypeTag::Duration => ValueType::Duration,
-    }
 }
 
 fn py_orm_error(error: type_bridge_orm::OrmError) -> PyErr {

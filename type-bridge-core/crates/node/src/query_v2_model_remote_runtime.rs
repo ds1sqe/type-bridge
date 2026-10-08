@@ -13,15 +13,15 @@ use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
     AnswerCancellation, PendingRemoteModelQueryV2, ProxyQueryConnection, QueryExecutionDeadline,
-    QueryExecutionResourceLimits, RemoteModelQueryV2Error, ValidatedMatchRequest, Window,
-    lower_remote_query_diagnostic, validate_order_term_count,
+    QueryExecutionResourceLimits, RemoteModelQueryV2Error, RowCardinality, ValidatedMatchRequest,
+    Window, lower_remote_query_diagnostic, validate_order_term_count,
 };
 
 use crate::match_runtime::{
     NodeMatchBindingHandle, NodeMatchFieldHandle, NodeMatchOrderHandle, NodeMatchQueryHandle,
     NodeMatchResultContext, NodeQueryCancellation, NodeQueryExecutionResources,
     NodeValidatedMatchResultHandle, borrow_reduce_terms, napi_match_error, napi_sdk_diagnostic,
-    napi_target_error, order_handles, parse_cardinality, reduce_terms, unknown_u64,
+    napi_target_error, order_handles, parse_enum, reduce_terms, unknown_u64,
 };
 use crate::query_v2_runtime::{NodeQueryV2Authority, bounded_response_snapshot, non_shared_buffer};
 
@@ -345,7 +345,7 @@ pub(crate) fn rows_request(
                 offset: unknown_u64(offset, "offset")?,
                 limit: unknown_u64(limit, "limit")?,
             },
-            parse_cardinality(cardinality)?,
+            parse_enum::<RowCardinality>(cardinality)?,
         )
         .map_err(crate::napi_orm_error)
 }

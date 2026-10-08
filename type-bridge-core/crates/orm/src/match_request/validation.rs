@@ -909,7 +909,7 @@ fn validate_expr_node(
                 )
                 .at(MatchErrorPathSegment::Predicate));
             }
-            validate_operator(*operator, value_type_from_tag(left_type), true)
+            validate_operator(*operator, ValueType::from(left_type), true)
                 .map_err(|error| error.at(MatchErrorPathSegment::Predicate))?;
         }
         MatchExpr::FieldPresence { field, .. } => {
@@ -1108,7 +1108,7 @@ fn validate_scalar_operand(
     bindings: &BTreeMap<BindingId, TypeDescriptorRef>,
 ) -> Result<ValueTypeTag, MatchError> {
     match operand {
-        MatchScalarOperand::Field { field } => Ok(value_type_tag(
+        MatchScalarOperand::Field { field } => Ok(ValueTypeTag::from(
             resolve_bound_field(registry, field, bindings)?.value_type,
         )),
         MatchScalarOperand::Value { value } => Ok(value.value_type()),
@@ -1209,34 +1209,6 @@ fn descriptor_id_from_type(id: &TypeId) -> Option<DescriptorId> {
         TypeKind::Attribute | TypeKind::Struct => return None,
     };
     Some(DescriptorId::new(format!("{prefix}:{}", id.label())))
-}
-
-const fn value_type_tag(value: ValueType) -> ValueTypeTag {
-    match value {
-        ValueType::String => ValueTypeTag::String,
-        ValueType::Long => ValueTypeTag::Long,
-        ValueType::Double => ValueTypeTag::Double,
-        ValueType::Boolean => ValueTypeTag::Boolean,
-        ValueType::Date => ValueTypeTag::Date,
-        ValueType::DateTime => ValueTypeTag::DateTime,
-        ValueType::DateTimeTz => ValueTypeTag::DateTimeTz,
-        ValueType::Decimal => ValueTypeTag::Decimal,
-        ValueType::Duration => ValueTypeTag::Duration,
-    }
-}
-
-const fn value_type_from_tag(value: ValueTypeTag) -> ValueType {
-    match value {
-        ValueTypeTag::String => ValueType::String,
-        ValueTypeTag::Long => ValueType::Long,
-        ValueTypeTag::Double => ValueType::Double,
-        ValueTypeTag::Boolean => ValueType::Boolean,
-        ValueTypeTag::Date => ValueType::Date,
-        ValueTypeTag::DateTime => ValueType::DateTime,
-        ValueTypeTag::DateTimeTz => ValueType::DateTimeTz,
-        ValueTypeTag::Decimal => ValueType::Decimal,
-        ValueTypeTag::Duration => ValueType::Duration,
-    }
 }
 
 fn validate_or_exports(expression: &MatchExpr) -> Result<BTreeSet<BindingId>, MatchError> {

@@ -45,7 +45,6 @@ use type_bridge_schema::{
 };
 use type_bridge_schema_compat::released_typeql_to_declared_projection;
 
-use crate::_attribute::ValueType;
 use crate::_descriptor::{
     OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor, TypeDescriptorRef,
 };
@@ -453,7 +452,7 @@ fn hydration_descriptor(
                 )
             })?
             .value_type();
-        if value_type_tag(registered.value_type) != attribute_type
+        if ValueTypeTag::from(registered.value_type) != attribute_type
             || registered_cardinality(registered)? != owns.cardinality()
             || (registered.is_key() || registered.is_unique())
                 != (owns.is_key() || owns.is_unique())
@@ -1195,7 +1194,7 @@ fn adapt_field(
         BindingId::new(field.binding.get())?,
         descriptor_id_type(field.field.owner.as_str())?,
         AttributeId::new(attribute.attr_name.clone())?,
-        value_type_tag(attribute.value_type),
+        ValueTypeTag::from(attribute.value_type),
     ))
 }
 
@@ -1459,20 +1458,6 @@ fn registered_cardinality(attribute: &OwnedAttributeDescriptor) -> Result<Cardin
 fn registered_role_cardinality(role: &RoleDescriptor) -> Result<Cardinality, Diagnostic> {
     let (minimum, maximum) = role.cardinality.unwrap_or((0, Some(1)));
     Cardinality::new(u64::from(minimum), maximum.map(u64::from))
-}
-
-const fn value_type_tag(value_type: ValueType) -> ValueTypeTag {
-    match value_type {
-        ValueType::String => ValueTypeTag::String,
-        ValueType::Long => ValueTypeTag::Long,
-        ValueType::Double => ValueTypeTag::Double,
-        ValueType::Boolean => ValueTypeTag::Boolean,
-        ValueType::Date => ValueTypeTag::Date,
-        ValueType::DateTime => ValueTypeTag::DateTime,
-        ValueType::DateTimeTz => ValueTypeTag::DateTimeTz,
-        ValueType::Decimal => ValueTypeTag::Decimal,
-        ValueType::Duration => ValueTypeTag::Duration,
-    }
 }
 
 fn output_slots(output: &FetchShape) -> impl Iterator<Item = &FetchSlot> {

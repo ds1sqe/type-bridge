@@ -26,6 +26,7 @@ use type_bridge_contract::limits::{
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::projected_record::{
     MAX_PROJECTED_ARCHIVE_BYTES, MAX_PROJECTED_ARCHIVE_RECORDS, MAX_PROJECTED_DECODED_WEIGHT,
+    ProjectedRecordKind,
 };
 use type_bridge_contract::projection::{
     BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectedModelUse,
@@ -53,7 +54,7 @@ use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
 use type_bridge_orm::projected_batch::ProjectedBatchBindingBudget;
 use type_bridge_orm::{
     AnswerCancellation, AttributeValue, Database, HydratedAttribute, InstalledRuntimeProjection,
-    ProjectedAttributeValue, ProjectedBatch, ProjectedBatchExecutor,
+    ManagerLookup, ProjectedAttributeValue, ProjectedBatch, ProjectedBatchExecutor,
     ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchResult,
     ProjectedBatchRow, ProjectedCodecValue, ProjectedCreate, ProjectedCrudExecutor,
     ProjectedManagerComparison, ProjectedManagerFilter, ProjectedManagerFilterExecutor,
@@ -67,7 +68,7 @@ use type_bridge_schema_codegen::{TypeScriptEmitter, verify_projection_evidence};
 
 use crate::match_runtime::{
     NodeQueryCancellation, NodeQueryExecutionResources, NodeQueryLimits, napi_sdk_diagnostic,
-    revalidate_diagnostic,
+    parse_enum, revalidate_diagnostic,
 };
 use crate::{
     NodeMatchSessionHandle, NodeRustDatabase, NodeRustTransactionContext, NodeValidatedThingHandle,
@@ -1959,7 +1960,7 @@ impl NodeRuntimeProjection {
             .ok_or_else(|| invalid_error("projection attribute has no scalar domain"))?;
         let wire: ScalarWire = serde_json::from_str(&value_json)
             .map_err(|error| invalid_error(format!("invalid projected scalar wire: {error}")))?;
-        let expected = projected_value_type(value_type);
+        let expected = ValueType::from(value_type);
         if projection_uses_ordered_collections(self.package.projection.projection()) {
             project_attribute_scalar(&self.package.projection, id, &wire, expected)
                 .map(|_| ())
@@ -2004,7 +2005,7 @@ impl NodeRuntimeProjection {
             &self.package.projection,
             id,
             &wire,
-            projected_value_type(value_type),
+            ValueType::from(value_type),
         )
         .map(|_| ())
         .map_err(napi_sdk_diagnostic)
@@ -2050,7 +2051,7 @@ impl NodeRuntimeProjection {
             .ok_or_else(|| invalid_error("projection field attribute has no scalar domain"))?;
         let wire: ScalarWire = serde_json::from_str(&value_json)
             .map_err(|error| invalid_error(format!("invalid projected scalar wire: {error}")))?;
-        let expected = projected_value_type(value_type);
+        let expected = ValueType::from(value_type);
         if projection_uses_ordered_collections(self.package.projection.projection()) {
             let projected =
                 project_attribute_scalar(&self.package.projection, attribute_id, &wire, expected)
@@ -2306,7 +2307,7 @@ impl NodeRuntimeProjection {
                 value
                     .as_ref()
                     .map(|wire| {
-                        scalar_to_ordered_attribute(wire, projected_value_type(field.value_type()))
+                        scalar_to_ordered_attribute(wire, ValueType::from(field.value_type()))
                             .and_then(|value| canonical_struct_scalar(&value))
                     })
                     .transpose()
@@ -2357,6 +2358,7 @@ impl NodeRuntimeProjection {
         max_depth: Option<u32>,
         max_members: Option<u32>,
     ) -> napi::Result<Buffer> {
+        let record_kind = parse_enum::<ProjectedRecordKind>(&record_kind)?;
         let control = NodeCanonicalControl::capture(
             cancellation,
             timeout_milliseconds,
@@ -2372,13 +2374,12 @@ impl NodeRuntimeProjection {
                 SdkExecutionDiagnostic::projected_codec_input_limit(),
             ));
         }
-        let bytes = match record_kind.as_str() {
-            "attribute" => self.encode_attribute_json(type_key, value_json),
-            "create" => self.encode_create_json(type_key, value_json),
-            "reference" => self.encode_reference_json(type_key, value_json),
-            "snapshot" => self.encode_snapshot_json(type_key, value_json),
-            "struct" => self.encode_struct_json(type_key, value_json),
-            _ => Err(invalid_error("unsupported canonical record kind")),
+        let bytes = match record_kind {
+            ProjectedRecordKind::Attribute => self.encode_attribute_json(type_key, value_json),
+            ProjectedRecordKind::Create => self.encode_create_json(type_key, value_json),
+            ProjectedRecordKind::Reference => self.encode_reference_json(type_key, value_json),
+            ProjectedRecordKind::Snapshot => self.encode_snapshot_json(type_key, value_json),
+            ProjectedRecordKind::Struct => self.encode_struct_json(type_key, value_json),
         }?;
         control.check()?;
         let record = type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
@@ -2413,6 +2414,7 @@ impl NodeRuntimeProjection {
         max_depth: Option<u32>,
         max_members: Option<u32>,
     ) -> napi::Result<String> {
+        let record_kind = parse_enum::<ProjectedRecordKind>(&record_kind)?;
         let control = NodeCanonicalControl::capture(
             cancellation,
             timeout_milliseconds,
@@ -2437,13 +2439,22 @@ impl NodeRuntimeProjection {
             .encode_with_limits(control.output_limits())
             .map_err(|error| node_canonical_limit_error(error, false))?;
         control.check()?;
-        let value_json = match record_kind.as_str() {
-            "attribute" => self.decode_attribute_json(type_key, Buffer::from(canonical)),
-            "create" => self.decode_create_json(type_key, Buffer::from(canonical)),
-            "reference" => self.decode_reference_json(type_key, Buffer::from(canonical)),
-            "snapshot" => self.decode_snapshot_json(type_key, Buffer::from(canonical)),
-            "struct" => self.decode_struct_json(type_key, Buffer::from(canonical)),
-            _ => Err(invalid_error("unsupported canonical record kind")),
+        let value_json = match record_kind {
+            ProjectedRecordKind::Attribute => {
+                self.decode_attribute_json(type_key, Buffer::from(canonical))
+            }
+            ProjectedRecordKind::Create => {
+                self.decode_create_json(type_key, Buffer::from(canonical))
+            }
+            ProjectedRecordKind::Reference => {
+                self.decode_reference_json(type_key, Buffer::from(canonical))
+            }
+            ProjectedRecordKind::Snapshot => {
+                self.decode_snapshot_json(type_key, Buffer::from(canonical))
+            }
+            ProjectedRecordKind::Struct => {
+                self.decode_struct_json(type_key, Buffer::from(canonical))
+            }
         }?;
         if value_json.len() > control.max_output_bytes {
             return Err(napi_sdk_diagnostic(
@@ -2796,7 +2807,7 @@ impl NodeProjectedManagerFilter {
         let attribute = AttributeId::new(attribute_label).map_err(diagnostic_error)?;
         let field = OwnsFactId::new(owner.clone(), attribute).map_err(diagnostic_error)?;
         let identity = ProjectedTokenIdentity::Field { owner, field };
-        let comparison = projected_manager_comparison(&comparison)?;
+        let comparison = parse_enum::<ProjectedManagerComparison>(&comparison)?;
         let wire = parse_wire(&value_json)?;
         let value =
             project_attribute_wire(self.package.as_ref(), &wire).map_err(napi_sdk_diagnostic)?;
@@ -4320,12 +4331,7 @@ fn project_hydrated_attribute_wire(
         .value
         .as_ref()
         .ok_or_else(|| malformed_projected_hydration_at(path.clone()))?;
-    project_hydrated_attribute_scalar(
-        &package.projection,
-        id,
-        scalar,
-        projected_value_type(value_type),
-    )
+    project_hydrated_attribute_scalar(&package.projection, id, scalar, ValueType::from(value_type))
 }
 
 fn project_hydrated_attribute_scalar(
@@ -4533,12 +4539,7 @@ fn project_attribute_wire(
         .value
         .as_ref()
         .ok_or_else(|| malformed_projected_create_at(path))?;
-    project_attribute_scalar(
-        &package.projection,
-        id,
-        scalar,
-        projected_value_type(value_type),
-    )
+    project_attribute_scalar(&package.projection, id, scalar, ValueType::from(value_type))
 }
 
 fn project_attribute_scalar(
@@ -4978,7 +4979,7 @@ fn lower_filter_values(
                 .any(|descriptor| descriptor.field_name == name || descriptor.attr_name == name)
         };
         let resolved = resolve_generated_manager_lookup(&key, has_field);
-        let (field_name, lookup) = (resolved.field_name(), resolved.lookup());
+        let field_name = resolved.field_name();
         let descriptor = descriptors
             .iter()
             .find(|descriptor| {
@@ -4987,66 +4988,61 @@ fn lower_filter_values(
             .ok_or_else(|| {
                 invalid_error(format!("unknown generated manager filter {field_name:?}"))
             })?;
-        if matches!(
-            lookup,
-            "contains" | "startswith" | "endswith" | "regex" | "like"
-        ) && descriptor.value_type != ValueType::String
-        {
+        let lookup = resolved
+            .operator()
+            .map_err(|error| napi_sdk_diagnostic(error.into()))?;
+        if lookup.requires_text() && descriptor.value_type != ValueType::String {
             return Err(invalid_error(format!(
-                "unsupported generated manager lookup {lookup:?} for non-string field {field_name:?}"
+                "unsupported generated manager lookup {:?} for non-string field {field_name:?}",
+                resolved.lookup()
             )));
         }
-        if lookup == "isnull" {
-            let is_null = value.as_bool().ok_or_else(|| {
-                invalid_error("generated manager isnull lookup requires a boolean")
-            })?;
-            lowered.push(DynamicExpr::IsNull {
-                attr_name: descriptor.attr_name.clone(),
-                is_null,
-            });
-            continue;
-        }
-        if lookup == "in" {
-            let values = value
-                .as_array()
-                .ok_or_else(|| invalid_error("generated manager in lookup requires an array"))?;
-            if values.is_empty() {
-                return Err(invalid_error(
-                    "generated manager in lookup requires at least one value",
-                ));
-            }
-            lowered.push(DynamicExpr::Or {
-                exprs: values
-                    .iter()
-                    .map(|value| {
-                        Ok(DynamicExpr::Compare {
-                            attr_name: descriptor.attr_name.clone(),
-                            operator: DynamicComparisonOp::Eq,
-                            value: projected_filter_attribute_value(
-                                package, descriptor, field_name, value,
-                            )?,
-                        })
-                    })
-                    .collect::<napi::Result<Vec<_>>>()?,
-            });
-            continue;
-        }
         let operator = match lookup {
-            "eq" | "exact" => DynamicComparisonOp::Eq,
-            "ne" => DynamicComparisonOp::Neq,
-            "gt" => DynamicComparisonOp::Gt,
-            "gte" => DynamicComparisonOp::Gte,
-            "lt" => DynamicComparisonOp::Lt,
-            "lte" => DynamicComparisonOp::Lte,
-            "contains" => DynamicComparisonOp::Contains,
-            "startswith" => DynamicComparisonOp::StartsWith,
-            "endswith" => DynamicComparisonOp::EndsWith,
-            "regex" | "like" => DynamicComparisonOp::Like,
-            _ => {
-                return Err(invalid_error(format!(
-                    "unsupported generated manager lookup {lookup:?}; expected exact, eq, ne, gt, gte, lt, lte, contains, startswith, endswith, regex, in, or isnull"
-                )));
+            ManagerLookup::IsNull => {
+                let is_null = value.as_bool().ok_or_else(|| {
+                    invalid_error("generated manager isnull lookup requires a boolean")
+                })?;
+                lowered.push(DynamicExpr::IsNull {
+                    attr_name: descriptor.attr_name.clone(),
+                    is_null,
+                });
+                continue;
             }
+            ManagerLookup::In => {
+                let values = value.as_array().ok_or_else(|| {
+                    invalid_error("generated manager in lookup requires an array")
+                })?;
+                if values.is_empty() {
+                    return Err(invalid_error(
+                        "generated manager in lookup requires at least one value",
+                    ));
+                }
+                lowered.push(DynamicExpr::Or {
+                    exprs: values
+                        .iter()
+                        .map(|value| {
+                            Ok(DynamicExpr::Compare {
+                                attr_name: descriptor.attr_name.clone(),
+                                operator: DynamicComparisonOp::Eq,
+                                value: projected_filter_attribute_value(
+                                    package, descriptor, field_name, value,
+                                )?,
+                            })
+                        })
+                        .collect::<napi::Result<Vec<_>>>()?,
+                });
+                continue;
+            }
+            ManagerLookup::Eq => DynamicComparisonOp::Eq,
+            ManagerLookup::Ne => DynamicComparisonOp::Neq,
+            ManagerLookup::Gt => DynamicComparisonOp::Gt,
+            ManagerLookup::Gte => DynamicComparisonOp::Gte,
+            ManagerLookup::Lt => DynamicComparisonOp::Lt,
+            ManagerLookup::Lte => DynamicComparisonOp::Lte,
+            ManagerLookup::Contains => DynamicComparisonOp::Contains,
+            ManagerLookup::StartsWith => DynamicComparisonOp::StartsWith,
+            ManagerLookup::EndsWith => DynamicComparisonOp::EndsWith,
+            ManagerLookup::Regex => DynamicComparisonOp::Like,
         };
         lowered.push(DynamicExpr::Compare {
             attr_name: descriptor.attr_name.clone(),
@@ -5055,20 +5051,6 @@ fn lower_filter_values(
         });
     }
     Ok(lowered)
-}
-
-fn projected_manager_comparison(value: &str) -> napi::Result<ProjectedManagerComparison> {
-    match value {
-        "eq" => Ok(ProjectedManagerComparison::Eq),
-        "ne" => Ok(ProjectedManagerComparison::Ne),
-        "lt" => Ok(ProjectedManagerComparison::Lt),
-        "lte" => Ok(ProjectedManagerComparison::Lte),
-        "gt" => Ok(ProjectedManagerComparison::Gt),
-        "gte" => Ok(ProjectedManagerComparison::Gte),
-        _ => Err(invalid_error(
-            "projected manager comparison must be eq, ne, lt, lte, gt, or gte",
-        )),
-    }
 }
 
 fn projected_filter_attribute_value(
@@ -5904,7 +5886,7 @@ fn projected_struct_wire(
             let value = value.as_ref().map(|value| {
                 attribute_to_scalar(
                     &canonical_struct_attribute(value),
-                    projected_value_type(field.value_type()),
+                    ValueType::from(field.value_type()),
                 )
                 .expect("validated projected struct scalar retains its declared domain")
             });
@@ -6135,7 +6117,7 @@ fn projected_attribute_value_wire(
         iid: None,
         value: Some(attribute_to_scalar(
             &value.to_attribute_value(),
-            projected_value_type(value_type),
+            ValueType::from(value_type),
         )?),
         values: BTreeMap::new(),
     })
@@ -6528,20 +6510,6 @@ const fn value_type_tag(value: ValueType) -> ValueTypeTag {
         ValueType::DateTimeTz => ValueTypeTag::DateTimeTz,
         ValueType::Decimal => ValueTypeTag::Decimal,
         ValueType::Duration => ValueTypeTag::Duration,
-    }
-}
-
-const fn projected_value_type(value: ValueTypeTag) -> ValueType {
-    match value {
-        ValueTypeTag::String => ValueType::String,
-        ValueTypeTag::Long => ValueType::Long,
-        ValueTypeTag::Double => ValueType::Double,
-        ValueTypeTag::Boolean => ValueType::Boolean,
-        ValueTypeTag::Date => ValueType::Date,
-        ValueTypeTag::DateTime => ValueType::DateTime,
-        ValueTypeTag::DateTimeTz => ValueType::DateTimeTz,
-        ValueTypeTag::Decimal => ValueType::Decimal,
-        ValueTypeTag::Duration => ValueType::Duration,
     }
 }
 

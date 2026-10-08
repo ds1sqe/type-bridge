@@ -29,7 +29,7 @@ pub use match_runtime::{
     NodeMatchOrderHandle, NodeMatchPredicateHandle, NodeMatchQueryHandle, NodeMatchRoleHandle,
     NodeMatchSelectionHandle, NodeMatchSessionHandle, NodeMatchShapeHandle, NodeQueryCancellation,
     NodeQueryExecutionResources, NodeQueryLimits, NodeValidatedMatchResultHandle,
-    NodeValidatedThingHandle,
+    NodeValidatedThingHandle, canonical_enum_spelling,
 };
 pub use migration_catalog_runtime::{
     NodeMigrationApprovalBuilder, NodeMigrationApprovalSet, NodeMigrationBackfillObservation,
@@ -56,6 +56,7 @@ use std::time::{Duration, Instant};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::{Map, Value};
+use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_core_lib::version as core_version;
 #[cfg(test)]
 use type_bridge_orm::_descriptor::{EntityDescriptor, RelationDescriptor};
@@ -477,7 +478,8 @@ impl NodeRustDatabase {
         &self,
         transaction_type: Option<String>,
     ) -> Result<NodeRustTransactionContext> {
-        let tx_type = parse_tx_type(transaction_type.as_deref().unwrap_or("read"))?;
+        let tx_type =
+            match_runtime::parse_enum::<TxType>(transaction_type.as_deref().unwrap_or("read"))?;
         let context = self
             .runtime
             .block_on(self.db.transaction_context(tx_type))
@@ -548,7 +550,7 @@ impl NodeRustTransactionContext {
 
     #[napi(js_name = "transactionType")]
     pub fn transaction_type(&self) -> String {
-        tx_type_name(self.context.tx_type()).to_string()
+        self.context.tx_type().spelling().to_string()
     }
 }
 
@@ -637,16 +639,10 @@ pub(crate) fn attribute_value_from_js(
     let object = value
         .as_object()
         .ok_or_else(|| Error::from_reason("Attribute value must be an object"))?;
-    let value_type_name = required_string(object, "value_type")?;
-    let value_type = match value_type_name.as_str() {
-        "datetime_tz" => Some(ValueType::DateTimeTz),
-        value_type => ValueType::parse(value_type),
-    }
-    .ok_or_else(|| {
-        Error::from_reason(format!(
-            "value_type must be one of the TypeDB value types, got '{value_type_name}'"
-        ))
-    })?;
+    // Generated code sends the projected wire's scalar-domain spelling.
+    let value_type = ValueType::from(match_runtime::parse_enum::<ValueTypeTag>(
+        &required_string(object, "value_type")?,
+    )?);
     if let Some(expected_type) = expected_type
         && value_type != expected_type
     {
@@ -743,26 +739,6 @@ fn query_result_to_json(result: QueryResult) -> Result<String> {
         QueryResult::Documents(values) | QueryResult::Rows(values) => values,
     };
     serde_json::to_string(&values).map_err(json_serialize_error)
-}
-
-fn parse_tx_type(value: &str) -> Result<TxType> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "read" => Ok(TxType::Read),
-        "write" => Ok(TxType::Write),
-        "schema" => Ok(TxType::Schema),
-        other => Err(Error::new(
-            Status::InvalidArg,
-            format!("transaction_type must be 'read', 'write', or 'schema', got {other:?}"),
-        )),
-    }
-}
-
-fn tx_type_name(tx_type: TxType) -> &'static str {
-    match tx_type {
-        TxType::Read => "read",
-        TxType::Write => "write",
-        TxType::Schema => "schema",
-    }
 }
 
 fn napi_secure_connect_options(

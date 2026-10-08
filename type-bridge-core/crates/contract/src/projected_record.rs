@@ -382,6 +382,30 @@ impl ProjectedRole {
     }
 }
 
+/// The record kind a generated model encodes or decodes through the canonical
+/// record codec.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ProjectedRecordKind {
+    /// One attribute or scalar wrapper value.
+    Attribute,
+    /// One entity or relation create input.
+    Create,
+    /// One reference to a stored entity or relation.
+    Reference,
+    /// One detached hydrated snapshot.
+    Snapshot,
+    /// One struct value.
+    Struct,
+}
+
+crate::enum_spellings!(ProjectedRecordKind, "projected_record_kind", canonical {
+    "attribute" => Attribute,
+    "create" => Create,
+    "reference" => Reference,
+    "snapshot" => Snapshot,
+    "struct" => Struct,
+});
+
 /// The closed canonical projected-record content vocabulary.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

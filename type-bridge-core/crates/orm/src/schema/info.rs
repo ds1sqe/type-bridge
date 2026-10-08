@@ -698,7 +698,7 @@ fn cardinality_tuple(cardinality: &core_schema::Cardinality) -> (u32, Option<u32
 fn value_type_from_typeql(value_type: &str) -> ValueType {
     match value_type {
         "integer" => ValueType::Long,
-        other => ValueType::parse(other).unwrap_or(ValueType::String),
+        other => other.parse().unwrap_or(ValueType::String),
     }
 }
 

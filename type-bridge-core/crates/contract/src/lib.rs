@@ -14,6 +14,8 @@ pub mod codec;
 pub mod decimal;
 /// Stable binding-neutral structured diagnostics.
 pub mod diagnostic;
+/// One parser per closed enum and the `unknown_enum_value` diagnostic.
+pub mod enum_spelling;
 /// Domain-separated fingerprint algorithms and values.
 pub mod fingerprint;
 /// Validated typed identifier primitives.

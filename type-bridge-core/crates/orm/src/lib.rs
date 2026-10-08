@@ -37,6 +37,7 @@ pub mod _relation;
 #[doc(hidden)]
 #[path = "schema/mod.rs"]
 pub mod _schema;
+mod enum_spelling;
 pub mod error;
 mod execution_diagnostic;
 pub mod expr;
@@ -111,6 +112,7 @@ pub use _dynamic::{
     DynamicEntityRow, DynamicExpr, DynamicRelationIdentity, DynamicRelationRow, DynamicRolePlayer,
     DynamicRolePlayerInput, DynamicSort,
 };
+pub use enum_spelling::{EnumKind, canonical_enum_spelling};
 pub use error::{ClassifiedCommitError, CommitFailureCertainty, OrmError, Result};
 #[doc(hidden)]
 pub use execution_diagnostic::{
@@ -197,8 +199,9 @@ pub use session::{
     delete_database_prepared_secure, delete_database_secure, ensure_database_exists,
     ensure_database_exists_prepared_secure, ensure_database_exists_secure,
 };
+pub use type_bridge_contract::enum_spelling::UnknownEnumValue;
 pub use type_bridge_contract::projection::{
-    GeneratedManagerLookup, resolve_generated_manager_lookup,
+    GeneratedManagerLookup, ManagerLookup, OwnerLookup, resolve_generated_manager_lookup,
 };
 /// Provider version type used by binding-owned recording backends.
 #[doc(hidden)]

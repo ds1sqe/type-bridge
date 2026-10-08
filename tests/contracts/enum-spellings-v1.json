@@ -1,0 +1,452 @@
+{
+  "corpus_id": "type-bridge.enum-spellings",
+  "version": 1,
+  "description": "Every closed enum a binding accepts as text has one parser in the Rust core. An unknown spelling is one diagnostic in every language: category invalid_input, code unknown_enum_value, details kind (the enum kind), accepted (canonical spellings, then aliases), and value (the rejected text, only when it is a bounded identifier). Rust checks the parsers; Python and Node check canonical_enum_spelling / canonicalEnumSpelling and the binding calls that parse each kind.",
+  "cases": [
+    {
+      "id": "comparison_operator.unknown",
+      "description": "An operator outside the canonical comparison names.",
+      "kind": "comparison_operator",
+      "value": "equals",
+      "expected": {
+        "category": "invalid_input",
+        "code": "unknown_enum_value",
+        "details": {
+          "kind": {
+            "kind": "query_identity",
+            "value": "comparison_operator"
+          },
+          "value": {
+            "kind": "query_identity",
+            "value": "equals"
+          },
+          "accepted": {
+            "kind": "query_identity_list",
+            "value": [
+              "equal",
+              "not_equal",
+              "less_than",
+              "less_than_or_equal",
+              "greater_than",
+              "greater_than_or_equal",
+              "contains",
+              "starts_with",
+              "ends_with",
+              "regex"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "sort_direction.unknown",
+      "description": "Abbreviations are not accepted.",
+      "kind": "sort_direction",
+      "value": "desc",
+      "expected": {
+        "category": "invalid_input",
+        "code": "unknown_enum_value",
+        "details": {
+          "kind": {
+            "kind": "query_identity",
+            "value": "sort_direction"
+          },
+          "value": {
+            "kind": "query_identity",
+            "value": "desc"
+          },
+          "accepted": {
+            "kind": "query_identity_list",
+            "value": [
+              "ascending",
+              "descending"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "missing_order.unknown",
+      "description": "A missing-key order outside reject, first, and last.",
+      "kind": "missing_order",
+      "value": "none",
+      "expected": {
+        "category": "invalid_input",
+        "code": "unknown_enum_value",
+        "details": {
+          "kind": {
+            "kind": "query_identity",
+            "value": "missing_order"
+          },
+          "value": {
+            "kind": "query_identity",
+            "value": "none"
+          },
+          "accepted": {
+            "kind": "query_identity_list",
+            "value": [
+              "reject",
+              "first",
+              "last"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "row_cardinality.unknown",
+      "description": "A row cardinality outside the core's three.",
+      "kind": "row_cardinality",
+      "value": "many",
+      "expected": {
+        "category": "invalid_input",
+        "code": "unknown_enum_value",
+        "details": {
+          "kind": {
+            "kind": "query_identity",
+            "value": "row_cardinality"
+          },
+          "value": {
+            "kind": "query_identity",
+            "value": "many"
+          },
+          "accepted": {
+            "kind": "query_identity_list",
+            "value": [
+              "exactly_one",
+              "bounded_many",
+              "complete"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "reducer.unknown",
+      "description": "A reducer outside the closed vocabulary.",
+      "kind": "reducer",
+      "value": "variance",
+      "expected": {
+        "category": "invalid_input",
+        "code": "unknown_enum_value",
+        "details": {
+          "kind": {
+            "kind": "query_identity",
+            "value": "reducer"
+          },
+          "value": {
+            "kind": "query_identity",
+            "value": "variance"
+          },
+          "accepted": {
+            "kind": "query_identity_list",
+            "value": [
+              "count",
+              "sum",
+              "min",
+              "max",
+              "mean",
+              "median",
+              "std"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "transaction_type.unknown",
+      "description": "Transaction types are exact lowercase; bindings no longer trim or case-fold.",
+      "kind": "transaction_type",
+      "value": "READ",
+      "expected": {
+        "category": "invalid_input",
+        "code": "unknown_enum_value",
+        "details": {
+          "kind": {
+            "kind": "query_identity",
+            "value": "transaction_type"
+          },
+          "value": {
+            "kind": "query_identity",
+            "value": "READ"
+          },
+          "accepted": {
+            "kind": "query_identity_list",
+            "value": [
+              "read",
+              "write",
+              "schema"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "value_type.unknown",
+      "description": "The TypeQL value type is spelled datetime-tz; the scalar-domain spelling is not an alias.",
+      "kind": "value_type",
+      "value": "datetime_tz",
+      "expected": {
+        "category": "invalid_input",
+        "code": "unknown_enum_value",
+        "details": {
+          "kind": {
+            "kind": "query_identity",
+            "value": "value_type"
+          },
+          "value": {
+            "kind": "query_identity",
+            "value": "datetime_tz"
+          },
+          "accepted": {
+            "kind": "query_identity_list",
+            "value": [
+              "string",
+              "long",
+              "double",
+              "boolean",
+              "date",
+              "datetime",
+              "datetime-tz",
+              "decimal",
+              "duration"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "scalar_domain.unknown",
+      "description": "The scalar domain is spelled datetime_tz; the TypeQL spelling is not an alias.",
+      "kind": "scalar_domain",
+      "value": "datetime-tz",
+      "expected": {
+        "category": "invalid_input",
+        "code": "unknown_enum_value",
+        "details": {
+          "kind": {
+            "kind": "query_identity",
+            "value": "scalar_domain"
+          },
+          "value": {
+            "kind": "query_identity",
+            "value": "datetime-tz"
+          },
+          "accepted": {
+            "kind": "query_identity_list",
+            "value": [
+              "string",
+              "long",
+              "double",
+              "boolean",
+              "date",
+              "datetime",
+              "datetime_tz",
+              "decimal",
+              "duration"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "projected_record_kind.unknown",
+      "description": "A canonical record kind outside attribute, create, reference, snapshot, and struct.",
+      "kind": "projected_record_kind",
+      "value": "entity",
+      "expected": {
+        "category": "invalid_input",
+        "code": "unknown_enum_value",
+        "details": {
+          "kind": {
+            "kind": "query_identity",
+            "value": "projected_record_kind"
+          },
+          "value": {
+            "kind": "query_identity",
+            "value": "entity"
+          },
+          "accepted": {
+            "kind": "query_identity_list",
+            "value": [
+              "attribute",
+              "create",
+              "reference",
+              "snapshot",
+              "struct"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "manager_lookup.unknown",
+      "description": "A manager filter lookup suffix outside the core vocabulary.",
+      "kind": "manager_lookup",
+      "value": "iexact",
+      "expected": {
+        "category": "invalid_input",
+        "code": "unknown_enum_value",
+        "details": {
+          "kind": {
+            "kind": "query_identity",
+            "value": "manager_lookup"
+          },
+          "value": {
+            "kind": "query_identity",
+            "value": "iexact"
+          },
+          "accepted": {
+            "kind": "query_identity_list",
+            "value": [
+              "eq",
+              "ne",
+              "gt",
+              "gte",
+              "lt",
+              "lte",
+              "contains",
+              "startswith",
+              "endswith",
+              "regex",
+              "in",
+              "isnull",
+              "exact",
+              "like"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "manager_comparison.unknown",
+      "description": "exact is a manager-lookup alias, not a manager comparison.",
+      "kind": "manager_comparison",
+      "value": "exact",
+      "expected": {
+        "category": "invalid_input",
+        "code": "unknown_enum_value",
+        "details": {
+          "kind": {
+            "kind": "query_identity",
+            "value": "manager_comparison"
+          },
+          "value": {
+            "kind": "query_identity",
+            "value": "exact"
+          },
+          "accepted": {
+            "kind": "query_identity_list",
+            "value": [
+              "eq",
+              "ne",
+              "lt",
+              "lte",
+              "gt",
+              "gte"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "owner_lookup.unknown",
+      "description": "like is a manager-lookup alias, not an owner lookup.",
+      "kind": "owner_lookup",
+      "value": "like",
+      "expected": {
+        "category": "invalid_input",
+        "code": "unknown_enum_value",
+        "details": {
+          "kind": {
+            "kind": "query_identity",
+            "value": "owner_lookup"
+          },
+          "value": {
+            "kind": "query_identity",
+            "value": "like"
+          },
+          "accepted": {
+            "kind": "query_identity_list",
+            "value": [
+              "eq",
+              "ne",
+              "gt",
+              "gte",
+              "lt",
+              "lte",
+              "contains",
+              "startswith",
+              "endswith",
+              "regex",
+              "in",
+              "present",
+              "exact"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "enum_kind.unknown",
+      "description": "An unknown enum kind is itself an unknown enum_kind spelling.",
+      "kind": "sort",
+      "value": "ascending",
+      "expected": {
+        "category": "invalid_input",
+        "code": "unknown_enum_value",
+        "details": {
+          "kind": {
+            "kind": "query_identity",
+            "value": "enum_kind"
+          },
+          "value": {
+            "kind": "query_identity",
+            "value": "sort"
+          },
+          "accepted": {
+            "kind": "query_identity_list",
+            "value": [
+              "comparison_operator",
+              "sort_direction",
+              "missing_order",
+              "row_cardinality",
+              "reducer",
+              "transaction_type",
+              "value_type",
+              "scalar_domain",
+              "projected_record_kind",
+              "manager_lookup",
+              "manager_comparison",
+              "owner_lookup"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "transaction_type.free-text-value",
+      "description": "A rejected value that is not a bounded identifier (here it contains a space) is left out of the details.",
+      "kind": "transaction_type",
+      "value": "read only",
+      "expected": {
+        "category": "invalid_input",
+        "code": "unknown_enum_value",
+        "details": {
+          "kind": {
+            "kind": "query_identity",
+            "value": "transaction_type"
+          },
+          "accepted": {
+            "kind": "query_identity_list",
+            "value": [
+              "read",
+              "write",
+              "schema"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

@@ -457,6 +457,15 @@ interface NativeLimitsModule {
   readonly MAX_DIAGNOSTIC_CODE_BYTES: number;
 }
 
+/** The core's one parser per closed enum. */
+interface NativeEnumSpellingModule {
+  /**
+   * The canonical spelling of `value` in the enum named by `kind`; an unknown
+   * spelling throws the `unknown_enum_value` diagnostic.
+   */
+  canonicalEnumSpelling(kind: string, value: string): string;
+}
+
 interface NativeRemoteModelQueryModule {
   /** An omitted dimension takes the core default. */
   NodeQueryExecutionResources: new (
@@ -639,6 +648,7 @@ interface NativeRuntimeProjectionModule {
 type LoadedNativeModule =
   & NativeModule
   & NativeLimitsModule
+  & NativeEnumSpellingModule
   & NativeRemoteModelQueryModule
   & NativeProxyConnectionModule
   & NativeRuntimeProjectionModule;

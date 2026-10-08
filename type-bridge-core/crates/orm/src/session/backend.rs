@@ -290,6 +290,12 @@ pub enum TxType {
     Schema,
 }
 
+type_bridge_contract::enum_spellings!(TxType, "transaction_type", canonical {
+    "read" => Read,
+    "write" => Write,
+    "schema" => Schema,
+});
+
 /// A single value bound to a `given` variable.
 ///
 /// Released temporal variants retain their ISO-8601 text representation.

@@ -1229,7 +1229,9 @@ function projectedManagerForNative<Complete>(
       }
       return projectedManagerForNative(
         typeKey,
-        native.filterJson(JSON.stringify(lowered)),
+        projectedManagerNativeCall(() =>
+          native.filterJson(JSON.stringify(lowered)),
+        ),
       );
     },
     getByIid(iid: string): Complete | null {
@@ -2353,7 +2355,7 @@ class BoundFieldValue<Value> implements BoundField<Value> {
   ): QueryOrder {
     const own = boundFieldState(this);
     return new QueryOrderValue(
-      own.handle.order(direction, missing),
+      coreCall(() => own.handle.order(direction, missing)),
       own.projection,
     );
   }

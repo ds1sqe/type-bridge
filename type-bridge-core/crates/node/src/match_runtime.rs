@@ -26,7 +26,7 @@ use type_bridge_orm::{
     ProjectedReductionGroup, ProjectedThing, ProviderRuntimeOwner, QueryExecutionDeadline,
     QueryExecutionResourceLimits, QueryHandle, QueryTarget, QueryTargetError, ReducedValue,
     Reduction, ReductionRow, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
-    ShapeHandle, SlotValue, SortDirection, ThingKind, UnvalidatedMatchRequest,
+    ShapeHandle, SlotValue, SortDirection, ThingKind, UnknownEnumValue, UnvalidatedMatchRequest,
     ValidatedMatchRequest, ValidatedMatchResult, Window, lower_match_error,
     query_resource_closed_diagnostic,
 };
@@ -195,68 +195,24 @@ fn result_decode_error(code: &'static str, _message: impl Into<String>) -> napi:
     napi_sdk_diagnostic(diagnostic)
 }
 
-fn parse_comparison(value: &str) -> Result<ComparisonOp> {
-    match value {
-        "equal" => Ok(ComparisonOp::Equal),
-        "not_equal" => Ok(ComparisonOp::NotEqual),
-        "less_than" => Ok(ComparisonOp::LessThan),
-        "less_than_or_equal" => Ok(ComparisonOp::LessThanOrEqual),
-        "greater_than" => Ok(ComparisonOp::GreaterThan),
-        "greater_than_or_equal" => Ok(ComparisonOp::GreaterThanOrEqual),
-        "contains" => Ok(ComparisonOp::Contains),
-        "starts_with" => Ok(ComparisonOp::StartsWith),
-        "ends_with" => Ok(ComparisonOp::EndsWith),
-        "regex" => Ok(ComparisonOp::Regex),
-        _ => Err(invalid_arg(format!(
-            "comparison must be a canonical comparison name, got '{value}'"
-        ))),
-    }
+/// Parse `value` with the core enum's one parser; an unknown spelling is the
+/// structured `unknown_enum_value` diagnostic.
+pub(crate) fn parse_enum<T>(value: &str) -> Result<T>
+where
+    T: std::str::FromStr<Err = UnknownEnumValue>,
+{
+    value
+        .parse()
+        .map_err(|error: UnknownEnumValue| napi_sdk_diagnostic(error.into()))
 }
 
-fn parse_direction(value: &str) -> Result<SortDirection> {
-    match value {
-        "ascending" => Ok(SortDirection::Ascending),
-        "descending" => Ok(SortDirection::Descending),
-        _ => Err(invalid_arg(format!(
-            "direction must be 'ascending' or 'descending', got '{value}'"
-        ))),
-    }
-}
-
-fn parse_missing(value: &str) -> Result<MissingOrder> {
-    match value {
-        "reject" => Ok(MissingOrder::Reject),
-        "first" => Ok(MissingOrder::First),
-        "last" => Ok(MissingOrder::Last),
-        _ => Err(invalid_arg(format!(
-            "missing order must be 'reject', 'first', or 'last', got '{value}'"
-        ))),
-    }
-}
-
-pub(crate) fn parse_cardinality(value: &str) -> Result<RowCardinality> {
-    match value {
-        "exactly_one" => Ok(RowCardinality::ExactlyOne),
-        "bounded_many" => Ok(RowCardinality::BoundedMany),
-        _ => Err(invalid_arg(format!(
-            "cardinality must be 'exactly_one' or 'bounded_many', got '{value}'"
-        ))),
-    }
-}
-
-fn parse_reduction(value: &str) -> Result<Reduction> {
-    match value {
-        "count" => Ok(Reduction::Count),
-        "sum" => Ok(Reduction::Sum),
-        "min" => Ok(Reduction::Min),
-        "max" => Ok(Reduction::Max),
-        "mean" => Ok(Reduction::Mean),
-        "median" => Ok(Reduction::Median),
-        "std" => Ok(Reduction::Std),
-        _ => Err(invalid_arg(format!(
-            "reducer must be a canonical reducer name, got '{value}'"
-        ))),
-    }
+/// Check `value` against the core enum named by `kind`; return its canonical
+/// spelling.
+#[napi(js_name = "canonicalEnumSpelling")]
+pub fn canonical_enum_spelling(kind: String, value: String) -> Result<String> {
+    type_bridge_orm::canonical_enum_spelling(&kind, &value)
+        .map(str::to_owned)
+        .map_err(|error| napi_sdk_diagnostic(error.into()))
 }
 
 pub(crate) fn reduce_terms(
@@ -273,7 +229,7 @@ pub(crate) fn reduce_terms(
         .zip(inputs)
         .map(|(reducer, input)| {
             Ok((
-                parse_reduction(reducer)?,
+                parse_enum::<Reduction>(reducer)?,
                 input.as_ref().map(|field| field.inner.clone()),
             ))
         })
@@ -969,7 +925,7 @@ impl NodeMatchFunctionCallHandle {
         field: &NodeMatchFieldHandle,
     ) -> Result<NodeMatchPredicateHandle> {
         self.inner
-            .compare_field(parse_comparison(&comparison)?, &field.inner)
+            .compare_field(parse_enum::<ComparisonOp>(&comparison)?, &field.inner)
             .map(|inner| NodeMatchPredicateHandle { inner })
             .map_err(crate::napi_orm_error)
     }
@@ -981,7 +937,7 @@ impl NodeMatchFunctionCallHandle {
         value: &NodeMatchFunctionValueHandle,
     ) -> Result<NodeMatchPredicateHandle> {
         self.inner
-            .compare_value(parse_comparison(&comparison)?, &value.inner)
+            .compare_value(parse_enum::<ComparisonOp>(&comparison)?, &value.inner)
             .map(|inner| NodeMatchPredicateHandle { inner })
             .map_err(crate::napi_orm_error)
     }
@@ -993,7 +949,7 @@ impl NodeMatchFunctionCallHandle {
         other: &NodeMatchFunctionCallHandle,
     ) -> Result<NodeMatchPredicateHandle> {
         self.inner
-            .compare_call(parse_comparison(&comparison)?, &other.inner)
+            .compare_call(parse_enum::<ComparisonOp>(&comparison)?, &other.inner)
             .map(|inner| NodeMatchPredicateHandle { inner })
             .map_err(crate::napi_orm_error)
     }
@@ -1032,7 +988,7 @@ impl NodeMatchFieldHandle {
         Ok(NodeMatchPredicateHandle {
             inner: self
                 .inner
-                .compare_value(parse_comparison(&comparison)?, value),
+                .compare_value(parse_enum::<ComparisonOp>(&comparison)?, value),
         })
     }
 
@@ -1043,7 +999,7 @@ impl NodeMatchFieldHandle {
         other: &NodeMatchFieldHandle,
     ) -> Result<NodeMatchPredicateHandle> {
         self.inner
-            .compare_field(parse_comparison(&comparison)?, &other.inner)
+            .compare_field(parse_enum::<ComparisonOp>(&comparison)?, &other.inner)
             .map(|inner| NodeMatchPredicateHandle { inner })
             .map_err(crate::napi_orm_error)
     }
@@ -1051,9 +1007,10 @@ impl NodeMatchFieldHandle {
     #[napi]
     pub fn order(&self, direction: String, missing: String) -> Result<NodeMatchOrderHandle> {
         Ok(NodeMatchOrderHandle {
-            inner: self
-                .inner
-                .order(parse_direction(&direction)?, parse_missing(&missing)?),
+            inner: self.inner.order(
+                parse_enum::<SortDirection>(&direction)?,
+                parse_enum::<MissingOrder>(&missing)?,
+            ),
         })
     }
 }
@@ -1417,7 +1374,7 @@ impl NodeMatchQueryHandle {
                     offset: bigint_u64(&offset, "offset")?,
                     limit: bigint_u64(&limit, "limit")?,
                 },
-                parse_cardinality(&cardinality)?,
+                parse_enum::<RowCardinality>(&cardinality)?,
             )
             .map_err(crate::napi_orm_error)?;
         diagnostic(request)
@@ -1445,7 +1402,7 @@ impl NodeMatchQueryHandle {
                     offset: bigint_u64(&offset, "offset")?,
                     limit: bigint_u64(&limit, "limit")?,
                 },
-                parse_cardinality(&cardinality)?,
+                parse_enum::<RowCardinality>(&cardinality)?,
             )
             .map_err(crate::napi_orm_error)?;
         self.execute_owned(&env, database, validated, deadline, cancellation)
@@ -1473,7 +1430,7 @@ impl NodeMatchQueryHandle {
                     offset: bigint_u64(&offset, "offset")?,
                     limit: bigint_u64(&limit, "limit")?,
                 },
-                parse_cardinality(&cardinality)?,
+                parse_enum::<RowCardinality>(&cardinality)?,
             )
             .map_err(crate::napi_orm_error)?;
         self.execute_borrowed(&env, transaction, validated, deadline, cancellation)
@@ -3890,31 +3847,88 @@ plays:
     }
 
     #[test]
-    fn enum_inputs_use_only_canonical_stable_spellings() {
-        assert_eq!(parse_comparison("equal").unwrap(), ComparisonOp::Equal);
+    fn unknown_enum_spelling_is_the_structured_core_diagnostic() {
+        let error = parse_enum::<SortDirection>("desc").unwrap_err();
+        assert_eq!(error.status, Status::InvalidArg);
+        let payload: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(payload["category"], "invalid_input");
+        assert_eq!(payload["code"], "unknown_enum_value");
         assert_eq!(
-            parse_direction("descending").unwrap(),
-            SortDirection::Descending
+            payload["details"],
+            json!({
+                "kind": {"kind": "query_identity", "value": "sort_direction"},
+                "value": {"kind": "query_identity", "value": "desc"},
+                "accepted": {
+                    "kind": "query_identity_list",
+                    "value": ["ascending", "descending"],
+                },
+            })
         );
-        assert_eq!(parse_missing("reject").unwrap(), MissingOrder::Reject);
-        assert_eq!(
-            parse_cardinality("bounded_many").unwrap(),
-            RowCardinality::BoundedMany
-        );
-        assert!(parse_comparison("=").is_err());
-        assert!(parse_direction("desc").is_err());
-        for (name, expected) in [
-            ("count", Reduction::Count),
-            ("sum", Reduction::Sum),
-            ("min", Reduction::Min),
-            ("max", Reduction::Max),
-            ("mean", Reduction::Mean),
-            ("median", Reduction::Median),
-            ("std", Reduction::Std),
-        ] {
-            assert_eq!(parse_reduction(name).unwrap(), expected);
+    }
+
+    #[test]
+    fn binding_calls_raise_the_enum_spelling_corpus_diagnostic() {
+        let corpus: Value = serde_json::from_str(include_str!(
+            "../../../../tests/contracts/enum-spellings-v1.json"
+        ))
+        .unwrap();
+        let expected = |id: &str| {
+            corpus["cases"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|case| case["id"] == id)
+                .unwrap()["expected"]
+                .clone()
+        };
+        let registry = registry();
+        let session = NodeMatchSessionHandle::new(&registry);
+        let person = session.exact("person".into()).unwrap();
+        let name = person.field("name".into()).unwrap();
+        let shape = NodeMatchShapeHandle {
+            inner: session.inner.positional([person.inner.one()]).unwrap(),
+            output: Arc::new(NodeOutputShape::Positional {
+                slots: vec![NodeOutputSlotKind::One],
+            }),
+        };
+        let query = session.query(&shape).unwrap();
+        let errors = [
+            (
+                "comparison_operator.unknown",
+                name.compare_field("equals".into(), &name).err(),
+            ),
+            (
+                "sort_direction.unknown",
+                name.order("desc".into(), "reject".into()).err(),
+            ),
+            (
+                "missing_order.unknown",
+                name.order("ascending".into(), "none".into()).err(),
+            ),
+            (
+                "row_cardinality.unknown",
+                query
+                    .fetch_rows_diagnostic(Vec::new(), 0u64.into(), 1u64.into(), "many".into())
+                    .err(),
+            ),
+            (
+                "reducer.unknown",
+                query
+                    .reduce_by_diagnostic(&person, None, vec!["variance".into()], vec![None])
+                    .err(),
+            ),
+        ];
+        for (id, error) in errors {
+            let error = error.unwrap_or_else(|| panic!("{id} was accepted"));
+            assert_eq!(error.status, Status::InvalidArg, "{id}");
+            let payload: Value = serde_json::from_str(&error.reason).unwrap();
+            let actual = json!({
+                "category": payload["category"],
+                "code": payload["code"],
+                "details": payload["details"],
+            });
+            assert_eq!(actual, expected(id), "{id}");
         }
-        assert!(parse_reduction("variance").is_err());
     }
 
     #[test]

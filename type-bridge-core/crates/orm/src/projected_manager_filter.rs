@@ -51,6 +51,35 @@ pub enum ProjectedManagerComparison {
     Gte,
 }
 
+type_bridge_contract::enum_spellings!(ProjectedManagerComparison, "manager_comparison", canonical {
+    "eq" => Eq,
+    "ne" => Ne,
+    "lt" => Lt,
+    "lte" => Lte,
+    "gt" => Gt,
+    "gte" => Gte,
+});
+
+impl TryFrom<type_bridge_contract::projection::ManagerLookup> for ProjectedManagerComparison {
+    type Error = type_bridge_contract::projection::ManagerLookup;
+
+    /// The scalar comparison a manager lookup names, if it names one.
+    fn try_from(
+        lookup: type_bridge_contract::projection::ManagerLookup,
+    ) -> Result<Self, Self::Error> {
+        use type_bridge_contract::projection::ManagerLookup;
+        match lookup {
+            ManagerLookup::Eq => Ok(Self::Eq),
+            ManagerLookup::Ne => Ok(Self::Ne),
+            ManagerLookup::Lt => Ok(Self::Lt),
+            ManagerLookup::Lte => Ok(Self::Lte),
+            ManagerLookup::Gt => Ok(Self::Gt),
+            ManagerLookup::Gte => Ok(Self::Gte),
+            other => Err(other),
+        }
+    }
+}
+
 impl ProjectedManagerComparison {
     const fn match_operator(self) -> ComparisonOp {
         match self {

@@ -16,7 +16,7 @@ use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration, TimeZoneDesignator,
 };
 use type_bridge_contract::value::{
-    CanonicalDouble, CanonicalString, CanonicalValue, Cardinality, DecimalValue, ValueTypeTag,
+    CanonicalDouble, CanonicalString, CanonicalValue, Cardinality, DecimalValue,
 };
 
 use crate::_attribute::ValueType;
@@ -791,7 +791,7 @@ fn owned_attributes(
             Ok(OwnedAttributeDescriptor {
                 field_name: field.target_name().as_str().to_owned(),
                 attr_name: field.id().attribute().label().as_str().to_owned(),
-                value_type: provider_value_type(value_type),
+                value_type: ValueType::from(value_type),
                 annotations,
                 is_optional: !field.multiplicity().required(),
                 is_ordered: !field.multiplicity().collection_mode().is_unordered(),
@@ -817,20 +817,6 @@ fn provider_cardinality(value: Cardinality) -> Result<(u32, Option<u32>)> {
                 message: "cardinality maximum exceeds the provider descriptor domain".into(),
             })?;
     Ok((min, max))
-}
-
-const fn provider_value_type(value: ValueTypeTag) -> ValueType {
-    match value {
-        ValueTypeTag::String => ValueType::String,
-        ValueTypeTag::Long => ValueType::Long,
-        ValueTypeTag::Double => ValueType::Double,
-        ValueTypeTag::Boolean => ValueType::Boolean,
-        ValueTypeTag::Date => ValueType::Date,
-        ValueTypeTag::DateTime => ValueType::DateTime,
-        ValueTypeTag::DateTimeTz => ValueType::DateTimeTz,
-        ValueTypeTag::Decimal => ValueType::Decimal,
-        ValueTypeTag::Duration => ValueType::Duration,
-    }
 }
 
 fn descriptor_error(id: &TypeId, message: &str) -> OrmError {

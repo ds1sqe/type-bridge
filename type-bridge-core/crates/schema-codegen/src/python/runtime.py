@@ -22,6 +22,8 @@ from typing import (
 )
 from weakref import ReferenceType, ref
 
+from type_bridge_core import canonical_enum_spelling
+
 from type_bridge._runtime_projection import GeneratedEntityProjection, GeneratedRelationProjection
 
 if TYPE_CHECKING:
@@ -709,25 +711,6 @@ class RelationBase(ModelBase, GeneratedRelationProjection):
         )
 
 
-_OWNER_LOOKUPS = frozenset(
-    {
-        "eq",
-        "exact",
-        "ne",
-        "gt",
-        "gte",
-        "lt",
-        "lte",
-        "contains",
-        "startswith",
-        "endswith",
-        "regex",
-        "in",
-        "present",
-    }
-)
-
-
 def _is_model_class(value: object) -> TypeGuard[type[ModelBase]]:
     return isinstance(value, type) and issubclass(value, ModelBase)
 
@@ -788,11 +771,12 @@ def _owner_lookup(
         raise RuntimeError("generated package runtime projection is not installed")
     if attribute.__dict__.get("__runtime_projection__") is not projection:
         raise TypeError("generated owner lookup requires an attribute from this package")
-    if lookup not in _OWNER_LOOKUPS:
-        raise ValueError(f"unsupported generated owner lookup {lookup!r}")
+    # The core owns the lookup vocabulary; an unknown spelling raises
+    # UnknownEnumValueError (a ValueError). Aliases become canonical (exact -> eq).
+    lookup = canonical_enum_spelling("owner_lookup", lookup)
     if lookup == "present" and value is not None:
         raise TypeError("generated owner lookup 'present' does not accept a value")
-    if value is None and lookup not in {"eq", "exact", "present"}:
+    if value is None and lookup not in {"eq", "present"}:
         raise TypeError("generated owner lookup comparison requires a value")
 
     expected_base: type[ModelBase]
@@ -834,7 +818,7 @@ def _owner_lookup(
                 raise TypeError("generated owner lookup 'in' requires a non-string sequence")
             filters = {f"{field_name}__in": list(value)}
         else:
-            filter_name = field_name if lookup in {"eq", "exact"} else f"{field_name}__{lookup}"
+            filter_name = field_name if lookup == "eq" else f"{field_name}__{lookup}"
             filters = {filter_name: value}
         results.extend(candidate.manager(connection).filter(**filters).all())
     return results

@@ -9,7 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::exceptions::{PyException, PyOverflowError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyInt};
+use pyo3::sync::PyOnceLock;
+use pyo3::types::{PyAny, PyDict, PyInt, PyType};
 use pythonize::pythonize;
 use serde_json::{Value, json};
 use type_bridge_contract::codec::to_canonical_json;
@@ -26,8 +27,8 @@ use type_bridge_orm::{
     ProjectedQueryOrigin, ProviderRuntimeOwner, QueryExecutionDeadline,
     QueryExecutionResourceLimits, QueryHandle, QueryTarget, QueryTargetError, Reduction,
     RemoteModelQueryV2Error, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
-    ShapeHandle, SortDirection, UnvalidatedMatchRequest, ValidatedMatchRequest, Window,
-    lower_match_error, lower_remote_query_diagnostic, query_resource_closed_diagnostic,
+    ShapeHandle, SortDirection, UnknownEnumValue, UnvalidatedMatchRequest, ValidatedMatchRequest,
+    Window, lower_match_error, lower_remote_query_diagnostic, query_resource_closed_diagnostic,
     validate_public_order_term_count,
 };
 
@@ -787,7 +788,7 @@ impl PyMatchFunctionCallHandle {
         field: PyRef<'_, PyMatchFieldHandle>,
     ) -> PyResult<PyMatchPredicateHandle> {
         self.inner
-            .compare_field(parse_comparison(operator)?, &field.inner)
+            .compare_field(parse_enum::<ComparisonOp>(operator)?, &field.inner)
             .map(|inner| PyMatchPredicateHandle { inner })
             .map_err(py_match_orm_error)
     }
@@ -798,7 +799,7 @@ impl PyMatchFunctionCallHandle {
         value: PyRef<'_, PyMatchFunctionValueHandle>,
     ) -> PyResult<PyMatchPredicateHandle> {
         self.inner
-            .compare_value(parse_comparison(operator)?, &value.inner)
+            .compare_value(parse_enum::<ComparisonOp>(operator)?, &value.inner)
             .map(|inner| PyMatchPredicateHandle { inner })
             .map_err(py_match_orm_error)
     }
@@ -809,7 +810,7 @@ impl PyMatchFunctionCallHandle {
         other: PyRef<'_, PyMatchFunctionCallHandle>,
     ) -> PyResult<PyMatchPredicateHandle> {
         self.inner
-            .compare_call(parse_comparison(operator)?, &other.inner)
+            .compare_call(parse_enum::<ComparisonOp>(operator)?, &other.inner)
             .map(|inner| PyMatchPredicateHandle { inner })
             .map_err(py_match_orm_error)
     }
@@ -892,9 +893,10 @@ impl PyMatchFieldHandle {
         value: PyRef<'_, PyDynamicValue>,
     ) -> PyResult<PyMatchPredicateHandle> {
         Ok(PyMatchPredicateHandle {
-            inner: self
-                .inner
-                .compare_value(parse_comparison(operator)?, value.attribute_value()),
+            inner: self.inner.compare_value(
+                parse_enum::<ComparisonOp>(operator)?,
+                value.attribute_value(),
+            ),
         })
     }
 
@@ -904,7 +906,7 @@ impl PyMatchFieldHandle {
         other: PyRef<'_, PyMatchFieldHandle>,
     ) -> PyResult<PyMatchPredicateHandle> {
         self.inner
-            .compare_field(parse_comparison(operator)?, &other.inner)
+            .compare_field(parse_enum::<ComparisonOp>(operator)?, &other.inner)
             .map(|inner| PyMatchPredicateHandle { inner })
             .map_err(py_match_orm_error)
     }
@@ -912,8 +914,8 @@ impl PyMatchFieldHandle {
     fn order(&self, direction: &str, missing: &str) -> PyResult<PyMatchOrderHandle> {
         Ok(PyMatchOrderHandle {
             inner: self.inner.order(
-                parse_sort_direction(direction)?,
-                parse_missing_order(missing)?,
+                parse_enum::<SortDirection>(direction)?,
+                parse_enum::<MissingOrder>(missing)?,
             ),
         })
     }
@@ -1061,7 +1063,7 @@ impl PyMatchQueryHandle {
         let request = self.inner.fetch_rows(
             &order,
             python_window(offset, limit)?,
-            parse_cardinality(cardinality)?,
+            parse_enum::<RowCardinality>(cardinality)?,
         );
         diagnostic_from_request(request)
     }
@@ -1518,7 +1520,7 @@ impl PyMatchQueryHandle {
         self.run_terminal_checked(py, target, |query| {
             let orders = order_handles(py, order);
             query
-                .validate_fetch_rows(&orders, window, parse_cardinality(cardinality)?)
+                .validate_fetch_rows(&orders, window, parse_enum::<RowCardinality>(cardinality)?)
                 .map_err(py_match_orm_error)
         })
     }
@@ -1616,7 +1618,7 @@ pub(crate) fn reduce_terms(
         .zip(inputs)
         .map(|(reducer, input)| {
             Ok((
-                parse_reduction(reducer)?,
+                parse_enum::<Reduction>(reducer)?,
                 input.as_ref().map(|field| field.borrow(py).inner.clone()),
             ))
         })
@@ -1810,66 +1812,60 @@ fn revalidate_match_diagnostic(
     revalidate_diagnostic(&registry, diagnostic).map_err(py_match_error)
 }
 
-fn parse_comparison(value: &str) -> PyResult<ComparisonOp> {
-    match value {
-        "equal" => Ok(ComparisonOp::Equal),
-        "not_equal" => Ok(ComparisonOp::NotEqual),
-        "less_than" => Ok(ComparisonOp::LessThan),
-        "less_than_or_equal" => Ok(ComparisonOp::LessThanOrEqual),
-        "greater_than" => Ok(ComparisonOp::GreaterThan),
-        "greater_than_or_equal" => Ok(ComparisonOp::GreaterThanOrEqual),
-        "contains" => Ok(ComparisonOp::Contains),
-        "starts_with" => Ok(ComparisonOp::StartsWith),
-        "ends_with" => Ok(ComparisonOp::EndsWith),
-        "regex" => Ok(ComparisonOp::Regex),
-        _ => Err(PyValueError::new_err(format!(
-            "unknown comparison operator {value:?}"
-        ))),
-    }
+/// Parse `value` with the core enum's one parser. An unknown spelling raises
+/// `UnknownEnumValueError` carrying the `unknown_enum_value` diagnostic.
+pub(crate) fn parse_enum<T>(value: &str) -> PyResult<T>
+where
+    T: std::str::FromStr<Err = UnknownEnumValue>,
+{
+    value.parse().map_err(py_unknown_enum_value)
 }
 
-fn parse_sort_direction(value: &str) -> PyResult<SortDirection> {
-    match value {
-        "ascending" => Ok(SortDirection::Ascending),
-        "descending" => Ok(SortDirection::Descending),
-        _ => Err(PyValueError::new_err(format!(
-            "unknown sort direction {value:?}"
-        ))),
-    }
+pub(crate) fn py_unknown_enum_value(error: UnknownEnumValue) -> PyErr {
+    Python::attach(|py| {
+        let diagnostic = SdkExecutionDiagnostic::from(error);
+        match unknown_enum_value_error_type(py) {
+            Ok(error_type) => structured_py_error(
+                py,
+                PyErr::from_type(error_type.clone(), diagnostic.message().as_str()),
+                &diagnostic,
+            ),
+            Err(error) => error,
+        }
+    })
 }
 
-fn parse_missing_order(value: &str) -> PyResult<MissingOrder> {
-    match value {
-        "reject" => Ok(MissingOrder::Reject),
-        "first" => Ok(MissingOrder::First),
-        "last" => Ok(MissingOrder::Last),
-        _ => Err(PyValueError::new_err(format!(
-            "unknown missing-value order {value:?}"
-        ))),
-    }
+static UNKNOWN_ENUM_VALUE_ERROR: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+
+/// `UnknownEnumValueError(MatchRequestError, ValueError)`: a structured SDK
+/// diagnostic that code catching the earlier `ValueError` still catches.
+fn unknown_enum_value_error_type(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
+    UNKNOWN_ENUM_VALUE_ERROR
+        .get_or_try_init(py, || {
+            let namespace = PyDict::new(py);
+            namespace.set_item("__module__", "type_bridge_core")?;
+            namespace.set_item(
+                "__doc__",
+                "A spelling no core enum parser accepts (code `unknown_enum_value`).",
+            )?;
+            let bases = (
+                py.get_type::<MatchRequestError>(),
+                py.get_type::<PyValueError>(),
+            );
+            py.get_type::<PyType>()
+                .call1(("UnknownEnumValueError", bases, namespace))?
+                .cast_into::<PyType>()
+                .map(Bound::unbind)
+                .map_err(PyErr::from)
+        })
+        .map(|error_type| error_type.bind(py))
 }
 
-pub(crate) fn parse_cardinality(value: &str) -> PyResult<RowCardinality> {
-    match value {
-        "exactly_one" => Ok(RowCardinality::ExactlyOne),
-        "bounded_many" => Ok(RowCardinality::BoundedMany),
-        _ => Err(PyValueError::new_err(format!(
-            "unknown row cardinality {value:?}"
-        ))),
-    }
-}
-
-fn parse_reduction(value: &str) -> PyResult<Reduction> {
-    match value {
-        "count" => Ok(Reduction::Count),
-        "sum" => Ok(Reduction::Sum),
-        "min" => Ok(Reduction::Min),
-        "max" => Ok(Reduction::Max),
-        "mean" => Ok(Reduction::Mean),
-        "median" => Ok(Reduction::Median),
-        "std" => Ok(Reduction::Std),
-        _ => Err(PyValueError::new_err(format!("unknown reducer {value:?}"))),
-    }
+/// Check `value` against the core enum named by `kind`; return its canonical
+/// spelling.
+#[pyfunction]
+fn canonical_enum_spelling(kind: &str, value: &str) -> PyResult<&'static str> {
+    type_bridge_orm::canonical_enum_spelling(kind, value).map_err(py_unknown_enum_value)
 }
 
 pub(crate) fn py_match_orm_error(error: OrmError) -> PyErr {
@@ -1885,6 +1881,19 @@ pub(crate) fn py_match_error(error: MatchError) -> PyErr {
 
 pub(crate) fn py_sdk_diagnostic(diagnostic: SdkExecutionDiagnostic) -> PyErr {
     Python::attach(|py| {
+        let py_error = MatchRequestError::new_err(diagnostic.message().as_str());
+        structured_py_error(py, py_error, &diagnostic)
+    })
+}
+
+/// Attach the diagnostic's category, code, message, path, and details to
+/// `py_error`.
+fn structured_py_error(
+    py: Python<'_>,
+    py_error: PyErr,
+    diagnostic: &SdkExecutionDiagnostic,
+) -> PyErr {
+    {
         let query_category = diagnostic
             .details()
             .values()
@@ -1905,7 +1914,6 @@ pub(crate) fn py_sdk_diagnostic(diagnostic: SdkExecutionDiagnostic) -> PyErr {
             .collect::<serde_json::Map<_, _>>();
         let category = query_category.unwrap_or_else(|| diagnostic.category().as_str());
         let message = diagnostic.message().as_str();
-        let py_error = MatchRequestError::new_err(message);
         let attach = || -> PyResult<()> {
             let value = py_error.value(py);
             value.setattr("category", category)?;
@@ -1921,7 +1929,7 @@ pub(crate) fn py_sdk_diagnostic(diagnostic: SdkExecutionDiagnostic) -> PyErr {
             Ok(()) => py_error,
             Err(attribute_error) => attribute_error,
         }
-    })
+    }
 }
 
 fn sdk_path_json(segment: &SdkDiagnosticPathSegment) -> Value {
@@ -2063,6 +2071,11 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::validated_result_runtime::register(module)?;
     module.add_function(wrap_pyfunction!(revalidate_match_diagnostic, module)?)?;
     module.add_function(wrap_pyfunction!(validate_match_order_term_count, module)?)?;
+    module.add_function(wrap_pyfunction!(canonical_enum_spelling, module)?)?;
+    module.add(
+        "UnknownEnumValueError",
+        unknown_enum_value_error_type(module.py())?,
+    )?;
     Ok(())
 }
 
@@ -2418,19 +2431,34 @@ mod tests {
     }
 
     #[test]
-    fn reducer_names_parse_to_the_canonical_closed_vocabulary() {
-        for (name, expected) in [
-            ("count", Reduction::Count),
-            ("sum", Reduction::Sum),
-            ("min", Reduction::Min),
-            ("max", Reduction::Max),
-            ("mean", Reduction::Mean),
-            ("median", Reduction::Median),
-            ("std", Reduction::Std),
-        ] {
-            assert_eq!(parse_reduction(name).unwrap(), expected);
-        }
-        assert!(parse_reduction("variance").is_err());
+    fn unknown_enum_spelling_is_a_structured_value_error() {
+        Python::initialize();
+        let error = parse_enum::<Reduction>("variance").unwrap_err();
+        Python::attach(|py| {
+            let value = error.value(py);
+            assert!(value.is_instance_of::<MatchRequestError>());
+            assert!(value.is_instance_of::<PyValueError>());
+            assert_eq!(
+                value.get_type().name().unwrap().to_string(),
+                "UnknownEnumValueError"
+            );
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            assert_eq!(text("category"), "invalid_input");
+            assert_eq!(text("code"), "unknown_enum_value");
+            let details: Value =
+                pythonize::depythonize(&value.getattr("details").unwrap()).unwrap();
+            assert_eq!(
+                details,
+                json!({
+                    "kind": {"kind": "query_identity", "value": "reducer"},
+                    "value": {"kind": "query_identity", "value": "variance"},
+                    "accepted": {
+                        "kind": "query_identity_list",
+                        "value": ["count", "sum", "min", "max", "mean", "median", "std"],
+                    },
+                })
+            );
+        });
     }
 
     #[test]

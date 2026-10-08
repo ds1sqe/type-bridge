@@ -19,13 +19,14 @@ use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
     AnswerCancellation, OrderHandle, PendingRemoteModelQueryV2, ProjectedQueryOrigin,
     ProxyQueryConnection, QueryExecutionDeadline, QueryExecutionResourceLimits, QueryHandle,
-    QueryTarget, ValidatedMatchRequest, lower_remote_query_diagnostic, validate_order_term_count,
+    QueryTarget, RowCardinality, ValidatedMatchRequest, lower_remote_query_diagnostic,
+    validate_order_term_count,
 };
 
 use crate::match_runtime::{
     PyMatchBindingHandle, PyMatchFieldHandle, PyMatchOrderHandle, PyMatchQueryHandle,
     PyQueryCancellation, PyQueryExecutionResourceLimits, PyQueryInvocationBudget,
-    borrow_reduce_terms, order_handles, parse_cardinality, py_match_error, py_match_orm_error,
+    borrow_reduce_terms, order_handles, parse_enum, py_match_error, py_match_orm_error,
     py_query_target_error, py_sdk_diagnostic, python_window, reduce_terms, validated_result_handle,
 };
 use crate::query_v2_runtime::{
@@ -238,7 +239,7 @@ pub(crate) fn query_v2_prepare_remote_model_rows(
         let window = python_window(offset, limit)?;
         let query = query.clone();
         let order = bounded_order_handles(py, order, query.limits())?;
-        let cardinality = parse_cardinality(cardinality)?;
+        let cardinality = parse_enum::<RowCardinality>(cardinality)?;
         py.detach(move || query.validate_fetch_rows(&order, window, cardinality))
             .map_err(py_match_orm_error)
     })
