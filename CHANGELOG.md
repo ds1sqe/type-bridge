@@ -98,6 +98,9 @@ differently direct and through a proxy. Each entry says what to do instead.
   optional request headers such as `Authorization`, and an advertisement can
   be pinned instead of fetched. It follows no redirects and ignores proxy
   environment variables.
+- Python and Node native `ProxyConnection`: the same built-in HTTP route
+  for the bindings, with `execute_*_proxy` terminals (Python) and
+  Promise terminals (Node).
 - Query resource-limit refusals report `limit`, `maximum`, and `source`
   (`default`, `configured`, or `advertised`).
 - Configurable answer limits. How much a query may return is one policy,
@@ -119,6 +122,11 @@ differently direct and through a proxy. Each entry says what to do instead.
 
 ### Fixed
 
+- Python and Node generated queries on a direct connection now run under
+  the connection's answer limits (`answer_limits` / `answerLimits` given
+  when connecting). They used only the session's own limits, so a session
+  could return more, or run longer, than its connection allowed. Rust and
+  C already applied the ceiling; every binding now shares one rule.
 - Build repeated `where` clauses and chained `and`/`or` predicates as one flat
   conjunction or disjunction in every language binding. A query with more than
   about thirty clauses previously nested past the canonical JSON depth of 64,
