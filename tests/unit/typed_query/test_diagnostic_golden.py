@@ -184,4 +184,4 @@ def test_native_group_fields_are_capped_at_the_group_by_call() -> None:
     assert (raised.value.category, raised.value.code) == corpus_error(
         "aggregate.seventeen-group-keys"
     )
-    assert raised.value.details["maximum"] == {"kind": "count", "value": 16}
+    assert raised.value.details["maximum"] == {"kind": "count", "value": "16"}

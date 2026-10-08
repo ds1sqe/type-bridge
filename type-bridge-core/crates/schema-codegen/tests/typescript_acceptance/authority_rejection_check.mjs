@@ -123,9 +123,10 @@ function rejectLegacy(name, authority, expected) {
 }
 
 const PROJECTION_EVIDENCE_MISMATCH = {
+  version: 1,
   category: "integrity",
-  sdkCategory: "integrity",
-  queryCategory: null,
+  sdk_category: "integrity",
+  query_category: null,
   code: "projection_evidence_mismatch",
   message: "Generated projection evidence does not match the verified schema package",
   path: [{ kind: "argument", value: "projection_evidence" }],

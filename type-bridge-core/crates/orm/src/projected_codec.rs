@@ -135,6 +135,21 @@ pub enum ProjectedCodecError {
     Materialization(#[from] SdkExecutionDiagnostic),
 }
 
+impl ProjectedCodecError {
+    /// The structured diagnostic every binding reports for a record whose
+    /// declared-schema identity differs from the installed package, or `None`
+    /// for any other codec error.
+    #[must_use]
+    pub fn record_schema_mismatch(&self) -> Option<SdkExecutionDiagnostic> {
+        matches!(
+            self,
+            Self::Contract(diagnostic)
+                if diagnostic.code().as_str() == "projected_codec_declared_schema_mismatch"
+        )
+        .then(SdkExecutionDiagnostic::projected_record_schema_mismatch)
+    }
+}
+
 /// Encode one branded scalar through the shared target-independent record contract.
 pub fn record_from_attribute(
     installed: &InstalledRuntimeProjection,

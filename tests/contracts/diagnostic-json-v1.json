@@ -1,0 +1,172 @@
+{
+  "corpus_id": "type-bridge.diagnostic-json",
+  "version": 1,
+  "description": "The JSON forms in which a structured diagnostic reaches a host. form sdk is SdkDiagnosticJson (contract sdk_diagnostic.rs): version, category (query category when present, else SDK category), sdk_category, query_category, code, message, path, details; count, byte_count, and signed details are decimal strings, path positions are numbers. form contract is the serde form of contract Diagnostic: category, code, message, path, details; long details are decimal strings. Each producer emits the diagnostic byte-for-byte equal as JSON: Python as its exception attributes, Node as the native error message, C through type_bridge_diagnostics_json.",
+  "cases": [
+    {
+      "id": "group_keys.seventeen",
+      "description": "Seventeen group-by fields at the group-by call: a typed-query refusal with u64 count details.",
+      "form": "sdk",
+      "producers": [
+        "rust",
+        "python",
+        "node"
+      ],
+      "diagnostic": {
+        "version": 1,
+        "category": "invalid_plan",
+        "sdk_category": "invalid_input",
+        "query_category": "invalid_plan",
+        "code": "field_group_tuple_cap_exceeded",
+        "message": "The typed query plan does not satisfy the generated query contract",
+        "path": [
+          {
+            "kind": "operation"
+          }
+        ],
+        "details": {
+          "actual": {
+            "kind": "count",
+            "value": "17"
+          },
+          "limit": {
+            "kind": "query_identity",
+            "value": "selected_slots"
+          },
+          "maximum": {
+            "kind": "count",
+            "value": "16"
+          },
+          "source": {
+            "kind": "query_identity",
+            "value": "default"
+          }
+        }
+      }
+    },
+    {
+      "id": "unknown_enum_value.sort_direction",
+      "description": "canonical_enum_spelling(\"sort_direction\", \"sideways\").",
+      "form": "sdk",
+      "producers": [
+        "rust",
+        "python",
+        "node"
+      ],
+      "diagnostic": {
+        "version": 1,
+        "category": "invalid_input",
+        "sdk_category": "invalid_input",
+        "query_category": null,
+        "code": "unknown_enum_value",
+        "message": "The value is not an accepted spelling of its enum",
+        "path": [],
+        "details": {
+          "accepted": {
+            "kind": "query_identity_list",
+            "value": [
+              "ascending",
+              "descending"
+            ]
+          },
+          "kind": {
+            "kind": "query_identity",
+            "value": "sort_direction"
+          },
+          "value": {
+            "kind": "query_identity",
+            "value": "sideways"
+          }
+        }
+      }
+    },
+    {
+      "id": "canonical_limit.depth",
+      "description": "A canonical_json_too_deep codec refusal mapped by SdkExecutionDiagnostic::from_canonical_limit.",
+      "form": "sdk",
+      "producers": [
+        "rust"
+      ],
+      "diagnostic": {
+        "version": 1,
+        "category": "resource_limit",
+        "sdk_category": "resource_limit",
+        "query_category": null,
+        "code": "projected_codec_depth_limit",
+        "message": "Canonical projected codec work exceeded a tightened resource limit",
+        "path": [],
+        "details": {}
+      }
+    },
+    {
+      "id": "integer_range.extremes",
+      "description": "u64 and i64 details at their extremes are decimal strings; path positions are numbers.",
+      "form": "sdk",
+      "producers": [
+        "rust"
+      ],
+      "diagnostic": {
+        "version": 1,
+        "category": "resource_limit",
+        "sdk_category": "resource_limit",
+        "query_category": null,
+        "code": "fixture_integer_range",
+        "message": "Fixture integer range",
+        "path": [
+          {
+            "kind": "argument",
+            "value": "rows"
+          },
+          {
+            "kind": "index",
+            "value": 4095
+          },
+          {
+            "kind": "binding",
+            "value": 65535
+          },
+          {
+            "kind": "output_slot",
+            "value": 3
+          }
+        ],
+        "details": {
+          "bytes": {
+            "kind": "byte_count",
+            "value": "18446744073709551615"
+          },
+          "count": {
+            "kind": "count",
+            "value": "18446744073709551615"
+          },
+          "signed_max": {
+            "kind": "signed",
+            "value": "9223372036854775807"
+          },
+          "signed_min": {
+            "kind": "signed",
+            "value": "-9223372036854775808"
+          }
+        }
+      }
+    },
+    {
+      "id": "contract.malformed_canonical_json",
+      "description": "Schema-authority bytes \"{\": the contract Diagnostic serde form (Python QueryV2Error attributes, the Node error JSON, one element of the C diagnostics JSON array).",
+      "form": "contract",
+      "producers": [
+        "rust",
+        "python",
+        "node",
+        "c"
+      ],
+      "diagnostic": {
+        "category": "invalid_contract",
+        "code": "malformed_canonical_json",
+        "message": "input is not valid canonical JSON",
+        "path": [],
+        "details": {}
+      }
+    }
+  ]
+}

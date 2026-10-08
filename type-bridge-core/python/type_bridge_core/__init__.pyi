@@ -1341,6 +1341,7 @@ def query_v2_prepare_remote_model_reduce_by_fields(
 ) -> PendingRemoteModelQuery: ...
 
 class MatchRequestError(Exception):
+    version: int
     category: str
     sdk_category: str
     query_category: str | None

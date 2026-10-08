@@ -1169,7 +1169,7 @@ const diagnostic = (error) => {
 const rejects = (operation, code, memberKind) => {
   assert.throws(operation, (error) => {
     const value = diagnostic(error);
-    assert.equal(value.sdkCategory, "integrity");
+    assert.equal(value.sdk_category, "integrity");
     assert.equal(value.code, code);
     assert.equal(value.path[0].kind, "type");
     if (memberKind !== undefined) assert.equal(value.path[1].kind, memberKind);
@@ -1292,7 +1292,7 @@ for (const fault of ["throw", "null", "primitive"]) {
       ),
       (error) => {
         const value = diagnostic(error);
-        assert.equal(value.sdkCategory, "integrity");
+        assert.equal(value.sdk_category, "integrity");
         assert.equal(value.code, "generated_model_materialization_failed");
         assert.deepEqual(value.path, [
           { kind: "argument", value: "rows" },

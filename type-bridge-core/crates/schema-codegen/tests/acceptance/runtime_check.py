@@ -412,8 +412,8 @@ except MatchRequestError as error:
     assert error.sdk_category == "invalid_input"
     assert error.code == "ordered_distinct_duplicate"
     assert error.details == {
-        "duplicate_index": {"kind": "count", "value": 1},
-        "first_index": {"kind": "count", "value": 0},
+        "duplicate_index": {"kind": "count", "value": "1"},
+        "first_index": {"kind": "count", "value": "0"},
     }
 else:
     raise AssertionError("ordered ownership reassignment accepted a duplicate scalar")
@@ -978,7 +978,7 @@ except MatchRequestError as error:
         {"kind": "contract_identity", "value": "person"},
     ]
     assert error.details == {
-        "attempt": {"kind": "signed", "value": -7},
+        "attempt": {"kind": "signed", "value": "-7"},
         "expected": {"kind": "query_identity_list", "value": ["person", "employee"]},
         "retryable": {"kind": "boolean", "value": False},
         "subject": {"kind": "query_identity", "value": "person"},
@@ -986,7 +986,7 @@ except MatchRequestError as error:
     attempt_detail = error.details["attempt"]
     assert isinstance(attempt_detail, dict)
     attempt_value = attempt_detail["value"]
-    assert isinstance(attempt_value, int)
+    assert isinstance(attempt_value, str)
     diagnostic_serialized = json.dumps(
         {"message": error.message, "path": error.path, "details": error.details},
         sort_keys=True,
@@ -1086,7 +1086,7 @@ def expect_core_refusal(
     except MatchRequestError as error:
         assert (error.category, error.code) == ("invalid_plan", code), (error.category, error.code)
         if maximum is not None:
-            assert error.details["maximum"] == {"kind": "count", "value": maximum}, error.details
+            assert error.details["maximum"] == {"kind": "count", "value": str(maximum)}, error.details
             assert error.details["limit"] == {
                 "kind": "query_identity",
                 "value": "selected_slots",

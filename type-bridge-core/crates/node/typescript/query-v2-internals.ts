@@ -1,5 +1,4 @@
 import type { NativeQueryLimits } from "./native.js";
-import { loadNative } from "./native.js";
 /** Shared, package-private machinery for the prepared and authored V2 facades. */
 
 declare const nativeQueryV2AuthorityKind: unique symbol;
@@ -298,238 +297,67 @@ export class QueryV2Error extends Error {
   }
 }
 
-interface NativeQueryV2ErrorPayload {
+/**
+ * The fields of a native error message that is one of the Rust core's two
+ * diagnostic JSON forms: the SDK execution form (`SdkDiagnosticJson`, with
+ * `version`, `sdk_category`, and `query_category`) or the contract
+ * `Diagnostic` serde form. Rust validates and encodes both, including the
+ * decimal-string integer details; TypeScript only selects the fields.
+ */
+interface NativeDiagnostic {
   readonly category: QueryV2ErrorCategory;
-  readonly sdkCategory: QueryV2ErrorCategory;
-  readonly queryCategory: QueryV2ErrorCategory | null;
+  readonly sdk_category?: QueryV2ErrorCategory;
+  readonly query_category?: QueryV2ErrorCategory | null;
   readonly code: string;
   readonly message: string;
   readonly path: readonly QueryV2ErrorPathSegment[];
   readonly details: Readonly<Record<string, QueryV2ErrorDetail>>;
 }
 
-interface LegacyNativeQueryV2ErrorPayload {
-  readonly category: QueryV2ErrorCategory;
-  readonly code: string;
-  readonly message: string;
-  readonly path: readonly QueryV2ErrorPathSegment[];
-  readonly details: Readonly<Record<string, QueryV2ErrorDetail>>;
-}
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function hasExactKeys(
-  value: Readonly<Record<string, unknown>>,
-  expected: readonly string[],
-): boolean {
-  const keys = Object.keys(value);
-  return (
-    keys.length === expected.length &&
-    expected.every((key) => keys.includes(key))
-  );
-}
-
-function isQueryV2ErrorCategory(value: unknown): value is QueryV2ErrorCategory {
-  return [
-    "invalid_contract",
-    "invalid_input",
-    "invalid_plan",
-    "cardinality",
-    "unsupported_capability",
-    "stale_schema",
-    "resource_limit",
-    "integrity",
-    "cancelled",
-    "provider",
-    "result_decode",
-    "transaction",
-    "internal",
-  ].includes(value as string);
-}
-
-function isAdmissibleNativeQueryV2ErrorCategory(
-  value: unknown,
-): value is QueryV2ErrorCategory {
-  // Native internal failures are deliberately not projected as stable public
-  // diagnostics: their text is not part of the redacted query contract.
-  return isQueryV2ErrorCategory(value) && value !== "internal";
-}
-
-function isQueryV2ErrorPathSegment(
-  value: unknown,
-): value is QueryV2ErrorPathSegment {
-  if (!isRecord(value) || typeof value.kind !== "string") {
-    return false;
+function nativeDiagnostic(message: string): NativeDiagnostic | null {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(message);
+  } catch {
+    return null;
   }
-  if (
-    [
-      "request",
-      "plan",
-      "operation",
-      "predicate",
-      "output",
-      "provider_evidence",
-      "result",
-      "unknown",
-    ].includes(value.kind)
-  ) {
-    return hasExactKeys(value, ["kind"]);
+  if (typeof payload !== "object" || payload === null) {
+    return null;
   }
-  if (!hasExactKeys(value, ["kind", "value"])) {
-    return false;
-  }
-  if (
-    [
-      "argument",
-      "identifier",
-      "type",
-      "field",
-      "role",
-      "contract_field",
-      "contract_identity",
-    ].includes(value.kind)
-  ) {
-    return typeof value.value === "string" || isRecord(value.value);
-  }
-  if (value.kind === "output_name") {
-    return typeof value.value === "string";
-  }
-  return (
-    ["index", "binding", "role_edge", "output_slot"].includes(value.kind) &&
-    typeof value.value === "number" &&
-    Number.isSafeInteger(value.value) &&
-    value.value >= 0
-  );
-}
-
-const MIN_I64 = -(1n << 63n);
-const MAX_I64 = (1n << 63n) - 1n;
-
-function isCanonicalI64(value: string): boolean {
-  if (!/^(?:0|-?[1-9][0-9]*)$/.test(value)) {
-    return false;
-  }
-  const parsed = BigInt(value);
-  return parsed >= MIN_I64 && parsed <= MAX_I64;
-}
-
-function isQueryV2ErrorDetail(value: unknown): value is QueryV2ErrorDetail {
-  if (!isRecord(value) || !hasExactKeys(value, ["kind", "value"])) {
-    return false;
-  }
-  switch (value.kind) {
-    case "text":
-    case "query_identity":
-      return typeof value.value === "string";
-    case "long":
-    case "signed":
-      return typeof value.value === "string" && isCanonicalI64(value.value);
-    case "unsigned":
-    case "count":
-    case "byte_count":
-      return (
-        typeof value.value === "string" &&
-        /^(?:0|[1-9][0-9]*)$/.test(value.value)
-      );
-    case "boolean":
-      return typeof value.value === "boolean";
-    case "text_list":
-    case "query_identity_list":
-      return (
-        Array.isArray(value.value) &&
-        value.value.every((item) => typeof item === "string")
-      );
-    default:
-      return false;
-  }
-}
-
-function isDiagnosticCode(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    value.length <= loadNative().MAX_DIAGNOSTIC_CODE_BYTES &&
-    /^[a-z][a-z0-9_]*$/.test(value)
-  );
-}
-
-function isNativeQueryV2ErrorPayload(
-  value: unknown,
-): value is NativeQueryV2ErrorPayload {
-  return (
-    isRecord(value) &&
-    hasExactKeys(value, [
-      "category",
-      "sdkCategory",
-      "queryCategory",
-      "code",
-      "message",
-      "path",
-      "details",
-    ]) &&
-    isAdmissibleNativeQueryV2ErrorCategory(value.category) &&
-    isAdmissibleNativeQueryV2ErrorCategory(value.sdkCategory) &&
-    (value.queryCategory === null ||
-      isQueryV2ErrorCategory(value.queryCategory)) &&
-    isDiagnosticCode(value.code) &&
-    typeof value.message === "string" &&
-    Array.isArray(value.path) &&
-    value.path.every(isQueryV2ErrorPathSegment) &&
-    isRecord(value.details) &&
-    Object.values(value.details).every(isQueryV2ErrorDetail)
-  );
-}
-
-function isLegacyNativeQueryV2ErrorPayload(
-  value: unknown,
-): value is LegacyNativeQueryV2ErrorPayload {
-  return (
-    isRecord(value) &&
-    hasExactKeys(value, ["category", "code", "message", "path", "details"]) &&
-    isAdmissibleNativeQueryV2ErrorCategory(value.category) &&
-    isDiagnosticCode(value.code) &&
-    typeof value.message === "string" &&
-    Array.isArray(value.path) &&
-    value.path.every(isQueryV2ErrorPathSegment) &&
-    isRecord(value.details) &&
-    Object.values(value.details).every(isQueryV2ErrorDetail)
-  );
+  const candidate = payload as Partial<NativeDiagnostic>;
+  return typeof candidate.category === "string" &&
+    typeof candidate.code === "string" &&
+    typeof candidate.message === "string" &&
+    Array.isArray(candidate.path) &&
+    typeof candidate.details === "object" &&
+    candidate.details !== null
+    ? (candidate as NativeDiagnostic)
+    : null;
 }
 
 function structuredQueryV2Error(error: unknown): unknown {
   if (!(error instanceof Error)) {
     return error;
   }
-  try {
-    const payload: unknown = JSON.parse(error.message);
-    if (isNativeQueryV2ErrorPayload(payload)) {
-      return new QueryV2Error(
-        payload.category,
-        payload.code,
-        payload.message,
-        payload.path,
-        payload.details,
-        payload.sdkCategory,
-        payload.queryCategory,
-      );
-    }
-    if (isLegacyNativeQueryV2ErrorPayload(payload)) {
-      // Retain source compatibility for the released low-level V2 N-API,
-      // whose contract diagnostics predate the additive SDK/query category
-      // split. New generated match facades always emit the complete form.
-      return new QueryV2Error(
-        payload.category,
-        payload.code,
-        payload.message,
-        payload.path,
-        payload.details,
-      );
-    }
-  } catch {
-    // Preserve non-diagnostic native errors unchanged.
+  const diagnostic = nativeDiagnostic(error.message);
+  const sdkCategory = diagnostic?.sdk_category ?? diagnostic?.category;
+  // Native internal failures stay plain errors: their text is not part of
+  // the redacted query contract.
+  if (diagnostic === null || sdkCategory === undefined || sdkCategory === "internal") {
+    return error;
   }
-  return error;
+  return new QueryV2Error(
+    diagnostic.category,
+    diagnostic.code,
+    diagnostic.message,
+    diagnostic.path,
+    diagnostic.details,
+    sdkCategory,
+    // The contract form has no query category; it is its own category.
+    diagnostic.query_category === undefined
+      ? diagnostic.category
+      : diagnostic.query_category,
+  );
 }
 
 export function queryV2NativeCall<Result>(operation: () => Result): Result {

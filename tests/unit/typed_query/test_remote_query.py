@@ -217,9 +217,9 @@ def test_public_direct_and_remote_order_iterables_stop_at_first_excess_term() ->
         "structural_limit_exceeded",
         [{"kind": "operation"}],
         {
-            "actual": {"kind": "count", "value": 65},
+            "actual": {"kind": "count", "value": "65"},
             "limit": {"kind": "query_identity", "value": "order_terms"},
-            "maximum": {"kind": "count", "value": 64},
+            "maximum": {"kind": "count", "value": "64"},
             "source": {"kind": "query_identity", "value": "default"},
         },
     )
@@ -664,7 +664,7 @@ def test_public_remote_session_preserves_authenticated_structured_failure() -> N
         {"kind": "contract_identity", "value": "smoke-person"},
     ]
     assert error.details == {
-        "attempt": {"kind": "signed", "value": 7},
+        "attempt": {"kind": "signed", "value": "7"},
         "expected": {
             "kind": "query_identity_list",
             "value": ["person", "employee"],
@@ -799,9 +799,9 @@ def test_native_remote_order_sequences_are_bounded_at_the_raw_ffi_boundary() -> 
         assert raised.value.code == "structural_limit_exceeded"
         assert raised.value.path == [{"kind": "operation"}]
         assert raised.value.details == {
-            "actual": {"kind": "count", "value": 65},
+            "actual": {"kind": "count", "value": "65"},
             "limit": {"kind": "query_identity", "value": "order_terms"},
-            "maximum": {"kind": "count", "value": 64},
+            "maximum": {"kind": "count", "value": "64"},
             "source": {"kind": "query_identity", "value": "default"},
         }
 

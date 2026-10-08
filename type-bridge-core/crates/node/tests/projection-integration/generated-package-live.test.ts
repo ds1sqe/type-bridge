@@ -2930,6 +2930,17 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       };
       for (const slots of [undefined, 4n]) {
         const directRules = await coreRules(database, slots);
+        if (slots === undefined) {
+          // tests/contracts/diagnostic-json-v1.json, group_keys.seventeen.
+          const golden = JSON.parse(
+            await readFile(resolve(ROOT, "tests/contracts/diagnostic-json-v1.json"), "utf8"),
+          ).cases.find((entry: any) => entry.id === "group_keys.seventeen").diagnostic;
+          assert.deepEqual(directRules.groupKeys, {
+            code: golden.code,
+            path: golden.path,
+            details: golden.details,
+          });
+        }
         const width = slots === undefined ? 16 : Number(slots);
         assert.equal(String((directRules.selection.details as any).maximum.value), String(width));
         assert.equal(String((directRules.groupKeys.details as any).maximum.value), String(width));

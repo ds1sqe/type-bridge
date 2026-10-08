@@ -13,8 +13,7 @@ use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{FunctionId, TypeId};
 use type_bridge_contract::limits::QueryLimits;
 use type_bridge_contract::sdk_diagnostic::{
-    SdkDiagnosticCategory, SdkDiagnosticDetailValue, SdkDiagnosticPathSegment,
-    SdkExecutionDiagnostic,
+    SdkDiagnosticCategory, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
 };
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
@@ -51,7 +50,8 @@ pub(crate) fn napi_target_error(error: QueryTargetError) -> napi::Error {
     }
 }
 
-/// `session` and `deadline` constrained by a connection's `ceiling`.
+/// Raise `diagnostic` as a native error whose reason is its canonical host
+/// JSON form.
 pub(crate) fn napi_sdk_diagnostic(diagnostic: SdkExecutionDiagnostic) -> napi::Error {
     let status = match diagnostic.category() {
         SdkDiagnosticCategory::InvalidInput | SdkDiagnosticCategory::ResourceLimit => {
@@ -60,119 +60,9 @@ pub(crate) fn napi_sdk_diagnostic(diagnostic: SdkExecutionDiagnostic) -> napi::E
         SdkDiagnosticCategory::Cancelled => Status::Cancelled,
         _ => Status::GenericFailure,
     };
-    let query_category = diagnostic
-        .details()
-        .values()
-        .find_map(|detail| match detail {
-            SdkDiagnosticDetailValue::QueryCategory(category) => Some(category.as_str()),
-            _ => None,
-        });
-    let path = diagnostic
-        .path()
-        .iter()
-        .map(sdk_path_json)
-        .collect::<Vec<_>>();
-    let details = diagnostic
-        .details()
-        .iter()
-        .filter(|(_, value)| !matches!(value, SdkDiagnosticDetailValue::QueryCategory(_)))
-        .map(|(name, value)| (name.as_str().to_owned(), sdk_detail_json(value)))
-        .collect::<serde_json::Map<_, _>>();
-    let reason = json!({
-        "category": query_category.unwrap_or_else(|| diagnostic.category().as_str()),
-        "sdkCategory": diagnostic.category().as_str(),
-        "queryCategory": query_category,
-        "code": diagnostic.code().as_str(),
-        "message": diagnostic.message().as_str(),
-        "path": path,
-        "details": details,
-    })
-    .to_string();
+    let reason = serde_json::to_string(&diagnostic.host_json())
+        .expect("the canonical SDK diagnostic form always encodes");
     Error::new(status, reason)
-}
-
-fn sdk_path_json(segment: &SdkDiagnosticPathSegment) -> Value {
-    match segment {
-        SdkDiagnosticPathSegment::Argument(name) => {
-            json!({"kind": "argument", "value": name.as_str()})
-        }
-        SdkDiagnosticPathSegment::Index(index) => json!({"kind": "index", "value": index}),
-        SdkDiagnosticPathSegment::Type(id) => json!({"kind": "type", "value": id}),
-        SdkDiagnosticPathSegment::Field(id) => json!({"kind": "field", "value": id}),
-        SdkDiagnosticPathSegment::Role(id) => json!({"kind": "role", "value": id}),
-        SdkDiagnosticPathSegment::Query(kind) => json!({"kind": kind.as_str()}),
-        SdkDiagnosticPathSegment::QueryBinding(binding) => {
-            json!({"kind": "binding", "value": binding})
-        }
-        SdkDiagnosticPathSegment::QueryField { owner, name } => json!({
-            "kind": "field",
-            "value": {"owner": owner.as_str(), "name": name.as_str()},
-        }),
-        SdkDiagnosticPathSegment::QueryRole { owner, name } => json!({
-            "kind": "role",
-            "value": {"owner": owner.as_str(), "name": name.as_str()},
-        }),
-        SdkDiagnosticPathSegment::QueryRoleEdge(edge) => {
-            json!({"kind": "role_edge", "value": edge})
-        }
-        SdkDiagnosticPathSegment::QueryOutputSlot(slot) => {
-            json!({"kind": "output_slot", "value": slot})
-        }
-        SdkDiagnosticPathSegment::QueryOutputName(name) => {
-            json!({"kind": "output_name", "value": name.as_str()})
-        }
-        SdkDiagnosticPathSegment::ContractField(name) => {
-            json!({"kind": "contract_field", "value": name.as_str()})
-        }
-        SdkDiagnosticPathSegment::ContractIdentity(name) => {
-            json!({"kind": "contract_identity", "value": name.as_str()})
-        }
-        _ => json!({"kind": "unknown"}),
-    }
-}
-
-fn sdk_detail_json(value: &SdkDiagnosticDetailValue) -> Value {
-    match value {
-        SdkDiagnosticDetailValue::Boolean(value) => json!({"kind": "boolean", "value": value}),
-        SdkDiagnosticDetailValue::Count(value) => {
-            json!({"kind": "count", "value": value.to_string()})
-        }
-        SdkDiagnosticDetailValue::ByteCount(value) => {
-            json!({"kind": "byte_count", "value": value.to_string()})
-        }
-        SdkDiagnosticDetailValue::Signed(value) => {
-            json!({"kind": "signed", "value": value.to_string()})
-        }
-        SdkDiagnosticDetailValue::QueryIdentity(value) => {
-            json!({"kind": "query_identity", "value": value.as_str()})
-        }
-        SdkDiagnosticDetailValue::QueryIdentityList(values) => json!({
-            "kind": "query_identity_list",
-            "value": values.iter().map(|value| value.as_str()).collect::<Vec<_>>(),
-        }),
-        SdkDiagnosticDetailValue::Capability(value) => {
-            json!({"kind": "text", "value": value.as_str()})
-        }
-        SdkDiagnosticDetailValue::ValueType(value) => {
-            json!({"kind": "text", "value": value.as_str()})
-        }
-        SdkDiagnosticDetailValue::Type(value) => json!({"kind": "text", "value": value}),
-        SdkDiagnosticDetailValue::Field(value) => json!({"kind": "text", "value": value}),
-        SdkDiagnosticDetailValue::Role(value) => json!({"kind": "text", "value": value}),
-        SdkDiagnosticDetailValue::Fingerprint(value) => {
-            json!({"kind": "text", "value": value})
-        }
-        SdkDiagnosticDetailValue::ProviderOperation(value) => {
-            json!({"kind": "text", "value": value.as_str()})
-        }
-        SdkDiagnosticDetailValue::CommitOutcome(value) => {
-            json!({"kind": "text", "value": value.as_str()})
-        }
-        SdkDiagnosticDetailValue::QueryCategory(value) => {
-            json!({"kind": "text", "value": value.as_str()})
-        }
-        _ => json!({"kind": "text", "value": "redacted"}),
-    }
 }
 
 fn invalid_arg(message: impl Into<String>) -> napi::Error {
@@ -4434,13 +4324,13 @@ plays:
             serde_json::from_str(&crate::napi_orm_error(in_flight_error).reason).unwrap();
         let observation = json!({
             "in_flight": {
-                "category": in_flight_payload["sdkCategory"],
+                "category": in_flight_payload["sdk_category"],
                 "code": in_flight_payload["code"],
                 "partial_result": false,
                 "provider_await_woken": true,
             },
             "pre_dispatch": {
-                "category": pre_dispatch_payload["sdkCategory"],
+                "category": pre_dispatch_payload["sdk_category"],
                 "code": pre_dispatch_payload["code"],
                 "partial_result": false,
                 "provider_calls": pre_dispatch_opens.load(Ordering::SeqCst),

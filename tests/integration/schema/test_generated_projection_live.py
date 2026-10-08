@@ -183,7 +183,7 @@ async def _core_rule_refusals(
         session.close()
     for name in ("selection", "group_keys", "terms"):
         details = refusals[name][2]
-        assert details["maximum"] == {"kind": "count", "value": width}, (name, details)
+        assert details["maximum"] == {"kind": "count", "value": str(width)}, (name, details)
     return dict(refusals)
 
 

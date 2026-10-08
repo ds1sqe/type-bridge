@@ -838,11 +838,11 @@ function diagnosticFrom(error) {
       if (
         value !== null &&
         typeof value === "object" &&
-        typeof value.sdkCategory === "string" &&
+        typeof value.sdk_category === "string" &&
         typeof value.code === "string"
       ) {
         return {
-          category: value.sdkCategory,
+          category: value.sdk_category,
           code: value.code,
           details: value.details ?? {},
           path: value.path ?? [],

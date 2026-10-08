@@ -6559,27 +6559,15 @@ fn node_canonical_limit_error(
     error: type_bridge_contract::diagnostic::Diagnostic,
     input: bool,
 ) -> Error {
-    let diagnostic = match error.code().as_str() {
-        "canonical_json_too_deep" => SdkExecutionDiagnostic::projected_codec_depth_limit(),
-        "canonical_collection_too_large" => SdkExecutionDiagnostic::projected_codec_member_limit(),
-        "canonical_json_too_large" | "canonical_string_too_large" if input => {
-            SdkExecutionDiagnostic::projected_codec_input_limit()
-        }
-        "canonical_json_too_large" | "canonical_string_too_large" => {
-            SdkExecutionDiagnostic::projected_codec_output_limit()
-        }
-        _ => return diagnostic_error(error),
-    };
-    napi_sdk_diagnostic(diagnostic)
+    match SdkExecutionDiagnostic::from_canonical_limit(&error, input) {
+        Some(diagnostic) => napi_sdk_diagnostic(diagnostic),
+        None => diagnostic_error(error),
+    }
 }
 
 fn node_canonical_codec_error(error: type_bridge_orm::ProjectedCodecError) -> Error {
-    if matches!(
-        &error,
-        type_bridge_orm::ProjectedCodecError::Contract(diagnostic)
-            if diagnostic.code().as_str() == "projected_codec_declared_schema_mismatch"
-    ) {
-        return napi_sdk_diagnostic(SdkExecutionDiagnostic::projected_record_schema_mismatch());
+    if let Some(diagnostic) = error.record_schema_mismatch() {
+        return napi_sdk_diagnostic(diagnostic);
     }
     invalid_error(error.to_string())
 }
@@ -6934,9 +6922,10 @@ entities:
         assert_eq!(
             diagnostic,
             serde_json::json!({
+                "version": 1,
                 "category": "integrity",
-                "sdkCategory": "integrity",
-                "queryCategory": null,
+                "sdk_category": "integrity",
+                "query_category": null,
                 "code": "projection_evidence_mismatch",
                 "message": "Generated projection evidence does not match the verified schema package",
                 "path": [{"kind": "argument", "value": "projection_evidence"}],
@@ -6950,9 +6939,10 @@ entities:
         assert_eq!(
             diagnostic,
             serde_json::json!({
+                "version": 1,
                 "category": "integrity",
-                "sdkCategory": "integrity",
-                "queryCategory": null,
+                "sdk_category": "integrity",
+                "query_category": null,
                 "code": "projection_evidence_mismatch",
                 "message": "Generated projection evidence does not match the verified schema package",
                 "path": [
@@ -7787,7 +7777,7 @@ entities:
             .validate_attribute_value_json(score, overflow)
             .unwrap_err();
         let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
-        assert_eq!(diagnostic["sdkCategory"], "invalid_input");
+        assert_eq!(diagnostic["sdk_category"], "invalid_input");
         assert_eq!(diagnostic["code"], "wrong_scalar_domain");
 
         let double = type_key(TypeKind::Attribute, "val-double");
@@ -8466,7 +8456,7 @@ entities:
                 .unwrap_err(),
         ] {
             let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
-            assert_eq!(diagnostic["sdkCategory"], "invalid_input");
+            assert_eq!(diagnostic["sdk_category"], "invalid_input");
             assert_eq!(diagnostic["code"], "ordered_distinct_duplicate");
             assert_eq!(diagnostic["details"]["first_index"]["value"], "0");
             assert_eq!(diagnostic["details"]["duplicate_index"]["value"], "1");
@@ -8534,7 +8524,7 @@ entities:
             )
             .unwrap_err();
         let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
-        assert_eq!(diagnostic["sdkCategory"], "integrity");
+        assert_eq!(diagnostic["sdk_category"], "integrity");
         assert_eq!(diagnostic["code"], "regex_constraint_violation");
         assert_eq!(diagnostic["path"][0]["kind"], "type");
 
@@ -8569,7 +8559,7 @@ entities:
             )
             .unwrap_err();
         let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
-        assert_eq!(diagnostic["sdkCategory"], "integrity");
+        assert_eq!(diagnostic["sdk_category"], "integrity");
         assert_eq!(diagnostic["code"], "ordered_distinct_duplicate");
         assert_eq!(diagnostic["path"][0]["kind"], "type");
         assert_eq!(diagnostic["path"][1]["kind"], "field");
@@ -8589,7 +8579,7 @@ entities:
             )
             .unwrap_err();
         let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
-        assert_eq!(diagnostic["sdkCategory"], "integrity");
+        assert_eq!(diagnostic["sdk_category"], "integrity");
         assert_eq!(diagnostic["code"], "range_constraint_violation");
         assert_eq!(diagnostic["path"][0]["kind"], "type");
         assert_eq!(diagnostic["path"][1]["kind"], "field");
@@ -8610,7 +8600,7 @@ entities:
             .validate_thing_json(membership_key, serde_json::to_string(&membership).unwrap())
             .unwrap_err();
         let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
-        assert_eq!(diagnostic["sdkCategory"], "integrity");
+        assert_eq!(diagnostic["sdk_category"], "integrity");
         assert_eq!(diagnostic["code"], "ordered_distinct_duplicate");
         assert_eq!(diagnostic["path"][1]["kind"], "role");
         assert_eq!(diagnostic["path"][2]["kind"], "index");
@@ -8676,7 +8666,7 @@ entities:
             )
             .unwrap_err();
         let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
-        assert_eq!(diagnostic["sdkCategory"], "integrity");
+        assert_eq!(diagnostic["sdk_category"], "integrity");
         assert_eq!(diagnostic["code"], "noncanonical_hydrated_iid");
         assert_eq!(diagnostic["path"][1]["kind"], "argument");
     }
@@ -8697,7 +8687,7 @@ entities:
             .unwrap_err();
         let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
         assert_eq!(diagnostic["category"], "integrity");
-        assert_eq!(diagnostic["sdkCategory"], "integrity");
+        assert_eq!(diagnostic["sdk_category"], "integrity");
         assert_eq!(diagnostic["code"], "generated_token_package_mismatch");
         assert_eq!(
             diagnostic["message"],

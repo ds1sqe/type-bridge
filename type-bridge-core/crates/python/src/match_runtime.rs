@@ -10,15 +10,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use pyo3::exceptions::{PyException, PyOverflowError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyAny, PyDict, PyInt, PyType};
+use pyo3::types::{PyAny, PyDict, PyInt, PyString, PyType};
 use pythonize::pythonize;
-use serde_json::{Value, json};
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{FunctionId, TypeId};
 use type_bridge_contract::limits::QueryLimits;
-use type_bridge_contract::sdk_diagnostic::{
-    SdkDiagnosticDetailValue, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
-};
+use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
     AnswerCancellation, BindingHandle, ComparisonOp, FieldHandle, FunctionArgumentHandle,
@@ -1886,129 +1883,25 @@ pub(crate) fn py_sdk_diagnostic(diagnostic: SdkExecutionDiagnostic) -> PyErr {
     })
 }
 
-/// Attach the diagnostic's category, code, message, path, and details to
-/// `py_error`.
+/// Set one attribute on `py_error` per key of the diagnostic's canonical host
+/// JSON form (`version`, `category`, `sdk_category`, `query_category`,
+/// `code`, `message`, `path`, `details`).
 fn structured_py_error(
     py: Python<'_>,
     py_error: PyErr,
     diagnostic: &SdkExecutionDiagnostic,
 ) -> PyErr {
-    {
-        let query_category = diagnostic
-            .details()
-            .values()
-            .find_map(|detail| match detail {
-                SdkDiagnosticDetailValue::QueryCategory(category) => Some(category.as_str()),
-                _ => None,
-            });
-        let path = diagnostic
-            .path()
-            .iter()
-            .map(sdk_path_json)
-            .collect::<Vec<_>>();
-        let details = diagnostic
-            .details()
-            .iter()
-            .filter(|(_, value)| !matches!(value, SdkDiagnosticDetailValue::QueryCategory(_)))
-            .map(|(name, value)| (name.as_str().to_owned(), sdk_detail_json(value)))
-            .collect::<serde_json::Map<_, _>>();
-        let category = query_category.unwrap_or_else(|| diagnostic.category().as_str());
-        let message = diagnostic.message().as_str();
-        let attach = || -> PyResult<()> {
-            let value = py_error.value(py);
-            value.setattr("category", category)?;
-            value.setattr("sdk_category", diagnostic.category().as_str())?;
-            value.setattr("query_category", query_category)?;
-            value.setattr("code", diagnostic.code().as_str())?;
-            value.setattr("message", message)?;
-            value.setattr("path", pythonize(py, &path)?)?;
-            value.setattr("details", pythonize(py, &details)?)?;
-            Ok(())
-        };
-        match attach() {
-            Ok(()) => py_error,
-            Err(attribute_error) => attribute_error,
+    let attach = || -> PyResult<()> {
+        let value = py_error.value(py);
+        let form = pythonize(py, &diagnostic.host_json())?.cast_into::<PyDict>()?;
+        for (key, item) in form.iter() {
+            value.setattr(key.cast_into::<PyString>()?, item)?;
         }
-    }
-}
-
-fn sdk_path_json(segment: &SdkDiagnosticPathSegment) -> Value {
-    match segment {
-        SdkDiagnosticPathSegment::Argument(name) => {
-            json!({"kind": "argument", "value": name.as_str()})
-        }
-        SdkDiagnosticPathSegment::Index(index) => json!({"kind": "index", "value": index}),
-        SdkDiagnosticPathSegment::Type(id) => json!({"kind": "type", "value": id}),
-        SdkDiagnosticPathSegment::Field(id) => json!({"kind": "field", "value": id}),
-        SdkDiagnosticPathSegment::Role(id) => json!({"kind": "role", "value": id}),
-        SdkDiagnosticPathSegment::Query(kind) => json!({"kind": kind.as_str()}),
-        SdkDiagnosticPathSegment::QueryBinding(binding) => {
-            json!({"kind": "binding", "value": binding})
-        }
-        SdkDiagnosticPathSegment::QueryField { owner, name } => json!({
-            "kind": "field",
-            "value": {"owner": owner.as_str(), "name": name.as_str()},
-        }),
-        SdkDiagnosticPathSegment::QueryRole { owner, name } => json!({
-            "kind": "role",
-            "value": {"owner": owner.as_str(), "name": name.as_str()},
-        }),
-        SdkDiagnosticPathSegment::QueryRoleEdge(edge) => {
-            json!({"kind": "role_edge", "value": edge})
-        }
-        SdkDiagnosticPathSegment::QueryOutputSlot(slot) => {
-            json!({"kind": "output_slot", "value": slot})
-        }
-        SdkDiagnosticPathSegment::QueryOutputName(name) => {
-            json!({"kind": "output_name", "value": name.as_str()})
-        }
-        SdkDiagnosticPathSegment::ContractField(name) => {
-            json!({"kind": "contract_field", "value": name.as_str()})
-        }
-        SdkDiagnosticPathSegment::ContractIdentity(name) => {
-            json!({"kind": "contract_identity", "value": name.as_str()})
-        }
-        _ => json!({"kind": "unknown"}),
-    }
-}
-
-fn sdk_detail_json(value: &SdkDiagnosticDetailValue) -> Value {
-    match value {
-        SdkDiagnosticDetailValue::Boolean(value) => json!({"kind": "boolean", "value": value}),
-        SdkDiagnosticDetailValue::Count(value) => json!({"kind": "count", "value": value}),
-        SdkDiagnosticDetailValue::ByteCount(value) => {
-            json!({"kind": "byte_count", "value": value})
-        }
-        SdkDiagnosticDetailValue::Signed(value) => json!({"kind": "signed", "value": value}),
-        SdkDiagnosticDetailValue::QueryIdentity(value) => {
-            json!({"kind": "query_identity", "value": value.as_str()})
-        }
-        SdkDiagnosticDetailValue::QueryIdentityList(values) => json!({
-            "kind": "query_identity_list",
-            "value": values.iter().map(|value| value.as_str()).collect::<Vec<_>>(),
-        }),
-        SdkDiagnosticDetailValue::Capability(value) => {
-            json!({"kind": "text", "value": value.as_str()})
-        }
-        SdkDiagnosticDetailValue::ValueType(value) => {
-            json!({"kind": "text", "value": value.as_str()})
-        }
-        SdkDiagnosticDetailValue::Type(value) => json!({"kind": "text", "value": value}),
-        SdkDiagnosticDetailValue::Field(value) => json!({"kind": "text", "value": value}),
-        SdkDiagnosticDetailValue::Role(value) => json!({"kind": "text", "value": value}),
-        SdkDiagnosticDetailValue::Fingerprint(value) => {
-            json!({"kind": "text", "value": value})
-        }
-        SdkDiagnosticDetailValue::ProviderOperation(value) => {
-            json!({"kind": "text", "value": value.as_str()})
-        }
-        SdkDiagnosticDetailValue::CommitOutcome(value) => {
-            json!({"kind": "text", "value": value.as_str()})
-        }
-        SdkDiagnosticDetailValue::QueryCategory(value) => {
-            json!({"kind": "text", "value": value.as_str()})
-        }
-        _ => json!({"kind": "text", "value": "redacted"}),
+        Ok(())
+    };
+    match attach() {
+        Ok(()) => py_error,
+        Err(attribute_error) => attribute_error,
     }
 }
 
@@ -2089,6 +1982,7 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::time::{Duration, Instant};
 
+    use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
     use tokio::sync::Notify;
     use type_bridge_orm::_descriptor::{EntityDescriptor, OwnedAttributeDescriptor};
@@ -2502,7 +2396,7 @@ mod tests {
             assert_eq!(
                 details,
                 serde_json::json!({
-                    "actual_bytes": {"kind": "byte_count", "value": 2}
+                    "actual_bytes": {"kind": "byte_count", "value": "2"}
                 })
             );
         });

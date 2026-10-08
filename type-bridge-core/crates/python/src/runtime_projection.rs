@@ -171,27 +171,15 @@ fn python_canonical_limit_error(
     error: type_bridge_contract::diagnostic::Diagnostic,
     input: bool,
 ) -> PyErr {
-    let diagnostic = match error.code().as_str() {
-        "canonical_json_too_deep" => SdkExecutionDiagnostic::projected_codec_depth_limit(),
-        "canonical_collection_too_large" => SdkExecutionDiagnostic::projected_codec_member_limit(),
-        "canonical_json_too_large" | "canonical_string_too_large" if input => {
-            SdkExecutionDiagnostic::projected_codec_input_limit()
-        }
-        "canonical_json_too_large" | "canonical_string_too_large" => {
-            SdkExecutionDiagnostic::projected_codec_output_limit()
-        }
-        _ => return py_diagnostic(error),
-    };
-    py_sdk_diagnostic(diagnostic)
+    match SdkExecutionDiagnostic::from_canonical_limit(&error, input) {
+        Some(diagnostic) => py_sdk_diagnostic(diagnostic),
+        None => py_diagnostic(error),
+    }
 }
 
 fn python_canonical_codec_error(error: type_bridge_orm::ProjectedCodecError) -> PyErr {
-    if matches!(
-        &error,
-        type_bridge_orm::ProjectedCodecError::Contract(diagnostic)
-            if diagnostic.code().as_str() == "projected_codec_declared_schema_mismatch"
-    ) {
-        return py_sdk_diagnostic(SdkExecutionDiagnostic::projected_record_schema_mismatch());
+    if let Some(diagnostic) = error.record_schema_mismatch() {
+        return py_sdk_diagnostic(diagnostic);
     }
     py_value_error(error.to_string())
 }
@@ -14958,7 +14946,7 @@ class BoundaryIterator:
             assert_eq!(
                 details,
                 serde_json::json!({
-                    "first_conflicting_index": {"kind": "count", "value": 0},
+                    "first_conflicting_index": {"kind": "count", "value": "0"},
                 }),
             );
             {
@@ -15005,7 +14993,7 @@ class BoundaryIterator:
             assert_eq!(
                 details,
                 serde_json::json!({
-                    "first_conflicting_index": {"kind": "count", "value": 0},
+                    "first_conflicting_index": {"kind": "count", "value": "0"},
                 }),
             );
             {
@@ -15056,7 +15044,7 @@ class BoundaryIterator:
             assert_eq!(
                 details,
                 serde_json::json!({
-                    "first_conflicting_index": {"kind": "count", "value": 0},
+                    "first_conflicting_index": {"kind": "count", "value": "0"},
                 }),
             );
             {
@@ -16338,8 +16326,8 @@ class CyclicFinalizer:
             assert_eq!(
                 details,
                 serde_json::json!({
-                    "actual_occurrence_count": {"kind": "count", "value": 0},
-                    "expected_occurrence_count": {"kind": "count", "value": 1},
+                    "actual_occurrence_count": {"kind": "count", "value": "0"},
+                    "expected_occurrence_count": {"kind": "count", "value": "1"},
                     "foreign_package": {"kind": "boolean", "value": false},
                 }),
             );

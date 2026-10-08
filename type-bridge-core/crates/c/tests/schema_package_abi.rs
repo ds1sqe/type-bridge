@@ -1589,6 +1589,43 @@ fn assert_rejected(
     );
 }
 
+/// The C half of the contract-form case in
+/// `tests/contracts/diagnostic-json-v1.json`: Python, Node, and C report the
+/// same malformed schema authority as the same diagnostic JSON.
+#[test]
+fn malformed_authority_diagnostic_json_matches_the_golden() {
+    let golden: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../tests/contracts/diagnostic-json-v1.json"
+    ))
+    .unwrap();
+    let expected = golden["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["id"] == "contract.malformed_canonical_json")
+        .unwrap()["diagnostic"]
+        .clone();
+    let bytes = emitted_fixture().bytes;
+    let malformed = b"{";
+    let mut descriptor = bytes.descriptor();
+    descriptor.schema_authority_json = view(malformed);
+    let mut package = NonNull::<TypeBridgeSchemaPackage>::dangling().as_ptr();
+    let mut diagnostics = NonNull::<TypeBridgeDiagnostics>::dangling().as_ptr();
+    // SAFETY: the descriptor and both output slots are readable/writable for the call.
+    let status =
+        unsafe { type_bridge_schema_package_open_v1(&descriptor, &mut package, &mut diagnostics) };
+    assert_eq!(status, TypeBridgeStatus::SchemaPackageRejected);
+    // SAFETY: the failed open returned a live diagnostic handle.
+    let json: serde_json::Value =
+        serde_json::from_str(&unsafe { diagnostic_text(diagnostics) }).unwrap();
+    assert_eq!(json, serde_json::Value::Array(vec![expected]));
+    // SAFETY: ownership of the returned handle is released through its close family.
+    assert_eq!(
+        unsafe { type_bridge_diagnostics_close(&mut diagnostics) },
+        TypeBridgeStatus::Ok,
+    );
+}
+
 #[test]
 fn public_c_header_matches_the_rust_abi_layout_and_constants() {
     // The ordinary Windows workspace test lane does not enter a Visual Studio

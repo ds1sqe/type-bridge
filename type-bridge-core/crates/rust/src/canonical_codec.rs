@@ -228,18 +228,10 @@ pub(crate) fn output_error(error: Diagnostic) -> Error {
 }
 
 fn limit_error(error: Diagnostic, input: bool) -> Error {
-    let diagnostic = match error.code().as_str() {
-        "canonical_json_too_deep" => SdkExecutionDiagnostic::projected_codec_depth_limit(),
-        "canonical_collection_too_large" => SdkExecutionDiagnostic::projected_codec_member_limit(),
-        "canonical_json_too_large" | "canonical_string_too_large" if input => {
-            SdkExecutionDiagnostic::projected_codec_input_limit()
-        }
-        "canonical_json_too_large" | "canonical_string_too_large" => {
-            SdkExecutionDiagnostic::projected_codec_output_limit()
-        }
-        _ => return Error::from_contract_diagnostic(error),
-    };
-    codec_error(diagnostic)
+    match SdkExecutionDiagnostic::from_canonical_limit(&error, input) {
+        Some(diagnostic) => codec_error(diagnostic),
+        None => Error::from_contract_diagnostic(error),
+    }
 }
 
 fn codec_error(error: SdkExecutionDiagnostic) -> Error {

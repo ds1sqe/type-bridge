@@ -216,7 +216,7 @@ const foreignError = expectCode(
   "projected_record_schema_mismatch",
 );
 if (
-  foreignError.sdkCategory !== "invalid_input" ||
+  foreignError.sdk_category !== "invalid_input" ||
   JSON.stringify(foreignError.path) !==
     JSON.stringify([{ kind: "contract_field", value: "declared_schema_identity" }]) ||
   JSON.stringify(foreignError.details) !== "{}"
@@ -242,7 +242,7 @@ const operationalPayload = canonicalJson({
   cancellation: { code: cancellationError.code, partial_output: false },
   deadline: { code: deadlineError.code, partial_output: false },
   diagnostic: {
-    category: foreignError.sdkCategory,
+    category: foreignError.sdk_category,
     code: foreignError.code,
     path: ["declared_schema_identity"],
     payload_absent: true,

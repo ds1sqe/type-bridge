@@ -221,7 +221,7 @@ const duplicateField = captureNativeDiagnostic(() =>
     tag: [OrderedTag.create("duplicate"), OrderedTag.create("duplicate")],
   }),
 );
-assert.equal(duplicateField.sdkCategory, "invalid_input");
+assert.equal(duplicateField.sdk_category, "invalid_input");
 assert.equal(duplicateField.code, "ordered_distinct_duplicate");
 assert.deepEqual(duplicateField.details, {
   duplicate_index: { kind: "count", value: "1" },
@@ -234,7 +234,7 @@ const constrainedField = captureNativeDiagnostic(() =>
     tag: [],
   }),
 );
-assert.equal(constrainedField.sdkCategory, "invalid_input");
+assert.equal(constrainedField.sdk_category, "invalid_input");
 assert.equal(constrainedField.code, "range_constraint_violation");
 
 // Hydration remains outside this constructor-only slice; use its existing hook
@@ -253,7 +253,7 @@ const duplicateRole = captureNativeDiagnostic(() =>
     member: [identifiedOrderedPerson, identifiedOrderedPerson],
   }),
 );
-assert.equal(duplicateRole.sdkCategory, "invalid_input");
+assert.equal(duplicateRole.sdk_category, "invalid_input");
 assert.equal(duplicateRole.code, "ordered_distinct_duplicate");
 assert.equal(
   OrderedPlainActivity.create({ participant: identifiedOrderedPerson })
@@ -279,7 +279,7 @@ const foreignPackage = captureNativeDiagnostic(() =>
   OrderedMembership.create({ member: [foreignPerson] }),
 );
 assert.equal(foreignPackage.category, "integrity");
-assert.equal(foreignPackage.sdkCategory, "integrity");
+assert.equal(foreignPackage.sdk_category, "integrity");
 assert.equal(foreignPackage.code, "generated_token_package_mismatch");
 assert.equal(
   foreignPackage.message,

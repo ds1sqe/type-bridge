@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use type_bridge_contract::limits::QueryLimits;
+use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
 use type_bridge_core_lib::ast::{
     TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
 };
@@ -765,6 +766,15 @@ async fn exact_one_reads_past_duplicate_hidden_witnesses_before_not_unique() {
 /// Refuse one corpus case through the handle API every binding calls, and
 /// return the refusal's category and code.
 fn handle_refusal(case_id: &str) -> (String, String) {
+    let error = handle_refusal_error(case_id);
+    (
+        error.category().as_str().to_owned(),
+        error.code().as_str().to_owned(),
+    )
+}
+
+/// Refuse one corpus case through the handle API every binding calls.
+fn handle_refusal_error(case_id: &str) -> type_bridge_orm::MatchError {
     let registry = Arc::new(registry());
     let session_slots = |slots: usize| {
         let mut limits = QueryLimits::CANONICAL;
@@ -824,10 +834,38 @@ fn handle_refusal(case_id: &str) -> (String, String) {
     let Err(OrmError::Match(error)) = outcome else {
         panic!("corpus case {case_id} was not refused by the core: {outcome:?}");
     };
-    (
-        error.category().as_str().to_owned(),
-        error.code().as_str().to_owned(),
-    )
+    error
+}
+
+/// The Rust half of the binding cases in `tests/contracts/diagnostic-json-v1.json`.
+#[test]
+fn binding_refusals_have_the_golden_host_json() {
+    let golden: Value = serde_json::from_str(include_str!(
+        "../../../../tests/contracts/diagnostic-json-v1.json"
+    ))
+    .unwrap();
+    let expected = |id: &str| {
+        golden["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["id"] == id)
+            .unwrap()["diagnostic"]
+            .clone()
+    };
+    let group_keys =
+        type_bridge_orm::lower_match_error(&handle_refusal_error("aggregate.seventeen-group-keys"));
+    assert_eq!(
+        serde_json::to_value(group_keys.host_json()).unwrap(),
+        expected("group_keys.seventeen")
+    );
+    let unknown = SdkExecutionDiagnostic::from(
+        type_bridge_orm::canonical_enum_spelling("sort_direction", "sideways").unwrap_err(),
+    );
+    assert_eq!(
+        serde_json::to_value(unknown.host_json()).unwrap(),
+        expected("unknown_enum_value.sort_direction")
+    );
 }
 
 #[test]

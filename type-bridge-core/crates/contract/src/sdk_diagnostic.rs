@@ -2,8 +2,10 @@
 //!
 //! This module is deliberately separate from [`crate::diagnostic`]. The
 //! existing diagnostic is part of canonical contract wires; an SDK execution
-//! diagnostic is an in-memory engine value that bindings project through their
-//! own versioned ABI. It therefore implements no serialization contract.
+//! diagnostic is an in-memory engine value. It has no wire decoder. Hosts
+//! receive it in one JSON form, [`SdkDiagnosticJson`], which every binding
+//! that reports a diagnostic as data uses unchanged; the C ABI copies the
+//! same values into typed accessors.
 //!
 //! Dynamic provider messages, credentials, endpoint or custom-root paths,
 //! query values, and internal backtraces have no representation here. Stable
@@ -16,7 +18,11 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 
+use serde::Serialize;
+use serde::ser::{SerializeMap, Serializer};
+
 use crate::capability::CapabilityId;
+use crate::diagnostic::Diagnostic;
 use crate::fingerprint::Fingerprint;
 use crate::id::{RoleId, TypeId};
 use crate::schema::OwnsFactId;
@@ -1020,6 +1026,229 @@ impl fmt::Display for SdkExecutionDiagnostic {
 }
 
 impl Error for SdkExecutionDiagnostic {}
+
+impl SdkExecutionDiagnostic {
+    /// Map a canonical codec ceiling refusal to its projected-codec
+    /// resource-limit diagnostic.
+    ///
+    /// `input` says whether the refused bytes were being decoded (input) or
+    /// encoded (output). Returns `None` for any other contract diagnostic,
+    /// which the caller reports unchanged.
+    #[must_use]
+    pub fn from_canonical_limit(diagnostic: &Diagnostic, input: bool) -> Option<Self> {
+        match diagnostic.code().as_str() {
+            "canonical_json_too_deep" => Some(Self::projected_codec_depth_limit()),
+            "canonical_collection_too_large" => Some(Self::projected_codec_member_limit()),
+            "canonical_json_too_large" | "canonical_string_too_large" if input => {
+                Some(Self::projected_codec_input_limit())
+            }
+            "canonical_json_too_large" | "canonical_string_too_large" => {
+                Some(Self::projected_codec_output_limit())
+            }
+            _ => None,
+        }
+    }
+
+    /// Borrow the canonical host JSON form of this diagnostic.
+    #[must_use]
+    pub const fn host_json(&self) -> SdkDiagnosticJson<'_> {
+        SdkDiagnosticJson(self)
+    }
+}
+
+/// The one JSON form in which an [`SdkExecutionDiagnostic`] reaches a host.
+///
+/// ```json
+/// {
+///   "version": 1,
+///   "category": "invalid_plan",
+///   "sdk_category": "invalid_input",
+///   "query_category": "invalid_plan",
+///   "code": "group_key_cap_exceeded",
+///   "message": "...",
+///   "path": [{"kind": "operation"}, {"kind": "index", "value": 2}],
+///   "details": {"maximum": {"kind": "count", "value": "16"}}
+/// }
+/// ```
+///
+/// - `category` is the typed-query category when the diagnostic carries
+///   one, else the SDK category; `sdk_category` is always the SDK category;
+///   `query_category` is the typed-query category or `null`. The
+///   `query_category` detail is not repeated under `details`.
+/// - Each path segment is `{"kind", "value"}`; structural query segments
+///   (`request`, `plan`, `operation`, ...) have no `value`.
+/// - Each detail is `{"kind", "value"}`. `count`, `byte_count`, and
+///   `signed` values are decimal strings: their Rust types (`u64`, `i64`)
+///   exceed the 2^53 integers a JavaScript number holds exactly.
+/// - Path positions (`index`, `output_slot`, `binding`, `role_edge`) are
+///   JSON numbers: they index collections bounded by the canonical codec
+///   ceilings, far below 2^53.
+#[derive(Clone, Copy, Debug)]
+pub struct SdkDiagnosticJson<'a>(&'a SdkExecutionDiagnostic);
+
+impl Serialize for SdkDiagnosticJson<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let diagnostic = self.0;
+        let query_category = diagnostic
+            .details()
+            .values()
+            .find_map(|detail| match detail {
+                SdkDiagnosticDetailValue::QueryCategory(category) => Some(category.as_str()),
+                _ => None,
+            });
+        let sdk_category = diagnostic.category().as_str();
+        let mut map = serializer.serialize_map(Some(8))?;
+        map.serialize_entry("version", &diagnostic.version().get())?;
+        map.serialize_entry("category", query_category.unwrap_or(sdk_category))?;
+        map.serialize_entry("sdk_category", sdk_category)?;
+        map.serialize_entry("query_category", &query_category)?;
+        map.serialize_entry("code", diagnostic.code().as_str())?;
+        map.serialize_entry("message", diagnostic.message().as_str())?;
+        map.serialize_entry("path", &PathJson(diagnostic.path()))?;
+        map.serialize_entry("details", &DetailsJson(diagnostic.details()))?;
+        map.end()
+    }
+}
+
+struct PathJson<'a>(&'a [SdkDiagnosticPathSegment]);
+
+impl Serialize for PathJson<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter().map(SegmentJson))
+    }
+}
+
+struct SegmentJson<'a>(&'a SdkDiagnosticPathSegment);
+
+#[derive(Serialize)]
+struct OwnedName<'a> {
+    owner: &'a str,
+    name: &'a str,
+}
+
+impl Serialize for SegmentJson<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            SdkDiagnosticPathSegment::Argument(name) => {
+                tagged(serializer, "argument", name.as_str())
+            }
+            SdkDiagnosticPathSegment::Index(index) => tagged(serializer, "index", index),
+            SdkDiagnosticPathSegment::Type(id) => tagged(serializer, "type", id),
+            SdkDiagnosticPathSegment::Field(id) => tagged(serializer, "field", id),
+            SdkDiagnosticPathSegment::Role(id) => tagged(serializer, "role", id),
+            SdkDiagnosticPathSegment::Query(kind) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("kind", kind.as_str())?;
+                map.end()
+            }
+            SdkDiagnosticPathSegment::QueryBinding(binding) => {
+                tagged(serializer, "binding", binding)
+            }
+            SdkDiagnosticPathSegment::QueryField { owner, name } => tagged(
+                serializer,
+                "field",
+                &OwnedName {
+                    owner: owner.as_str(),
+                    name: name.as_str(),
+                },
+            ),
+            SdkDiagnosticPathSegment::QueryRole { owner, name } => tagged(
+                serializer,
+                "role",
+                &OwnedName {
+                    owner: owner.as_str(),
+                    name: name.as_str(),
+                },
+            ),
+            SdkDiagnosticPathSegment::QueryRoleEdge(edge) => tagged(serializer, "role_edge", edge),
+            SdkDiagnosticPathSegment::QueryOutputSlot(slot) => {
+                tagged(serializer, "output_slot", slot)
+            }
+            SdkDiagnosticPathSegment::QueryOutputName(name) => {
+                tagged(serializer, "output_name", name.as_str())
+            }
+            SdkDiagnosticPathSegment::ContractField(name) => {
+                tagged(serializer, "contract_field", name.as_str())
+            }
+            SdkDiagnosticPathSegment::ContractIdentity(name) => {
+                tagged(serializer, "contract_identity", name.as_str())
+            }
+        }
+    }
+}
+
+struct DetailsJson<'a>(&'a BTreeMap<SdkDiagnosticName, SdkDiagnosticDetailValue>);
+
+impl Serialize for DetailsJson<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_map(
+            self.0
+                .iter()
+                .filter(|(_, value)| !matches!(value, SdkDiagnosticDetailValue::QueryCategory(_)))
+                .map(|(name, value)| (name.as_str(), DetailJson(value))),
+        )
+    }
+}
+
+struct DetailJson<'a>(&'a SdkDiagnosticDetailValue);
+
+impl Serialize for DetailJson<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            SdkDiagnosticDetailValue::Boolean(value) => tagged(serializer, "boolean", value),
+            SdkDiagnosticDetailValue::Count(value) => {
+                tagged(serializer, "count", &value.to_string())
+            }
+            SdkDiagnosticDetailValue::ByteCount(value) => {
+                tagged(serializer, "byte_count", &value.to_string())
+            }
+            SdkDiagnosticDetailValue::Signed(value) => {
+                tagged(serializer, "signed", &value.to_string())
+            }
+            SdkDiagnosticDetailValue::QueryIdentity(value) => {
+                tagged(serializer, "query_identity", value.as_str())
+            }
+            SdkDiagnosticDetailValue::QueryIdentityList(values) => tagged(
+                serializer,
+                "query_identity_list",
+                &values
+                    .iter()
+                    .map(SdkQueryDiagnosticIdentity::as_str)
+                    .collect::<Vec<_>>(),
+            ),
+            SdkDiagnosticDetailValue::Capability(value) => {
+                tagged(serializer, "text", value.as_str())
+            }
+            SdkDiagnosticDetailValue::ValueType(value) => {
+                tagged(serializer, "text", value.as_str())
+            }
+            SdkDiagnosticDetailValue::Type(value) => tagged(serializer, "text", value),
+            SdkDiagnosticDetailValue::Field(value) => tagged(serializer, "text", value),
+            SdkDiagnosticDetailValue::Role(value) => tagged(serializer, "text", value),
+            SdkDiagnosticDetailValue::Fingerprint(value) => tagged(serializer, "text", value),
+            SdkDiagnosticDetailValue::ProviderOperation(value) => {
+                tagged(serializer, "text", value.as_str())
+            }
+            SdkDiagnosticDetailValue::CommitOutcome(value) => {
+                tagged(serializer, "text", value.as_str())
+            }
+            SdkDiagnosticDetailValue::QueryCategory(value) => {
+                tagged(serializer, "text", value.as_str())
+            }
+        }
+    }
+}
+
+fn tagged<S: Serializer, V: Serialize + ?Sized>(
+    serializer: S,
+    kind: &str,
+    value: &V,
+) -> Result<S::Ok, S::Error> {
+    let mut map = serializer.serialize_map(Some(2))?;
+    map.serialize_entry("kind", kind)?;
+    map.serialize_entry("value", value)?;
+    map.end()
+}
 
 fn static_code(value: &'static str) -> SdkDiagnosticCode {
     SdkDiagnosticCode::new(value).expect("static SDK diagnostic code is canonical")

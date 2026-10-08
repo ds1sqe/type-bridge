@@ -164,6 +164,28 @@ differently direct and through a proxy. Each entry says what to do instead.
   `str::parse::<ValueType>()`; the core enums gain `FromStr`, `ACCEPTED`,
   `KIND`, and `spelling()`, and `ValueType` / `ValueTypeTag` convert with
   `From`.
+- A structured SDK diagnostic reaches Python and Node in one JSON form,
+  defined by the Rust core (`SdkExecutionDiagnostic::host_json`): `version`,
+  `category`, `sdk_category`, `query_category`, `code`, `message`, `path`,
+  `details`. `count`, `byte_count`, and `signed` detail values are decimal
+  strings in every language, because a `u64`/`i64` does not fit a JavaScript
+  number; path positions (`index`, `output_slot`, `binding`, `role_edge`)
+  stay numbers.
+  - Python: `MatchRequestError` (and `UnknownEnumValueError`) keep their
+    classes and attribute names, but `details[...]["value"]` of a `count`,
+    `byte_count`, or `signed` detail is now a `str` (`"16"`, was `16`); use
+    `int(...)`. The exception also gains a `version` attribute.
+  - Node: the native error message of a structured diagnostic uses the keys
+    `sdk_category` and `query_category` (was `sdkCategory`,
+    `queryCategory`) and adds `version`. `QueryV2Error` properties are
+    unchanged. TypeScript no longer re-validates the native JSON field by
+    field; it takes the core's form as given (internal failures still stay
+    plain errors).
+  - Rust and C are unchanged: the C ABI keeps its typed accessors, and its
+    contract diagnostic JSON is the same serde form Python and Node give a
+    `QueryV2Error`.
+  The cases in `tests/contracts/diagnostic-json-v1.json` are checked to be
+  identical in Rust, Python, Node, and (for the contract form) C.
 - Mixed versions: clients and executors must both be 2.3.
   - A 2.3 executor refuses a V1-format request with
     `query_remote_v2_format_unsupported` and a `supported` detail naming the

@@ -5,8 +5,8 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use serde_json::{Value, json};
-use type_bridge_contract::sdk_diagnostic::{SdkDiagnosticDetailValue, SdkExecutionDiagnostic};
+use serde_json::Value;
+use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
 use type_bridge_orm::{EnumKind, canonical_enum_spelling};
 
 fn corpus() -> Value {
@@ -15,26 +15,9 @@ fn corpus() -> Value {
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
-/// The JSON form both bindings give a diagnostic's details.
+/// The details of a diagnostic's canonical host JSON form.
 fn details_json(diagnostic: &SdkExecutionDiagnostic) -> Value {
-    diagnostic
-        .details()
-        .iter()
-        .map(|(key, value)| {
-            let value = match value {
-                SdkDiagnosticDetailValue::QueryIdentity(value) => {
-                    json!({"kind": "query_identity", "value": value.as_str()})
-                }
-                SdkDiagnosticDetailValue::QueryIdentityList(values) => json!({
-                    "kind": "query_identity_list",
-                    "value": values.iter().map(|value| value.as_str()).collect::<Vec<_>>(),
-                }),
-                other => panic!("unexpected detail {other:?}"),
-            };
-            (key.as_str().to_owned(), value)
-        })
-        .collect::<serde_json::Map<_, _>>()
-        .into()
+    serde_json::to_value(diagnostic.host_json()).unwrap()["details"].clone()
 }
 
 #[test]

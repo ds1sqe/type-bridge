@@ -14,7 +14,7 @@ use std::sync::Arc;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyUnicodeEncodeError, PyValueError};
 use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyByteArray, PyBytes, PyInt, PyString};
+use pyo3::types::{PyAny, PyByteArray, PyBytes, PyDict, PyInt, PyString};
 use pythonize::pythonize;
 use type_bridge_contract::codec::{from_canonical_json, to_canonical_json};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
@@ -53,13 +53,14 @@ pub(crate) fn value_error(diagnostic: &Diagnostic) -> PyErr {
             diagnostic.code().as_str(),
             diagnostic.message(),
         ));
+        // One attribute per key of the diagnostic's serde form, the same JSON
+        // Node and the C ABI emit.
         let attach = || -> PyResult<()> {
             let value = py_error.value(py);
-            value.setattr("category", diagnostic.category().as_str())?;
-            value.setattr("code", diagnostic.code().as_str())?;
-            value.setattr("message", diagnostic.message())?;
-            value.setattr("path", pythonize(py, diagnostic.path().segments())?)?;
-            value.setattr("details", pythonize(py, diagnostic.details())?)?;
+            let form = pythonize(py, diagnostic)?.cast_into::<PyDict>()?;
+            for (key, item) in form.iter() {
+                value.setattr(key.cast_into::<PyString>()?, item)?;
+            }
             Ok(())
         };
         match attach() {
