@@ -27,7 +27,7 @@ from typing import Any, Protocol
 from urllib import request as urllib_request
 
 import pytest
-from type_bridge_core import MatchRequestError
+from type_bridge_core import MatchRequestError, QueryCancellation, QueryExecutionResourceLimits
 
 from type_bridge import Database
 
@@ -4535,3 +4535,73 @@ def test_generated_projection_round_trips_live_models(
                 sdk_v2_results,
             ),
         )
+
+
+def test_generated_direct_terminals_run_under_the_connection_answer_ceiling(
+    clean_db: Database,
+    generated_package: ModuleType,
+) -> None:
+    generated = generated_package
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
+    clean_db.execute_query(
+        "insert $a isa counter, has counter_value 1; $b isa counter, has counter_value 2;",
+        transaction_type="write",
+    )
+    projection = generated.Counter.__runtime_projection__
+    tls_root_ca = os.getenv("TYPEDB_TLS_ROOT_CA")
+
+    def connect(answer_limits: QueryExecutionResourceLimits | None) -> Any:
+        return projection.connect_direct(
+            clean_db.address,
+            clean_db.database_name,
+            clean_db.username or "admin",
+            clean_db.password or "password",
+            clean_db.http_port,
+            tls_mode="disabled" if tls_root_ca is None else "custom_root",
+            tls_root_ca=tls_root_ca,
+            answer_limits=answer_limits,
+        )
+
+    # The session asks for every default; each connection allows less.
+    session = projection.match_session_with_resources(
+        QueryExecutionResourceLimits(), QueryCancellation()
+    )
+    counter = session.exact("counter")
+    query = session.query(session.positional([counter.one()]))
+
+    unbounded = connect(None)
+    assert query.execute_count_by_owned(unbounded, counter).count_value() == 2
+    unbounded.close()
+
+    expired = connect(QueryExecutionResourceLimits(timeout_milliseconds=0))
+    transaction = expired.transaction("read")
+    for terminal in (
+        lambda: query.execute_count_by_owned(expired, counter),
+        lambda: query.execute_count_by_borrowed(transaction, counter),
+    ):
+        with pytest.raises(MatchRequestError) as timed_out:
+            terminal()
+        assert timed_out.value.category == "resource_limit"
+        assert timed_out.value.code == "transaction_deadline_exceeded"
+    transaction.close()
+    expired.close()
+
+    # A one-item ceiling refuses exactly as a session asking for one item.
+    unbounded = connect(None)
+    asking = projection.match_session_with_resources(
+        QueryExecutionResourceLimits(items=1), QueryCancellation()
+    )
+    asked_counter = asking.exact("counter")
+    asked = asking.query(asking.positional([asked_counter.one()]))
+    with pytest.raises(MatchRequestError) as session_refusal:
+        asked.execute_fetch_rows_owned(unbounded, [], 0, 10, "bounded_many")
+    unbounded.close()
+    one_item = connect(QueryExecutionResourceLimits(items=1))
+    with pytest.raises(MatchRequestError) as ceiling_refusal:
+        query.execute_fetch_rows_owned(one_item, [], 0, 10, "bounded_many")
+    one_item.close()
+    assert (ceiling_refusal.value.category, ceiling_refusal.value.code) == (
+        session_refusal.value.category,
+        session_refusal.value.code,
+    )

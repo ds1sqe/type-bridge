@@ -869,6 +869,14 @@ class MatchQueryHandle:
         limit: int,
         cardinality: str,
     ) -> ValidatedMatchResultHandle: ...
+    def execute_fetch_rows_proxy(
+        self,
+        connection: ProxyConnection,
+        order: list[MatchOrderHandle],
+        offset: int,
+        limit: int,
+        cardinality: str,
+    ) -> ValidatedMatchResultHandle: ...
     def execute_page_by_owned(
         self,
         database: PyRustDatabase,
@@ -887,17 +895,32 @@ class MatchQueryHandle:
         limit: int,
         include_total: bool,
     ) -> ValidatedMatchResultHandle: ...
+    def execute_page_by_proxy(
+        self,
+        connection: ProxyConnection,
+        root: MatchBindingHandle,
+        order: list[MatchOrderHandle],
+        offset: int,
+        limit: int,
+        include_total: bool,
+    ) -> ValidatedMatchResultHandle: ...
     def execute_count_by_owned(
         self, database: PyRustDatabase, root: MatchBindingHandle
     ) -> ValidatedMatchResultHandle: ...
     def execute_count_by_borrowed(
         self, transaction: PyRustTransactionContext, root: MatchBindingHandle
     ) -> ValidatedMatchResultHandle: ...
+    def execute_count_by_proxy(
+        self, connection: ProxyConnection, root: MatchBindingHandle
+    ) -> ValidatedMatchResultHandle: ...
     def execute_exists_by_owned(
         self, database: PyRustDatabase, root: MatchBindingHandle
     ) -> ValidatedMatchResultHandle: ...
     def execute_exists_by_borrowed(
         self, transaction: PyRustTransactionContext, root: MatchBindingHandle
+    ) -> ValidatedMatchResultHandle: ...
+    def execute_exists_by_proxy(
+        self, connection: ProxyConnection, root: MatchBindingHandle
     ) -> ValidatedMatchResultHandle: ...
     def page_by_diagnostic(
         self,
@@ -932,6 +955,14 @@ class MatchQueryHandle:
         reducers: Sequence[str],
         inputs: Sequence[MatchFieldHandle | None],
     ) -> ValidatedMatchResultHandle: ...
+    def execute_reduce_by_proxy(
+        self,
+        connection: ProxyConnection,
+        root: MatchBindingHandle,
+        group: MatchBindingHandle | None,
+        reducers: Sequence[str],
+        inputs: Sequence[MatchFieldHandle | None],
+    ) -> ValidatedMatchResultHandle: ...
     def reduce_by_field_diagnostic(
         self,
         root: MatchBindingHandle,
@@ -955,6 +986,14 @@ class MatchQueryHandle:
         reducers: Sequence[str],
         inputs: Sequence[MatchFieldHandle | None],
     ) -> ValidatedMatchResultHandle: ...
+    def execute_reduce_by_field_proxy(
+        self,
+        connection: ProxyConnection,
+        root: MatchBindingHandle,
+        group: MatchFieldHandle,
+        reducers: Sequence[str],
+        inputs: Sequence[MatchFieldHandle | None],
+    ) -> ValidatedMatchResultHandle: ...
     def reduce_by_fields_diagnostic(
         self,
         root: MatchBindingHandle,
@@ -973,6 +1012,14 @@ class MatchQueryHandle:
     def execute_reduce_by_fields_borrowed(
         self,
         transaction: PyRustTransactionContext,
+        root: MatchBindingHandle,
+        groups: Sequence[MatchFieldHandle],
+        reducers: Sequence[str],
+        inputs: Sequence[MatchFieldHandle | None],
+    ) -> ValidatedMatchResultHandle: ...
+    def execute_reduce_by_fields_proxy(
+        self,
+        connection: ProxyConnection,
         root: MatchBindingHandle,
         groups: Sequence[MatchFieldHandle],
         reducers: Sequence[str],
@@ -1179,6 +1226,25 @@ class PyRuntimeProjection:
         query_limits: QueryLimits | None = ...,
     ) -> MatchSessionHandle: ...
     def hydrate_thing(self, thing: ValidatedMatchThingHandle) -> object: ...
+
+@final
+class ProxyConnection:
+    def __new__(cls) -> Never: ...
+    @staticmethod
+    def connect(
+        authority: QueryV2Authority,
+        endpoint: str,
+        *,
+        tls_mode: Literal["disabled", "native_roots", "custom_root"] = ...,
+        tls_root_ca: str | PathLike[str] | None = ...,
+        headers: Sequence[tuple[str, str]] | None = ...,
+        advertisement: bytes | bytearray | None = ...,
+        connection_limits: QueryExecutionResourceLimits | None = ...,
+        answer_limits: QueryExecutionResourceLimits | None = ...,
+        cancellation: QueryCancellation | None = ...,
+    ) -> ProxyConnection: ...
+    @property
+    def answer_limits(self) -> QueryExecutionResourceLimits: ...
 
 @final
 class RemoteModelQueryContext:

@@ -23,16 +23,19 @@ use type_bridge_orm::{
     AnswerCancellation, BindingHandle, ComparisonOp, FieldHandle, FunctionArgumentHandle,
     FunctionCallHandle, FunctionHandle, FunctionValueHandle, InstalledRuntimeProjection,
     MatchError, MissingOrder, OrderHandle, OrmError, PredicateHandle, ProjectedAttributeValue,
-    ProjectedQueryOrigin, QueryExecutionDeadline, QueryExecutionResourceLimits, QueryHandle,
-    Reduction, RoleHandle, RowCardinality, SelectionHandle, SessionHandle, ShapeHandle,
-    SortDirection, UnvalidatedMatchRequest, ValidatedMatchRequest, Window, lower_match_error,
-    query_resource_closed_diagnostic, validate_public_order_term_count,
+    ProjectedQueryOrigin, ProviderRuntimeOwner, QueryExecutionDeadline,
+    QueryExecutionResourceLimits, QueryHandle, QueryTarget, QueryTargetError, Reduction,
+    RemoteModelQueryV2Error, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
+    ShapeHandle, SortDirection, UnvalidatedMatchRequest, ValidatedMatchRequest, Window,
+    lower_match_error, lower_remote_query_diagnostic, query_resource_closed_diagnostic,
+    validate_public_order_term_count,
 };
 
 use crate::orm_runtime::{
     PyDescriptorRegistry, PyDynamicValue, PyRustDatabase, PyRustTransactionContext,
     provider_block_on,
 };
+use crate::proxy_connection_runtime::PyProxyConnection;
 use crate::validated_result_runtime::PyValidatedMatchResultHandle;
 
 pyo3::create_exception!(
@@ -157,6 +160,14 @@ impl PyQueryInvocationBudget {
     }
 }
 
+/// Where one generated terminal runs, as Python passes it.
+#[derive(Clone, Copy)]
+enum TerminalTarget<'a> {
+    Database(&'a PyRustDatabase),
+    Transaction(&'a PyRustTransactionContext),
+    Proxy(&'a PyProxyConnection),
+}
+
 /// Canonical cross-binding generated-query execution budgets.
 #[pyclass(name = "QueryExecutionResourceLimits", frozen, from_py_object)]
 #[derive(Clone, Copy)]
@@ -167,6 +178,10 @@ pub(crate) struct PyQueryExecutionResourceLimits {
 impl PyQueryExecutionResourceLimits {
     pub(crate) const fn inner(&self) -> QueryExecutionResourceLimits {
         self.inner
+    }
+
+    pub(crate) const fn from_inner(inner: QueryExecutionResourceLimits) -> Self {
+        Self { inner }
     }
 }
 
@@ -1052,25 +1067,8 @@ impl PyMatchQueryHandle {
         limit: u64,
         cardinality: &str,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let orders = order_handles(py, &order);
-        let validated = self
-            .inner
-            .validate_fetch_rows(
-                &orders,
-                Window { offset, limit },
-                parse_cardinality(cardinality)?,
-            )
-            .map_err(py_match_orm_error)?;
-        let registry = self.inner.registry_arc();
-        execute_validated_owned(
-            py,
-            database,
-            self.installed.as_ref(),
-            validated,
-            registry,
-            budget,
-        )
+        let target = TerminalTarget::Database(database);
+        self.fetch_rows_on(py, target, &order, offset, limit, cardinality)
     }
 
     fn execute_fetch_rows_borrowed(
@@ -1082,25 +1080,21 @@ impl PyMatchQueryHandle {
         limit: u64,
         cardinality: &str,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let orders = order_handles(py, &order);
-        let validated = self
-            .inner
-            .validate_fetch_rows(
-                &orders,
-                Window { offset, limit },
-                parse_cardinality(cardinality)?,
-            )
-            .map_err(py_match_orm_error)?;
-        let registry = self.inner.registry_arc();
-        execute_validated_borrowed(
-            py,
-            transaction,
-            self.installed.as_ref(),
-            validated,
-            registry,
-            budget,
-        )
+        let target = TerminalTarget::Transaction(transaction);
+        self.fetch_rows_on(py, target, &order, offset, limit, cardinality)
+    }
+
+    fn execute_fetch_rows_proxy(
+        &self,
+        py: Python<'_>,
+        connection: &PyProxyConnection,
+        order: Vec<Py<PyMatchOrderHandle>>,
+        offset: u64,
+        limit: u64,
+        cardinality: &str,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let target = TerminalTarget::Proxy(connection);
+        self.fetch_rows_on(py, target, &order, offset, limit, cardinality)
     }
 
     // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
@@ -1115,24 +1109,15 @@ impl PyMatchQueryHandle {
         limit: u64,
         include_total: bool,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let orders = order_handles(py, &order);
-        let validated = self
-            .inner
-            .validate_page_by(
-                &root.inner,
-                &orders,
-                Window { offset, limit },
-                include_total,
-            )
-            .map_err(py_match_orm_error)?;
-        execute_validated_owned(
+        let target = TerminalTarget::Database(database);
+        self.page_by_on(
             py,
-            database,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
+            target,
+            &root.inner,
+            &order,
+            offset,
+            limit,
+            include_total,
         )
     }
 
@@ -1148,24 +1133,39 @@ impl PyMatchQueryHandle {
         limit: u64,
         include_total: bool,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let orders = order_handles(py, &order);
-        let validated = self
-            .inner
-            .validate_page_by(
-                &root.inner,
-                &orders,
-                Window { offset, limit },
-                include_total,
-            )
-            .map_err(py_match_orm_error)?;
-        execute_validated_borrowed(
+        let target = TerminalTarget::Transaction(transaction);
+        self.page_by_on(
             py,
-            transaction,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
+            target,
+            &root.inner,
+            &order,
+            offset,
+            limit,
+            include_total,
+        )
+    }
+
+    // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_page_by_proxy(
+        &self,
+        py: Python<'_>,
+        connection: &PyProxyConnection,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        order: Vec<Py<PyMatchOrderHandle>>,
+        offset: u64,
+        limit: u64,
+        include_total: bool,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let target = TerminalTarget::Proxy(connection);
+        self.page_by_on(
+            py,
+            target,
+            &root.inner,
+            &order,
+            offset,
+            limit,
+            include_total,
         )
     }
 
@@ -1175,19 +1175,8 @@ impl PyMatchQueryHandle {
         database: &PyRustDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let validated = self
-            .inner
-            .validate_count_by(&root.inner)
-            .map_err(py_match_orm_error)?;
-        execute_validated_owned(
-            py,
-            database,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
-        )
+        let target = TerminalTarget::Database(database);
+        self.run_terminal(py, target, |query| query.validate_count_by(&root.inner))
     }
 
     fn execute_count_by_borrowed(
@@ -1196,19 +1185,18 @@ impl PyMatchQueryHandle {
         transaction: &PyRustTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let validated = self
-            .inner
-            .validate_count_by(&root.inner)
-            .map_err(py_match_orm_error)?;
-        execute_validated_borrowed(
-            py,
-            transaction,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
-        )
+        let target = TerminalTarget::Transaction(transaction);
+        self.run_terminal(py, target, |query| query.validate_count_by(&root.inner))
+    }
+
+    fn execute_count_by_proxy(
+        &self,
+        py: Python<'_>,
+        connection: &PyProxyConnection,
+        root: PyRef<'_, PyMatchBindingHandle>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let target = TerminalTarget::Proxy(connection);
+        self.run_terminal(py, target, |query| query.validate_count_by(&root.inner))
     }
 
     fn execute_exists_by_owned(
@@ -1217,19 +1205,8 @@ impl PyMatchQueryHandle {
         database: &PyRustDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let validated = self
-            .inner
-            .validate_exists_by(&root.inner)
-            .map_err(py_match_orm_error)?;
-        execute_validated_owned(
-            py,
-            database,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
-        )
+        let target = TerminalTarget::Database(database);
+        self.run_terminal(py, target, |query| query.validate_exists_by(&root.inner))
     }
 
     fn execute_exists_by_borrowed(
@@ -1238,19 +1215,18 @@ impl PyMatchQueryHandle {
         transaction: &PyRustTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let validated = self
-            .inner
-            .validate_exists_by(&root.inner)
-            .map_err(py_match_orm_error)?;
-        execute_validated_borrowed(
-            py,
-            transaction,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
-        )
+        let target = TerminalTarget::Transaction(transaction);
+        self.run_terminal(py, target, |query| query.validate_exists_by(&root.inner))
+    }
+
+    fn execute_exists_by_proxy(
+        &self,
+        py: Python<'_>,
+        connection: &PyProxyConnection,
+        root: PyRef<'_, PyMatchBindingHandle>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let target = TerminalTarget::Proxy(connection);
+        self.run_terminal(py, target, |query| query.validate_exists_by(&root.inner))
     }
 
     #[pyo3(signature = (root, group, reducers, inputs))]
@@ -1284,25 +1260,9 @@ impl PyMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let terms = reduce_terms(py, &reducers, &inputs)?;
-        let terms = borrow_reduce_terms(&terms);
-        let validated = self
-            .inner
-            .validate_reduce_by(
-                &root.inner,
-                group.as_ref().map(|group| &group.inner),
-                &terms,
-            )
-            .map_err(py_match_orm_error)?;
-        execute_validated_owned(
-            py,
-            database,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
-        )
+        let target = TerminalTarget::Database(database);
+        let group = group.as_ref().map(|group| &group.inner);
+        self.reduce_by_on(py, target, &root.inner, group, &reducers, &inputs)
     }
 
     // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
@@ -1317,25 +1277,26 @@ impl PyMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let terms = reduce_terms(py, &reducers, &inputs)?;
-        let terms = borrow_reduce_terms(&terms);
-        let validated = self
-            .inner
-            .validate_reduce_by(
-                &root.inner,
-                group.as_ref().map(|group| &group.inner),
-                &terms,
-            )
-            .map_err(py_match_orm_error)?;
-        execute_validated_borrowed(
-            py,
-            transaction,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
-        )
+        let target = TerminalTarget::Transaction(transaction);
+        let group = group.as_ref().map(|group| &group.inner);
+        self.reduce_by_on(py, target, &root.inner, group, &reducers, &inputs)
+    }
+
+    // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (connection, root, group, reducers, inputs))]
+    fn execute_reduce_by_proxy(
+        &self,
+        py: Python<'_>,
+        connection: &PyProxyConnection,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        group: Option<PyRef<'_, PyMatchBindingHandle>>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let target = TerminalTarget::Proxy(connection);
+        let group = group.as_ref().map(|group| &group.inner);
+        self.reduce_by_on(py, target, &root.inner, group, &reducers, &inputs)
     }
 
     #[pyo3(signature = (root, group, reducers, inputs))]
@@ -1368,21 +1329,8 @@ impl PyMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let terms = reduce_terms(py, &reducers, &inputs)?;
-        let terms = borrow_reduce_terms(&terms);
-        let validated = self
-            .inner
-            .validate_reduce_by_field(&root.inner, &group.inner, &terms)
-            .map_err(py_match_orm_error)?;
-        execute_validated_owned(
-            py,
-            database,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
-        )
+        let target = TerminalTarget::Database(database);
+        self.reduce_by_field_on(py, target, &root.inner, &group.inner, &reducers, &inputs)
     }
 
     // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
@@ -1397,21 +1345,24 @@ impl PyMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let terms = reduce_terms(py, &reducers, &inputs)?;
-        let terms = borrow_reduce_terms(&terms);
-        let validated = self
-            .inner
-            .validate_reduce_by_field(&root.inner, &group.inner, &terms)
-            .map_err(py_match_orm_error)?;
-        execute_validated_borrowed(
-            py,
-            transaction,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
-        )
+        let target = TerminalTarget::Transaction(transaction);
+        self.reduce_by_field_on(py, target, &root.inner, &group.inner, &reducers, &inputs)
+    }
+
+    // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (connection, root, group, reducers, inputs))]
+    fn execute_reduce_by_field_proxy(
+        &self,
+        py: Python<'_>,
+        connection: &PyProxyConnection,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        group: PyRef<'_, PyMatchFieldHandle>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let target = TerminalTarget::Proxy(connection);
+        self.reduce_by_field_on(py, target, &root.inner, &group.inner, &reducers, &inputs)
     }
 
     #[pyo3(signature = (root, groups, reducers, inputs))]
@@ -1446,26 +1397,8 @@ impl PyMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let groups = groups
-            .iter()
-            .map(|group| group.borrow(py).inner.clone())
-            .collect::<Vec<_>>();
-        let groups = groups.iter().collect::<Vec<_>>();
-        let terms = reduce_terms(py, &reducers, &inputs)?;
-        let terms = borrow_reduce_terms(&terms);
-        let validated = self
-            .inner
-            .validate_reduce_by_fields(&root.inner, &groups, &terms)
-            .map_err(py_match_orm_error)?;
-        execute_validated_owned(
-            py,
-            database,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
-        )
+        let target = TerminalTarget::Database(database);
+        self.reduce_by_fields_on(py, target, &root.inner, &groups, &reducers, &inputs)
     }
 
     // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
@@ -1480,26 +1413,156 @@ impl PyMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
+        let target = TerminalTarget::Transaction(transaction);
+        self.reduce_by_fields_on(py, target, &root.inner, &groups, &reducers, &inputs)
+    }
+
+    // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (connection, root, groups, reducers, inputs))]
+    fn execute_reduce_by_fields_proxy(
+        &self,
+        py: Python<'_>,
+        connection: &PyProxyConnection,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        groups: Vec<Py<PyMatchFieldHandle>>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let target = TerminalTarget::Proxy(connection);
+        self.reduce_by_fields_on(py, target, &root.inner, &groups, &reducers, &inputs)
+    }
+}
+
+/// One body per terminal kind; the Python methods above only name the target.
+impl PyMatchQueryHandle {
+    /// Open one invocation budget, validate the request, and run it on
+    /// `target`. The budget is taken first so a closed query or an expired
+    /// session refuses before any validation work.
+    fn run_terminal(
+        &self,
+        py: Python<'_>,
+        target: TerminalTarget<'_>,
+        validate: impl FnOnce(&QueryHandle) -> Result<ValidatedMatchRequest, OrmError>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        self.run_terminal_checked(py, target, |query| {
+            validate(query).map_err(py_match_orm_error)
+        })
+    }
+
+    fn run_terminal_checked(
+        &self,
+        py: Python<'_>,
+        target: TerminalTarget<'_>,
+        validate: impl FnOnce(&QueryHandle) -> PyResult<ValidatedMatchRequest>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
         let budget = self.begin_invocation()?;
-        let groups = groups
-            .iter()
-            .map(|group| group.borrow(py).inner.clone())
-            .collect::<Vec<_>>();
-        let groups = groups.iter().collect::<Vec<_>>();
-        let terms = reduce_terms(py, &reducers, &inputs)?;
-        let terms = borrow_reduce_terms(&terms);
-        let validated = self
-            .inner
-            .validate_reduce_by_fields(&root.inner, &groups, &terms)
-            .map_err(py_match_orm_error)?;
-        execute_validated_borrowed(
+        let validated = validate(&self.inner)?;
+        execute_on_target(
             py,
-            transaction,
+            target,
             self.installed.as_ref(),
             validated,
             self.inner.registry_arc(),
             budget,
         )
+    }
+
+    fn fetch_rows_on(
+        &self,
+        py: Python<'_>,
+        target: TerminalTarget<'_>,
+        order: &[Py<PyMatchOrderHandle>],
+        offset: u64,
+        limit: u64,
+        cardinality: &str,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        self.run_terminal_checked(py, target, |query| {
+            let orders = order_handles(py, order);
+            query
+                .validate_fetch_rows(
+                    &orders,
+                    Window { offset, limit },
+                    parse_cardinality(cardinality)?,
+                )
+                .map_err(py_match_orm_error)
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn page_by_on(
+        &self,
+        py: Python<'_>,
+        target: TerminalTarget<'_>,
+        root: &BindingHandle,
+        order: &[Py<PyMatchOrderHandle>],
+        offset: u64,
+        limit: u64,
+        include_total: bool,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        self.run_terminal(py, target, |query| {
+            let orders = order_handles(py, order);
+            query.validate_page_by(root, &orders, Window { offset, limit }, include_total)
+        })
+    }
+
+    fn reduce_by_on(
+        &self,
+        py: Python<'_>,
+        target: TerminalTarget<'_>,
+        root: &BindingHandle,
+        group: Option<&BindingHandle>,
+        reducers: &[String],
+        inputs: &[Option<Py<PyMatchFieldHandle>>],
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        self.run_terminal_checked(py, target, |query| {
+            let terms = reduce_terms(py, reducers, inputs)?;
+            let terms = borrow_reduce_terms(&terms);
+            query
+                .validate_reduce_by(root, group, &terms)
+                .map_err(py_match_orm_error)
+        })
+    }
+
+    fn reduce_by_field_on(
+        &self,
+        py: Python<'_>,
+        target: TerminalTarget<'_>,
+        root: &BindingHandle,
+        group: &FieldHandle,
+        reducers: &[String],
+        inputs: &[Option<Py<PyMatchFieldHandle>>],
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        self.run_terminal_checked(py, target, |query| {
+            let terms = reduce_terms(py, reducers, inputs)?;
+            let terms = borrow_reduce_terms(&terms);
+            query
+                .validate_reduce_by_field(root, group, &terms)
+                .map_err(py_match_orm_error)
+        })
+    }
+
+    fn reduce_by_fields_on(
+        &self,
+        py: Python<'_>,
+        target: TerminalTarget<'_>,
+        root: &BindingHandle,
+        groups: &[Py<PyMatchFieldHandle>],
+        reducers: &[String],
+        inputs: &[Option<Py<PyMatchFieldHandle>>],
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        self.run_terminal_checked(py, target, |query| {
+            let groups = groups
+                .iter()
+                .map(|group| group.borrow(py).inner.clone())
+                .collect::<Vec<_>>();
+            let groups = groups.iter().collect::<Vec<_>>();
+            let terms = reduce_terms(py, reducers, inputs)?;
+            let terms = borrow_reduce_terms(&terms);
+            query
+                .validate_reduce_by_fields(root, &groups, &terms)
+                .map_err(py_match_orm_error)
+        })
     }
 }
 
@@ -1534,57 +1597,102 @@ pub(crate) fn borrow_reduce_terms(
         .collect()
 }
 
-fn execute_validated_owned(
+/// Run one validated request on `target` through the shared terminal
+/// executor, which holds it to the connection's answer-limit ceiling, and
+/// materialize the result under the same constrained budget.
+fn execute_on_target(
     py: Python<'_>,
-    database: &PyRustDatabase,
+    target: TerminalTarget<'_>,
     installed: Option<&Arc<InstalledRuntimeProjection>>,
     validated: ValidatedMatchRequest,
-    registry: std::sync::Arc<DescriptorRegistry>,
+    registry: Arc<DescriptorRegistry>,
     budget: PyQueryInvocationBudget,
 ) -> PyResult<PyValidatedMatchResultHandle> {
-    let (database, runtime) = database.handles();
-    let origin = installed.map(|_| ProjectedQueryOrigin::for_database(database.as_ref()));
-    let result = provider_block_on(
+    match target {
+        TerminalTarget::Database(database) => {
+            let (database, runtime) = database.handles();
+            let origin = installed.map(|_| ProjectedQueryOrigin::for_database(database.as_ref()));
+            let target = QueryTarget::Database(database.as_ref());
+            execute_and_materialize(
+                py, &runtime, target, installed, origin, validated, registry, budget,
+            )
+        }
+        TerminalTarget::Transaction(transaction) => {
+            let (transaction, runtime) = transaction.handles();
+            let origin = installed
+                .map(|_| ProjectedQueryOrigin::for_transaction(&transaction))
+                .transpose()
+                .map_err(py_sdk_diagnostic)?;
+            let target = QueryTarget::Transaction(&transaction);
+            execute_and_materialize(
+                py, &runtime, target, installed, origin, validated, registry, budget,
+            )
+        }
+        TerminalTarget::Proxy(connection) => {
+            let origin = installed.map(|_| ProjectedQueryOrigin::remote_unbound());
+            let target = QueryTarget::Proxy(connection.connection());
+            execute_and_materialize(
+                py,
+                connection.runtime(),
+                target,
+                installed,
+                origin,
+                validated,
+                registry,
+                budget,
+            )
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_and_materialize(
+    py: Python<'_>,
+    runtime: &ProviderRuntimeOwner,
+    target: QueryTarget<'_>,
+    installed: Option<&Arc<InstalledRuntimeProjection>>,
+    origin: Option<ProjectedQueryOrigin>,
+    validated: ValidatedMatchRequest,
+    registry: Arc<DescriptorRegistry>,
+    budget: PyQueryInvocationBudget,
+) -> PyResult<PyValidatedMatchResultHandle> {
+    // Materialization runs under the same ceiling-bound budget as execution.
+    let (resources, deadline) = target.budget(budget.resources, budget.deadline);
+    let budget = PyQueryInvocationBudget::from_parts(resources, deadline, budget.cancellation);
+    let (validated, result) = provider_block_on(
         py,
-        runtime.as_ref(),
-        database.execute_match_with_limits(
+        runtime,
+        target.execute(
             &registry,
-            &validated,
-            budget
-                .resources
-                .direct_with_deadline(budget.cancellation.clone(), budget.deadline),
+            validated,
+            budget.resources,
+            &budget.cancellation,
+            budget.deadline,
         ),
     )
-    .map_err(py_match_orm_error)?;
+    .map_err(py_query_target_error)?;
     validated_result_handle(installed, origin, validated, result, registry, budget)
 }
 
-fn execute_validated_borrowed(
-    py: Python<'_>,
-    transaction: &PyRustTransactionContext,
-    installed: Option<&Arc<InstalledRuntimeProjection>>,
-    validated: ValidatedMatchRequest,
-    registry: std::sync::Arc<DescriptorRegistry>,
-    budget: PyQueryInvocationBudget,
-) -> PyResult<PyValidatedMatchResultHandle> {
-    let (transaction, runtime) = transaction.handles();
-    let origin = installed
-        .map(|_| ProjectedQueryOrigin::for_transaction(&transaction))
-        .transpose()
-        .map_err(py_sdk_diagnostic)?;
-    let result = provider_block_on(
-        py,
-        runtime.as_ref(),
-        transaction.execute_match_with_limits(
-            &registry,
-            &validated,
-            budget
-                .resources
-                .direct_with_deadline(budget.cancellation.clone(), budget.deadline),
-        ),
-    )
-    .map_err(py_match_orm_error)?;
-    validated_result_handle(installed, origin, validated, result, registry, budget)
+/// Lower a terminal failure to the exception its stage raised before the
+/// shared executor existed.
+pub(crate) fn py_query_target_error(error: QueryTargetError) -> PyErr {
+    match error {
+        QueryTargetError::Direct(error) => py_match_orm_error(error),
+        QueryTargetError::Prepare(error) | QueryTargetError::Reply(error) => {
+            py_remote_model_error(error)
+        }
+        QueryTargetError::Interrupted(diagnostic) => py_sdk_diagnostic(diagnostic),
+    }
+}
+
+pub(crate) fn py_remote_model_error(error: RemoteModelQueryV2Error) -> PyErr {
+    match error {
+        RemoteModelQueryV2Error::Diagnostic(diagnostic) => {
+            py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic))
+        }
+        RemoteModelQueryV2Error::Match(error) => py_match_error(error),
+    }
 }
 
 pub(crate) fn validated_result_handle(

@@ -1130,7 +1130,7 @@ impl InstalledPackage {
     }
 }
 
-fn direct_tls_from_python(
+pub(crate) fn direct_tls_from_python(
     tls_mode: &str,
     tls_root_ca: Option<std::path::PathBuf>,
 ) -> PyResult<type_bridge_orm::TlsPolicy> {

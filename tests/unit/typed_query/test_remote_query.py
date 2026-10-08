@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import pytest
 from type_bridge_core import (
     MatchRequestError,
+    ProxyConnection,
+    QueryExecutionResourceLimits,
     QueryV2Authority,
     query_v2_prepare_remote_model_page,
     query_v2_prepare_remote_model_rows,
@@ -836,3 +839,111 @@ def test_public_remote_session_rejects_invalid_limits_before_exchange(
     assert raised.value.query_category == "invalid_plan"
     assert raised.value.code == "query_remote_limit_invalid"
     assert exchanges == 0
+
+
+def _unreachable_endpoint() -> str:
+    # A port that was just bound and released refuses connections.
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    return f"http://127.0.0.1:{port}"
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "options", "code"),
+    [
+        ("https://proxy:8443", {}, "proxy_endpoint_invalid"),
+        ("http://proxy:8080", {"tls_mode": "native_roots"}, "proxy_endpoint_invalid"),
+        ("not a url", {}, "proxy_endpoint_invalid"),
+        (
+            "http://proxy:8080",
+            {"headers": [("Content-Length", "1")]},
+            "proxy_header_invalid",
+        ),
+        (
+            "http://proxy:8080",
+            {"headers": [("Authorization", "secret\nInjected: header-secret")]},
+            "proxy_header_invalid",
+        ),
+    ],
+)
+def test_proxy_connection_refuses_malformed_endpoints_and_headers_before_io(
+    endpoint: str, options: dict[str, object], code: str
+) -> None:
+    with pytest.raises(MatchRequestError) as raised:
+        invoke_untyped(ProxyConnection.connect, _model_authority(), endpoint, **options)
+    assert raised.value.sdk_category == "invalid_input"
+    assert raised.value.code == code
+    assert "secret" not in str(raised.value)
+
+
+def test_proxy_connection_tls_options_are_checked_like_direct_connections() -> None:
+    with pytest.raises(ValueError, match="tls_root_ca is valid only with custom_root TLS"):
+        ProxyConnection.connect(_model_authority(), "http://proxy:8080", tls_root_ca="root.pem")
+    with pytest.raises(ValueError, match="custom_root TLS requires tls_root_ca"):
+        ProxyConnection.connect(_model_authority(), "https://proxy:8443", tls_mode="custom_root")
+    with pytest.raises(ValueError, match="tls_mode must be"):
+        invoke_untyped(
+            ProxyConnection.connect,
+            _model_authority(),
+            "http://proxy:8080",
+            tls_mode="plaintext",
+        )
+
+
+def test_unreachable_proxy_is_a_redacted_provider_failure() -> None:
+    endpoint = _unreachable_endpoint()
+    with pytest.raises(MatchRequestError) as raised:
+        ProxyConnection.connect(_model_authority(), endpoint)
+    assert raised.value.code == "provider_operation_failed"
+    assert endpoint.rsplit(":", 1)[1] not in str(raised.value)
+
+
+def test_proxy_terminals_run_on_the_built_in_route_under_the_connection_ceiling() -> None:
+    # A pinned advertisement needs no fetch, so connecting does no I/O.
+    endpoint = _unreachable_endpoint()
+    connection = ProxyConnection.connect(
+        _model_authority(),
+        endpoint,
+        advertisement=_model_advertisement(),
+        answer_limits=QueryExecutionResourceLimits(items=1),
+    )
+    assert connection.answer_limits.items == 1
+    session = diagnostic_session()
+    person = session.var(RemoteSmokePerson)
+    query = session.query(person)._native_query()
+    root = person._native_binding()
+    with pytest.raises(MatchRequestError) as unreachable:
+        query.execute_count_by_proxy(connection, root)
+    assert unreachable.value.code == "provider_operation_failed"
+
+    # The session asks for the default thirty seconds; the connection allows
+    # none, so the terminal ends before it reaches the route.
+    expired = ProxyConnection.connect(
+        _model_authority(),
+        endpoint,
+        advertisement=_model_advertisement(),
+        answer_limits=QueryExecutionResourceLimits(timeout_milliseconds=0),
+    )
+    terminals = (
+        lambda: query.execute_count_by_proxy(expired, root),
+        lambda: query.execute_exists_by_proxy(expired, root),
+        lambda: query.execute_fetch_rows_proxy(expired, [], 0, 1, "bounded_many"),
+        lambda: query.execute_page_by_proxy(expired, root, [], 0, 1, False),
+        lambda: query.execute_reduce_by_proxy(expired, root, None, ["count"], [None]),
+    )
+    for terminal in terminals:
+        with pytest.raises(MatchRequestError) as raised:
+            terminal()
+        assert raised.value.category == "resource_limit"
+        assert raised.value.code == "transaction_deadline_exceeded"
+
+
+def test_proxy_connection_refuses_an_invalid_pinned_advertisement() -> None:
+    with pytest.raises(MatchRequestError) as raised:
+        ProxyConnection.connect(
+            _model_authority(),
+            _unreachable_endpoint(),
+            advertisement=b"{}",
+        )
+    assert raised.value.sdk_category == "invalid_input"
