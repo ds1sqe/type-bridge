@@ -18,7 +18,7 @@ use pyo3::types::{PyAny, PyByteArray, PyBytes, PyInt, PyString};
 use pythonize::pythonize;
 use type_bridge_contract::codec::{from_canonical_json, to_canonical_json};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use type_bridge_contract::fingerprint::Fingerprint;
+use type_bridge_contract::fingerprint::{Fingerprint, MAX_FINGERPRINT_IDENTIFIER_BYTES};
 use type_bridge_contract::limits::{
     MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES, MAX_REMOTE_ENVELOPE_BYTES,
 };
@@ -71,10 +71,6 @@ pub(crate) fn value_error(diagnostic: &Diagnostic) -> PyErr {
 
 const LOCAL_WORKER_FAILED: &str =
     "query_v2_local_worker_failed: local provider worker terminated unexpectedly";
-// `SemanticProfileId` freezes this tighter identifier ceiling inside the
-// contract validator; mirror it at the FFI ownership boundary so Python and
-// Node never allocate beyond the value that validator can admit.
-const MAX_SEMANTIC_PROFILE_ID_BYTES: usize = 255;
 
 fn binding_diagnostic(
     category: DiagnosticCategory,
@@ -266,7 +262,7 @@ fn build_query_v2_authority(
     let profile = PythonString::extract(profile, "profile")?;
     let declared_schema = declared_schema.bounded_snapshot(MAX_CANONICAL_BYTES.saturating_add(1));
     let scope = scope.bounded_snapshot(MAX_CANONICAL_STRING_BYTES)?;
-    let profile = profile.bounded_snapshot(MAX_SEMANTIC_PROFILE_ID_BYTES)?;
+    let profile = profile.bounded_snapshot(MAX_FINGERPRINT_IDENTIFIER_BYTES)?;
     let authority = py
         .detach(move || QueryAuthority::from_declared_bytes(&declared_schema, &scope, &profile))
         .map_err(|diagnostic| value_error(&diagnostic))?;
@@ -365,7 +361,7 @@ fn build_query_v2_query_only_authority(
     let profile = PythonString::extract(profile, "profile")?;
     let declared_schema = declared_schema.bounded_snapshot(MAX_CANONICAL_BYTES.saturating_add(1));
     let scope = scope.bounded_snapshot(MAX_CANONICAL_STRING_BYTES)?;
-    let profile = profile.bounded_snapshot(MAX_SEMANTIC_PROFILE_ID_BYTES)?;
+    let profile = profile.bounded_snapshot(MAX_FINGERPRINT_IDENTIFIER_BYTES)?;
     let (database, _) = database.handles();
     let authority = py
         .detach(move || {
@@ -597,7 +593,7 @@ mod tests {
     use pythonize::depythonize;
 
     use super::{
-        LOCAL_WORKER_FAILED, MAX_SEMANTIC_PROFILE_ID_BYTES, PyQueryV2Authority, PythonBytes,
+        LOCAL_WORKER_FAILED, MAX_FINGERPRINT_IDENTIFIER_BYTES, PyQueryV2Authority, PythonBytes,
         PythonString, QueryV2Error, build_query_v2_authority_from_schema_authority,
         contain_local_worker_panic, python_limit, value_error,
     };
@@ -892,21 +888,21 @@ mod tests {
 
             let exact_profile = format!(
                 "{}/v1",
-                "a".repeat(MAX_SEMANTIC_PROFILE_ID_BYTES - "/v1".len())
+                "a".repeat(MAX_FINGERPRINT_IDENTIFIER_BYTES - "/v1".len())
             );
             let exact_value = PyString::new(py, &exact_profile);
             let profile = PythonString::extract(exact_value.as_any(), "profile")
                 .expect("profile string")
-                .bounded_snapshot(MAX_SEMANTIC_PROFILE_ID_BYTES)
+                .bounded_snapshot(MAX_FINGERPRINT_IDENTIFIER_BYTES)
                 .expect("UTF-8 profile");
             assert_eq!(profile, exact_profile);
             SemanticProfileId::new(profile).expect("exact profile ceiling is valid");
 
             let profile = PythonString::extract(value.as_any(), "profile")
                 .expect("profile string")
-                .bounded_snapshot(MAX_SEMANTIC_PROFILE_ID_BYTES)
+                .bounded_snapshot(MAX_FINGERPRINT_IDENTIFIER_BYTES)
                 .expect("UTF-8 profile");
-            assert_eq!(profile.len(), MAX_SEMANTIC_PROFILE_ID_BYTES + 1);
+            assert_eq!(profile.len(), MAX_FINGERPRINT_IDENTIFIER_BYTES + 1);
             assert_eq!(
                 SemanticProfileId::new(profile)
                     .expect_err("oversized profile marker")

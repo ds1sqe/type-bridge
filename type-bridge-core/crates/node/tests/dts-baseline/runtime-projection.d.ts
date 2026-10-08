@@ -42,7 +42,10 @@ export interface GeneratedSchemaAuthorityInstall {
     readonly schemaAuthorityJson: string;
     readonly semanticFingerprintJson: string;
 }
-/** The answer policy shared by direct and remote queries; a dimension may tighten or raise its default. */
+/**
+ * The answer policy shared by direct and remote queries. An omitted
+ * dimension takes the core default; a given one may tighten or raise it.
+ */
 export interface QueryExecutionResourceLimitOptions {
     readonly timeoutMilliseconds?: bigint;
     readonly items?: bigint;

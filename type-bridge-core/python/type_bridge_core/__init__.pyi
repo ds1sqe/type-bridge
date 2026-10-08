@@ -16,7 +16,7 @@ fallback rather than being enumerated here.
 
 from collections.abc import Mapping, Sequence
 from os import PathLike
-from typing import Any, Literal, Never, Protocol, TypedDict, final, overload
+from typing import Any, Final, Literal, Never, Protocol, TypedDict, final, overload
 
 class ValueCoercer:
     def __init__(self) -> None: ...
@@ -683,6 +683,16 @@ class QueryLimits:
     @staticmethod
     def names() -> list[str]: ...
     def get(self, name: str) -> int: ...
+
+# Answer-policy defaults a `QueryExecutionResourceLimits()` dimension takes.
+DEFAULT_QUERY_TIMEOUT_MILLISECONDS: Final[int]
+DEFAULT_QUERY_ITEMS: Final[int]
+DEFAULT_QUERY_BYTES: Final[int]
+DEFAULT_QUERY_GRAPH_NODES: Final[int]
+DEFAULT_QUERY_ATTRIBUTE_VALUES: Final[int]
+DEFAULT_QUERY_COLLECTION_MEMBERS: Final[int]
+DEFAULT_QUERY_ROLE_PLAYERS: Final[int]
+DEFAULT_QUERY_STATEMENTS: Final[int]
 
 @final
 class QueryExecutionResourceLimits:

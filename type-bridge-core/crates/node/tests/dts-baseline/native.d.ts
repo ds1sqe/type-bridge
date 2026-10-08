@@ -189,8 +189,23 @@ interface NativeProxyConnectionModule {
         connect(authority: ReturnType<NativeModule["queryV2Authority"]>, endpoint: string, tlsMode: string, tlsRootCa: string | undefined, headerNames: string[], headerValues: string[], advertisement?: Uint8Array, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation): Promise<NativeProxyConnection>;
     };
 }
+/** Core limits the addon exports, so the package holds no copies. */
+interface NativeLimitsModule {
+    readonly DEFAULT_QUERY_TIMEOUT_MILLISECONDS: bigint;
+    readonly DEFAULT_QUERY_ITEMS: bigint;
+    readonly DEFAULT_QUERY_BYTES: bigint;
+    readonly DEFAULT_QUERY_GRAPH_NODES: bigint;
+    readonly DEFAULT_QUERY_ATTRIBUTE_VALUES: bigint;
+    readonly DEFAULT_QUERY_COLLECTION_MEMBERS: bigint;
+    readonly DEFAULT_QUERY_ROLE_PLAYERS: bigint;
+    readonly DEFAULT_QUERY_STATEMENTS: bigint;
+    readonly MAX_CANONICAL_BYTES: number;
+    readonly MAX_REMOTE_ENVELOPE_BYTES: number;
+    readonly MAX_DIAGNOSTIC_CODE_BYTES: number;
+}
 interface NativeRemoteModelQueryModule {
-    NodeQueryExecutionResources: new (timeoutMilliseconds: bigint, items: bigint, bytes: bigint, graphNodes: bigint, attributeValues: bigint, collectionMembers: bigint, rolePlayers: bigint, statements: bigint) => NativeQueryExecutionResources;
+    /** An omitted dimension takes the core default. */
+    NodeQueryExecutionResources: new (timeoutMilliseconds?: bigint, items?: bigint, bytes?: bigint, graphNodes?: bigint, attributeValues?: bigint, collectionMembers?: bigint, rolePlayers?: bigint, statements?: bigint) => NativeQueryExecutionResources;
     NodeQueryCancellation: new () => NativeQueryCancellation;
     NodeQueryLimits: new (names: string[], values: bigint[]) => NativeQueryLimits;
     queryV2RemoteModelContextWithResources(authority: ReturnType<NativeModule["queryV2Authority"]>, advertisement: Uint8Array, resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation, answerLimits?: NativeQueryExecutionResources): NativeRemoteModelQueryContext;
@@ -238,7 +253,7 @@ interface NativeRuntimeProjectionHandle {
 interface NativeRuntimeProjectionModule {
     NodeRuntimeProjection: new (projectionJson: string, semanticFingerprintJson: string, projectionFingerprintJson: string, registrationsJson: string, schemaAuthorityJson?: string, projectedBatchMaterializer?: (typeKey: string, ordinal: number, json: string, authority: NativeProjectedBatchAuthority) => object) => NativeRuntimeProjectionHandle;
 }
-type LoadedNativeModule = NativeModule & NativeRemoteModelQueryModule & NativeProxyConnectionModule & NativeRuntimeProjectionModule;
+type LoadedNativeModule = NativeModule & NativeLimitsModule & NativeRemoteModelQueryModule & NativeProxyConnectionModule & NativeRuntimeProjectionModule;
 /**
  * Loads and returns the native .node module. The result is cached after the
  * first successful load; subsequent calls return the same object.

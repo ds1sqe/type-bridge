@@ -17,7 +17,7 @@ use napi::bindgen_prelude::{
 use napi_derive::napi;
 use type_bridge_contract::codec::{from_canonical_json, to_canonical_json};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use type_bridge_contract::fingerprint::Fingerprint;
+use type_bridge_contract::fingerprint::{Fingerprint, MAX_FINGERPRINT_IDENTIFIER_BYTES};
 use type_bridge_contract::limits::{
     MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES, MAX_REMOTE_ENVELOPE_BYTES,
 };
@@ -37,8 +37,6 @@ use type_bridge_schema::{
 };
 
 use crate::NodeRustDatabase;
-
-const MAX_SEMANTIC_PROFILE_ID_BYTES: usize = 255;
 
 pub(crate) fn napi_error(diagnostic: &Diagnostic) -> napi::Error {
     napi::Error::from_reason(serde_json::to_string(diagnostic).unwrap_or_else(|_| {
@@ -429,7 +427,7 @@ pub fn query_v2_authority(
     let profile = bounded_string(
         &env,
         profile,
-        MAX_SEMANTIC_PROFILE_ID_BYTES,
+        MAX_FINGERPRINT_IDENTIFIER_BYTES,
         semantic_profile_id_too_large,
     )?;
     let authority = QueryAuthority::from_declared_bytes(
@@ -566,7 +564,7 @@ pub fn query_v2_query_only_authority(
     let profile = bounded_string(
         &env,
         profile,
-        MAX_SEMANTIC_PROFILE_ID_BYTES,
+        MAX_FINGERPRINT_IDENTIFIER_BYTES,
         semantic_profile_id_too_large,
     )?;
     let (database, _) = database.handles();

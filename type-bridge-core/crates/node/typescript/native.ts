@@ -442,16 +442,32 @@ interface NativeProxyConnectionModule {
   };
 }
 
+/** Core limits the addon exports, so the package holds no copies. */
+interface NativeLimitsModule {
+  readonly DEFAULT_QUERY_TIMEOUT_MILLISECONDS: bigint;
+  readonly DEFAULT_QUERY_ITEMS: bigint;
+  readonly DEFAULT_QUERY_BYTES: bigint;
+  readonly DEFAULT_QUERY_GRAPH_NODES: bigint;
+  readonly DEFAULT_QUERY_ATTRIBUTE_VALUES: bigint;
+  readonly DEFAULT_QUERY_COLLECTION_MEMBERS: bigint;
+  readonly DEFAULT_QUERY_ROLE_PLAYERS: bigint;
+  readonly DEFAULT_QUERY_STATEMENTS: bigint;
+  readonly MAX_CANONICAL_BYTES: number;
+  readonly MAX_REMOTE_ENVELOPE_BYTES: number;
+  readonly MAX_DIAGNOSTIC_CODE_BYTES: number;
+}
+
 interface NativeRemoteModelQueryModule {
+  /** An omitted dimension takes the core default. */
   NodeQueryExecutionResources: new (
-    timeoutMilliseconds: bigint,
-    items: bigint,
-    bytes: bigint,
-    graphNodes: bigint,
-    attributeValues: bigint,
-    collectionMembers: bigint,
-    rolePlayers: bigint,
-    statements: bigint,
+    timeoutMilliseconds?: bigint,
+    items?: bigint,
+    bytes?: bigint,
+    graphNodes?: bigint,
+    attributeValues?: bigint,
+    collectionMembers?: bigint,
+    rolePlayers?: bigint,
+    statements?: bigint,
   ) => NativeQueryExecutionResources;
   NodeQueryCancellation: new () => NativeQueryCancellation;
   NodeQueryLimits: new (names: string[], values: bigint[]) => NativeQueryLimits;
@@ -622,6 +638,7 @@ interface NativeRuntimeProjectionModule {
 
 type LoadedNativeModule =
   & NativeModule
+  & NativeLimitsModule
   & NativeRemoteModelQueryModule
   & NativeProxyConnectionModule
   & NativeRuntimeProjectionModule;
@@ -631,9 +648,6 @@ type LoadedNativePendingQueryV2Remote = ReturnType<
 type LoadedNativePendingRemoteModelQuery = ReturnType<
   LoadedNativeModule["queryV2PrepareRemoteModelRows"]
 >;
-
-const MAX_CANONICAL_BYTES = 16 * 1024 * 1024;
-const MAX_REMOTE_ENVELOPE_BYTES = 32 * 1024 * 1024;
 
 // This module compiles to dist/native.js (CommonJS). __dirname is therefore
 // the dist/ directory. The .node artifacts are placed at the package root
@@ -646,6 +660,7 @@ let _cached: LoadedNativeModule | null = null;
 
 function protectedPendingQueryV2Remote(
   pending: LoadedNativePendingQueryV2Remote,
+  maxEnvelopeBytes: number,
 ): LoadedNativePendingQueryV2Remote {
   const requestBytes = pending.requestBytes.bind(pending);
   const decodeReply = pending.decodeReply.bind(pending);
@@ -661,7 +676,7 @@ function protectedPendingQueryV2Remote(
       decodeStarted = true;
       let snapshot: Buffer;
       try {
-        snapshot = ownedByteSnapshot(response, MAX_REMOTE_ENVELOPE_BYTES);
+        snapshot = ownedByteSnapshot(response, maxEnvelopeBytes);
       } catch {
         // Preserve the native claim-first contract for an invalid first
         // argument. The addon consumes the one-shot before its metadata check,
@@ -678,6 +693,7 @@ function protectedPendingQueryV2Remote(
 
 function protectedPendingRemoteModelQuery(
   pending: LoadedNativePendingRemoteModelQuery,
+  maxEnvelopeBytes: number,
 ): LoadedNativePendingRemoteModelQuery {
   const requestBytes = pending.requestBytes.bind(pending);
   const decodeReply = pending.decodeReply.bind(pending);
@@ -700,7 +716,7 @@ function protectedPendingRemoteModelQuery(
       decodeStarted = true;
       let snapshot: Buffer;
       try {
-        snapshot = ownedByteSnapshot(response, MAX_REMOTE_ENVELOPE_BYTES);
+        snapshot = ownedByteSnapshot(response, maxEnvelopeBytes);
       } catch {
         return decodeReply(response);
       }
@@ -738,6 +754,8 @@ function protectedMethodDescriptor(
  * that native boundary.
  */
 function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModule {
+  const maxCanonicalBytes = native.MAX_CANONICAL_BYTES;
+  const maxEnvelopeBytes = native.MAX_REMOTE_ENVELOPE_BYTES;
   const queryV2Authority = native.queryV2Authority.bind(native);
   const queryV2QueryOnlyAuthority = native.queryV2QueryOnlyAuthority.bind(native);
   const queryV2ExecuteLocal = native.queryV2ExecuteLocal.bind(native);
@@ -766,7 +784,7 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
     "queryV2Authority",
     ((declaredSchema: Uint8Array, scope: string, profile: string) =>
       queryV2Authority(
-        ownedByteSnapshot(declaredSchema, MAX_CANONICAL_BYTES),
+        ownedByteSnapshot(declaredSchema, maxCanonicalBytes),
         scope,
         profile,
       )) as (
@@ -784,7 +802,7 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
     ) =>
       queryV2QueryOnlyAuthority(
         database,
-        ownedByteSnapshot(declaredSchema, MAX_CANONICAL_BYTES),
+        ownedByteSnapshot(declaredSchema, maxCanonicalBytes),
         scope,
         profile,
       )) as (...args: never[]) => unknown,
@@ -802,7 +820,7 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
       queryV2ExecuteLocal(
         database,
         authority,
-        ownedByteSnapshot(plan, MAX_CANONICAL_BYTES),
+        ownedByteSnapshot(plan, maxCanonicalBytes),
         invocationJson,
         deadlineMs,
       )) as (...args: never[]) => unknown,
@@ -812,7 +830,7 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
     "queryV2RemoteCapabilities",
     ((advertisement: Uint8Array) =>
       queryV2RemoteCapabilities(
-        ownedByteSnapshot(advertisement, MAX_REMOTE_ENVELOPE_BYTES),
+        ownedByteSnapshot(advertisement, maxEnvelopeBytes),
       )) as (
       ...args: never[]
     ) => unknown,
@@ -833,14 +851,15 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
       protectedPendingQueryV2Remote(
         queryV2PrepareRemote(
           authority,
-          ownedByteSnapshot(plan, MAX_CANONICAL_BYTES),
+          ownedByteSnapshot(plan, maxCanonicalBytes),
           invocationJson,
-          ownedByteSnapshot(advertisement, MAX_REMOTE_ENVELOPE_BYTES),
+          ownedByteSnapshot(advertisement, maxEnvelopeBytes),
           maxItems,
           maxBytes,
           maxCollectionMembers,
           deadlineMs,
         ),
+        maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
   descriptors["queryV2RemoteModelContextWithResources"] = protectedMethodDescriptor(
@@ -854,7 +873,7 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
       answerLimits?: NativeQueryExecutionResources,
     ) => queryV2RemoteModelContextWithResources(
       authority,
-      ownedByteSnapshot(advertisement, MAX_REMOTE_ENVELOPE_BYTES),
+      ownedByteSnapshot(advertisement, maxEnvelopeBytes),
       resources,
       cancellation,
       answerLimits,
@@ -866,6 +885,7 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
     ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelRows"]>) =>
       protectedPendingRemoteModelQuery(
         queryV2PrepareRemoteModelRows(...args),
+        maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
   descriptors["queryV2PrepareRemoteModelPage"] = protectedMethodDescriptor(
@@ -874,6 +894,7 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
     ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelPage"]>) =>
       protectedPendingRemoteModelQuery(
         queryV2PrepareRemoteModelPage(...args),
+        maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
   descriptors["queryV2PrepareRemoteModelCount"] = protectedMethodDescriptor(
@@ -882,6 +903,7 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
     ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelCount"]>) =>
       protectedPendingRemoteModelQuery(
         queryV2PrepareRemoteModelCount(...args),
+        maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
   descriptors["queryV2PrepareRemoteModelExists"] = protectedMethodDescriptor(
@@ -890,6 +912,7 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
     ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelExists"]>) =>
       protectedPendingRemoteModelQuery(
         queryV2PrepareRemoteModelExists(...args),
+        maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
   descriptors["queryV2PrepareRemoteModelReduce"] = protectedMethodDescriptor(
@@ -898,6 +921,7 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
     ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelReduce"]>) =>
       protectedPendingRemoteModelQuery(
         queryV2PrepareRemoteModelReduce(...args),
+        maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
   descriptors["queryV2PrepareRemoteModelReduceByField"] = protectedMethodDescriptor(
@@ -906,6 +930,7 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
     ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelReduceByField"]>) =>
       protectedPendingRemoteModelQuery(
         queryV2PrepareRemoteModelReduceByField(...args),
+        maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
   descriptors["queryV2PrepareRemoteModelReduceByFields"] = protectedMethodDescriptor(
@@ -914,6 +939,7 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
     ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelReduceByFields"]>) =>
       protectedPendingRemoteModelQuery(
         queryV2PrepareRemoteModelReduceByFields(...args),
+        maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
 

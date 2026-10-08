@@ -1,4 +1,5 @@
 import type { NativeQueryLimits } from "./native.js";
+import { loadNative } from "./native.js";
 /** Shared, package-private machinery for the prepared and authored V2 facades. */
 
 declare const nativeQueryV2AuthorityKind: unique symbol;
@@ -445,6 +446,14 @@ function isQueryV2ErrorDetail(value: unknown): value is QueryV2ErrorDetail {
   }
 }
 
+function isDiagnosticCode(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length <= loadNative().MAX_DIAGNOSTIC_CODE_BYTES &&
+    /^[a-z][a-z0-9_]*$/.test(value)
+  );
+}
+
 function isNativeQueryV2ErrorPayload(
   value: unknown,
 ): value is NativeQueryV2ErrorPayload {
@@ -463,8 +472,7 @@ function isNativeQueryV2ErrorPayload(
     isAdmissibleNativeQueryV2ErrorCategory(value.sdkCategory) &&
     (value.queryCategory === null ||
       isQueryV2ErrorCategory(value.queryCategory)) &&
-    typeof value.code === "string" &&
-    /^[a-z][a-z0-9_]{0,127}$/.test(value.code) &&
+    isDiagnosticCode(value.code) &&
     typeof value.message === "string" &&
     Array.isArray(value.path) &&
     value.path.every(isQueryV2ErrorPathSegment) &&
@@ -480,8 +488,7 @@ function isLegacyNativeQueryV2ErrorPayload(
     isRecord(value) &&
     hasExactKeys(value, ["category", "code", "message", "path", "details"]) &&
     isAdmissibleNativeQueryV2ErrorCategory(value.category) &&
-    typeof value.code === "string" &&
-    /^[a-z][a-z0-9_]{0,127}$/.test(value.code) &&
+    isDiagnosticCode(value.code) &&
     typeof value.message === "string" &&
     Array.isArray(value.path) &&
     value.path.every(isQueryV2ErrorPathSegment) &&

@@ -170,6 +170,13 @@ differently direct and through a proxy. Each entry says what to do instead.
   (3) have a supported maximum; a value past it is refused by name.
 - Query-limit and answer-limit refusals report `limit`, `maximum`, and
   `source` (`default`, `configured`, or `advertised`).
+- `type_bridge_core.DEFAULT_QUERY_*` (`TIMEOUT_MILLISECONDS`, `ITEMS`,
+  `BYTES`, `GRAPH_NODES`, `ATTRIBUTE_VALUES`, `COLLECTION_MEMBERS`,
+  `ROLE_PLAYERS`, `STATEMENTS`): the answer-limit defaults, read from the
+  Rust core. The TypeScript package no longer carries its own copies of
+  these defaults or of the codec byte ceilings; an omitted
+  `QueryExecutionResourceLimits` dimension takes the core default in every
+  language.
 - One connection, direct or proxy, chosen by configuration, in every
   language; the same query program runs on either and returns the same
   results and refusals. A proxy connection uses a built-in HTTP route to a

@@ -42,13 +42,19 @@ impl fmt::Display for DiagnosticCategory {
     }
 }
 
+/// Longest diagnostic code, in bytes.
+pub const MAX_DIAGNOSTIC_CODE_BYTES: usize = 128;
+
 /// Error returned when a diagnostic code is not canonical snake case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiagnosticCodeError;
 
 impl fmt::Display for DiagnosticCodeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("diagnostic code must be 1-128 lowercase snake-case bytes")
+        write!(
+            formatter,
+            "diagnostic code must be 1-{MAX_DIAGNOSTIC_CODE_BYTES} lowercase snake-case bytes"
+        )
     }
 }
 
@@ -63,7 +69,7 @@ impl DiagnosticCode {
     pub fn new(value: impl Into<String>) -> Result<Self, DiagnosticCodeError> {
         let value = value.into();
         let mut bytes = value.bytes();
-        let valid = value.len() <= 128
+        let valid = value.len() <= MAX_DIAGNOSTIC_CODE_BYTES
             && bytes.next().is_some_and(|byte| byte.is_ascii_lowercase())
             && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
         if valid {

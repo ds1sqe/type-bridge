@@ -26,13 +26,16 @@ pub struct FingerprintDomain(String);
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SemanticProfileId(String);
 
+/// Longest fingerprint identifier, such as a [`SemanticProfileId`], in bytes.
+pub const MAX_FINGERPRINT_IDENTIFIER_BYTES: usize = 255;
+
 fn validate_name(
     value: String,
     kind: &'static str,
     require_version: bool,
 ) -> Result<String, Diagnostic> {
     let valid = !value.is_empty()
-        && value.len() <= 255
+        && value.len() <= MAX_FINGERPRINT_IDENTIFIER_BYTES
         && value.bytes().all(|b| {
             b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'/' | b'_' | b'-')
         })

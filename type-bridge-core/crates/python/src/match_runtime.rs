@@ -2031,6 +2031,33 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyMatchShapeHandle>()?;
     module.add_class::<PyMatchQueryHandle>()?;
     module.add_class::<PyQueryExecutionResourceLimits>()?;
+    // Answer-policy defaults, read from the core so Python holds no copies.
+    module.add(
+        "DEFAULT_QUERY_TIMEOUT_MILLISECONDS",
+        type_bridge_orm::DEFAULT_QUERY_TIMEOUT_MILLISECONDS,
+    )?;
+    module.add("DEFAULT_QUERY_ITEMS", type_bridge_orm::DEFAULT_QUERY_ITEMS)?;
+    module.add("DEFAULT_QUERY_BYTES", type_bridge_orm::DEFAULT_QUERY_BYTES)?;
+    module.add(
+        "DEFAULT_QUERY_GRAPH_NODES",
+        type_bridge_orm::DEFAULT_QUERY_GRAPH_NODES,
+    )?;
+    module.add(
+        "DEFAULT_QUERY_ATTRIBUTE_VALUES",
+        type_bridge_orm::DEFAULT_QUERY_ATTRIBUTE_VALUES,
+    )?;
+    module.add(
+        "DEFAULT_QUERY_COLLECTION_MEMBERS",
+        type_bridge_orm::DEFAULT_QUERY_COLLECTION_MEMBERS,
+    )?;
+    module.add(
+        "DEFAULT_QUERY_ROLE_PLAYERS",
+        type_bridge_orm::DEFAULT_QUERY_ROLE_PLAYERS,
+    )?;
+    module.add(
+        "DEFAULT_QUERY_STATEMENTS",
+        type_bridge_orm::DEFAULT_QUERY_STATEMENTS,
+    )?;
     module.add_class::<PyQueryLimits>()?;
     module.add_class::<PyQueryCancellation>()?;
     crate::validated_result_runtime::register(module)?;

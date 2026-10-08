@@ -85,7 +85,10 @@ export interface GeneratedSchemaAuthorityInstall {
   readonly semanticFingerprintJson: string;
 }
 
-/** The answer policy shared by direct and remote queries; a dimension may tighten or raise its default. */
+/**
+ * The answer policy shared by direct and remote queries. An omitted
+ * dimension takes the core default; a given one may tighten or raise it.
+ */
 export interface QueryExecutionResourceLimitOptions {
   readonly timeoutMilliseconds?: bigint;
   readonly items?: bigint;
@@ -104,14 +107,14 @@ export class QueryExecutionResourceLimits {
   constructor(options: QueryExecutionResourceLimitOptions = {}) {
     const native = loadNative();
     this.#native = new native.NodeQueryExecutionResources(
-      options.timeoutMilliseconds ?? 30_000n,
-      options.items ?? 65_536n,
-      options.bytes ?? 33_554_432n,
-      options.graphNodes ?? 65_536n,
-      options.attributeValues ?? 65_536n,
-      options.collectionMembers ?? 65_536n,
-      options.rolePlayers ?? 65_536n,
-      options.statements ?? 3n,
+      options.timeoutMilliseconds,
+      options.items,
+      options.bytes,
+      options.graphNodes,
+      options.attributeValues,
+      options.collectionMembers,
+      options.rolePlayers,
+      options.statements,
     );
     Object.freeze(this);
   }
@@ -1150,8 +1153,6 @@ export interface ProxyConnectionOptions {
   readonly cancellation?: QueryCancellation;
 }
 
-const MAX_PROXY_ADVERTISEMENT_BYTES = 32 * 1024 * 1024;
-
 /**
  * A verified connection to a TypeBridge server over the built-in HTTP route.
  *
@@ -1193,7 +1194,7 @@ export class ProxyConnection implements RuntimeProjectionRemote {
     }
     const advertisement = options.advertisement === undefined
       ? undefined
-      : ownedByteSnapshot(options.advertisement, MAX_PROXY_ADVERTISEMENT_BYTES);
+      : ownedByteSnapshot(options.advertisement, loadNative().MAX_REMOTE_ENVELOPE_BYTES);
     const native = await queryV2NativePromise(queryV2NativeCall(() =>
       loadNative().NodeProxyConnection.connect(
         nativeAuthority,

@@ -423,33 +423,50 @@ impl NodeQueryExecutionResources {
 
 #[napi]
 impl NodeQueryExecutionResources {
-    /// Construct an answer policy. Each dimension may tighten or raise its
-    /// default, and zero is valid. A value above a dimension's supported
-    /// maximum is refused by name, never clamped.
+    /// Construct an answer policy. An omitted dimension keeps its core
+    /// default; a given one may tighten or raise it, and zero is valid. A
+    /// value above a dimension's supported maximum is refused by name, never
+    /// clamped.
     #[napi(constructor)]
     #[allow(
         clippy::too_many_arguments,
         reason = "the common policy has eight explicit dimensions"
     )]
     pub fn new(
-        timeout_milliseconds: BigInt,
-        items: BigInt,
-        bytes: BigInt,
-        graph_nodes: BigInt,
-        attribute_values: BigInt,
-        collection_members: BigInt,
-        role_players: BigInt,
-        statements: BigInt,
+        timeout_milliseconds: Option<BigInt>,
+        items: Option<BigInt>,
+        bytes: Option<BigInt>,
+        graph_nodes: Option<BigInt>,
+        attribute_values: Option<BigInt>,
+        collection_members: Option<BigInt>,
+        role_players: Option<BigInt>,
+        statements: Option<BigInt>,
     ) -> Result<Self> {
-        let statements = bigint_u64(&statements, "statements")?;
+        let defaults = QueryExecutionResourceLimits::default();
+        let dimension = |value: Option<BigInt>, default: u64, name: &str| {
+            value.map_or(Ok(default), |value| bigint_u64(&value, name))
+        };
+        let statements = dimension(statements, u64::from(defaults.statements), "statements")?;
         let inner = QueryExecutionResourceLimits {
-            timeout_milliseconds: bigint_u64(&timeout_milliseconds, "timeoutMilliseconds")?,
-            items: bigint_u64(&items, "items")?,
-            bytes: bigint_u64(&bytes, "bytes")?,
-            graph_nodes: bigint_u64(&graph_nodes, "graphNodes")?,
-            attribute_values: bigint_u64(&attribute_values, "attributeValues")?,
-            collection_members: bigint_u64(&collection_members, "collectionMembers")?,
-            role_players: bigint_u64(&role_players, "rolePlayers")?,
+            timeout_milliseconds: dimension(
+                timeout_milliseconds,
+                defaults.timeout_milliseconds,
+                "timeoutMilliseconds",
+            )?,
+            items: dimension(items, defaults.items, "items")?,
+            bytes: dimension(bytes, defaults.bytes, "bytes")?,
+            graph_nodes: dimension(graph_nodes, defaults.graph_nodes, "graphNodes")?,
+            attribute_values: dimension(
+                attribute_values,
+                defaults.attribute_values,
+                "attributeValues",
+            )?,
+            collection_members: dimension(
+                collection_members,
+                defaults.collection_members,
+                "collectionMembers",
+            )?,
+            role_players: dimension(role_players, defaults.role_players, "rolePlayers")?,
             statements: u32::try_from(statements).unwrap_or(u32::MAX),
         }
         .validate()
@@ -3685,9 +3702,11 @@ plays:
 
     #[test]
     fn common_resources_keep_a_raise_refuse_past_the_maximum_and_preserve_zero() {
-        let wide = |value| BigInt {
-            sign_bit: false,
-            words: vec![value],
+        let wide = |value| {
+            Some(BigInt {
+                sign_bit: false,
+                words: vec![value],
+            })
         };
         let resources = NodeQueryExecutionResources::new(
             wide(type_bridge_orm::DEFAULT_QUERY_TIMEOUT_MILLISECONDS + 1),
@@ -3718,12 +3737,12 @@ plays:
         let with = |timeout: u64, statements: u64| {
             NodeQueryExecutionResources::new(
                 wide(timeout),
-                wide(default.items),
-                wide(default.bytes),
-                wide(default.graph_nodes),
-                wide(default.attribute_values),
-                wide(default.collection_members),
-                wide(default.role_players),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
                 wide(statements),
             )
             .map(|_| ())
@@ -3734,10 +3753,7 @@ plays:
         let refused = with(1, u64::from(type_bridge_orm::MAX_QUERY_STATEMENTS) + 1).unwrap_err();
         assert!(refused.contains("statements"), "{refused}");
 
-        let zero = || BigInt {
-            sign_bit: false,
-            words: vec![0],
-        };
+        let zero = || wide(0);
         let resources = NodeQueryExecutionResources::new(
             zero(),
             zero(),

@@ -9,6 +9,7 @@
 
 #[cfg(feature = "contract-test-adapter")]
 mod contract_test_adapter;
+pub mod limits;
 mod match_runtime;
 mod migration_catalog_runtime;
 mod proxy_connection_runtime;
