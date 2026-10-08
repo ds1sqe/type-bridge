@@ -636,20 +636,7 @@ fn validate_operation_structure(
                 )
                 .at(MatchErrorPathSegment::Operation));
             }
-            if groups.len() > limits.selected_slots {
-                return Err(invalid(
-                    "field_group_tuple_cap_exceeded",
-                    "tuple-field reductions exceed the selected-slot ceiling",
-                )
-                .at(MatchErrorPathSegment::Operation)
-                .with_detail("actual", usize_detail(groups.len()))
-                .with_detail("maximum", usize_detail(limits.selected_slots))
-                .with_detail("limit", "selected_slots")
-                .with_detail(
-                    "source",
-                    limit_source("selected_slots", limits.selected_slots),
-                ));
-            }
+            validate_field_group_count(limits, groups.len())?;
             let mut unique = BTreeSet::new();
             for group in groups {
                 validate_bound_field_id(limits, group)?;
@@ -696,20 +683,7 @@ fn validate_operation_structure(
             )
             .at(MatchErrorPathSegment::Output));
         }
-        if count > limits.selected_slots {
-            return Err(invalid(
-                "selection_cap_exceeded",
-                "fetch output exceeds the selected-slot ceiling",
-            )
-            .at(MatchErrorPathSegment::Output)
-            .with_detail("actual", usize_detail(count))
-            .with_detail("maximum", usize_detail(limits.selected_slots))
-            .with_detail("limit", "selected_slots")
-            .with_detail(
-                "source",
-                limit_source("selected_slots", limits.selected_slots),
-            ));
-        }
+        validate_selection_count(limits, count)?;
         let mut selected = BTreeSet::new();
         output.for_each_slot(|slot| {
             selected.insert(slot.binding());
@@ -779,20 +753,13 @@ fn validate_reducer_structure(
         )
         .at(MatchErrorPathSegment::Operation));
     }
-    if reducers.len() > limits.selected_slots {
-        return Err(invalid(
-            "reducer_cap_exceeded",
-            "typed reductions exceed the selected-slot ceiling",
-        )
-        .at(MatchErrorPathSegment::Operation)
-        .with_detail("actual", usize_detail(reducers.len()))
-        .with_detail("maximum", usize_detail(limits.selected_slots))
-        .with_detail("limit", "selected_slots")
-        .with_detail(
-            "source",
-            limit_source("selected_slots", limits.selected_slots),
-        ));
-    }
+    selected_slot_cap(
+        limits,
+        reducers.len(),
+        "reducer_cap_exceeded",
+        "typed reductions exceed the selected-slot ceiling",
+        MatchErrorPathSegment::Operation,
+    )?;
     for term in reducers {
         match (&term.input, term.reduction.requires_input()) {
             (Some(_), false) => {
@@ -2212,6 +2179,60 @@ pub fn validate_function_argument_count(
         limits.boolean_terms,
         MatchErrorPathSegment::Predicate,
     )
+}
+
+/// Refuse an output shape wider than the session's `selected_slots`.
+///
+/// Handle composition and request validation both call this, so a shape is
+/// refused with one diagnostic whichever stage sees it first.
+pub(crate) fn validate_selection_count(
+    limits: StructuralLimits,
+    count: usize,
+) -> Result<(), MatchError> {
+    selected_slot_cap(
+        limits,
+        count,
+        "selection_cap_exceeded",
+        "fetch output exceeds the selected-slot ceiling",
+        MatchErrorPathSegment::Output,
+    )
+}
+
+/// Refuse more reduction group fields than the session's `selected_slots`.
+///
+/// The group-by composition call and request validation share this check.
+pub(crate) fn validate_field_group_count(
+    limits: StructuralLimits,
+    count: usize,
+) -> Result<(), MatchError> {
+    selected_slot_cap(
+        limits,
+        count,
+        "field_group_tuple_cap_exceeded",
+        "tuple-field reductions exceed the selected-slot ceiling",
+        MatchErrorPathSegment::Operation,
+    )
+}
+
+fn selected_slot_cap(
+    limits: StructuralLimits,
+    count: usize,
+    code: &'static str,
+    message: &'static str,
+    path: MatchErrorPathSegment,
+) -> Result<(), MatchError> {
+    if count <= limits.selected_slots {
+        return Ok(());
+    }
+    Err(invalid(code, message)
+        .at(path)
+        .with_detail("actual", usize_detail(count))
+        .with_detail("maximum", usize_detail(limits.selected_slots))
+        .with_detail("limit", "selected_slots")
+        .with_detail(
+            "source",
+            limit_source("selected_slots", limits.selected_slots),
+        ))
 }
 
 fn check_limit(

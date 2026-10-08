@@ -150,6 +150,7 @@ interface NativeMatchQueryHandle {
   addHidden(binding: NativeMatchBindingHandle): NativeMatchQueryHandle;
   wherePredicate(predicate: NativeMatchPredicateHandle): NativeMatchQueryHandle;
   allowCrossJoin(left: NativeMatchBindingHandle, right: NativeMatchBindingHandle): NativeMatchQueryHandle;
+  checkGroupFields(groups: NativeMatchFieldHandle[]): void;
   fetchRowsDiagnostic(
     orders: NativeMatchOrderHandle[],
     offset: bigint,

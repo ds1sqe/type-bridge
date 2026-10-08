@@ -684,8 +684,6 @@ def _require_aggregate_groups(
 ) -> BoundVar | BoundField | tuple[BoundField, ...]:
     if not candidates:
         raise TypeError("aggregate grouping requires at least one generated group")
-    if len(candidates) > 16:
-        raise ValueError("aggregate grouping supports at most sixteen fields")
     if len(candidates) == 1 and isinstance(candidates[0], BoundVar):
         candidate = candidates[0]
         _require_projection(candidate.projection_identity(), projection, context)
@@ -1121,7 +1119,6 @@ class Query(_Frozen):
         self.__require_root(root, "query root")
         if type(include_total) is not bool:
             raise TypeError("include_total must be an exact bool")
-        offset, limit = _window(offset, limit)
         handles = self.order_handles(order_by)
         result = await self.__run(
             _PAGE_BY, root.native_handle(), handles, offset, limit, include_total
@@ -1145,11 +1142,12 @@ class Query(_Frozen):
 
     def group_by(self, root: BoundVar, *groups: BoundVar | BoundField) -> GroupedQuery:
         self.__require_root(root, "aggregate root")
-        return GroupedQuery(
-            self.clone(),
-            root,
-            _require_aggregate_groups(groups, self.__projection, "aggregate group"),
-        )
+        group = _require_aggregate_groups(groups, self.__projection, "aggregate group")
+        fields = (group,) if isinstance(group, BoundField) else group
+        if isinstance(fields, tuple):
+            # The core refuses too many group fields here, not at aggregate().
+            self.__handle.check_group_fields([field.native_handle() for field in fields])
+        return GroupedQuery(self.clone(), root, group)
 
     async def reduction_result(
         self,
@@ -1248,7 +1246,6 @@ class Query(_Frozen):
         cardinality: _Cardinality,
         order_by: Iterable[QueryOrder],
     ) -> ValidatedMatchResultHandle:
-        offset, limit = _window(offset, limit)
         handles = self.order_handles(order_by)
         return await self.__run(_FETCH_ROWS, handles, offset, limit, cardinality)
 
@@ -1529,8 +1526,8 @@ class QuerySession(_Frozen):
                 to_role,
                 source.native_handle(),
                 target.native_handle(),
-                _depth(min_depth, "min_depth"),
-                _depth(max_depth, "max_depth"),
+                min_depth,
+                max_depth,
             ),
             self.__projection,
         )
@@ -1538,8 +1535,6 @@ class QuerySession(_Frozen):
     def query(self, *selections: _Selection) -> Query:
         if not selections:
             raise TypeError("QuerySession.query requires at least one generated selection")
-        if len(selections) > 16:
-            raise ValueError("QuerySession.query supports at most sixteen generated selections")
         handles: list[MatchSelectionHandle] = []
         collected: list[bool] = []
         for selection in selections:
@@ -1622,14 +1617,6 @@ def _require_projection(
 ) -> None:
     if actual is not expected:
         raise TypeError(f"generated {kind} must belong to the same installed package")
-
-
-def _depth(value: int, name: str) -> int:
-    if type(value) is not int:
-        raise TypeError(f"{name} must be an exact int")
-    if not 0 <= value <= 255:
-        raise ValueError(f"{name} must be between zero and 255")
-    return value
 
 
 def _reachable_role(
@@ -1806,20 +1793,10 @@ def _duration_isoformat(value: timedelta) -> str:
     return f"{sign}P{days}DT{hours}H{minutes}M{second_text}S"
 
 
-def _window(offset: int, limit: int) -> tuple[int, int]:
-    if type(offset) is not int or offset < 0:
-        raise ValueError("generated query offset must be a non-negative integer")
-    if type(limit) is not int or limit < 1:
-        raise ValueError("generated query limit must be a positive integer")
-    return offset, limit
-
-
 def _prepare_aggregate_terms(
     terms: tuple[Aggregate, ...],
     projection: PyRuntimeProjection,
 ) -> tuple[list[_Reducer], list[MatchFieldHandle | None]]:
-    if not 1 <= len(terms) <= 16:
-        raise ValueError("generated aggregate requires between one and sixteen terms")
     reducers: list[_Reducer] = []
     inputs: list[MatchFieldHandle | None] = []
     for term in terms:

@@ -846,6 +846,7 @@ class MatchQueryHandle:
     def allow_cross_join(
         self, left: MatchBindingHandle, right: MatchBindingHandle
     ) -> MatchQueryHandle: ...
+    def check_group_fields(self, groups: list[MatchFieldHandle]) -> None: ...
     def fetch_rows_diagnostic(
         self,
         order: list[MatchOrderHandle],

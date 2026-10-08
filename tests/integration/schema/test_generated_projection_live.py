@@ -91,6 +91,101 @@ _REMOTE_RESOURCES = QueryExecutionResourceLimits(
 )
 
 
+_CORPUS_CODES = {
+    case["id"]: (case["expected"]["error_category"], case["expected"]["error_code"])
+    for case in json.loads(
+        (ROOT / "tests/contracts/typed_query/corpus-v1.json").read_text(encoding="utf-8")
+    )["cases"]
+    if case["expected"]["outcome"] == "error"
+}
+
+
+async def _core_rule_refusals(
+    generated: ModuleType, connection: object, slots: int | None
+) -> dict[str, object]:
+    """Refuse every window, cap, and depth corpus case with the core's code.
+
+    The generated host only marshals, so a session with fewer selected slots
+    refuses at its own limit, and nothing reaches the connection.
+    """
+    session = generated.QuerySession(
+        connection,
+        resources=_REMOTE_RESOURCES,
+        query_limits=None if slots is None else generated.QueryLimits(selected_slots=slots),
+    )
+    width = 16 if slots is None else slots
+    person = session.exact(generated.Person)
+    score = person.field(generated.Person.score)
+    query = session.query(person)
+    other = session.exact(generated.Person)
+
+    def reachable(min_depth: int, max_depth: int) -> object:
+        return session.reachable(
+            person,
+            other,
+            generated.NetworkLink,
+            generated.NetworkLink.origin,
+            generated.NetworkLink.destination,
+            min_depth=min_depth,
+            max_depth=max_depth,
+        )
+
+    cases: list[tuple[str, str, Any]] = [
+        (
+            "selection",
+            "selection.seventeen-slot-rejection"
+            if slots is None
+            else "selection.session-slot-ceiling",
+            lambda: session.query(*(session.exact(generated.Person) for _ in range(width + 1))),
+        ),
+        (
+            "group_keys",
+            "aggregate.seventeen-group-keys",
+            lambda: query.group_by(person, *(score for _ in range(width + 1))),
+        ),
+        (
+            "terms",
+            "aggregate.seventeen-terms",
+            lambda: query.aggregate(
+                person, *(generated.aggregate.count() for _ in range(width + 1))
+            ),
+        ),
+        ("empty_terms", "aggregate.empty-terms", lambda: query.aggregate(person)),
+        ("zero_limit", "bounds.public-invalid-limit", lambda: query.rows(limit=0)),
+        ("zero_page", "bounds.public-invalid-limit", lambda: query.page_by(person, limit=0)),
+        (
+            "offset",
+            "bounds.public-invalid-offset",
+            lambda: query.rows(offset=2**64 - 1, limit=1),
+        ),
+        (
+            "overflow",
+            "bounds.window-overflow",
+            lambda: query.rows(offset=2**64 - 2, limit=2),
+        ),
+        ("reversed", "reachability.reversed-bounds", lambda: reachable(3, 2)),
+        ("deep", "reachability.depth-ceiling", lambda: reachable(0, 65)),
+    ]
+    refusals: dict[str, tuple[str, list[dict[str, object]], dict[str, object]]] = {}
+    try:
+        for name, case_id, action in cases:
+            try:
+                outcome = action()
+                if asyncio.iscoroutine(outcome):
+                    await outcome
+            except MatchRequestError as error:
+                assert (error.category, error.code) == _CORPUS_CODES[case_id], case_id
+                refusals[name] = (error.code, error.path, error.details)
+            else:
+                raise AssertionError(f"{case_id} was not refused")
+    finally:
+        session.close()
+    for name in ("selection", "group_keys", "terms"):
+        details = refusals[name][2]
+        assert details["maximum"] == {"kind": "count", "value": width}, (name, details)
+    return dict(refusals)
+
+
 async def _one_program(generated: ModuleType, connection: object) -> dict[str, object]:
     """One query program; the connection is the only thing that differs."""
     session = generated.Person.query(connection, resources=_REMOTE_RESOURCES)
@@ -136,6 +231,9 @@ async def _one_program(generated: ModuleType, connection: object) -> dict[str, o
     finally:
         limited.close()
     return {
+        "core_rules": [
+            await _core_rule_refusals(generated, connection, slots) for slots in (None, 4)
+        ],
         "one": one.iid,
         "first": None if first is None else first.iid,
         "rows": [row.iid for row in rows],

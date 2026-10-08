@@ -1,6 +1,7 @@
 import {
   installGeneratedSchemaAuthority,
   installRuntimeProjection,
+  projectedManagerNativeCall,
   type InstalledRuntimeProjection,
   type CanonicalCodecOptions,
   type NativeProjectedManager,
@@ -2636,8 +2637,8 @@ export class Query<out Output> {
     const result = await state.executor.rows(
       state.handle,
       nativeOrders(options.orderBy ?? [], state.projection),
-      windowValue(options.offset ?? 0n, "offset"),
-      windowValue(options.limit, "limit"),
+      options.offset ?? 0n,
+      options.limit,
       "bounded_many",
     );
     return Object.freeze(materializeRows(state, result)) as readonly Output[];
@@ -2658,8 +2659,8 @@ export class Query<out Output> {
       state.handle,
       rootState.binding,
       nativeOrders(options.orderBy ?? [], state.projection),
-      windowValue(options.offset ?? 0n, "offset"),
-      windowValue(options.limit, "limit"),
+      options.offset ?? 0n,
+      options.limit,
       options.includeTotal ?? false,
     );
     return Object.freeze({
@@ -2753,10 +2754,17 @@ export class Query<out Output> {
       rootState.projection,
       "generated aggregate root",
     );
+    const group = runtimeReductionGroup(groups, state.projection);
+    // The core refuses too many group fields here, not at aggregate().
+    if (group.kind !== "binding") {
+      const fields =
+        group.kind === "field" ? [group.handle] : [...group.handles];
+      coreCall(() => state.handle.checkGroupFields(fields));
+    }
     return createGroupedQuery<object>(
       createQuery({ ...state, handle: state.handle.fork() }),
       rootState.binding,
-      runtimeReductionGroup(groups, state.projection),
+      group,
     );
   }
 }
@@ -2781,11 +2789,6 @@ function runtimeReductionGroup(
   if (groups.length === 0) {
     throw new TypeError(
       "generated aggregate grouping requires at least one group",
-    );
-  }
-  if (groups.length > 16) {
-    throw new RangeError(
-      "generated aggregate grouping supports at most sixteen fields",
     );
   }
   const binding =
@@ -3265,14 +3268,16 @@ export class QuerySession {
       "roleTo",
     );
     return new PredicateValue(
-      this.#session.reachable(
-        this.#projection.matchModelType(relationEntry.token.typeKey),
-        roleIdentityLabel(from.role),
-        roleIdentityLabel(to.role),
-        sourceState.binding,
-        targetState.binding,
-        reachabilityDepth(bounds.minDepth, "minDepth"),
-        reachabilityDepth(bounds.maxDepth, "maxDepth"),
+      coreCall(() =>
+        this.#session.reachable(
+          this.#projection.matchModelType(relationEntry.token.typeKey),
+          roleIdentityLabel(from.role),
+          roleIdentityLabel(to.role),
+          sourceState.binding,
+          targetState.binding,
+          bounds.minDepth,
+          bounds.maxDepth,
+        ),
       ),
       this.#projection,
     );
@@ -3287,7 +3292,9 @@ export class QuerySession {
     ...selections: Selections & AtMostSixteen<Selections>
   ): Query<PositionalOutput<Selections>> {
     const states = querySelections(selections, this.#projection);
-    const shape = this.#session.positional(states.map((state) => state.handle));
+    const shape = coreCall(() =>
+      this.#session.positional(states.map((state) => state.handle)),
+    );
     return createQuery({
       handle: this.#session.query(shape),
       projection: this.#projection,
@@ -3306,9 +3313,11 @@ export class QuerySession {
       entries.map(([, selection]) => selection),
       this.#projection,
     );
-    const shape = this.#session.named(
-      entries.map(([name]) => name),
-      states.map((state) => state.handle),
+    const shape = coreCall(() =>
+      this.#session.named(
+        entries.map(([name]) => name),
+        states.map((state) => state.handle),
+      ),
     );
     return createQuery({
       handle: this.#session.query(shape),
@@ -3316,6 +3325,11 @@ export class QuerySession {
       executor: this.#executor,
     });
   }
+}
+
+/** Run a native composition call; a core refusal surfaces as `QueryV2Error`. */
+function coreCall<Result>(operation: () => Result): Result {
+  return projectedManagerNativeCall(operation);
 }
 
 function createQuery<Output>(state: QueryState): Query<Output> {
@@ -3364,11 +3378,6 @@ function prepareAggregateTerms(
   terms: readonly Aggregate<unknown>[],
   projection: InstalledRuntimeProjection,
 ): PreparedAggregateTerms {
-  if (terms.length === 0 || terms.length > 16) {
-    throw new RangeError(
-      "generated aggregate requires between one and sixteen terms",
-    );
-  }
   const reducers: RuntimeProjectionReduction[] = [];
   const inputs: (RuntimeProjectionMatchField | null)[] = [];
   const outputs: ReductionOutputSpec[] = [];
@@ -3551,33 +3560,17 @@ function exactRoleToken(
   return definition;
 }
 
-function reachabilityDepth(value: number, name: string): number {
-  if (!Number.isInteger(value) || value < 0 || value > 255) {
-    throw new RangeError(`${name} must be an integer from 0 through 255`);
-  }
-  return value;
-}
-
 function querySelections(
   selections: readonly Selection<unknown>[],
   projection: InstalledRuntimeProjection,
 ): readonly SelectionState[] {
   if (selections.length === 0)
     throw new TypeError("generated query requires at least one selection");
-  if (selections.length > 16)
-    throw new RangeError("generated query supports at most sixteen selections");
   return selections.map((selection) => {
     const state = selectionState(selection);
     requireSameProjection(projection, state.projection, "generated selection");
     return state;
   });
-}
-
-function windowValue(value: bigint, name: string): bigint {
-  if (typeof value !== "bigint" || value < 0n || value > (1n << 64n) - 1n) {
-    throw new RangeError(`${name} must be an unsigned 64-bit bigint`);
-  }
-  return value;
 }
 
 function nativeOrders(

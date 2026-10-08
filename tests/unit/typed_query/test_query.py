@@ -263,14 +263,10 @@ def test_window_checks_are_stable_before_native_unsigned_conversion(
     assert raised.value.category == "invalid_plan"
     assert raised.value.code == code
 
-    case_id = (
-        "bounds.public-invalid-offset"
-        if code == "invalid_window_offset"
-        else "bounds.window-overflow"
-        if code == "window_overflow"
-        else "bounds.public-invalid-limit"
-    )
-    assert (raised.value.category, raised.value.code) == corpus_error(case_id)
+    # The invalid_window_* codes belong to this legacy typed surface only; the
+    # corpus pins the core codes the generated sessions report.
+    if code == "window_overflow":
+        assert (raised.value.category, raised.value.code) == corpus_error("bounds.window-overflow")
 
 
 def test_legacy_query_import_remains_separate() -> None:

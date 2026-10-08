@@ -3,7 +3,9 @@
 from pathlib import Path
 
 import pytest
-from type_bridge_core import MatchSessionHandle, _QueryDescriptorRegistry
+from type_bridge_core import MatchRequestError, MatchSessionHandle, _QueryDescriptorRegistry
+
+from tests.unit.typed_query._support import corpus_error
 
 GOLDEN = (
     Path(__file__).parents[3]
@@ -100,20 +102,20 @@ def test_public_named_page_matches_the_rust_and_node_golden() -> None:
         (
             "min_depth",
             -1,
-            ValueError,
-            "min_depth must be an integer between 0 and 255",
+            OverflowError,
+            "min_depth must be an integer from 0 to 255",
         ),
         (
             "max_depth",
             256,
-            ValueError,
-            "max_depth must be an integer between 0 and 255",
+            OverflowError,
+            "max_depth must be an integer from 0 to 255",
         ),
         (
             "min_depth",
             10**100,
-            ValueError,
-            "min_depth must be an integer between 0 and 255",
+            OverflowError,
+            "min_depth must be an integer from 0 to 255",
         ),
     ],
 )
@@ -139,3 +141,47 @@ def test_native_reachable_requires_exact_bounded_pyints(
 
     with pytest.raises(error_type, match=f"^{message}$"):
         session.reachable(**arguments)
+
+
+def _reachable(session: MatchSessionHandle, min_depth: int, max_depth: int) -> object:
+    return session.reachable(
+        relation_type="employment",
+        role_from="employee",
+        role_to="employer",
+        source=session.exact("person"),
+        target=session.exact("company"),
+        min_depth=min_depth,
+        max_depth=max_depth,
+    )
+
+
+@pytest.mark.parametrize(
+    ("case_id", "min_depth", "max_depth"),
+    [
+        ("reachability.reversed-bounds", 3, 2),
+        ("reachability.depth-ceiling", 0, 65),
+    ],
+)
+def test_native_reachable_depth_rules_are_core_corpus_codes(
+    case_id: str, min_depth: int, max_depth: int
+) -> None:
+    session = MatchSessionHandle(_registry())
+
+    with pytest.raises(MatchRequestError) as raised:
+        _reachable(session, min_depth, max_depth)
+    assert (raised.value.category, raised.value.code) == corpus_error(case_id)
+
+
+def test_native_group_fields_are_capped_at_the_group_by_call() -> None:
+    session = MatchSessionHandle(_registry())
+    person = session.exact("person")
+    query = session.query(session.positional([person.one()]))
+    name = person.field("name")
+
+    query.check_group_fields([name] * 16)
+    with pytest.raises(MatchRequestError) as raised:
+        query.check_group_fields([name] * 17)
+    assert (raised.value.category, raised.value.code) == corpus_error(
+        "aggregate.seventeen-group-keys"
+    )
+    assert raised.value.details["maximum"] == {"kind": "count", "value": 16}

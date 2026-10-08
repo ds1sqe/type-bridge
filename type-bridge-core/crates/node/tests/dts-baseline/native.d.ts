@@ -86,6 +86,7 @@ interface NativeMatchQueryHandle {
     addHidden(binding: NativeMatchBindingHandle): NativeMatchQueryHandle;
     wherePredicate(predicate: NativeMatchPredicateHandle): NativeMatchQueryHandle;
     allowCrossJoin(left: NativeMatchBindingHandle, right: NativeMatchBindingHandle): NativeMatchQueryHandle;
+    checkGroupFields(groups: NativeMatchFieldHandle[]): void;
     fetchRowsDiagnostic(orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): string;
     executeFetchRowsOwned(database: NativeRustDatabase, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): Promise<NativeValidatedMatchResultHandle>;
     executeFetchRowsBorrowed(transaction: NativeRustTransactionContext, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): Promise<NativeValidatedMatchResultHandle>;

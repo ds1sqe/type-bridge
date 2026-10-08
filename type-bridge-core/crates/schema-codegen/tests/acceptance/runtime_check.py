@@ -4,6 +4,7 @@ import json
 import os
 import struct
 import weakref
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -692,7 +693,6 @@ for rejected_same_package_query in (
         .role(Employment.employee)
         .connects(query_session.exact(Event))
     ),
-    lambda: query_session.query(*(query_session.exact(Person) for _ in range(17))),
     lambda: query_session.query_as(MutableRow, person=person_var),
     lambda: query_session.query_as(
         EmploymentRow,
@@ -1063,6 +1063,104 @@ else:
     raise AssertionError("a lowered session limit must refuse the wider query")
 assert generated_remote_exchanges == 1
 limited_remote_session.close()
+
+
+# Windows, selection and aggregate caps, group-by keys, and reachability
+# depth are core rules: the generated host only marshals, and every refusal
+# is the core's structured diagnostic, at the same call as before.
+core_rule_exchanges: list[bytes] = []
+
+
+async def core_rule_exchange(request: bytes) -> bytes:
+    core_rule_exchanges.append(request)
+    return b"{}"
+
+
+def expect_core_refusal(
+    action: Callable[[], object], code: str, maximum: int | None = None
+) -> None:
+    try:
+        outcome = action()
+        if asyncio.iscoroutine(outcome):
+            asyncio.run(outcome)
+    except MatchRequestError as error:
+        assert (error.category, error.code) == ("invalid_plan", code), (error.category, error.code)
+        if maximum is not None:
+            assert error.details["maximum"] == {"kind": "count", "value": maximum}, error.details
+            assert error.details["limit"] == {
+                "kind": "query_identity",
+                "value": "selected_slots",
+            }, error.details
+    else:
+        raise AssertionError(f"expected the core refusal {code}")
+
+
+for session_slots in (None, 4):
+    core_rule_session = QuerySession(
+        ExchangeConnection(generated_advertisement, core_rule_exchange),
+        query_limits=None if session_slots is None else QueryLimits(selected_slots=session_slots),
+    )
+    slots = 16 if session_slots is None else session_slots
+    core_person = core_rule_session.exact(Person)
+    core_score = core_person.field(Person.score)
+    core_query = core_rule_session.query(core_person)
+    expect_core_refusal(
+        lambda: core_rule_session.query(
+            *(core_rule_session.exact(Person) for _ in range(slots + 1))
+        ),
+        "selection_cap_exceeded",
+        slots,
+    )
+    expect_core_refusal(
+        lambda: core_query.group_by(core_person, *(core_score for _ in range(slots + 1))),
+        "field_group_tuple_cap_exceeded",
+        slots,
+    )
+    expect_core_refusal(
+        lambda: core_query.aggregate(core_person, *(aggregate.count() for _ in range(slots + 1))),
+        "reducer_cap_exceeded",
+        slots,
+    )
+    expect_core_refusal(lambda: core_query.aggregate(core_person), "empty_reducers")
+    expect_core_refusal(lambda: core_query.rows(limit=0), "zero_window_limit")
+    expect_core_refusal(lambda: core_query.page_by(core_person, limit=0), "zero_window_limit")
+    expect_core_refusal(lambda: core_query.rows(offset=2**64 - 2, limit=2), "window_overflow")
+    core_other = core_rule_session.exact(Person)
+    for min_depth, max_depth, code in (
+        (3, 2, "reachable_bounds"),
+        (0, 65, "reachable_depth_limit"),
+    ):
+        expect_core_refusal(
+            lambda: core_rule_session.reachable(
+                core_person,
+                core_other,
+                Event,
+                Event.subject,
+                Event.subject,
+                min_depth=min_depth,
+                max_depth=max_depth,
+            ),
+            code,
+        )
+    # Marshalling stays a host error: a bool is not an int, and a value
+    # outside the native unsigned range does not convert.
+    for hostile, error_type in ((True, TypeError), (-1, OverflowError), (256, OverflowError)):
+        try:
+            core_rule_session.reachable(
+                core_person,
+                core_other,
+                Event,
+                Event.subject,
+                Event.subject,
+                min_depth=0,
+                max_depth=hostile,
+            )
+        except error_type:
+            pass
+        else:
+            raise AssertionError(f"reachable depth {hostile!r} must raise {error_type.__name__}")
+    core_rule_session.close()
+assert core_rule_exchanges == []
 
 # Repeated where clauses are one flat conjunction, so a wide query adapts
 # under the default limits. Thirty-eight clauses used to nest past the
@@ -1712,13 +1810,11 @@ try:
     assert reduce_calls[0][3] is None
     assert reduce_calls[0][4] == ["count", "sum"]
     assert reduce_calls[1][3] is not None
+    # The host forwards any term count; the core refuses it (checked with a
+    # real native prepare above).
     for invalid_terms in ((), tuple(aggregate.count() for _ in range(17))):
-        try:
-            asyncio.run(remote_query.aggregate(remote_person, *invalid_terms))
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("generated remote aggregate accepted invalid term cardinality")
+        asyncio.run(remote_query.aggregate(remote_person, *invalid_terms))
+        assert len(reduce_calls[-1][4]) == len(invalid_terms)
     # The blocking facade runs the same coroutine terminals to completion.
     blocking_query = blocking(remote_session).query(remote_person)
     assert blocking_query.one() is person

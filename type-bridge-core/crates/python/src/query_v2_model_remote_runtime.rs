@@ -19,15 +19,14 @@ use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
     AnswerCancellation, OrderHandle, PendingRemoteModelQueryV2, ProjectedQueryOrigin,
     ProxyQueryConnection, QueryExecutionDeadline, QueryExecutionResourceLimits, QueryHandle,
-    QueryTarget, ValidatedMatchRequest, Window, lower_remote_query_diagnostic,
-    validate_order_term_count,
+    QueryTarget, ValidatedMatchRequest, lower_remote_query_diagnostic, validate_order_term_count,
 };
 
 use crate::match_runtime::{
     PyMatchBindingHandle, PyMatchFieldHandle, PyMatchOrderHandle, PyMatchQueryHandle,
     PyQueryCancellation, PyQueryExecutionResourceLimits, PyQueryInvocationBudget,
     borrow_reduce_terms, order_handles, parse_cardinality, py_match_error, py_match_orm_error,
-    py_query_target_error, py_sdk_diagnostic, reduce_terms, validated_result_handle,
+    py_query_target_error, py_sdk_diagnostic, python_window, reduce_terms, validated_result_handle,
 };
 use crate::query_v2_runtime::{
     PyQueryV2Authority, PythonBytes, python_limit, python_optional_limit,
@@ -236,12 +235,11 @@ pub(crate) fn query_v2_prepare_remote_model_rows(
     cardinality: &str,
 ) -> PyResult<PyPendingRemoteModelQuery> {
     prepare_terminal(py, query, context, |query| {
-        let offset = python_unsigned(offset)?;
-        let limit = python_unsigned(limit)?;
+        let window = python_window(offset, limit)?;
         let query = query.clone();
         let order = bounded_order_handles(py, order, query.limits())?;
         let cardinality = parse_cardinality(cardinality)?;
-        py.detach(move || query.validate_fetch_rows(&order, Window { offset, limit }, cardinality))
+        py.detach(move || query.validate_fetch_rows(&order, window, cardinality))
             .map_err(py_match_orm_error)
     })
 }
@@ -264,16 +262,13 @@ pub(crate) fn query_v2_prepare_remote_model_page(
     include_total: &Bound<'_, PyAny>,
 ) -> PyResult<PyPendingRemoteModelQuery> {
     prepare_terminal(py, query, context, |query| {
-        let offset = python_unsigned(offset)?;
-        let limit = python_unsigned(limit)?;
+        let window = python_window(offset, limit)?;
         let include_total = python_bool(include_total, "include_total")?;
         let query = query.clone();
         let root = root.inner().clone();
         let order = bounded_order_handles(py, order, query.limits())?;
-        py.detach(move || {
-            query.validate_page_by(&root, &order, Window { offset, limit }, include_total)
-        })
-        .map_err(py_match_orm_error)
+        py.detach(move || query.validate_page_by(&root, &order, window, include_total))
+            .map_err(py_match_orm_error)
     })
 }
 
@@ -411,14 +406,6 @@ fn prepare_terminal(
     })
 }
 
-fn python_unsigned(value: &Bound<'_, PyAny>) -> PyResult<u64> {
-    checked_remote_limit(
-        python_limit(value)
-            .map_err(|diagnostic| py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))?,
-    )
-    .map_err(|diagnostic| py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))
-}
-
 fn python_bool(value: &Bound<'_, PyAny>, argument: &'static str) -> PyResult<bool> {
     value
         .cast_exact::<PyBool>()
@@ -489,30 +476,36 @@ mod tests {
     use pyo3::ffi;
     use pyo3::prelude::*;
 
-    use super::{python_bool, python_unsigned};
+    use type_bridge_orm::Window;
+
+    use super::{python_bool, python_window};
 
     #[test]
-    fn hostile_native_windows_require_exact_non_boolean_u64_values() {
+    fn hostile_native_windows_are_host_marshalling_errors() {
         Python::initialize();
         Python::attach(|py| {
             let one = py.eval(ffi::c_str!("1"), None, None).expect("integer");
-            assert_eq!(python_unsigned(&one).expect("exact integer"), 1);
+            assert_eq!(
+                python_window(&one, &one).expect("exact integers"),
+                Window {
+                    offset: 1,
+                    limit: 1
+                }
+            );
 
-            for expression in [
-                ffi::c_str!("True"),
-                ffi::c_str!("1.0"),
-                ffi::c_str!("-1"),
-                ffi::c_str!("1 << 65"),
+            for (expression, overflow) in [
+                (ffi::c_str!("True"), false),
+                (ffi::c_str!("1.0"), false),
+                (ffi::c_str!("-1"), true),
+                (ffi::c_str!("1 << 65"), true),
             ] {
                 let value = py.eval(expression, None, None).expect("hostile value");
-                let error = python_unsigned(&value).expect_err("value must be rejected");
-                let code = error
-                    .value(py)
-                    .getattr("code")
-                    .expect("structured code")
-                    .extract::<String>()
-                    .expect("string code");
-                assert_eq!(code, "query_remote_limit_invalid");
+                let error = python_window(&one, &value).expect_err("value must be rejected");
+                if overflow {
+                    assert!(error.is_instance_of::<pyo3::exceptions::PyOverflowError>(py));
+                } else {
+                    assert!(error.is_instance_of::<pyo3::exceptions::PyTypeError>(py));
+                }
             }
         });
     }

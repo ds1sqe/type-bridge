@@ -36,7 +36,8 @@ use super::model::{
     RowCardinality, SortDirection, ThingKind, Window,
 };
 use super::validation::{
-    ValidatedMatchRequest, validate_function_argument_count, validate_match_request_with_limits,
+    ValidatedMatchRequest, validate_field_group_count, validate_function_argument_count,
+    validate_match_request_with_limits, validate_selection_count,
 };
 use type_bridge_contract::limits::QueryLimits;
 
@@ -475,12 +476,7 @@ fn validate_shape_arity(limits: StructuralLimits, count: usize) -> Result<()> {
             "typed queries must select at least one output binding",
         ));
     }
-    if count > limits.selected_slots {
-        return Err(handle_error(
-            "selection_cap_exceeded",
-            "typed query output exceeds the selected-slot ceiling",
-        ));
-    }
+    validate_selection_count(limits, count)?;
     Ok(())
 }
 
@@ -1941,6 +1937,20 @@ impl QueryHandle {
                 reducers,
             },
         ))
+    }
+
+    /// Check reduction group fields when a caller chooses them.
+    ///
+    /// Bindings call this from their group-by composition so too many group
+    /// fields are refused there, with the diagnostic the reduction terminal
+    /// would produce (`field_group_tuple_cap_exceeded` under the session's
+    /// `selected_slots`).
+    pub fn check_group_fields(&self, groups: &[&FieldHandle]) -> Result<()> {
+        for group in groups {
+            self.require_session(group.session_id())?;
+        }
+        validate_field_group_count(self.0.session.limits.structural, groups.len())?;
+        Ok(())
     }
 
     /// Canonically validate one tuple-field-grouped reduction terminal.

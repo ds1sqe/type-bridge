@@ -41,8 +41,6 @@ const ORDERED_MATERIALIZE_THING_SOURCE: &[u8] = br#"function materializeThing(
 
 const ORDERED_RUNTIME_SOURCE_SUFFIX: &[u8] = br#"
 
-import { projectedManagerNativeCall } from "@type-bridge/node/runtime-projection";
-
 /** Canonical collection semantics present only in ordered projection resources. */
 export interface Multiplicity {
   readonly collection_mode?: "ordered_list";
@@ -1309,15 +1307,15 @@ mod tests {
     #[test]
     fn legacy_runtime_source_remains_byte_exact() {
         assert_eq!(runtime_source(false).unwrap(), RUNTIME_SOURCE);
-        assert_eq!(RUNTIME_SOURCE.len(), 120_941);
+        assert_eq!(RUNTIME_SOURCE.len(), 120_556);
         assert_eq!(
             format!("{:x}", Sha256::digest(RUNTIME_SOURCE)),
-            "6fc7092acf6ab682d27a128e0e6ac1796abf925a4f67c7458e0134628750a15b"
+            "372142114e9224b4b74a1d3e9bbbca0cd2450c5c6d39b2e54ee1fd79bf8d2e66"
         );
         let resource = CodeResourceDigest::from_bytes(RUNTIME_SOURCE_ID, RUNTIME_SOURCE).unwrap();
         assert_eq!(
             resource.content_fingerprint().digest().to_hex(),
-            "5b4afca5d21e84cdec5c384be174a3d7dfb332b145e60e3819c0576d2e88735b"
+            "ed00e0c823ed0fafe819a2366b5cd60ec6cb85a194e5a28bcbf1fc8194f94689"
         );
     }
 
@@ -1341,9 +1339,8 @@ mod tests {
         assert!(source.contains("readonly #password: string;"));
         assert!(source.contains("DirectConnectionPolicy([REDACTED])"));
         assert!(source.contains("projection.connectDirect({"));
-        assert!(source.contains(
-            "import { projectedManagerNativeCall } from \"@type-bridge/node/runtime-projection\";"
-        ));
+        // The base runtime imports the structured-error wrapper once.
+        assert_eq!(source.matches("  projectedManagerNativeCall,\n").count(), 1);
         assert!(source.contains("const entries = Object.entries(filters);"));
         assert!(source.contains("orderedCompatibilityPredicates(typeKey, entries)"));
         assert!(!source.contains("orderedCompatibilityPredicates(typeKey, filters)"));

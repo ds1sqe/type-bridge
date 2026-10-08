@@ -111,6 +111,33 @@ differently direct and through a proxy. Each entry says what to do instead.
     built-in HTTP route. Flat limits `{ maxItems, maxBytes, ..., deadlineMs }`
     are `new QueryExecutionResourceLimits({ items, bytes, ...,
     timeoutMilliseconds })`.
+- Generated Python and TypeScript packages no longer check query windows,
+  selection and aggregate caps, group-by keys, or reachability depth
+  themselves; the Rust core refuses them with its structured diagnostic
+  (`MatchRequestError` in Python, the structured error with `category` and
+  `code` in TypeScript), the same on every connection. Catch the core codes
+  instead of the old host errors:
+  - a zero limit is `zero_window_limit` and an offset plus limit past the
+    unsigned 64-bit range is `window_overflow` (Python raised `ValueError`;
+    TypeScript accepted `limit: 0n` and now refuses it);
+  - more selections than `selected_slots` is `selection_cap_exceeded`, no
+    or too many aggregate terms are `empty_reducers` /
+    `reducer_cap_exceeded`, and too many group-by fields are
+    `field_group_tuple_cap_exceeded`, still raised by `group_by()` /
+    `groupBy()` (Python raised `ValueError`, TypeScript `RangeError`);
+  - a reachability minimum depth above its maximum is `reachable_bounds`,
+    and a maximum above the predicate-depth ceiling (64) is
+    `reachable_depth_limit`.
+
+  The caps follow the session's `QueryLimits`: a session that lowers
+  `selected_slots` is refused at its own limit, where the hosts used to
+  apply a fixed sixteen. Marshalling stays a host error: in Python a `bool`
+  or non-`int` window or depth raises `TypeError` and a negative or
+  too-large one raises `OverflowError` (depth used to raise `ValueError`); in
+  Node a window that is not a `u64` `bigint` or a depth that is not an
+  integer from 0 to 255 is a native argument error (it was a `RangeError`).
+  These are the same on every connection: a caller-exchanged session no
+  longer reports a malformed window as `query_remote_limit_invalid`.
 - Mixed versions: clients and executors must both be 2.3.
   - A 2.3 executor refuses a V1-format request with
     `query_remote_v2_format_unsupported` and a `supported` detail naming the

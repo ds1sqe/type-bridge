@@ -299,6 +299,13 @@ pub(crate) fn bigint_u64(value: &BigInt, name: &str) -> Result<u64> {
     Ok(value)
 }
 
+/// Marshal a JavaScript `bigint` window value that arrives untyped.
+pub(crate) fn unknown_u64(value: Unknown, name: &str) -> Result<u64> {
+    let value =
+        BigInt::from_unknown(value).map_err(|_| invalid_arg(format!("{name} must be a bigint")))?;
+    bigint_u64(&value, name)
+}
+
 fn u64_bigint(value: u64) -> BigInt {
     BigInt {
         sign_bit: false,
@@ -1362,6 +1369,17 @@ impl NodeMatchQueryHandle {
         self.inner
             .allow_cross_join(&left.inner, &right.inner)
             .map(|inner| self.derived(inner))
+            .map_err(crate::napi_orm_error)
+    }
+
+    /// Refuse group fields at `groupBy()` with the reduction terminal's
+    /// diagnostic (`field_group_tuple_cap_exceeded` under `selected_slots`).
+    #[napi(js_name = "checkGroupFields")]
+    pub fn check_group_fields(&self, groups: Vec<Reference<NodeMatchFieldHandle>>) -> Result<()> {
+        self.ensure_open()?;
+        let groups = groups.iter().map(|group| &group.inner).collect::<Vec<_>>();
+        self.inner
+            .check_group_fields(&groups)
             .map_err(crate::napi_orm_error)
     }
 

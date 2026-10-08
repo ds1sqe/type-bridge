@@ -7,15 +7,9 @@
 
 use std::sync::Arc;
 
-use napi::bindgen_prelude::{
-    Array, AsyncTask, BigInt, Buffer, Env, FromNapiValue, Reference, Unknown,
-};
+use napi::bindgen_prelude::{Array, AsyncTask, Buffer, Env, FromNapiValue, Reference, Unknown};
 use napi_derive::napi;
-use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
-use type_bridge_contract::query_remote::{
-    checked_remote_limit, remote_limit_invalid,
-};
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
     AnswerCancellation, PendingRemoteModelQueryV2, ProxyQueryConnection, QueryExecutionDeadline,
@@ -27,7 +21,7 @@ use crate::match_runtime::{
     NodeMatchBindingHandle, NodeMatchFieldHandle, NodeMatchOrderHandle, NodeMatchQueryHandle,
     NodeMatchResultContext, NodeQueryCancellation, NodeQueryExecutionResources,
     NodeValidatedMatchResultHandle, borrow_reduce_terms, napi_match_error, napi_sdk_diagnostic,
-    napi_target_error, order_handles, parse_cardinality, reduce_terms,
+    napi_target_error, order_handles, parse_cardinality, reduce_terms, unknown_u64,
 };
 use crate::query_v2_runtime::{NodeQueryV2Authority, bounded_response_snapshot, non_shared_buffer};
 
@@ -50,9 +44,12 @@ impl NodeRemoteModelQueryContext {
         cancellation: AnswerCancellation,
     ) -> napi::Result<Self> {
         let advertisement = owned_advertisement(env, advertisement)?;
-        let connection =
-            ProxyQueryConnection::with_exchange(advertisement, authority.authority(), answer_limits)
-                .map_err(napi_sdk_diagnostic)?;
+        let connection = ProxyQueryConnection::with_exchange(
+            advertisement,
+            authority.authority(),
+            answer_limits,
+        )
+        .map_err(napi_sdk_diagnostic)?;
         Ok(Self {
             connection,
             resources,
@@ -329,8 +326,8 @@ pub(crate) fn owned_advertisement(env: &Env, advertisement: Unknown) -> napi::Re
     ))
 }
 
-// Remote terminal arguments are validated with the remote limit diagnostics,
-// whichever route then carries the request.
+// Window integers are marshalled like the direct terminals', whichever route
+// then carries the request; the core owns every rule on their values.
 
 pub(crate) fn rows_request(
     query: &NodeMatchQueryHandle,
@@ -345,8 +342,8 @@ pub(crate) fn rows_request(
         .validate_fetch_rows(
             &orders,
             Window {
-                offset: node_unsigned(offset)?,
-                limit: node_unsigned(limit)?,
+                offset: unknown_u64(offset, "offset")?,
+                limit: unknown_u64(limit, "limit")?,
             },
             parse_cardinality(cardinality)?,
         )
@@ -368,8 +365,8 @@ pub(crate) fn page_request(
             root.inner(),
             &orders,
             Window {
-                offset: node_unsigned(offset)?,
-                limit: node_unsigned(limit)?,
+                offset: unknown_u64(offset, "offset")?,
+                limit: unknown_u64(limit, "limit")?,
             },
             node_bool(include_total, "includeTotal")?,
         )
@@ -446,26 +443,6 @@ pub(crate) fn reduce_by_fields_request(
         .map_err(crate::napi_orm_error)
 }
 
-fn node_limit_bigint(value: &BigInt) -> Result<i128, Diagnostic> {
-    let (value, lossless) = value.get_i128();
-    if lossless {
-        Ok(value)
-    } else {
-        Err(remote_limit_invalid())
-    }
-}
-
-fn node_unsigned(value: Unknown) -> napi::Result<u64> {
-    let value = BigInt::from_unknown(value)
-        .map_err(|_| remote_limit_invalid())
-        .and_then(|value| checked_node_limit_bigint(&value));
-    value.map_err(|diagnostic| napi_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))
-}
-
-fn checked_node_limit_bigint(value: &BigInt) -> Result<u64, Diagnostic> {
-    checked_remote_limit(node_limit_bigint(value)?)
-}
-
 fn node_bool(value: Unknown, argument: &'static str) -> napi::Result<bool> {
     bool::from_unknown(value).map_err(|_| {
         napi::Error::new(
@@ -498,37 +475,5 @@ pub(crate) fn remote_model_error(error: RemoteModelQueryV2Error) -> napi::Error 
             napi_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic))
         }
         RemoteModelQueryV2Error::Match(error) => napi_match_error(error),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use napi::bindgen_prelude::BigInt;
-
-    use super::checked_node_limit_bigint;
-
-    #[test]
-    fn hostile_native_bigints_share_the_remote_limit_diagnostic() {
-        assert_eq!(
-            checked_node_limit_bigint(&BigInt {
-                sign_bit: false,
-                words: vec![7],
-            })
-            .expect("small unsigned bigint"),
-            7
-        );
-        for value in [
-            BigInt {
-                sign_bit: true,
-                words: vec![1],
-            },
-            BigInt {
-                sign_bit: false,
-                words: vec![0, 0, 1],
-            },
-        ] {
-            let diagnostic = checked_node_limit_bigint(&value).expect_err("hostile bigint");
-            assert_eq!(diagnostic.code().as_str(), "query_remote_limit_invalid");
-        }
     }
 }

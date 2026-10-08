@@ -1105,6 +1105,110 @@ await assert.rejects(
 assert.equal(generatedRemoteExchanges, limitedRemoteExchangesBefore);
 limitedRemoteSession.close();
 
+// Windows, selection and aggregate caps, group-by keys, and reachability
+// depth are core rules: the generated host only marshals, and every refusal
+// is the core's structured diagnostic, at the same call as before.
+let coreRuleExchanges = 0;
+function expectCoreRefusal(error, code, maximum) {
+  assert.equal(error.category, "invalid_plan", `${error.category}/${error.code}`);
+  assert.equal(error.code, code);
+  if (maximum !== undefined) {
+    assert.equal(String(error.details.maximum.value), String(maximum));
+    assert.match(JSON.stringify(error.details.limit), /selected_slots/);
+  }
+  return true;
+}
+for (const sessionSlots of [undefined, 4n]) {
+  const coreRuleSession = new QuerySession(
+    new ExchangeConnection(generatedAdvertisement, async () => {
+      coreRuleExchanges += 1;
+      return new Uint8Array();
+    }),
+    sessionSlots === undefined
+      ? {}
+      : { queryLimits: new QueryLimits({ selected_slots: sessionSlots }) },
+  );
+  const slots = sessionSlots === undefined ? 16 : Number(sessionSlots);
+  const corePerson = coreRuleSession.exact(Person);
+  const coreScore = corePerson.field(Person.score);
+  const coreQuery = coreRuleSession.query(corePerson);
+  assert.throws(
+    () =>
+      coreRuleSession.query(
+        ...Array.from({ length: slots + 1 }, () => coreRuleSession.exact(Person)),
+      ),
+    (error) => expectCoreRefusal(error, "selection_cap_exceeded", slots),
+  );
+  assert.throws(
+    () =>
+      coreQuery.groupBy(
+        corePerson,
+        ...Array.from({ length: slots + 1 }, () => coreScore),
+      ),
+    (error) => expectCoreRefusal(error, "field_group_tuple_cap_exceeded", slots),
+  );
+  await assert.rejects(
+    async () =>
+      coreQuery.aggregate(
+        corePerson,
+        Array.from({ length: slots + 1 }, () => aggregate.count()),
+      ),
+    (error) => expectCoreRefusal(error, "reducer_cap_exceeded", slots),
+  );
+  await assert.rejects(
+    async () => coreQuery.aggregate(corePerson, []),
+    (error) => expectCoreRefusal(error, "empty_reducers"),
+  );
+  await assert.rejects(
+    async () => coreQuery.rows({ limit: 0n }),
+    (error) => expectCoreRefusal(error, "zero_window_limit"),
+  );
+  await assert.rejects(
+    async () => coreQuery.pageBy(corePerson, { limit: 0n }),
+    (error) => expectCoreRefusal(error, "zero_window_limit"),
+  );
+  await assert.rejects(
+    async () => coreQuery.rows({ offset: (1n << 64n) - 2n, limit: 2n }),
+    (error) => expectCoreRefusal(error, "window_overflow"),
+  );
+  const coreOther = coreRuleSession.exact(Person);
+  for (const [minDepth, maxDepth, code] of [
+    [3, 2, "reachable_bounds"],
+    [0, 65, "reachable_depth_limit"],
+  ]) {
+    assert.throws(
+      () =>
+        coreRuleSession.reachable(
+          corePerson,
+          coreOther,
+          Event,
+          Event.subject,
+          Event.subject,
+          { minDepth, maxDepth },
+        ),
+      (error) => expectCoreRefusal(error, code),
+    );
+  }
+  // Marshalling stays a host error: a depth that is not a u8 never reaches
+  // the core.
+  for (const hostile of [-1, 256, 1.5]) {
+    assert.throws(
+      () =>
+        coreRuleSession.reachable(
+          corePerson,
+          coreOther,
+          Event,
+          Event.subject,
+          Event.subject,
+          { minDepth: 0, maxDepth: hostile },
+        ),
+      (error) => error.code !== "reachable_depth_limit",
+    );
+  }
+  coreRuleSession.close();
+}
+assert.equal(coreRuleExchanges, 0);
+
 // Repeated where clauses are one flat conjunction, so a wide query adapts
 // under the default limits. Thirty-eight clauses used to nest past the
 // canonical encoding depth and were refused as a resource limit during

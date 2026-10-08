@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use pyo3::exceptions::{PyException, PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyException, PyOverflowError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyInt};
 use pythonize::pythonize;
@@ -715,16 +715,35 @@ impl PyMatchSessionHandle {
     }
 }
 
-fn python_reachability_depth(value: &Bound<'_, PyAny>, name: &str) -> PyResult<u8> {
-    let value = value
+/// Marshal an exact Python `int` into a native unsigned integer.
+///
+/// Type conversion only: `bool` and other non-`int` values raise
+/// `TypeError`, and a value outside the native range raises
+/// `OverflowError`. Query rules on the converted value (a zero limit, a
+/// window overflow, a depth ceiling) belong to the core and surface as
+/// `MatchRequestError`.
+fn exact_unsigned<T: TryFrom<i128>>(value: &Bound<'_, PyAny>, name: &str, max: u64) -> PyResult<T> {
+    let range = || PyOverflowError::new_err(format!("{name} must be an integer from 0 to {max}"));
+    value
         .cast_exact::<PyInt>()
         .map_err(|_| PyTypeError::new_err(format!("{name} must be an exact Python int")))?
         .extract::<i128>()
-        .map_err(|_| {
-            PyValueError::new_err(format!("{name} must be an integer between 0 and 255"))
-        })?;
-    u8::try_from(value)
-        .map_err(|_| PyValueError::new_err(format!("{name} must be an integer between 0 and 255")))
+        .map_err(|_| range())
+        .and_then(|value| T::try_from(value).map_err(|_| range()))
+}
+
+fn python_reachability_depth(value: &Bound<'_, PyAny>, name: &str) -> PyResult<u8> {
+    exact_unsigned(value, name, u64::from(u8::MAX))
+}
+
+pub(crate) fn python_window(
+    offset: &Bound<'_, PyAny>,
+    limit: &Bound<'_, PyAny>,
+) -> PyResult<Window> {
+    Ok(Window {
+        offset: exact_unsigned(offset, "offset", u64::MAX)?,
+        limit: exact_unsigned(limit, "limit", u64::MAX)?,
+    })
 }
 
 #[pymethods]
@@ -1011,19 +1030,37 @@ impl PyMatchQueryHandle {
             .map_err(py_match_orm_error)
     }
 
+    /// Refuse group fields at `group_by()` with the reduction terminal's
+    /// diagnostic (`field_group_tuple_cap_exceeded` under `selected_slots`).
+    fn check_group_fields(
+        &self,
+        py: Python<'_>,
+        groups: Vec<Py<PyMatchFieldHandle>>,
+    ) -> PyResult<()> {
+        self.ensure_open()?;
+        let groups = groups
+            .iter()
+            .map(|group| group.borrow(py).inner.clone())
+            .collect::<Vec<_>>();
+        let groups = groups.iter().collect::<Vec<_>>();
+        self.inner
+            .check_group_fields(&groups)
+            .map_err(py_match_orm_error)
+    }
+
     fn fetch_rows_diagnostic(
         &self,
         py: Python<'_>,
         order: Vec<Py<PyMatchOrderHandle>>,
-        offset: u64,
-        limit: u64,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
         cardinality: &str,
     ) -> PyResult<String> {
         self.ensure_open()?;
         let order = order_handles(py, &order);
         let request = self.inner.fetch_rows(
             &order,
-            Window { offset, limit },
+            python_window(offset, limit)?,
             parse_cardinality(cardinality)?,
         );
         diagnostic_from_request(request)
@@ -1034,8 +1071,8 @@ impl PyMatchQueryHandle {
         py: Python<'_>,
         root: PyRef<'_, PyMatchBindingHandle>,
         order: Vec<Py<PyMatchOrderHandle>>,
-        offset: u64,
-        limit: u64,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
         include_total: bool,
     ) -> PyResult<String> {
         self.ensure_open()?;
@@ -1043,7 +1080,7 @@ impl PyMatchQueryHandle {
         diagnostic_from_request(self.inner.page_by(
             &root.inner,
             &order,
-            Window { offset, limit },
+            python_window(offset, limit)?,
             include_total,
         ))
     }
@@ -1063,8 +1100,8 @@ impl PyMatchQueryHandle {
         py: Python<'_>,
         database: &PyRustDatabase,
         order: Vec<Py<PyMatchOrderHandle>>,
-        offset: u64,
-        limit: u64,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
         cardinality: &str,
     ) -> PyResult<PyValidatedMatchResultHandle> {
         let target = TerminalTarget::Database(database);
@@ -1076,8 +1113,8 @@ impl PyMatchQueryHandle {
         py: Python<'_>,
         transaction: &PyRustTransactionContext,
         order: Vec<Py<PyMatchOrderHandle>>,
-        offset: u64,
-        limit: u64,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
         cardinality: &str,
     ) -> PyResult<PyValidatedMatchResultHandle> {
         let target = TerminalTarget::Transaction(transaction);
@@ -1089,8 +1126,8 @@ impl PyMatchQueryHandle {
         py: Python<'_>,
         connection: &PyProxyConnection,
         order: Vec<Py<PyMatchOrderHandle>>,
-        offset: u64,
-        limit: u64,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
         cardinality: &str,
     ) -> PyResult<PyValidatedMatchResultHandle> {
         let target = TerminalTarget::Proxy(connection);
@@ -1105,8 +1142,8 @@ impl PyMatchQueryHandle {
         database: &PyRustDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
         order: Vec<Py<PyMatchOrderHandle>>,
-        offset: u64,
-        limit: u64,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
         include_total: bool,
     ) -> PyResult<PyValidatedMatchResultHandle> {
         let target = TerminalTarget::Database(database);
@@ -1129,8 +1166,8 @@ impl PyMatchQueryHandle {
         transaction: &PyRustTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
         order: Vec<Py<PyMatchOrderHandle>>,
-        offset: u64,
-        limit: u64,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
         include_total: bool,
     ) -> PyResult<PyValidatedMatchResultHandle> {
         let target = TerminalTarget::Transaction(transaction);
@@ -1153,8 +1190,8 @@ impl PyMatchQueryHandle {
         connection: &PyProxyConnection,
         root: PyRef<'_, PyMatchBindingHandle>,
         order: Vec<Py<PyMatchOrderHandle>>,
-        offset: u64,
-        limit: u64,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
         include_total: bool,
     ) -> PyResult<PyValidatedMatchResultHandle> {
         let target = TerminalTarget::Proxy(connection);
@@ -1473,18 +1510,15 @@ impl PyMatchQueryHandle {
         py: Python<'_>,
         target: TerminalTarget<'_>,
         order: &[Py<PyMatchOrderHandle>],
-        offset: u64,
-        limit: u64,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
         cardinality: &str,
     ) -> PyResult<PyValidatedMatchResultHandle> {
+        let window = python_window(offset, limit)?;
         self.run_terminal_checked(py, target, |query| {
             let orders = order_handles(py, order);
             query
-                .validate_fetch_rows(
-                    &orders,
-                    Window { offset, limit },
-                    parse_cardinality(cardinality)?,
-                )
+                .validate_fetch_rows(&orders, window, parse_cardinality(cardinality)?)
                 .map_err(py_match_orm_error)
         })
     }
@@ -1496,13 +1530,14 @@ impl PyMatchQueryHandle {
         target: TerminalTarget<'_>,
         root: &BindingHandle,
         order: &[Py<PyMatchOrderHandle>],
-        offset: u64,
-        limit: u64,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
         include_total: bool,
     ) -> PyResult<PyValidatedMatchResultHandle> {
+        let window = python_window(offset, limit)?;
         self.run_terminal(py, target, |query| {
             let orders = order_handles(py, order);
-            query.validate_page_by(root, &orders, Window { offset, limit }, include_total)
+            query.validate_page_by(root, &orders, window, include_total)
         })
     }
 

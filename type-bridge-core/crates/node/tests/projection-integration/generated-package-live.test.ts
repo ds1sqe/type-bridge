@@ -1840,6 +1840,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       QuerySession,
       ExchangeConnection,
       QueryExecutionResourceLimits,
+      QueryLimits,
       connectProxy,
       PROJECTION_FINGERPRINT_JSON,
       Rank,
@@ -2820,6 +2821,109 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
         directRefusal,
       );
       assert.deepEqual(await limitRefusal(proxy), directRefusal);
+
+      // Windows, caps, group-by keys, and reachability depth are core rules:
+      // each corpus case is refused with the corpus code on every
+      // connection, and a session with fewer selected slots refuses at its
+      // own limit.
+      const corpusCases = JSON.parse(
+        await readFile(resolve(ROOT, "tests/contracts/typed_query/corpus-v1.json"), "utf8"),
+      ).cases as { id: string; expected: { error_category: string; error_code: string } }[];
+      const corpusCode = (id: string): [string, string] => {
+        const found = corpusCases.find((entry) => entry.id === id);
+        assert.ok(found !== undefined, `missing corpus case ${id}`);
+        return [found.expected.error_category, found.expected.error_code];
+      };
+      const coreRefusal = async (
+        id: string,
+        action: () => unknown,
+      ): Promise<Record<string, unknown>> => {
+        try {
+          await action();
+        } catch (error: any) {
+          assert.deepEqual([error.category, error.code], corpusCode(id), id);
+          return { code: error.code, path: error.path, details: error.details };
+        }
+        throw new Error(`${id} was not refused`);
+      };
+      const coreRules = async (connection: any, slots: bigint | undefined) => {
+        const session = new QuerySession(
+          connection,
+          slots === undefined ? {} : { queryLimits: new QueryLimits({ selected_slots: slots }) },
+        );
+        const width = slots === undefined ? 16 : Number(slots);
+        try {
+          const person = session.exact(Person);
+          const score = person.field(Person.score);
+          const query = session.query(person);
+          const other = session.exact(Person);
+          const reachable = (minDepth: number, maxDepth: number) => () =>
+            session.reachable(
+              person,
+              other,
+              NetworkLink,
+              NetworkLink.origin,
+              NetworkLink.destination,
+              { minDepth, maxDepth },
+            );
+          return {
+            selection: await coreRefusal(
+              slots === undefined
+                ? "selection.seventeen-slot-rejection"
+                : "selection.session-slot-ceiling",
+              () =>
+                session.query(
+                  ...(Array.from({ length: width + 1 }, () => session.exact(Person)) as [any]),
+                ),
+            ),
+            groupKeys: await coreRefusal("aggregate.seventeen-group-keys", () =>
+              (query.groupBy as any)(
+                person,
+                ...Array.from({ length: width + 1 }, () => score),
+              ),
+            ),
+            terms: await coreRefusal("aggregate.seventeen-terms", () =>
+              query.aggregate(
+                person,
+                Array.from({ length: width + 1 }, () => aggregate.count()) as any,
+              ),
+            ),
+            emptyTerms: await coreRefusal("aggregate.empty-terms", () =>
+              query.aggregate(person, [] as any),
+            ),
+            zeroLimit: await coreRefusal("bounds.public-invalid-limit", () =>
+              query.rows({ limit: 0n }),
+            ),
+            zeroPage: await coreRefusal("bounds.public-invalid-limit", () =>
+              query.pageBy(person, { limit: 0n }),
+            ),
+            offset: await coreRefusal("bounds.public-invalid-offset", () =>
+              query.rows({ offset: (1n << 64n) - 1n, limit: 1n }),
+            ),
+            overflow: await coreRefusal("bounds.window-overflow", () =>
+              query.rows({ offset: (1n << 64n) - 2n, limit: 2n }),
+            ),
+            reversed: await coreRefusal("reachability.reversed-bounds", reachable(3, 2)),
+            deep: await coreRefusal("reachability.depth-ceiling", reachable(0, 65)),
+          };
+        } finally {
+          session.close();
+        }
+      };
+      for (const slots of [undefined, 4n]) {
+        const directRules = await coreRules(database, slots);
+        const width = slots === undefined ? 16 : Number(slots);
+        assert.equal(String((directRules.selection.details as any).maximum.value), String(width));
+        assert.equal(String((directRules.groupKeys.details as any).maximum.value), String(width));
+        assert.equal(String((directRules.terms.details as any).maximum.value), String(width));
+        const requestsBefore = requests.length;
+        assert.deepEqual(
+          await coreRules(new ExchangeConnection(advertisement, exchange), slots),
+          directRules,
+        );
+        assert.deepEqual(await coreRules(proxy, slots), directRules);
+        assert.equal(requests.length, requestsBefore);
+      }
       assert.ok(requests.every((request) => request.length > 0));
 
       if (sdkReportPath !== undefined) {
