@@ -18,7 +18,8 @@ use type_bridge::value::{
     Decimal as QueryDecimal, Double as QueryDouble, Regex, Text,
 };
 use type_bridge::{
-    AnswerCancellation, ConnectionOptions, Database, Error, ErrorCategory, ErrorDetail,
+    AnswerCancellation, Connection, ConnectionOptions, Database, DirectConnectionPolicy, Error,
+    ErrorCategory, ErrorDetail, TlsPolicy,
     ErrorPathSegment, DEFAULT_QUERY_ITEMS, PageOptions, ProjectedManagerComparison,
     QueryDiagnosticCategory, QueryDiagnosticPathKind, QueryExecutionResourceLimits, QuerySession,
     ProxyConnectionPolicy, ProxyDatabase, ProxyEndpoint, ProxyExchange, RowsOptions, aggregate,
@@ -5249,6 +5250,211 @@ async fn generated_relation_query_and_remote_lifecycle() {
         person_baseline
     );
     println!("F2C-03 public generated relation lifecycle: passed");
+}
+
+/// The live database as a direct connection policy.
+fn direct_connection_policy() -> DirectConnectionPolicy {
+    let options = connection_options();
+    let username = env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned());
+    let password = env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned());
+    let policy =
+        DirectConnectionPolicy::new(options.address(), options.database(), username, password)
+            .http_port(options.get_http_port());
+    if !options.is_tls() {
+        return policy;
+    }
+    policy.tls(match env::var_os("TYPEDB_TLS_ROOT_CA") {
+        Some(root) => TlsPolicy::custom_root(root).expect("live TLS root CA loads"),
+        None => TlsPolicy::native_roots(),
+    })
+}
+
+/// One query program; the connection is the only thing that differs.
+async fn one_program(connection: &Connection<AppSchema>) -> Value {
+    let mut session = connection.query().expect("one-program session");
+    let person = session.exact::<Person>().expect("one-program person");
+    let member = session.exact::<Person>().expect("one-program member");
+    let employment = session
+        .exact::<Employment>()
+        .expect("one-program employment");
+    let identifier = person.field(PersonType::identifier);
+    let score = person.field(PersonType::score);
+    let people = session
+        .query(person)
+        .expect("one-program people")
+        .where_(identifier.starts_with(Text::new("p-6").expect("one-program prefix")))
+        .expect("one-program prefix predicate");
+    let iids = |values: &[Person]| {
+        values
+            .iter()
+            .map(|value| value.iid().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let rows = people
+        .rows(RowsOptions::new(10).order_by(identifier.asc()))
+        .await
+        .expect("one-program rows");
+    let first = people
+        .first(identifier.asc())
+        .await
+        .expect("one-program first")
+        .expect("one-program first row");
+    let page = people
+        .page_by(
+            person,
+            PageOptions::new(1)
+                .include_total(true)
+                .order_by(identifier.asc()),
+        )
+        .await
+        .expect("one-program page");
+    let totals: (u64, i64) = people
+        .aggregate((aggregate::count(), score.sum()))
+        .await
+        .expect("one-program aggregate");
+    let employed = session
+        .query(employment)
+        .expect("one-program employment query")
+        .match_(member)
+        .expect("one-program employee match")
+        .where_(
+            employment.role(EmploymentType::employee).connects(member)
+                & member
+                    .field(PersonType::identifier)
+                    .eq(Identifier::new("p-600").expect("one-program employee key")),
+        )
+        .expect("one-program employment predicate")
+        .one()
+        .await
+        .expect("one-program employment");
+    let observed = json!({
+        "rows": iids(&rows),
+        "first": first.iid(),
+        "page": [iids(page.items()), page.total()],
+        "count": people.count().await.expect("one-program count"),
+        "exists": people.exists().await.expect("one-program exists"),
+        "aggregate": [totals.0, totals.1],
+        "employment": employed.iid(),
+    });
+    drop(people);
+    drop(session);
+
+    // A limit refusal belongs to the program too: its category, code, path,
+    // and details are the same on every connection.
+    let mut limited = connection
+        .query_with_resources(zero_role_players(), AnswerCancellation::default())
+        .expect("one-program limited session");
+    let mut observed = observed;
+    observed["limit_refusal"] = role_player_refusal(&mut limited, employed.iid()).await;
+    observed
+}
+
+fn zero_role_players() -> QueryExecutionResourceLimits {
+    QueryExecutionResourceLimits {
+        role_players: 0,
+        ..QueryExecutionResourceLimits::default()
+    }
+}
+
+/// The refusal of hydrating one employment under a zero role-player budget.
+async fn role_player_refusal(
+    session: &mut QuerySession<'_, AppSchema>,
+    employment_iid: &str,
+) -> Value {
+    let employment = session
+        .exact::<Employment>()
+        .expect("limited employment binding");
+    let error = session
+        .query(employment)
+        .expect("limited employment query")
+        .where_(employment.iid(employment_iid))
+        .expect("limited employment predicate")
+        .one()
+        .await
+        .expect_err("a zero role-player budget refuses a hydrated relation");
+    assert_eq!(error.category(), ErrorCategory::ResourceLimit);
+    json!({
+        "category": error.category().as_str(),
+        "sdk_category": error.sdk_category(),
+        "code": error.code(),
+        "path": format!("{:?}", error.diagnostic_path()),
+        "details": format!("{:?}", error.details()),
+    })
+}
+
+#[tokio::test]
+async fn generated_one_program_under_direct_and_proxy_connections() {
+    let db = database().await;
+    let workers = [
+        db.entities::<Person>()
+            .insert(relation_person_input("p-600", "one-program-a"))
+            .await
+            .expect("one-program person a"),
+        db.entities::<Person>()
+            .insert(relation_person_input("p-601", "one-program-b"))
+            .await
+            .expect("one-program person b"),
+    ];
+    let employment = db
+        .relations::<Employment>()
+        .insert(EmploymentCreate::new(workers[0].reference()).expect("one-program employment"))
+        .await
+        .expect("one-program employment insert");
+
+    let direct = SCHEMA
+        .connect(direct_connection_policy())
+        .await
+        .expect("direct connection opens");
+    assert!(matches!(direct, Connection::Direct(_)));
+    let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("proxy server URL");
+    let proxy_policy = || ProxyConnectionPolicy::new(ProxyEndpoint::new(remote_url.clone()));
+    let proxy = SCHEMA
+        .connect(proxy_policy())
+        .await
+        .expect("proxy connection opens");
+    assert!(matches!(proxy, Connection::Proxy(_)));
+
+    let direct_observed = one_program(&direct).await;
+    assert_eq!(direct_observed["employment"], employment.iid());
+    assert_eq!(direct_observed["count"], 2);
+    assert_eq!(one_program(&proxy).await, direct_observed);
+    drop(proxy);
+    drop(direct);
+
+    // The connection's answer ceiling binds a session that asks for the
+    // defaults: the zero role-player budget, set only on the connection,
+    // refuses the same way on both transports.
+    let ceilinged = [
+        SCHEMA
+            .connect(direct_connection_policy().answer_limits(zero_role_players()))
+            .await
+            .expect("ceilinged direct connection opens"),
+        SCHEMA
+            .connect(proxy_policy().answer_limits(zero_role_players()))
+            .await
+            .expect("ceilinged proxy connection opens"),
+    ];
+    for connection in &ceilinged {
+        let mut session = connection.query().expect("ceilinged session");
+        assert_eq!(
+            role_player_refusal(&mut session, employment.iid()).await,
+            direct_observed["limit_refusal"],
+            "a session must not exceed its connection's answer ceiling"
+        );
+    }
+    drop(ceilinged);
+
+    db.relations::<Employment>()
+        .delete(employment.iid())
+        .await
+        .expect("one-program employment cleanup");
+    for worker in &workers {
+        db.entities::<Person>()
+            .delete(worker.iid())
+            .await
+            .expect("one-program person cleanup");
+    }
+    println!("05.5 one program under direct and proxy connections: passed");
 }
 
 #[tokio::test]

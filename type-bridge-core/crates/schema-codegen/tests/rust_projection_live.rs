@@ -45,12 +45,13 @@ const SDK_V3_JOURNEY: &[u8] =
     include_bytes!("../../../../tests/contracts/sdk_conformance/sdk-v3/journey-v3.json");
 const SDK_V2_CATALOG_RELATIVE: &str = "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json";
 const SDK_PROFILE: &str = "typedb-3.12.1/v1";
-const CONSUMER_TESTS: [&str; 12] = [
+const CONSUMER_TESTS: [&str; 13] = [
     "generated_sdk_report_journeys",
     "generated_schema_handshake_and_tokens",
     "generated_entity_crud_batches_and_scalar_domains",
     "generated_inheritance_exact_and_subtype_reads",
     "generated_relation_query_and_remote_lifecycle",
+    "generated_one_program_under_direct_and_proxy_connections",
     "generated_integer_keys_and_polymorphic_role_parity",
     "generated_plain_inherited_abstract_role_parity",
     "generated_unkeyed_entity_iid_lifecycle_and_singular_query",

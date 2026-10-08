@@ -130,59 +130,55 @@ differently direct and through a proxy. Each entry says what to do instead.
   `with_query_limits`); the C runtime header adds
   `type_bridge_query_limit_override_v1_t` and
   `type_bridge_query_session_open_with_limits_v1`. Defaults are unchanged.
-- Remote executors advertise the query limits they enforce. A client holds a
-  request to the stricter of its own and the advertised limits and refuses
-  before sending. The standalone server reads `[v2.query_limits]`.
-- A built-in HTTP transport for proxy connections. In Rust,
-  `ProxyConnectionPolicy::new(ProxyEndpoint::new(url))` reaches a
-  TypeBridge server's `/v2/capabilities` and `/v2/query` routes over
-  plaintext or TLS (`TlsPolicy`: native roots or a custom root bundle), with
-  optional request headers such as `Authorization`, and an advertisement can
-  be pinned instead of fetched. It follows no redirects and ignores proxy
-  environment variables.
-- Python and Node native `ProxyConnection`: the same built-in HTTP route
-  for the bindings, with `execute_*_proxy` terminals (Python) and
-  Promise terminals (Node).
-- Generated Python proxy connections: `connect_proxy(endpoint, ...)` opens
-  the built-in route with the package's embedded authority, and
-  `ExchangeConnection(advertisement, exchange, *, answer_limits=None)` is
-  the host-owned transport; both take an `answer_limits` ceiling. Pass
-  either to `QuerySession` or `Model.query`.
-- Generated TypeScript proxy connections: `connectProxy(endpoint, options)`
-  resolves to a `ProxyConnection` over the built-in route with the package's
-  embedded authority, and `new ExchangeConnection(advertisement, exchange,
-  { answerLimits })` is the host-owned transport; both take an `answerLimits`
-  ceiling. Pass either to `QuerySession`.
-- `type_bridge_core.blocking(obj)`: a blocking view of an object with
-  coroutine methods, such as a generated session, for code without an event
-  loop.
-- Query resource-limit refusals report `limit`, `maximum`, and `source`
-  (`default`, `configured`, or `advertised`).
+- Remote executors advertise the query limits and answer ceilings they
+  enforce. A client holds a request to the stricter of its own and the
+  advertised limits, refuses a query limit before sending, and asks for no
+  more answer than was advertised. The standalone server reads
+  `[v2.query_limits]` and `[v2.answer_limits]`.
 - Configurable answer limits. How much a query may return is one policy,
   `QueryExecutionResourceLimits`, on both transports. A caller may raise a
   dimension as well as tighten it: more than 65,536 items or 32 MiB can be
   returned when the session, and through a proxy the executor too, are
   configured for it. Only `timeout_milliseconds` (one day) and `statements`
   (3) have a supported maximum; a value past it is refused by name.
-- Remote executors advertise the answer ceilings they enforce. A client asks
-  for no more than was advertised, and a request runs under the stricter of
-  its own budget and the executor's. The standalone server reads
-  `[v2.answer_limits]`.
-- Answer-limit refusals report `limit`, `maximum`, and `source`.
+- Query-limit and answer-limit refusals report `limit`, `maximum`, and
+  `source` (`default`, `configured`, or `advertised`).
+- One connection, direct or proxy, chosen by configuration, in every
+  language; the same query program runs on either and returns the same
+  results and refusals. A proxy connection uses a built-in HTTP route to a
+  TypeBridge server's `/v2/capabilities` and `/v2/query` over plaintext or
+  TLS (native roots or a custom root bundle), with optional request headers
+  such as `Authorization` and an optionally pinned advertisement; it follows
+  no redirects and ignores proxy environment variables. Every proxy
+  connection takes an answer-limit ceiling.
+  - Rust: `SchemaPackage::connect(policy)` with
+    `ProxyConnectionPolicy::new(ProxyEndpoint::new(url))` (`TlsPolicy`), or
+    `ProxyConnectionPolicy::with_exchange` for a host-owned `ProxyExchange`.
+  - Python: `connect_proxy(endpoint, ...)`, or
+    `ExchangeConnection(advertisement, exchange, *, answer_limits=None)` for a
+    host-owned exchange; pass either to `QuerySession` or `Model.query`. The
+    native `ProxyConnection` behind it has `execute_*_proxy` terminals.
+  - TypeScript: `connectProxy(endpoint, options)` resolves to a
+    `ProxyConnection`, and `new ExchangeConnection(advertisement, exchange,
+    { answerLimits })` is the host-owned exchange; pass either to
+    `QuerySession`.
+  - C: `type_bridge_proxy_connection_open_v1` opens a synchronous connection
+    from `type_bridge_proxy_connection_options_v1_t` (endpoint, TLS mode and
+    custom root, headers, pinned advertisement, connection and answer
+    limits), and `type_bridge_proxy_query_execute_v1` runs a terminal on it
+    with the same arguments and result family as
+    `type_bridge_database_query_execute_v1`. Generated C packages emit
+    `{prefix}_proxy_query_execute_{kind}`. The remote context stays as the
+    exchange extension point for hosts that own the route. The C ABI
+    version stays 1.6.0.
+- `type_bridge_core.blocking(obj)`: a blocking view of an object with
+  coroutine methods, such as a generated session, for code without an event
+  loop.
 - A `complete` row cardinality in the request model and the V2 plan: every
   distinct selected row, or a refusal when there are more than the limit. It
   needs no order and no unique key. Plans that use it require the new
   `query.operation.complete-rows` capability, which an executor older than
   this release does not advertise.
-
-- C built-in proxy connection. `type_bridge_proxy_connection_open_v1` opens a
-  synchronous connection to a TypeBridge server from
-  `type_bridge_proxy_connection_options_v1_t` (endpoint, TLS mode and custom
-  root, request headers, optional pinned advertisement, connection and answer
-  limits), and `type_bridge_proxy_query_execute_v1` runs a terminal on it with
-  the same result family as `type_bridge_database_query_execute_v1`. One C
-  program now runs against TypeDB directly or through a server by changing
-  only the connection it opens. ABI label stays 1.6.
 
 ### Fixed
 
@@ -208,7 +204,6 @@ differently direct and through a proxy. Each entry says what to do instead.
   connection, so a connection's answer limits bind them the same way. The
   header no longer describes limit values as clamped: they are kept, and a
   value above its maximum is refused.
-
 - A generated package runs direct queries on the executor a proxy uses. Each
   request is adapted to a V2 plan under the package's embedded schema
   authority, so the same query is accepted or refused the same way direct and

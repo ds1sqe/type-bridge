@@ -144,7 +144,7 @@ person = session.exact(Person)
 employment = session.exact(Employment)
 
 employee = employment.role(Employment.employee).connects(person)
-rows = (
+rows = await (
     session.query(person, employment)
     .where(employee, person.field(Person.age).gte(Age(18)))
     .rows(limit=100)

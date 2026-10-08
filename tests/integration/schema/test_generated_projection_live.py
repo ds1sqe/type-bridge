@@ -121,6 +121,20 @@ async def _one_program(generated: ModuleType, connection: object) -> dict[str, o
         .one()
     )
     session.close()
+    # A limit refusal belongs to the program too: its category, code, path,
+    # and details are the same on every connection.
+    limited = generated.QuerySession(
+        connection, resources=generated.QueryExecutionResourceLimits(role_players=0)
+    )
+    limited_employment = limited.exact(generated.Employment)
+    try:
+        await limited.query(limited_employment).one()
+    except MatchRequestError as error:
+        refusal = (error.sdk_category, error.code, error.path, error.details)
+    else:
+        raise AssertionError("a zero role-player budget accepted a hydrated relation")
+    finally:
+        limited.close()
     return {
         "one": one.iid,
         "first": None if first is None else first.iid,
@@ -131,6 +145,7 @@ async def _one_program(generated: ModuleType, connection: object) -> dict[str, o
         "aggregate": totals,
         "grouped": [(group.value, values) for group, values in grouped],
         "pair": (pair_person.iid, pair_employment.iid),
+        "limit_refusal": refusal,
     }
 
 
@@ -4375,9 +4390,29 @@ def test_generated_projection_round_trips_live_models(
             )
         ]
         assert program_results[0]["one"] == person.iid
+        assert program_results[0]["limit_refusal"][0] == "resource_limit"
         assert program_results[1] == program_results[0]
         assert program_results[2] == program_results[0]
-        assert len(remote_requests) - requests_before_program == 9
+        assert len(remote_requests) - requests_before_program == 10
+
+        # A proxy connection's answer ceiling binds a session that asks for
+        # the defaults, and refuses as a session asking for the same budget.
+        ceiling = QueryExecutionResourceLimits(role_players=0)
+        for ceilinged in (
+            generated.connect_proxy(f"http://127.0.0.1:{remote_port}", answer_limits=ceiling),
+            generated.ExchangeConnection(advertisement, exchange, answer_limits=ceiling),
+        ):
+            ceiling_session = generated.QuerySession(ceilinged)
+            ceiling_employment = ceiling_session.exact(generated.Employment)
+            with pytest.raises(MatchRequestError) as ceiling_refusal:
+                asyncio.run(ceiling_session.query(ceiling_employment).one())
+            ceiling_session.close()
+            assert (
+                ceiling_refusal.value.sdk_category,
+                ceiling_refusal.value.code,
+                ceiling_refusal.value.path,
+                ceiling_refusal.value.details,
+            ) == program_results[0]["limit_refusal"]
 
         if sdk_catalog is not None and sdk_journey is not None:
             sdk_results = _run_sdk_journey(

@@ -2790,6 +2790,36 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       } finally {
         proxySession.close();
       }
+
+      // A limit refusal is the same on every connection: category, code,
+      // path, and details.
+      const limitRefusal = async (connection: any): Promise<Record<string, unknown>> => {
+        const session = new QuerySession(connection, {
+          resources: new QueryExecutionResourceLimits({ rolePlayers: 0n }),
+        });
+        const membership = session.exact(Membership);
+        try {
+          await session.query(membership).where(membership.iid(insertedMembership.iid)).one();
+        } catch (error: any) {
+          return {
+            category: error.sdkCategory,
+            queryCategory: error.queryCategory,
+            code: error.code,
+            path: error.path,
+            details: error.details,
+          };
+        } finally {
+          session.close();
+        }
+        throw new Error("a zero role-player budget accepted a hydrated relation");
+      };
+      const directRefusal = await limitRefusal(database);
+      assert.equal(directRefusal.category, "resource_limit");
+      assert.deepEqual(
+        await limitRefusal(new ExchangeConnection(advertisement, exchange)),
+        directRefusal,
+      );
+      assert.deepEqual(await limitRefusal(proxy), directRefusal);
       assert.ok(requests.every((request) => request.length > 0));
 
       if (sdkReportPath !== undefined) {

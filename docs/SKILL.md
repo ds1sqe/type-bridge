@@ -192,14 +192,15 @@ authorization for database recreation and data loss.
   operation, and retain parameterization and version gates.
 
 Treat query construction as local and synchronous. Direct terminals perform
-provider work. A remote terminal performs exactly one caller-owned exchange;
-the client owns transport, authentication, retry policy, and capability trust.
+provider work. A proxy terminal performs exactly one `/v2/query` exchange,
+over the built-in HTTP route or a caller-owned exchange; with the latter the
+client owns transport, authentication, retry policy, and capability trust.
 Generated Python and TypeScript sessions take the connection: a direct
 database or transaction, `connect_proxy(url)` (`await connectProxy(url)` in
 TypeScript), or `ExchangeConnection(advertisement, exchange)`; every terminal
-is awaited. Both proxy connections derive authority from private package
-evidence; never read an authority file or construct a low-level
-`QueryV2Authority` for this normal path.
+is awaited, and the program is the same on each. Both proxy connections derive
+authority from private package evidence; never read an authority file or
+construct a low-level `QueryV2Authority` for this normal path.
 
 ## TypeScript and Node workflow
 

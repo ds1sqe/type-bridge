@@ -256,6 +256,11 @@ a function that sends one request and resolves to its reply. Composition
 remains local; one terminal performs one exchange and materializes through
 the same package projection as direct execution.
 
+Rust opens either connection from one policy with `SCHEMA.connect(policy)`
+([Direct or proxy](rust.md#direct-or-proxy)); C runs each terminal on a proxy
+connection with the same arguments as on a database
+([Run a query on a database or a TypeBridge server](c.md#run-a-query-on-a-database-or-a-typebridge-server)).
+
 Scripts without an event loop wrap a session in `type_bridge_core.blocking`,
 which runs each terminal to completion on a private event-loop thread:
 

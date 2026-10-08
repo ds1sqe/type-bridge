@@ -154,8 +154,8 @@ impl RemoteResultKindV2 {
 
 /// Caller-owned V2 transport and hydration budgets bound into one request.
 ///
-/// These limits are additive rather than widening [`crate::query_remote::RemoteLimits`];
-/// V1 request bytes and APIs remain exact.
+/// This is the wire form of an answer policy; generated sessions derive it
+/// from their `QueryExecutionResourceLimits`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteLimitsV2 {
