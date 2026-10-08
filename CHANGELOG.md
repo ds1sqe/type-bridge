@@ -226,6 +226,13 @@ differently direct and through a proxy. Each entry says what to do instead.
     is refused by the core with the same codes in category `integrity`
     (Python `MatchRequestError`, Node the structured error) instead of a
     `RuntimeError` reading "provider row violates projected cardinality".
+  - A generated manager write (insert, put, update, and their batch forms)
+    whose model holds a member count outside the cardinality, such as a
+    hand-built Node wire, is refused by the core with the same codes in
+    category `invalid_input` (Python `ProjectedCardinalityError`, Node the
+    structured error) instead of a `ValueError` reading "projected value
+    violates resolved cardinality" or a Node error reading "projected member
+    violates resolved cardinality".
 - Mixed versions: clients and executors must both be 2.3.
   - A 2.3 executor refuses a V1-format request with
     `query_remote_v2_format_unsupported` and a `supported` detail naming the

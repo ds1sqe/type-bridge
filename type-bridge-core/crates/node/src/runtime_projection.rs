@@ -3186,6 +3186,7 @@ impl NodeProjectedModelManager {
             TypeDescriptor::Entity(descriptor) => {
                 let attributes = lower_attributes(
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -3197,6 +3198,7 @@ impl NodeProjectedModelManager {
             TypeDescriptor::Relation(descriptor) => {
                 let attributes = lower_attributes(
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -3228,6 +3230,7 @@ impl NodeProjectedModelManager {
             TypeDescriptor::Entity(descriptor) => {
                 let attributes = lower_attributes(
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -3239,6 +3242,7 @@ impl NodeProjectedModelManager {
             TypeDescriptor::Relation(descriptor) => {
                 let attributes = lower_attributes(
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -3271,6 +3275,7 @@ impl NodeProjectedModelManager {
             TypeDescriptor::Entity(descriptor) => {
                 let attributes = lower_attributes(
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -3284,6 +3289,7 @@ impl NodeProjectedModelManager {
             TypeDescriptor::Relation(descriptor) => {
                 let attributes = lower_attributes(
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -3659,6 +3665,7 @@ impl NodeProjectedModelManager {
                     .map(|instance| {
                         lower_attributes(
                             self.package.as_ref(),
+                            &self.type_id,
                             &descriptor.owned_attributes,
                             instance,
                         )
@@ -3682,6 +3689,7 @@ impl NodeProjectedModelManager {
                         Ok((
                             lower_attributes(
                                 self.package.as_ref(),
+                                &self.type_id,
                                 &descriptor.owned_attributes,
                                 instance,
                             )?,
@@ -4919,12 +4927,16 @@ fn ensure_wire_members(
 
 fn lower_attributes(
     package: &InstalledPackage,
+    id: &TypeId,
     descriptors: &[OwnedAttributeDescriptor],
     wire: &ProjectedWire,
 ) -> napi::Result<DynamicAttributeMap> {
     let mut attributes = Vec::new();
     for descriptor in descriptors {
         for value in normalized_values(
+            package,
+            id,
+            &descriptor.field_name,
             wire.values.get(&descriptor.field_name),
             descriptor_cardinality(descriptor),
         )? {
@@ -5130,6 +5142,9 @@ fn lower_roles(
             .role(create.role().label().as_str())
             .ok_or_else(|| runtime_error("projected role has no provider descriptor"))?;
         for value in normalized_values(
+            package,
+            relation_id,
+            token.target_name().as_str(),
             wire.values.get(token.target_name().as_str()),
             role_cardinality(role),
         )? {
@@ -5206,31 +5221,32 @@ fn projected_key(
     )))
 }
 
-fn normalized_values(
-    value: Option<&Value>,
+/// Unpack one create member of `id` from a projected wire for lowering into
+/// a provider row. The core checks the member count; the descriptor's
+/// maximum only picks the wire shape.
+fn normalized_values<'a>(
+    package: &InstalledPackage,
+    id: &TypeId,
+    member: &str,
+    value: Option<&'a Value>,
     cardinality: (u32, Option<u32>),
-) -> napi::Result<Vec<&Value>> {
-    let (minimum, maximum) = cardinality;
+) -> napi::Result<Vec<&'a Value>> {
+    let scalar = cardinality.1 == Some(1);
     let values = match value {
         None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(values)) if maximum != Some(1) => values.iter().collect(),
+        Some(Value::Array(values)) if !scalar => values.iter().collect(),
         Some(Value::Array(_)) => {
             return Err(invalid_error("scalar projected member received a sequence"));
         }
-        Some(value) if maximum == Some(1) => vec![value],
+        Some(value) if scalar => vec![value],
         Some(_) => {
             return Err(invalid_error(
                 "multi-value projected member requires a sequence",
             ));
         }
     };
-    let count = u32::try_from(values.len())
-        .map_err(|_| invalid_error("projected member count exceeds u32"))?;
-    if count < minimum || maximum.is_some_and(|maximum| count > maximum) {
-        return Err(invalid_error(
-            "projected member violates resolved cardinality",
-        ));
-    }
+    validate_projected_create_member_count(&package.projection, id, member, values.len())
+        .map_err(napi_sdk_diagnostic)?;
     Ok(values)
 }
 
@@ -8502,6 +8518,202 @@ entities:
             .insert_json(serde_json::to_string(&valid).unwrap())
             .unwrap_err();
         assert_eq!(error.reason, "projected manager has no execution target");
+    }
+
+    /// Shared with the Python glue's lowering test so both hosts pin the same
+    /// diagnostics for the same forged counts.
+    const LOWERING_SCHEMA: &str = r#"format: typebridge.schema/v2
+attributes:
+  identifier: { value: string }
+  aliases: { value: string }
+entities:
+  person:
+    owns:
+      identifier: { key: true }
+      aliases: { card: { min: 0, max: 2 } }
+relations:
+  membership:
+    relates:
+      member: { card: 1 }
+  event: {}
+  container:
+    relates:
+      item: { card: { min: 0, max: 2 } }
+plays:
+  person:
+    membership: [member]
+  event:
+    container: [item]
+"#;
+
+    /// The canonical host form of a lowering count refusal on the
+    /// `LOWERING_SCHEMA` models; the Python glue's test pins the same values.
+    fn lowering_count_refusal(
+        code: &str,
+        message: &str,
+        [owner, member]: [Value; 2],
+        [actual, minimum, maximum]: [&str; 3],
+    ) -> Value {
+        json!({
+            "version": 1,
+            "category": "invalid_input",
+            "sdk_category": "invalid_input",
+            "query_category": null,
+            "code": code,
+            "message": message,
+            "path": [{"kind": "type", "value": owner}, member],
+            "details": {
+                "actual_count": {"kind": "count", "value": actual},
+                "minimum_count": {"kind": "count", "value": minimum},
+                "maximum_count": {"kind": "count", "value": maximum},
+            },
+        })
+    }
+
+    fn lowering_refusal(error: napi::Error) -> Value {
+        assert_eq!(error.status, Status::InvalidArg);
+        serde_json::from_str(&error.reason).unwrap()
+    }
+
+    #[test]
+    fn unordered_write_lowering_refuses_forged_member_counts_with_core_diagnostics() {
+        let runtime = runtime_for_schema(LOWERING_SCHEMA, "node-lowering-cardinality.yaml");
+        let person_id = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let person_key = canonical_type_key(&person_id).unwrap();
+        let identifier = serde_json::to_value(attribute_wire(
+            "identifier",
+            ValueTypeTag::String,
+            Value::String("person-1".into()),
+        ))
+        .unwrap();
+        let alias = serde_json::to_value(attribute_wire(
+            "aliases",
+            ValueTypeTag::String,
+            Value::String("ada".into()),
+        ))
+        .unwrap();
+        let person_wire = |values: Vec<(&str, Value)>| {
+            serde_json::to_string(&ProjectedWire {
+                type_key: person_key.clone(),
+                form: WireForm::Complete,
+                iid: None,
+                value: None,
+                values: values
+                    .into_iter()
+                    .map(|(name, value)| (name.to_owned(), value))
+                    .collect(),
+            })
+            .unwrap()
+        };
+        let person = json!({"kind": "entity", "label": "person"});
+        let person_field = |attribute: &str| {
+            [
+                person.clone(),
+                json!({"kind": "field", "value": {"attribute": attribute, "owner": person}}),
+            ]
+        };
+        let manager = manager_without_execution_target(&runtime, person_id);
+
+        for (wire, expected) in [
+            (
+                person_wire(vec![
+                    ("identifier", identifier.clone()),
+                    ("aliases", Value::Array(vec![alias.clone(); 3])),
+                ]),
+                lowering_count_refusal(
+                    "field_cardinality_violation",
+                    "The projected ownership violates its exact cardinality",
+                    person_field("aliases"),
+                    ["3", "0", "2"],
+                ),
+            ),
+            (
+                person_wire(vec![("aliases", Value::Array(vec![alias.clone()]))]),
+                lowering_count_refusal(
+                    "missing_required_field",
+                    "A required projected ownership has no value",
+                    person_field("identifier"),
+                    ["0", "1", "1"],
+                ),
+            ),
+        ] {
+            let batch = format!("[{wire}]");
+            // Every legacy write route lowers through the same core check.
+            for error in [
+                manager.insert_json(wire.clone()).unwrap_err(),
+                manager.put_json(wire.clone()).unwrap_err(),
+                manager
+                    .update_json("0xa1".into(), wire.clone())
+                    .unwrap_err(),
+                manager.insert_many_json(batch.clone()).unwrap_err(),
+                manager.put_many_json(batch).unwrap_err(),
+            ] {
+                assert_eq!(lowering_refusal(error), expected);
+            }
+        }
+
+        let valid = person_wire(vec![
+            ("identifier", identifier),
+            ("aliases", Value::Array(vec![alias; 2])),
+        ]);
+        assert_eq!(
+            manager.insert_json(valid).unwrap_err().reason,
+            "projected manager has no execution target"
+        );
+
+        let container_id = TypeId::new(TypeKind::Relation, "container").unwrap();
+        let event = serde_json::to_value(ProjectedWire {
+            type_key: type_key(TypeKind::Relation, "event"),
+            form: WireForm::Complete,
+            iid: Some("0xe1".into()),
+            value: None,
+            values: BTreeMap::new(),
+        })
+        .unwrap();
+        let container = serde_json::to_string(&ProjectedWire {
+            type_key: canonical_type_key(&container_id).unwrap(),
+            form: WireForm::Complete,
+            iid: None,
+            value: None,
+            values: BTreeMap::from([("item".into(), Value::Array(vec![event; 3]))]),
+        })
+        .unwrap();
+        let manager = manager_without_execution_target(&runtime, container_id);
+        assert_eq!(
+            lowering_refusal(manager.insert_json(container).unwrap_err()),
+            lowering_count_refusal(
+                "role_cardinality_violation",
+                "The projected role violates its exact cardinality",
+                [
+                    json!({"kind": "relation", "label": "container"}),
+                    json!({"kind": "role", "value": {"declaring_relation": "container", "label": "item"}}),
+                ],
+                ["3", "0", "2"],
+            )
+        );
+
+        let membership_id = TypeId::new(TypeKind::Relation, "membership").unwrap();
+        let membership = serde_json::to_string(&ProjectedWire {
+            type_key: canonical_type_key(&membership_id).unwrap(),
+            form: WireForm::Complete,
+            iid: None,
+            value: None,
+            values: BTreeMap::from([("member".into(), Value::Null)]),
+        })
+        .unwrap();
+        let manager = manager_without_execution_target(&runtime, membership_id);
+        assert_eq!(
+            lowering_refusal(manager.insert_json(membership).unwrap_err()),
+            lowering_count_refusal(
+                "missing_required_role",
+                "A required projected role has no player",
+                [
+                    json!({"kind": "relation", "label": "membership"}),
+                    json!({"kind": "role", "value": {"declaring_relation": "membership", "label": "member"}}),
+                ],
+                ["0", "1", "1"],
+            )
+        );
     }
 
     #[test]

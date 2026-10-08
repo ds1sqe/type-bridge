@@ -2092,6 +2092,7 @@ impl PyRuntimeProjection {
         let attributes = lower_attributes(
             py,
             self.package.as_ref(),
+            &id,
             &descriptor.owned_attributes,
             &instance,
         )?;
@@ -2472,6 +2473,7 @@ impl PyProjectedModelManager {
                 let attributes = lower_attributes(
                     py,
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -2483,6 +2485,7 @@ impl PyProjectedModelManager {
                 let attributes = lower_attributes(
                     py,
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -2534,6 +2537,7 @@ impl PyProjectedModelManager {
                 let attributes = lower_attributes(
                     py,
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -2545,6 +2549,7 @@ impl PyProjectedModelManager {
                 let attributes = lower_attributes(
                     py,
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -2602,6 +2607,7 @@ impl PyProjectedModelManager {
                 let attributes = lower_attributes(
                     py,
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -2618,6 +2624,7 @@ impl PyProjectedModelManager {
                 let attributes = lower_attributes(
                     py,
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -2667,6 +2674,7 @@ impl PyProjectedModelManager {
                             lower_attributes(
                                 py,
                                 self.package.as_ref(),
+                                &self.type_id,
                                 &descriptor.owned_attributes,
                                 instance.bind(py),
                             )?,
@@ -2693,6 +2701,7 @@ impl PyProjectedModelManager {
                             lower_attributes(
                                 py,
                                 self.package.as_ref(),
+                                &self.type_id,
                                 &descriptor.owned_attributes,
                                 instance.bind(py),
                             )?,
@@ -2744,6 +2753,7 @@ impl PyProjectedModelManager {
                 let attributes = lower_attributes(
                     py,
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -2788,6 +2798,7 @@ impl PyProjectedModelManager {
                 let attributes = lower_attributes(
                     py,
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -3314,6 +3325,7 @@ impl PyProjectedModelManager {
                         lower_attributes(
                             py,
                             self.package.as_ref(),
+                            &self.type_id,
                             &descriptor.owned_attributes,
                             instance.bind(py),
                         )
@@ -3336,6 +3348,7 @@ impl PyProjectedModelManager {
                             lower_attributes(
                                 py,
                                 self.package.as_ref(),
+                                &self.type_id,
                                 &descriptor.owned_attributes,
                                 instance.bind(py),
                             )?,
@@ -5696,6 +5709,7 @@ fn compatibility_clause_body(clause: Clause, keyword: &str) -> PyResult<String> 
 fn lower_attributes(
     py: Python<'_>,
     package: &InstalledPackage,
+    id: &TypeId,
     descriptors: &[OwnedAttributeDescriptor],
     instance: &Bound<'_, PyAny>,
 ) -> PyResult<DynamicAttributeMap> {
@@ -5704,7 +5718,13 @@ fn lower_attributes(
     let mut attributes = Vec::new();
     for descriptor in descriptors {
         let value = values.get_item(&descriptor.field_name)?;
-        let items = normalized_items(value.as_ref(), descriptor_cardinality(descriptor))?;
+        let items = normalized_items(
+            package,
+            id,
+            &descriptor.field_name,
+            value.as_ref(),
+            descriptor_cardinality(descriptor),
+        )?;
         for item in items {
             let (id, form) = package.identify_value(py, &item)?;
             let expected = package.type_by_label(&descriptor.attr_name, TypeKind::Attribute)?;
@@ -6880,7 +6900,13 @@ fn lower_roles(
             .role(role_name)
             .ok_or_else(|| py_runtime_error("projected role has no provider descriptor"))?;
         let value = values.get_item(token.target_name().as_str())?;
-        for item in normalized_items(value.as_ref(), role_cardinality(role))? {
+        for item in normalized_items(
+            package,
+            relation_id,
+            token.target_name().as_str(),
+            value.as_ref(),
+            role_cardinality(role),
+        )? {
             let (player_id, form) = package.identify_value(py, &item)?;
             if !create
                 .players()
@@ -7046,16 +7072,21 @@ fn resolved_relation_iid(row: Option<&DynamicRelationRow>) -> PyResult<Option<St
     .transpose()
 }
 
+/// Unpack one generated create member of `id` for lowering into a provider
+/// row. The core checks the member count (`ProjectedCardinalityError`); the
+/// descriptor's maximum only picks the host shape.
 fn normalized_items<'py>(
+    package: &InstalledPackage,
+    id: &TypeId,
+    member: &str,
     value: Option<&Bound<'py, PyAny>>,
     cardinality: (u32, Option<u32>),
 ) -> PyResult<Vec<Bound<'py, PyAny>>> {
-    let (minimum, maximum) = cardinality;
     let mut items = Vec::new();
     match value {
         None => {}
         Some(value) if value.is_none() => {}
-        Some(value) if maximum == Some(1) => items.push(value.clone()),
+        Some(value) if cardinality.1 == Some(1) => items.push(value.clone()),
         Some(value) => {
             if value.cast::<PyString>().is_ok() {
                 return Err(py_type_error(
@@ -7068,13 +7099,8 @@ fn normalized_items<'py>(
             items.extend(tuple.iter());
         }
     }
-    let count = u32::try_from(items.len())
-        .map_err(|_| py_value_error("projected value count exceeds u32"))?;
-    if count < minimum || maximum.is_some_and(|maximum| count > maximum) {
-        return Err(py_value_error(
-            "projected value violates resolved cardinality",
-        ));
-    }
+    validate_projected_create_member_count(&package.projection, id, member, items.len())
+        .map_err(py_projected_cardinality)?;
     Ok(items)
 }
 
@@ -16547,6 +16573,200 @@ class CyclicFinalizer:
         });
     }
 
+    /// The canonical host form of a lowering count refusal on the `SCHEMA`
+    /// models; the Node glue's lowering test pins the same values.
+    fn lowering_count_refusal(
+        code: &str,
+        message: &str,
+        [owner, member]: [Value; 2],
+        [actual, minimum, maximum]: [&str; 3],
+    ) -> Value {
+        json!({
+            "version": 1,
+            "category": "invalid_input",
+            "sdk_category": "invalid_input",
+            "query_category": null,
+            "code": code,
+            "message": message,
+            "path": [{"kind": "type", "value": owner}, member],
+            "details": {
+                "actual_count": {"kind": "count", "value": actual},
+                "minimum_count": {"kind": "count", "value": minimum},
+                "maximum_count": {"kind": "count", "value": maximum},
+            },
+        })
+    }
+
+    fn py_lowering_refusal(py: Python<'_>, error: PyErr) -> Value {
+        use pythonize::depythonize;
+
+        assert!(error.is_instance_of::<pyo3::exceptions::PyValueError>(py));
+        assert_eq!(
+            error.get_type(py).name().unwrap().to_string(),
+            "ProjectedCardinalityError"
+        );
+        let value = error.value(py);
+        let form = PyDict::new(py);
+        for key in [
+            "version",
+            "category",
+            "sdk_category",
+            "query_category",
+            "code",
+            "message",
+            "path",
+            "details",
+        ] {
+            form.set_item(key, value.getattr(key).unwrap()).unwrap();
+        }
+        depythonize(&form).unwrap()
+    }
+
+    #[test]
+    fn unordered_write_lowering_refuses_forged_member_counts_with_core_diagnostics() {
+        Python::initialize();
+        Python::attach(|py| {
+            let (_, package) = install(py);
+            let id =
+                |kind: TypeKind, label: &str| package.type_by_label(label, kind).unwrap().clone();
+            let class = |id: &TypeId| {
+                package
+                    .class(id, ProjectedModelForm::Complete)
+                    .unwrap()
+                    .bind(py)
+                    .clone()
+            };
+            let manager = |type_id: TypeId| PyProjectedModelManager {
+                package: Arc::clone(&package),
+                type_id,
+                database: None,
+                transaction: None,
+                successor_batch_marker: None,
+                runtime: Arc::new(
+                    ProviderRuntimeOwner::new().expect("provider runtime should start"),
+                ),
+                filters: Vec::new(),
+                compatibility_filter: None,
+            };
+            // The test classes do not check counts at construction, so each
+            // instance below reaches the lowering with a forged count.
+            let construct = |id: &TypeId, values: Vec<(&str, Bound<'_, PyAny>)>| {
+                let kwargs = PyDict::new(py);
+                for (name, value) in values {
+                    kwargs.set_item(name, value).unwrap();
+                }
+                class(id).call((), Some(&kwargs)).unwrap()
+            };
+
+            let person_id = id(TypeKind::Entity, "person");
+            let identifier = class(&id(TypeKind::Attribute, "identifier"))
+                .call1(("person-1",))
+                .unwrap();
+            let alias = class(&id(TypeKind::Attribute, "aliases"))
+                .call1(("ada",))
+                .unwrap();
+            let aliases = |count: usize| {
+                PyTuple::new(py, vec![alias.clone(); count])
+                    .unwrap()
+                    .into_any()
+            };
+            let person = json!({"kind": "entity", "label": "person"});
+            let person_field = |attribute: &str| {
+                [
+                    person.clone(),
+                    json!({"kind": "field", "value": {"attribute": attribute, "owner": person}}),
+                ]
+            };
+            let people = manager(person_id.clone());
+
+            for (values, expected) in [
+                (
+                    vec![("identifier", identifier.clone()), ("aliases", aliases(3))],
+                    lowering_count_refusal(
+                        "field_cardinality_violation",
+                        "The projected ownership violates its exact cardinality",
+                        person_field("aliases"),
+                        ["3", "0", "2"],
+                    ),
+                ),
+                (
+                    vec![("aliases", aliases(1))],
+                    lowering_count_refusal(
+                        "missing_required_field",
+                        "A required projected ownership has no value",
+                        person_field("identifier"),
+                        ["0", "1", "1"],
+                    ),
+                ),
+            ] {
+                let instance = construct(&person_id, values.clone());
+                let attached = construct(&person_id, values);
+                attached
+                    .call_method1("attach_runtime_iid", ("0xa1",))
+                    .unwrap();
+                let batch = || PyList::new(py, [instance.clone()]).unwrap().into_any();
+                // Every legacy write route lowers through the same core check.
+                for error in [
+                    people.insert(py, instance.clone()).unwrap_err(),
+                    people.put(py, instance.clone()).unwrap_err(),
+                    people.update(py, attached).unwrap_err(),
+                    people.insert_many(py, batch()).unwrap_err(),
+                    people.put_many(py, batch()).unwrap_err(),
+                ] {
+                    assert_eq!(py_lowering_refusal(py, error), expected);
+                }
+            }
+
+            let valid = construct(
+                &person_id,
+                vec![("identifier", identifier), ("aliases", aliases(2))],
+            );
+            assert!(
+                people
+                    .insert(py, valid)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("projected manager has no execution target")
+            );
+
+            let container_id = id(TypeKind::Relation, "container");
+            let event = construct(&id(TypeKind::Relation, "event"), Vec::new());
+            event.call_method1("attach_runtime_iid", ("0xe1",)).unwrap();
+            let events = PyTuple::new(py, vec![event; 3]).unwrap().into_any();
+            let container = construct(&container_id, vec![("item", events)]);
+            assert_eq!(
+                py_lowering_refusal(py, manager(container_id).insert(py, container).unwrap_err()),
+                lowering_count_refusal(
+                    "role_cardinality_violation",
+                    "The projected role violates its exact cardinality",
+                    [
+                        json!({"kind": "relation", "label": "container"}),
+                        json!({"kind": "role", "value": {"declaring_relation": "container", "label": "item"}}),
+                    ],
+                    ["3", "0", "2"],
+                )
+            );
+
+            let membership_id = id(TypeKind::Relation, "membership");
+            let membership = construct(&membership_id, vec![("member", py.None().into_bound(py))]);
+            assert_eq!(
+                py_lowering_refusal(
+                    py,
+                    manager(membership_id).insert(py, membership).unwrap_err()
+                ),
+                lowering_count_refusal(
+                    "missing_required_role",
+                    "A required projected role has no player",
+                    [
+                        json!({"kind": "relation", "label": "membership"}),
+                        json!({"kind": "role", "value": {"declaring_relation": "membership", "label": "member"}}),
+                    ],
+                    ["0", "1", "1"],
+                )
+            );
+        });
+    }
+
     #[test]
     fn native_lowering_and_hydration_preserve_wrappers_iids_and_relation_references() {
         Python::initialize();
@@ -16582,8 +16802,14 @@ class CyclicFinalizer:
             let person = person_class.call((), Some(&kwargs)).unwrap();
             let descriptor = package.projection.entity_descriptor(&person_id).unwrap();
             assert_eq!(
-                lower_attributes(py, package.as_ref(), &descriptor.owned_attributes, &person)
-                    .unwrap(),
+                lower_attributes(
+                    py,
+                    package.as_ref(),
+                    &person_id,
+                    &descriptor.owned_attributes,
+                    &person,
+                )
+                .unwrap(),
                 vec![(
                     "identifier".into(),
                     AttributeValue::String("person-1".into())
