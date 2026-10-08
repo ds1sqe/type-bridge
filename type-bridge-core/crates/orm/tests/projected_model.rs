@@ -1791,3 +1791,67 @@ fn eager_member_counts_refuse_exactly_as_encoding() {
         "projected_member_unknown",
     );
 }
+
+// Python and Node hydrate provider rows member by member through this entry;
+// it applies the encoder's rule and codes as an integrity failure.
+#[test]
+fn hydrated_member_counts_refuse_as_integrity_with_the_encoder_codes() {
+    use type_bridge_orm::{
+        validate_projected_create_member_count, validate_projected_hydrated_member_count,
+    };
+
+    let same_refusal_as_integrity = |installed, type_id: &TypeId, member, count, code| {
+        let hydrated = validate_projected_hydrated_member_count(installed, type_id, member, count)
+            .unwrap_err();
+        let eager =
+            validate_projected_create_member_count(installed, type_id, member, count).unwrap_err();
+        assert_code(&hydrated, SdkDiagnosticCategory::Integrity, code);
+        assert_eq!(hydrated.code(), eager.code());
+        assert_eq!(hydrated.path(), eager.path());
+        assert_eq!(hydrated.details(), eager.details());
+    };
+
+    let projection = installed(BindingTarget::Python, SCHEMA);
+    let membership = type_id(TypeKind::Relation, "membership");
+    validate_projected_hydrated_member_count(&projection, &membership, "observer", 2).unwrap();
+    same_refusal_as_integrity(
+        &projection,
+        &membership,
+        "observer",
+        3,
+        "role_cardinality_violation",
+    );
+    same_refusal_as_integrity(
+        &projection,
+        &membership,
+        "member",
+        0,
+        "missing_required_role",
+    );
+
+    let constrained = installed(BindingTarget::Python, CONSTRAINT_SCHEMA);
+    let person = type_id(TypeKind::Entity, "person");
+    validate_projected_hydrated_member_count(&constrained, &person, "handle", 0).unwrap();
+    same_refusal_as_integrity(
+        &constrained,
+        &person,
+        "handle",
+        3,
+        "field_cardinality_violation",
+    );
+    same_refusal_as_integrity(
+        &constrained,
+        &person,
+        "nickname",
+        0,
+        "missing_required_field",
+    );
+    let unknown =
+        validate_projected_hydrated_member_count(&constrained, &person, "no_such_member", 1)
+            .unwrap_err();
+    assert_code(
+        &unknown,
+        SdkDiagnosticCategory::Integrity,
+        "projected_member_unknown",
+    );
+}

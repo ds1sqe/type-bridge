@@ -17,7 +17,7 @@ pub mod transaction;
 #[cfg(feature = "typedb")]
 pub mod real_driver;
 
-pub use backend::{GivenRowsSpec, GivenValue, TxType};
+pub use backend::{GivenColumnType, GivenRowsSpec, GivenValue, TxType};
 pub use context::TransactionContext;
 #[doc(hidden)]
 pub use context::TransactionContextState;

@@ -48,6 +48,7 @@ def test_aliases_resolve_to_their_canonical_spelling() -> None:
     assert canonical_enum_spelling("manager_lookup", "like") == "regex"
     assert canonical_enum_spelling("owner_lookup", "exact") == "eq"
     assert canonical_enum_spelling("value_type", "datetime-tz") == "datetime-tz"
+    assert canonical_enum_spelling("given_column_type", "long") == "integer"
 
 
 def _registry() -> _QueryDescriptorRegistry:

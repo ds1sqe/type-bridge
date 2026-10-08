@@ -622,7 +622,10 @@ const generatedRemoteNestedCall = qualifyingScore(
 assert.ok(generatedRemoteCall.gteCall(generatedRemoteNestedCall));
 assert.throws(
   () => generatedRemoteSession.var(Person, "subtype"),
-  /match mode must be "exact" or "subtypes"/i,
+  (error) =>
+    error.code === "unknown_enum_value" &&
+    error.details.kind.value === "match_mode" &&
+    error.details.value.value === "subtype",
 );
 const native = loadNative();
 const originalPrepareRemoteRows = native.queryV2PrepareRemoteModelRows;

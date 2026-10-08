@@ -342,6 +342,38 @@ pub enum GivenValue {
     },
 }
 
+/// The TypeQL value type a binding declares for one `given` column; it
+/// selects how the binding marshals that column's host cells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GivenColumnType {
+    /// TypeQL `boolean`.
+    Boolean,
+    /// TypeQL `integer` (`long` is the ORM's older name for it).
+    Integer,
+    /// TypeQL `double`.
+    Double,
+    /// TypeQL `string`.
+    String,
+    /// TypeQL `date`.
+    Date,
+    /// TypeQL `datetime`.
+    Datetime,
+    /// TypeQL `datetime-tz`.
+    DatetimeTz,
+}
+
+type_bridge_contract::enum_spellings!(GivenColumnType, "given_column_type", canonical {
+    "boolean" => Boolean,
+    "integer" => Integer,
+    "double" => Double,
+    "string" => String,
+    "date" => Date,
+    "datetime" => Datetime,
+    "datetime-tz" => DatetimeTz,
+}, aliases {
+    "long" => Integer,
+});
+
 /// Input rows for a `given`-stage query: a variable header plus value rows.
 ///
 /// Every row must have exactly one entry per header variable, in header

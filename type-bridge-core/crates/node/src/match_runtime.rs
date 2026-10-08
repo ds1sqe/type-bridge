@@ -20,7 +20,7 @@ use type_bridge_orm::{
     AnswerCancellation, BindingHandle, ComparisonOp, DescriptorId, FieldHandle,
     FunctionArgumentHandle, FunctionCallHandle, FunctionHandle, FunctionValueHandle,
     HydratedAttribute, HydratedRole, HydratedRolePlayer, HydratedThing, InstalledRuntimeProjection,
-    MatchError, MatchRequest, MatchResult, MissingOrder, OrderHandle, PredicateHandle,
+    MatchError, MatchMode, MatchRequest, MatchResult, MissingOrder, OrderHandle, PredicateHandle,
     ProjectedAttributeValue, ProjectedQueryOrigin, ProjectedQuerySlotValue, ProjectedQueryValue,
     ProjectedReductionGroup, ProjectedThing, ProviderRuntimeOwner, QueryExecutionDeadline,
     QueryExecutionResourceLimits, QueryHandle, QueryTarget, QueryTargetError, ReducedValue,
@@ -505,6 +505,18 @@ impl NodeMatchSessionHandle {
         self.ensure_open()?;
         self.inner
             .subtypes(&type_name)
+            .map(|inner| NodeMatchBindingHandle { inner })
+            .map_err(crate::napi_orm_error)
+    }
+
+    /// Bind `type_name` with a match mode spelled `exact` or `subtypes`; any
+    /// other spelling is the core's `unknown_enum_value` diagnostic.
+    #[napi]
+    pub fn binding(&self, type_name: String, match_mode: String) -> Result<NodeMatchBindingHandle> {
+        self.ensure_open()?;
+        let match_mode: MatchMode = parse_enum(&match_mode)?;
+        self.inner
+            .binding(&type_name, match_mode)
             .map(|inner| NodeMatchBindingHandle { inner })
             .map_err(crate::napi_orm_error)
     }

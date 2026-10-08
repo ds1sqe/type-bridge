@@ -13,6 +13,8 @@ interface NativeMatchSessionHandle {
     close(): void;
     exact(typeName: string): NativeMatchBindingHandle;
     subtypes(typeName: string): NativeMatchBindingHandle;
+    /** `matchMode` is parsed by the core: `exact` or `subtypes`. */
+    binding(typeName: string, matchMode: string): NativeMatchBindingHandle;
     functionById(functionId: string): NativeMatchFunctionHandle;
     functionValueJson(attributeTypeKey: string, valueJson: string): NativeMatchFunctionValueHandle;
     reachable(relationType: string, roleFrom: string, roleTo: string, source: NativeMatchBindingHandle, target: NativeMatchBindingHandle, minDepth: number, maxDepth: number): NativeMatchPredicateHandle;

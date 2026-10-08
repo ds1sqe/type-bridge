@@ -35,7 +35,7 @@ use type_bridge_contract::sdk_diagnostic::{
 };
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration, CanonicalTime,
-    TimeZoneDesignator,
+    MAX_TIME_ZONE_NAME_BYTES, TimeZoneDesignator,
 };
 use type_bridge_contract::value::{CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue};
 use type_bridge_core_lib::ast::{Clause, Constraint, Pattern, RolePlayer, Statement};
@@ -61,6 +61,7 @@ use type_bridge_orm::{
     ProjectedManagerFilterExecutor, ProjectedReference, ProjectedReferenceOrigin,
     ProjectedRolePlayer, ProjectedThing, QueryExecutionResourceLimits, ThingKind,
     resolve_generated_manager_lookup, validate_projected_create_member_count,
+    validate_projected_hydrated_member_count,
 };
 use type_bridge_orm::{InstalledRuntimeProjection, ProviderRuntimeOwner};
 use type_bridge_schema::VerifiedSchemaAuthority;
@@ -7473,14 +7474,9 @@ fn set_projected_hydrated_values(
     items: Vec<Py<PyAny>>,
     multiplicity: ProjectedMultiplicity,
 ) -> PyResult<()> {
-    let cardinality = multiplicity.cardinality();
-    let count = u64::try_from(items.len())
-        .map_err(|_| py_runtime_error("projected hydrated value count exceeds u64"))?;
-    if count < cardinality.min() || cardinality.max().is_some_and(|maximum| count > maximum) {
-        return Err(py_runtime_error(
-            "projected hydrated value violates its projected cardinality",
-        ));
-    }
+    // `ProjectedThing`, `ProjectedCreate`, and `ProjectedReference` are
+    // validated against the projection when built, cardinality included;
+    // the multiplicity only picks the host shape here.
     let name = fallible_python_string(py, name)?;
     match multiplicity.container() {
         ProjectedContainer::Scalar => match items.into_iter().next() {
@@ -7612,6 +7608,7 @@ fn hydrate_validated_thing(
             let values = hydrate_validated_attributes(
                 py,
                 package,
+                id,
                 &descriptor.owned_attributes,
                 thing.attributes(),
             )?;
@@ -7640,6 +7637,7 @@ fn hydrate_validated_relation(
     let values = hydrate_validated_attributes(
         py,
         package,
+        id,
         &descriptor.owned_attributes,
         thing.attributes(),
     )?;
@@ -7668,6 +7666,8 @@ fn hydrate_validated_relation(
         }
         set_hydrated_values(
             py,
+            package,
+            id,
             &values,
             token.target_name().as_str(),
             players,
@@ -7714,7 +7714,7 @@ fn hydrate_validated_player(
             Vec::new()
         }
     };
-    let values = hydrate_validated_attributes(py, package, &descriptors, player.attributes())?;
+    let values = hydrate_validated_attributes(py, package, id, &descriptors, player.attributes())?;
     match projected.form() {
         ProjectedModelForm::Complete => {
             hydrate_complete(py, package, id, &values, Some(player.concept_id().as_str()))
@@ -7728,6 +7728,7 @@ fn hydrate_validated_player(
 fn hydrate_validated_attributes<'py>(
     py: Python<'py>,
     package: &InstalledPackage,
+    id: &TypeId,
     descriptors: &[OwnedAttributeDescriptor],
     attributes: &[HydratedAttribute],
 ) -> PyResult<Bound<'py, PyDict>> {
@@ -7744,6 +7745,8 @@ fn hydrate_validated_attributes<'py>(
         }
         set_hydrated_values(
             py,
+            package,
+            id,
             &values,
             &descriptor.field_name,
             wrappers,
@@ -7764,7 +7767,13 @@ fn hydrate_entity(
         .projection
         .entity_descriptor(id)
         .map_err(py_orm_error)?;
-    let values = hydrate_attributes(py, package, &descriptor.owned_attributes, &row.attributes)?;
+    let values = hydrate_attributes(
+        py,
+        package,
+        id,
+        &descriptor.owned_attributes,
+        &row.attributes,
+    )?;
     hydrate_complete(py, package, id, &values, row.iid.as_deref())
 }
 
@@ -7832,7 +7841,13 @@ fn hydrate_relation(
         .projection
         .relation_descriptor(id)
         .map_err(py_orm_error)?;
-    let values = hydrate_attributes(py, package, &descriptor.owned_attributes, &row.attributes)?;
+    let values = hydrate_attributes(
+        py,
+        package,
+        id,
+        &descriptor.owned_attributes,
+        &row.attributes,
+    )?;
     let projection = package.projection.projection();
     let model = &projection.models()[id];
     for read in model.complete_read().roles().values() {
@@ -7851,6 +7866,8 @@ fn hydrate_relation(
         }
         set_hydrated_values(
             py,
+            package,
+            id,
             &values,
             token.target_name().as_str(),
             players,
@@ -7912,7 +7929,7 @@ fn hydrate_player(
                     .collect::<Vec<_>>(),
                 TypeDescriptor::Relation(_) => Vec::new(),
             };
-            let values = hydrate_attributes(py, package, &descriptors, &attributes)?;
+            let values = hydrate_attributes(py, package, id, &descriptors, &attributes)?;
             hydrate_reference(py, package, id, &values, iid)
         }
     }
@@ -7921,6 +7938,7 @@ fn hydrate_player(
 fn hydrate_attributes<'py>(
     py: Python<'py>,
     package: &InstalledPackage,
+    id: &TypeId,
     descriptors: &[OwnedAttributeDescriptor],
     attributes: &DynamicAttributeMap,
 ) -> PyResult<Bound<'py, PyDict>> {
@@ -7935,6 +7953,8 @@ fn hydrate_attributes<'py>(
         }
         set_hydrated_values(
             py,
+            package,
+            id,
             &values,
             &descriptor.field_name,
             wrappers,
@@ -8009,20 +8029,17 @@ fn hydrate_projected_attribute_callback_free(
 
 fn set_hydrated_values(
     py: Python<'_>,
+    package: &InstalledPackage,
+    id: &TypeId,
     values: &Bound<'_, PyDict>,
     name: &str,
     items: Vec<Py<PyAny>>,
     cardinality: (u32, Option<u32>),
 ) -> PyResult<()> {
-    let (minimum, maximum) = cardinality;
-    let count = u32::try_from(items.len())
-        .map_err(|_| py_value_error("hydrated value count exceeds u32"))?;
-    if count < minimum || maximum.is_some_and(|maximum| count > maximum) {
-        return Err(py_runtime_error(
-            "provider row violates projected cardinality",
-        ));
-    }
-    if maximum == Some(1) {
+    validate_projected_hydrated_member_count(&package.projection, id, name, items.len())
+        .map_err(py_sdk_diagnostic)?;
+    // The count is checked; the descriptor's maximum only picks the host shape.
+    if cardinality.1 == Some(1) {
         match items.into_iter().next() {
             Some(value) => values.set_item(name, value)?,
             None => values.set_item(name, py.None())?,
@@ -8141,8 +8158,7 @@ fn canonical_projected_value_from_py_at(
     match value_type {
         ValueType::String => {
             let text = value.cast_exact::<PyString>().map_err(|_| wrong())?;
-            let retained =
-                copy_projected_text(text, MAX_CANONICAL_STRING_BYTES, |_| true, operation_path)?;
+            let retained = copy_projected_text(text, MAX_CANONICAL_STRING_BYTES, operation_path)?;
             CanonicalString::new(retained)
                 .map(CanonicalValue::String)
                 .map_err(|_| wrong())
@@ -8200,13 +8216,13 @@ fn canonical_projected_value_from_py_at(
 fn copy_projected_text(
     value: &Bound<'_, PyString>,
     maximum: usize,
-    valid: impl FnOnce(&str) -> bool,
     operation_path: &[SdkDiagnosticPathSegment],
 ) -> PyResult<String> {
     let text = value
         .to_str()
         .map_err(|_| py_sdk_diagnostic(wrong_scalar_diagnostic(operation_path)))?;
-    if text.len() > maximum || !valid(text) {
+    // A bounded copy only; the core constructor decides validity.
+    if text.len() > maximum {
         return Err(py_sdk_diagnostic(wrong_scalar_diagnostic(operation_path)));
     }
     let mut retained = String::new();
@@ -8364,8 +8380,7 @@ fn canonical_projected_datetime_tz(
             .map_err(|_| wrong())?;
         Some(copy_projected_text(
             zone,
-            255,
-            valid_projected_zone_name,
+            MAX_TIME_ZONE_NAME_BYTES,
             operation_path,
         )?)
     } else if timezone.get_type().is(hydration.zoneinfo_type.bind(py)) {
@@ -8373,8 +8388,7 @@ fn canonical_projected_datetime_tz(
         let key = key.bind(py).cast_exact::<PyString>().map_err(|_| wrong())?;
         Some(copy_projected_text(
             key,
-            255,
-            valid_projected_zone_name,
+            MAX_TIME_ZONE_NAME_BYTES,
             operation_path,
         )?)
     } else {
@@ -8393,13 +8407,6 @@ fn canonical_projected_datetime_tz(
         )
         .map_err(|_| wrong()),
     }
-}
-
-fn valid_projected_zone_name(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'-' | b'+'))
 }
 
 fn canonical_projected_decimal(

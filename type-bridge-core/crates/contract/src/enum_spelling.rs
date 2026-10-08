@@ -8,6 +8,7 @@
 
 use std::fmt;
 
+use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use crate::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticDetailValue, SdkDiagnosticMessage, SdkDiagnosticName,
     SdkExecutionDiagnostic, SdkQueryDiagnosticIdentity,
@@ -54,6 +55,14 @@ impl UnknownEnumValue {
     pub const fn accepted(&self) -> &'static [&'static str] {
         self.accepted
     }
+
+    /// The rejected text when it is a bounded identifier (no whitespace,
+    /// control characters, `/`, `\`, or `@`, at most 512 bytes); both
+    /// diagnostic lowerings report `value` only then, so caller text cannot
+    /// smuggle free text into a diagnostic.
+    fn reportable_value(&self) -> Option<SdkQueryDiagnosticIdentity> {
+        SdkQueryDiagnosticIdentity::new(self.value.as_str()).ok()
+    }
 }
 
 impl fmt::Display for UnknownEnumValue {
@@ -72,9 +81,7 @@ impl std::error::Error for UnknownEnumValue {}
 
 impl From<UnknownEnumValue> for SdkExecutionDiagnostic {
     /// Details: `kind` and `accepted` always; `value` only when the rejected
-    /// text is a bounded identifier (no whitespace, control characters, `/`,
-    /// `\`, or `@`, at most 512 bytes), so caller text cannot smuggle free
-    /// text into the diagnostic.
+    /// text is a bounded identifier.
     fn from(error: UnknownEnumValue) -> Self {
         let identity = |text: &str| {
             SdkQueryDiagnosticIdentity::new(text).expect("enum spellings are bounded identifiers")
@@ -101,14 +108,40 @@ impl From<UnknownEnumValue> for SdkExecutionDiagnostic {
             )
         })
         .expect("two distinct details fit the SDK detail ceiling");
-        match SdkQueryDiagnosticIdentity::new(error.value) {
-            Ok(value) => diagnostic
+        match error.reportable_value() {
+            Some(value) => diagnostic
                 .try_with_detail(
                     name("value"),
                     SdkDiagnosticDetailValue::QueryIdentity(value),
                 )
                 .expect("three distinct details fit the SDK detail ceiling"),
-            Err(_) => diagnostic,
+            None => diagnostic,
+        }
+    }
+}
+
+impl From<UnknownEnumValue> for Diagnostic {
+    /// The contract-diagnostic form used by the query-plan builder, whose
+    /// authored-input failures are all `invalid_contract`: same code,
+    /// message, and detail keys as the SDK form, as text details.
+    fn from(error: UnknownEnumValue) -> Self {
+        let diagnostic = Self::new(
+            DiagnosticCategory::InvalidContract,
+            DiagnosticCode::new(UNKNOWN_ENUM_VALUE_CODE).expect("code is canonical"),
+            UNKNOWN_ENUM_VALUE_MESSAGE,
+        )
+        .with_detail("kind", error.kind)
+        .with_detail(
+            "accepted",
+            error
+                .accepted
+                .iter()
+                .map(|spelling| (*spelling).to_owned())
+                .collect::<Vec<_>>(),
+        );
+        match error.reportable_value() {
+            Some(value) => diagnostic.with_detail("value", value.as_str()),
+            None => diagnostic,
         }
     }
 }
@@ -236,5 +269,38 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(keys, ["accepted", "kind"], "{value:?}");
         }
+    }
+
+    #[test]
+    fn contract_form_has_the_same_code_message_and_detail_keys() {
+        use crate::diagnostic::DiagnosticDetailValue;
+
+        let diagnostic = Diagnostic::from("three".parse::<Sample>().unwrap_err());
+        assert_eq!(diagnostic.category(), DiagnosticCategory::InvalidContract);
+        assert_eq!(diagnostic.code().as_str(), UNKNOWN_ENUM_VALUE_CODE);
+        assert_eq!(diagnostic.message(), UNKNOWN_ENUM_VALUE_MESSAGE);
+        let details = diagnostic
+            .details()
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            details,
+            [
+                (
+                    "accepted",
+                    DiagnosticDetailValue::TextList(vec!["one".into(), "two".into(), "uno".into()])
+                ),
+                ("kind", DiagnosticDetailValue::Text("sample".into())),
+                ("value", DiagnosticDetailValue::Text("three".into())),
+            ]
+        );
+        let free_text = Diagnostic::from("two words".parse::<Sample>().unwrap_err());
+        let keys = free_text
+            .details()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(keys, ["accepted", "kind"]);
     }
 }

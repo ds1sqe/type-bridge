@@ -435,13 +435,14 @@ run_step "generated C entity and relation CRUD strict C17 consumer" \
 run_step "C runtime, transaction, and cancellation ABI" \
     cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
     -p type-bridge-c --lib --test execution_abi
-run_step "C typed-query, diagnostic, function, and remote ABI" \
+run_step "C typed-query, diagnostic, function, remote ABI, and parity corpus" \
     cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
     -p type-bridge-c \
     --test query_abi \
     --test query_diagnostic_abi \
     --test query_function_abi \
-    --test query_remote_abi
+    --test query_remote_abi \
+    --test typed_query_corpus
 run_step "build the C ABI shared library" \
     cargo build --locked --manifest-path type-bridge-core/Cargo.toml \
     -p type-bridge-c --lib

@@ -10,7 +10,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use type_bridge_contract::id::{FunctionId, TypeId, TypeKind};
-use type_bridge_contract::limits::{MAX_REMOTE_ENVELOPE_BYTES, QueryLimits};
+use type_bridge_contract::limits::{
+    MAX_BOOLEAN_TERMS, MAX_COLLECTION_ORDER_TERMS, MAX_ORDER_TERMS, MAX_REMOTE_ENVELOPE_BYTES,
+    MAX_SUPPORTED_SELECTED_SLOTS, QueryLimits, StructuralLimits,
+};
 use type_bridge_contract::projection::{ProjectedTokenIdentity, ProjectionHandler};
 use type_bridge_contract::schema::{OwnsFactId, encode_declared_schema};
 use type_bridge_contract::sdk_diagnostic::{
@@ -28,7 +31,8 @@ use type_bridge_orm::{
     QueryExecutionDeadline, QueryExecutionResourceLimits, QueryHandle, Reduction,
     RemoteModelQueryV2Error, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
     SortDirection, ValidatedMatchRequest, Window, lower_execution_error,
-    materialize_projected_query_result_with_budget,
+    materialize_projected_query_result_with_budget, validate_field_group_count,
+    validate_order_term_count, validate_reducer_count, validate_selection_count,
 };
 #[cfg(test)]
 use type_bridge_orm::{
@@ -72,11 +76,15 @@ use proxy_connection::{
 };
 
 const DESCRIPTOR_VERSION: u32 = 1;
-const SELECTED_SLOT_MAX: usize = 16;
-const ORDER_TERM_MAX: usize = 16;
-const BOOLEAN_TERM_MAX: usize = 256;
+// Table-read bounds are the core's absolute ceilings (sessions only tighten
+// them); a count above one is refused with the core's diagnostic.
+const SELECTED_SLOT_MAX: usize = MAX_SUPPORTED_SELECTED_SLOTS;
+const ORDER_TERM_MAX: usize = MAX_ORDER_TERMS;
+const COLLECTION_ORDER_TERM_MAX: usize = MAX_COLLECTION_ORDER_TERMS;
+const BOOLEAN_TERM_MAX: usize = MAX_BOOLEAN_TERMS;
+// The C object-size floor of a generated argument struct (C11 5.2.4.1), not
+// a query rule.
 const FUNCTION_ARGUMENT_HOSTED_OBJECT_BYTES_MAX: usize = 65_535;
-const OUTPUT_NAME_BYTES_MAX: usize = 128;
 const REMOTE_RESPONSE_SNAPSHOT_LIMIT: usize = MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1);
 
 const MATCH_EXACT: u32 = 1;
@@ -2845,7 +2853,11 @@ pub unsafe extern "C" fn type_bridge_query_selection_open_v1(
         ) && value.reserved0 == [0; 7]
             && matches!(value.kind, SELECTION_ONE | SELECTION_COLLECT)
             && value.distinct <= 1
-            && collection_pointer_is_canonical(value.orders, value.order_count, ORDER_TERM_MAX)
+            && collection_pointer_is_canonical(
+                value.orders,
+                value.order_count,
+                COLLECTION_ORDER_TERM_MAX,
+            )
             && (value.kind != SELECTION_ONE || (value.distinct == 0 && value.order_count == 0))
     });
     if layout_active {
@@ -2987,11 +2999,12 @@ pub unsafe extern "C" fn type_bridge_query_open_v1(
             value.reserved,
         ) && value.reserved0 == 0
             && matches!(value.shape_kind, SHAPE_POSITIONAL | SHAPE_NAMED)
-            && (1..=SELECTED_SLOT_MAX).contains(&value.slot_count)
-            && !value.slots.is_null()
+            && collection_pointer_is_canonical(value.slots, value.slot_count, usize::MAX)
     });
+    // The core refuses empty and over-wide shapes; an over-wide table is not read.
+    let slots_over_ceiling = snapshot.is_some_and(|value| value.slot_count > SELECTED_SLOT_MAX);
     let mut slots_valid = top_layout;
-    if let Some(descriptor) = snapshot.filter(|_| top_layout) {
+    if let Some(descriptor) = snapshot.filter(|_| top_layout && !slots_over_ceiling) {
         let table_bytes = match descriptor
             .slot_count
             .checked_mul(size_of::<TypeBridgeQueryShapeSlotV1>())
@@ -3008,7 +3021,8 @@ pub unsafe extern "C" fn type_bridge_query_open_v1(
             let name_canonical = if descriptor.shape_kind == SHAPE_POSITIONAL {
                 slot.name.length == 0 && slot.name.data.is_null()
             } else {
-                (1..=OUTPUT_NAME_BYTES_MAX).contains(&slot.name.length) && !slot.name.data.is_null()
+                // The core refuses empty and over-long names (`invalid_output_name`).
+                slot.name.length != 0 && !slot.name.data.is_null()
             };
             if !descriptor_layout::<TypeBridgeQueryShapeSlotV1>(
                 slot.struct_size,
@@ -3059,6 +3073,13 @@ pub unsafe extern "C" fn type_bridge_query_open_v1(
         }
         // SAFETY: caller retains the immutable session for the call.
         let session = unsafe { &*session };
+        if slots_over_ceiling {
+            let limits = session.state.handle.limits().structural;
+            let error = validate_selection_count(limits, descriptor.slot_count)
+                .err()
+                .map_or_else(layout_invalid, |error| lower(error.into()));
+            return return_execution_error(error, out_diagnostics);
+        }
         let mut selections = Vec::new();
         let mut declarations = Vec::new();
         let mut named = Vec::new();
@@ -3495,14 +3516,14 @@ fn terminal_lanes_valid(value: &TypeBridgeQueryTerminalDescriptorV1) -> bool {
         return false;
     }
     if matches!(value.kind, TERMINAL_ROWS | TERMINAL_FIRST | TERMINAL_PAGE)
-        && !collection_pointer_is_canonical(value.orders, value.order_count, ORDER_TERM_MAX)
+        && !collection_pointer_is_canonical(value.orders, value.order_count, usize::MAX)
     {
         return false;
     }
     match value.kind {
         TERMINAL_ROWS => {
+            // The core refuses a zero limit (`zero_window_limit`).
             if !matches!(value.cardinality, ROWS_EXACTLY_ONE | ROWS_BOUNDED_MANY)
-                || value.limit == 0
                 || (value.cardinality == ROWS_EXACTLY_ONE
                     && (value.offset != 0 || value.limit != 1))
             {
@@ -3515,7 +3536,7 @@ fn terminal_lanes_valid(value: &TypeBridgeQueryTerminalDescriptorV1) -> bool {
             }
         }
         TERMINAL_PAGE => {
-            if value.cardinality != ROWS_BOUNDED_MANY || value.limit == 0 {
+            if value.cardinality != ROWS_BOUNDED_MANY {
                 return false;
             }
         }
@@ -3562,7 +3583,7 @@ fn terminal_lanes_valid(value: &TypeBridgeQueryTerminalDescriptorV1) -> bool {
                 || !value.expected_group_model.is_null()
                 || value.expected_group_mode != 0
                 || value.group_fields.is_null()
-                || !(2..=SELECTED_SLOT_MAX).contains(&value.group_field_count)
+                || value.group_field_count < 2
             {
                 return false;
             }
@@ -3579,11 +3600,31 @@ fn terminal_lanes_valid(value: &TypeBridgeQueryTerminalDescriptorV1) -> bool {
         }
     }
     if reduction_terminal {
-        collection_pointer_is_canonical(value.reducers, value.reducer_count, SELECTED_SLOT_MAX)
-            && value.reducer_count != 0
+        // The core refuses an empty reducer list (`empty_reducers`).
+        collection_pointer_is_canonical(value.reducers, value.reducer_count, usize::MAX)
     } else {
         value.reducers.is_null() && value.reducer_count == 0
     }
+}
+
+/// Whether a terminal table is longer than the core's absolute ceiling, so it
+/// is not read and the core's refusal is returned instead.
+fn terminal_table_over_ceiling(value: &TypeBridgeQueryTerminalDescriptorV1) -> bool {
+    value.order_count > ORDER_TERM_MAX
+        || value.group_field_count > SELECTED_SLOT_MAX
+        || value.reducer_count > SELECTED_SLOT_MAX
+}
+
+/// The core's refusal of a terminal table above its absolute ceiling.
+fn terminal_ceiling_refusal(
+    limits: StructuralLimits,
+    value: &TypeBridgeQueryTerminalDescriptorV1,
+) -> SdkExecutionDiagnostic {
+    validate_order_term_count(value.order_count, limits)
+        .and_then(|()| validate_field_group_count(limits, value.group_field_count))
+        .and_then(|()| validate_reducer_count(limits, value.reducer_count))
+        .err()
+        .map_or_else(layout_invalid, |error| lower(error.into()))
 }
 
 fn field_reference_layout(value: &TypeBridgeQueryFieldReferenceV1) -> bool {
@@ -3619,6 +3660,7 @@ unsafe fn terminal_active_preflight(
     if !terminal_lanes_valid(value) {
         return Ok(false);
     }
+    let tables_readable = !terminal_table_over_ceiling(value);
     // SAFETY: lane validation identifies required root and optional active group binding.
     for result in [
         unsafe { preflight_handle(preflight, value.root) },
@@ -3636,7 +3678,7 @@ unsafe fn terminal_active_preflight(
         // SAFETY: caller retains the active immutable group binding.
         unsafe { &*value.group_binding }.check_borrowed_ranges(preflight)?;
     }
-    if value.order_count != 0 {
+    if tables_readable && value.order_count != 0 {
         // SAFETY: lane validation bounded the canonical active pointer table.
         unsafe { preflight.check_pointer_array(value.orders, value.order_count) }?;
         for index in 0..value.order_count {
@@ -3648,7 +3690,7 @@ unsafe fn terminal_active_preflight(
             }
         }
     }
-    if value.group_field_count != 0 {
+    if tables_readable && value.group_field_count != 0 {
         let bytes = value
             .group_field_count
             .checked_mul(size_of::<TypeBridgeQueryFieldReferenceV1>())
@@ -3671,7 +3713,7 @@ unsafe fn terminal_active_preflight(
             unsafe { &*field.field }.check_borrowed_ranges(preflight)?;
         }
     }
-    if value.reducer_count != 0 {
+    if tables_readable && value.reducer_count != 0 {
         let bytes = value
             .reducer_count
             .checked_mul(size_of::<TypeBridgeQueryReducerV1>())
@@ -3800,6 +3842,11 @@ pub unsafe extern "C" fn type_bridge_query_terminal_open_v1(
         }
         // SAFETY: caller retains the immutable query.
         let query = unsafe { &*query };
+        if terminal_table_over_ceiling(&descriptor) {
+            let limits = query.state.handle.limits().structural;
+            let error = terminal_ceiling_refusal(limits, &descriptor);
+            return return_execution_error(error, out_diagnostics);
+        }
         let manager_operation = manager_terminal_marker(&descriptor);
         if manager_operation.is_some() && !manager_terminal_package_allowed(&query.state.package) {
             return return_execution_error(layout_invalid(), out_diagnostics);

@@ -1125,6 +1125,66 @@ pub fn validate_projected_create_member_count(
     ))
 }
 
+/// Check how many values a provider row hydrated for one member against the
+/// member's projected complete-read cardinality, before a binding builds its
+/// host value.
+///
+/// `member` is the generated target name of a field or role of `type_id`.
+/// The rule and codes are the ones [`ProjectedThing`] hydration applies, in
+/// the `integrity` category: `missing_required_field` /
+/// `missing_required_role` for no value, otherwise
+/// `field_cardinality_violation` / `role_cardinality_violation`, with
+/// `actual_count`, `minimum_count`, and `maximum_count` details.
+pub fn validate_projected_hydrated_member_count(
+    installed: &InstalledRuntimeProjection,
+    type_id: &TypeId,
+    member: &str,
+    count: usize,
+) -> Result<(), SdkExecutionDiagnostic> {
+    let origin = ValidationOrigin::Hydration;
+    let model = require_projected_thing_model(installed, type_id)
+        .map_err(|diagnostic| diagnostic_for_origin(diagnostic, origin))?;
+    let tokens = model.query_tokens();
+    if let Some((field_id, _)) = tokens
+        .fields()
+        .iter()
+        .find(|(_, token)| token.target_name().as_str() == member)
+    {
+        let field = model
+            .complete_read()
+            .fields()
+            .iter()
+            .find(|field| field.token() == field_id)
+            .ok_or_else(|| {
+                integrity(
+                    "field_not_readable",
+                    "The ownership token is outside the selected complete-read facet",
+                    field_path(type_id, field_id),
+                )
+            })?;
+        return enforce_cardinality(type_id, field_id, field.multiplicity(), count, origin);
+    }
+    if let Some((role_id, _)) = tokens
+        .roles()
+        .iter()
+        .find(|(_, token)| token.target_name().as_str() == member)
+    {
+        let role = model.complete_read().roles().get(role_id).ok_or_else(|| {
+            integrity(
+                "role_not_readable",
+                "The role token is outside the selected complete-read facet",
+                role_path(type_id, role_id),
+            )
+        })?;
+        return enforce_role_cardinality(type_id, role_id, role.multiplicity(), count, origin);
+    }
+    Err(integrity(
+        "projected_member_unknown",
+        "The member is not a field or role of the projected model",
+        type_path(type_id),
+    ))
+}
+
 /// An immutable exact create payload for one projected entity or relation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectedCreate {

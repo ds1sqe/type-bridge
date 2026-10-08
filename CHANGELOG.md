@@ -138,10 +138,17 @@ differently direct and through a proxy. Each entry says what to do instead.
   integer from 0 to 255 is a native argument error (it was a `RangeError`).
   These are the same on every connection: a caller-exchanged session no
   longer reports a malformed window as `query_remote_limit_invalid`.
+
+  C query descriptors get the same codes instead of
+  `c_query_descriptor_layout_invalid` for a zero limit, no selected slots
+  (`empty_output`) or reducers, a slot, order, group-field, or reducer table
+  above the core's ceiling, and an invalid output name
+  (`invalid_output_name`); a terminal now accepts up to 64 order terms, the
+  core's limit, instead of 16.
 - Every enum the native modules accept as text (comparison operator, sort
   direction, missing-key order, row cardinality, reducer, transaction type,
-  value type, record kind, manager lookup and comparison, owner lookup) is
-  parsed by the Rust core. An unknown spelling is one structured diagnostic
+  value type, record kind, manager lookup and comparison, owner lookup,
+  match mode, given-row column type) is parsed by the Rust core. An unknown spelling is one structured diagnostic
   in every language: category `invalid_input`, code `unknown_enum_value`,
   details `kind`, `accepted`, and `value` (the rejected text, left out when
   it is not a bounded identifier). Python raises the new
@@ -157,8 +164,23 @@ differently direct and through a proxy. Each entry says what to do instead.
     spelling `datetime_tz` only (generated code always sent it); the
     TypeQL spelling `datetime-tz` there was an alias and is refused;
   - row cardinality also accepts `complete`, which the core validates;
+  - TypeScript `QuerySession.var(model, mode)` refuses a mode other than
+    `exact` or `subtypes` with the structured error (was `TypeError`); the
+    native match session's new `binding(typeName, matchMode)` parses it;
+  - Python `execute_with_rows` column types are `boolean`, `integer` (alias
+    `long`), `double`, `string`, `date`, `datetime`, and `datetime-tz`; any
+    other raises `UnknownEnumValueError` before a row is read (was a
+    `ValueError` naming the row);
   - the manager lookup aliases `exact` (for `eq`) and `like` (for `regex`)
     and the owner lookup alias `exact` remain, now defined by the core.
+
+  The low-level query-v2 builders (Python and Node) report an unknown
+  value type, type kind, comparator, order direction, or reducer the same
+  way, with code `unknown_enum_value` and the same details; the category
+  stays `invalid_contract`, like every builder refusal. The codes
+  `query_builder_value_type_unknown`, `query_builder_type_kind_unknown`,
+  `query_builder_comparator_unknown`, `query_builder_order_direction_unknown`,
+  and `query_builder_reducer_unknown` are gone.
 
   Rust: `ValueType::parse` (returned `Option`) is replaced by
   `str::parse::<ValueType>()`; the core enums gain `FromStr`, `ACCEPTED`,
@@ -185,7 +207,7 @@ differently direct and through a proxy. Each entry says what to do instead.
     contract diagnostic JSON is the same serde form Python and Node give a
     `QueryV2Error`.
   The cases in `tests/contracts/diagnostic-json-v1.json` are checked to be
-  identical in Rust, Python, Node, and (for the contract form) C.
+  identical in Rust, Python, Node, and C (for the cases C can produce).
 - Generated Python and TypeScript packages no longer check a model member's
   cardinality themselves; the Rust core checks it at the same call (Python
   field assignment and construction, TypeScript `create` and
@@ -200,6 +222,10 @@ differently direct and through a proxy. Each entry says what to do instead.
   - TypeScript raises the structured error with that `code` instead of a
     `RangeError`. Hydrated values are no longer re-checked in TypeScript;
     the core checked them when it hydrated them.
+  - A provider row whose member count is outside the projected cardinality
+    is refused by the core with the same codes in category `integrity`
+    (Python `MatchRequestError`, Node the structured error) instead of a
+    `RuntimeError` reading "provider row violates projected cardinality".
 - Mixed versions: clients and executors must both be 2.3.
   - A 2.3 executor refuses a V1-format request with
     `query_remote_v2_format_unsupported` and a `supported` detail naming the
@@ -245,7 +271,7 @@ differently direct and through a proxy. Each entry says what to do instead.
   becomes `eq`). Generated Python owner lookups (`has()`, `owners()`) use
   it instead of their own list. The cases in
   `tests/contracts/enum-spellings-v1.json` are checked in Rust, Python, and
-  Node.
+  Node; C checks that its integer constants spell the same enums.
 - One connection, direct or proxy, chosen by configuration, in every
   language; the same query program runs on either and returns the same
   results and refusals. A proxy connection uses a built-in HTTP route to a

@@ -152,7 +152,7 @@ pub use projected_model::{
     MAX_PROJECTED_MODEL_BYTES, MAX_PROJECTED_MODEL_MEMBERS, ProjectedAttributeValue,
     ProjectedCreate, ProjectedCreateBudget, ProjectedReference, ProjectedReferenceOrigin,
     ProjectedResourceMeasure, ProjectedRolePlayer, ProjectedThing,
-    validate_projected_create_member_count,
+    validate_projected_create_member_count, validate_projected_hydrated_member_count,
 };
 #[doc(hidden)]
 pub use projected_query::{
@@ -190,8 +190,8 @@ pub use session::{
     SecureConnectOptions, SecureResult, TlsMode,
 };
 pub use session::{
-    Database, DatabaseConnectionAuthority, GivenRowsSpec, GivenValue, ProxyEndpoint,
-    ProxyHttpTransport, TlsPolicy, Transaction, TransactionContext, TxType,
+    Database, DatabaseConnectionAuthority, GivenColumnType, GivenRowsSpec, GivenValue,
+    ProxyEndpoint, ProxyHttpTransport, TlsPolicy, Transaction, TransactionContext, TxType,
     require_legacy_writer_open, require_legacy_writer_open_in_transaction,
 };
 #[cfg(feature = "typedb")]

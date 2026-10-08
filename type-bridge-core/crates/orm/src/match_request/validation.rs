@@ -746,20 +746,7 @@ fn validate_reducer_structure(
     limits: StructuralLimits,
     reducers: &[super::model::ReduceTerm],
 ) -> Result<(), MatchError> {
-    if reducers.is_empty() {
-        return Err(invalid(
-            "empty_reducers",
-            "typed reductions require at least one reducer term",
-        )
-        .at(MatchErrorPathSegment::Operation));
-    }
-    selected_slot_cap(
-        limits,
-        reducers.len(),
-        "reducer_cap_exceeded",
-        "typed reductions exceed the selected-slot ceiling",
-        MatchErrorPathSegment::Operation,
-    )?;
+    validate_reducer_count(limits, reducers.len())?;
     for term in reducers {
         match (&term.input, term.reduction.requires_input()) {
             (Some(_), false) => {
@@ -2157,10 +2144,7 @@ pub fn validate_function_argument_count(
 ///
 /// Handle composition and request validation both call this, so a shape is
 /// refused with one diagnostic whichever stage sees it first.
-pub(crate) fn validate_selection_count(
-    limits: StructuralLimits,
-    count: usize,
-) -> Result<(), MatchError> {
+pub fn validate_selection_count(limits: StructuralLimits, count: usize) -> Result<(), MatchError> {
     selected_slot_cap(
         limits,
         count,
@@ -2173,7 +2157,7 @@ pub(crate) fn validate_selection_count(
 /// Refuse more reduction group fields than the session's `selected_slots`.
 ///
 /// The group-by composition call and request validation share this check.
-pub(crate) fn validate_field_group_count(
+pub fn validate_field_group_count(
     limits: StructuralLimits,
     count: usize,
 ) -> Result<(), MatchError> {
@@ -2182,6 +2166,27 @@ pub(crate) fn validate_field_group_count(
         count,
         "field_group_tuple_cap_exceeded",
         "tuple-field reductions exceed the selected-slot ceiling",
+        MatchErrorPathSegment::Operation,
+    )
+}
+
+/// Refuse an empty reducer list or more reducer terms than the session's
+/// `selected_slots`.
+///
+/// Request validation and the C terminal descriptor share this check.
+pub fn validate_reducer_count(limits: StructuralLimits, count: usize) -> Result<(), MatchError> {
+    if count == 0 {
+        return Err(invalid(
+            "empty_reducers",
+            "typed reductions require at least one reducer term",
+        )
+        .at(MatchErrorPathSegment::Operation));
+    }
+    selected_slot_cap(
+        limits,
+        count,
+        "reducer_cap_exceeded",
+        "typed reductions exceed the selected-slot ceiling",
         MatchErrorPathSegment::Operation,
     )
 }

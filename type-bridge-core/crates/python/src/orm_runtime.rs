@@ -28,8 +28,9 @@ use type_bridge_orm::_schema::{SchemaInfo, SchemaManager};
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
     AttributeValue, DynamicAggregate, DynamicAttributeMap, DynamicComparisonOp, DynamicEntityRow,
-    DynamicExpr, DynamicRelationRow, DynamicRolePlayerInput, DynamicSort, Filter, GivenRowsSpec,
-    GivenValue, OrmError, ProviderRuntimeOwner, SortDir, TransactionContext, TxType, ValueType,
+    DynamicExpr, DynamicRelationRow, DynamicRolePlayerInput, DynamicSort, Filter, GivenColumnType,
+    GivenRowsSpec, GivenValue, OrmError, ProviderRuntimeOwner, SortDir, TransactionContext, TxType,
+    ValueType,
 };
 
 fn drive_provider_future<F>(runtime: &ProviderRuntimeOwner, future: F) -> F::Output
@@ -2160,6 +2161,12 @@ fn given_rows_from_py(
             column_types.len()
         )));
     }
+    // Parsed once, before any cell, so an unknown spelling surfaces as the
+    // core's `UnknownEnumValueError` rather than a per-row marshalling error.
+    let column_types = column_types
+        .iter()
+        .map(|column_type| crate::match_runtime::parse_enum::<GivenColumnType>(column_type))
+        .collect::<PyResult<Vec<_>>>()?;
     let rows: Vec<Vec<Bound<'_, PyAny>>> = rows
         .extract()
         .map_err(|error| py_value_error(format!("rows must be a sequence of rows: {error}")))?;
@@ -2173,8 +2180,8 @@ fn given_rows_from_py(
             )));
         }
         let mut cells = Vec::with_capacity(row.len());
-        for (cell, column_type) in row.iter().zip(column_types) {
-            cells.push(given_value_from_py(cell, column_type).map_err(|error| {
+        for (cell, column_type) in row.iter().zip(&column_types) {
+            cells.push(given_value_from_py(cell, *column_type).map_err(|error| {
                 let message = format!("row {row_index}: {error}");
                 if error.is_instance_of::<pyo3::exceptions::PyTypeError>(cell.py()) {
                     py_type_error(message)
@@ -2191,34 +2198,32 @@ fn given_rows_from_py(
     })
 }
 
-/// Extract one given cell according to its declared TypeQL column type.
-fn given_value_from_py(cell: &Bound<'_, PyAny>, column_type: &str) -> PyResult<GivenValue> {
+/// Extract one given cell as the exact Python type of its column.
+fn given_value_from_py(
+    cell: &Bound<'_, PyAny>,
+    column_type: GivenColumnType,
+) -> PyResult<GivenValue> {
     Ok(match column_type {
-        "boolean" => GivenValue::Boolean(
+        GivenColumnType::Boolean => GivenValue::Boolean(
             cell.cast_exact::<PyBool>()
                 .map_err(|_| py_type_error("given boolean cells require an exact Python bool"))?
                 .extract()?,
         ),
-        // "long" is the ORM-internal name for the TypeQL "integer" type.
-        "integer" | "long" => GivenValue::Integer(
+        GivenColumnType::Integer => GivenValue::Integer(
             cell.cast_exact::<PyInt>()
                 .map_err(|_| py_type_error("given integer cells require an exact Python int"))?
                 .extract()?,
         ),
-        "double" => GivenValue::Double(
+        GivenColumnType::Double => GivenValue::Double(
             cell.cast_exact::<PyFloat>()
                 .map_err(|_| py_type_error("given double cells require an exact Python float"))?
                 .extract()?,
         ),
-        "string" => GivenValue::String(exact_given_string(cell, "string")?),
-        "date" => GivenValue::Date(exact_given_string(cell, "date")?),
-        "datetime" => GivenValue::Datetime(exact_given_string(cell, "datetime")?),
-        "datetime-tz" => GivenValue::DatetimeTz(exact_given_string(cell, "datetime-tz")?),
-        other => {
-            return Err(py_value_error(format!(
-                "Unsupported given column type {other:?}; expected one of string, \
-                 integer, double, boolean, date, datetime, datetime-tz"
-            )));
+        GivenColumnType::String => GivenValue::String(exact_given_string(cell, "string")?),
+        GivenColumnType::Date => GivenValue::Date(exact_given_string(cell, "date")?),
+        GivenColumnType::Datetime => GivenValue::Datetime(exact_given_string(cell, "datetime")?),
+        GivenColumnType::DatetimeTz => {
+            GivenValue::DatetimeTz(exact_given_string(cell, "datetime-tz")?)
         }
     })
 }
@@ -2659,6 +2664,7 @@ mod given_rows_tests {
             for (source, column_type, expected) in valid {
                 let source = std::ffi::CString::new(source).unwrap();
                 let value = py.eval(source.as_c_str(), None, None).unwrap();
+                let column_type = column_type.parse().unwrap();
                 assert_eq!(given_value_from_py(&value, column_type).unwrap(), expected);
             }
 
@@ -2673,17 +2679,22 @@ mod given_rows_tests {
                 let source = std::ffi::CString::new(source).unwrap();
                 let value = py.eval(source.as_c_str(), None, None).unwrap();
                 assert!(
-                    given_value_from_py(&value, column_type).is_err(),
+                    given_value_from_py(&value, column_type.parse().unwrap()).is_err(),
                     "{source:?} must not coerce into {column_type}"
                 );
             }
 
-            let unsupported = py.eval(ffi::c_str!("'value'"), None, None).unwrap();
+            let rows = py.eval(ffi::c_str!("[['value']]"), None, None).unwrap();
+            let unsupported =
+                given_rows_from_py(vec!["value".into()], &["decimal".into()], &rows).unwrap_err();
             assert!(
-                given_value_from_py(&unsupported, "decimal")
-                    .unwrap_err()
+                unsupported
+                    .get_type(py)
+                    .name()
+                    .unwrap()
                     .to_string()
-                    .contains("Unsupported given column type")
+                    .contains("UnknownEnumValueError"),
+                "{unsupported}"
             );
         });
     }

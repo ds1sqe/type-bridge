@@ -1149,6 +1149,7 @@ async function sdkV2QueryLane(
     .or(identifier.eq(Identifier.create("query-dana")));
   const query = session.query(person).where(scope);
   assertUnknownEnumValue(() => identifier.asc("none" as never), "missing_order");
+  assertUnknownEnumValue(() => session.var(Person, "subtype" as never), "match_mode");
   // The core checks a create member's count at construction, with its code.
   assert.throws(
     () => Person.create({ identifier: Identifier.create("query-cardinality") }),

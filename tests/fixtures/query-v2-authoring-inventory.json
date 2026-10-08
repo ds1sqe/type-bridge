@@ -771,7 +771,7 @@
         "needles": [
           "define_closed_builder_vocabulary!(",
           "QUERY_BUILDER_VALUE_TYPES,",
-          "define_queryable_type_kinds!(",
+          "pub enum QueryableTypeKind",
           "QUERY_BUILDER_COMPARATORS,",
           "QUERY_BUILDER_ORDER_DIRECTIONS,",
           "QUERY_BUILDER_REDUCERS,",
@@ -793,8 +793,7 @@
         "needles": [
           "limits().structural.boolean_terms",
           "limits().structural.selected_slots",
-          "limits.input_rows",
-          "limits.input_bytes"
+          "QueryInvocationRowBudget"
         ],
         "path": "type-bridge-core/crates/python/src/query_v2_builder_runtime.rs"
       },
@@ -803,8 +802,7 @@
         "needles": [
           "limits().structural.boolean_terms",
           "limits().structural.selected_slots",
-          "limits.input_rows",
-          "limits.input_bytes"
+          "QueryInvocationRowBudget"
         ],
         "path": "type-bridge-core/crates/node/src/query_v2_builder_runtime.rs"
       }
@@ -2235,9 +2233,32 @@
     {
       "expected": {
         "category": "invalid_contract",
-        "code": "query_builder_value_type_unknown",
-        "details": {},
-        "message": "value type must use one exact canonical scalar-domain spelling",
+        "code": "unknown_enum_value",
+        "details": {
+          "accepted": {
+            "kind": "text_list",
+            "value": [
+              "string",
+              "long",
+              "double",
+              "boolean",
+              "date",
+              "datetime",
+              "datetime_tz",
+              "decimal",
+              "duration"
+            ]
+          },
+          "kind": {
+            "kind": "text",
+            "value": "scalar_domain"
+          },
+          "value": {
+            "kind": "text",
+            "value": "integer"
+          }
+        },
+        "message": "The value is not an accepted spelling of its enum",
         "path": []
       },
       "failure": {
@@ -2253,9 +2274,29 @@
     {
       "expected": {
         "category": "invalid_contract",
-        "code": "query_builder_comparator_unknown",
-        "details": {},
-        "message": "comparator must use one exact canonical comparator spelling",
+        "code": "unknown_enum_value",
+        "details": {
+          "accepted": {
+            "kind": "text_list",
+            "value": [
+              "equal",
+              "not_equal",
+              "less",
+              "less_or_equal",
+              "greater",
+              "greater_or_equal"
+            ]
+          },
+          "kind": {
+            "kind": "text",
+            "value": "value_comparator"
+          },
+          "value": {
+            "kind": "text",
+            "value": "contains"
+          }
+        },
+        "message": "The value is not an accepted spelling of its enum",
         "path": []
       },
       "failure": {
@@ -2292,9 +2333,25 @@
     {
       "expected": {
         "category": "invalid_contract",
-        "code": "query_builder_order_direction_unknown",
-        "details": {},
-        "message": "order direction must be ascending or descending",
+        "code": "unknown_enum_value",
+        "details": {
+          "accepted": {
+            "kind": "text_list",
+            "value": [
+              "ascending",
+              "descending"
+            ]
+          },
+          "kind": {
+            "kind": "text",
+            "value": "order_direction"
+          },
+          "value": {
+            "kind": "text",
+            "value": "sideways"
+          }
+        },
+        "message": "The value is not an accepted spelling of its enum",
         "path": []
       },
       "failure": {
@@ -2315,9 +2372,30 @@
     {
       "expected": {
         "category": "invalid_contract",
-        "code": "query_builder_reducer_unknown",
-        "details": {},
-        "message": "reducer must use one exact canonical reducer spelling",
+        "code": "unknown_enum_value",
+        "details": {
+          "accepted": {
+            "kind": "text_list",
+            "value": [
+              "count",
+              "max",
+              "mean",
+              "median",
+              "min",
+              "std",
+              "sum"
+            ]
+          },
+          "kind": {
+            "kind": "text",
+            "value": "plan_reducer"
+          },
+          "value": {
+            "kind": "text",
+            "value": "variance"
+          }
+        },
+        "message": "The value is not an accepted spelling of its enum",
         "path": []
       },
       "failure": {
@@ -2339,9 +2417,26 @@
     {
       "expected": {
         "category": "invalid_contract",
-        "code": "query_builder_type_kind_unknown",
-        "details": {},
-        "message": "type kind must be entity, relation, or attribute",
+        "code": "unknown_enum_value",
+        "details": {
+          "accepted": {
+            "kind": "text_list",
+            "value": [
+              "entity",
+              "relation",
+              "attribute"
+            ]
+          },
+          "kind": {
+            "kind": "text",
+            "value": "queryable_type_kind"
+          },
+          "value": {
+            "kind": "text",
+            "value": "struct"
+          }
+        },
+        "message": "The value is not an accepted spelling of its enum",
         "path": []
       },
       "failure": {

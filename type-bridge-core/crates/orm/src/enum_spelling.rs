@@ -11,9 +11,11 @@ use type_bridge_contract::projection::{ManagerLookup, OwnerLookup};
 use type_bridge_contract::value::ValueTypeTag;
 
 use crate::_attribute::ValueType;
-use crate::match_request::{ComparisonOp, MissingOrder, Reduction, RowCardinality, SortDirection};
+use crate::match_request::{
+    ComparisonOp, MatchMode, MissingOrder, Reduction, RowCardinality, SortDirection,
+};
 use crate::projected_manager_filter::ProjectedManagerComparison;
-use crate::session::TxType;
+use crate::session::{GivenColumnType, TxType};
 
 /// One closed enum a binding accepts as text.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -42,6 +44,10 @@ pub enum EnumKind {
     ManagerComparison,
     /// [`OwnerLookup`].
     OwnerLookup,
+    /// [`MatchMode`].
+    MatchMode,
+    /// [`GivenColumnType`].
+    GivenColumnType,
 }
 
 type_bridge_contract::enum_spellings!(EnumKind, "enum_kind", canonical {
@@ -57,6 +63,8 @@ type_bridge_contract::enum_spellings!(EnumKind, "enum_kind", canonical {
     "manager_lookup" => ManagerLookup,
     "manager_comparison" => ManagerComparison,
     "owner_lookup" => OwnerLookup,
+    "match_mode" => MatchMode,
+    "given_column_type" => GivenColumnType,
 });
 
 impl EnumKind {
@@ -76,6 +84,8 @@ impl EnumKind {
             Self::ManagerLookup => value.parse().map(ManagerLookup::spelling),
             Self::ManagerComparison => value.parse().map(ProjectedManagerComparison::spelling),
             Self::OwnerLookup => value.parse().map(OwnerLookup::spelling),
+            Self::MatchMode => value.parse().map(MatchMode::spelling),
+            Self::GivenColumnType => value.parse().map(GivenColumnType::spelling),
         }
     }
 
@@ -95,6 +105,8 @@ impl EnumKind {
             Self::ManagerLookup => ManagerLookup::ACCEPTED,
             Self::ManagerComparison => ProjectedManagerComparison::ACCEPTED,
             Self::OwnerLookup => OwnerLookup::ACCEPTED,
+            Self::MatchMode => MatchMode::ACCEPTED,
+            Self::GivenColumnType => GivenColumnType::ACCEPTED,
         }
     }
 }
@@ -154,6 +166,10 @@ mod tests {
         }
         assert_eq!(serde_name(SortDirection::Descending), "descending");
         assert_eq!(serde_name(MissingOrder::First), "first");
+        for spelling in MatchMode::ACCEPTED {
+            let value: MatchMode = spelling.parse().unwrap();
+            assert_eq!(serde_name(value), *spelling);
+        }
     }
 
     #[test]
@@ -168,6 +184,10 @@ mod tests {
         assert!(canonical_enum_spelling("transaction_type", "READ").is_err());
         assert!(canonical_enum_spelling("value_type", "datetime_tz").is_err());
         assert!(canonical_enum_spelling("scalar_domain", "datetime-tz").is_err());
+        assert_eq!(
+            canonical_enum_spelling("given_column_type", "long"),
+            Ok("integer")
+        );
         let error = canonical_enum_spelling("sort", "ascending").unwrap_err();
         assert_eq!(error.kind(), "enum_kind");
     }

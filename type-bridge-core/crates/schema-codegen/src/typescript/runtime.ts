@@ -3114,17 +3114,10 @@ export class QuerySession {
     model: QueryModelToken<Id, Model>,
     matchMode: QueryMatchMode = "exact",
   ): BoundVar<Model, "exact"> | BoundVar<Model, "subtypes"> {
-    if (matchMode !== "exact" && matchMode !== "subtypes") {
-      throw new TypeError(
-        'generated query match mode must be "exact" or "subtypes"',
-      );
-    }
     const entry = exactModelToken(model);
     const label = this.#projection.matchModelType(entry.token.typeKey);
-    const binding =
-      matchMode === "exact"
-        ? this.#session.exact(label)
-        : this.#session.subtypes(label);
+    // The core parses the mode; an unknown spelling is `unknown_enum_value`.
+    const binding = coreCall(() => this.#session.binding(label, matchMode));
     const state: BoundVarState = {
       binding,
       handle: binding.one(),

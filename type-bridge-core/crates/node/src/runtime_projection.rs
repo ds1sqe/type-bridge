@@ -61,7 +61,7 @@ use type_bridge_orm::{
     ProjectedReference, ProjectedRolePlayer, ProjectedStructValue, ProjectedThing,
     ProviderRuntimeOwner, QueryExecutionResourceLimits, ThingKind, TransactionContext,
     TransactionContextState, ValueType, resolve_generated_manager_lookup,
-    validate_projected_create_member_count,
+    validate_projected_create_member_count, validate_projected_hydrated_member_count,
 };
 use type_bridge_schema::VerifiedSchemaAuthority;
 use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
@@ -6145,14 +6145,9 @@ fn projected_read_member_value(
     values: Vec<ProjectedWire>,
     multiplicity: ProjectedMultiplicity,
 ) -> napi::Result<Value> {
-    let count = u64::try_from(values.len())
-        .map_err(|_| runtime_error("projected hydrated value count exceeds u64"))?;
-    let cardinality = multiplicity.cardinality();
-    if count < cardinality.min() || cardinality.max().is_some_and(|maximum| count > maximum) {
-        return Err(runtime_error(
-            "projected hydrated value violates its projected cardinality",
-        ));
-    }
+    // `ProjectedThing`, `ProjectedCreate`, and `ProjectedReference` are
+    // validated against the projection when built, cardinality included;
+    // the multiplicity only picks the host shape here.
     match multiplicity.container() {
         ProjectedContainer::Scalar => values
             .into_iter()
@@ -6180,7 +6175,7 @@ fn hydrate_entity(
         form: WireForm::Complete,
         iid: row.iid.clone(),
         value: None,
-        values: hydrate_attributes(package, &descriptor.owned_attributes, &row.attributes)?,
+        values: hydrate_attributes(package, id, &descriptor.owned_attributes, &row.attributes)?,
     })
 }
 
@@ -6194,7 +6189,8 @@ fn hydrate_relation(
         .projection
         .relation_descriptor(id)
         .map_err(orm_error)?;
-    let mut values = hydrate_attributes(package, &descriptor.owned_attributes, &row.attributes)?;
+    let mut values =
+        hydrate_attributes(package, id, &descriptor.owned_attributes, &row.attributes)?;
     let projection = package.projection.projection();
     let model = projection
         .models()
@@ -6215,9 +6211,10 @@ fn hydrate_relation(
             .filter(|player| player.role_name == read.role().label().as_str())
             .map(|player| hydrate_player(package, read.players(), player))
             .collect::<napi::Result<Vec<_>>>()?;
+        let member = token.target_name().as_str();
         values.insert(
-            token.target_name().as_str().to_owned(),
-            projected_member_value(players, role_cardinality(role))?,
+            member.to_owned(),
+            projected_member_value(package, id, member, players, role_cardinality(role))?,
         );
     }
     Ok(ProjectedWire {
@@ -6286,7 +6283,7 @@ fn hydrate_player(
                 form: WireForm::Reference,
                 iid: Some(iid.to_owned()),
                 value: None,
-                values: hydrate_attributes(package, &descriptors, &attributes)?,
+                values: hydrate_attributes(package, id, &descriptors, &attributes)?,
             })
         }
     }
@@ -6294,6 +6291,7 @@ fn hydrate_player(
 
 fn hydrate_attributes(
     package: &InstalledPackage,
+    id: &TypeId,
     descriptors: &[OwnedAttributeDescriptor],
     attributes: &DynamicAttributeMap,
 ) -> napi::Result<BTreeMap<String, Value>> {
@@ -6306,7 +6304,13 @@ fn hydrate_attributes(
             .collect::<napi::Result<Vec<_>>>()?;
         values.insert(
             descriptor.field_name.clone(),
-            projected_member_value(wrappers, descriptor_cardinality(descriptor))?,
+            projected_member_value(
+                package,
+                id,
+                &descriptor.field_name,
+                wrappers,
+                descriptor_cardinality(descriptor),
+            )?,
         );
     }
     Ok(values)
@@ -6328,16 +6332,16 @@ fn attribute_wire(
 }
 
 fn projected_member_value(
+    package: &InstalledPackage,
+    id: &TypeId,
+    member: &str,
     values: Vec<ProjectedWire>,
     cardinality: (u32, Option<u32>),
 ) -> napi::Result<Value> {
-    let (minimum, maximum) = cardinality;
-    let count = u32::try_from(values.len())
-        .map_err(|_| runtime_error("hydrated value count exceeds u32"))?;
-    if count < minimum || maximum.is_some_and(|maximum| count > maximum) {
-        return Err(runtime_error("provider row violates projected cardinality"));
-    }
-    if maximum == Some(1) {
+    validate_projected_hydrated_member_count(&package.projection, id, member, values.len())
+        .map_err(napi_sdk_diagnostic)?;
+    // The count is checked; the descriptor's maximum only picks the host shape.
+    if cardinality.1 == Some(1) {
         values
             .into_iter()
             .next()

@@ -92,20 +92,18 @@ macro_rules! define_closed_builder_vocabulary {
         $manifest:ident,
         $name_function:ident,
         $variant_type:ty,
-        { $($variant:path => $spelling:literal),+ $(,)? }
+        [ $($variant:path),+ $(,)? ]
     ) => {
-        #[doc = "Closed public spellings generated from the exhaustive enum mapping."]
+        #[doc = "Closed public spellings, each the enum's one canonical spelling."]
         #[doc(hidden)]
         pub const $manifest: &[($variant_type, &str)] = &[
-            $(($variant, $spelling)),+
+            $(($variant, $variant.spelling())),+
         ];
 
-        #[doc = "Return the source-owned spelling for one closed enum variant."]
+        #[doc = "Return the canonical spelling for one closed enum variant."]
         #[doc(hidden)]
         pub const fn $name_function(value: $variant_type) -> &'static str {
-            match value {
-                $($variant => $spelling),+
-            }
+            value.spelling()
         }
     };
 }
@@ -114,89 +112,112 @@ define_closed_builder_vocabulary!(
     QUERY_BUILDER_VALUE_TYPES,
     query_builder_value_type_name,
     ValueTypeTag,
-    {
-        ValueTypeTag::String => "string",
-        ValueTypeTag::Long => "long",
-        ValueTypeTag::Double => "double",
-        ValueTypeTag::Boolean => "boolean",
-        ValueTypeTag::Date => "date",
-        ValueTypeTag::DateTime => "datetime",
-        ValueTypeTag::DateTimeTz => "datetime_tz",
-        ValueTypeTag::Decimal => "decimal",
-        ValueTypeTag::Duration => "duration",
-    }
+    [
+        ValueTypeTag::String,
+        ValueTypeTag::Long,
+        ValueTypeTag::Double,
+        ValueTypeTag::Boolean,
+        ValueTypeTag::Date,
+        ValueTypeTag::DateTime,
+        ValueTypeTag::DateTimeTz,
+        ValueTypeTag::Decimal,
+        ValueTypeTag::Duration,
+    ]
 );
 
-macro_rules! define_queryable_type_kinds {
-    (
-        accepted { $($accepted:path => $spelling:literal),+ $(,)? }
-        rejected { $($rejected:path),+ $(,)? }
-    ) => {
-        /// Closed schema-kind subset accepted by `isa` authoring.
-        #[doc(hidden)]
-        pub const QUERY_BUILDER_TYPE_KINDS: &[(TypeKind, &str)] = &[
-            $(($accepted, $spelling)),+
-        ];
-
-        /// Return the source-owned `isa` spelling, or `None` for non-queryable kinds.
-        #[doc(hidden)]
-        pub const fn query_builder_type_kind_name(kind: TypeKind) -> Option<&'static str> {
-            match kind {
-                $($accepted => Some($spelling)),+,
-                $($rejected => None),+
-            }
-        }
-    };
+/// The schema kinds `isa` and `links` authoring accepts: every [`TypeKind`]
+/// except `struct`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[doc(hidden)]
+pub enum QueryableTypeKind {
+    /// [`TypeKind::Entity`].
+    Entity,
+    /// [`TypeKind::Relation`].
+    Relation,
+    /// [`TypeKind::Attribute`].
+    Attribute,
 }
 
-define_queryable_type_kinds!(
-    accepted {
-        TypeKind::Entity => "entity",
-        TypeKind::Relation => "relation",
-        TypeKind::Attribute => "attribute",
+type_bridge_contract::enum_spellings!(QueryableTypeKind, "queryable_type_kind", canonical {
+    "entity" => Entity,
+    "relation" => Relation,
+    "attribute" => Attribute,
+});
+
+impl QueryableTypeKind {
+    /// The schema kind this spelling names.
+    #[must_use]
+    pub const fn type_kind(self) -> TypeKind {
+        match self {
+            Self::Entity => TypeKind::Entity,
+            Self::Relation => TypeKind::Relation,
+            Self::Attribute => TypeKind::Attribute,
+        }
     }
-    rejected {
-        TypeKind::Struct,
+
+    /// The queryable kind of `kind`, or `None` for a non-queryable kind.
+    #[must_use]
+    pub const fn from_type_kind(kind: TypeKind) -> Option<Self> {
+        match kind {
+            TypeKind::Entity => Some(Self::Entity),
+            TypeKind::Relation => Some(Self::Relation),
+            TypeKind::Attribute => Some(Self::Attribute),
+            TypeKind::Struct => None,
+        }
     }
-);
+}
+
+/// Closed schema-kind subset accepted by `isa` authoring.
+#[doc(hidden)]
+pub const QUERY_BUILDER_TYPE_KINDS: &[(TypeKind, &str)] = &[
+    (TypeKind::Entity, QueryableTypeKind::Entity.spelling()),
+    (TypeKind::Relation, QueryableTypeKind::Relation.spelling()),
+    (TypeKind::Attribute, QueryableTypeKind::Attribute.spelling()),
+];
+
+/// Return the canonical `isa` spelling, or `None` for non-queryable kinds.
+#[doc(hidden)]
+pub const fn query_builder_type_kind_name(kind: TypeKind) -> Option<&'static str> {
+    match QueryableTypeKind::from_type_kind(kind) {
+        Some(kind) => Some(kind.spelling()),
+        None => None,
+    }
+}
 
 define_closed_builder_vocabulary!(
     QUERY_BUILDER_COMPARATORS,
     query_builder_comparator_name,
     ValueComparator,
-    {
-        ValueComparator::Equal => "equal",
-        ValueComparator::NotEqual => "not_equal",
-        ValueComparator::Less => "less",
-        ValueComparator::LessOrEqual => "less_or_equal",
-        ValueComparator::Greater => "greater",
-        ValueComparator::GreaterOrEqual => "greater_or_equal",
-    }
+    [
+        ValueComparator::Equal,
+        ValueComparator::NotEqual,
+        ValueComparator::Less,
+        ValueComparator::LessOrEqual,
+        ValueComparator::Greater,
+        ValueComparator::GreaterOrEqual,
+    ]
 );
 
 define_closed_builder_vocabulary!(
     QUERY_BUILDER_ORDER_DIRECTIONS,
     query_builder_order_direction_name,
     OrderDirection,
-    {
-        OrderDirection::Ascending => "ascending",
-        OrderDirection::Descending => "descending",
-    }
+    [OrderDirection::Ascending, OrderDirection::Descending]
 );
 
 define_closed_builder_vocabulary!(
     QUERY_BUILDER_REDUCERS,
     query_builder_reducer_name,
     Reducer,
-    {
-        Reducer::Count => "count",
-        Reducer::Max => "max",
-        Reducer::Mean => "mean",
-        Reducer::Median => "median",
-        Reducer::Min => "min",
-        Reducer::Std => "std",
-        Reducer::Sum => "sum",
-    }
+    [
+        Reducer::Count,
+        Reducer::Max,
+        Reducer::Mean,
+        Reducer::Median,
+        Reducer::Min,
+        Reducer::Std,
+        Reducer::Sum,
+    ]
 );
 
 /// Closed reducer/result pairs admitted by plan-local functions.
@@ -210,76 +231,34 @@ pub const QUERY_BUILDER_LOCAL_RETURNS: &[(Reducer, ValueTypeTag)] = &[
 /// Parse the exact low-level scalar-domain spelling shared by both bindings.
 #[doc(hidden)]
 pub fn query_builder_value_type(value: &str) -> Result<ValueTypeTag, Diagnostic> {
-    QUERY_BUILDER_VALUE_TYPES
-        .iter()
-        .find_map(|(value_type, spelling)| (*spelling == value).then_some(*value_type))
-        .ok_or_else(|| {
-            builder_failure(
-                DiagnosticCategory::InvalidContract,
-                "query_builder_value_type_unknown",
-                "value type must use one exact canonical scalar-domain spelling",
-            )
-        })
+    value.parse().map_err(Diagnostic::from)
 }
 
 /// Parse the exact low-level schema-kind spelling shared by both bindings.
 #[doc(hidden)]
 pub fn query_builder_type_kind(value: &str) -> Result<TypeKind, Diagnostic> {
-    QUERY_BUILDER_TYPE_KINDS
-        .iter()
-        .find_map(|(kind, spelling)| (*spelling == value).then_some(*kind))
-        .ok_or_else(|| {
-            builder_failure(
-                DiagnosticCategory::InvalidContract,
-                "query_builder_type_kind_unknown",
-                "type kind must be entity, relation, or attribute",
-            )
-        })
+    value
+        .parse()
+        .map(QueryableTypeKind::type_kind)
+        .map_err(Diagnostic::from)
 }
 
 /// Parse the exact low-level comparator spelling shared by both bindings.
 #[doc(hidden)]
 pub fn query_builder_comparator(value: &str) -> Result<ValueComparator, Diagnostic> {
-    QUERY_BUILDER_COMPARATORS
-        .iter()
-        .find_map(|(comparator, spelling)| (*spelling == value).then_some(*comparator))
-        .ok_or_else(|| {
-            builder_failure(
-                DiagnosticCategory::InvalidContract,
-                "query_builder_comparator_unknown",
-                "comparator must use one exact canonical comparator spelling",
-            )
-        })
+    value.parse().map_err(Diagnostic::from)
 }
 
 /// Parse the exact low-level sort-direction spelling shared by both bindings.
 #[doc(hidden)]
 pub fn query_builder_order_direction(value: &str) -> Result<OrderDirection, Diagnostic> {
-    QUERY_BUILDER_ORDER_DIRECTIONS
-        .iter()
-        .find_map(|(direction, spelling)| (*spelling == value).then_some(*direction))
-        .ok_or_else(|| {
-            builder_failure(
-                DiagnosticCategory::InvalidContract,
-                "query_builder_order_direction_unknown",
-                "order direction must be ascending or descending",
-            )
-        })
+    value.parse().map_err(Diagnostic::from)
 }
 
 /// Parse the exact low-level reducer spelling shared by both bindings.
 #[doc(hidden)]
 pub fn query_builder_reducer(value: &str) -> Result<Reducer, Diagnostic> {
-    QUERY_BUILDER_REDUCERS
-        .iter()
-        .find_map(|(reducer, spelling)| (*spelling == value).then_some(*reducer))
-        .ok_or_else(|| {
-            builder_failure(
-                DiagnosticCategory::InvalidContract,
-                "query_builder_reducer_unknown",
-                "reducer must use one exact canonical reducer spelling",
-            )
-        })
+    value.parse().map_err(Diagnostic::from)
 }
 
 /// Convert one checked host primitive into its exact canonical scalar.

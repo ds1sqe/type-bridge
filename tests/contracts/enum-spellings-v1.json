@@ -388,6 +388,66 @@
       }
     },
     {
+      "id": "match_mode.unknown",
+      "description": "The mode is plural; TypeScript `var(model, mode)` and Node `binding` parse it in the core.",
+      "kind": "match_mode",
+      "value": "subtype",
+      "expected": {
+        "category": "invalid_input",
+        "code": "unknown_enum_value",
+        "details": {
+          "kind": {
+            "kind": "query_identity",
+            "value": "match_mode"
+          },
+          "value": {
+            "kind": "query_identity",
+            "value": "subtype"
+          },
+          "accepted": {
+            "kind": "query_identity_list",
+            "value": [
+              "exact",
+              "subtypes"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "given_column_type.unknown",
+      "description": "Given rows marshal only the listed TypeQL value types; `long` is the alias of `integer`.",
+      "kind": "given_column_type",
+      "value": "decimal",
+      "expected": {
+        "category": "invalid_input",
+        "code": "unknown_enum_value",
+        "details": {
+          "kind": {
+            "kind": "query_identity",
+            "value": "given_column_type"
+          },
+          "value": {
+            "kind": "query_identity",
+            "value": "decimal"
+          },
+          "accepted": {
+            "kind": "query_identity_list",
+            "value": [
+              "boolean",
+              "integer",
+              "double",
+              "string",
+              "date",
+              "datetime",
+              "datetime-tz",
+              "long"
+            ]
+          }
+        }
+      }
+    },
+    {
       "id": "enum_kind.unknown",
       "description": "An unknown enum kind is itself an unknown enum_kind spelling.",
       "kind": "sort",
@@ -418,7 +478,9 @@
               "projected_record_kind",
               "manager_lookup",
               "manager_comparison",
-              "owner_lookup"
+              "owner_lookup",
+              "match_mode",
+              "given_column_type"
             ]
           }
         }

@@ -401,6 +401,11 @@ pub enum OrderDirection {
     Descending,
 }
 
+crate::enum_spellings!(OrderDirection, "order_direction", canonical {
+    "ascending" => Ascending,
+    "descending" => Descending,
+});
+
 /// One typed sort key.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct OrderTerm {
@@ -452,6 +457,16 @@ pub enum Reducer {
     /// The total of input values.
     Sum,
 }
+
+crate::enum_spellings!(Reducer, "plan_reducer", canonical {
+    "count" => Count,
+    "max" => Max,
+    "mean" => Mean,
+    "median" => Median,
+    "min" => Min,
+    "std" => Std,
+    "sum" => Sum,
+});
 
 impl Reducer {
     /// Whether this reducer yields a defined result on an empty stream.

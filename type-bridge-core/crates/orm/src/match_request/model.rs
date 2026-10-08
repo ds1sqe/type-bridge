@@ -102,6 +102,11 @@ pub enum MatchMode {
     Subtypes,
 }
 
+type_bridge_contract::enum_spellings!(MatchMode, "match_mode", canonical {
+    "exact" => Exact,
+    "subtypes" => Subtypes,
+});
+
 /// An explicitly permitted topology-level cross join.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct BindingPair {
