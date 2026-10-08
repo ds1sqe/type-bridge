@@ -2527,7 +2527,7 @@ fn supported_c_preprocessors_fit_the_frozen_implementation_macro_reserve() {
     let runtime_macros = runtime_header_macro_names();
     assert_eq!(
         runtime_macros.len(),
-        262,
+        267,
         "runtime-header macro reserve drifted"
     );
     let mut invocations = 0;
@@ -3105,6 +3105,7 @@ int main(void) {
   const type_bridge_schema_package_t *package = 0;
   const type_bridge_database_t *database = 0;
   const type_bridge_read_transaction_t *read_tx = 0;
+  const type_bridge_proxy_connection_t *proxy = 0;
   const type_bridge_cancellation_t *cancellation = 0;
   type_bridge_execution_diagnostics_t *diagnostics = 0;
   acme_query_remote_context *remote_context = 0;
@@ -3316,6 +3317,12 @@ int main(void) {
       database, field_terminal, 0, cancellation, &field_result, &diagnostics);
   (void)acme_database_query_execute_field_tuple_reduction(
       database, tuple_terminal, 0, cancellation, &tuple_result, &diagnostics);
+  (void)acme_proxy_query_execute_rows(
+      proxy, rows_terminal, 0, cancellation, &rows_result, &diagnostics);
+  (void)acme_proxy_query_execute_page(
+      proxy, page_terminal, 0, cancellation, &page_result, &diagnostics);
+  (void)acme_proxy_query_execute_field_tuple_reduction(
+      proxy, tuple_terminal, 0, cancellation, &tuple_result, &diagnostics);
 
   (void)acme_query_remote_context_open(
       package, output_name, 0, &remote_context, &diagnostics);

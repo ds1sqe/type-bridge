@@ -2,7 +2,7 @@
   "format": "typebridge.c-abi/v1",
   "version": "1.6.0",
   "header": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-  "header_sha256": "f0a7db5cedc0ab91928bd0508816933005d7429995937703dbd4260389d84e3b",
+  "header_sha256": "d51944f483b7c94db5bfc4adce69cb25a7ea1817b5252fb4aed54c41831f5382",
   "handles": [
     "type_bridge_canonical_bytes_t",
     "type_bridge_canonical_archive_builder_t",
@@ -249,6 +249,9 @@
     "type_bridge_projected_value_string_open",
     "type_bridge_projected_value_text",
     "type_bridge_projected_value_validate_model",
+    "type_bridge_proxy_connection_close",
+    "type_bridge_proxy_connection_open_v1",
+    "type_bridge_proxy_query_execute_v1",
     "type_bridge_query_add_hidden",
     "type_bridge_query_allow_cross_join",
     "type_bridge_query_binding_close",

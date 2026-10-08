@@ -175,6 +175,15 @@ differently direct and through a proxy. Each entry says what to do instead.
   `query.operation.complete-rows` capability, which an executor older than
   this release does not advertise.
 
+- C built-in proxy connection. `type_bridge_proxy_connection_open_v1` opens a
+  synchronous connection to a TypeBridge server from
+  `type_bridge_proxy_connection_options_v1_t` (endpoint, TLS mode and custom
+  root, request headers, optional pinned advertisement, connection and answer
+  limits), and `type_bridge_proxy_query_execute_v1` runs a terminal on it with
+  the same result family as `type_bridge_database_query_execute_v1`. One C
+  program now runs against TypeDB directly or through a server by changing
+  only the connection it opens. ABI label stays 1.6.
+
 ### Fixed
 
 - Python and Node generated queries on a direct connection now run under
@@ -189,6 +198,13 @@ differently direct and through a proxy. Each entry says what to do instead.
   executor.
 
 ### Changed
+
+- C database, read-transaction, and proxy executes run through the Rust
+  query target that the other SDKs use, and the C remote context (the
+  caller-owned exchange) prepares requests through the Rust proxy
+  connection, so a connection's answer limits bind them the same way. The
+  header no longer describes limit values as clamped: they are kept, and a
+  value above its maximum is refused.
 
 - A generated package runs direct queries on the executor a proxy uses. Each
   request is adapted to a V2 plan under the package's embedded schema

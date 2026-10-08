@@ -1667,7 +1667,7 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
         .collect::<Vec<_>>();
     assert_eq!(
         markers.len(),
-        if sdk_v5_evidence.is_some() { 1 } else { 61 },
+        if sdk_v5_evidence.is_some() { 1 } else { 62 },
         "live C marker inventory drifted"
     );
     assert_eq!(

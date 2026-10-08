@@ -66,7 +66,7 @@ def _live_report() -> dict[str, Any]:
                 "runtime": "runtime-id",
             },
             "format": "typebridge.c-artifact-connected-observation/v1",
-            "full-c17-marker-count": 61,
+            "full-c17-marker-count": 62,
             "model-codec": {
                 "direct-remote-equal": True,
                 "files": {
@@ -159,7 +159,7 @@ def test_tls_consumer_captures_custom_root_without_template_markers() -> None:
 def test_connected_marker_authority_is_exact_and_duplicate_free() -> None:
     full = JOURNEY.passed_markers(JOURNEY.FULL_CONSUMER, exclude_codec=True)
     query = JOURNEY.passed_markers(JOURNEY.QUERY_CONSUMER)
-    assert len(full) == JOURNEY.FULL_MARKER_COUNT == 61
+    assert len(full) == JOURNEY.FULL_MARKER_COUNT == 62
     assert len(query) == JOURNEY.QUERY_MARKER_COUNT == 8
     JOURNEY.require_markers("\n".join([*full, *query]), [*full, *query], "test")
     with pytest.raises(JOURNEY.JourneyError, match="omitted connected markers"):

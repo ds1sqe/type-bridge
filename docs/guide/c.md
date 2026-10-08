@@ -87,6 +87,67 @@ For pkg-config, add both packages' `lib/pkgconfig` directories to
 using `pkg-config --cflags --libs tb_sdkv3`. Configure the dynamic loader to find
 the installed runtime's `lib` directory.
 
+## Run a query on a database or a TypeBridge server
+
+A query session authors terminals; it holds no connection. Each connection
+type has one execute call, and all of them return the same result family and
+diagnostics:
+
+| Connection | Execute call |
+| --- | --- |
+| `type_bridge_database_t` | `type_bridge_database_query_execute_v1` |
+| `type_bridge_read_transaction_t` | `type_bridge_read_transaction_query_execute_v1` |
+| `type_bridge_proxy_connection_t` | `type_bridge_proxy_query_execute_v1` |
+
+So one program runs unchanged against TypeDB directly or through a
+TypeBridge server; only the connection it opens differs. The proxy connection
+is synchronous and blocks the calling thread:
+
+```c
+type_bridge_proxy_header_v1_t auth = {
+    {(const uint8_t *)"Authorization", 13},
+    {(const uint8_t *)token, token_length},
+};
+type_bridge_proxy_connection_options_v1_t options = {0};
+options.struct_size = sizeof options;
+options.version = TYPE_BRIDGE_PROXY_CONNECTION_OPTIONS_VERSION;
+options.endpoint = (type_bridge_byte_view_t){(const uint8_t *)url, strlen(url)};
+options.tls_mode = TYPE_BRIDGE_TLS_NATIVE_ROOTS; /* or _DISABLED, _CUSTOM_ROOT_CA */
+options.headers = &auth;
+options.header_count = 1;
+options.answer_limits = &ceiling; /* NULL selects the defaults */
+
+type_bridge_proxy_connection_t *proxy = NULL;
+type_bridge_execution_diagnostics_t *diagnostics = NULL;
+status = type_bridge_proxy_connection_open_v1(
+    package, &options, NULL, &proxy, &diagnostics);
+/* ... */
+status = type_bridge_proxy_query_execute_v1(
+    proxy, terminal, kind, NULL, NULL, &result, &diagnostics);
+/* ... */
+type_bridge_proxy_connection_close(&proxy);
+```
+
+With TLS mode `TYPE_BRIDGE_TLS_CUSTOM_ROOT_CA`, `custom_root_ca_path` names a
+PEM bundle. An empty `pinned_advertisement` fetches the server's capability
+advertisement during open, bounded by `connection_limits`; a nonempty one is
+used as is. `answer_limits` is a ceiling: every terminal on the connection
+runs under its own limits constrained by it, and limit values are kept or
+refused, never clamped. Manager terminals run only on a database or a read
+transaction.
+
+### Caller-owned exchange
+
+A host that owns the route to the server (its own HTTP stack, a message bus,
+or an in-process server) uses the remote context instead of the built-in
+proxy connection. It is the exchange extension point, not a second session:
+`type_bridge_query_remote_context_open_v1` validates the advertisement,
+`type_bridge_query_remote_prepare_v1` returns a pending request whose bytes
+(`type_bridge_query_remote_pending_request_bytes`) the host sends, and the
+reply goes through the one-shot `type_bridge_query_remote_pending_claim` and
+`type_bridge_query_remote_claim_decode_v1`. Both paths prepare and validate
+requests through the same Rust proxy connection.
+
 The release evidence covers relocated installation, strict C17/C++17 headers,
 direct and caller-transport queries, custom-root TLS, migrations, model
 serialization, cancellation, resource limits, and cleanup. See the

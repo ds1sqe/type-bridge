@@ -2203,6 +2203,202 @@ static int check_sdk_field_tuple_groups(
   return 0;
 }
 
+/* One program, two configurations: a terminal runs on a direct database or a
+ * built-in proxy connection through the matching *_query_execute_v1 call. */
+typedef struct query_connection {
+  const char *name;
+  const type_bridge_database_t *database;
+  const type_bridge_proxy_connection_t *proxy;
+} query_connection_t;
+
+typedef struct connection_terminals_observation {
+  sdk_person_rows_observation_t rows;
+  sdk_person_rows_observation_t first;
+  sdk_person_rows_observation_t nickname;
+  type_bridge_query_page_metadata_v1_t page_metadata;
+  char page_key[64];
+  uint64_t count;
+  uint8_t exists;
+  char refusal_code[96];
+} connection_terminals_observation_t;
+
+/* Dispatches one terminal to the generated execute wrapper of the
+ * connection's transport; both wrappers return the same typed result. */
+#define CONNECTION_EXECUTE(kind, connection, terminal, limits, out_result,     \
+                           out_diagnostics)                                    \
+  ((connection)->proxy != NULL                                                 \
+       ? fixture_proxy_query_execute_##kind((connection)->proxy, (terminal),   \
+                                            (limits), NULL, (out_result),      \
+                                            (out_diagnostics))                 \
+       : fixture_database_query_execute_##kind(                                \
+             (connection)->database, (terminal), (limits), NULL, (out_result), \
+             (out_diagnostics)))
+
+static int observe_connection_terminals(
+    const query_connection_t *connection,
+    const fixture_query_rows_terminal *rows_terminal,
+    const fixture_query_first_terminal *first_terminal,
+    const fixture_query_rows_terminal *nickname_terminal,
+    const fixture_query_page_terminal *page_terminal,
+    const fixture_query_count_terminal *count_terminal,
+    const fixture_query_exists_terminal *exists_terminal,
+    connection_terminals_observation_t *observation,
+    type_bridge_execution_diagnostics_t **out_diagnostics) {
+  type_bridge_query_execution_limits_v1_t limits =
+      TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
+  type_bridge_query_execution_limits_v1_t one_item =
+      TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
+  type_bridge_execution_diagnostic_view_v1_t diagnostic = {0};
+  fixture_query_rows_result *rows_result = NULL;
+  fixture_query_page_result *page_result = NULL;
+  fixture_query_count_result *count_result = NULL;
+  fixture_query_exists_result *exists_result = NULL;
+  fixture_person *page_person = NULL;
+  memset(observation, 0, sizeof(*observation));
+
+  CHECK(CONNECTION_EXECUTE(rows, connection, rows_terminal, &limits,
+                           &rows_result, out_diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(observe_person_rows(rows_result, &observation->rows,
+                            out_diagnostics) == 0);
+  CHECK(fixture_query_rows_result_close(&rows_result) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(CONNECTION_EXECUTE(first, connection, first_terminal, &limits,
+                           &rows_result, out_diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(observe_person_rows(rows_result, &observation->first,
+                            out_diagnostics) == 0);
+  CHECK(fixture_query_rows_result_close(&rows_result) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(CONNECTION_EXECUTE(rows, connection, nickname_terminal, &limits,
+                           &rows_result, out_diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(observe_person_rows(rows_result, &observation->nickname,
+                            out_diagnostics) == 0);
+  CHECK(fixture_query_rows_result_close(&rows_result) == TYPE_BRIDGE_STATUS_OK);
+
+  CHECK(CONNECTION_EXECUTE(page, connection, page_terminal, &limits,
+                           &page_result, out_diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_page_metadata(page_result, &observation->page_metadata,
+                                    out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_query_exact_one_at(
+            fixture_person_query_exact_one_result_slot_v1_t_page(page_result,
+                                                                  0u),
+            0u, &page_person, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(read_query_person_identifier(page_person, observation->page_key,
+                                     sizeof(observation->page_key),
+                                     out_diagnostics) == 0);
+  CHECK(fixture_person_close(&page_person) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_page_result_close(&page_result) == TYPE_BRIDGE_STATUS_OK);
+
+  CHECK(CONNECTION_EXECUTE(count, connection, count_terminal, &limits,
+                           &count_result, out_diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_count_result_value(count_result, &observation->count,
+                                         out_diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_count_result_close(&count_result) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(CONNECTION_EXECUTE(exists, connection, exists_terminal, &limits,
+                           &exists_result, out_diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_exists_result_value(exists_result, &observation->exists,
+                                          out_diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_exists_result_close(&exists_result) ==
+        TYPE_BRIDGE_STATUS_OK);
+
+  /* A two-row answer under a one-item limit is refused the same way on both
+   * transports. */
+  one_item.items = 1u;
+  CHECK(CONNECTION_EXECUTE(rows, connection, rows_terminal, &one_item,
+                           &rows_result, out_diagnostics) ==
+        TYPE_BRIDGE_STATUS_RESOURCE_LIMIT);
+  CHECK(rows_result == NULL);
+  CHECK(type_bridge_execution_diagnostics_get_v1(*out_diagnostics, 0u,
+                                                 &diagnostic) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(diagnostic.category == TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_RESOURCE_LIMIT);
+  CHECK(copy_stable_text(diagnostic.code, observation->refusal_code,
+                         sizeof(observation->refusal_code)));
+  CHECK(type_bridge_execution_diagnostics_close(out_diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  return 0;
+}
+
+static int check_proxy_connection_parity(
+    const type_bridge_schema_package_t *package,
+    const type_bridge_database_t *database, uint16_t remote_port,
+    const fixture_query_rows_terminal *rows_terminal,
+    const fixture_query_first_terminal *first_terminal,
+    const fixture_query_rows_terminal *nickname_terminal,
+    const fixture_query_page_terminal *page_terminal,
+    const fixture_query_count_terminal *count_terminal,
+    const fixture_query_exists_terminal *exists_terminal,
+    type_bridge_execution_diagnostics_t **out_diagnostics) {
+  char endpoint[64];
+  type_bridge_proxy_connection_options_v1_t options;
+  type_bridge_proxy_connection_t *proxy = NULL;
+  query_connection_t configurations[2];
+  connection_terminals_observation_t observations[2];
+  size_t index;
+  CHECK(snprintf(endpoint, sizeof(endpoint), "http://127.0.0.1:%u",
+                 (unsigned)remote_port) > 0);
+  memset(&options, 0, sizeof(options));
+  options.struct_size = (uint32_t)sizeof(options);
+  options.version = TYPE_BRIDGE_PROXY_CONNECTION_OPTIONS_VERSION;
+  options.endpoint = view_of(endpoint);
+  options.tls_mode = TYPE_BRIDGE_TLS_DISABLED;
+  CHECK(type_bridge_proxy_connection_open_v1(package, &options, NULL, &proxy,
+                                             out_diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  configurations[0].name = "direct";
+  configurations[0].database = database;
+  configurations[0].proxy = NULL;
+  configurations[1].name = "proxy";
+  configurations[1].database = NULL;
+  configurations[1].proxy = proxy;
+  for (index = 0u; index < 2u; ++index) {
+    if (observe_connection_terminals(
+            &configurations[index], rows_terminal, first_terminal,
+            nickname_terminal, page_terminal, count_terminal, exists_terminal,
+            &observations[index], out_diagnostics) != 0) {
+      fprintf(stderr, "connection parity failed under the %s configuration\n",
+              configurations[index].name);
+      (void)type_bridge_proxy_connection_close(&proxy);
+      return 1;
+    }
+  }
+  CHECK(type_bridge_proxy_connection_close(&proxy) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(proxy == NULL);
+  CHECK(observations[0].rows.count == 2u && observations[0].count == 2u &&
+        observations[0].exists == 1u);
+  CHECK(memcmp(&observations[0].rows, &observations[1].rows,
+               sizeof(observations[0].rows)) == 0);
+  CHECK(memcmp(&observations[0].first, &observations[1].first,
+               sizeof(observations[0].first)) == 0);
+  CHECK(memcmp(&observations[0].nickname, &observations[1].nickname,
+               sizeof(observations[0].nickname)) == 0);
+  CHECK(observations[0].page_metadata.offset ==
+            observations[1].page_metadata.offset &&
+        observations[0].page_metadata.limit ==
+            observations[1].page_metadata.limit &&
+        observations[0].page_metadata.has_total ==
+            observations[1].page_metadata.has_total &&
+        observations[0].page_metadata.total ==
+            observations[1].page_metadata.total);
+  CHECK(strcmp(observations[0].page_key, observations[1].page_key) == 0);
+  CHECK(observations[0].count == observations[1].count);
+  CHECK(observations[0].exists == observations[1].exists);
+  if (strcmp(observations[0].refusal_code, observations[1].refusal_code) !=
+      0) {
+    fprintf(stderr, "limit refusal differs: direct=%s proxy=%s\n",
+            observations[0].refusal_code, observations[1].refusal_code);
+    return 1;
+  }
+  puts("05.4 one program under direct and built-in proxy connections: passed");
+  return 0;
+}
+
 static int run_typed_query_function_and_remote(
     const type_bridge_schema_package_t *package,
     const type_bridge_database_t *database,
@@ -2725,6 +2921,10 @@ static int run_typed_query_function_and_remote(
       remote_one_rows.keys[0], &remote_page_rows, &remote_sdk_rows,
       remote_page_metadata.offset, remote_page_metadata.limit,
       remote_page_metadata.total));
+  CHECK(check_proxy_connection_parity(
+            package, database, remote_port, rows_terminal, first_terminal,
+            nickname_terminal, page_terminal, count_terminal, exists_terminal,
+            out_diagnostics) == 0);
   CHECK(emit_v2_observationf(
       "remote_one_exchange", "remote_runtime",
       "{\"exchange_count\":%zu,\"terminal\":\"one\"}",

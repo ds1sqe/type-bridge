@@ -393,6 +393,11 @@ pub(super) fn function_names(
         "read_transaction_query_execute_page",
         "read_transaction_query_execute_count",
         "read_transaction_query_execute_exists",
+        "proxy_query_execute_rows",
+        "proxy_query_execute_first",
+        "proxy_query_execute_page",
+        "proxy_query_execute_count",
+        "proxy_query_execute_exists",
         "query_rows_result_ref",
         "query_page_result_ref",
         "query_result_row_count",
@@ -1100,6 +1105,7 @@ fn render_package_query_declarations(
     for (scope, owner) in [
         ("database", "type_bridge_database_t"),
         ("read_transaction", "type_bridge_read_transaction_t"),
+        ("proxy", "type_bridge_proxy_connection_t"),
     ] {
         for (kind, terminal, result, _) in [
             (
@@ -1592,6 +1598,11 @@ fn render_package_definitions(
             "read_transaction",
             "type_bridge_read_transaction_t",
             "type_bridge_read_transaction_query_execute_v1",
+        ),
+        (
+            "proxy",
+            "type_bridge_proxy_connection_t",
+            "type_bridge_proxy_query_execute_v1",
         ),
     ] {
         for (kind, terminal, result, terminal_kind) in [

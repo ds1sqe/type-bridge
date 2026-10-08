@@ -75,6 +75,7 @@ pub use projected_model::{
 pub use projected_token::TypeBridgeProjectedTokenV1;
 pub use projected_value::{TypeBridgeProjectedValue, TypeBridgeProjectedValueKind};
 pub use query::{
+    TypeBridgeProxyConnection, TypeBridgeProxyConnectionOptionsV1, TypeBridgeProxyHeaderV1,
     TypeBridgeQuery, TypeBridgeQueryBinding, TypeBridgeQueryDescriptorV1,
     TypeBridgeQueryExecutionLimitsV1, TypeBridgeQueryField, TypeBridgeQueryFieldReferenceV1,
     TypeBridgeQueryFunction, TypeBridgeQueryFunctionArgumentMemberV1,

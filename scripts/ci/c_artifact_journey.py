@@ -37,7 +37,7 @@ PREDECESSOR_CATALOGS = tuple(
     ROOT / f"tests/contracts/sdk_conformance/sdk-v{version}/catalog-v{version}.json"
     for version in range(1, 6)
 )
-FULL_MARKER_COUNT = 61
+FULL_MARKER_COUNT = 62
 QUERY_MARKER_COUNT = 8
 CODEC_MARKER = "Sdk V5 C live codec direct/remote parity: passed"
 

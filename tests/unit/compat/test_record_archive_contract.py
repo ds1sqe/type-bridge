@@ -86,7 +86,7 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
     assert not any(key.startswith("parent_") for key in contract)
     exports = set(re.findall(r"\b(type_bridge_[a-z0-9_]+)\s*\(", header.read_text()))
     assert contract["exports"] == sorted(exports)
-    assert len(exports) == 341
+    assert len(exports) == 344
     assert contract["options"]["size_64_bit"] == 72
     assert contract["options"]["alignment_64_bit"] == 8
     assert contract["ownership"]["partial_archive_result"] is False

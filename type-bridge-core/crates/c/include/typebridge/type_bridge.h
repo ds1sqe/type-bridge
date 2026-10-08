@@ -463,8 +463,11 @@ typedef struct type_bridge_query_execution_limits_v1 {
 } type_bridge_query_execution_limits_v1_t;
 
 /*
- * NULL execution limits select these canonical hard defaults. A non-NULL
- * descriptor is componentwise clamped to these hard maxima and every zero
+ * NULL execution limits select these canonical defaults. A non-NULL
+ * descriptor's values are kept as given, never clamped: a dimension may
+ * tighten or raise its default, and a value past its supported maximum (a
+ * timeout past one day, more than 3 statements) is refused. A connection's
+ * answer limits are a ceiling every call on it is constrained by. Every zero
  * field is an actual zero ceiling, never a request to substitute a default.
  * Direct execution reports the shared statement-limit diagnostic before its
  * first provider statement. Remote preparation preserves zero through the
@@ -1332,6 +1335,75 @@ type_bridge_read_transaction_query_execute_v1(
     type_bridge_execution_diagnostics_t **out_diagnostics);
 
 /*
+ * Built-in proxy connection to a TypeBridge server. A terminal runs on any
+ * connection type through that type's one *_query_execute_v1 call: database,
+ * read transaction, or proxy, with the same result family and diagnostics.
+ * Open and execute are synchronous and block the calling thread; the
+ * connection owns its I/O and needs no runtime handle. Every byte view is
+ * copied during open and need not be NUL terminated. `endpoint` is the
+ * server base URL (https:// for TLS). `tls_mode` is one of
+ * TYPE_BRIDGE_TLS_DISABLED, TYPE_BRIDGE_TLS_NATIVE_ROOTS, or
+ * TYPE_BRIDGE_TLS_CUSTOM_ROOT_CA; `custom_root_ca_path` names a PEM bundle in
+ * custom-root mode and is empty otherwise. `headers` (such as Authorization)
+ * is sent with every request and may be NULL when `header_count` is 0. An
+ * empty `pinned_advertisement` fetches the server's capability advertisement
+ * during open; a nonempty one is used instead. `connection_limits` bounds
+ * the open; `answer_limits` is the ceiling every terminal on the connection
+ * is constrained by. NULL limits select the defaults. Reserved words must be
+ * zero. Manager terminals run only on a database or read transaction.
+ */
+#define TYPE_BRIDGE_PROXY_CONNECTION_OPTIONS_VERSION 1u
+#define TYPE_BRIDGE_PROXY_ENDPOINT_BYTES_MAX 4096u
+#define TYPE_BRIDGE_PROXY_CUSTOM_ROOT_PATH_BYTES_MAX 4096u
+#define TYPE_BRIDGE_PROXY_HEADER_COUNT_MAX 64u
+#define TYPE_BRIDGE_PROXY_HEADER_BYTES_MAX 8192u
+
+typedef struct type_bridge_proxy_connection type_bridge_proxy_connection_t;
+
+typedef struct type_bridge_proxy_header_v1 {
+  type_bridge_byte_view_t name;
+  type_bridge_byte_view_t value;
+} type_bridge_proxy_header_v1_t;
+
+typedef struct type_bridge_proxy_connection_options_v1 {
+  uint32_t struct_size;
+  uint32_t version;
+  type_bridge_byte_view_t endpoint;
+  uint32_t tls_mode;
+  uint32_t reserved0;
+  type_bridge_byte_view_t custom_root_ca_path;
+  const type_bridge_proxy_header_v1_t *headers;
+  size_t header_count;
+  type_bridge_byte_view_t pinned_advertisement;
+  const type_bridge_query_execution_limits_v1_t *connection_limits;
+  const type_bridge_query_execution_limits_v1_t *answer_limits;
+  uint64_t reserved[4];
+} type_bridge_proxy_connection_options_v1_t;
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_connection_open_v1(
+    const type_bridge_schema_package_t *package,
+    const type_bridge_proxy_connection_options_v1_t *options,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_proxy_connection_t **out_connection,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_connection_close(type_bridge_proxy_connection_t **connection);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_query_execute_v1(const type_bridge_proxy_connection_t *proxy,
+    const type_bridge_query_terminal_t *terminal,
+    type_bridge_query_terminal_kind_t expected_terminal_kind,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_query_result_t **out_result,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+
+/*
+ * The remote context is the exchange extension point for hosts that own the
+ * route to a TypeBridge server: it is not a second session. Terminals come
+ * from the same query session, and the context only replaces the built-in
+ * route with a caller-driven open/prepare/send/claim/decode exchange; its
+ * limits are the connection ceiling every prepared request is constrained by.
  * Caller-transport remote execution performs no hidden network operation.
  * Context open copies and authenticates one capability advertisement against
  * the exact retained generated package. Prepare mints a fresh invocation and

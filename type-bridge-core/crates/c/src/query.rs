@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex};
 use type_bridge_contract::id::{FunctionId, TypeId, TypeKind};
 use type_bridge_contract::limits::{MAX_REMOTE_ENVELOPE_BYTES, QueryLimits};
 use type_bridge_contract::projection::{ProjectedTokenIdentity, ProjectionHandler};
-use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_contract::schema::{OwnsFactId, encode_declared_schema};
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic, SdkProviderOperation,
@@ -29,7 +28,7 @@ use type_bridge_orm::{
     QueryExecutionDeadline, QueryExecutionResourceLimits, QueryHandle, Reduction,
     RemoteModelQueryV2Error, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
     SortDirection, ValidatedMatchRequest, Window, lower_execution_error,
-    materialize_projected_query_result_with_budget, prepare_remote_model_query_v2_with_budget,
+    materialize_projected_query_result_with_budget,
 };
 #[cfg(test)]
 use type_bridge_orm::{
@@ -60,6 +59,16 @@ use crate::runtime::{
     TypeBridgeCancellation, TypeBridgeDatabase, TypeBridgeReadTransaction,
     check_database_borrowed_ranges, check_read_transaction_borrowed_ranges,
     poisoned_transaction_diagnostic,
+};
+
+mod proxy_connection;
+pub use proxy_connection::{
+    TypeBridgeProxyConnection, TypeBridgeProxyConnectionOptionsV1, TypeBridgeProxyHeaderV1,
+};
+#[cfg(test)]
+use proxy_connection::{
+    type_bridge_proxy_connection_close, type_bridge_proxy_connection_open_v1,
+    type_bridge_proxy_query_execute_v1,
 };
 
 const DESCRIPTOR_VERSION: u32 = 1;
@@ -504,9 +513,7 @@ enum QueryResultStorage {
 struct QueryRemoteContextState {
     package: Arc<SchemaPackageState>,
     registry: Arc<DescriptorRegistry>,
-    authority: Arc<QueryAuthority>,
-    advertisement: Vec<u8>,
-    limits: QueryExecutionResourceLimits,
+    connection: type_bridge_orm::ProxyQueryConnection,
 }
 
 /// Opaque immutable authenticated caller-transport remote query context.
@@ -723,11 +730,7 @@ impl TypeBridgeQueryRemoteContext {
         &self,
         preflight: &DirectOutputPreflight,
     ) -> Result<(), TypeBridgeStatus> {
-        preflight.check_package_borrowed_ranges(&self.state.package)?;
-        preflight.check_bytes(
-            self.state.advertisement.as_ptr().cast(),
-            self.state.advertisement.len(),
-        )
+        preflight.check_package_borrowed_ranges(&self.state.package)
     }
 }
 
@@ -737,10 +740,6 @@ impl TypeBridgeQueryRemotePending {
         preflight: &DirectOutputPreflight,
     ) -> Result<(), TypeBridgeStatus> {
         preflight.check_package_borrowed_ranges(&self.state.package)?;
-        preflight.check_bytes(
-            self.state.advertisement.as_ptr().cast(),
-            self.state.advertisement.len(),
-        )?;
         preflight.check_bytes(
             self.pending.request_bytes().as_ptr().cast(),
             self.pending.request_bytes().len(),
@@ -753,11 +752,7 @@ impl TypeBridgeQueryRemoteClaim {
         &self,
         preflight: &DirectOutputPreflight,
     ) -> Result<(), TypeBridgeStatus> {
-        preflight.check_package_borrowed_ranges(&self.state.package)?;
-        preflight.check_bytes(
-            self.state.advertisement.as_ptr().cast(),
-            self.state.advertisement.len(),
-        )
+        preflight.check_package_borrowed_ranges(&self.state.package)
     }
 }
 
@@ -4203,6 +4198,52 @@ fn materialize_result(
     })
 }
 
+fn lower_target(error: type_bridge_orm::QueryTargetError) -> SdkExecutionDiagnostic {
+    match error {
+        type_bridge_orm::QueryTargetError::Direct(error) => lower(error),
+        type_bridge_orm::QueryTargetError::Prepare(error)
+        | type_bridge_orm::QueryTargetError::Reply(error) => lower_remote(error),
+        type_bridge_orm::QueryTargetError::Interrupted(error) => error,
+    }
+}
+
+/// Run one validated non-manager terminal on `target` and materialize its
+/// result under the same target budget. Every C `*_query_execute_v1` entry
+/// point funnels through here, whatever the transport.
+pub(crate) async fn execute_validated_on_target(
+    target: type_bridge_orm::QueryTarget<'_>,
+    terminal: &TypeBridgeQueryTerminal,
+    request: ValidatedMatchRequest,
+    origin: ProjectedQueryOrigin,
+    resources: QueryExecutionResourceLimits,
+    deadline: QueryExecutionDeadline,
+    answer: &type_bridge_orm::AnswerCancellation,
+) -> Result<TypeBridgeQueryResult, SdkExecutionDiagnostic> {
+    let (resources, deadline) = target.budget(resources, deadline);
+    let (request, result) = target
+        .execute(
+            &terminal.state.registry,
+            request,
+            resources,
+            answer,
+            deadline,
+        )
+        .await
+        .map_err(lower_target)?;
+    materialize_result(
+        terminal,
+        &terminal.state.registry,
+        origin,
+        request,
+        result,
+        MaterializationBudget {
+            limits: resources.projected(),
+            cancellation: answer,
+            deadline,
+        },
+    )
+}
+
 async fn execute_manager_database(
     terminal: &TypeBridgeQueryTerminal,
     database: &TypeBridgeDatabase,
@@ -4381,8 +4422,23 @@ fn build_remote_context_state(
     advertisement: Vec<u8>,
     limits: QueryExecutionResourceLimits,
 ) -> Result<QueryRemoteContextState, SdkExecutionDiagnostic> {
-    RemoteCapabilities::decode(&advertisement)
-        .map_err(type_bridge_orm::lower_remote_query_diagnostic)?;
+    let (authority, registry) = remote_authority(package)?;
+    // The connection validates the advertisement and owns the ceiling that
+    // every prepared request on this context is constrained by.
+    let connection =
+        type_bridge_orm::ProxyQueryConnection::with_exchange(advertisement, authority, limits)?;
+    Ok(QueryRemoteContextState {
+        package: Arc::clone(package),
+        registry,
+        connection,
+    })
+}
+
+/// The schema authority proxy requests are prepared under, checked against
+/// the package's projection, and the package's match registry.
+fn remote_authority(
+    package: &Arc<SchemaPackageState>,
+) -> Result<(Arc<QueryAuthority>, Arc<DescriptorRegistry>), SdkExecutionDiagnostic> {
     let declared = encode_declared_schema(package._authority.declared_schema())
         .map_err(type_bridge_orm::lower_remote_query_diagnostic)?;
     let authority = QueryAuthority::from_declared_bytes(
@@ -4404,13 +4460,7 @@ fn build_remote_context_state(
         .match_registry()
         .map(Arc::new)
         .map_err(lower)?;
-    Ok(QueryRemoteContextState {
-        package: Arc::clone(package),
-        registry,
-        authority: Arc::new(authority),
-        advertisement,
-        limits,
-    })
+    Ok((Arc::new(authority), registry))
 }
 
 fn take_remote_claim(
@@ -4526,29 +4576,15 @@ pub unsafe extern "C" fn type_bridge_database_query_execute_v1(
                     }
                 };
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
-                    let value = database
-                        .block_on(
-                            database.orm_database().execute_match_with_limits(
-                                &terminal.state.registry,
-                                &request,
-                                parsed
-                                    .resources
-                                    .direct_with_deadline(answer.clone(), parsed.deadline),
-                            ),
-                        )
-                        .map_err(lower)?;
-                    materialize_result(
+                    database.block_on(execute_validated_on_target(
+                        type_bridge_orm::QueryTarget::Database(database.orm_database()),
                         terminal,
-                        &terminal.state.registry,
-                        ProjectedQueryOrigin::for_database(database.orm_database()),
                         request,
-                        value,
-                        MaterializationBudget {
-                            limits: parsed.resources.projected(),
-                            cancellation: &answer,
-                            deadline: parsed.deadline,
-                        },
-                    )
+                        ProjectedQueryOrigin::for_database(database.orm_database()),
+                        parsed.resources,
+                        parsed.deadline,
+                        &answer,
+                    ))
                 }));
                 let value = match outcome {
                     Ok(Ok(value)) => value,
@@ -4675,30 +4711,16 @@ pub unsafe extern "C" fn type_bridge_read_transaction_query_execute_v1(
                     }
                 };
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
-                    let value = transaction
-                        .block_on(
-                            context.execute_match_with_limits(
-                                &terminal.state.registry,
-                                &request,
-                                parsed
-                                    .resources
-                                    .direct_with_deadline(answer.clone(), parsed.deadline),
-                            ),
-                        )
-                        .map_err(lower)?;
                     let origin = ProjectedQueryOrigin::for_transaction(context)?;
-                    materialize_result(
+                    transaction.block_on(execute_validated_on_target(
+                        type_bridge_orm::QueryTarget::Transaction(context),
                         terminal,
-                        &terminal.state.registry,
-                        origin,
                         request,
-                        value,
-                        MaterializationBudget {
-                            limits: parsed.resources.projected(),
-                            cancellation: &answer,
-                            deadline: parsed.deadline,
-                        },
-                    )
+                        origin,
+                        parsed.resources,
+                        parsed.deadline,
+                        &answer,
+                    ))
                 }));
                 let value = match outcome {
                     Ok(Ok(value)) => value,
@@ -4847,7 +4869,9 @@ pub unsafe extern "C" fn type_bridge_query_remote_prepare_v1(
         None
     } else {
         // SAFETY: the complete context outer object was fenced above.
-        let deadline = QueryExecutionDeadline::for_limits(unsafe { &*context }.state.limits);
+        let deadline = QueryExecutionDeadline::for_limits(
+            unsafe { &*context }.state.connection.answer_limits(),
+        );
         let check = deadline.check(&answer);
         Some((deadline, check))
     };
@@ -4906,21 +4930,17 @@ pub unsafe extern "C" fn type_bridge_query_remote_prepare_v1(
             Ok(value) => value,
             Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
         };
-        let pending = match prepare_remote_model_query_v2_with_budget(
-            &context.state.authority,
+        let connection = &context.state.connection;
+        let pending = match connection.prepare(
             &context.state.registry,
             request,
-            &context.state.advertisement,
-            context.state.limits.remote(),
-            deadline,
+            connection.answer_limits(),
             &answer,
+            deadline,
         ) {
             Ok(value) => value,
-            Err(error) => return return_execution_error(lower_remote(error), out_diagnostics),
+            Err(error) => return return_execution_error(lower_target(error), out_diagnostics),
         };
-        if let Err(error) = deadline.check(&answer) {
-            return return_execution_error(error, out_diagnostics);
-        }
         let pending = reservation.initialize(TypeBridgeQueryRemotePending {
             state: Arc::clone(&context.state),
             terminal: terminal.clone(),
@@ -5208,7 +5228,7 @@ pub unsafe extern "C" fn type_bridge_query_remote_claim_decode_v1(
             request,
             result,
             MaterializationBudget {
-                limits: claim.state.limits.projected(),
+                limits: claim.state.connection.answer_limits().projected(),
                 cancellation: &answer,
                 deadline: claim.deadline,
             },
@@ -13739,5 +13759,162 @@ mod tests {
         if let Some((destination, run_nonce)) = requested_sdk_v2_proof() {
             publish_sdk_v2_proof(&destination, &run_nonce, results);
         }
+    }
+
+    fn proxy_options(endpoint: &'static str) -> TypeBridgeProxyConnectionOptionsV1 {
+        TypeBridgeProxyConnectionOptionsV1 {
+            struct_size: size_of::<TypeBridgeProxyConnectionOptionsV1>() as u32,
+            version: 1,
+            endpoint: TypeBridgeByteView {
+                data: endpoint.as_ptr(),
+                length: endpoint.len(),
+            },
+            tls_mode: 0,
+            reserved0: 0,
+            custom_root_ca_path: TypeBridgeByteView {
+                data: ptr::null(),
+                length: 0,
+            },
+            headers: ptr::null(),
+            header_count: 0,
+            pinned_advertisement: TypeBridgeByteView {
+                data: ptr::null(),
+                length: 0,
+            },
+            connection_limits: ptr::null(),
+            answer_limits: ptr::null(),
+            reserved: [0; 4],
+        }
+    }
+
+    unsafe fn open_proxy(
+        package: *const TypeBridgeSchemaPackage,
+        options: *const TypeBridgeProxyConnectionOptionsV1,
+    ) -> (TypeBridgeStatus, *mut TypeBridgeProxyConnection, String) {
+        let mut connection = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        // SAFETY: caller retains immutable inputs; outputs are independent.
+        let status = unsafe {
+            type_bridge_proxy_connection_open_v1(
+                package,
+                options,
+                ptr::null(),
+                &mut connection,
+                &mut diagnostics,
+            )
+        };
+        let code = if diagnostics.is_null() {
+            String::new()
+        } else {
+            // SAFETY: the diagnostics handle was just returned.
+            let code = unsafe { diagnostic_code(diagnostics) };
+            // SAFETY: owned diagnostics handle.
+            unsafe { close_diagnostics(&mut diagnostics) };
+            code
+        };
+        (status, connection, code)
+    }
+
+    #[test]
+    fn proxy_connection_open_refuses_invalid_options_before_io() {
+        let package = package("proxyoptions");
+        // SAFETY: a null options pointer is a documented refusal.
+        let (status, connection, code) = unsafe { open_proxy(&package, ptr::null()) };
+        assert_ne!(status, TypeBridgeStatus::Ok);
+        assert!(connection.is_null());
+        assert_eq!(code, "c_proxy_options_missing");
+
+        let mut options = proxy_options("http://127.0.0.1:9");
+        options.tls_mode = 7;
+        // SAFETY: options are retained for the call.
+        let (_, connection, code) = unsafe { open_proxy(&package, &options) };
+        assert!(connection.is_null());
+        assert_eq!(code, "c_proxy_tls_mode_invalid");
+
+        let mut options = proxy_options("https://127.0.0.1:9");
+        options.tls_mode = 2;
+        // SAFETY: options are retained for the call.
+        let (_, _, code) = unsafe { open_proxy(&package, &options) };
+        assert_eq!(code, "direct_tls_custom_root_path_empty");
+
+        let mut options = proxy_options("http://127.0.0.1:9");
+        options.header_count = 1;
+        // SAFETY: options are retained for the call.
+        let (_, _, code) = unsafe { open_proxy(&package, &options) };
+        assert_eq!(code, "c_proxy_headers_invalid");
+
+        let mut options = proxy_options("http://127.0.0.1:9");
+        options.struct_size -= 8;
+        // SAFETY: options are retained for the call.
+        let (_, _, code) = unsafe { open_proxy(&package, &options) };
+        assert_eq!(code, "c_proxy_options_layout_invalid");
+
+        let garbage = b"not an advertisement";
+        let mut options = proxy_options("http://127.0.0.1:9");
+        options.pinned_advertisement = TypeBridgeByteView {
+            data: garbage.as_ptr(),
+            length: garbage.len(),
+        };
+        // SAFETY: options and advertisement bytes are retained for the call.
+        let (status, connection, code) = unsafe { open_proxy(&package, &options) };
+        assert_ne!(status, TypeBridgeStatus::Ok);
+        assert!(connection.is_null());
+        assert!(!code.is_empty());
+    }
+
+    #[test]
+    fn proxy_execute_reports_unreachable_route_and_package_mismatch() {
+        let package_a = package("proxyroutea");
+        let package_b = package("proxyrouteb");
+        let remote = remote_fixture(0x51);
+        let mut options = proxy_options("http://127.0.0.1:9");
+        options.pinned_advertisement = TypeBridgeByteView {
+            data: remote.advertisement.as_ptr(),
+            length: remote.advertisement.len(),
+        };
+        // SAFETY: options and advertisement bytes are retained for the call.
+        let (status, mut connection, code) = unsafe { open_proxy(&package_a, &options) };
+        assert_eq!(status, TypeBridgeStatus::Ok, "{code}");
+        // SAFETY: fixtures own exact generated handles.
+        let built_a = unsafe { BuiltQuery::open(&package_a, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        // SAFETY: fixtures own exact generated handles.
+        let built_b = unsafe { BuiltQuery::open(&package_b, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        for (terminal, expected) in [
+            (built_a.terminal, None),
+            (built_b.terminal, Some("c_query_package_lineage_mismatch")),
+        ] {
+            let mut result = ptr::null_mut();
+            let mut diagnostics = ptr::null_mut();
+            // SAFETY: every input is retained; outputs are independent.
+            let status = unsafe {
+                type_bridge_proxy_query_execute_v1(
+                    connection,
+                    terminal,
+                    TERMINAL_COUNT,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut result,
+                    &mut diagnostics,
+                )
+            };
+            assert_ne!(status, TypeBridgeStatus::Ok);
+            assert!(result.is_null());
+            assert!(!diagnostics.is_null());
+            // SAFETY: the diagnostics handle was just returned.
+            let code = unsafe { diagnostic_code(diagnostics) };
+            if let Some(expected) = expected {
+                assert_eq!(code, expected);
+            }
+            // SAFETY: owned diagnostics handle.
+            unsafe { close_diagnostics(&mut diagnostics) };
+        }
+        drop(built_a);
+        drop(built_b);
+        assert_eq!(
+            // SAFETY: owned connection handle.
+            unsafe { type_bridge_proxy_connection_close(&mut connection) },
+            TypeBridgeStatus::Ok,
+        );
+        assert!(connection.is_null());
     }
 }
