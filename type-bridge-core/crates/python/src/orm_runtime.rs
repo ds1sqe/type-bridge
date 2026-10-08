@@ -2328,22 +2328,38 @@ mod provider_wait_tests {
 
     use super::*;
 
+    /// Bounds the GIL probe only so a provider wait that keeps the GIL fails
+    /// instead of deadlocking the test binary; a passing run never waits on it.
+    const GIL_PROBE_HANG_GUARD: Duration = Duration::from_secs(60);
+
+    // The probe proves the GIL was released by acquiring it while the provider
+    // future waits for the probe's signal. Parallel tests hold the GIL for as
+    // long as they like, so the probe runs in a process of its own and
+    // contends only with the waiting thread.
     #[test]
     fn provider_block_on_releases_the_gil() {
+        crate::test_isolation::run_isolated(
+            module_path!(),
+            "provider_block_on_releases_the_gil",
+            assert_provider_block_on_releases_the_gil,
+        );
+    }
+
+    fn assert_provider_block_on_releases_the_gil() {
         Python::initialize();
         let worker = Python::attach(|py| {
             let runtime = ProviderRuntimeOwner::new().expect("provider runtime should start");
             let (sender, receiver) = mpsc::channel();
             let worker = thread::spawn(move || {
                 Python::attach(|_| {
-                    sender
-                        .send(())
-                        .expect("provider wait receiver should remain alive");
+                    // A closed receiver means the hang guard already failed
+                    // the wait; that failure is the one to report.
+                    let _ = sender.send(());
                 });
             });
 
             provider_block_on(py, &runtime, async move {
-                receiver.recv_timeout(Duration::from_secs(5))
+                receiver.recv_timeout(GIL_PROBE_HANG_GUARD)
             })
             .expect("another Python thread must acquire the GIL during a provider wait");
             worker

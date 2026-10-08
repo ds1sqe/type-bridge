@@ -499,30 +499,57 @@ struct BatchPublicationGuard<'py> {
 
 struct SuccessorBatchGcGuard<'py> {
     _py: Python<'py>,
+}
+
+/// Successor batches in flight on any thread, and the collector state found by
+/// the first of them.
+///
+/// The flag is interpreter-wide and batch workers on different threads
+/// interleave at GIL switches, so their guards end in any order. Only the last
+/// batch out may restore the state; an earlier one restoring it would re-enable
+/// collection under a batch still running, or leave it disabled for good.
+struct SuccessorBatchGcState {
+    active: usize,
     restore_enabled: bool,
+}
+
+static SUCCESSOR_BATCH_GC: Mutex<SuccessorBatchGcState> = Mutex::new(SuccessorBatchGcState {
+    active: 0,
+    restore_enabled: false,
+});
+
+fn successor_batch_gc_state() -> std::sync::MutexGuard<'static, SuccessorBatchGcState> {
+    SUCCESSOR_BATCH_GC
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl<'py> SuccessorBatchGcGuard<'py> {
     fn disable(py: Python<'py>) -> Self {
+        let mut state = successor_batch_gc_state();
         // SAFETY: called only on the dedicated worker while it owns the GIL.
-        let restore_enabled = unsafe { pyo3::ffi::PyGC_Disable() } != 0;
-        Self {
-            _py: py,
-            restore_enabled,
+        let was_enabled = unsafe { pyo3::ffi::PyGC_Disable() } != 0;
+        if state.active == 0 {
+            state.restore_enabled = was_enabled;
         }
+        state.active += 1;
+        Self { _py: py }
     }
 }
 
 impl Drop for SuccessorBatchGcGuard<'_> {
     fn drop(&mut self) {
-        if self.restore_enabled {
+        let mut state = successor_batch_gc_state();
+        state.active -= 1;
+        if state.active == 0 && state.restore_enabled {
             // SAFETY: the guard is destroyed on the same worker under the GIL,
             // after mapped executor cleanup and publication/rollback finish.
             unsafe {
                 pyo3::ffi::PyGC_Enable();
             }
         } else {
-            // Restore an already-disabled caller state even if interior code
+            // Keep collection off for batches still in flight, and restore an
+            // already-disabled caller state, even if interior code
             // accidentally enabled collection while the guard was active.
             unsafe {
                 pyo3::ffi::PyGC_Disable();
@@ -15937,8 +15964,18 @@ entities:
         });
     }
 
+    // Batch tests on parallel threads toggle the interpreter-wide collector
+    // flag, so the tests that assert it run in a process of their own.
     #[test]
     fn successor_batch_gc_guard_restores_state_and_defers_cyclic_finalizers() {
+        crate::test_isolation::run_isolated(
+            module_path!(),
+            "successor_batch_gc_guard_restores_state_and_defers_cyclic_finalizers",
+            assert_successor_batch_gc_guard_restores_state_and_defers_cyclic_finalizers,
+        );
+    }
+
+    fn assert_successor_batch_gc_guard_restores_state_and_defers_cyclic_finalizers() {
         Python::initialize();
         Python::attach(|py| {
             let initially_enabled = unsafe { pyo3::ffi::PyGC_IsEnabled() } != 0;
@@ -15964,6 +16001,16 @@ entities:
             unsafe {
                 pyo3::ffi::PyGC_Enable();
             }
+
+            // Batches on two threads interleave at GIL switches, so the first
+            // one in may finish first. Collection stays off until both end and
+            // then returns to the state found before either began.
+            let first = SuccessorBatchGcGuard::disable(py);
+            let second = SuccessorBatchGcGuard::disable(py);
+            drop(first);
+            assert_eq!(unsafe { pyo3::ffi::PyGC_IsEnabled() }, 0);
+            drop(second);
+            assert_ne!(unsafe { pyo3::ffi::PyGC_IsEnabled() }, 0);
 
             let helper = PyModule::from_code(
                 py,
@@ -16012,6 +16059,14 @@ class CyclicFinalizer:
 
     #[test]
     fn python_mapper_panic_restores_facades_gc_and_marks_borrowed_public_commit() {
+        crate::test_isolation::run_isolated(
+            module_path!(),
+            "python_mapper_panic_restores_facades_gc_and_marks_borrowed_public_commit",
+            assert_python_mapper_panic_restores_facades_gc_and_marks_borrowed_public_commit,
+        );
+    }
+
+    fn assert_python_mapper_panic_restores_facades_gc_and_marks_borrowed_public_commit() {
         Python::initialize();
         Python::attach(|py| {
             let initially_enabled = unsafe { pyo3::ffi::PyGC_IsEnabled() } != 0;
