@@ -334,6 +334,44 @@ export declare class InstalledRuntimeProjection {
     /** @internal Bind remote authority, executor epoch, budgets, and exchange once. */
     remote(authority: QueryV2Authority, advertisement: Uint8Array, exchange: RuntimeProjectionRemoteExchange, limits: RuntimeProjectionRemoteLimits | QueryExecutionResourceLimits, cancellation?: QueryCancellation): RuntimeProjectionRemote;
 }
+/** TLS for a proxy endpoint; `custom_root` trusts the `tlsRootCa` bundle only. */
+export type ProxyTlsMode = "disabled" | "native_roots" | "custom_root";
+/** How a {@link ProxyConnection} reaches its server and the policy it holds terminals to. */
+export interface ProxyConnectionOptions {
+    /** Defaults to `custom_root` when `tlsRootCa` is given, else `disabled`. */
+    readonly tls?: ProxyTlsMode;
+    /** Path of the PEM bundle a `custom_root` connection trusts. */
+    readonly tlsRootCa?: string;
+    /** Headers sent with every request, such as `Authorization`. */
+    readonly headers?: readonly (readonly [string, string])[];
+    /** Exact advertisement bytes provisioned out of band; fetched when omitted. */
+    readonly advertisement?: Uint8Array;
+    /** Bounds connecting, which fetches the advertisement. */
+    readonly connectionLimits?: QueryExecutionResourceLimits;
+    /** The ceiling every terminal on this connection is constrained by. */
+    readonly answerLimits?: QueryExecutionResourceLimits;
+    /** Cancels connecting. */
+    readonly cancellation?: QueryCancellation;
+}
+/**
+ * A verified connection to a TypeBridge server over the built-in HTTP route.
+ *
+ * Each terminal is one exchange, run off the JavaScript thread under the
+ * query session's policy constrained by this connection's `answerLimits`.
+ */
+export declare class ProxyConnection implements RuntimeProjectionRemote {
+    #private;
+    private constructor();
+    /** Open `endpoint` under `authority`, fetch or pin its advertisement, and verify it. */
+    static connect(authority: QueryV2Authority, endpoint: string, options?: ProxyConnectionOptions): Promise<ProxyConnection>;
+    rows(query: RuntimeProjectionMatchQuery, orders: RuntimeProjectionMatchOrder[], offset: bigint, limit: bigint, cardinality: "exactly_one" | "bounded_many"): Promise<RuntimeProjectionMatchResult>;
+    page(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, orders: RuntimeProjectionMatchOrder[], offset: bigint, limit: bigint, includeTotal: boolean): Promise<RuntimeProjectionMatchResult>;
+    count(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding): Promise<RuntimeProjectionMatchResult>;
+    exists(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding): Promise<RuntimeProjectionMatchResult>;
+    reduce(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, group: RuntimeProjectionMatchBinding | null, reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): Promise<RuntimeProjectionMatchResult>;
+    reduceByField(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, group: RuntimeProjectionMatchField, reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): Promise<RuntimeProjectionMatchResult>;
+    reduceByFields(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, groups: RuntimeProjectionMatchField[], reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): Promise<RuntimeProjectionMatchResult>;
+}
 /** Verify and install one generated package's exact projection evidence. */
 export declare function installRuntimeProjection(input: RuntimeProjectionInstall): InstalledRuntimeProjection;
 /** @internal Verify an embedded authority before a generated package installs. */

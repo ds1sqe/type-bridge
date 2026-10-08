@@ -376,6 +376,71 @@ interface NativePendingRemoteModelQuery {
   decodeReply(response: Uint8Array): Promise<NativeValidatedMatchResultHandle>;
 }
 
+/** Native proxy connection over the built-in HTTP route. */
+export interface NativeProxyConnection {
+  rows(
+    query: NativeMatchQueryHandle,
+    orders: NativeMatchOrderHandle[],
+    offset: bigint,
+    limit: bigint,
+    cardinality: NativeMatchRowCardinality,
+  ): Promise<NativeValidatedMatchResultHandle>;
+  page(
+    query: NativeMatchQueryHandle,
+    root: NativeMatchBindingHandle,
+    orders: NativeMatchOrderHandle[],
+    offset: bigint,
+    limit: bigint,
+    includeTotal: boolean,
+  ): Promise<NativeValidatedMatchResultHandle>;
+  count(
+    query: NativeMatchQueryHandle,
+    root: NativeMatchBindingHandle,
+  ): Promise<NativeValidatedMatchResultHandle>;
+  exists(
+    query: NativeMatchQueryHandle,
+    root: NativeMatchBindingHandle,
+  ): Promise<NativeValidatedMatchResultHandle>;
+  reduce(
+    query: NativeMatchQueryHandle,
+    root: NativeMatchBindingHandle,
+    group: NativeMatchBindingHandle | null,
+    reducers: NativeMatchReduction[],
+    inputs: (NativeMatchFieldHandle | null)[],
+  ): Promise<NativeValidatedMatchResultHandle>;
+  reduceByField(
+    query: NativeMatchQueryHandle,
+    root: NativeMatchBindingHandle,
+    group: NativeMatchFieldHandle,
+    reducers: NativeMatchReduction[],
+    inputs: (NativeMatchFieldHandle | null)[],
+  ): Promise<NativeValidatedMatchResultHandle>;
+  reduceByFields(
+    query: NativeMatchQueryHandle,
+    root: NativeMatchBindingHandle,
+    groups: NativeMatchFieldHandle[],
+    reducers: NativeMatchReduction[],
+    inputs: (NativeMatchFieldHandle | null)[],
+  ): Promise<NativeValidatedMatchResultHandle>;
+}
+
+interface NativeProxyConnectionModule {
+  NodeProxyConnection: {
+    connect(
+      authority: ReturnType<NativeModule["queryV2Authority"]>,
+      endpoint: string,
+      tlsMode: string,
+      tlsRootCa: string | undefined,
+      headerNames: string[],
+      headerValues: string[],
+      advertisement?: Uint8Array,
+      connectionLimits?: NativeQueryExecutionResources,
+      answerLimits?: NativeQueryExecutionResources,
+      cancellation?: NativeQueryCancellation,
+    ): Promise<NativeProxyConnection>;
+  };
+}
+
 interface NativeRemoteModelQueryModule {
   NodeQueryExecutionResources: new (
     timeoutMilliseconds: bigint,
@@ -568,6 +633,7 @@ interface NativeRuntimeProjectionModule {
 type LoadedNativeModule =
   & NativeModule
   & NativeRemoteModelQueryModule
+  & NativeProxyConnectionModule
   & NativeRuntimeProjectionModule;
 type LoadedNativePendingQueryV2Remote = ReturnType<
   LoadedNativeModule["queryV2PrepareRemote"]

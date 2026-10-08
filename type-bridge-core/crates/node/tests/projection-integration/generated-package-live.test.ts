@@ -972,6 +972,32 @@ async function sdkV2ResourceLimits(
     }),
   );
   assert.deepEqual(errors[1], errors[0]);
+  // A session asking for more than its connection's answer ceiling runs
+  // under the ceiling: the same zero role-player budget, set only on the
+  // connection, refuses the hydrated relation the same way.
+  const ceilinged = generated.connect(
+    new generated.DirectConnectionPolicy(TYPEDB_ADDRESS, INTG_DATABASE, {
+      username: TYPEDB_USERNAME,
+      password: TYPEDB_PASSWORD,
+      httpPort: TYPEDB_HTTP_PORT,
+      ...(process.env.TYPEDB_TLS_ROOT_CA === undefined
+        ? {}
+        : { tls: "custom_root", tlsRootCa: process.env.TYPEDB_TLS_ROOT_CA }),
+      answerLimits: new generated.QueryExecutionResourceLimits({ rolePlayers: 0n }),
+    }),
+  );
+  try {
+    const session = new generated.QuerySession(ceilinged, { resources: plus });
+    const relation = session.exact(generated.Membership);
+    assert.throws(
+      () => session.query(relation).where(relation.iid(membershipIid)).one(),
+      (error: any) => error.sdkCategory === errors[0][0] && error.code === errors[0][1],
+      "a direct session must not exceed its connection's answer ceiling",
+    );
+    session.close();
+  } finally {
+    ceilinged.close();
+  }
   return {
     defaults,
     plus_one_kept_all: plusOneKeptAll,

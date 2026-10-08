@@ -197,6 +197,7 @@ assert.equal(queryV2.QueryV2Authority, typeBridge.QueryV2Authority);
 const runtimeProjection = require("@type-bridge/node/runtime-projection");
 assert.deepEqual(Object.keys(runtimeProjection).sort(), [
   "InstalledRuntimeProjection",
+  "ProxyConnection",
   "QueryCancellation",
   "QueryExecutionResourceLimits",
   "QueryLimits",

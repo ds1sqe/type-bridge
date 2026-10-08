@@ -8,10 +8,12 @@ import {
 } from "./index.js";
 import { loadNative } from "./native.js";
 import type {
+  NativeProxyConnection,
   NativeQueryCancellation,
   NativeQueryExecutionResources,
   NativeQueryLimits,
 } from "./native.js";
+import { ownedByteSnapshot } from "./owned-bytes.js";
 import {
   queryV2AuthorityHandle,
   queryV2NativeCall,
@@ -1186,6 +1188,166 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     } finally {
       detach();
     }
+  }
+}
+
+/** TLS for a proxy endpoint; `custom_root` trusts the `tlsRootCa` bundle only. */
+export type ProxyTlsMode = "disabled" | "native_roots" | "custom_root";
+
+/** How a {@link ProxyConnection} reaches its server and the policy it holds terminals to. */
+export interface ProxyConnectionOptions {
+  /** Defaults to `custom_root` when `tlsRootCa` is given, else `disabled`. */
+  readonly tls?: ProxyTlsMode;
+  /** Path of the PEM bundle a `custom_root` connection trusts. */
+  readonly tlsRootCa?: string;
+  /** Headers sent with every request, such as `Authorization`. */
+  readonly headers?: readonly (readonly [string, string])[];
+  /** Exact advertisement bytes provisioned out of band; fetched when omitted. */
+  readonly advertisement?: Uint8Array;
+  /** Bounds connecting, which fetches the advertisement. */
+  readonly connectionLimits?: QueryExecutionResourceLimits;
+  /** The ceiling every terminal on this connection is constrained by. */
+  readonly answerLimits?: QueryExecutionResourceLimits;
+  /** Cancels connecting. */
+  readonly cancellation?: QueryCancellation;
+}
+
+const MAX_PROXY_ADVERTISEMENT_BYTES = 32 * 1024 * 1024;
+
+/**
+ * A verified connection to a TypeBridge server over the built-in HTTP route.
+ *
+ * Each terminal is one exchange, run off the JavaScript thread under the
+ * query session's policy constrained by this connection's `answerLimits`.
+ */
+export class ProxyConnection implements RuntimeProjectionRemote {
+  readonly #native: NativeProxyConnection;
+
+  private constructor(native: NativeProxyConnection) {
+    this.#native = native;
+    Object.freeze(this);
+  }
+
+  /** Open `endpoint` under `authority`, fetch or pin its advertisement, and verify it. */
+  static async connect(
+    authority: QueryV2Authority,
+    endpoint: string,
+    options: ProxyConnectionOptions = {},
+  ): Promise<ProxyConnection> {
+    const nativeAuthority = queryV2AuthorityHandle(authority);
+    if (nativeAuthority === undefined) {
+      throw new TypeError("proxy connection requires a type-bridge QueryV2Authority");
+    }
+    if (typeof endpoint !== "string") {
+      throw new TypeError("proxy endpoint must be a string");
+    }
+    const headers = options.headers ?? [];
+    if (
+      !Array.isArray(headers)
+      || !headers.every((header) =>
+        Array.isArray(header)
+        && header.length === 2
+        && typeof header[0] === "string"
+        && typeof header[1] === "string"
+      )
+    ) {
+      throw new TypeError("proxy headers must be [name, value] string pairs");
+    }
+    const advertisement = options.advertisement === undefined
+      ? undefined
+      : ownedByteSnapshot(options.advertisement, MAX_PROXY_ADVERTISEMENT_BYTES);
+    const native = await queryV2NativePromise(queryV2NativeCall(() =>
+      loadNative().NodeProxyConnection.connect(
+        nativeAuthority,
+        endpoint,
+        options.tls ?? (options.tlsRootCa === undefined ? "disabled" : "custom_root"),
+        options.tlsRootCa,
+        headers.map(([name]) => name),
+        headers.map(([, value]) => value),
+        advertisement,
+        options.connectionLimits?.nativeHandle(),
+        options.answerLimits?.nativeHandle(),
+        options.cancellation?.nativeHandle(),
+      )
+    ));
+    return new ProxyConnection(native);
+  }
+
+  rows(
+    query: RuntimeProjectionMatchQuery,
+    orders: RuntimeProjectionMatchOrder[],
+    offset: bigint,
+    limit: bigint,
+    cardinality: "exactly_one" | "bounded_many",
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(() => this.#native.rows(query, orders, offset, limit, cardinality));
+  }
+
+  page(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    orders: RuntimeProjectionMatchOrder[],
+    offset: bigint,
+    limit: bigint,
+    includeTotal: boolean,
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(() =>
+      this.#native.page(query, root, orders, offset, limit, includeTotal)
+    );
+  }
+
+  count(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(() => this.#native.count(query, root));
+  }
+
+  exists(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(() => this.#native.exists(query, root));
+  }
+
+  reduce(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    group: RuntimeProjectionMatchBinding | null,
+    reducers: RuntimeProjectionReduction[],
+    inputs: (RuntimeProjectionMatchField | null)[],
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(() => this.#native.reduce(query, root, group, reducers, inputs));
+  }
+
+  reduceByField(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    group: RuntimeProjectionMatchField,
+    reducers: RuntimeProjectionReduction[],
+    inputs: (RuntimeProjectionMatchField | null)[],
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(() =>
+      this.#native.reduceByField(query, root, group, reducers, inputs)
+    );
+  }
+
+  reduceByFields(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    groups: RuntimeProjectionMatchField[],
+    reducers: RuntimeProjectionReduction[],
+    inputs: (RuntimeProjectionMatchField | null)[],
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(() =>
+      this.#native.reduceByFields(query, root, groups, reducers, inputs)
+    );
+  }
+
+  async #run(
+    terminal: () => Promise<RuntimeProjectionMatchResult>,
+  ): Promise<RuntimeProjectionMatchResult> {
+    return queryV2NativePromise(queryV2NativeCall(terminal));
   }
 }
 

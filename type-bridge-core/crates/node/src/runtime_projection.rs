@@ -1602,7 +1602,7 @@ impl InstalledPackage {
     }
 }
 
-fn direct_tls_from_node(
+pub(crate) fn direct_tls_from_node(
     tls_mode: &str,
     tls_root_ca: Option<String>,
 ) -> napi::Result<type_bridge_orm::TlsPolicy> {

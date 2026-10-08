@@ -173,6 +173,21 @@ interface NativePendingRemoteModelQuery {
     requestBytes(): Uint8Array;
     decodeReply(response: Uint8Array): Promise<NativeValidatedMatchResultHandle>;
 }
+/** Native proxy connection over the built-in HTTP route. */
+export interface NativeProxyConnection {
+    rows(query: NativeMatchQueryHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): Promise<NativeValidatedMatchResultHandle>;
+    page(query: NativeMatchQueryHandle, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): Promise<NativeValidatedMatchResultHandle>;
+    count(query: NativeMatchQueryHandle, root: NativeMatchBindingHandle): Promise<NativeValidatedMatchResultHandle>;
+    exists(query: NativeMatchQueryHandle, root: NativeMatchBindingHandle): Promise<NativeValidatedMatchResultHandle>;
+    reduce(query: NativeMatchQueryHandle, root: NativeMatchBindingHandle, group: NativeMatchBindingHandle | null, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
+    reduceByField(query: NativeMatchQueryHandle, root: NativeMatchBindingHandle, group: NativeMatchFieldHandle, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
+    reduceByFields(query: NativeMatchQueryHandle, root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
+}
+interface NativeProxyConnectionModule {
+    NodeProxyConnection: {
+        connect(authority: ReturnType<NativeModule["queryV2Authority"]>, endpoint: string, tlsMode: string, tlsRootCa: string | undefined, headerNames: string[], headerValues: string[], advertisement?: Uint8Array, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation): Promise<NativeProxyConnection>;
+    };
+}
 interface NativeRemoteModelQueryModule {
     NodeQueryExecutionResources: new (timeoutMilliseconds: bigint, items: bigint, bytes: bigint, graphNodes: bigint, attributeValues: bigint, collectionMembers: bigint, rolePlayers: bigint, statements: bigint) => NativeQueryExecutionResources;
     NodeQueryCancellation: new () => NativeQueryCancellation;
@@ -224,7 +239,7 @@ interface NativeRuntimeProjectionHandle {
 interface NativeRuntimeProjectionModule {
     NodeRuntimeProjection: new (projectionJson: string, semanticFingerprintJson: string, projectionFingerprintJson: string, registrationsJson: string, schemaAuthorityJson?: string, projectedBatchMaterializer?: (typeKey: string, ordinal: number, json: string, authority: NativeProjectedBatchAuthority) => object) => NativeRuntimeProjectionHandle;
 }
-type LoadedNativeModule = NativeModule & NativeRemoteModelQueryModule & NativeRuntimeProjectionModule;
+type LoadedNativeModule = NativeModule & NativeRemoteModelQueryModule & NativeProxyConnectionModule & NativeRuntimeProjectionModule;
 /**
  * Loads and returns the native .node module. The result is cached after the
  * first successful load; subsequent calls return the same object.

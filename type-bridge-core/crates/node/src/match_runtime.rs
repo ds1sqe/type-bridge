@@ -23,11 +23,12 @@ use type_bridge_orm::{
     HydratedAttribute, HydratedRole, HydratedRolePlayer, HydratedThing, InstalledRuntimeProjection,
     MatchError, MatchRequest, MatchResult, MissingOrder, OrderHandle, PredicateHandle,
     ProjectedAttributeValue, ProjectedQueryOrigin, ProjectedQuerySlotValue, ProjectedQueryValue,
-    ProjectedReductionGroup, ProjectedThing, QueryExecutionDeadline, QueryExecutionResourceLimits,
-    QueryHandle, ReducedValue, Reduction, ReductionRow, RoleHandle, RowCardinality,
-    SelectionHandle, SessionHandle, ShapeHandle, SlotValue, SortDirection, ThingKind,
-    UnvalidatedMatchRequest, ValidatedMatchRequest, ValidatedMatchResult, Window,
-    lower_match_error, query_resource_closed_diagnostic,
+    ProjectedReductionGroup, ProjectedThing, ProviderRuntimeOwner, QueryExecutionDeadline,
+    QueryExecutionResourceLimits, QueryHandle, QueryTarget, QueryTargetError, ReducedValue,
+    Reduction, ReductionRow, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
+    ShapeHandle, SlotValue, SortDirection, ThingKind, UnvalidatedMatchRequest,
+    ValidatedMatchRequest, ValidatedMatchResult, Window, lower_match_error,
+    query_resource_closed_diagnostic,
 };
 
 #[cfg(test)]
@@ -38,6 +39,19 @@ pub(crate) fn napi_match_error(error: MatchError) -> napi::Error {
     napi_sdk_diagnostic(lower_match_error(&error))
 }
 
+/// Lower one terminal failure to the error its direct or remote half raised
+/// before the shared executor existed.
+pub(crate) fn napi_target_error(error: QueryTargetError) -> napi::Error {
+    match error {
+        QueryTargetError::Direct(error) => crate::napi_orm_error(error),
+        QueryTargetError::Prepare(error) | QueryTargetError::Reply(error) => {
+            crate::query_v2_model_remote_runtime::remote_model_error(error)
+        }
+        QueryTargetError::Interrupted(diagnostic) => napi_sdk_diagnostic(diagnostic),
+    }
+}
+
+/// `session` and `deadline` constrained by a connection's `ceiling`.
 pub(crate) fn napi_sdk_diagnostic(diagnostic: SdkExecutionDiagnostic) -> napi::Error {
     let status = match diagnostic.category() {
         SdkDiagnosticCategory::InvalidInput | SdkDiagnosticCategory::ResourceLimit => {
@@ -1195,56 +1209,98 @@ impl NodeMatchQueryHandle {
         }
     }
 
-    fn direct_limits(
+    /// The policy and deadline one terminal on `target` runs under: this
+    /// session's resources and invocation deadline, constrained by the
+    /// target connection's answer-limit ceiling. Execution and hydration
+    /// share them, so neither can outrun the ceiling.
+    pub(crate) fn terminal_budget(
         &self,
+        target: &QueryTarget<'_>,
         deadline: QueryExecutionDeadline,
-        cancellation: AnswerCancellation,
-    ) -> type_bridge_orm::MatchExecutionLimits {
-        self.resources.direct_with_deadline(cancellation, deadline)
+    ) -> (QueryExecutionResourceLimits, QueryExecutionDeadline) {
+        target.budget(self.resources, deadline)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn owned_result(
+    fn execute_owned(
         &self,
-        database: &type_bridge_orm::Database,
-        request: ValidatedMatchRequest,
-        result: ValidatedMatchResult,
-        registry: Arc<DescriptorRegistry>,
+        database: &NodeRustDatabase,
+        validated: ValidatedMatchRequest,
         deadline: QueryExecutionDeadline,
         cancellation: AnswerCancellation,
     ) -> Result<NodeValidatedMatchResultHandle> {
-        validated_result_handle(
-            self.installed.as_ref(),
-            self.installed
-                .as_ref()
-                .map(|_| ProjectedQueryOrigin::for_database(database)),
+        let (database, runtime) = database.handles();
+        self.execute_direct(
+            QueryTarget::Database(&database),
+            &runtime,
+            || Ok(ProjectedQueryOrigin::for_database(&database)),
+            validated,
+            deadline,
+            cancellation,
+        )
+    }
+
+    fn execute_borrowed(
+        &self,
+        transaction: &NodeRustTransactionContext,
+        validated: ValidatedMatchRequest,
+        deadline: QueryExecutionDeadline,
+        cancellation: AnswerCancellation,
+    ) -> Result<NodeValidatedMatchResultHandle> {
+        let (transaction, runtime) = transaction.handles();
+        self.execute_direct(
+            QueryTarget::Transaction(&transaction),
+            &runtime,
+            || ProjectedQueryOrigin::for_transaction(&transaction),
+            validated,
+            deadline,
+            cancellation,
+        )
+    }
+
+    /// Run one terminal on a direct target through the shared executor,
+    /// then bind its hydration to the target's database.
+    fn execute_direct(
+        &self,
+        target: QueryTarget<'_>,
+        runtime: &ProviderRuntimeOwner,
+        origin: impl FnOnce() -> std::result::Result<ProjectedQueryOrigin, SdkExecutionDiagnostic>,
+        validated: ValidatedMatchRequest,
+        deadline: QueryExecutionDeadline,
+        cancellation: AnswerCancellation,
+    ) -> Result<NodeValidatedMatchResultHandle> {
+        let (resources, deadline) = self.terminal_budget(&target, deadline);
+        let registry = self.inner.registry_arc();
+        let (request, result) = runtime
+            .block_on(target.execute(&registry, validated, resources, &cancellation, deadline))
+            .map_err(napi_target_error)?;
+        let origin = self
+            .installed
+            .as_ref()
+            .map(|_| origin())
+            .transpose()
+            .map_err(napi_sdk_diagnostic)?;
+        self.direct_result(
+            origin,
             request,
             result,
             registry,
-            Arc::clone(&self.output),
-            Arc::clone(&self.lineage),
-            self.resources,
+            resources,
             deadline,
             cancellation,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn borrowed_result(
+    fn direct_result(
         &self,
-        transaction: &type_bridge_orm::TransactionContext,
+        origin: Option<ProjectedQueryOrigin>,
         request: ValidatedMatchRequest,
         result: ValidatedMatchResult,
         registry: Arc<DescriptorRegistry>,
+        resources: QueryExecutionResourceLimits,
         deadline: QueryExecutionDeadline,
         cancellation: AnswerCancellation,
     ) -> Result<NodeValidatedMatchResultHandle> {
-        let origin = self
-            .installed
-            .as_ref()
-            .map(|_| ProjectedQueryOrigin::for_transaction(transaction))
-            .transpose()
-            .map_err(napi_sdk_diagnostic)?;
         validated_result_handle(
             self.installed.as_ref(),
             origin,
@@ -1253,7 +1309,7 @@ impl NodeMatchQueryHandle {
             registry,
             Arc::clone(&self.output),
             Arc::clone(&self.lineage),
-            self.resources,
+            resources,
             deadline,
             cancellation,
         )
@@ -1377,23 +1433,7 @@ impl NodeMatchQueryHandle {
                 parse_cardinality(&cardinality)?,
             )
             .map_err(crate::napi_orm_error)?;
-        let registry = self.inner.registry_arc();
-        let (database, runtime) = database.handles();
-        let inner = runtime
-            .block_on(database.execute_match_with_limits(
-                &registry,
-                &validated,
-                self.direct_limits(deadline, cancellation.clone()),
-            ))
-            .map_err(crate::napi_orm_error)?;
-        self.owned_result(
-            database.as_ref(),
-            validated,
-            inner,
-            registry,
-            deadline,
-            cancellation,
-        )
+        self.execute_owned(database, validated, deadline, cancellation)
     }
 
     #[napi(js_name = "executeFetchRowsBorrowed")]
@@ -1417,23 +1457,7 @@ impl NodeMatchQueryHandle {
                 parse_cardinality(&cardinality)?,
             )
             .map_err(crate::napi_orm_error)?;
-        let registry = self.inner.registry_arc();
-        let (transaction, runtime) = transaction.handles();
-        let inner = runtime
-            .block_on(transaction.execute_match_with_limits(
-                &registry,
-                &validated,
-                self.direct_limits(deadline, cancellation.clone()),
-            ))
-            .map_err(crate::napi_orm_error)?;
-        self.borrowed_result(
-            &transaction,
-            validated,
-            inner,
-            registry,
-            deadline,
-            cancellation,
-        )
+        self.execute_borrowed(transaction, validated, deadline, cancellation)
     }
 
     #[napi(js_name = "executePageByOwned")]
@@ -1459,23 +1483,7 @@ impl NodeMatchQueryHandle {
                 include_total,
             )
             .map_err(crate::napi_orm_error)?;
-        let registry = self.inner.registry_arc();
-        let (database, runtime) = database.handles();
-        let inner = runtime
-            .block_on(database.execute_match_with_limits(
-                &registry,
-                &validated,
-                self.direct_limits(deadline, cancellation.clone()),
-            ))
-            .map_err(crate::napi_orm_error)?;
-        self.owned_result(
-            database.as_ref(),
-            validated,
-            inner,
-            registry,
-            deadline,
-            cancellation,
-        )
+        self.execute_owned(database, validated, deadline, cancellation)
     }
 
     #[napi(js_name = "executePageByBorrowed")]
@@ -1501,23 +1509,7 @@ impl NodeMatchQueryHandle {
                 include_total,
             )
             .map_err(crate::napi_orm_error)?;
-        let registry = self.inner.registry_arc();
-        let (transaction, runtime) = transaction.handles();
-        let inner = runtime
-            .block_on(transaction.execute_match_with_limits(
-                &registry,
-                &validated,
-                self.direct_limits(deadline, cancellation.clone()),
-            ))
-            .map_err(crate::napi_orm_error)?;
-        self.borrowed_result(
-            &transaction,
-            validated,
-            inner,
-            registry,
-            deadline,
-            cancellation,
-        )
+        self.execute_borrowed(transaction, validated, deadline, cancellation)
     }
 
     #[napi(js_name = "executeCountByOwned")]
@@ -1531,23 +1523,7 @@ impl NodeMatchQueryHandle {
             .inner
             .validate_count_by(&root.inner)
             .map_err(crate::napi_orm_error)?;
-        let registry = self.inner.registry_arc();
-        let (database, runtime) = database.handles();
-        let inner = runtime
-            .block_on(database.execute_match_with_limits(
-                &registry,
-                &validated,
-                self.direct_limits(deadline, cancellation.clone()),
-            ))
-            .map_err(crate::napi_orm_error)?;
-        self.owned_result(
-            database.as_ref(),
-            validated,
-            inner,
-            registry,
-            deadline,
-            cancellation,
-        )
+        self.execute_owned(database, validated, deadline, cancellation)
     }
 
     #[napi(js_name = "executeCountByBorrowed")]
@@ -1561,23 +1537,7 @@ impl NodeMatchQueryHandle {
             .inner
             .validate_count_by(&root.inner)
             .map_err(crate::napi_orm_error)?;
-        let registry = self.inner.registry_arc();
-        let (transaction, runtime) = transaction.handles();
-        let inner = runtime
-            .block_on(transaction.execute_match_with_limits(
-                &registry,
-                &validated,
-                self.direct_limits(deadline, cancellation.clone()),
-            ))
-            .map_err(crate::napi_orm_error)?;
-        self.borrowed_result(
-            &transaction,
-            validated,
-            inner,
-            registry,
-            deadline,
-            cancellation,
-        )
+        self.execute_borrowed(transaction, validated, deadline, cancellation)
     }
 
     #[napi(js_name = "executeExistsByOwned")]
@@ -1591,23 +1551,7 @@ impl NodeMatchQueryHandle {
             .inner
             .validate_exists_by(&root.inner)
             .map_err(crate::napi_orm_error)?;
-        let registry = self.inner.registry_arc();
-        let (database, runtime) = database.handles();
-        let inner = runtime
-            .block_on(database.execute_match_with_limits(
-                &registry,
-                &validated,
-                self.direct_limits(deadline, cancellation.clone()),
-            ))
-            .map_err(crate::napi_orm_error)?;
-        self.owned_result(
-            database.as_ref(),
-            validated,
-            inner,
-            registry,
-            deadline,
-            cancellation,
-        )
+        self.execute_owned(database, validated, deadline, cancellation)
     }
 
     #[napi(js_name = "executeExistsByBorrowed")]
@@ -1621,23 +1565,7 @@ impl NodeMatchQueryHandle {
             .inner
             .validate_exists_by(&root.inner)
             .map_err(crate::napi_orm_error)?;
-        let registry = self.inner.registry_arc();
-        let (transaction, runtime) = transaction.handles();
-        let inner = runtime
-            .block_on(transaction.execute_match_with_limits(
-                &registry,
-                &validated,
-                self.direct_limits(deadline, cancellation.clone()),
-            ))
-            .map_err(crate::napi_orm_error)?;
-        self.borrowed_result(
-            &transaction,
-            validated,
-            inner,
-            registry,
-            deadline,
-            cancellation,
-        )
+        self.execute_borrowed(transaction, validated, deadline, cancellation)
     }
 
     #[napi(js_name = "pageByDiagnostic")]
@@ -1719,23 +1647,7 @@ impl NodeMatchQueryHandle {
             .inner
             .validate_reduce_by(&root.inner, group.map(|group| &group.inner), &terms)
             .map_err(crate::napi_orm_error)?;
-        let registry = self.inner.registry_arc();
-        let (database, runtime) = database.handles();
-        let inner = runtime
-            .block_on(database.execute_match_with_limits(
-                &registry,
-                &validated,
-                self.direct_limits(deadline, cancellation.clone()),
-            ))
-            .map_err(crate::napi_orm_error)?;
-        self.owned_result(
-            database.as_ref(),
-            validated,
-            inner,
-            registry,
-            deadline,
-            cancellation,
-        )
+        self.execute_owned(database, validated, deadline, cancellation)
     }
 
     #[napi(js_name = "executeReduceByBorrowed")]
@@ -1754,23 +1666,7 @@ impl NodeMatchQueryHandle {
             .inner
             .validate_reduce_by(&root.inner, group.map(|group| &group.inner), &terms)
             .map_err(crate::napi_orm_error)?;
-        let registry = self.inner.registry_arc();
-        let (transaction, runtime) = transaction.handles();
-        let inner = runtime
-            .block_on(transaction.execute_match_with_limits(
-                &registry,
-                &validated,
-                self.direct_limits(deadline, cancellation.clone()),
-            ))
-            .map_err(crate::napi_orm_error)?;
-        self.borrowed_result(
-            &transaction,
-            validated,
-            inner,
-            registry,
-            deadline,
-            cancellation,
-        )
+        self.execute_borrowed(transaction, validated, deadline, cancellation)
     }
 
     #[napi(js_name = "reduceByFieldDiagnostic")]
@@ -1807,23 +1703,7 @@ impl NodeMatchQueryHandle {
             .inner
             .validate_reduce_by_field(&root.inner, &group.inner, &terms)
             .map_err(crate::napi_orm_error)?;
-        let registry = self.inner.registry_arc();
-        let (database, runtime) = database.handles();
-        let inner = runtime
-            .block_on(database.execute_match_with_limits(
-                &registry,
-                &validated,
-                self.direct_limits(deadline, cancellation.clone()),
-            ))
-            .map_err(crate::napi_orm_error)?;
-        self.owned_result(
-            database.as_ref(),
-            validated,
-            inner,
-            registry,
-            deadline,
-            cancellation,
-        )
+        self.execute_owned(database, validated, deadline, cancellation)
     }
 
     #[napi(js_name = "executeReduceByFieldBorrowed")]
@@ -1842,23 +1722,7 @@ impl NodeMatchQueryHandle {
             .inner
             .validate_reduce_by_field(&root.inner, &group.inner, &terms)
             .map_err(crate::napi_orm_error)?;
-        let registry = self.inner.registry_arc();
-        let (transaction, runtime) = transaction.handles();
-        let inner = runtime
-            .block_on(transaction.execute_match_with_limits(
-                &registry,
-                &validated,
-                self.direct_limits(deadline, cancellation.clone()),
-            ))
-            .map_err(crate::napi_orm_error)?;
-        self.borrowed_result(
-            &transaction,
-            validated,
-            inner,
-            registry,
-            deadline,
-            cancellation,
-        )
+        self.execute_borrowed(transaction, validated, deadline, cancellation)
     }
 
     #[napi(js_name = "reduceByFieldsDiagnostic")]
@@ -1897,23 +1761,7 @@ impl NodeMatchQueryHandle {
             .inner
             .validate_reduce_by_fields(&root.inner, &groups, &terms)
             .map_err(crate::napi_orm_error)?;
-        let registry = self.inner.registry_arc();
-        let (database, runtime) = database.handles();
-        let inner = runtime
-            .block_on(database.execute_match_with_limits(
-                &registry,
-                &validated,
-                self.direct_limits(deadline, cancellation.clone()),
-            ))
-            .map_err(crate::napi_orm_error)?;
-        self.owned_result(
-            database.as_ref(),
-            validated,
-            inner,
-            registry,
-            deadline,
-            cancellation,
-        )
+        self.execute_owned(database, validated, deadline, cancellation)
     }
 
     #[napi(js_name = "executeReduceByFieldsBorrowed")]
@@ -1933,23 +1781,7 @@ impl NodeMatchQueryHandle {
             .inner
             .validate_reduce_by_fields(&root.inner, &groups, &terms)
             .map_err(crate::napi_orm_error)?;
-        let registry = self.inner.registry_arc();
-        let (transaction, runtime) = transaction.handles();
-        let inner = runtime
-            .block_on(transaction.execute_match_with_limits(
-                &registry,
-                &validated,
-                self.direct_limits(deadline, cancellation.clone()),
-            ))
-            .map_err(crate::napi_orm_error)?;
-        self.borrowed_result(
-            &transaction,
-            validated,
-            inner,
-            registry,
-            deadline,
-            cancellation,
-        )
+        self.execute_borrowed(transaction, validated, deadline, cancellation)
     }
 }
 
@@ -2919,7 +2751,13 @@ mod tests {
     use tokio::sync::Notify;
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
-    use type_bridge_contract::schema::DocumentId;
+    use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
+    use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
+    use type_bridge_contract::query_remote_v2::query_remote_v2_required_capabilities;
+    use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
+    use type_bridge_orm::ProxyQueryConnection;
+    use type_bridge_orm::query_v2_prepared::QueryAuthority;
+    use type_bridge_orm::query_v2_remote::RemoteReplySigningKey;
     use type_bridge_orm::session::backend::{
         AnswerCancellation, BoundedAnswerLimits, BoundedAnswerReader, BoxFuture, DriverBackend,
         QueryResult, TransactionOps, TxType,
@@ -3392,11 +3230,12 @@ plays:
             .await
             .unwrap();
         let owned = query
-            .owned_result(
-                &database,
+            .direct_result(
+                Some(ProjectedQueryOrigin::for_database(&database)),
                 owned_request,
                 owned_inner,
                 Arc::clone(&registry),
+                QueryExecutionResourceLimits::default(),
                 deadline(),
                 AnswerCancellation::default(),
             )
@@ -3436,11 +3275,12 @@ plays:
             .await
             .unwrap();
         let borrowed = query
-            .borrowed_result(
-                &transaction,
+            .direct_result(
+                Some(ProjectedQueryOrigin::for_transaction(&transaction).unwrap()),
                 borrowed_request,
                 borrowed_inner,
                 Arc::clone(&registry),
+                QueryExecutionResourceLimits::default(),
                 deadline(),
                 AnswerCancellation::default(),
             )
@@ -3531,13 +3371,13 @@ plays:
             .execute_match(registry.as_ref(), &request)
             .await
             .unwrap();
-        let error = match crate::query_v2_model_remote_runtime::remote_result_context(
-            &query,
-            tight,
-            QueryExecutionDeadline::for_limits(tight),
-            AnswerCancellation::default(),
-        )
-        .attach(request, inner, Arc::clone(&registry))
+        let error = match query
+            .result_context(
+                tight,
+                QueryExecutionDeadline::for_limits(tight),
+                AnswerCancellation::default(),
+            )
+            .attach(request, inner, Arc::clone(&registry))
         {
             Err(error) => error,
             Ok(_) => panic!("tight remote context must reject projected materialization"),
@@ -3552,13 +3392,13 @@ plays:
             .unwrap();
         let cancellation = AnswerCancellation::default();
         cancellation.cancel();
-        let error = match crate::query_v2_model_remote_runtime::remote_result_context(
-            &query,
-            QueryExecutionResourceLimits::default(),
-            QueryExecutionDeadline::from_timeout_milliseconds(30_000),
-            cancellation,
-        )
-        .attach(request, inner, Arc::clone(&registry))
+        let error = match query
+            .result_context(
+                QueryExecutionResourceLimits::default(),
+                QueryExecutionDeadline::from_timeout_milliseconds(30_000),
+                cancellation,
+            )
+            .attach(request, inner, Arc::clone(&registry))
         {
             Err(error) => error,
             Ok(_) => panic!("cancelled remote context must reject projected materialization"),
@@ -3571,13 +3411,13 @@ plays:
             .execute_match(registry.as_ref(), &request)
             .await
             .unwrap();
-        let error = match crate::query_v2_model_remote_runtime::remote_result_context(
-            &query,
-            QueryExecutionResourceLimits::default(),
-            QueryExecutionDeadline::from_timeout_milliseconds(0),
-            AnswerCancellation::default(),
-        )
-        .attach(request, inner, registry)
+        let error = match query
+            .result_context(
+                QueryExecutionResourceLimits::default(),
+                QueryExecutionDeadline::from_timeout_milliseconds(0),
+                AnswerCancellation::default(),
+            )
+            .attach(request, inner, registry)
         {
             Err(error) => error,
             Ok(_) => panic!("expired remote context must reject projected materialization"),
@@ -3587,6 +3427,104 @@ plays:
 
         assert_eq!(events.opens.load(Ordering::SeqCst), 3);
         assert_eq!(events.queries.load(Ordering::SeqCst), 6);
+    }
+
+    /// A proxy connection to the ordered-query schema whose ceiling is
+    /// `answer_limits`; its exchange is never performed.
+    fn ordered_query_proxy(answer_limits: QueryExecutionResourceLimits) -> ProxyQueryConnection {
+        let documents = SchemaDocumentSet::parse([(
+            DocumentId::new("node-ordered-query.yaml").unwrap(),
+            ORDERED_QUERY_SCHEMA,
+        )])
+        .unwrap();
+        let declared = encode_declared_schema(&normalize_documents(&documents).unwrap()).unwrap();
+        let authority = QueryAuthority::from_declared_bytes(
+            &declared,
+            "node-ordered-query",
+            "typedb-3.12.1/v1",
+        )
+        .unwrap();
+        let mut capabilities = query_plan_v2_capability_vocabulary();
+        for capability in query_remote_v2_required_capabilities(true) {
+            capabilities.insert(capability);
+        }
+        let advertisement = RemoteCapabilities::new(
+            capabilities,
+            RemoteExecutorBinding::new("node-ceiling-test", "epoch-00000000001").unwrap(),
+            RemoteReplySigningKey::from_secret_bytes([0x5c; 32]).public_key(),
+        )
+        .encode()
+        .unwrap();
+        ProxyQueryConnection::with_exchange(advertisement, Arc::new(authority), answer_limits)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn terminals_run_and_hydrate_under_the_connection_ceiling() {
+        let (mut query, registry) = projected_query();
+        // The session asks for more than its connection allows.
+        query.resources = QueryExecutionResourceLimits {
+            items: QueryExecutionResourceLimits::default().items * 4,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let ceiling = QueryExecutionResourceLimits {
+            timeout_milliseconds: 5_000,
+            items: 0,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let connection = ordered_query_proxy(ceiling);
+        let session_deadline = QueryExecutionDeadline::for_limits(query.resources);
+
+        let (resources, deadline) =
+            query.terminal_budget(&QueryTarget::Proxy(&connection), session_deadline);
+        assert_eq!(resources, query.resources.constrained_by(ceiling));
+        assert_eq!(resources.items, 0);
+        assert_eq!(resources.timeout_milliseconds, 5_000);
+        assert!(deadline.instant() < session_deadline.instant());
+
+        // Hydration shares the constrained policy: the session's raised item
+        // budget would admit this row, the ceiling does not.
+        let (database, _events) = projected_query_database(projected_query_responses("0xa1"));
+        let request = projected_rows_request(&query);
+        let inner = database
+            .execute_match(registry.as_ref(), &request)
+            .await
+            .unwrap();
+        let error = match query
+            .result_context(resources, deadline, AnswerCancellation::default())
+            .attach(request, inner, Arc::clone(&registry))
+        {
+            Err(error) => error,
+            Ok(_) => panic!("the ceiling must bound projected materialization"),
+        };
+        let payload: Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(payload["code"], "projected_query_row_limit");
+
+        // A target without a ceiling keeps the session's policy and deadline.
+        let (resources, deadline) =
+            query.terminal_budget(&QueryTarget::Database(&database), session_deadline);
+        assert_eq!(resources, query.resources);
+        assert_eq!(deadline.instant(), session_deadline.instant());
+    }
+
+    #[test]
+    fn every_terminal_runs_through_the_shared_query_target() {
+        let production = |source: &'static str| {
+            source
+                .split("#[cfg(test)]\nmod tests")
+                .next()
+                .expect("source has a production half")
+        };
+        let direct = production(include_str!("match_runtime.rs"));
+        assert!(direct.contains(".block_on(target.execute("));
+        assert!(!direct.contains("execute_match_with_limits"));
+        assert!(!direct.contains("direct_with_deadline"));
+        let remote = production(include_str!("query_v2_model_remote_runtime.rs"));
+        assert!(remote.contains("ProxyQueryConnection::finish("));
+        assert!(!remote.contains("prepare_remote_model_query_v2_with_budget"));
+        assert!(!remote.contains("claim_reply_with_cancellation"));
+        let proxy = production(include_str!("proxy_connection_runtime.rs"));
+        assert!(proxy.contains("QueryTarget::Proxy(&connection)"));
     }
 
     #[test]

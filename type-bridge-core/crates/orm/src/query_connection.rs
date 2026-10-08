@@ -234,6 +234,25 @@ impl QueryTarget<'_> {
         }
     }
 
+    /// The resources and deadline a terminal on this target runs under:
+    /// `resources` constrained by the connection's ceiling, and the earlier
+    /// of `deadline` and the ceiling's timeout. A binding that materializes
+    /// the result itself uses the same budget.
+    #[must_use]
+    pub fn budget(
+        &self,
+        resources: QueryExecutionResourceLimits,
+        deadline: QueryExecutionDeadline,
+    ) -> (QueryExecutionResourceLimits, QueryExecutionDeadline) {
+        match self.answer_limits() {
+            Some(ceiling) => (
+                resources.constrained_by(ceiling),
+                deadline.earliest(QueryExecutionDeadline::for_limits(ceiling)),
+            ),
+            None => (resources.effective(), deadline),
+        }
+    }
+
     /// Run one validated request under `resources` and `deadline`, both of
     /// which this call constrains by the connection's ceiling again, so a
     /// caller cannot exceed it.
@@ -251,13 +270,9 @@ impl QueryTarget<'_> {
         cancellation: &AnswerCancellation,
         deadline: QueryExecutionDeadline,
     ) -> Result<(ValidatedMatchRequest, ValidatedMatchResult), QueryTargetError> {
-        let resources = self.constrain(resources);
-        // A session constrained when it was created already has this
-        // deadline; one that was not still cannot outlive the ceiling.
-        let deadline = match self.answer_limits() {
-            Some(ceiling) => deadline.earliest(QueryExecutionDeadline::for_limits(ceiling)),
-            None => deadline,
-        };
+        // A session constrained when it was created already runs under this
+        // budget; one that was not still cannot exceed the ceiling.
+        let (resources, deadline) = self.budget(resources, deadline);
         match self {
             Self::Database(database) => {
                 let result = database
