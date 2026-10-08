@@ -3,7 +3,7 @@ import { loadNative } from "./native.js";
 import type { NativeQueryCancellation, NativeQueryExecutionResources, NativeQueryLimits } from "./native.js";
 type NativeModule = ReturnType<typeof loadNative>;
 type NativeRuntimeProjection = InstanceType<NativeModule["NodeRuntimeProjection"]>;
-export type RuntimeProjectionMatchSession = ReturnType<NativeRuntimeProjection["matchSession"]>;
+export type RuntimeProjectionMatchSession = ReturnType<NativeRuntimeProjection["matchSessionWithResources"]>;
 export type RuntimeProjectionMatchBinding = ReturnType<RuntimeProjectionMatchSession["exact"]>;
 export type RuntimeProjectionMatchFunction = ReturnType<RuntimeProjectionMatchSession["functionById"]>;
 export type RuntimeProjectionMatchFunctionValue = ReturnType<RuntimeProjectionMatchSession["functionValueJson"]>;
@@ -15,7 +15,7 @@ export type RuntimeProjectionMatchOrder = ReturnType<RuntimeProjectionMatchField
 export type RuntimeProjectionMatchSelection = ReturnType<RuntimeProjectionMatchBinding["one"]>;
 export type RuntimeProjectionMatchShape = ReturnType<RuntimeProjectionMatchSession["positional"]>;
 export type RuntimeProjectionMatchQuery = ReturnType<RuntimeProjectionMatchSession["query"]>;
-export type RuntimeProjectionMatchResult = ReturnType<RuntimeProjectionMatchQuery["executeFetchRowsOwned"]>;
+export type RuntimeProjectionMatchResult = Awaited<ReturnType<RuntimeProjectionMatchQuery["executeFetchRowsOwned"]>>;
 export type RuntimeProjectionMatchThing = ReturnType<RuntimeProjectionMatchResult["slotThing"]>;
 export type RuntimeProjectionReduction = "count" | "sum" | "min" | "max" | "mean" | "median" | "std";
 export type RuntimeProjectionConnection = RustDatabase | RustTransactionContext;
@@ -41,16 +41,6 @@ export interface RuntimeProjectionInstall {
 export interface GeneratedSchemaAuthorityInstall {
     readonly schemaAuthorityJson: string;
     readonly semanticFingerprintJson: string;
-}
-/** Explicit immutable budgets bound into every generated remote query. */
-export interface RuntimeProjectionRemoteLimits {
-    readonly maxItems: bigint;
-    readonly maxBytes: bigint;
-    readonly maxCollectionMembers: bigint;
-    readonly maxGraphNodes: bigint;
-    readonly maxAttributeValues: bigint;
-    readonly maxRolePlayers: bigint;
-    readonly deadlineMs?: bigint | null;
 }
 /** The answer policy shared by direct and remote queries; a dimension may tighten or raise its default. */
 export interface QueryExecutionResourceLimitOptions {
@@ -202,7 +192,6 @@ interface NativeProjectionHandle {
     connectDirect(endpoint: string, database: string, username: string, password: string, httpPort: number, tlsMode: string, tlsRootCa?: string, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation): NativeRustDatabase;
     managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
     managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
-    matchSession(): RuntimeProjectionMatchSession;
     matchSessionWithResources(resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation, queryLimits?: NativeQueryLimits | null): RuntimeProjectionMatchSession;
     matchModelType(typeKey: string): string;
     validateAttributeValueJson(typeKey: string, valueJson: string): void;
@@ -317,22 +306,18 @@ export declare class InstalledRuntimeProjection {
     materializeMatchThingJson(thing: RuntimeProjectionMatchThing): string;
     /** @internal Materialize one successor query thing with its exact opaque proof. */
     materializeMatchThingProjected(thing: RuntimeProjectionMatchThing): NativeProjectedValueEnvelope;
-    /** @internal Execute one selected-row request through the verified projection. */
-    executeRows(query: RuntimeProjectionMatchQuery, connection: RuntimeProjectionConnection, orders: RuntimeProjectionMatchOrder[], offset: bigint, limit: bigint, cardinality: "exactly_one" | "bounded_many"): RuntimeProjectionMatchResult;
-    /** @internal Execute one distinct-root page through the verified projection. */
-    executePage(query: RuntimeProjectionMatchQuery, connection: RuntimeProjectionConnection, root: RuntimeProjectionMatchBinding, orders: RuntimeProjectionMatchOrder[], offset: bigint, limit: bigint, includeTotal: boolean): RuntimeProjectionMatchResult;
-    /** @internal Execute one distinct-root count through the verified projection. */
-    executeCount(query: RuntimeProjectionMatchQuery, connection: RuntimeProjectionConnection, root: RuntimeProjectionMatchBinding): bigint;
-    /** @internal Execute one distinct-root existence request. */
-    executeExists(query: RuntimeProjectionMatchQuery, connection: RuntimeProjectionConnection, root: RuntimeProjectionMatchBinding): boolean;
-    /** @internal Execute one typed ungrouped or grouped reduction. */
-    executeReduce(query: RuntimeProjectionMatchQuery, connection: RuntimeProjectionConnection, root: RuntimeProjectionMatchBinding, group: RuntimeProjectionMatchBinding | null, reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): RuntimeProjectionMatchResult;
-    /** @internal Execute one typed reduction grouped by an owned field value. */
-    executeReduceByField(query: RuntimeProjectionMatchQuery, connection: RuntimeProjectionConnection, root: RuntimeProjectionMatchBinding, group: RuntimeProjectionMatchField, reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): RuntimeProjectionMatchResult;
-    /** @internal Execute one typed reduction grouped by an owned-field tuple. */
-    executeReduceByFields(query: RuntimeProjectionMatchQuery, connection: RuntimeProjectionConnection, root: RuntimeProjectionMatchBinding, groups: RuntimeProjectionMatchField[], reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): RuntimeProjectionMatchResult;
-    /** @internal Bind remote authority, executor epoch, budgets, and exchange once. */
-    remote(authority: QueryV2Authority, advertisement: Uint8Array, exchange: RuntimeProjectionRemoteExchange, limits: RuntimeProjectionRemoteLimits | QueryExecutionResourceLimits, cancellation?: QueryCancellation): RuntimeProjectionRemote;
+    /**
+     * @internal Bind one registered `RustDatabase` (owned) or transaction
+     * (borrowed) as a terminal executor. Terminals run on the provider runtime
+     * and resolve without blocking the event loop.
+     */
+    direct(connection: RuntimeProjectionConnection): RuntimeProjectionRemote;
+    /**
+     * @internal Bind remote authority, executor epoch, the session's resources
+     * and cancellation, and one host exchange. `answerLimits` is the
+     * connection's ceiling; left out, the session's resources are the ceiling.
+     */
+    remote(authority: QueryV2Authority, advertisement: Uint8Array, exchange: RuntimeProjectionRemoteExchange, resources: QueryExecutionResourceLimits, cancellation: QueryCancellation, answerLimits?: QueryExecutionResourceLimits): RuntimeProjectionRemote;
 }
 /** TLS for a proxy endpoint; `custom_root` trusts the `tlsRootCa` bundle only. */
 export type ProxyTlsMode = "disabled" | "native_roots" | "custom_root";

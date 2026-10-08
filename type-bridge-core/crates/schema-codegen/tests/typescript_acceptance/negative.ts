@@ -17,6 +17,7 @@ import {
   ValDecimal,
   ValDouble,
   ValDuration,
+  ExchangeConnection,
   QuerySession,
   aggregate,
   qualifyingScore,
@@ -115,3 +116,9 @@ querySession.query(personVar).aggregate(personVar, [
   aggregate.count(), aggregate.count(), aggregate.count(), aggregate.count(),
   aggregate.count(),
 ] as const);
+// @ts-expect-error terminals return promises on every connection kind
+const synchronousCount: bigint = querySession.query(personVar).countBy(personVar);
+// @ts-expect-error QuerySession requires a QueryConnection
+new QuerySession({ advertisement: new Uint8Array() });
+// @ts-expect-error ExchangeConnection answer limits are QueryExecutionResourceLimits
+new ExchangeConnection(new Uint8Array(), async () => new Uint8Array(), { answerLimits: {} });

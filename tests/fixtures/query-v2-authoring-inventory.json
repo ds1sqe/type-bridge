@@ -256,7 +256,7 @@
       {
         "family": "node_authenticated_structured_remote_diagnostic",
         "needles": [
-          "const generatedRemoteSession = new RemoteQuerySession(",
+          "const generatedRemoteSession = new QuerySession(",
           "{ kind: \"identifier\", value: \"person\" }",
           "expected: { kind: \"text_list\", value: [\"person\", \"employee\"] }",
           "assert.equal(generatedRemoteExchanges, 1)"

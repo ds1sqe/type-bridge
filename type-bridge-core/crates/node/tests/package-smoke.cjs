@@ -97,6 +97,7 @@ for (const name of [
   "normalizeRelationWriteBatchJson",
   "normalizeRolePlayersJson",
   "parseSchemaJson",
+  "queryV2RemoteModelContext",
   "renderModelsJson",
   "revalidateMatchDiagnostic",
   "validateMatchOrderTermCount",
@@ -112,9 +113,22 @@ for (const name of [
   "connectRustDatabase",
   "ensureRustDatabase",
   "queryV2Authority",
+  "queryV2RemoteModelContextWithResources",
 ]) {
   assert.equal(typeof native[name], "function", `${name} must remain native`);
 }
+// Every match session carries execution resources; the resource-free entry
+// point is gone so no caller can bypass the connection's answer limits.
+assert.equal(
+  Object.hasOwn(native.NodeRuntimeProjection.prototype, "matchSession"),
+  false,
+  "matchSession must be absent; sessions come from matchSessionWithResources",
+);
+assert.equal(
+  typeof native.NodeRuntimeProjection.prototype.matchSessionWithResources,
+  "function",
+  "matchSessionWithResources must remain native",
+);
 assert.throws(
   () => new native.NodeMatchSessionHandle(),
   /contains no `constructor`|not a constructor/i,
@@ -205,6 +219,29 @@ assert.deepEqual(Object.keys(runtimeProjection).sort(), [
   "installRuntimeProjection",
   "projectedManagerNativeCall",
 ]);
+// Query execution enters through one connection-bound executor per kind.
+for (const name of ["direct", "remote"]) {
+  assert.equal(
+    typeof runtimeProjection.InstalledRuntimeProjection.prototype[name],
+    "function",
+    `InstalledRuntimeProjection.${name} must exist`,
+  );
+}
+for (const name of [
+  "executeCount",
+  "executeExists",
+  "executePage",
+  "executeReduce",
+  "executeReduceByField",
+  "executeReduceByFields",
+  "executeRows",
+]) {
+  assert.equal(
+    Object.hasOwn(runtimeProjection.InstalledRuntimeProjection.prototype, name),
+    false,
+    `InstalledRuntimeProjection.${name} must be absent; use direct(connection)`,
+  );
+}
 
 const packed = JSON.parse(execSync("npm pack --dry-run --json", { encoding: "utf8" }));
 const packInfo = Array.isArray(packed) ? packed[0] : Object.values(packed)[0];

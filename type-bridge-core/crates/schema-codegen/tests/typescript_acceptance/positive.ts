@@ -39,10 +39,11 @@ import {
   type PersonRef,
   type Query,
   QuerySession,
-  type RemoteQuery,
-  type RemoteQueryExchange,
-  type RemoteQueryLimits,
-  RemoteQuerySession,
+  ExchangeConnection,
+  type ProxyConnection,
+  type QueryConnection,
+  QueryExecutionResourceLimits,
+  connectProxy,
 } from "./generated_v2/src/index.js";
 import type { RustDatabase } from "@type-bridge/node";
 
@@ -167,51 +168,56 @@ const sixteenQuery = querySession.query(
   personVar, personVar, personVar, personVar, personVar, personVar, personVar, personVar,
   personVar, personVar, personVar, personVar, personVar, personVar, personVar, personVar,
 );
-const personOne: Person = personQuery.one();
-const personFirst: Person | null = personQuery.first();
-const personRows: readonly Person[] = personQuery.rows({ limit: 10n });
-const partyRows: readonly Party[] = querySession.query(partyVar).rows({ limit: 10n });
-const personPage: Page<Person> = personQuery.pageBy(personVar, { limit: 10n });
-const personCount: bigint = personQuery.countBy(personVar);
-const personExists: boolean = personQuery.existsBy(personVar);
+const personOne: Person = await personQuery.one();
+const personFirst: Person | null = await personQuery.first();
+const personRows: readonly Person[] = await personQuery.rows({ limit: 10n });
+const partyRows: readonly Party[] = await querySession.query(partyVar).rows({ limit: 10n });
+const personPage: Page<Person> = await personQuery.pageBy(personVar, { limit: 10n });
+const personCount: bigint = await personQuery.countBy(personVar);
+const personExists: boolean = await personQuery.existsBy(personVar);
 const scoreField = personVar.field(Person.score);
 const boolField = personVar.field(Person.valBool);
-const personAggregate: readonly [bigint, bigint, number | null] = personQuery.aggregate(
+const personAggregate: readonly [bigint, bigint, number | null] = await personQuery.aggregate(
   personVar,
   [aggregate.count(), aggregate.sum(scoreField), aggregate.mean(scoreField)] as const,
 );
 const groupedAggregate: readonly (
   readonly [Employment, readonly [bigint, bigint | null]]
-)[] = querySession
+)[] = await querySession
   .query(personVar, employmentVar)
   .where(employeePredicate)
   .groupBy(personVar, employmentVar)
   .aggregate([aggregate.count(), aggregate.max(scoreField)] as const);
 const fieldGroupedAggregate: readonly (
   readonly [ValBool, readonly [bigint, bigint]]
-)[] = personQuery
+)[] = await personQuery
   .groupBy(personVar, boolField)
   .aggregate([aggregate.count(), aggregate.sum(scoreField)] as const);
 const tupleFieldGroupedAggregate: readonly (
   readonly [readonly [ValBool, Score], readonly [bigint]]
-)[] = personQuery
+)[] = await personQuery
   .groupBy(personVar, boolField, scoreField)
   .aggregate([aggregate.count()] as const);
 declare const advertisement: Uint8Array;
-declare const exchange: RemoteQueryExchange;
-const remoteLimits: RemoteQueryLimits = {
-  maxItems: 100n,
-  maxBytes: 1_000_000n,
-  maxCollectionMembers: 100n,
-  maxGraphNodes: 1_000n,
-  maxAttributeValues: 1_000n,
-  maxRolePlayers: 1_000n,
-};
-const remoteSession = new RemoteQuerySession(
-  advertisement,
-  exchange,
-  remoteLimits,
-);
+declare const exchange: (
+  request: Uint8Array,
+  signal?: AbortSignal,
+) => Promise<Uint8Array>;
+const exchangeConnection = new ExchangeConnection(advertisement, exchange, {
+  answerLimits: new QueryExecutionResourceLimits({ items: 100n }),
+});
+const exchangeAdvertisement: Uint8Array = exchangeConnection.advertisement;
+const proxy: ProxyConnection = await connectProxy("http://127.0.0.1:8080", {
+  answerLimits: new QueryExecutionResourceLimits({ items: 100n }),
+});
+const connections: readonly QueryConnection[] = [database, proxy, exchangeConnection];
+const proxySession = new QuerySession(proxy);
+const proxyRows: readonly Person[] = await proxySession
+  .query(proxySession.exact(Person))
+  .rows({ limit: 10n });
+const remoteSession = new QuerySession(exchangeConnection, {
+  resources: new QueryExecutionResourceLimits({ items: 100n }),
+});
 const remotePersonVar = remoteSession.var(Person);
 const remotePartyVar = remoteSession.subtypes(Party);
 const remoteMinimum: IntegerInput = integerInput(remoteSession, Score.create(2n));
@@ -225,13 +231,13 @@ const remoteNestedQualifying: IntegerCall = qualifyingScore(
   remotePersonVar,
   remoteQualifying,
 );
-const remotePersonQuery: RemoteQuery<Person> = remoteSession.query(remotePersonVar);
-const clonedRemotePersonQuery: RemoteQuery<Person> = remotePersonQuery.clone();
+const remotePersonQuery: Query<Person> = remoteSession.query(remotePersonVar);
+const clonedRemotePersonQuery: Query<Person> = remotePersonQuery.clone();
 const remotePersonQueryClosed: boolean = remotePersonQuery.isClosed;
 remotePersonQuery.close();
 const remoteSessionClosed: boolean = remoteSession.isClosed;
 remoteSession.close();
-const remoteNamedQuery: RemoteQuery<Readonly<{ person: Person }>> =
+const remoteNamedQuery: Query<Readonly<{ person: Person }>> =
   remoteSession.queryNamed({ person: remotePersonVar });
 const remoteOne: Promise<Person> = remotePersonQuery.one();
 const remoteRows: Promise<readonly Person[]> = remotePersonQuery.rows({ limit: 10n });
@@ -273,6 +279,9 @@ void tupleQuery;
 void collectedQuery;
 void namedQuery;
 void sixteenQuery;
+void exchangeAdvertisement;
+void connections;
+void proxyRows;
 void personOne;
 void clonedPersonQuery;
 void personQueryClosed;

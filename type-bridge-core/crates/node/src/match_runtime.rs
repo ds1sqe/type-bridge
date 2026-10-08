@@ -1223,16 +1223,17 @@ impl NodeMatchQueryHandle {
 
     fn execute_owned(
         &self,
+        env: &Env,
         database: &NodeRustDatabase,
         validated: ValidatedMatchRequest,
         deadline: QueryExecutionDeadline,
         cancellation: AnswerCancellation,
-    ) -> Result<NodeValidatedMatchResultHandle> {
+    ) -> Result<Object<'static>> {
         let (database, runtime) = database.handles();
         self.execute_direct(
-            QueryTarget::Database(&database),
+            env,
+            DirectTarget::Database(database),
             &runtime,
-            || Ok(ProjectedQueryOrigin::for_database(&database)),
             validated,
             deadline,
             cancellation,
@@ -1241,78 +1242,53 @@ impl NodeMatchQueryHandle {
 
     fn execute_borrowed(
         &self,
+        env: &Env,
         transaction: &NodeRustTransactionContext,
         validated: ValidatedMatchRequest,
         deadline: QueryExecutionDeadline,
         cancellation: AnswerCancellation,
-    ) -> Result<NodeValidatedMatchResultHandle> {
+    ) -> Result<Object<'static>> {
         let (transaction, runtime) = transaction.handles();
         self.execute_direct(
-            QueryTarget::Transaction(&transaction),
+            env,
+            DirectTarget::Transaction(transaction),
             &runtime,
-            || ProjectedQueryOrigin::for_transaction(&transaction),
             validated,
             deadline,
             cancellation,
         )
     }
 
-    /// Run one terminal on a direct target through the shared executor,
-    /// then bind its hydration to the target's database.
+    /// Run one terminal on a direct target through the shared executor on
+    /// the provider runtime, then bind its hydration to the target's
+    /// database. The returned Promise settles off the JavaScript thread, so
+    /// a direct terminal never blocks the event loop.
     fn execute_direct(
         &self,
-        target: QueryTarget<'_>,
-        runtime: &ProviderRuntimeOwner,
-        origin: impl FnOnce() -> std::result::Result<ProjectedQueryOrigin, SdkExecutionDiagnostic>,
+        env: &Env,
+        target: DirectTarget,
+        runtime: &Arc<ProviderRuntimeOwner>,
         validated: ValidatedMatchRequest,
         deadline: QueryExecutionDeadline,
         cancellation: AnswerCancellation,
-    ) -> Result<NodeValidatedMatchResultHandle> {
-        let (resources, deadline) = self.terminal_budget(&target, deadline);
+    ) -> Result<Object<'static>> {
+        let (resources, deadline) = self.terminal_budget(&target.query_target(), deadline);
         let registry = self.inner.registry_arc();
-        let (request, result) = runtime
-            .block_on(target.execute(&registry, validated, resources, &cancellation, deadline))
-            .map_err(napi_target_error)?;
-        let origin = self
-            .installed
-            .as_ref()
-            .map(|_| origin())
-            .transpose()
-            .map_err(napi_sdk_diagnostic)?;
-        self.direct_result(
-            origin,
-            request,
-            result,
-            registry,
-            resources,
-            deadline,
-            cancellation,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn direct_result(
-        &self,
-        origin: Option<ProjectedQueryOrigin>,
-        request: ValidatedMatchRequest,
-        result: ValidatedMatchResult,
-        registry: Arc<DescriptorRegistry>,
-        resources: QueryExecutionResourceLimits,
-        deadline: QueryExecutionDeadline,
-        cancellation: AnswerCancellation,
-    ) -> Result<NodeValidatedMatchResultHandle> {
-        validated_result_handle(
-            self.installed.as_ref(),
-            origin,
-            request,
-            result,
-            registry,
-            Arc::clone(&self.output),
-            Arc::clone(&self.lineage),
-            resources,
-            deadline,
-            cancellation,
-        )
+        let context = self.result_context(resources, deadline, cancellation.clone());
+        crate::proxy_connection_runtime::settle(env, runtime, async move {
+            let (request, result) = target
+                .query_target()
+                .execute(&registry, validated, resources, &cancellation, deadline)
+                .await
+                .map_err(napi_target_error)?;
+            let origin = context
+                .installed
+                .as_ref()
+                .map(|_| target.origin())
+                .transpose()
+                .map_err(napi_sdk_diagnostic)?;
+            context.attach_with_origin(origin, request, result, registry)
+        })
     }
 
     fn derived(&self, inner: QueryHandle) -> Self {
@@ -1412,15 +1388,19 @@ impl NodeMatchQueryHandle {
         diagnostic(request)
     }
 
-    #[napi(js_name = "executeFetchRowsOwned")]
+    #[napi(
+        js_name = "executeFetchRowsOwned",
+        ts_return_type = "Promise<NodeValidatedMatchResultHandle>"
+    )]
     pub fn execute_fetch_rows_owned(
         &self,
+        env: Env,
         database: &NodeRustDatabase,
         orders: Vec<Reference<NodeMatchOrderHandle>>,
         offset: BigInt,
         limit: BigInt,
         cardinality: String,
-    ) -> Result<NodeValidatedMatchResultHandle> {
+    ) -> Result<Object<'static>> {
         let (deadline, cancellation) = self.begin_invocation()?;
         let validated = self
             .inner
@@ -1433,18 +1413,22 @@ impl NodeMatchQueryHandle {
                 parse_cardinality(&cardinality)?,
             )
             .map_err(crate::napi_orm_error)?;
-        self.execute_owned(database, validated, deadline, cancellation)
+        self.execute_owned(&env, database, validated, deadline, cancellation)
     }
 
-    #[napi(js_name = "executeFetchRowsBorrowed")]
+    #[napi(
+        js_name = "executeFetchRowsBorrowed",
+        ts_return_type = "Promise<NodeValidatedMatchResultHandle>"
+    )]
     pub fn execute_fetch_rows_borrowed(
         &self,
+        env: Env,
         transaction: &NodeRustTransactionContext,
         orders: Vec<Reference<NodeMatchOrderHandle>>,
         offset: BigInt,
         limit: BigInt,
         cardinality: String,
-    ) -> Result<NodeValidatedMatchResultHandle> {
+    ) -> Result<Object<'static>> {
         let (deadline, cancellation) = self.begin_invocation()?;
         let validated = self
             .inner
@@ -1457,19 +1441,27 @@ impl NodeMatchQueryHandle {
                 parse_cardinality(&cardinality)?,
             )
             .map_err(crate::napi_orm_error)?;
-        self.execute_borrowed(transaction, validated, deadline, cancellation)
+        self.execute_borrowed(&env, transaction, validated, deadline, cancellation)
     }
 
-    #[napi(js_name = "executePageByOwned")]
+    #[napi(
+        js_name = "executePageByOwned",
+        ts_return_type = "Promise<NodeValidatedMatchResultHandle>"
+    )]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "terminal mirrors released grammar"
+    )]
     pub fn execute_page_by_owned(
         &self,
+        env: Env,
         database: &NodeRustDatabase,
         root: &NodeMatchBindingHandle,
         orders: Vec<Reference<NodeMatchOrderHandle>>,
         offset: BigInt,
         limit: BigInt,
         include_total: bool,
-    ) -> Result<NodeValidatedMatchResultHandle> {
+    ) -> Result<Object<'static>> {
         let (deadline, cancellation) = self.begin_invocation()?;
         let validated = self
             .inner
@@ -1483,19 +1475,27 @@ impl NodeMatchQueryHandle {
                 include_total,
             )
             .map_err(crate::napi_orm_error)?;
-        self.execute_owned(database, validated, deadline, cancellation)
+        self.execute_owned(&env, database, validated, deadline, cancellation)
     }
 
-    #[napi(js_name = "executePageByBorrowed")]
+    #[napi(
+        js_name = "executePageByBorrowed",
+        ts_return_type = "Promise<NodeValidatedMatchResultHandle>"
+    )]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "terminal mirrors released grammar"
+    )]
     pub fn execute_page_by_borrowed(
         &self,
+        env: Env,
         transaction: &NodeRustTransactionContext,
         root: &NodeMatchBindingHandle,
         orders: Vec<Reference<NodeMatchOrderHandle>>,
         offset: BigInt,
         limit: BigInt,
         include_total: bool,
-    ) -> Result<NodeValidatedMatchResultHandle> {
+    ) -> Result<Object<'static>> {
         let (deadline, cancellation) = self.begin_invocation()?;
         let validated = self
             .inner
@@ -1509,63 +1509,79 @@ impl NodeMatchQueryHandle {
                 include_total,
             )
             .map_err(crate::napi_orm_error)?;
-        self.execute_borrowed(transaction, validated, deadline, cancellation)
+        self.execute_borrowed(&env, transaction, validated, deadline, cancellation)
     }
 
-    #[napi(js_name = "executeCountByOwned")]
+    #[napi(
+        js_name = "executeCountByOwned",
+        ts_return_type = "Promise<NodeValidatedMatchResultHandle>"
+    )]
     pub fn execute_count_by_owned(
         &self,
+        env: Env,
         database: &NodeRustDatabase,
         root: &NodeMatchBindingHandle,
-    ) -> Result<NodeValidatedMatchResultHandle> {
+    ) -> Result<Object<'static>> {
         let (deadline, cancellation) = self.begin_invocation()?;
         let validated = self
             .inner
             .validate_count_by(&root.inner)
             .map_err(crate::napi_orm_error)?;
-        self.execute_owned(database, validated, deadline, cancellation)
+        self.execute_owned(&env, database, validated, deadline, cancellation)
     }
 
-    #[napi(js_name = "executeCountByBorrowed")]
+    #[napi(
+        js_name = "executeCountByBorrowed",
+        ts_return_type = "Promise<NodeValidatedMatchResultHandle>"
+    )]
     pub fn execute_count_by_borrowed(
         &self,
+        env: Env,
         transaction: &NodeRustTransactionContext,
         root: &NodeMatchBindingHandle,
-    ) -> Result<NodeValidatedMatchResultHandle> {
+    ) -> Result<Object<'static>> {
         let (deadline, cancellation) = self.begin_invocation()?;
         let validated = self
             .inner
             .validate_count_by(&root.inner)
             .map_err(crate::napi_orm_error)?;
-        self.execute_borrowed(transaction, validated, deadline, cancellation)
+        self.execute_borrowed(&env, transaction, validated, deadline, cancellation)
     }
 
-    #[napi(js_name = "executeExistsByOwned")]
+    #[napi(
+        js_name = "executeExistsByOwned",
+        ts_return_type = "Promise<NodeValidatedMatchResultHandle>"
+    )]
     pub fn execute_exists_by_owned(
         &self,
+        env: Env,
         database: &NodeRustDatabase,
         root: &NodeMatchBindingHandle,
-    ) -> Result<NodeValidatedMatchResultHandle> {
+    ) -> Result<Object<'static>> {
         let (deadline, cancellation) = self.begin_invocation()?;
         let validated = self
             .inner
             .validate_exists_by(&root.inner)
             .map_err(crate::napi_orm_error)?;
-        self.execute_owned(database, validated, deadline, cancellation)
+        self.execute_owned(&env, database, validated, deadline, cancellation)
     }
 
-    #[napi(js_name = "executeExistsByBorrowed")]
+    #[napi(
+        js_name = "executeExistsByBorrowed",
+        ts_return_type = "Promise<NodeValidatedMatchResultHandle>"
+    )]
     pub fn execute_exists_by_borrowed(
         &self,
+        env: Env,
         transaction: &NodeRustTransactionContext,
         root: &NodeMatchBindingHandle,
-    ) -> Result<NodeValidatedMatchResultHandle> {
+    ) -> Result<Object<'static>> {
         let (deadline, cancellation) = self.begin_invocation()?;
         let validated = self
             .inner
             .validate_exists_by(&root.inner)
             .map_err(crate::napi_orm_error)?;
-        self.execute_borrowed(transaction, validated, deadline, cancellation)
+        self.execute_borrowed(&env, transaction, validated, deadline, cancellation)
     }
 
     #[napi(js_name = "pageByDiagnostic")]
@@ -1631,15 +1647,19 @@ impl NodeMatchQueryHandle {
         )
     }
 
-    #[napi(js_name = "executeReduceByOwned")]
+    #[napi(
+        js_name = "executeReduceByOwned",
+        ts_return_type = "Promise<NodeValidatedMatchResultHandle>"
+    )]
     pub fn execute_reduce_by_owned(
         &self,
+        env: Env,
         database: &NodeRustDatabase,
         root: &NodeMatchBindingHandle,
         group: Option<&NodeMatchBindingHandle>,
         reducers: Vec<String>,
         inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
-    ) -> Result<NodeValidatedMatchResultHandle> {
+    ) -> Result<Object<'static>> {
         let (deadline, cancellation) = self.begin_invocation()?;
         let terms = reduce_terms(&reducers, &inputs)?;
         let terms = borrow_reduce_terms(&terms);
@@ -1647,18 +1667,22 @@ impl NodeMatchQueryHandle {
             .inner
             .validate_reduce_by(&root.inner, group.map(|group| &group.inner), &terms)
             .map_err(crate::napi_orm_error)?;
-        self.execute_owned(database, validated, deadline, cancellation)
+        self.execute_owned(&env, database, validated, deadline, cancellation)
     }
 
-    #[napi(js_name = "executeReduceByBorrowed")]
+    #[napi(
+        js_name = "executeReduceByBorrowed",
+        ts_return_type = "Promise<NodeValidatedMatchResultHandle>"
+    )]
     pub fn execute_reduce_by_borrowed(
         &self,
+        env: Env,
         transaction: &NodeRustTransactionContext,
         root: &NodeMatchBindingHandle,
         group: Option<&NodeMatchBindingHandle>,
         reducers: Vec<String>,
         inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
-    ) -> Result<NodeValidatedMatchResultHandle> {
+    ) -> Result<Object<'static>> {
         let (deadline, cancellation) = self.begin_invocation()?;
         let terms = reduce_terms(&reducers, &inputs)?;
         let terms = borrow_reduce_terms(&terms);
@@ -1666,7 +1690,7 @@ impl NodeMatchQueryHandle {
             .inner
             .validate_reduce_by(&root.inner, group.map(|group| &group.inner), &terms)
             .map_err(crate::napi_orm_error)?;
-        self.execute_borrowed(transaction, validated, deadline, cancellation)
+        self.execute_borrowed(&env, transaction, validated, deadline, cancellation)
     }
 
     #[napi(js_name = "reduceByFieldDiagnostic")]
@@ -1687,15 +1711,19 @@ impl NodeMatchQueryHandle {
         )
     }
 
-    #[napi(js_name = "executeReduceByFieldOwned")]
+    #[napi(
+        js_name = "executeReduceByFieldOwned",
+        ts_return_type = "Promise<NodeValidatedMatchResultHandle>"
+    )]
     pub fn execute_reduce_by_field_owned(
         &self,
+        env: Env,
         database: &NodeRustDatabase,
         root: &NodeMatchBindingHandle,
         group: &NodeMatchFieldHandle,
         reducers: Vec<String>,
         inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
-    ) -> Result<NodeValidatedMatchResultHandle> {
+    ) -> Result<Object<'static>> {
         let (deadline, cancellation) = self.begin_invocation()?;
         let terms = reduce_terms(&reducers, &inputs)?;
         let terms = borrow_reduce_terms(&terms);
@@ -1703,18 +1731,22 @@ impl NodeMatchQueryHandle {
             .inner
             .validate_reduce_by_field(&root.inner, &group.inner, &terms)
             .map_err(crate::napi_orm_error)?;
-        self.execute_owned(database, validated, deadline, cancellation)
+        self.execute_owned(&env, database, validated, deadline, cancellation)
     }
 
-    #[napi(js_name = "executeReduceByFieldBorrowed")]
+    #[napi(
+        js_name = "executeReduceByFieldBorrowed",
+        ts_return_type = "Promise<NodeValidatedMatchResultHandle>"
+    )]
     pub fn execute_reduce_by_field_borrowed(
         &self,
+        env: Env,
         transaction: &NodeRustTransactionContext,
         root: &NodeMatchBindingHandle,
         group: &NodeMatchFieldHandle,
         reducers: Vec<String>,
         inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
-    ) -> Result<NodeValidatedMatchResultHandle> {
+    ) -> Result<Object<'static>> {
         let (deadline, cancellation) = self.begin_invocation()?;
         let terms = reduce_terms(&reducers, &inputs)?;
         let terms = borrow_reduce_terms(&terms);
@@ -1722,7 +1754,7 @@ impl NodeMatchQueryHandle {
             .inner
             .validate_reduce_by_field(&root.inner, &group.inner, &terms)
             .map_err(crate::napi_orm_error)?;
-        self.execute_borrowed(transaction, validated, deadline, cancellation)
+        self.execute_borrowed(&env, transaction, validated, deadline, cancellation)
     }
 
     #[napi(js_name = "reduceByFieldsDiagnostic")]
@@ -1744,15 +1776,19 @@ impl NodeMatchQueryHandle {
         )
     }
 
-    #[napi(js_name = "executeReduceByFieldsOwned")]
+    #[napi(
+        js_name = "executeReduceByFieldsOwned",
+        ts_return_type = "Promise<NodeValidatedMatchResultHandle>"
+    )]
     pub fn execute_reduce_by_fields_owned(
         &self,
+        env: Env,
         database: &NodeRustDatabase,
         root: &NodeMatchBindingHandle,
         groups: Vec<Reference<NodeMatchFieldHandle>>,
         reducers: Vec<String>,
         inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
-    ) -> Result<NodeValidatedMatchResultHandle> {
+    ) -> Result<Object<'static>> {
         let (deadline, cancellation) = self.begin_invocation()?;
         let groups = groups.iter().map(|group| &group.inner).collect::<Vec<_>>();
         let terms = reduce_terms(&reducers, &inputs)?;
@@ -1761,18 +1797,22 @@ impl NodeMatchQueryHandle {
             .inner
             .validate_reduce_by_fields(&root.inner, &groups, &terms)
             .map_err(crate::napi_orm_error)?;
-        self.execute_owned(database, validated, deadline, cancellation)
+        self.execute_owned(&env, database, validated, deadline, cancellation)
     }
 
-    #[napi(js_name = "executeReduceByFieldsBorrowed")]
+    #[napi(
+        js_name = "executeReduceByFieldsBorrowed",
+        ts_return_type = "Promise<NodeValidatedMatchResultHandle>"
+    )]
     pub fn execute_reduce_by_fields_borrowed(
         &self,
+        env: Env,
         transaction: &NodeRustTransactionContext,
         root: &NodeMatchBindingHandle,
         groups: Vec<Reference<NodeMatchFieldHandle>>,
         reducers: Vec<String>,
         inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
-    ) -> Result<NodeValidatedMatchResultHandle> {
+    ) -> Result<Object<'static>> {
         let (deadline, cancellation) = self.begin_invocation()?;
         let groups = groups.iter().map(|group| &group.inner).collect::<Vec<_>>();
         let terms = reduce_terms(&reducers, &inputs)?;
@@ -1781,7 +1821,7 @@ impl NodeMatchQueryHandle {
             .inner
             .validate_reduce_by_fields(&root.inner, &groups, &terms)
             .map_err(crate::napi_orm_error)?;
-        self.execute_borrowed(transaction, validated, deadline, cancellation)
+        self.execute_borrowed(&env, transaction, validated, deadline, cancellation)
     }
 }
 
@@ -1802,6 +1842,28 @@ pub struct NodeValidatedMatchResultHandle {
 }
 
 /// Immutable materialization metadata retained while a remote reply is decoded.
+/// A direct target a Promise-returning terminal owns while it runs.
+enum DirectTarget {
+    Database(Arc<type_bridge_orm::Database>),
+    Transaction(type_bridge_orm::TransactionContext),
+}
+
+impl DirectTarget {
+    fn query_target(&self) -> QueryTarget<'_> {
+        match self {
+            Self::Database(database) => QueryTarget::Database(database),
+            Self::Transaction(transaction) => QueryTarget::Transaction(transaction),
+        }
+    }
+
+    fn origin(&self) -> std::result::Result<ProjectedQueryOrigin, SdkExecutionDiagnostic> {
+        match self {
+            Self::Database(database) => Ok(ProjectedQueryOrigin::for_database(database)),
+            Self::Transaction(transaction) => ProjectedQueryOrigin::for_transaction(transaction),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct NodeMatchResultContext {
     installed: Option<Arc<InstalledRuntimeProjection>>,
@@ -1819,11 +1881,23 @@ impl NodeMatchResultContext {
         inner: ValidatedMatchResult,
         registry: Arc<DescriptorRegistry>,
     ) -> Result<NodeValidatedMatchResultHandle> {
+        let origin = self
+            .installed
+            .as_ref()
+            .map(|_| ProjectedQueryOrigin::remote_unbound());
+        self.attach_with_origin(origin, request, inner, registry)
+    }
+
+    fn attach_with_origin(
+        self,
+        origin: Option<ProjectedQueryOrigin>,
+        request: ValidatedMatchRequest,
+        inner: ValidatedMatchResult,
+        registry: Arc<DescriptorRegistry>,
+    ) -> Result<NodeValidatedMatchResultHandle> {
         validated_result_handle(
             self.installed.as_ref(),
-            self.installed
-                .as_ref()
-                .map(|_| ProjectedQueryOrigin::remote_unbound()),
+            origin,
             request,
             inner,
             registry,
@@ -3230,14 +3304,16 @@ plays:
             .await
             .unwrap();
         let owned = query
-            .direct_result(
+            .result_context(
+                QueryExecutionResourceLimits::default(),
+                deadline(),
+                AnswerCancellation::default(),
+            )
+            .attach_with_origin(
                 Some(ProjectedQueryOrigin::for_database(&database)),
                 owned_request,
                 owned_inner,
                 Arc::clone(&registry),
-                QueryExecutionResourceLimits::default(),
-                deadline(),
-                AnswerCancellation::default(),
             )
             .unwrap();
         let owned_first = owned.slot_thing(&query, 0, 0).unwrap().projected.unwrap();
@@ -3275,14 +3351,16 @@ plays:
             .await
             .unwrap();
         let borrowed = query
-            .direct_result(
+            .result_context(
+                QueryExecutionResourceLimits::default(),
+                deadline(),
+                AnswerCancellation::default(),
+            )
+            .attach_with_origin(
                 Some(ProjectedQueryOrigin::for_transaction(&transaction).unwrap()),
                 borrowed_request,
                 borrowed_inner,
                 Arc::clone(&registry),
-                QueryExecutionResourceLimits::default(),
-                deadline(),
-                AnswerCancellation::default(),
             )
             .unwrap();
         let borrowed_thing = borrowed
@@ -3516,7 +3594,10 @@ plays:
                 .expect("source has a production half")
         };
         let direct = production(include_str!("match_runtime.rs"));
-        assert!(direct.contains(".block_on(target.execute("));
+        // Direct terminals settle the shared target on the provider runtime
+        // as a Promise rather than blocking the event loop.
+        assert!(direct.contains(".query_target()\n                .execute("));
+        assert!(direct.contains("proxy_connection_runtime::settle("));
         assert!(!direct.contains("execute_match_with_limits"));
         assert!(!direct.contains("direct_with_deadline"));
         let remote = production(include_str!("query_v2_model_remote_runtime.rs"));

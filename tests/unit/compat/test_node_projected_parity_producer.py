@@ -135,7 +135,7 @@ def test_acceptance_runs_real_producer_then_committed_comparator() -> None:
     assert "expected_report" not in producer
     assert "compare_projected_parity" not in producer
     assert "journey-v3.json" in producer
-    assert "RemoteQuerySession" in producer
+    assert "new package_.ExchangeConnection(" in producer
     assert "remoteSignedReply" in producer
     assert ".sign(null, digest, SIGNING_PRIVATE_KEY)" in producer
     assert "generated_projected_foreign" in producer

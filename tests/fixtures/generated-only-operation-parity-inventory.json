@@ -681,8 +681,7 @@
               "anchors": [
                 ".isPresent()",
                 ".isMissing()",
-                "personVariable.iidIn([insertedPerson.iid, insertedBatch[0].iid])",
-                "remotePerson.iidIn([insertedPerson.iid, insertedBatch[0].iid])"
+                "personVariable.iidIn([insertedPerson.iid, insertedBatch[0].iid])"
               ]
             }
           ]
@@ -732,11 +731,11 @@
               "mode": "live",
               "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
               "anchors": [
-                "querySession.subtypes(Party)",
-                "[Employee.typeKey, Manager.typeKey]",
-                "querySession.subtypes(Membership)",
-                "queriedSubtypeRelation.__typebridgeModel, Employment.typeKey",
-                "remoteSession.subtypes(Party)"
+                "session.subtypes(Party)",
+                "[Manager.typeKey, insertedManager.iid]",
+                "session.subtypes(Membership)",
+                "subtype_relation: [Employment.typeKey, insertedPerson.iid, false]",
+                "assert.deepEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)"
               ]
             }
           ]
@@ -886,10 +885,9 @@
               "mode": "live",
               "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
               "anchors": [
-                "querySession.reachable",
-                "remoteSession.reachable",
-                ".allowCrossJoin(crossLeft, crossRight)",
-                ".allowCrossJoin(remoteCrossLeft, remoteCrossRight)"
+                "session.reachable(",
+                "assert.deepEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)",
+                ".allowCrossJoin(crossLeft, crossRight)"
               ]
             }
           ]
@@ -1020,12 +1018,12 @@
               "mode": "live",
               "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
               "anchors": [
-                "directQuery.one()",
+                "await terminal(() => pairQuery.one())",
                 "allPeopleQuery.first",
                 "offset: 1n",
                 ".pageBy(personVariable",
-                "remoteDirectQuery.countBy",
-                "remoteDirectQuery.existsBy"
+                "pairQuery.countBy(personVariable)",
+                "pairQuery.existsBy(personVariable)"
               ]
             }
           ]
@@ -1083,8 +1081,8 @@
                 "aggregate.sum(scoreField)",
                 "aggregate.median(scoreField)",
                 "personVariable.field(Person.valBool)",
-                "directFieldGroupedAggregate[0][0].value",
-                "directTupleFieldGroupedAggregate = allPeopleQuery",
+                "field_grouped: fieldGrouped.map(([group, values]: any) => [group.value, values])",
+                "const tupleGrouped = await terminal(() => allPeopleQuery",
                 "boolGroup.value",
                 "scoreGroup.value",
                 ".groupBy(personVariable, eventVariable)"
@@ -1140,11 +1138,11 @@
               "mode": "live",
               "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
               "anchors": [
-                "new RemoteQuerySession",
-                "remoteDirectQuery.one()",
-                "remotePersonOnly.rows",
-                ".pageBy(remotePerson",
-                "remoteNamed.person.iid"
+                "new ExchangeConnection(advertisement, exchange)",
+                "await terminal(() => pairQuery.one())",
+                "personQuery.rows(ordered)",
+                ".pageBy(personVariable, { limit: 10n, includeTotal: true })",
+                "named: named.person.iid"
               ]
             }
           ]
@@ -1193,7 +1191,7 @@
               "mode": "offline",
               "path": "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/runtime_check.mjs",
               "anchors": [
-                "const generatedRemoteSession = new RemoteQuerySession(",
+                "const generatedRemoteSession = new QuerySession(",
                 "assert.equal(error.code, \"remote_application_failure\")",
                 "expected: { kind: \"text_list\", value: [\"person\", \"employee\"] }",
                 "assert.equal(generatedRemoteExchanges, 1)"
@@ -1245,9 +1243,9 @@
               "mode": "live",
               "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
               "anchors": [
-                "const remoteAggregate = await oneRemoteExchange(() =>",
-                "remoteAggregate.slice(0, 6), directAggregate.slice(0, 6)",
-                "const remoteTupleFieldGroupedAggregate = await oneRemoteExchange(() =>",
+                "const reducers = await terminal(() => allPeopleQuery.aggregate(personVariable, [",
+                "reducers: reducers.slice(0, 6),",
+                "assert.deepEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)",
                 "assert.equal(requests.length, requestsBefore + 1)"
               ]
             }
@@ -1320,7 +1318,7 @@
               "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
               "anchors": [
                 "const integerKeyValues = [-42n, 1n, 100n, 9999n] as const",
-                "const polymorphicActorRows = querySession",
+                "const polymorphicActorRows = await querySession",
                 "assert.equal(survivingInteraction.actor, null)"
               ]
             }
@@ -1418,7 +1416,7 @@
               "anchors": [
                 "const detachedCounter = Counter.create",
                 "attached TypeDB IID",
-                "assert.equal(counterQuery.one().iid, insertedCounter.iid)",
+                "assert.equal((await counterQuery.one()).iid, insertedCounter.iid)",
                 "counterQuery.rows({ limit: 2n })"
               ]
             }
@@ -1466,7 +1464,7 @@
               "mode": "live",
               "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
               "anchors": [
-                "const scalarDomainPerson = querySession",
+                "const scalarDomainPerson = await querySession",
                 ".field(Person.valDatetimeTz)",
                 "valDuration: ValDuration.create(\"PT3S\")"
               ]

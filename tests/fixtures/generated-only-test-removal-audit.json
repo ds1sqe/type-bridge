@@ -40,11 +40,11 @@
       "evidence": [
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/positive.ts",
-          "needles": ["Person.manager(database)", "RemoteQuerySession", "personManager.filter"]
+          "needles": ["Person.manager(database)", "new QuerySession(exchangeConnection", "personManager.filter"]
         },
         {
           "path": "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/runtime_check.mjs",
-          "needles": ["const generatedRemoteSession = new RemoteQuerySession(", "remote_application_failure", "assert.equal(generatedRemoteExchanges, 1)"]
+          "needles": ["const generatedRemoteSession = new QuerySession(", "remote_application_failure", "assert.equal(generatedRemoteExchanges, 1)"]
         },
         {
           "path": "type-bridge-core/crates/node/tests/unit/query-v2-authoring.test.ts",
@@ -128,7 +128,7 @@
         },
         {
           "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
-          "needles": ["RemoteQuerySession", "Person.manager(database)"]
+          "needles": ["new ExchangeConnection(advertisement, exchange)", "Person.manager(database)"]
         }
       ],
       "removed_paths": [

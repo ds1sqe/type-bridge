@@ -8,7 +8,7 @@ const sourcePath = path.resolve(
   "tests/projection-integration/generated-package-live.test.ts",
 );
 
-test("remote close I/O is measured before later usable-lineage terminals", () => {
+test("close I/O is measured before later usable-lineage terminals", () => {
   const source = fs.readFileSync(sourcePath, "utf8");
   const start = source.indexOf("async function sdkV2Lifecycle(");
   const end = source.indexOf("async function runSdkV2Journey(", start);
@@ -20,7 +20,7 @@ test("remote close I/O is measured before later usable-lineage terminals", () =>
     "const requestsBeforeRejection = requests.length;",
   );
   const rejectedTerminal = lifecycle.indexOf(
-    "await remoteAncestor.one();",
+    "await ancestor.one();",
     snapshot,
   );
   const measured = lifecycle.indexOf(
@@ -28,7 +28,7 @@ test("remote close I/O is measured before later usable-lineage terminals", () =>
     rejectedTerminal,
   );
   const descendantTerminal = lifecycle.indexOf(
-    "sdkV2Key(await remoteDescendant.one())",
+    "sdkV2Key(await descendant.one())",
     measured,
   );
   assert.notEqual(snapshot, -1);

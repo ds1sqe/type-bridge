@@ -43,7 +43,7 @@ pub use query_v2_model_remote_runtime::{
     query_v2_prepare_remote_model_exists, query_v2_prepare_remote_model_page,
     query_v2_prepare_remote_model_reduce, query_v2_prepare_remote_model_reduce_by_field,
     query_v2_prepare_remote_model_reduce_by_fields, query_v2_prepare_remote_model_rows,
-    query_v2_remote_model_context, query_v2_remote_model_context_with_resources,
+    query_v2_remote_model_context_with_resources,
 };
 pub use runtime_projection::{NodeProjectedModelManager, NodeRuntimeProjection};
 

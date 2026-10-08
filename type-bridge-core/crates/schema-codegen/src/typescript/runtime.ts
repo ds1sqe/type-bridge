@@ -20,15 +20,19 @@ import {
   type RuntimeProjectionMatchThing,
   type RuntimeProjectionRemote,
   type RuntimeProjectionRemoteExchange,
-  type RuntimeProjectionRemoteLimits,
+  type ProxyConnectionOptions,
+  ProxyConnection,
   QueryCancellation,
   QueryExecutionResourceLimits,
   QueryLimits,
 } from "@type-bridge/node/runtime-projection";
 export {
+  ProxyConnection,
   QueryCancellation,
   QueryExecutionResourceLimits,
   QueryLimits,
+  type ProxyConnectionOptions,
+  type ProxyTlsMode,
 } from "@type-bridge/node/runtime-projection";
 import type { QueryV2Authority } from "@type-bridge/node/query-v2";
 import type { RustDatabase } from "@type-bridge/node";
@@ -2514,14 +2518,15 @@ class CollectedValue<Model extends object> implements Collected<Model> {
 interface QueryState {
   readonly handle: RuntimeProjectionMatchQuery;
   readonly projection: InstalledRuntimeProjection;
-  readonly connection: RuntimeProjectionConnection | null;
+  /** The session's executor, chosen once from its connection kind. */
+  readonly executor: RuntimeProjectionRemote;
 }
 const queryStates = new WeakMap<object, QueryState>();
-const REMOTE_QUERY_SESSION = Symbol(
-  "typebridge.generated-remote-query-session",
-);
 
-/** Immutable generated-only direct query. */
+/**
+ * Immutable generated query. Composition is synchronous; every terminal
+ * returns a promise on every connection kind.
+ */
 export class Query<out Output> {
   private constructor(state: QueryState) {
     queryStates.set(this, state);
@@ -2602,11 +2607,10 @@ export class Query<out Output> {
     });
   }
 
-  one(): Output {
+  async one(): Promise<Output> {
     const state = queryState(this);
-    const result = state.projection.executeRows(
+    const result = await state.executor.rows(
       state.handle,
-      directConnection(state),
       [],
       0n,
       1n,
@@ -2615,11 +2619,10 @@ export class Query<out Output> {
     return materializeRows(state, result)[0] as Output;
   }
 
-  first(options: FirstOptions = {}): Output | null {
+  async first(options: FirstOptions = {}): Promise<Output | null> {
     const state = queryState(this);
-    const result = state.projection.executeRows(
+    const result = await state.executor.rows(
       state.handle,
-      directConnection(state),
       nativeOrders(options.orderBy ?? [], state.projection),
       0n,
       1n,
@@ -2628,13 +2631,11 @@ export class Query<out Output> {
     return (materializeRows(state, result)[0] as Output | undefined) ?? null;
   }
 
-  rows(options: RowsOptions): readonly Output[] {
+  async rows(options: RowsOptions): Promise<readonly Output[]> {
     const state = queryState(this);
-    const orders = nativeOrders(options.orderBy ?? [], state.projection);
-    const result = state.projection.executeRows(
+    const result = await state.executor.rows(
       state.handle,
-      directConnection(state),
-      orders,
+      nativeOrders(options.orderBy ?? [], state.projection),
       windowValue(options.offset ?? 0n, "offset"),
       windowValue(options.limit, "limit"),
       "bounded_many",
@@ -2642,10 +2643,10 @@ export class Query<out Output> {
     return Object.freeze(materializeRows(state, result)) as readonly Output[];
   }
 
-  pageBy<Root extends object>(
+  async pageBy<Root extends object>(
     root: BoundVar<Root>,
     options: PageOptions,
-  ): Page<Output> {
+  ): Promise<Page<Output>> {
     const state = queryState(this);
     const rootState = boundVarState(root);
     requireSameProjection(
@@ -2653,9 +2654,8 @@ export class Query<out Output> {
       rootState.projection,
       "generated page root",
     );
-    const result = state.projection.executePage(
+    const result = await state.executor.page(
       state.handle,
-      directConnection(state),
       rootState.binding,
       nativeOrders(options.orderBy ?? [], state.projection),
       windowValue(options.offset ?? 0n, "offset"),
@@ -2672,7 +2672,7 @@ export class Query<out Output> {
     });
   }
 
-  countBy<Root extends object>(root: BoundVar<Root>): bigint {
+  async countBy<Root extends object>(root: BoundVar<Root>): Promise<bigint> {
     const state = queryState(this);
     const item = boundVarState(root);
     requireSameProjection(
@@ -2680,14 +2680,11 @@ export class Query<out Output> {
       item.projection,
       "generated count root",
     );
-    return state.projection.executeCount(
-      state.handle,
-      directConnection(state),
-      item.binding,
-    );
+    const result = await state.executor.count(state.handle, item.binding);
+    return result.countValue(state.handle);
   }
 
-  existsBy<Root extends object>(root: BoundVar<Root>): boolean {
+  async existsBy<Root extends object>(root: BoundVar<Root>): Promise<boolean> {
     const state = queryState(this);
     const item = boundVarState(root);
     requireSameProjection(
@@ -2695,20 +2692,17 @@ export class Query<out Output> {
       item.projection,
       "generated exists root",
     );
-    return state.projection.executeExists(
-      state.handle,
-      directConnection(state),
-      item.binding,
-    );
+    const result = await state.executor.exists(state.handle, item.binding);
+    return result.existsValue(state.handle);
   }
 
-  aggregate<
+  async aggregate<
     Root extends object,
     const Terms extends readonly [Aggregate<unknown>, ...Aggregate<unknown>[]],
   >(
     root: BoundVar<Root>,
     terms: Terms & AtMostSixteen<Terms>,
-  ): AggregateOutputs<Terms> {
+  ): Promise<AggregateOutputs<Terms>> {
     const state = queryState(this);
     const rootState = boundVarState(root);
     requireSameProjection(
@@ -2717,9 +2711,8 @@ export class Query<out Output> {
       "generated aggregate root",
     );
     const prepared = prepareAggregateTerms(terms, state.projection);
-    const result = state.projection.executeReduce(
+    const result = await state.executor.reduce(
       state.handle,
-      directConnection(state),
       rootState.binding,
       null,
       prepared.reducers,
@@ -2842,7 +2835,7 @@ interface GroupedQueryState {
 }
 const groupedQueryStates = new WeakMap<object, GroupedQueryState>();
 
-/** Immutable generated direct grouped-reduction query. */
+/** Immutable generated grouped-reduction query. */
 export class GroupedQuery<out Group extends object> {
   private constructor(state: GroupedQueryState) {
     groupedQueryStates.set(this, Object.freeze(state));
@@ -2890,36 +2883,33 @@ export class GroupedQuery<out Group extends object> {
     );
   }
 
-  aggregate<
+  async aggregate<
     const Terms extends readonly [Aggregate<unknown>, ...Aggregate<unknown>[]],
   >(
     terms: Terms & AtMostSixteen<Terms>,
-  ): readonly (readonly [Group, AggregateOutputs<Terms>])[] {
+  ): Promise<readonly (readonly [Group, AggregateOutputs<Terms>])[]> {
     const grouped = groupedQueryState(this);
     const state = queryState(grouped.query);
     const prepared = prepareAggregateTerms(terms, state.projection);
     const result =
       grouped.group.kind === "binding"
-        ? state.projection.executeReduce(
+        ? await state.executor.reduce(
             state.handle,
-            directConnection(state),
             grouped.root,
             grouped.group.handle,
             prepared.reducers,
             prepared.inputs,
           )
         : grouped.group.kind === "field"
-          ? state.projection.executeReduceByField(
+          ? await state.executor.reduceByField(
               state.handle,
-              directConnection(state),
               grouped.root,
               grouped.group.handle,
               prepared.reducers,
               prepared.inputs,
             )
-          : state.projection.executeReduceByFields(
+          : await state.executor.reduceByFields(
               state.handle,
-              directConnection(state),
               grouped.root,
               [...grouped.group.handles],
               prepared.reducers,
@@ -2934,38 +2924,159 @@ export class GroupedQuery<out Group extends object> {
   }
 }
 
-/** Package-local generated query construction over exact generated tokens. */
+/**
+ * A proxy connection whose transport the host performs.
+ *
+ * `exchange` sends one request to the server's query route and resolves to
+ * its reply; the host owns routing and authentication, and no retry is
+ * performed. `advertisement` is the server's capability advertisement.
+ * `answerLimits`, when given, is the ceiling every session on this
+ * connection runs under.
+ */
+export class ExchangeConnection {
+  readonly #advertisement: Uint8Array;
+  readonly #exchange: RuntimeProjectionRemoteExchange;
+  readonly #answerLimits: QueryExecutionResourceLimits | undefined;
+
+  constructor(
+    advertisement: Uint8Array,
+    exchange: RuntimeProjectionRemoteExchange,
+    options: Readonly<{ answerLimits?: QueryExecutionResourceLimits }> = {},
+  ) {
+    if (!(advertisement instanceof Uint8Array)) {
+      throw new TypeError(
+        "generated remote advertisement must be a Uint8Array",
+      );
+    }
+    if (typeof exchange !== "function") {
+      throw new TypeError("generated remote exchange must be callable");
+    }
+    const answerLimits = options.answerLimits;
+    if (
+      answerLimits !== undefined &&
+      !(answerLimits instanceof QueryExecutionResourceLimits)
+    ) {
+      throw new TypeError(
+        "generated answer limits must be QueryExecutionResourceLimits",
+      );
+    }
+    // Snapshot so later caller writes cannot change the verified bytes.
+    this.#advertisement = advertisement.slice();
+    this.#exchange = exchange;
+    this.#answerLimits = answerLimits;
+    Object.freeze(this);
+  }
+
+  /** A copy of the server's capability advertisement. */
+  get advertisement(): Uint8Array {
+    return this.#advertisement.slice();
+  }
+  get exchange(): RuntimeProjectionRemoteExchange {
+    return this.#exchange;
+  }
+  get answerLimits(): QueryExecutionResourceLimits | undefined {
+    return this.#answerLimits;
+  }
+}
+
+/** Every connection a {@link QuerySession} runs on. */
+export type QueryConnection =
+  | RuntimeProjectionConnection
+  | ProxyConnection
+  | ExchangeConnection;
+
+/**
+ * Open a connection to a TypeBridge server's HTTP routes for this package.
+ *
+ * The server's advertisement is fetched from `endpoint`, or
+ * `options.advertisement` is used as given. `connectionLimits` bounds that
+ * fetch; `answerLimits` is the ceiling every session on the connection runs
+ * under.
+ */
+export function connectProxy(
+  endpoint: string,
+  options: ProxyConnectionOptions = {},
+): Promise<ProxyConnection> {
+  return ProxyConnection.connect(requireQueryAuthority(), endpoint, options);
+}
+
+/** Bind one connection to the session's executor. The only connection-kind branch. */
+function queryExecutor(
+  projection: InstalledRuntimeProjection,
+  connection: QueryConnection,
+  resources: QueryExecutionResourceLimits,
+  cancellation: QueryCancellation,
+): RuntimeProjectionRemote {
+  if (connection instanceof ExchangeConnection) {
+    return projection.remote(
+      requireQueryAuthority(),
+      connection.advertisement,
+      connection.exchange,
+      resources,
+      cancellation,
+      connection.answerLimits,
+    );
+  }
+  if (connection instanceof ProxyConnection) {
+    return connection;
+  }
+  if (typeof connection !== "object" || connection === null) {
+    throw new TypeError(
+      "generated QuerySession requires a RustDatabase, RustTransactionContext, ProxyConnection, or ExchangeConnection",
+    );
+  }
+  return projection.direct(connection);
+}
+
+/**
+ * Author and run queries over one connection.
+ *
+ * The connection is a direct `RustDatabase` or transaction, a
+ * `ProxyConnection` from `connectProxy`, or an `ExchangeConnection`. The
+ * session, its queries, and their results are the same on every kind;
+ * terminals return promises on all of them.
+ */
 export class QuerySession {
-  readonly #connection: RuntimeProjectionConnection | null;
+  readonly #executor: RuntimeProjectionRemote;
   readonly #projection: InstalledRuntimeProjection;
   readonly #session: RuntimeProjectionMatchSession;
 
   constructor(
-    connection: RuntimeProjectionConnection,
-    options?: Readonly<{
-      resources?: QueryExecutionResourceLimits;
-      cancellation?: QueryCancellation;
-      queryLimits?: QueryLimits;
-    }>,
-  );
-  constructor(
-    connection: RuntimeProjectionConnection | typeof REMOTE_QUERY_SESSION,
+    connection: QueryConnection,
     options: Readonly<{
       resources?: QueryExecutionResourceLimits;
       cancellation?: QueryCancellation;
       queryLimits?: QueryLimits;
     }> = {},
   ) {
-    this.#projection = requireProjection();
-    if (connection === REMOTE_QUERY_SESSION) {
-      this.#connection = null;
-    } else {
-      this.#projection.assertConnection(connection);
-      this.#connection = connection;
+    const resources = options.resources ?? new QueryExecutionResourceLimits();
+    const cancellation = options.cancellation ?? new QueryCancellation();
+    if (!(resources instanceof QueryExecutionResourceLimits)) {
+      throw new TypeError(
+        "generated query resources must be QueryExecutionResourceLimits",
+      );
     }
+    if (!(cancellation instanceof QueryCancellation)) {
+      throw new TypeError(
+        "generated query cancellation must be QueryCancellation",
+      );
+    }
+    if (
+      options.queryLimits !== undefined &&
+      !(options.queryLimits instanceof QueryLimits)
+    ) {
+      throw new TypeError("generated query limits must be QueryLimits");
+    }
+    this.#projection = requireProjection();
+    this.#executor = queryExecutor(
+      this.#projection,
+      connection,
+      resources,
+      cancellation,
+    );
     this.#session = this.#projection.matchSession(
-      options.resources,
-      options.cancellation,
+      resources,
+      cancellation,
       options.queryLimits,
     );
     Object.freeze(this);
@@ -3180,7 +3291,7 @@ export class QuerySession {
     return createQuery({
       handle: this.#session.query(shape),
       projection: this.#projection,
-      connection: this.#connection,
+      executor: this.#executor,
     });
   }
 
@@ -3202,495 +3313,9 @@ export class QuerySession {
     return createQuery({
       handle: this.#session.query(shape),
       projection: this.#projection,
-      connection: this.#connection,
+      executor: this.#executor,
     });
   }
-}
-
-/** Explicit immutable budgets bound into every generated remote query. */
-export type RemoteQueryLimits =
-  | RuntimeProjectionRemoteLimits
-  | QueryExecutionResourceLimits;
-
-/** One caller-owned request/response exchange. No retry is performed. */
-export type RemoteQueryExchange = RuntimeProjectionRemoteExchange;
-
-interface RemoteQueryState {
-  readonly direct: Query<unknown>;
-  readonly remote: RuntimeProjectionRemote;
-}
-const remoteQueryStates = new WeakMap<object, RemoteQueryState>();
-
-/** Immutable generated query composition over one caller-owned remote exchange. */
-export class RemoteQuery<out Output> {
-  private constructor(state: RemoteQueryState) {
-    remoteQueryStates.set(this, state);
-    Object.freeze(this);
-  }
-
-  close(): void {
-    remoteQueryStateUnchecked<Output>(this).direct.close();
-  }
-  get isClosed(): boolean {
-    return remoteQueryStateUnchecked<Output>(this).direct.isClosed;
-  }
-  clone(): RemoteQuery<Output> {
-    const state = remoteQueryState<Output>(this);
-    return createRemoteQuery(state.direct.clone(), state.remote);
-  }
-
-  match<const Models extends readonly [object, ...object[]]>(
-    ...bindings: { readonly [Index in keyof Models]: BoundVar<Models[Index]> }
-  ): RemoteQuery<Output> {
-    const state = remoteQueryState<Output>(this);
-    let direct = state.direct;
-    for (const binding of bindings) {
-      direct = direct.match(binding);
-    }
-    return createRemoteQuery(direct, state.remote);
-  }
-
-  where(
-    ...predicates: readonly [Predicate, ...Predicate[]]
-  ): RemoteQuery<Output> {
-    const state = remoteQueryState<Output>(this);
-    return createRemoteQuery(state.direct.where(...predicates), state.remote);
-  }
-
-  allowCrossJoin<Left extends object, Right extends object>(
-    left: BoundVar<Left>,
-    right: BoundVar<Right>,
-  ): RemoteQuery<Output> {
-    const state = remoteQueryState<Output>(this);
-    return createRemoteQuery(
-      state.direct.allowCrossJoin(left, right),
-      state.remote,
-    );
-  }
-
-  async one(): Promise<Output> {
-    const remote = remoteQueryState<Output>(this);
-    const state = queryState(remote.direct);
-    const result = await remote.remote.rows(
-      state.handle,
-      [],
-      0n,
-      1n,
-      "exactly_one",
-    );
-    return materializeRows(state, result)[0] as Output;
-  }
-
-  async first(options: FirstOptions = {}): Promise<Output | null> {
-    const remote = remoteQueryState<Output>(this);
-    const state = queryState(remote.direct);
-    const result = await remote.remote.rows(
-      state.handle,
-      nativeOrders(options.orderBy ?? [], state.projection),
-      0n,
-      1n,
-      "bounded_many",
-    );
-    return (materializeRows(state, result)[0] as Output | undefined) ?? null;
-  }
-
-  async rows(options: RowsOptions): Promise<readonly Output[]> {
-    const remote = remoteQueryState<Output>(this);
-    const state = queryState(remote.direct);
-    const result = await remote.remote.rows(
-      state.handle,
-      nativeOrders(options.orderBy ?? [], state.projection),
-      windowValue(options.offset ?? 0n, "offset"),
-      windowValue(options.limit, "limit"),
-      "bounded_many",
-    );
-    return Object.freeze(materializeRows(state, result)) as readonly Output[];
-  }
-
-  async pageBy<Root extends object>(
-    root: BoundVar<Root>,
-    options: PageOptions,
-  ): Promise<Page<Output>> {
-    const remote = remoteQueryState<Output>(this);
-    const state = queryState(remote.direct);
-    const rootState = boundVarState(root);
-    requireSameProjection(
-      state.projection,
-      rootState.projection,
-      "generated page root",
-    );
-    const result = await remote.remote.page(
-      state.handle,
-      rootState.binding,
-      nativeOrders(options.orderBy ?? [], state.projection),
-      windowValue(options.offset ?? 0n, "offset"),
-      windowValue(options.limit, "limit"),
-      options.includeTotal ?? false,
-    );
-    return Object.freeze({
-      items: Object.freeze(
-        materializePageRows(state, result),
-      ) as readonly Output[],
-      offset: result.pageOffset(state.handle),
-      limit: result.pageLimit(state.handle),
-      total: result.pageTotal(state.handle),
-    });
-  }
-
-  async countBy<Root extends object>(root: BoundVar<Root>): Promise<bigint> {
-    const remote = remoteQueryState<Output>(this);
-    const state = queryState(remote.direct);
-    const item = boundVarState(root);
-    requireSameProjection(
-      state.projection,
-      item.projection,
-      "generated count root",
-    );
-    const result = await remote.remote.count(state.handle, item.binding);
-    return result.countValue(state.handle);
-  }
-
-  async existsBy<Root extends object>(root: BoundVar<Root>): Promise<boolean> {
-    const remote = remoteQueryState<Output>(this);
-    const state = queryState(remote.direct);
-    const item = boundVarState(root);
-    requireSameProjection(
-      state.projection,
-      item.projection,
-      "generated exists root",
-    );
-    const result = await remote.remote.exists(state.handle, item.binding);
-    return result.existsValue(state.handle);
-  }
-
-  async aggregate<
-    Root extends object,
-    const Terms extends readonly [Aggregate<unknown>, ...Aggregate<unknown>[]],
-  >(
-    root: BoundVar<Root>,
-    terms: Terms & AtMostSixteen<Terms>,
-  ): Promise<AggregateOutputs<Terms>> {
-    const remote = remoteQueryState<Output>(this);
-    const state = queryState(remote.direct);
-    const rootState = boundVarState(root);
-    requireSameProjection(
-      state.projection,
-      rootState.projection,
-      "generated aggregate root",
-    );
-    const prepared = prepareAggregateTerms(terms, state.projection);
-    const result = await remote.remote.reduce(
-      state.handle,
-      rootState.binding,
-      null,
-      prepared.reducers,
-      prepared.inputs,
-    );
-    return materializeUngroupedReduction(
-      state,
-      result,
-      prepared.outputs,
-    ) as AggregateOutputs<Terms>;
-  }
-
-  groupBy<Root extends object, Group extends object>(
-    root: BoundVar<Root>,
-    group: BoundVar<Group>,
-  ): RemoteGroupedQuery<Group>;
-  groupBy<Root extends object, Group extends object>(
-    root: BoundVar<Root>,
-    group: BoundField<Group>,
-  ): RemoteGroupedQuery<Group>;
-  groupBy<
-    Root extends object,
-    const Groups extends readonly [object, object, ...object[]],
-  >(
-    root: BoundVar<Root>,
-    ...groups: AtMostSixteen<{
-      readonly [Index in keyof Groups]: BoundField<Groups[Index]>;
-    }>
-  ): RemoteGroupedQuery<Groups>;
-  groupBy<Root extends object>(
-    root: BoundVar<Root>,
-    ...groups: readonly object[]
-  ): RemoteGroupedQuery<object> {
-    const remote = remoteQueryState<Output>(this);
-    const state = queryState(remote.direct);
-    const rootState = boundVarState(root);
-    requireSameProjection(
-      state.projection,
-      rootState.projection,
-      "generated aggregate root",
-    );
-    return createRemoteGroupedQuery<object>(
-      createRemoteQuery(
-        createQuery({ ...state, handle: state.handle.fork() }),
-        remote.remote,
-      ),
-      rootState.binding,
-      runtimeReductionGroup(groups, state.projection),
-    );
-  }
-}
-
-interface RemoteGroupedQueryState {
-  readonly query: RemoteQuery<unknown>;
-  readonly root: RuntimeProjectionMatchBinding;
-  readonly group: RuntimeReductionGroup;
-}
-const remoteGroupedQueryStates = new WeakMap<object, RemoteGroupedQueryState>();
-
-/** Immutable generated remote grouped-reduction query. */
-export class RemoteGroupedQuery<out Group extends object> {
-  private constructor(state: RemoteGroupedQueryState) {
-    remoteGroupedQueryStates.set(this, Object.freeze(state));
-    Object.freeze(this);
-  }
-
-  close(): void {
-    remoteGroupedQueryState(this).query.close();
-  }
-  get isClosed(): boolean {
-    return remoteGroupedQueryState(this).query.isClosed;
-  }
-
-  match<const Models extends readonly [object, ...object[]]>(
-    ...bindings: { readonly [Index in keyof Models]: BoundVar<Models[Index]> }
-  ): RemoteGroupedQuery<Group> {
-    const state = remoteGroupedQueryState(this);
-    let query = state.query;
-    for (const binding of bindings) {
-      query = query.match(binding);
-    }
-    return createRemoteGroupedQuery(query, state.root, state.group);
-  }
-
-  where(
-    ...predicates: readonly [Predicate, ...Predicate[]]
-  ): RemoteGroupedQuery<Group> {
-    const state = remoteGroupedQueryState(this);
-    return createRemoteGroupedQuery(
-      state.query.where(...predicates),
-      state.root,
-      state.group,
-    );
-  }
-
-  allowCrossJoin<Left extends object, Right extends object>(
-    left: BoundVar<Left>,
-    right: BoundVar<Right>,
-  ): RemoteGroupedQuery<Group> {
-    const state = remoteGroupedQueryState(this);
-    return createRemoteGroupedQuery(
-      state.query.allowCrossJoin(left, right),
-      state.root,
-      state.group,
-    );
-  }
-
-  async aggregate<
-    const Terms extends readonly [Aggregate<unknown>, ...Aggregate<unknown>[]],
-  >(
-    terms: Terms & AtMostSixteen<Terms>,
-  ): Promise<readonly (readonly [Group, AggregateOutputs<Terms>])[]> {
-    const grouped = remoteGroupedQueryState(this);
-    const remote = remoteQueryState(grouped.query);
-    const state = queryState(remote.direct);
-    const prepared = prepareAggregateTerms(terms, state.projection);
-    const result =
-      grouped.group.kind === "binding"
-        ? await remote.remote.reduce(
-            state.handle,
-            grouped.root,
-            grouped.group.handle,
-            prepared.reducers,
-            prepared.inputs,
-          )
-        : grouped.group.kind === "field"
-          ? await remote.remote.reduceByField(
-              state.handle,
-              grouped.root,
-              grouped.group.handle,
-              prepared.reducers,
-              prepared.inputs,
-            )
-          : await remote.remote.reduceByFields(
-              state.handle,
-              grouped.root,
-              [...grouped.group.handles],
-              prepared.reducers,
-              prepared.inputs,
-            );
-    return materializeGroupedReduction(
-      state,
-      result,
-      grouped.group,
-      prepared.outputs,
-    ) as readonly (readonly [Group, AggregateOutputs<Terms>])[];
-  }
-}
-
-/** Generated-only remote query construction over exact package tokens. */
-export class RemoteQuerySession {
-  readonly #direct: QuerySession;
-  readonly #remote: RuntimeProjectionRemote;
-
-  readonly var: QuerySession["var"];
-  readonly exact: QuerySession["exact"];
-  readonly subtypes: QuerySession["subtypes"];
-  readonly reachable: QuerySession["reachable"];
-
-  /** @internal Construct one nominal projected scalar function input. */
-  __functionInput<Value extends { readonly value: unknown }>(
-    value: Value,
-  ): FunctionInput<Value["value"]> {
-    return this.#direct.__functionInput(value);
-  }
-
-  /** @internal Invoke one exact nominal generated scalar schema function. */
-  __callFunction<
-    Id extends string,
-    Arguments extends readonly unknown[],
-    Domain,
-  >(
-    token: FunctionToken<Id, Arguments, Domain>,
-    arguments_: readonly unknown[],
-  ): FunctionCall<Domain> {
-    return this.#direct.__callFunction(token, arguments_);
-  }
-
-  constructor(
-    advertisement: Uint8Array,
-    exchange: RemoteQueryExchange,
-    limits: RemoteQueryLimits,
-    cancellation?: QueryCancellation,
-    queryLimits?: QueryLimits,
-  ) {
-    const projection = requireProjection();
-    const resources =
-      limits instanceof QueryExecutionResourceLimits
-        ? limits
-        : new QueryExecutionResourceLimits({
-            timeoutMilliseconds: limits.deadlineMs ?? 30_000n,
-            items: limits.maxItems,
-            bytes: limits.maxBytes,
-            collectionMembers: limits.maxCollectionMembers,
-            graphNodes: limits.maxGraphNodes,
-            attributeValues: limits.maxAttributeValues,
-            rolePlayers: limits.maxRolePlayers,
-            statements: 3n,
-          });
-    const legacyDefaults =
-      !(limits instanceof QueryExecutionResourceLimits) &&
-      cancellation === undefined;
-    const cancellationOwner = legacyDefaults
-      ? undefined
-      : (cancellation ?? new QueryCancellation());
-    this.#remote = projection.remote(
-      requireQueryAuthority(),
-      advertisement,
-      exchange,
-      limits,
-      cancellationOwner,
-    );
-    const Constructor = QuerySession as unknown as new (
-      token: typeof REMOTE_QUERY_SESSION,
-      options: Readonly<{
-        resources?: QueryExecutionResourceLimits;
-        cancellation?: QueryCancellation;
-        queryLimits?: QueryLimits;
-      }>,
-    ) => QuerySession;
-    this.#direct = new Constructor(
-      REMOTE_QUERY_SESSION,
-      legacyDefaults
-        ? queryLimits === undefined
-          ? {}
-          : { queryLimits }
-        : {
-            resources,
-            cancellation: cancellationOwner ?? new QueryCancellation(),
-            ...(queryLimits === undefined ? {} : { queryLimits }),
-          },
-    );
-    this.var = this.#direct.var.bind(this.#direct) as QuerySession["var"];
-    this.exact = this.#direct.exact.bind(this.#direct) as QuerySession["exact"];
-    this.subtypes = this.#direct.subtypes.bind(
-      this.#direct,
-    ) as QuerySession["subtypes"];
-    this.reachable = this.#direct.reachable.bind(
-      this.#direct,
-    ) as QuerySession["reachable"];
-    Object.freeze(this);
-  }
-
-  close(): void {
-    this.#direct.close();
-  }
-  get isClosed(): boolean {
-    return this.#direct.isClosed;
-  }
-
-  query<
-    const Selections extends readonly [
-      Selection<unknown>,
-      ...Selection<unknown>[],
-    ],
-  >(
-    ...selections: Selections & AtMostSixteen<Selections>
-  ): RemoteQuery<PositionalOutput<Selections>> {
-    const query = this.#direct.query.bind(this.#direct) as unknown as (
-      ...values: readonly [Selection<unknown>, ...Selection<unknown>[]]
-    ) => Query<PositionalOutput<Selections>>;
-    return createRemoteQuery(
-      query(
-        ...(selections as readonly [
-          Selection<unknown>,
-          ...Selection<unknown>[],
-        ]),
-      ),
-      this.#remote,
-    );
-  }
-
-  queryNamed<const Shape extends Readonly<Record<string, Selection<unknown>>>>(
-    selections: NamedSelectionInput<Shape>,
-  ): RemoteQuery<NamedOutput<Shape>> {
-    return createRemoteQuery(this.#direct.queryNamed(selections), this.#remote);
-  }
-}
-
-function createRemoteQuery<Output>(
-  direct: Query<Output>,
-  remote: RuntimeProjectionRemote,
-): RemoteQuery<Output> {
-  const Constructor = RemoteQuery as unknown as new (
-    state: RemoteQueryState,
-  ) => RemoteQuery<Output>;
-  return new Constructor({ direct, remote });
-}
-
-function remoteQueryState<Output>(query: RemoteQuery<Output>): Readonly<{
-  direct: Query<Output>;
-  remote: RuntimeProjectionRemote;
-}> {
-  return remoteQueryStateUnchecked(query);
-}
-
-function remoteQueryStateUnchecked<Output>(
-  query: RemoteQuery<Output>,
-): Readonly<{
-  direct: Query<Output>;
-  remote: RuntimeProjectionRemote;
-}> {
-  const state = remoteQueryStates.get(query);
-  if (state === undefined) {
-    throw new TypeError("generated RemoteQuery has invalid lineage");
-  }
-  return state as Readonly<{
-    direct: Query<Output>;
-    remote: RuntimeProjectionRemote;
-  }>;
 }
 
 function createQuery<Output>(state: QueryState): Query<Output> {
@@ -3729,24 +3354,6 @@ function groupedQueryState(query: object): GroupedQueryState {
   return state;
 }
 
-function createRemoteGroupedQuery<Group extends object>(
-  query: RemoteQuery<unknown>,
-  root: RuntimeProjectionMatchBinding,
-  group: RuntimeReductionGroup,
-): RemoteGroupedQuery<Group> {
-  const Constructor = RemoteGroupedQuery as unknown as new (
-    state: RemoteGroupedQueryState,
-  ) => RemoteGroupedQuery<Group>;
-  return new Constructor({ query, root, group });
-}
-
-function remoteGroupedQueryState(query: object): RemoteGroupedQueryState {
-  const state = remoteGroupedQueryStates.get(query);
-  if (state === undefined)
-    throw new TypeError("generated RemoteGroupedQuery has invalid lineage");
-  return state;
-}
-
 interface PreparedAggregateTerms {
   readonly reducers: RuntimeProjectionReduction[];
   readonly inputs: (RuntimeProjectionMatchField | null)[];
@@ -3782,13 +3389,6 @@ function prepareAggregateTerms(
     outputs.push(state.output);
   }
   return { reducers, inputs, outputs: Object.freeze(outputs) };
-}
-
-function directConnection(state: QueryState): RuntimeProjectionConnection {
-  if (state.connection === null) {
-    throw new TypeError("generated remote query cannot use a direct terminal");
-  }
-  return state.connection;
 }
 
 function selectionState(selection: object): SelectionState {

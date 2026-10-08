@@ -155,7 +155,7 @@ The constructor admits only generated player types allowed by the canonical
 `plays` facts. Generated reference values can supply an existing IID/key without
 hydrating a complete player.
 
-## Direct queries
+## Queries
 
 ```ts
 import { QuerySession } from "./generated/typescript/dist/index.js";
@@ -167,11 +167,19 @@ const employmentVar = session.exact(Employment);
 const adult = person.field(Person.age).gte(Age.create(18n));
 const employee = employmentVar.role(Employment.employee).connects(person);
 
-const rows = session
+const rows = await session
   .query(person, employmentVar)
   .where(adult, employee)
   .rows({ limit: 100n });
 ```
+
+`QuerySession(connection, { resources, cancellation, queryLimits })` runs on a
+direct `RustDatabase` or transaction, or on a proxy connection (see
+[Proxy queries](#proxy-queries)). Composition is synchronous and performs no
+I/O. Every terminal (`one`, `first`, `rows`, `pageBy`, `countBy`, `existsBy`,
+`aggregate`, grouped `aggregate`) returns a `Promise` on every connection;
+direct terminals run off the JavaScript thread, so they do not block the event
+loop.
 
 The generated query facade supports exact/subtype bindings, owner-aware fields
 and roles, comparison/string/Boolean predicates, explicit cross joins, bounded
@@ -181,7 +189,7 @@ counts, existence, and direct reducers/grouping.
 ```ts
 const left = session.exact(Person);
 const right = session.exact(Person);
-const pairs = session
+const pairs = await session
   .query(left, right)
   .allowCrossJoin(left, right)
   .rows({ limit: 10n });
@@ -206,44 +214,50 @@ try {
 Generated managers never commit a caller-owned transaction. Close read
 transactions after their final query terminal.
 
-## Remote queries
+## Proxy queries
 
-The generated package exports `RemoteQuerySession` and privately embeds its
-verified Query V2 authority. Supply the exact server advertisement, a
-caller-owned one-exchange callback, and resource limits—never an authority file
-or `QueryV2Authority`:
+A proxy connection runs the same program against a TypeBridge server. Only the
+connection changes:
 
 ```ts
 import {
+  ExchangeConnection,
   Person,
-  RemoteQuerySession,
+  QueryExecutionResourceLimits,
+  QuerySession,
+  connectProxy,
 } from "./generated/typescript/dist/index.js";
 
-const remote = new RemoteQuerySession(
-  advertisementBytes,
-  exchange,
-  {
-    maxItems: 100n,
-    maxBytes: 8_388_608n,
-    maxCollectionMembers: 1_000n,
-    maxGraphNodes: 1_000n,
-    maxAttributeValues: 1_000n,
-    maxRolePlayers: 1_000n,
-    deadlineMs: 30_000n,
-  },
+// The built-in HTTP route to the server's /v2/capabilities and /v2/query.
+const proxy = await connectProxy("https://typebridge.example", {
+  headers: [["Authorization", `Bearer ${token}`]],
+});
+const session = new QuerySession(proxy);
+
+// Or a host-owned transport that routes and authenticates itself.
+const hosted = new QuerySession(
+  new ExchangeConnection(advertisementBytes, exchange),
+  { resources: new QueryExecutionResourceLimits({ items: 100n }) },
 );
-const person = remote.exact(Person);
-const rows = await remote.query(person).rows({ limit: 50n });
+
+const person = session.exact(Person);
+const rows = await session.query(person).rows({ limit: 50n });
 ```
 
-`advertisementBytes` must come from the intended server over authenticated TLS
-or be pinned out of band. `exchange` performs one authenticated request and
-returns the exact response bytes; TypeBridge does not choose an HTTP client,
-credential policy, or retry policy. Query composition performs no I/O; `one`,
-`first`, bounded `rows`, `pageBy`, `countBy`, `existsBy`, and typed
-`aggregate`/`groupBy` each perform one exchange and hydrate the same generated
-classes and scalar groups as direct execution. Generated remote mutation APIs
-are not advertised.
+Both connections use the package's privately embedded, verified Query V2
+authority; no authority file or `QueryV2Authority` is passed. `connectProxy`
+fetches the server advertisement over the configured TLS mode (`tls`,
+`tlsRootCa`), or takes a pinned `advertisement`; `headers` carries caller
+authentication. It follows no redirects. `ExchangeConnection` takes
+advertisement bytes that came from the intended server over authenticated TLS
+or were pinned out of band, and an `exchange(request, signal?)` function that
+performs one request and resolves to the exact reply bytes; the host owns the
+HTTP client, credentials, and retry policy. Either takes `answerLimits`, the
+ceiling every session on the connection runs under.
+
+Each terminal performs one exchange and hydrates the same generated classes
+and scalar groups as direct execution. Generated remote mutation APIs are not
+advertised.
 
 ## Runtime boundary
 

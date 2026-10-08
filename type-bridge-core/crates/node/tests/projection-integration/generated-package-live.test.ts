@@ -670,55 +670,35 @@ async function runSdkJourney(
     assert.notEqual(storedMembership, null);
     assert.equal(storedMembership.member.identifier.value, membershipRecord.player.key);
 
-    const directRelationVariable = querySession.exact(Membership);
-    const directPersonVariable = querySession.exact(Person);
-    const [directRelation, directPerson] = querySession
-      .query(directRelationVariable, directPersonVariable)
-      .where(
-        directRelationVariable.role(Membership.member).connects(directPersonVariable),
-        directPersonVariable
-          .field(Person.identifier)
-          .eq(Identifier.create(fields.identifier.value)),
-      )
-      .one();
-    const directRole = normalizeRole(directRelation, directPerson);
-    const directPersonObservation = normalizePerson(directPerson, update.nickname);
-    observed.set(
-      observationKey("model_values_and_references", "direct_runtime"),
-      { ...directPersonObservation, reference: directRole.reference },
-    );
-    observed.set(
-      observationKey("hydrated_role_result", "direct_runtime"),
-      directRole.hydrated,
-    );
-    observed.set(observationKey("role_traversal", "direct_runtime"), directRole.traversal);
-
-    const remoteRelationVariable = remoteSession.exact(Membership);
-    const remotePersonVariable = remoteSession.exact(Person);
-    const requestsBefore = requests.length;
-    const [remoteRelation, remotePerson] = await remoteSession
-      .query(remoteRelationVariable, remotePersonVariable)
-      .where(
-        remoteRelationVariable.role(Membership.member).connects(remotePersonVariable),
-        remotePersonVariable
-          .field(Person.identifier)
-          .eq(Identifier.create(fields.identifier.value)),
-      )
-      .one();
-    const exchangeCount = requests.length - requestsBefore;
+    // One role query, run on the direct and the exchange connection.
+    const roleLane = async (session: any): Promise<number> => {
+      const relationVariable = session.exact(Membership);
+      const personVariable = session.exact(Person);
+      const requestsBefore = requests.length;
+      const [relation, player] = await session
+        .query(relationVariable, personVariable)
+        .where(
+          relationVariable.role(Membership.member).connects(personVariable),
+          personVariable
+            .field(Person.identifier)
+            .eq(Identifier.create(fields.identifier.value)),
+        )
+        .one();
+      const exchangeCount = requests.length - requestsBefore;
+      assert.ok(requests.slice(requestsBefore).every((request) => request.length > 0));
+      const lane = session === querySession ? "direct_runtime" : "remote_runtime";
+      const role = normalizeRole(relation, player);
+      observed.set(
+        observationKey("model_values_and_references", lane),
+        { ...normalizePerson(player, update.nickname), reference: role.reference },
+      );
+      observed.set(observationKey("hydrated_role_result", lane), role.hydrated);
+      observed.set(observationKey("role_traversal", lane), role.traversal);
+      return exchangeCount;
+    };
+    assert.equal(await roleLane(querySession), 0);
+    const exchangeCount = await roleLane(remoteSession);
     assert.equal(exchangeCount, 1);
-    assert.ok(requests.slice(requestsBefore).every((request) => request.length > 0));
-    const remoteRole = normalizeRole(remoteRelation, remotePerson);
-    const remotePersonObservation = normalizePerson(remotePerson, update.nickname);
-    observed.set(
-      observationKey("model_values_and_references", "remote_runtime"),
-      { ...remotePersonObservation, reference: remoteRole.reference },
-    );
-    observed.set(
-      observationKey("hydrated_role_result", "remote_runtime"),
-      remoteRole.hydrated,
-    );
-    observed.set(observationKey("role_traversal", "remote_runtime"), remoteRole.traversal);
     observed.set(
       observationKey("remote_one_exchange", "remote_runtime"),
       { exchange_count: exchangeCount, terminal: "one" },
@@ -954,14 +934,14 @@ async function sdkV2ResourceLimits(
   const errors: readonly [string, string][] = await Promise.all(
     [false, true].map(async (remote) => {
       const limits = new generated.QueryExecutionResourceLimits({ rolePlayers: 0n });
-      const session = remote
-        ? new generated.RemoteQuerySession(advertisement, exchange, limits)
-        : new generated.QuerySession(database, { resources: limits });
+      const connection = remote
+        ? new generated.ExchangeConnection(advertisement, exchange)
+        : database;
+      const session = new generated.QuerySession(connection, { resources: limits });
       const relation = session.exact(generated.Membership);
       const query = session.query(relation).where(relation.iid(membershipIid));
       try {
-        if (remote) await query.one();
-        else query.one();
+        await query.one();
       } catch (error) {
         const diagnostic = error as any;
         return [diagnostic.sdkCategory, diagnostic.code] as const;
@@ -987,14 +967,19 @@ async function sdkV2ResourceLimits(
     }),
   );
   try {
-    const session = new generated.QuerySession(ceilinged, { resources: plus });
-    const relation = session.exact(generated.Membership);
-    assert.throws(
-      () => session.query(relation).where(relation.iid(membershipIid)).one(),
-      (error: any) => error.sdkCategory === errors[0][0] && error.code === errors[0][1],
-      "a direct session must not exceed its connection's answer ceiling",
-    );
-    session.close();
+    const ceilingedExchange = new generated.ExchangeConnection(advertisement, exchange, {
+      answerLimits: new generated.QueryExecutionResourceLimits({ rolePlayers: 0n }),
+    });
+    for (const connection of [ceilinged, ceilingedExchange]) {
+      const session = new generated.QuerySession(connection, { resources: plus });
+      const relation = session.exact(generated.Membership);
+      await assert.rejects(
+        session.query(relation).where(relation.iid(membershipIid)).one(),
+        (error: any) => error.sdkCategory === errors[0][0] && error.code === errors[0][1],
+        "a session must not exceed its connection's answer ceiling",
+      );
+      session.close();
+    }
   } finally {
     ceilinged.close();
   }
@@ -1019,91 +1004,54 @@ async function sdkV2Lifecycle(
   exchange: (request: Uint8Array, signal?: AbortSignal) => Promise<Uint8Array>,
   requests: readonly Uint8Array[],
 ): Promise<Record<string, unknown>> {
-  const directSession = new generated.QuerySession(database);
-  const directPerson = directSession.exact(generated.Person);
-  const directIdentifier = directPerson.field(generated.Person.identifier);
-  const directScope = directIdentifier.eq(generated.Identifier.create("query-ada"));
-  const directAncestor = directSession.query(directPerson).where(directScope);
-  const directSibling = directAncestor.clone();
-  const directClosedDescendant = directAncestor.where(
-    directPerson.field(generated.Person.score).gte(generated.Score.create(1n)),
-  );
-  directClosedDescendant.close();
-  directClosedDescendant.close();
-  const directAncestorUsable = sdkV2Key(directAncestor.one()) === "query-ada";
-  const directDescendant = directAncestor.where(
-    directPerson.field(generated.Person.score).gte(generated.Score.create(1n)),
-  );
-  const directResult = directDescendant.one();
-  directAncestor.close();
-  directAncestor.close();
-  let directRejected = false;
-  try {
-    directAncestor.one();
-  } catch (error) {
-    directRejected = (error as any).code === "query_resource_closed";
-  }
-  const direct = {
-    ancestor_usable_after_descendant_close: directAncestorUsable,
-    close_idempotent: directAncestor.isClosed && directClosedDescendant.isClosed,
-    descendant_usable_after_ancestor_close:
-      sdkV2Key(directDescendant.one()) === "query-ada",
-    handle_invalidated: directAncestor.isClosed,
-    post_close_io_count: 0,
-    post_close_rejected: directRejected,
-    session_usable_after_query_close:
-      sdkV2Key(directSession.query(directPerson).where(directScope).one()) === "query-ada",
-    sibling_usable: sdkV2Key(directSibling.one()) === "query-ada",
+  // One lifecycle program, run on a direct and an exchange connection.
+  const lane = async (session: any): Promise<[Record<string, unknown>, any]> => {
+    const person = session.exact(generated.Person);
+    const identifier = person.field(generated.Person.identifier);
+    const scope = identifier.eq(generated.Identifier.create("query-ada"));
+    const ancestor = session.query(person).where(scope);
+    const sibling = ancestor.clone();
+    const closedDescendant = ancestor.where(
+      person.field(generated.Person.score).gte(generated.Score.create(1n)),
+    );
+    closedDescendant.close();
+    closedDescendant.close();
+    const ancestorUsable = sdkV2Key(await ancestor.one()) === "query-ada";
+    const descendant = ancestor.where(
+      person.field(generated.Person.score).gte(generated.Score.create(1n)),
+    );
+    const result = await descendant.one();
+    ancestor.close();
+    ancestor.close();
+    const requestsBeforeRejection = requests.length;
+    let rejected = false;
+    try {
+      await ancestor.one();
+    } catch (error) {
+      rejected = (error as any).code === "query_resource_closed";
+    }
+    const postCloseIoCount = requests.length - requestsBeforeRejection;
+    const observation = {
+      ancestor_usable_after_descendant_close: ancestorUsable,
+      close_idempotent: ancestor.isClosed && closedDescendant.isClosed,
+      descendant_usable_after_ancestor_close:
+        sdkV2Key(await descendant.one()) === "query-ada",
+      handle_invalidated: ancestor.isClosed,
+      post_close_io_count: postCloseIoCount,
+      post_close_rejected: rejected,
+      session_usable_after_query_close:
+        sdkV2Key(await session.query(person).where(scope).one()) === "query-ada",
+      sibling_usable: sdkV2Key(await sibling.one()) === "query-ada",
+    };
+    descendant.close();
+    sibling.close();
+    session.close();
+    return [observation, result];
   };
-  directDescendant.close();
-  directSibling.close();
-  directSession.close();
-
-  const remoteSession = new generated.RemoteQuerySession(
-    advertisement,
-    exchange,
-    new generated.QueryExecutionResourceLimits(),
+  const [direct, directResult] = await lane(new generated.QuerySession(database));
+  const [remote, remoteResult] = await lane(
+    new generated.QuerySession(new generated.ExchangeConnection(advertisement, exchange)),
   );
-  const remotePerson = remoteSession.exact(generated.Person);
-  const remoteIdentifier = remotePerson.field(generated.Person.identifier);
-  const remoteScope = remoteIdentifier.eq(generated.Identifier.create("query-ada"));
-  const remoteAncestor = remoteSession.query(remotePerson).where(remoteScope);
-  const remoteSibling = remoteAncestor.clone();
-  const remoteClosedDescendant = remoteAncestor.where(
-    remotePerson.field(generated.Person.score).gte(generated.Score.create(1n)),
-  );
-  remoteClosedDescendant.close();
-  remoteClosedDescendant.close();
-  const remoteAncestorUsable = sdkV2Key(await remoteAncestor.one()) === "query-ada";
-  const remoteDescendant = remoteAncestor.where(
-    remotePerson.field(generated.Person.score).gte(generated.Score.create(1n)),
-  );
-  const remoteResult = await remoteDescendant.one();
-  remoteAncestor.close();
-  remoteAncestor.close();
-  const requestsBeforeRejection = requests.length;
-  let remoteRejected = false;
-  try {
-    await remoteAncestor.one();
-  } catch (error) {
-    remoteRejected = (error as any).code === "query_resource_closed";
-  }
-  const postCloseIoCount = requests.length - requestsBeforeRejection;
-  const remote = {
-    ancestor_usable_after_descendant_close: remoteAncestorUsable,
-    close_idempotent: remoteAncestor.isClosed && remoteClosedDescendant.isClosed,
-    descendant_usable_after_ancestor_close:
-      sdkV2Key(await remoteDescendant.one()) === "query-ada",
-    handle_invalidated: remoteAncestor.isClosed,
-    post_close_io_count: postCloseIoCount,
-    post_close_rejected: remoteRejected,
-    session_usable_after_query_close:
-      sdkV2Key(await remoteSession.query(remotePerson).where(remoteScope).one()) === "query-ada",
-    sibling_usable: sdkV2Key(await remoteSibling.one()) === "query-ada",
-  };
-  remoteDescendant.close();
-  remoteSibling.close();
-  remoteSession.close();
   assert.deepEqual(remote, direct);
   return {
     lanes: ["direct", "remote"],
@@ -1113,6 +1061,402 @@ async function sdkV2Lifecycle(
       && sdkV2Key(remoteResult) === "query-ada",
   };
 }
+
+function sdkV2Reducers(
+    values: readonly unknown[],
+    binding: readonly any[],
+    field: readonly any[],
+    tuple: readonly any[],
+  ): Record<string, unknown> {
+    const bits = (value: unknown): string => {
+      assert.equal(typeof value, "number");
+      const bytes = Buffer.alloc(8);
+      bytes.writeDoubleBE(value as number);
+      return bytes.toString("hex");
+    };
+    return {
+      reducers: {
+        count: Number(values[0]),
+        sum: Number(values[1]),
+        min: Number(values[2]),
+        max: Number(values[3]),
+        mean_bits: bits(values[4]),
+        median_bits: bits(values[5]),
+        std_bits: bits(values[6]),
+      },
+      groups: {
+        binding: binding.map(([group, result]) => ({
+          model: "person",
+          key: group.identifier.value,
+          count: Number(result[0]),
+        })),
+        field: field.map(([group, result]) => ({
+          key: Number(group.value),
+          count: Number(result[0]),
+        })),
+        field_tuple: tuple.map(([[score, scoreGte], result]) => ({
+          key: [Number(score.value), Number(scoreGte.value)],
+          count: Number(result[0]),
+        })),
+      },
+    };
+}
+
+/**
+ * The sdk-v2 query program, run once per connection. Every lane observation
+ * comes from this one program, so the direct and remote lanes differ only in
+ * the connection the session was opened on.
+ */
+async function sdkV2QueryLane(
+  generated: any,
+  session: any,
+  requests: readonly Uint8Array[],
+  personIids: readonly string[],
+  membershipIid: string,
+  networkIid: string,
+): Promise<{
+  observations: Record<string, Record<string, unknown>>;
+  oneExchange: number;
+}> {
+  const {
+    Employee,
+    Identifier,
+    Membership,
+    NetworkLink,
+    Person,
+    Score,
+    ValBool,
+    aggregate,
+    integerInput,
+    qualifyingScore,
+  } = generated;
+  const person = session.exact(Person);
+  const identifier = person.field(Person.identifier);
+  const scope = identifier.eq(Identifier.create("query-ada"))
+    .or(identifier.eq(Identifier.create("query-dana")));
+  const query = session.query(person).where(scope);
+  const keys = (await query.rows({
+    limit: 2n,
+    orderBy: [identifier.asc()],
+  })).map((person: any) => person.identifier.value);
+  const ada = await session
+    .query(person)
+    .where(identifier.eq(Identifier.create("query-ada")))
+    .one();
+  const membershipVar = session.exact(Membership);
+  const member = session.exact(Person);
+  const membership = await session
+    .query(membershipVar)
+    .match(member)
+    .where(
+      membershipVar.iid(membershipIid),
+      membershipVar.role(Membership.member).connects(member),
+      member.field(Person.identifier).eq(Identifier.create("query-ada")),
+    )
+    .one();
+  const networkVar = session.exact(NetworkLink);
+  const origin = session.exact(Person);
+  const destination = session.exact(Person);
+  const network = await session
+    .query(networkVar)
+    .match(origin, destination)
+    .where(
+      networkVar.iid(networkIid),
+      networkVar.role(NetworkLink.origin).connects(origin),
+      networkVar.role(NetworkLink.destination).connects(destination),
+      origin.field(Person.identifier).eq(Identifier.create("query-ada")),
+      destination.field(Person.identifier).eq(Identifier.create("query-dana")),
+    )
+    .one();
+
+  const ownerKeys = sdkV2Keys(
+    await session
+      .query(person)
+      .where(person.field(Person.score).isPresent(), scope)
+      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+  );
+  const optionalKeys = sdkV2Keys(
+    await session
+      .query(person)
+      .where(person.field(Person.nickname).isPresent(), scope)
+      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+  );
+  const iidKeys = sdkV2Keys(
+    await session
+      .query(person)
+      .where(person.iidIn(personIids))
+      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+  );
+
+  const employeeExact = session.exact(Employee);
+  const employeeExactId = employeeExact.field(Employee.identifier);
+  const exactValues = await session
+    .query(employeeExact)
+    .where(
+      employeeExactId.eq(Identifier.create("query-employee"))
+        .or(employeeExactId.eq(Identifier.create("query-manager"))),
+    )
+    .rows({ limit: 2n, orderBy: [employeeExactId.asc()] });
+  const employeeSubtypes = session.subtypes(Employee);
+  const employeeSubtypesId = employeeSubtypes.field(Employee.identifier);
+  const subtypeValues = await session
+    .query(employeeSubtypes)
+    .where(
+      employeeSubtypesId.eq(Identifier.create("query-employee"))
+        .or(employeeSubtypesId.eq(Identifier.create("query-manager"))),
+    )
+    .rows({ limit: 2n, orderBy: [employeeSubtypesId.asc()] });
+
+  const score = person.field(Person.score);
+  const scoreGte = person.field(Person.scoreGte);
+  const boolean = person.field(Person.valBool);
+  const andKeys = sdkV2Keys(
+    await session
+      .query(person)
+      .where(
+        scope,
+        score.gte(Score.create(40n)).and(boolean.eq(ValBool.create(true))),
+      )
+      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+  );
+  const orKeys = sdkV2Keys(
+    await session
+      .query(person)
+      .where(scope)
+      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+  );
+  const notKeys = sdkV2Keys(
+    await session
+      .query(person)
+      .where(scope, boolean.eq(ValBool.create(true)).not())
+      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+  );
+  const fieldComparisonKeys = sdkV2Keys(
+    await session
+      .query(person)
+      .where(scope, score.gteField(scoreGte))
+      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+  );
+
+  const source = session.exact(Person);
+  const target = session.exact(Person);
+  const reachable = session.reachable(
+    source,
+    target,
+    NetworkLink,
+    NetworkLink.origin,
+    NetworkLink.destination,
+    { minDepth: 1, maxDepth: 1 },
+  );
+  const reachablePair = await session
+    .query(source, target)
+    .where(
+      reachable,
+      source.field(Person.identifier).eq(Identifier.create("query-ada")),
+      target.field(Person.identifier).eq(Identifier.create("query-dana")),
+    )
+    .one();
+  const crossLeft = session.exact(Person);
+  const crossRight = session.exact(Person);
+  const crossLeftId = crossLeft.field(Person.identifier);
+  const crossRightId = crossRight.field(Person.identifier);
+  const crossScope = crossLeftId.eq(Identifier.create("query-ada"))
+    .or(crossLeftId.eq(Identifier.create("query-dana")))
+    .and(
+      crossRightId.eq(Identifier.create("query-ada"))
+        .or(crossRightId.eq(Identifier.create("query-dana"))),
+    );
+  const crossPairs = (await session
+    .query(crossLeft, crossRight)
+    .allowCrossJoin(crossLeft, crossRight)
+    .where(crossScope)
+    .rows({
+      limit: 4n,
+      orderBy: [crossLeftId.asc(), crossRightId.asc()],
+    }))
+    .map(([left, right]: readonly any[]) => [sdkV2Key(left), sdkV2Key(right)]);
+
+  const selectionLink = session.exact(NetworkLink);
+  const selectionOrigin = session.exact(Person);
+  const selectionParticipant = session.exact(Person);
+  const selectionPredicates = [
+    selectionLink.iid(networkIid),
+    selectionLink.role(NetworkLink.origin).connects(selectionOrigin),
+    selectionLink.role(NetworkLink.participant).connects(selectionParticipant),
+  ] as const;
+  const selectionParticipants = selectionParticipant
+    .collect()
+    .distinct()
+    .orderBy(selectionParticipant.field(Person.identifier).asc());
+  const positionalPage = await session
+    .query(selectionOrigin, selectionParticipants)
+    .match(selectionLink)
+    .where(...selectionPredicates)
+    .pageBy(selectionOrigin, {
+      limit: 1n,
+      orderBy: [selectionOrigin.field(Person.identifier).asc()],
+      includeTotal: true,
+    });
+  assert.equal(Number(positionalPage.total), 1);
+  assert.equal(positionalPage.items.length, 1);
+  const [positionalOrigin, positionalParticipants] =
+    positionalPage.items[0];
+  const namedPage = await session
+    .queryNamed({ origin: selectionOrigin, participants: selectionParticipants })
+    .match(selectionLink)
+    .where(...selectionPredicates)
+    .pageBy(selectionOrigin, {
+      limit: 1n,
+      orderBy: [selectionOrigin.field(Person.identifier).asc()],
+      includeTotal: true,
+    });
+  assert.equal(Number(namedPage.total), 1);
+  assert.equal(namedPage.items.length, 1);
+  const named = namedPage.items[0];
+  const selection = {
+    positional: [
+      sdkV2Key(positionalOrigin),
+      sdkV2Keys(positionalParticipants),
+    ],
+    named: {
+      origin: sdkV2Key(named.origin),
+      participants: sdkV2Keys(named.participants),
+    },
+    collected_distinct:
+      new Set(positionalParticipants.map((value: any) => value.iid)).size
+      === positionalParticipants.length,
+    collection_order: "identifier_asc",
+  };
+
+  const requestsBeforeOne = requests.length;
+  const dana = await session
+    .query(person)
+    .where(identifier.eq(Identifier.create("query-dana")))
+    .one();
+  const oneExchange = requests.length - requestsBeforeOne;
+  const first = await query.first({ orderBy: [identifier.asc()] });
+  const page = await query.pageBy(person, {
+    limit: 1n,
+    orderBy: [identifier.asc()],
+    includeTotal: true,
+  });
+  const terminals = {
+    one: sdkV2Key(dana),
+    first: sdkV2Key(first),
+    rows: keys,
+    page: {
+      items: sdkV2Keys(page.items),
+      offset: Number(page.offset),
+      limit: Number(page.limit),
+      total: Number(page.total),
+    },
+    count: Number(await query.countBy(person)),
+    exists: await query.existsBy(person),
+  };
+  const scalarDomainKeys = sdkV2Keys(
+    await session
+      .query(person)
+      .where(scope, score.gte(Score.create(40n)))
+      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+  );
+  const values = await query.aggregate(person, [
+    aggregate.count(),
+    aggregate.sum(score),
+    aggregate.min(score),
+    aggregate.max(score),
+    aggregate.mean(score),
+    aggregate.median(score),
+    aggregate.std(score),
+  ] as const);
+  const groupPerson = session.exact(Person);
+  const groupIdentifier = groupPerson.field(Person.identifier);
+  const binding = await query
+    .match(groupPerson)
+    .where(identifier.eqField(groupIdentifier))
+    .groupBy(person, groupPerson)
+    .aggregate([aggregate.count()] as const);
+  const field = await query
+    .groupBy(person, score)
+    .aggregate([aggregate.count()] as const);
+  const tuple = await query
+    .groupBy(person, score, person.field(Person.scoreGte))
+    .aggregate([aggregate.count()] as const);
+  const reducers = sdkV2Reducers(
+    values,
+    binding,
+    field,
+    tuple,
+  );
+
+  const minimum = integerInput(session, Score.create(30n));
+  const call = qualifyingScore(session, person, minimum);
+  const functionValues = (await query
+    .where(call.gteField(score))
+    .rows({ limit: 2n, orderBy: [identifier.asc()] }))
+    .map((person: any) => Number(person.score.value));
+  const nested = qualifyingScore(session, person, call);
+  const nestedFunctionValues = (await query
+    .where(nested.gteField(score))
+    .rows({ limit: 2n, orderBy: [identifier.asc()] }))
+    .map((person: any) => Number(person.score.value));
+  let diagnostic: Record<string, unknown> | undefined;
+  try {
+    await query.one();
+  } catch (error) {
+    diagnostic = sdkV2CardinalityDiagnostic(error);
+  }
+  assert.notEqual(diagnostic, undefined, "one() over two rows must fail");
+  return {
+    oneExchange,
+    observations: {
+      model_values_and_references: sdkV2PersonValues(generated, ada, membership),
+      owner_iid_set: {
+        owner_field: "score",
+        owner_keys: ownerKeys,
+        optional_field: "nickname",
+        optional_present_keys: optionalKeys,
+        iid_set_keys: iidKeys,
+      },
+      exact_subtypes: {
+        declared_model: "employee",
+        exact: exactValues.map((value: any) => sdkV2ModelKey(generated, value)),
+        subtypes: subtypeValues.map((value: any) => sdkV2ModelKey(generated, value)),
+      },
+      scalar_boolean: {
+        and_keys: andKeys,
+        or_keys: orKeys,
+        not_keys: notKeys,
+        field_comparison_keys: fieldComparisonKeys,
+      },
+      roles: sdkV2RoleObservation(generated, membership, network),
+      topology: {
+        reachable: [{
+          from: sdkV2Key(reachablePair[0]),
+          to: sdkV2Key(reachablePair[1]),
+          max_hops: 1,
+        }],
+        cross_join_pairs: crossPairs,
+      },
+      selection_shapes: selection,
+      terminals,
+      grouped_reducer: reducers,
+      hydrated_result: sdkV2HydratedResult(generated, membership),
+      scalar_domain: {
+        domain: "long",
+        operator: "gte",
+        operand: 40,
+        keys: scalarDomainKeys,
+      },
+      schema_function: {
+        minimum: 30,
+        values: functionValues,
+        nested_values: nestedFunctionValues,
+      },
+      structured_query_diagnostic: diagnostic as Record<string, unknown>,
+    },
+  };
+}
+
 
 async function runSdkV2Journey(
   generated: any,
@@ -1242,684 +1586,31 @@ async function runSdkV2Journey(
     const entityReadAfterCreate = personManager.getByIid(personIids[0]) !== null;
     const relationReadAfterCreate = membershipManager.getByIid(membershipIid) !== null;
 
+    const lane = (session: any) => sdkV2QueryLane(
+      generated,
+      session,
+      requests,
+      personIids,
+      membershipIid,
+      networkIid,
+    );
     const directSession = new generated.QuerySession(database);
-    const directPerson = directSession.exact(Person);
-    const directIdentifier = directPerson.field(Person.identifier);
-    const directScope = directIdentifier.eq(Identifier.create("query-ada"))
-      .or(directIdentifier.eq(Identifier.create("query-dana")));
-    const directQuery = directSession.query(directPerson).where(directScope);
-    const directKeys = directQuery
-      .rows({ limit: 2n, orderBy: [directIdentifier.asc()] })
-      .map((person: any) => person.identifier.value);
-    assert.deepEqual(directKeys, ["query-ada", "query-dana"]);
-    const directAda = directSession
-      .query(directPerson)
-      .where(directIdentifier.eq(Identifier.create("query-ada")))
-      .one();
-
-    const directMembershipVar = directSession.exact(Membership);
-    const directMember = directSession.exact(Person);
-    const directMembership = directSession
-      .query(directMembershipVar)
-      .match(directMember)
-      .where(
-        directMembershipVar.iid(membershipIid),
-        directMembershipVar.role(Membership.member).connects(directMember),
-        directMember.field(Person.identifier).eq(Identifier.create("query-ada")),
-      )
-      .one();
-    const directNetworkVar = directSession.exact(NetworkLink);
-    const directOrigin = directSession.exact(Person);
-    const directDestination = directSession.exact(Person);
-    const directNetwork = directSession
-      .query(directNetworkVar)
-      .match(directOrigin, directDestination)
-      .where(
-        directNetworkVar.iid(networkIid),
-        directNetworkVar.role(NetworkLink.origin).connects(directOrigin),
-        directNetworkVar.role(NetworkLink.destination).connects(directDestination),
-        directOrigin.field(Person.identifier).eq(Identifier.create("query-ada")),
-        directDestination.field(Person.identifier).eq(Identifier.create("query-dana")),
-      )
-      .one();
-
-    const directOwnerKeys = sdkV2Keys(
-      directSession
-        .query(directPerson)
-        .where(directPerson.field(Person.score).isPresent(), directScope)
-        .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
-    );
-    const directOptionalKeys = sdkV2Keys(
-      directSession
-        .query(directPerson)
-        .where(directPerson.field(Person.nickname).isPresent(), directScope)
-        .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
-    );
-    const directIidKeys = sdkV2Keys(
-      directSession
-        .query(directPerson)
-        .where(directPerson.iidIn(personIids))
-        .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
-    );
-
-    const directEmployeeExact = directSession.exact(Employee);
-    const directEmployeeExactId = directEmployeeExact.field(Employee.identifier);
-    const directExactValues = directSession
-      .query(directEmployeeExact)
-      .where(
-        directEmployeeExactId.eq(Identifier.create("query-employee"))
-          .or(directEmployeeExactId.eq(Identifier.create("query-manager"))),
-      )
-      .rows({ limit: 2n, orderBy: [directEmployeeExactId.asc()] });
-    const directEmployeeSubtypes = directSession.subtypes(Employee);
-    const directEmployeeSubtypesId = directEmployeeSubtypes.field(Employee.identifier);
-    const directSubtypeValues = directSession
-      .query(directEmployeeSubtypes)
-      .where(
-        directEmployeeSubtypesId.eq(Identifier.create("query-employee"))
-          .or(directEmployeeSubtypesId.eq(Identifier.create("query-manager"))),
-      )
-      .rows({ limit: 2n, orderBy: [directEmployeeSubtypesId.asc()] });
-
-    const directScore = directPerson.field(Person.score);
-    const directScoreGte = directPerson.field(Person.scoreGte);
-    const directBoolean = directPerson.field(Person.valBool);
-    const directAndKeys = sdkV2Keys(
-      directSession
-        .query(directPerson)
-        .where(
-          directScope,
-          directScore.gte(Score.create(40n)).and(directBoolean.eq(ValBool.create(true))),
-        )
-        .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
-    );
-    const directOrKeys = sdkV2Keys(
-      directSession
-        .query(directPerson)
-        .where(directScope)
-        .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
-    );
-    const directNotKeys = sdkV2Keys(
-      directSession
-        .query(directPerson)
-        .where(directScope, directBoolean.eq(ValBool.create(true)).not())
-        .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
-    );
-    const directFieldComparisonKeys = sdkV2Keys(
-      directSession
-        .query(directPerson)
-        .where(directScope, directScore.gteField(directScoreGte))
-        .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
-    );
-
-    const directSource = directSession.exact(Person);
-    const directTarget = directSession.exact(Person);
-    const directReachable = directSession.reachable(
-      directSource,
-      directTarget,
-      NetworkLink,
-      NetworkLink.origin,
-      NetworkLink.destination,
-      { minDepth: 1, maxDepth: 1 },
-    );
-    const directReachablePair = directSession
-      .query(directSource, directTarget)
-      .where(
-        directReachable,
-        directSource.field(Person.identifier).eq(Identifier.create("query-ada")),
-        directTarget.field(Person.identifier).eq(Identifier.create("query-dana")),
-      )
-      .one();
-    const directCrossLeft = directSession.exact(Person);
-    const directCrossRight = directSession.exact(Person);
-    const directCrossLeftId = directCrossLeft.field(Person.identifier);
-    const directCrossRightId = directCrossRight.field(Person.identifier);
-    const directCrossScope = directCrossLeftId.eq(Identifier.create("query-ada"))
-      .or(directCrossLeftId.eq(Identifier.create("query-dana")))
-      .and(
-        directCrossRightId.eq(Identifier.create("query-ada"))
-          .or(directCrossRightId.eq(Identifier.create("query-dana"))),
-      );
-    const directCrossPairs = directSession
-      .query(directCrossLeft, directCrossRight)
-      .allowCrossJoin(directCrossLeft, directCrossRight)
-      .where(directCrossScope)
-      .rows({
-        limit: 4n,
-        orderBy: [directCrossLeftId.asc(), directCrossRightId.asc()],
-      })
-      .map(([left, right]: readonly any[]) => [sdkV2Key(left), sdkV2Key(right)]);
-
-    const selectionLink = directSession.exact(NetworkLink);
-    const selectionOrigin = directSession.exact(Person);
-    const selectionParticipant = directSession.exact(Person);
-    const selectionPredicates = [
-      selectionLink.iid(networkIid),
-      selectionLink.role(NetworkLink.origin).connects(selectionOrigin),
-      selectionLink.role(NetworkLink.participant).connects(selectionParticipant),
-    ] as const;
-    const selectionParticipants = selectionParticipant
-      .collect()
-      .distinct()
-      .orderBy(selectionParticipant.field(Person.identifier).asc());
-    const directPositionalPage = directSession
-      .query(selectionOrigin, selectionParticipants)
-      .match(selectionLink)
-      .where(...selectionPredicates)
-      .pageBy(selectionOrigin, {
-        limit: 1n,
-        orderBy: [selectionOrigin.field(Person.identifier).asc()],
-        includeTotal: true,
-      });
-    assert.equal(Number(directPositionalPage.total), 1);
-    assert.equal(directPositionalPage.items.length, 1);
-    const [positionalOrigin, positionalParticipants] = directPositionalPage.items[0];
-    const directNamedPage = directSession
-      .queryNamed({ origin: selectionOrigin, participants: selectionParticipants })
-      .match(selectionLink)
-      .where(...selectionPredicates)
-      .pageBy(selectionOrigin, {
-        limit: 1n,
-        orderBy: [selectionOrigin.field(Person.identifier).asc()],
-        includeTotal: true,
-      });
-    assert.equal(Number(directNamedPage.total), 1);
-    assert.equal(directNamedPage.items.length, 1);
-    const directNamed = directNamedPage.items[0];
-    const directSelection = {
-      positional: [sdkV2Key(positionalOrigin), sdkV2Keys(positionalParticipants)],
-      named: {
-        origin: sdkV2Key(directNamed.origin),
-        participants: sdkV2Keys(directNamed.participants),
-      },
-      collected_distinct:
-        new Set(positionalParticipants.map((value: any) => value.iid)).size
-        === positionalParticipants.length,
-      collection_order: "identifier_asc",
-    };
-
-    const directDana = directSession
-      .query(directPerson)
-      .where(directIdentifier.eq(Identifier.create("query-dana")))
-      .one();
-    const directFirst = directQuery.first({ orderBy: [directIdentifier.asc()] });
-    const directPage = directQuery.pageBy(directPerson, {
-      limit: 1n,
-      orderBy: [directIdentifier.asc()],
-      includeTotal: true,
-    });
-    const directTerminals = {
-      one: sdkV2Key(directDana),
-      first: sdkV2Key(directFirst),
-      rows: directKeys,
-      page: {
-        items: sdkV2Keys(directPage.items),
-        offset: Number(directPage.offset),
-        limit: Number(directPage.limit),
-        total: Number(directPage.total),
-      },
-      count: Number(directQuery.countBy(directPerson)),
-      exists: directQuery.existsBy(directPerson),
-    };
-    let structuredQueryDiagnostic: Record<string, unknown> | undefined;
-    try {
-      directQuery.one();
-    } catch (error) {
-      structuredQueryDiagnostic = sdkV2CardinalityDiagnostic(error);
-    }
-    assert.notEqual(structuredQueryDiagnostic, undefined);
-    const directScalarDomainKeys = sdkV2Keys(
-      directSession
-        .query(directPerson)
-        .where(directScope, directScore.gte(Score.create(40n)))
-        .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
-    );
-
-    const normalizeReducers = (
-      values: readonly unknown[],
-      binding: readonly any[],
-      field: readonly any[],
-      tuple: readonly any[],
-    ): Record<string, unknown> => {
-      const bits = (value: unknown): string => {
-        assert.equal(typeof value, "number");
-        const bytes = Buffer.alloc(8);
-        bytes.writeDoubleBE(value as number);
-        return bytes.toString("hex");
-      };
-      return {
-        reducers: {
-          count: Number(values[0]),
-          sum: Number(values[1]),
-          min: Number(values[2]),
-          max: Number(values[3]),
-          mean_bits: bits(values[4]),
-          median_bits: bits(values[5]),
-          std_bits: bits(values[6]),
-        },
-        groups: {
-          binding: binding.map(([group, result]) => ({
-            model: "person",
-            key: group.identifier.value,
-            count: Number(result[0]),
-          })),
-          field: field.map(([group, result]) => ({
-            key: Number(group.value),
-            count: Number(result[0]),
-          })),
-          field_tuple: tuple.map(([[score, scoreGte], result]) => ({
-            key: [Number(score.value), Number(scoreGte.value)],
-            count: Number(result[0]),
-          })),
-        },
-      };
-    };
-    const directValues = directQuery.aggregate(directPerson, [
-      aggregate.count(),
-      aggregate.sum(directScore),
-      aggregate.min(directScore),
-      aggregate.max(directScore),
-      aggregate.mean(directScore),
-      aggregate.median(directScore),
-      aggregate.std(directScore),
-    ] as const);
-    const directGroupPerson = directSession.exact(Person);
-    const directGroupIdentifier = directGroupPerson.field(Person.identifier);
-    const directBinding = directQuery
-      .match(directGroupPerson)
-      .where(directIdentifier.eqField(directGroupIdentifier))
-      .groupBy(directPerson, directGroupPerson)
-      .aggregate([aggregate.count()] as const);
-    const directField = directQuery
-      .groupBy(directPerson, directScore)
-      .aggregate([aggregate.count()] as const);
-    const directTuple = directQuery
-      .groupBy(directPerson, directScore, directPerson.field(Person.scoreGte))
-      .aggregate([aggregate.count()] as const);
-    const directReducers = normalizeReducers(
-      directValues,
-      directBinding,
-      directField,
-      directTuple,
-    );
-    assert.deepEqual(directReducers, expected.grouped_reducer);
-
-    const directMinimum = integerInput(directSession, Score.create(30n));
-    const directCall = qualifyingScore(directSession, directPerson, directMinimum);
-    const directFunctionValues = directQuery
-      .where(directCall.gteField(directScore))
-      .rows({ limit: 2n, orderBy: [directIdentifier.asc()] })
-      .map((person: any) => Number(person.score.value));
-    assert.deepEqual(directFunctionValues, expected.schema_function.values);
-    const directNested = qualifyingScore(directSession, directPerson, directCall);
-    const directNestedFunctionValues = directQuery
-      .where(directNested.gteField(directScore))
-      .rows({ limit: 2n, orderBy: [directIdentifier.asc()] })
-      .map((person: any) => Number(person.score.value));
+    const direct = await lane(directSession).finally(() => directSession.close());
+    const remote = await lane(remoteSession);
+    // One program, two connections: the lanes must agree observation for
+    // observation before either is reported.
+    assert.deepEqual(remote.observations, direct.observations);
+    assert.deepEqual(direct.observations.grouped_reducer, expected.grouped_reducer);
     assert.deepEqual(
-      directNestedFunctionValues,
-      expected.schema_function.nested_values,
-    );
-
-    const remotePerson = remoteSession.exact(Person);
-    const remoteIdentifier = remotePerson.field(Person.identifier);
-    const remoteScope = remoteIdentifier.eq(Identifier.create("query-ada"))
-      .or(remoteIdentifier.eq(Identifier.create("query-dana")));
-    const remoteQuery = remoteSession.query(remotePerson).where(remoteScope);
-    const remoteKeys = (await remoteQuery.rows({
-      limit: 2n,
-      orderBy: [remoteIdentifier.asc()],
-    })).map((person: any) => person.identifier.value);
-    assert.deepEqual(remoteKeys, directKeys);
-    const remoteAda = await remoteSession
-      .query(remotePerson)
-      .where(remoteIdentifier.eq(Identifier.create("query-ada")))
-      .one();
-    const remoteMembershipVar = remoteSession.exact(Membership);
-    const remoteMember = remoteSession.exact(Person);
-    const remoteMembership = await remoteSession
-      .query(remoteMembershipVar)
-      .match(remoteMember)
-      .where(
-        remoteMembershipVar.iid(membershipIid),
-        remoteMembershipVar.role(Membership.member).connects(remoteMember),
-        remoteMember.field(Person.identifier).eq(Identifier.create("query-ada")),
-      )
-      .one();
-    const remoteNetworkVar = remoteSession.exact(NetworkLink);
-    const remoteOrigin = remoteSession.exact(Person);
-    const remoteDestination = remoteSession.exact(Person);
-    const remoteNetwork = await remoteSession
-      .query(remoteNetworkVar)
-      .match(remoteOrigin, remoteDestination)
-      .where(
-        remoteNetworkVar.iid(networkIid),
-        remoteNetworkVar.role(NetworkLink.origin).connects(remoteOrigin),
-        remoteNetworkVar.role(NetworkLink.destination).connects(remoteDestination),
-        remoteOrigin.field(Person.identifier).eq(Identifier.create("query-ada")),
-        remoteDestination.field(Person.identifier).eq(Identifier.create("query-dana")),
-      )
-      .one();
-
-    const remoteOwnerKeys = sdkV2Keys(
-      await remoteSession
-        .query(remotePerson)
-        .where(remotePerson.field(Person.score).isPresent(), remoteScope)
-        .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
-    );
-    const remoteOptionalKeys = sdkV2Keys(
-      await remoteSession
-        .query(remotePerson)
-        .where(remotePerson.field(Person.nickname).isPresent(), remoteScope)
-        .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
-    );
-    const remoteIidKeys = sdkV2Keys(
-      await remoteSession
-        .query(remotePerson)
-        .where(remotePerson.iidIn(personIids))
-        .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
-    );
-
-    const remoteEmployeeExact = remoteSession.exact(Employee);
-    const remoteEmployeeExactId = remoteEmployeeExact.field(Employee.identifier);
-    const remoteExactValues = await remoteSession
-      .query(remoteEmployeeExact)
-      .where(
-        remoteEmployeeExactId.eq(Identifier.create("query-employee"))
-          .or(remoteEmployeeExactId.eq(Identifier.create("query-manager"))),
-      )
-      .rows({ limit: 2n, orderBy: [remoteEmployeeExactId.asc()] });
-    const remoteEmployeeSubtypes = remoteSession.subtypes(Employee);
-    const remoteEmployeeSubtypesId = remoteEmployeeSubtypes.field(Employee.identifier);
-    const remoteSubtypeValues = await remoteSession
-      .query(remoteEmployeeSubtypes)
-      .where(
-        remoteEmployeeSubtypesId.eq(Identifier.create("query-employee"))
-          .or(remoteEmployeeSubtypesId.eq(Identifier.create("query-manager"))),
-      )
-      .rows({ limit: 2n, orderBy: [remoteEmployeeSubtypesId.asc()] });
-
-    const remoteScore = remotePerson.field(Person.score);
-    const remoteScoreGte = remotePerson.field(Person.scoreGte);
-    const remoteBoolean = remotePerson.field(Person.valBool);
-    const remoteAndKeys = sdkV2Keys(
-      await remoteSession
-        .query(remotePerson)
-        .where(
-          remoteScope,
-          remoteScore.gte(Score.create(40n)).and(remoteBoolean.eq(ValBool.create(true))),
-        )
-        .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
-    );
-    const remoteOrKeys = sdkV2Keys(
-      await remoteSession
-        .query(remotePerson)
-        .where(remoteScope)
-        .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
-    );
-    const remoteNotKeys = sdkV2Keys(
-      await remoteSession
-        .query(remotePerson)
-        .where(remoteScope, remoteBoolean.eq(ValBool.create(true)).not())
-        .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
-    );
-    const remoteFieldComparisonKeys = sdkV2Keys(
-      await remoteSession
-        .query(remotePerson)
-        .where(remoteScope, remoteScore.gteField(remoteScoreGte))
-        .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
-    );
-
-    const remoteSource = remoteSession.exact(Person);
-    const remoteTarget = remoteSession.exact(Person);
-    const remoteReachable = remoteSession.reachable(
-      remoteSource,
-      remoteTarget,
-      NetworkLink,
-      NetworkLink.origin,
-      NetworkLink.destination,
-      { minDepth: 1, maxDepth: 1 },
-    );
-    const remoteReachablePair = await remoteSession
-      .query(remoteSource, remoteTarget)
-      .where(
-        remoteReachable,
-        remoteSource.field(Person.identifier).eq(Identifier.create("query-ada")),
-        remoteTarget.field(Person.identifier).eq(Identifier.create("query-dana")),
-      )
-      .one();
-    const remoteCrossLeft = remoteSession.exact(Person);
-    const remoteCrossRight = remoteSession.exact(Person);
-    const remoteCrossLeftId = remoteCrossLeft.field(Person.identifier);
-    const remoteCrossRightId = remoteCrossRight.field(Person.identifier);
-    const remoteCrossScope = remoteCrossLeftId.eq(Identifier.create("query-ada"))
-      .or(remoteCrossLeftId.eq(Identifier.create("query-dana")))
-      .and(
-        remoteCrossRightId.eq(Identifier.create("query-ada"))
-          .or(remoteCrossRightId.eq(Identifier.create("query-dana"))),
-      );
-    const remoteCrossPairs = (await remoteSession
-      .query(remoteCrossLeft, remoteCrossRight)
-      .allowCrossJoin(remoteCrossLeft, remoteCrossRight)
-      .where(remoteCrossScope)
-      .rows({
-        limit: 4n,
-        orderBy: [remoteCrossLeftId.asc(), remoteCrossRightId.asc()],
-      }))
-      .map(([left, right]: readonly any[]) => [sdkV2Key(left), sdkV2Key(right)]);
-
-    const remoteSelectionLink = remoteSession.exact(NetworkLink);
-    const remoteSelectionOrigin = remoteSession.exact(Person);
-    const remoteSelectionParticipant = remoteSession.exact(Person);
-    const remoteSelectionPredicates = [
-      remoteSelectionLink.iid(networkIid),
-      remoteSelectionLink.role(NetworkLink.origin).connects(remoteSelectionOrigin),
-      remoteSelectionLink.role(NetworkLink.participant).connects(remoteSelectionParticipant),
-    ] as const;
-    const remoteSelectionParticipants = remoteSelectionParticipant
-      .collect()
-      .distinct()
-      .orderBy(remoteSelectionParticipant.field(Person.identifier).asc());
-    const remotePositionalPage = await remoteSession
-      .query(remoteSelectionOrigin, remoteSelectionParticipants)
-      .match(remoteSelectionLink)
-      .where(...remoteSelectionPredicates)
-      .pageBy(remoteSelectionOrigin, {
-        limit: 1n,
-        orderBy: [remoteSelectionOrigin.field(Person.identifier).asc()],
-        includeTotal: true,
-      });
-    assert.equal(Number(remotePositionalPage.total), 1);
-    assert.equal(remotePositionalPage.items.length, 1);
-    const [remotePositionalOrigin, remotePositionalParticipants] =
-      remotePositionalPage.items[0];
-    const remoteNamedPage = await remoteSession
-      .queryNamed({ origin: remoteSelectionOrigin, participants: remoteSelectionParticipants })
-      .match(remoteSelectionLink)
-      .where(...remoteSelectionPredicates)
-      .pageBy(remoteSelectionOrigin, {
-        limit: 1n,
-        orderBy: [remoteSelectionOrigin.field(Person.identifier).asc()],
-        includeTotal: true,
-      });
-    assert.equal(Number(remoteNamedPage.total), 1);
-    assert.equal(remoteNamedPage.items.length, 1);
-    const remoteNamed = remoteNamedPage.items[0];
-    const remoteSelection = {
-      positional: [
-        sdkV2Key(remotePositionalOrigin),
-        sdkV2Keys(remotePositionalParticipants),
-      ],
-      named: {
-        origin: sdkV2Key(remoteNamed.origin),
-        participants: sdkV2Keys(remoteNamed.participants),
+      direct.observations.schema_function,
+      {
+        minimum: 30,
+        values: expected.schema_function.values,
+        nested_values: expected.schema_function.nested_values,
       },
-      collected_distinct:
-        new Set(remotePositionalParticipants.map((value: any) => value.iid)).size
-        === remotePositionalParticipants.length,
-      collection_order: "identifier_asc",
-    };
-
-    const requestsBeforeOne = requests.length;
-    const remoteDana = await remoteSession
-      .query(remotePerson)
-      .where(remoteIdentifier.eq(Identifier.create("query-dana")))
-      .one();
-    const remoteOneExchange = requests.length - requestsBeforeOne;
-    const remoteFirst = await remoteQuery.first({ orderBy: [remoteIdentifier.asc()] });
-    const remotePage = await remoteQuery.pageBy(remotePerson, {
-      limit: 1n,
-      orderBy: [remoteIdentifier.asc()],
-      includeTotal: true,
-    });
-    const remoteTerminals = {
-      one: sdkV2Key(remoteDana),
-      first: sdkV2Key(remoteFirst),
-      rows: remoteKeys,
-      page: {
-        items: sdkV2Keys(remotePage.items),
-        offset: Number(remotePage.offset),
-        limit: Number(remotePage.limit),
-        total: Number(remotePage.total),
-      },
-      count: Number(await remoteQuery.countBy(remotePerson)),
-      exists: await remoteQuery.existsBy(remotePerson),
-    };
-    const remoteScalarDomainKeys = sdkV2Keys(
-      await remoteSession
-        .query(remotePerson)
-        .where(remoteScope, remoteScore.gte(Score.create(40n)))
-        .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
     );
-    const remoteValues = await remoteQuery.aggregate(remotePerson, [
-      aggregate.count(),
-      aggregate.sum(remoteScore),
-      aggregate.min(remoteScore),
-      aggregate.max(remoteScore),
-      aggregate.mean(remoteScore),
-      aggregate.median(remoteScore),
-      aggregate.std(remoteScore),
-    ] as const);
-    const remoteGroupPerson = remoteSession.exact(Person);
-    const remoteGroupIdentifier = remoteGroupPerson.field(Person.identifier);
-    const remoteBinding = await remoteQuery
-      .match(remoteGroupPerson)
-      .where(remoteIdentifier.eqField(remoteGroupIdentifier))
-      .groupBy(remotePerson, remoteGroupPerson)
-      .aggregate([aggregate.count()] as const);
-    const remoteField = await remoteQuery
-      .groupBy(remotePerson, remoteScore)
-      .aggregate([aggregate.count()] as const);
-    const remoteTuple = await remoteQuery
-      .groupBy(remotePerson, remoteScore, remotePerson.field(Person.scoreGte))
-      .aggregate([aggregate.count()] as const);
-    const remoteReducers = normalizeReducers(
-      remoteValues,
-      remoteBinding,
-      remoteField,
-      remoteTuple,
-    );
-    assert.deepEqual(remoteReducers, directReducers);
-
-    const remoteMinimum = integerInput(remoteSession, Score.create(30n));
-    const remoteCall = qualifyingScore(remoteSession, remotePerson, remoteMinimum);
-    const remoteFunctionValues = (await remoteQuery
-      .where(remoteCall.gteField(remoteScore))
-      .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }))
-      .map((person: any) => Number(person.score.value));
-    assert.deepEqual(remoteFunctionValues, directFunctionValues);
-    const remoteNested = qualifyingScore(remoteSession, remotePerson, remoteCall);
-    const remoteNestedFunctionValues = (await remoteQuery
-      .where(remoteNested.gteField(remoteScore))
-      .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }))
-      .map((person: any) => Number(person.score.value));
-    assert.deepEqual(remoteNestedFunctionValues, directNestedFunctionValues);
-
-    const directModelValues = sdkV2PersonValues(generated, directAda, directMembership);
-    const remoteModelValues = sdkV2PersonValues(generated, remoteAda, remoteMembership);
-    assert.deepEqual(remoteModelValues, directModelValues);
-    const ownerIidSetDirect = {
-      owner_field: "score",
-      owner_keys: directOwnerKeys,
-      optional_field: "nickname",
-      optional_present_keys: directOptionalKeys,
-      iid_set_keys: directIidKeys,
-    };
-    const ownerIidSetRemote = {
-      owner_field: "score",
-      owner_keys: remoteOwnerKeys,
-      optional_field: "nickname",
-      optional_present_keys: remoteOptionalKeys,
-      iid_set_keys: remoteIidKeys,
-    };
-    assert.deepEqual(ownerIidSetRemote, ownerIidSetDirect);
-    const exactSubtypesDirect = {
-      declared_model: "employee",
-      exact: directExactValues.map((value: any) => sdkV2ModelKey(generated, value)),
-      subtypes: directSubtypeValues.map(
-        (value: any) => sdkV2ModelKey(generated, value),
-      ),
-    };
-    const exactSubtypesRemote = {
-      declared_model: "employee",
-      exact: remoteExactValues.map((value: any) => sdkV2ModelKey(generated, value)),
-      subtypes: remoteSubtypeValues.map(
-        (value: any) => sdkV2ModelKey(generated, value),
-      ),
-    };
-    assert.deepEqual(exactSubtypesRemote, exactSubtypesDirect);
-    const scalarBooleanDirect = {
-      and_keys: directAndKeys,
-      or_keys: directOrKeys,
-      not_keys: directNotKeys,
-      field_comparison_keys: directFieldComparisonKeys,
-    };
-    const scalarBooleanRemote = {
-      and_keys: remoteAndKeys,
-      or_keys: remoteOrKeys,
-      not_keys: remoteNotKeys,
-      field_comparison_keys: remoteFieldComparisonKeys,
-    };
-    assert.deepEqual(scalarBooleanRemote, scalarBooleanDirect);
-    const directRoles = sdkV2RoleObservation(generated, directMembership, directNetwork);
-    const remoteRoles = sdkV2RoleObservation(generated, remoteMembership, remoteNetwork);
-    assert.deepEqual(remoteRoles, directRoles);
-    const topologyDirect = {
-      reachable: [{
-        from: sdkV2Key(directReachablePair[0]),
-        to: sdkV2Key(directReachablePair[1]),
-        max_hops: 1,
-      }],
-      cross_join_pairs: directCrossPairs,
-    };
-    const topologyRemote = {
-      reachable: [{
-        from: sdkV2Key(remoteReachablePair[0]),
-        to: sdkV2Key(remoteReachablePair[1]),
-        max_hops: 1,
-      }],
-      cross_join_pairs: remoteCrossPairs,
-    };
-    assert.deepEqual(topologyRemote, topologyDirect);
-    assert.deepEqual(remoteSelection, directSelection);
-    assert.deepEqual(remoteTerminals, directTerminals);
-    const directHydrated = sdkV2HydratedResult(generated, directMembership);
-    const remoteHydrated = sdkV2HydratedResult(generated, remoteMembership);
-    assert.deepEqual(remoteHydrated, directHydrated);
-    const scalarDomainDirect = {
-      domain: "long",
-      operator: "gte",
-      operand: 40,
-      keys: directScalarDomainKeys,
-    };
-    const scalarDomainRemote = {
-      domain: "long",
-      operator: "gte",
-      operand: 40,
-      keys: remoteScalarDomainKeys,
-    };
-    assert.deepEqual(scalarDomainRemote, scalarDomainDirect);
-    assert.equal(remoteOneExchange, 1);
+    assert.equal(direct.oneExchange, 0);
+    assert.equal(remote.oneExchange, 1);
     const resourceLimits = await sdkV2ResourceLimits(
       generated,
       database,
@@ -1936,52 +1627,20 @@ async function runSdkV2Journey(
     );
 
     const observed = new Map<string, Record<string, unknown>>();
-    observed.set(
-      observationKey("model_values_and_references", "direct_runtime"),
-      directModelValues,
-    );
-    observed.set(
-      observationKey("model_values_and_references", "remote_runtime"),
-      remoteModelValues,
-    );
-    observed.set(observationKey("owner_iid_set", "direct_runtime"), ownerIidSetDirect);
-    observed.set(observationKey("owner_iid_set", "remote_runtime"), ownerIidSetRemote);
-    observed.set(observationKey("exact_subtypes", "direct_runtime"), exactSubtypesDirect);
-    observed.set(observationKey("exact_subtypes", "remote_runtime"), exactSubtypesRemote);
-    observed.set(observationKey("scalar_boolean", "direct_runtime"), scalarBooleanDirect);
-    observed.set(observationKey("scalar_boolean", "remote_runtime"), scalarBooleanRemote);
-    observed.set(observationKey("roles", "direct_runtime"), directRoles);
-    observed.set(observationKey("roles", "remote_runtime"), remoteRoles);
-    observed.set(observationKey("topology", "direct_runtime"), topologyDirect);
-    observed.set(observationKey("topology", "remote_runtime"), topologyRemote);
-    observed.set(observationKey("selection_shapes", "direct_runtime"), directSelection);
-    observed.set(observationKey("selection_shapes", "remote_runtime"), remoteSelection);
-    observed.set(observationKey("terminals", "direct_runtime"), directTerminals);
-    observed.set(observationKey("terminals", "remote_runtime"), remoteTerminals);
-    observed.set(observationKey("grouped_reducer", "direct_runtime"), directReducers);
-    observed.set(observationKey("grouped_reducer", "remote_runtime"), remoteReducers);
+    const { structured_query_diagnostic: diagnostic, ...laneObservations } =
+      direct.observations;
+    for (const [name, observation] of Object.entries(laneObservations)) {
+      observed.set(observationKey(name, "direct_runtime"), observation);
+      observed.set(
+        observationKey(name, "remote_runtime"),
+        remote.observations[name] as Record<string, unknown>,
+      );
+    }
     observed.set(observationKey("remote_one_exchange", "remote_runtime"), {
-      exchange_count: remoteOneExchange,
+      exchange_count: remote.oneExchange,
       terminal: "one",
     });
-    observed.set(observationKey("hydrated_result", "direct_runtime"), directHydrated);
-    observed.set(observationKey("hydrated_result", "remote_runtime"), remoteHydrated);
-    observed.set(observationKey("scalar_domain", "direct_runtime"), scalarDomainDirect);
-    observed.set(observationKey("scalar_domain", "remote_runtime"), scalarDomainRemote);
-    observed.set(observationKey("schema_function", "direct_runtime"), {
-      minimum: 30,
-      values: directFunctionValues,
-      nested_values: directNestedFunctionValues,
-    });
-    observed.set(observationKey("schema_function", "remote_runtime"), {
-      minimum: 30,
-      values: remoteFunctionValues,
-      nested_values: remoteNestedFunctionValues,
-    });
-    observed.set(
-      observationKey("structured_query_diagnostic", "diagnostic"),
-      structuredQueryDiagnostic as Record<string, unknown>,
-    );
+    observed.set(observationKey("structured_query_diagnostic", "diagnostic"), diagnostic);
     observed.set(observationKey("resource_limits", "direct_runtime"), resourceLimits);
     observed.set(observationKey("resource_limits", "remote_runtime"), resourceLimits);
     observed.set(
@@ -2179,7 +1838,9 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       Person,
       PlainActivity,
       QuerySession,
-      RemoteQuerySession,
+      ExchangeConnection,
+      QueryExecutionResourceLimits,
+      connectProxy,
       PROJECTION_FINGERPRINT_JSON,
       Rank,
       Robot,
@@ -2493,8 +2154,8 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
         .where(
           transactionPersonVar.field(Person.identifier).eq(Identifier.create("person-4")),
       );
-      assert.equal(transactionQuery.countBy(transactionPersonVar), 1n);
-      assert.equal(transactionQuery.first()?.iid, transactionPersonIid);
+      assert.equal(await transactionQuery.countBy(transactionPersonVar), 1n);
+      assert.equal((await transactionQuery.first())?.iid, transactionPersonIid);
     } finally {
       readTransaction.close();
     }
@@ -2588,7 +2249,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     );
 
     const scalarDomainVariable = querySession.exact(Person);
-    const scalarDomainPerson = querySession
+    const scalarDomainPerson = await querySession
       .query(scalarDomainVariable)
       .where(
         scalarDomainVariable.field(Person.identifier).eq(Identifier.create("person-1")),
@@ -2639,9 +2300,9 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     const counterQuery = querySession
       .query(counterVariable)
       .where(counterVariable.field(Counter.counterValue).eq(CounterValue.create(42n)));
-    assert.equal(counterQuery.one().iid, insertedCounter.iid);
-    assert.throws(
-      () => counterQuery.rows({ limit: 2n }),
+    assert.equal((await counterQuery.one()).iid, insertedCounter.iid);
+    await assert.rejects(
+      counterQuery.rows({ limit: 2n }),
       (boundedCounterError: any) => {
         assert.match(
           String(boundedCounterError),
@@ -2668,7 +2329,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     assert.equal(storedPlainActivity.participant.iid, insertedPerson.iid);
     const plainActivityVariable = querySession.exact(PlainActivity);
     const plainParticipantVariable = querySession.exact(Person);
-    const [queriedPlainActivity, queriedPlainParticipant] = querySession
+    const [queriedPlainActivity, queriedPlainParticipant] = await querySession
       .query(plainActivityVariable, plainParticipantVariable)
       .where(
         plainActivityVariable.role(PlainActivity.participant).connects(plainParticipantVariable),
@@ -2741,7 +2402,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
 
     const actorVariable = querySession.subtypes(Actor);
     const interactionVariable = querySession.exact(Interaction);
-    const polymorphicActorRows = querySession
+    const polymorphicActorRows = await querySession
       .query(interactionVariable)
       .match(actorVariable)
       .where(
@@ -2763,7 +2424,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
 
     const robotVariable = querySession.exact(Robot);
     const targetVariable = querySession.exact(Person);
-    const [queriedRobotInteraction, queriedRobot, queriedTarget] = querySession
+    const [queriedRobotInteraction, queriedRobot, queriedTarget] = await querySession
       .query(interactionVariable, robotVariable, targetVariable)
       .where(
         interactionVariable.role(Interaction.actor).connects(robotVariable),
@@ -2780,7 +2441,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     assert.equal(queriedTarget.iid, insertedPerson.iid);
 
     const personActorVariable = querySession.exact(Person);
-    const [queriedPersonInteraction, queriedPersonActor] = querySession
+    const [queriedPersonInteraction, queriedPersonActor] = await querySession
       .query(interactionVariable, personActorVariable)
       .where(
         interactionVariable.role(Interaction.actor).connects(personActorVariable),
@@ -2809,233 +2470,244 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     }
     assert.equal(robotManager.count(), 0n);
 
-    const personVariable = querySession.var(Person);
-    const collectedPersonVariable = querySession.var(Person);
-    const eventVariable = querySession.var(Event);
-    const identifierOrder = personVariable.field(Person.identifier).asc();
-    const personPredicate = personVariable
-      .field(Person.identifier)
-      .eq(Identifier.create("person-1"));
-    const eventPredicate = eventVariable.role(Event.subject).connects(personVariable);
-    const sameIdentifierPredicate = collectedPersonVariable
-      .field(Person.identifier)
-      .eqField(personVariable.field(Person.identifier));
-    const directQuery = querySession
-      .query(personVariable, eventVariable)
-      .where(personPredicate, eventPredicate);
-    const directOne = directQuery.one();
-    assert.equal(directOne[0].iid, insertedPerson.iid);
-    assert.equal(directOne[1].iid, insertedEvent.iid);
-    assert.equal(directOne[1].subject.iid, insertedPerson.iid);
-    const directRows = querySession
-      .query(personVariable)
-      .where(personPredicate)
-      .rows({ limit: 10n, orderBy: [identifierOrder] });
-    assert.equal(directRows.length, 1);
-    assert.equal(directRows[0].iid, insertedPerson.iid);
-    assert.equal(directRows[0].identifier.value, "person-1");
-    assert.deepEqual(
-      querySession
+    // One query program, run on a direct, an exchange, and a proxy
+    // connection. `terminal` wraps every terminal call so the exchange lane
+    // can prove each terminal is exactly one exchange.
+    const iids = (values: readonly { readonly iid: string | null }[]): (string | null)[] =>
+      values.map((value) => value.iid);
+    const queryProgram = async (
+      session: any,
+      terminal: (run: () => Promise<any>) => Promise<any>,
+    ): Promise<Record<string, unknown>> => {
+      const personVariable = session.var(Person);
+      const collectedPersonVariable = session.var(Person);
+      const eventVariable = session.var(Event);
+      const identifierOrder = personVariable.field(Person.identifier).asc();
+      const personPredicate = personVariable
+        .field(Person.identifier)
+        .eq(Identifier.create("person-1"));
+      const eventPredicate = eventVariable.role(Event.subject).connects(personVariable);
+      const sameIdentifierPredicate = collectedPersonVariable
+        .field(Person.identifier)
+        .eqField(personVariable.field(Person.identifier));
+      const pairQuery = session
+        .query(personVariable, eventVariable)
+        .where(personPredicate, eventPredicate);
+      const personQuery = session.query(personVariable).where(personPredicate);
+      const ordered = { limit: 10n, orderBy: [identifierOrder] };
+
+      const [onePerson, oneEvent] = await terminal(() => pairQuery.one());
+      const rows = await terminal(() => personQuery.rows(ordered));
+      const first = await terminal(() => personQuery.first({ orderBy: [identifierOrder] }));
+      const aliasesPresent = await terminal(() => session
         .query(personVariable)
         .where(personVariable.field(Person.aliases).isPresent())
-        .rows({ limit: 10n, orderBy: [identifierOrder] })
-        .map((candidate: { readonly iid: string | null }) => candidate.iid),
-      [insertedPerson.iid],
-    );
-    assert.deepEqual(
-      querySession
+        .rows(ordered));
+      const aliasesMissing = await terminal(() => session
         .query(personVariable)
         .where(personVariable.field(Person.aliases).isMissing())
-        .rows({ limit: 10n, orderBy: [identifierOrder] })
-        .map((candidate: { readonly iid: string | null }) => candidate.iid),
-      [...batchIids, transactionPersonIid],
-    );
-    assert.equal(
-      querySession.query(personVariable).where(personVariable.iid(insertedPerson.iid)).one().iid,
-      insertedPerson.iid,
-    );
-    assert.deepEqual(
-      querySession
+        .rows(ordered));
+      const byIid = await terminal(() => session
+        .query(personVariable)
+        .where(personVariable.iid(insertedPerson.iid))
+        .one());
+      const byIidSet = await terminal(() => session
         .query(personVariable)
         .where(personVariable.iidIn([insertedPerson.iid, insertedBatch[0].iid]))
-        .rows({ limit: 10n, orderBy: [identifierOrder] })
-        .map((candidate: { readonly iid: string | null }) => candidate.iid),
-      [insertedPerson.iid, insertedBatch[0].iid],
-    );
-    assert.deepEqual(
-      querySession.query(personVariable).rows({
-        limit: 2n,
-        offset: 1n,
-        orderBy: [identifierOrder],
-      }).map((candidate: { readonly identifier: { readonly value: string } }) => candidate.identifier.value),
-      ["person-2", "person-3"],
-    );
-    const identifierField = personVariable.field(Person.identifier);
-    const identifierValue = Identifier.create("person-1");
-    const generatedExpression = identifierField.startsWith(Identifier.create("person-"))
-      .and(identifierField.contains(Identifier.create("son-")))
-      .and(identifierField.endsWith(Identifier.create("-1")))
-      .and(identifierField.regex(Identifier.create("^person-1$")))
-      .and(identifierField.ne(identifierValue).not())
-      .and(
-        identifierField.eq(identifierValue)
-          .or(identifierField.eq(Identifier.create("does-not-exist"))),
+        .rows(ordered));
+      const offsetRows = await terminal(() => session
+        .query(personVariable)
+        .rows({ limit: 2n, offset: 1n, orderBy: [identifierOrder] }));
+      const identifierField = personVariable.field(Person.identifier);
+      const identifierValue = Identifier.create("person-1");
+      const generatedExpression = identifierField.startsWith(Identifier.create("person-"))
+        .and(identifierField.contains(Identifier.create("son-")))
+        .and(identifierField.endsWith(Identifier.create("-1")))
+        .and(identifierField.regex(Identifier.create("^person-1$")))
+        .and(identifierField.ne(identifierValue).not())
+        .and(
+          identifierField.eq(identifierValue)
+            .or(identifierField.eq(Identifier.create("does-not-exist"))),
+        );
+      const byExpression = await terminal(() =>
+        session.query(personVariable).where(generatedExpression).one());
+      const crossLeft = session.exact(Person);
+      const crossRight = session.exact(Person);
+      const crossPair = await terminal(() => session
+        .query(crossLeft, crossRight)
+        .allowCrossJoin(crossLeft, crossRight)
+        .where(
+          crossLeft.field(Person.identifier).eq(Identifier.create("person-1")),
+          crossRight.field(Person.identifier).eq(Identifier.create("person-2")),
+        )
+        .one());
+
+      const partyVariable = session.subtypes(Party);
+      const partyRows = await terminal(() => session.query(partyVariable).rows({
+        limit: 10n,
+        orderBy: [partyVariable.field(Party.identifier).asc()],
+      }));
+      const membershipSubtypeVariable = session.subtypes(Membership);
+      const membershipFamily = session.query(membershipSubtypeVariable);
+      const membershipCount = await terminal(() =>
+        membershipFamily.countBy(membershipSubtypeVariable));
+      const baseRelation = await terminal(() => membershipFamily
+        .where(membershipSubtypeVariable.iid(insertedMembership.iid))
+        .one());
+      const subtypeRelation = await terminal(() => membershipFamily
+        .where(membershipSubtypeVariable.iid(insertedEmployment.iid))
+        .one());
+
+      const reachableSource = session.exact(Person);
+      const reachableTarget = session.exact(Person);
+      const reachable = session.reachable(
+        reachableSource,
+        reachableTarget,
+        NetworkLink,
+        NetworkLink.origin,
+        NetworkLink.destination,
+        { minDepth: 1, maxDepth: 1 },
       );
-    assert.equal(
-      querySession.query(personVariable).where(generatedExpression).one().iid,
-      insertedPerson.iid,
-    );
-    const crossLeft = querySession.exact(Person);
-    const crossRight = querySession.exact(Person);
-    const crossPair = querySession
-      .query(crossLeft, crossRight)
-      .allowCrossJoin(crossLeft, crossRight)
-      .where(
-        crossLeft.field(Person.identifier).eq(Identifier.create("person-1")),
-        crossRight.field(Person.identifier).eq(Identifier.create("person-2")),
-      )
-      .one();
-    assert.deepEqual(
-      crossPair.map((candidate: { readonly iid: string | null }) => candidate.iid),
-      [insertedPerson.iid, insertedBatch[0].iid],
-    );
+      const reachablePair = await terminal(() => session
+        .query(reachableSource, reachableTarget)
+        .where(
+          reachable,
+          reachableSource.field(Person.identifier).eq(Identifier.create("person-1")),
+          reachableTarget.field(Person.identifier).eq(Identifier.create("person-2")),
+        )
+        .one());
+      const networkVariable = session.exact(NetworkLink);
+      const network = await terminal(() => session
+        .query(networkVariable)
+        .where(
+          networkVariable.iid(insertedNetwork.iid),
+          networkVariable.field(NetworkLink.nickname).isPresent(),
+        )
+        .one());
 
-    const partyVariable = querySession.subtypes(Party);
-    const partyRows = querySession.query(partyVariable).rows({
-      limit: 10n,
-      orderBy: [partyVariable.field(Party.identifier).asc()],
-    });
-    assert.deepEqual(
-      partyRows.map((candidate: { readonly __typebridgeModel: string }) => candidate.__typebridgeModel),
-      [Employee.typeKey, Manager.typeKey],
-    );
-    assert.deepEqual(
-      partyRows.map((candidate: { readonly iid: string | null }) => candidate.iid),
-      [insertedEmployee.iid, insertedManager.iid],
-    );
+      const allPeopleQuery = session.query(personVariable);
+      const allFirst = await terminal(() =>
+        allPeopleQuery.first({ orderBy: [identifierOrder] }));
+      const scoreField = personVariable.field(Person.score);
+      const reducers = await terminal(() => allPeopleQuery.aggregate(personVariable, [
+        aggregate.count(),
+        aggregate.sum(scoreField),
+        aggregate.min(scoreField),
+        aggregate.max(scoreField),
+        aggregate.mean(scoreField),
+        aggregate.median(scoreField),
+        aggregate.std(scoreField),
+      ] as const));
+      const fieldGrouped = await terminal(() => allPeopleQuery
+        .groupBy(personVariable, personVariable.field(Person.valBool))
+        .aggregate([aggregate.count(), aggregate.sum(scoreField)] as const));
+      const tupleGrouped = await terminal(() => allPeopleQuery
+        .groupBy(personVariable, personVariable.field(Person.valBool), scoreField)
+        .aggregate([aggregate.count(), aggregate.sum(scoreField)] as const));
+      await assert.rejects(
+        async () => allPeopleQuery.aggregate(personVariable, [
+          aggregate.sum(personVariable.field(Person.identifier)),
+        ] as const),
+        /long|double|numeric|reduc/i,
+      );
+      const eventGrouped = await terminal(() => pairQuery
+        .groupBy(personVariable, eventVariable)
+        .aggregate([aggregate.count(), aggregate.sum(scoreField)] as const));
+      const named = await terminal(() => session
+        .queryNamed({ person: personVariable })
+        .where(personPredicate)
+        .one());
+      const count = await terminal(() => pairQuery.countBy(personVariable));
+      const exists = await terminal(() => pairQuery.existsBy(personVariable));
+      const page = await terminal(() => session
+        .query(personVariable, collectedPersonVariable.collect().distinct())
+        .where(personPredicate, sameIdentifierPredicate)
+        .pageBy(personVariable, { limit: 10n, includeTotal: true }));
 
-    const membershipSubtypeVariable = querySession.subtypes(Membership);
-    const membershipFamily = querySession.query(membershipSubtypeVariable);
-    assert.equal(membershipFamily.countBy(membershipSubtypeVariable), 2n);
-    const queriedBaseRelation = membershipFamily
-      .where(membershipSubtypeVariable.iid(insertedMembership.iid))
-      .one();
-    assert.equal(queriedBaseRelation.__typebridgeModel, Membership.typeKey);
-    assert.equal(queriedBaseRelation.member.iid, insertedPerson.iid);
-    const queriedSubtypeRelation = membershipFamily
-      .where(membershipSubtypeVariable.iid(insertedEmployment.iid))
-      .one() as unknown as {
-        readonly __typebridgeModel: string;
-        readonly employee: { readonly iid: string | null };
-        readonly member?: unknown;
+      return {
+        one: [onePerson.iid, oneEvent.iid, oneEvent.subject.iid],
+        rows: rows.map((row: any) => [row.iid, row.identifier.value]),
+        first: first?.iid,
+        aliases_present: iids(aliasesPresent),
+        aliases_missing: iids(aliasesMissing),
+        by_iid: byIid.iid,
+        by_iid_set: iids(byIidSet),
+        offset_identifiers: offsetRows.map((row: any) => row.identifier.value),
+        by_expression: byExpression.iid,
+        cross_pair: iids(crossPair),
+        parties: partyRows.map((row: any) => [row.__typebridgeModel, row.iid]),
+        membership_count: membershipCount,
+        base_relation: [baseRelation.__typebridgeModel, baseRelation.member.iid],
+        subtype_relation: [
+          subtypeRelation.__typebridgeModel,
+          subtypeRelation.employee.iid,
+          Object.hasOwn(subtypeRelation, "member"),
+        ],
+        reachable: iids(reachablePair),
+        network: network.iid,
+        all_first: allFirst?.iid,
+        reducers: reducers.slice(0, 6),
+        std_type: typeof reducers[6],
+        field_grouped: fieldGrouped.map(([group, values]: any) => [group.value, values]),
+        tuple_grouped: tupleGrouped.map(([[boolGroup, scoreGroup], values]: any) => [
+          boolGroup.value,
+          scoreGroup.value,
+          values,
+        ]),
+        event_grouped: eventGrouped.map(([event, values]: any) => [event.iid, values]),
+        named: named.person.iid,
+        count,
+        exists,
+        page: {
+          items: page.items.map(([person, collected]: any) => [person.iid, iids(collected)]),
+          limit: page.limit,
+          offset: page.offset,
+          total: page.total,
+        },
       };
-    assert.equal(queriedSubtypeRelation.__typebridgeModel, Employment.typeKey);
-    assert.equal(queriedSubtypeRelation.employee.iid, insertedPerson.iid);
-    assert.equal(Object.hasOwn(queriedSubtypeRelation, "member"), false);
-
-    const reachableSource = querySession.exact(Person);
-    const reachableTarget = querySession.exact(Person);
-    const reachable = querySession.reachable(
-      reachableSource,
-      reachableTarget,
-      NetworkLink,
-      NetworkLink.origin,
-      NetworkLink.destination,
-      { minDepth: 1, maxDepth: 1 },
-    );
-    const reachablePair = querySession
-      .query(reachableSource, reachableTarget)
-      .where(
-        reachable,
-        reachableSource.field(Person.identifier).eq(Identifier.create("person-1")),
-        reachableTarget.field(Person.identifier).eq(Identifier.create("person-2")),
-      )
-      .one();
-    assert.deepEqual(
-      reachablePair.map((candidate: { readonly iid: string | null }) => candidate.iid),
-      [insertedPerson.iid, insertedBatch[0].iid],
-    );
-    const networkVariable = querySession.exact(NetworkLink);
-    const queriedNetwork = querySession
-      .query(networkVariable)
-      .where(
-        networkVariable.iid(insertedNetwork.iid),
-        networkVariable.field(NetworkLink.nickname).isPresent(),
-      )
-      .one();
-    assert.equal(queriedNetwork.iid, insertedNetwork.iid);
-
-    const allPeopleQuery = querySession.query(personVariable);
-    assert.equal(allPeopleQuery.first({ orderBy: [identifierOrder] })?.iid, insertedPerson.iid);
-    const scoreField = personVariable.field(Person.score);
-    const directAggregate = allPeopleQuery.aggregate(personVariable, [
-      aggregate.count(),
-      aggregate.sum(scoreField),
-      aggregate.min(scoreField),
-      aggregate.max(scoreField),
-      aggregate.mean(scoreField),
-      aggregate.median(scoreField),
-      aggregate.std(scoreField),
-    ] as const);
-    assert.deepEqual(directAggregate.slice(0, 6), [4n, 24n, 3n, 9n, 6, 6]);
-    assert.equal(typeof directAggregate[6], "number");
-    const directFieldGroupedAggregate = allPeopleQuery
-      .groupBy(personVariable, personVariable.field(Person.valBool))
-      .aggregate([aggregate.count(), aggregate.sum(scoreField)] as const);
-    assert.equal(directFieldGroupedAggregate.length, 1);
-    assert.equal(directFieldGroupedAggregate[0][0].value, true);
-    assert.deepEqual(directFieldGroupedAggregate[0][1], [4n, 24n]);
-    const directTupleFieldGroupedAggregate = allPeopleQuery
-      .groupBy(personVariable, personVariable.field(Person.valBool), scoreField)
-      .aggregate([aggregate.count(), aggregate.sum(scoreField)] as const);
-    assert.deepEqual(
-      directTupleFieldGroupedAggregate.map(([[boolGroup, scoreGroup], values]) => [
-        boolGroup.value,
-        scoreGroup.value,
-        values,
-      ]),
-      [
+    };
+    const direct = await queryProgram(querySession, (run) => run());
+    assert.deepEqual(direct, {
+      one: [insertedPerson.iid, insertedEvent.iid, insertedPerson.iid],
+      rows: [[insertedPerson.iid, "person-1"]],
+      first: insertedPerson.iid,
+      aliases_present: [insertedPerson.iid],
+      aliases_missing: [...batchIids, transactionPersonIid],
+      by_iid: insertedPerson.iid,
+      by_iid_set: [insertedPerson.iid, insertedBatch[0].iid],
+      offset_identifiers: ["person-2", "person-3"],
+      by_expression: insertedPerson.iid,
+      cross_pair: [insertedPerson.iid, insertedBatch[0].iid],
+      parties: [
+        [Employee.typeKey, insertedEmployee.iid],
+        [Manager.typeKey, insertedManager.iid],
+      ],
+      membership_count: 2n,
+      base_relation: [Membership.typeKey, insertedPerson.iid],
+      subtype_relation: [Employment.typeKey, insertedPerson.iid, false],
+      reachable: [insertedPerson.iid, insertedBatch[0].iid],
+      network: insertedNetwork.iid,
+      all_first: insertedPerson.iid,
+      reducers: [4n, 24n, 3n, 9n, 6, 6],
+      std_type: "number",
+      field_grouped: [[true, [4n, 24n]]],
+      tuple_grouped: [
         [true, 3n, [1n, 3n]],
         [true, 5n, [1n, 5n]],
         [true, 7n, [1n, 7n]],
         [true, 9n, [1n, 9n]],
       ],
-    );
-    assert.throws(
-      () => allPeopleQuery.aggregate(personVariable, [
-        aggregate.sum(personVariable.field(Person.identifier)),
-      ] as const),
-      /long|double|numeric|reduc/i,
-    );
-
-    const directGroupedAggregate = directQuery
-      .groupBy(personVariable, eventVariable)
-      .aggregate([aggregate.count(), aggregate.sum(scoreField)] as const);
-    assert.equal(directGroupedAggregate.length, 1);
-    assert.equal(directGroupedAggregate[0][0].iid, insertedEvent.iid);
-    assert.deepEqual(directGroupedAggregate[0][1], [1n, 3n]);
-
-    const named = querySession
-      .queryNamed({ person: personVariable })
-      .where(personPredicate)
-      .one();
-    assert.equal(named.person.iid, insertedPerson.iid);
-    assert.equal(directQuery.countBy(personVariable), 1n);
-    assert.equal(directQuery.existsBy(personVariable), true);
-
-    const collectedPage = querySession
-      .query(personVariable, collectedPersonVariable.collect().distinct())
-      .where(personPredicate, sameIdentifierPredicate)
-      .pageBy(personVariable, { limit: 10n, includeTotal: true });
-    assert.equal(collectedPage.offset, 0n);
-    assert.equal(collectedPage.limit, 10n);
-    assert.equal(collectedPage.total, 1n);
-    assert.equal(collectedPage.items.length, 1);
-    assert.equal(collectedPage.items[0][0].iid, insertedPerson.iid);
-    assert.deepEqual(
-      collectedPage.items[0][1].map((item: { readonly iid: string }) => item.iid),
-      [insertedPerson.iid],
-    );
+      event_grouped: [[insertedEvent.iid, [1n, 3n]]],
+      named: insertedPerson.iid,
+      count: 1n,
+      exists: true,
+      page: {
+        items: [[insertedPerson.iid, [insertedPerson.iid]]],
+        limit: 10n,
+        offset: 0n,
+        total: 1n,
+      },
+    });
 
     const authority = await readFile(resolve(stage, "schema-authority.json"));
     const port = await freePort();
@@ -3095,233 +2767,29 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       }
 
       // docs: remote-query-node:start
-      const remoteSession = new RemoteQuerySession(
-        advertisement,
-        exchange,
+      const remoteSession = new QuerySession(
+        new ExchangeConnection(advertisement, exchange),
         {
-          maxItems: 100n,
-          maxBytes: 1n << 20n,
-          maxCollectionMembers: 100n,
-          maxGraphNodes: 1_000n,
-          maxAttributeValues: 1_000n,
-          maxRolePlayers: 1_000n,
-          deadlineMs: 30_000n,
+          resources: new QueryExecutionResourceLimits({
+            timeoutMilliseconds: 30_000n,
+            items: 100n,
+            bytes: 1n << 20n,
+            collectionMembers: 100n,
+            graphNodes: 1_000n,
+            attributeValues: 1_000n,
+            rolePlayers: 1_000n,
+          }),
         },
-      );
-      const remotePerson = remoteSession.var(Person);
-      const remoteCollectedPerson = remoteSession.var(Person);
-      const remoteEvent = remoteSession.var(Event);
-      const remotePersonPredicate = remotePerson
-        .field(Person.identifier)
-        .eq(Identifier.create("person-1"));
-      const remoteEventPredicate = remoteEvent.role(Event.subject).connects(remotePerson);
-      const remoteDirectQuery = remoteSession
-        .query(remotePerson, remoteEvent)
-        .where(remotePersonPredicate, remoteEventPredicate);
-      const remoteOne = await oneRemoteExchange(() => remoteDirectQuery.one());
-      assert.deepEqual(
-        [remoteOne[0].iid, remoteOne[1].iid],
-        [directOne[0].iid, directOne[1].iid],
-      );
-      const remotePersonOnly = remoteSession
-        .query(remotePerson)
-        .where(remotePersonPredicate);
-      const remoteRows = await oneRemoteExchange(() => remotePersonOnly.rows({
-          limit: 10n,
-          orderBy: [remotePerson.field(Person.identifier).asc()],
-        }));
-      assert.deepEqual(remoteRows.map((item: { readonly iid: string }) => item.iid), [insertedPerson.iid]);
-      const remoteFirst = await oneRemoteExchange(() => remotePersonOnly.first({
-          orderBy: [remotePerson.field(Person.identifier).asc()],
-        }));
-      assert.equal(remoteFirst?.iid, insertedPerson.iid);
-      assert.deepEqual(
-        (await oneRemoteExchange(() => remoteSession
-          .query(remotePerson)
-          .where(remotePerson.field(Person.aliases).isPresent())
-          .rows({ limit: 10n, orderBy: [remotePerson.field(Person.identifier).asc()] })))
-          .map((candidate: { readonly iid: string | null }) => candidate.iid),
-        [insertedPerson.iid],
-      );
-      assert.deepEqual(
-        (await oneRemoteExchange(() => remoteSession
-          .query(remotePerson)
-          .where(remotePerson.field(Person.aliases).isMissing())
-          .rows({ limit: 10n, orderBy: [remotePerson.field(Person.identifier).asc()] })))
-          .map((candidate: { readonly iid: string | null }) => candidate.iid),
-        [...batchIids, transactionPersonIid],
-      );
-      assert.equal(
-        (await oneRemoteExchange(() =>
-          remoteSession.query(remotePerson).where(remotePerson.iid(insertedPerson.iid)).one()
-        )).iid,
-        insertedPerson.iid,
-      );
-      assert.deepEqual(
-        (await oneRemoteExchange(() => remoteSession
-          .query(remotePerson)
-          .where(remotePerson.iidIn([insertedPerson.iid, insertedBatch[0].iid]))
-          .rows({ limit: 10n, orderBy: [remotePerson.field(Person.identifier).asc()] })))
-          .map((candidate: { readonly iid: string | null }) => candidate.iid),
-        [insertedPerson.iid, insertedBatch[0].iid],
-      );
-      const remoteNetwork = remoteSession.exact(NetworkLink);
-      assert.equal(
-        (await oneRemoteExchange(() => remoteSession
-          .query(remoteNetwork)
-          .where(
-            remoteNetwork.iid(insertedNetwork.iid),
-            remoteNetwork.field(NetworkLink.nickname).isPresent(),
-          )
-          .one())).iid,
-        insertedNetwork.iid,
-      );
-
-      const remoteParty = remoteSession.subtypes(Party);
-      const remotePartyRows = await oneRemoteExchange(() =>
-        remoteSession.query(remoteParty).rows({
-          limit: 10n,
-          orderBy: [remoteParty.field(Party.identifier).asc()],
-        })
-      );
-      assert.deepEqual(
-        remotePartyRows.map((candidate: { readonly __typebridgeModel: string }) => candidate.__typebridgeModel),
-        [Employee.typeKey, Manager.typeKey],
-      );
-      assert.deepEqual(
-        remotePartyRows.map((candidate: { readonly iid: string | null }) => candidate.iid),
-        [insertedEmployee.iid, insertedManager.iid],
       );
       // docs: remote-query-node:end
-      const remoteNamed = await oneRemoteExchange(() => remoteSession
-          .queryNamed({ person: remotePerson })
-          .where(remotePersonPredicate)
-          .one());
-      assert.equal(remoteNamed.person.iid, named.person.iid);
-      assert.equal(
-        await oneRemoteExchange(() => remoteDirectQuery.countBy(remotePerson)),
-        directQuery.countBy(personVariable),
-      );
-      assert.equal(
-        await oneRemoteExchange(() => remoteDirectQuery.existsBy(remotePerson)),
-        directQuery.existsBy(personVariable),
-      );
-
-      const remoteScoreField = remotePerson.field(Person.score);
-      const remoteAggregate = await oneRemoteExchange(() =>
-        remoteSession.query(remotePerson).aggregate(remotePerson, [
-          aggregate.count(),
-          aggregate.sum(remoteScoreField),
-          aggregate.min(remoteScoreField),
-          aggregate.max(remoteScoreField),
-          aggregate.mean(remoteScoreField),
-          aggregate.median(remoteScoreField),
-          aggregate.std(remoteScoreField),
-        ] as const)
-      );
-      assert.deepEqual(remoteAggregate.slice(0, 6), directAggregate.slice(0, 6));
-      assert.equal(typeof remoteAggregate[6], "number");
-
-      const remoteFieldGroupedAggregate = await oneRemoteExchange(() =>
-        remoteSession
-          .query(remotePerson)
-          .groupBy(remotePerson, remotePerson.field(Person.valBool))
-          .aggregate([aggregate.count(), aggregate.sum(remoteScoreField)] as const)
-      );
-      assert.equal(remoteFieldGroupedAggregate.length, 1);
-      assert.equal(remoteFieldGroupedAggregate[0][0].value, true);
-      assert.deepEqual(remoteFieldGroupedAggregate[0][1], [4n, 24n]);
-
-      const remoteTupleFieldGroupedAggregate = await oneRemoteExchange(() =>
-        remoteSession
-          .query(remotePerson)
-          .groupBy(remotePerson, remotePerson.field(Person.valBool), remoteScoreField)
-          .aggregate([aggregate.count(), aggregate.sum(remoteScoreField)] as const)
-      );
-      assert.deepEqual(
-        remoteTupleFieldGroupedAggregate.map(([[boolGroup, scoreGroup], values]) => [
-          boolGroup.value,
-          scoreGroup.value,
-          values,
-        ]),
-        directTupleFieldGroupedAggregate.map(([[boolGroup, scoreGroup], values]) => [
-          boolGroup.value,
-          scoreGroup.value,
-          values,
-        ]),
-      );
-
-      const remoteGroupedAggregate = await oneRemoteExchange(() => remoteDirectQuery
-          .groupBy(remotePerson, remoteEvent)
-          .aggregate([aggregate.count(), aggregate.sum(remoteScoreField)] as const));
-      assert.equal(remoteGroupedAggregate.length, 1);
-      assert.equal(remoteGroupedAggregate[0][0].iid, insertedEvent.iid);
-      assert.deepEqual(remoteGroupedAggregate[0][1], directGroupedAggregate[0][1]);
-
-      const remoteSameIdentifier = remoteCollectedPerson
-        .field(Person.identifier)
-        .eqField(remotePerson.field(Person.identifier));
-      const remotePage = await oneRemoteExchange(() => remoteSession
-          .query(remotePerson, remoteCollectedPerson.collect().distinct())
-          .where(remotePersonPredicate, remoteSameIdentifier)
-          .pageBy(remotePerson, { limit: 10n, includeTotal: true }));
-      assert.deepEqual(
-        {
-          items: remotePage.items.map((item: readonly [
-            { readonly iid: string },
-            readonly { readonly iid: string }[],
-          ]) => [item[0].iid, item[1].map((member) => member.iid)]),
-          limit: remotePage.limit,
-          offset: remotePage.offset,
-          total: remotePage.total,
-        },
-        {
-          items: collectedPage.items.map((item: readonly [
-            { readonly iid: string },
-            readonly { readonly iid: string }[],
-          ]) => [item[0].iid, item[1].map((member) => member.iid)]),
-          limit: collectedPage.limit,
-          offset: collectedPage.offset,
-          total: collectedPage.total,
-        },
-      );
-
-      const remoteReachableSource = remoteSession.exact(Person);
-      const remoteReachableTarget = remoteSession.exact(Person);
-      const remoteReachable = remoteSession.reachable(
-        remoteReachableSource,
-        remoteReachableTarget,
-        NetworkLink,
-        NetworkLink.origin,
-        NetworkLink.destination,
-        { minDepth: 1, maxDepth: 1 },
-      );
-      const remoteReachablePair = await oneRemoteExchange(() => remoteSession
-          .query(remoteReachableSource, remoteReachableTarget)
-          .where(
-            remoteReachable,
-            remoteReachableSource.field(Person.identifier).eq(Identifier.create("person-1")),
-            remoteReachableTarget.field(Person.identifier).eq(Identifier.create("person-2")),
-          )
-          .one());
-      assert.deepEqual(
-        remoteReachablePair.map((candidate: { readonly iid: string | null }) => candidate.iid),
-        reachablePair.map((candidate: { readonly iid: string | null }) => candidate.iid),
-      );
-      const remoteCrossLeft = remoteSession.exact(Person);
-      const remoteCrossRight = remoteSession.exact(Person);
-      const remoteCrossPair = await oneRemoteExchange(() => remoteSession
-          .query(remoteCrossLeft, remoteCrossRight)
-          .allowCrossJoin(remoteCrossLeft, remoteCrossRight)
-          .where(
-            remoteCrossLeft.field(Person.identifier).eq(Identifier.create("person-1")),
-            remoteCrossRight.field(Person.identifier).eq(Identifier.create("person-2")),
-          )
-          .one());
-      assert.deepEqual(
-        remoteCrossPair.map((candidate: { readonly iid: string | null }) => candidate.iid),
-        crossPair.map((candidate: { readonly iid: string | null }) => candidate.iid),
-      );
+      assert.deepEqual(await queryProgram(remoteSession, oneRemoteExchange), direct);
+      const proxy = await connectProxy(`http://127.0.0.1:${port}`);
+      const proxySession = new QuerySession(proxy);
+      try {
+        assert.deepEqual(await queryProgram(proxySession, (run) => run()), direct);
+      } finally {
+        proxySession.close();
+      }
       assert.ok(requests.every((request) => request.length > 0));
 
       if (sdkReportPath !== undefined) {
@@ -3874,7 +3342,8 @@ test(
         pathToFileURL(resolve(generatedDirectory, "dist/index.js")).href
       );
       const {
-        Employment, Identifier, Person, QuerySession, RemoteQuerySession, Score,
+        Employment, ExchangeConnection, Identifier, Person, QueryExecutionResourceLimits,
+        QuerySession, Score,
         ValBool, ValConstrained, ValDate, ValDatetime, ValDatetimeTz, ValDecimal,
         ValDouble, ValDuration,
       } = generated;
@@ -3900,16 +3369,23 @@ test(
       }));
       const employment = employmentManager.insert(Employment.create({ employee: person }));
 
-      const directSession = new QuerySession(database);
-      const directEmploymentVar = directSession.var(Employment);
-      const directPersonVar = directSession.var(Person);
-      const [directEmployment, directPerson] = directSession
-        .query(directEmploymentVar, directPersonVar)
-        .where(
-          directEmploymentVar.role(Employment.employee).connects(directPersonVar),
-          directPersonVar.field(Person.identifier).eq(Identifier.create("v5-live-person")),
-        )
-        .one();
+      // One employment query, run on the direct and the exchange connection.
+      const employmentPair = async (session: any): Promise<[any, any]> => {
+        const employmentVar = session.var(Employment);
+        const personVar = session.var(Person);
+        try {
+          return await session
+            .query(employmentVar, personVar)
+            .where(
+              employmentVar.role(Employment.employee).connects(personVar),
+              personVar.field(Person.identifier).eq(Identifier.create("v5-live-person")),
+            )
+            .one();
+        } finally {
+          session.close();
+        }
+      };
+      const [directEmployment, directPerson] = await employmentPair(new QuerySession(database));
       const entitySnapshot = Person.encodeSnapshot(directPerson);
       const relationSnapshot = Employment.encodeSnapshot(directEmployment);
 
@@ -3941,7 +3417,7 @@ test(
       assert.equal(advertisementResponse.status, 200);
       const advertisement = Buffer.from(await advertisementResponse.arrayBuffer());
       const requests: Buffer[] = [];
-      const remoteSession = new RemoteQuerySession(
+      const exchange = new ExchangeConnection(
         advertisement,
         async (request: Uint8Array): Promise<Buffer> => {
           requests.push(Buffer.from(request));
@@ -3953,22 +3429,18 @@ test(
           assert.equal(response.status, 200);
           return Buffer.from(await response.arrayBuffer());
         },
-        {
-          maxItems: 10n, maxBytes: 1n << 20n, maxCollectionMembers: 100n,
-          maxGraphNodes: 30n, maxAttributeValues: 1_000n, maxRolePlayers: 30n,
-          deadlineMs: 30_000n,
-        },
       );
-      const remoteEmploymentVar = remoteSession.var(Employment);
-      const remotePersonVar = remoteSession.var(Person);
-      const [remoteEmployment, remotePerson] = await remoteSession
-        .query(remoteEmploymentVar, remotePersonVar)
-        .where(
-          remoteEmploymentVar.role(Employment.employee).connects(remotePersonVar),
-          remotePersonVar.field(Person.identifier).eq(Identifier.create("v5-live-person")),
-        )
-        .one();
-      remoteSession.close();
+      const [remoteEmployment, remotePerson] = await employmentPair(new QuerySession(exchange, {
+        resources: new QueryExecutionResourceLimits({
+          timeoutMilliseconds: 30_000n,
+          items: 10n,
+          bytes: 1n << 20n,
+          collectionMembers: 100n,
+          graphNodes: 30n,
+          attributeValues: 1_000n,
+          rolePlayers: 30n,
+        }),
+      }));
       assert.equal(requests.length, 1);
       assert.deepEqual(Person.encodeSnapshot(remotePerson), entitySnapshot);
       assert.deepEqual(Employment.encodeSnapshot(remoteEmployment), relationSnapshot);

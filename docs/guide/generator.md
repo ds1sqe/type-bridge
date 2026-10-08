@@ -95,8 +95,8 @@ runtime during import. Installation verifies exact generated classes and
 fingerprints. Rust generated crates bind the equivalent `SchemaPackage` through
 the public SDK.
 
-Generated Python proxy connections (`connect_proxy`, `ExchangeConnection`) and
-the TypeScript `RemoteQuerySession` constructor derive Query V2 authority from
+Generated proxy connections (`connect_proxy`/`connectProxy` and
+`ExchangeConnection` in Python and TypeScript) derive Query V2 authority from
 those private package bytes. Normal applications supply only
 authenticated capability-advertisement bytes, a caller-owned one-exchange
 transport, and resource limits; they do not read an authority file or construct

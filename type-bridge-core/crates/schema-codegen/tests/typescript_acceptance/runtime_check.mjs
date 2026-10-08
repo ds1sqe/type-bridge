@@ -29,8 +29,8 @@ import {
   QueryExecutionResourceLimits,
   QueryLimits,
   QuerySession,
+  ExchangeConnection,
   RUNTIME_PROJECTION_JSON,
-  RemoteQuerySession,
   Robot,
   RobotId,
   SEMANTIC_SCHEMA_FINGERPRINT_JSON,
@@ -432,18 +432,11 @@ assert.throws(
 );
 assert.throws(
   () => new QuerySession({}),
-  /registered RustDatabase|RustTransactionContext/i,
+  /registered Rust connection/i,
 );
 assert.throws(
   () =>
-    new RemoteQuerySession({}, async () => new Uint8Array(), {
-      maxItems: 1n,
-      maxBytes: 1n,
-      maxCollectionMembers: 1n,
-      maxGraphNodes: 1n,
-      maxAttributeValues: 1n,
-      maxRolePlayers: 1n,
-    }),
+    new ExchangeConnection({}, async () => new Uint8Array()),
   /Uint8Array|advertisement/i,
 );
 
@@ -562,50 +555,56 @@ function remoteSignedReply(payload, advertisement) {
 const generatedAdvertisement = remoteAdvertisement();
 let generatedRemoteExchanges = 0;
 let generatedFailureReply;
-const generatedRemoteSession = new RemoteQuerySession(
-  generatedAdvertisement,
-  async (request) => {
-    generatedRemoteExchanges += 1;
-    const decoded = JSON.parse(Buffer.from(request).toString("utf8"));
-    assert.deepEqual(
-      Buffer.from(JSON.stringify(decoded)),
-      Buffer.from(request),
-    );
-    generatedFailureReply = remoteSignedReply(
-      {
-        category: "integrity",
-        code: "remote_application_failure",
-        details: {
-          attempt: { kind: "long", value: "-7" },
-          expected: { kind: "text_list", value: ["person", "employee"] },
-          retryable: { kind: "boolean", value: false },
-          subject: { kind: "text", value: "person" },
+const generatedRemoteSession = new QuerySession(
+  new ExchangeConnection(
+    generatedAdvertisement,
+    async (request) => {
+      generatedRemoteExchanges += 1;
+      const decoded = JSON.parse(Buffer.from(request).toString("utf8"));
+      assert.deepEqual(
+        Buffer.from(JSON.stringify(decoded)),
+        Buffer.from(request),
+      );
+      generatedFailureReply = remoteSignedReply(
+        {
+          category: "integrity",
+          code: "remote_application_failure",
+          details: {
+            attempt: { kind: "long", value: "-7" },
+            expected: { kind: "text_list", value: ["person", "employee"] },
+            retryable: { kind: "boolean", value: false },
+            subject: { kind: "text", value: "person" },
+          },
+          format: "typebridge.query-remote-failure/v2",
+          message: "the remote application rejected this query",
+          nonce: decoded.nonce,
+          path: [
+            { kind: "field", value: "plan" },
+            { kind: "index", value: 2 },
+            { kind: "identifier", value: "person" },
+          ],
+          request: remoteFingerprint(
+            "typebridge.query.remote-request",
+            "typebridge.query-remote-request/v2",
+            request,
+          ),
         },
-        format: "typebridge.query-remote-failure/v2",
-        message: "the remote application rejected this query",
-        nonce: decoded.nonce,
-        path: [
-          { kind: "field", value: "plan" },
-          { kind: "index", value: 2 },
-          { kind: "identifier", value: "person" },
-        ],
-        request: remoteFingerprint(
-          "typebridge.query.remote-request",
-          "typebridge.query-remote-request/v2",
-          request,
-        ),
-      },
-      generatedAdvertisement,
-    );
-    return generatedFailureReply;
-  },
+        generatedAdvertisement,
+      );
+      return generatedFailureReply;
+    },
+  ),
   {
-    maxItems: 11n,
-    maxBytes: 1n << 20n,
-    maxCollectionMembers: 12n,
-    maxGraphNodes: 13n,
-    maxAttributeValues: 14n,
-    maxRolePlayers: 15n,
+    resources: new QueryExecutionResourceLimits({
+      items: 11n,
+      bytes: 1n << 20n,
+      collectionMembers: 12n,
+      graphNodes: 13n,
+      attributeValues: 14n,
+      rolePlayers: 15n,
+      timeoutMilliseconds: 30_000n,
+      statements: 3n,
+    }),
   },
 );
 const generatedRemotePerson = generatedRemoteSession.exact(Person);
@@ -702,25 +701,29 @@ remoteDiagnosticObservation.claim_consumed = true;
 
 const transportCancellation = new QueryCancellation();
 let transportAbortObserved = false;
-const cancelledRemoteSession = new RemoteQuerySession(
-  generatedAdvertisement,
-  (_request, signal) =>
-    new Promise((_resolve, reject) => {
-      signal?.addEventListener(
-        "abort",
-        () => {
-          transportAbortObserved = true;
-          reject(
-            new Error(
-              "transport abort must lose to canonical query cancellation",
-            ),
-          );
-        },
-        { once: true },
-      );
-    }),
-  new QueryExecutionResourceLimits(),
-  transportCancellation,
+const cancelledRemoteSession = new QuerySession(
+  new ExchangeConnection(
+    generatedAdvertisement,
+    (_request, signal) =>
+      new Promise((_resolve, reject) => {
+        signal?.addEventListener(
+          "abort",
+          () => {
+            transportAbortObserved = true;
+            reject(
+              new Error(
+                "transport abort must lose to canonical query cancellation",
+              ),
+            );
+          },
+          { once: true },
+        );
+      }),
+  ),
+  {
+    resources: new QueryExecutionResourceLimits(),
+    cancellation: transportCancellation,
+  },
 );
 const cancelledRemotePerson = cancelledRemoteSession.exact(Person);
 const cancelledRemoteExecution = cancelledRemoteSession
@@ -739,14 +742,18 @@ assert.equal(transportAbortObserved, true);
 const beforeExchangeCancellation = new QueryCancellation();
 beforeExchangeCancellation.cancel();
 let beforeExchangeCount = 0;
-const beforeExchangeSession = new RemoteQuerySession(
-  generatedAdvertisement,
-  async () => {
-    beforeExchangeCount += 1;
-    throw new Error("pre-cancelled remote query reached caller transport");
+const beforeExchangeSession = new QuerySession(
+  new ExchangeConnection(
+    generatedAdvertisement,
+    async () => {
+      beforeExchangeCount += 1;
+      throw new Error("pre-cancelled remote query reached caller transport");
+    },
+  ),
+  {
+    resources: new QueryExecutionResourceLimits(),
+    cancellation: beforeExchangeCancellation,
   },
-  new QueryExecutionResourceLimits(),
-  beforeExchangeCancellation,
 );
 const beforeExchangePerson = beforeExchangeSession.exact(Person);
 let beforeExchangeDiagnostic;
@@ -766,42 +773,46 @@ beforeExchangeSession.close();
 const duringDecodeCancellation = new QueryCancellation();
 let duringDecodeExchangeCount = 0;
 let serverExchangeCancelledAfterSend = false;
-const duringDecodeSession = new RemoteQuerySession(
-  generatedAdvertisement,
-  async (request, signal) => {
-    duringDecodeExchangeCount += 1;
-    let responseConstructed = false;
-    signal?.addEventListener(
-      "abort",
-      () => {
-        serverExchangeCancelledAfterSend ||= !responseConstructed;
-      },
-      { once: true },
-    );
-    const decoded = JSON.parse(Buffer.from(request).toString("utf8"));
-    const response = remoteSignedReply(
-      {
-        category: "integrity",
-        code: "remote_application_failure",
-        details: {},
-        format: "typebridge.query-remote-failure/v2",
-        message: "provider text must be redacted",
-        nonce: decoded.nonce,
-        path: [],
-        request: remoteFingerprint(
-          "typebridge.query.remote-request",
-          "typebridge.query-remote-request/v2",
-          request,
-        ),
-      },
-      generatedAdvertisement,
-    );
-    responseConstructed = true;
-    duringDecodeCancellation.cancel();
-    return response;
+const duringDecodeSession = new QuerySession(
+  new ExchangeConnection(
+    generatedAdvertisement,
+    async (request, signal) => {
+      duringDecodeExchangeCount += 1;
+      let responseConstructed = false;
+      signal?.addEventListener(
+        "abort",
+        () => {
+          serverExchangeCancelledAfterSend ||= !responseConstructed;
+        },
+        { once: true },
+      );
+      const decoded = JSON.parse(Buffer.from(request).toString("utf8"));
+      const response = remoteSignedReply(
+        {
+          category: "integrity",
+          code: "remote_application_failure",
+          details: {},
+          format: "typebridge.query-remote-failure/v2",
+          message: "provider text must be redacted",
+          nonce: decoded.nonce,
+          path: [],
+          request: remoteFingerprint(
+            "typebridge.query.remote-request",
+            "typebridge.query-remote-request/v2",
+            request,
+          ),
+        },
+        generatedAdvertisement,
+      );
+      responseConstructed = true;
+      duringDecodeCancellation.cancel();
+      return response;
+    },
+  ),
+  {
+    resources: new QueryExecutionResourceLimits(),
+    cancellation: duringDecodeCancellation,
   },
-  new QueryExecutionResourceLimits(),
-  duringDecodeCancellation,
 );
 const duringDecodePerson = duringDecodeSession.exact(Person);
 let duringDecodeDiagnostic;
@@ -1051,22 +1062,27 @@ for (const rejected of [
   assert.throws(() => new QueryLimits(rejected));
 }
 const limitedRemoteExchangesBefore = generatedRemoteExchanges;
-const limitedRemoteSession = new RemoteQuerySession(
-  generatedAdvertisement,
-  async () => {
-    generatedRemoteExchanges += 1;
-    return new Uint8Array();
-  },
+const limitedRemoteSession = new QuerySession(
+  new ExchangeConnection(
+    generatedAdvertisement,
+    async () => {
+      generatedRemoteExchanges += 1;
+      return new Uint8Array();
+    },
+  ),
   {
-    maxItems: 11n,
-    maxBytes: 1n << 20n,
-    maxCollectionMembers: 12n,
-    maxGraphNodes: 13n,
-    maxAttributeValues: 14n,
-    maxRolePlayers: 15n,
+    resources: new QueryExecutionResourceLimits({
+      items: 11n,
+      bytes: 1n << 20n,
+      collectionMembers: 12n,
+      graphNodes: 13n,
+      attributeValues: 14n,
+      rolePlayers: 15n,
+      timeoutMilliseconds: 30_000n,
+      statements: 3n,
+    }),
+    queryLimits: new QueryLimits({ boolean_terms: 1n }),
   },
-  undefined,
-  new QueryLimits({ boolean_terms: 1n }),
 );
 const limitedRemotePerson = limitedRemoteSession.exact(Person);
 await assert.rejects(
@@ -1096,19 +1112,25 @@ limitedRemoteSession.close();
 // capability, so preparation now ends one step later, at capability
 // negotiation, which only an adapted plan reaches.
 let wideRemoteRequests = 0;
-const wideRemoteSession = new RemoteQuerySession(
-  generatedAdvertisement,
-  async () => {
-    wideRemoteRequests += 1;
-    return new TextEncoder().encode("{}");
-  },
+const wideRemoteSession = new QuerySession(
+  new ExchangeConnection(
+    generatedAdvertisement,
+    async () => {
+      wideRemoteRequests += 1;
+      return new TextEncoder().encode("{}");
+    },
+  ),
   {
-    maxItems: 11n,
-    maxBytes: 1n << 20n,
-    maxCollectionMembers: 12n,
-    maxGraphNodes: 13n,
-    maxAttributeValues: 14n,
-    maxRolePlayers: 15n,
+    resources: new QueryExecutionResourceLimits({
+      items: 11n,
+      bytes: 1n << 20n,
+      collectionMembers: 12n,
+      graphNodes: 13n,
+      attributeValues: 14n,
+      rolePlayers: 15n,
+      timeoutMilliseconds: 30_000n,
+      statements: 3n,
+    }),
   },
 );
 const wideRemotePerson = wideRemoteSession.exact(Person);

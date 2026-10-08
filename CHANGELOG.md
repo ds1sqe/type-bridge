@@ -89,6 +89,28 @@ differently direct and through a proxy. Each entry says what to do instead.
     built-in HTTP route. `RemoteQueryLimits(max_items=..., ...)` is
     `QueryExecutionResourceLimits(items=..., ...)`; its defaults are the
     statement count and deadline the flat limits used.
+- Generated TypeScript packages have one session. `QuerySession`, `Query`,
+  and `GroupedQuery` run on every connection, and every terminal (`one`,
+  `first`, `rows`, `pageBy`, `countBy`, `existsBy`, `aggregate`, grouped
+  `aggregate`) returns a `Promise`, direct included; composition stays
+  synchronous, and direct terminals no longer block the event loop.
+  `new QuerySession(connection, { resources, cancellation, queryLimits })`
+  takes a `RustDatabase`, a transaction, a `ProxyConnection`, or an
+  `ExchangeConnection`. Removed: `RemoteQuerySession`, `RemoteQuery`,
+  `RemoteGroupedQuery`, `RemoteQueryLimits`, and `RemoteQueryExchange`;
+  from `@type-bridge/node/runtime-projection`,
+  `RuntimeProjectionRemoteLimits`, the seven
+  `InstalledRuntimeProjection.execute*` methods (use `direct(connection)`),
+  and the natives `matchSession()` without resources and the flat-limit
+  `queryV2RemoteModelContext` (use `matchSessionWithResources` and
+  `queryV2RemoteModelContextWithResources`). To migrate:
+  - `await` each terminal.
+  - `new RemoteQuerySession(advertisement, exchange, limits)` is
+    `new QuerySession(new ExchangeConnection(advertisement, exchange),
+    { resources })`, or `new QuerySession(await connectProxy(url))` for the
+    built-in HTTP route. Flat limits `{ maxItems, maxBytes, ..., deadlineMs }`
+    are `new QueryExecutionResourceLimits({ items, bytes, ...,
+    timeoutMilliseconds })`.
 - Mixed versions: clients and executors must both be 2.3.
   - A 2.3 executor refuses a V1-format request with
     `query_remote_v2_format_unsupported` and a `supported` detail naming the
@@ -126,6 +148,11 @@ differently direct and through a proxy. Each entry says what to do instead.
   `ExchangeConnection(advertisement, exchange, *, answer_limits=None)` is
   the host-owned transport; both take an `answer_limits` ceiling. Pass
   either to `QuerySession` or `Model.query`.
+- Generated TypeScript proxy connections: `connectProxy(endpoint, options)`
+  resolves to a `ProxyConnection` over the built-in route with the package's
+  embedded authority, and `new ExchangeConnection(advertisement, exchange,
+  { answerLimits })` is the host-owned transport; both take an `answerLimits`
+  ceiling. Pass either to `QuerySession`.
 - `type_bridge_core.blocking(obj)`: a blocking view of an object with
   coroutine methods, such as a generated session, for code without an event
   loop.

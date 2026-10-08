@@ -245,7 +245,7 @@ impl NodeProxyConnection {
 
 /// Run `work` on the connection's runtime and return a Promise settled with
 /// its outcome.
-fn settle<T>(
+pub(crate) fn settle<T>(
     env: &Env,
     runtime: &Arc<ProviderRuntimeOwner>,
     work: impl Future<Output = napi::Result<T>> + Send + 'static,
@@ -263,7 +263,7 @@ where
             Ok(Ok(output)) => deferred.resolve(move |_env| Ok(output)),
             Ok(Err(error)) => deferred.reject(error),
             Err(_) => deferred.reject(napi::Error::from_reason(
-                "proxy_worker_failed: proxy worker terminated unexpectedly",
+                "query_worker_failed: query worker terminated unexpectedly",
             )),
         }
         drop(owner);

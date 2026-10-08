@@ -740,7 +740,7 @@ function fieldTokenObservation(package_) {
   };
 }
 
-function runManagerJourney(package_, database) {
+async function runManagerJourney(package_, database) {
   const transaction = database.transaction("read");
   try {
     const manager = package_.Person.manager(transaction);
@@ -799,7 +799,7 @@ function runManagerJourney(package_, database) {
             .eq(package_.Identifier.create("data-ada")),
         );
       requireCondition(
-        sibling_query.countBy(person) === 1n,
+        (await sibling_query.countBy(person)) === 1n,
         "borrowed_read_reuse",
         "sibling query sibling query did not remain usable",
       );
@@ -941,7 +941,7 @@ async function runOwnedDatabase({
       "manager fixture insertion drifted",
     );
     exerciseProviderFreeManagerSurfaceChecks(local, providerFreeFilters);
-    observation = runManagerJourney(local, database);
+    observation = await runManagerJourney(local, database);
     observation.rejections = hostile.rejections;
     observation.first.nonsingular_rejection = hostile.nonsingular;
     for (const value of inserted.reverse()) manager.delete(value);

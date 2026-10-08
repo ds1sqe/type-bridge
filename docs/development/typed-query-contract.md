@@ -268,13 +268,13 @@ for two or more slots.
 <!-- typed-query-example: typescript-selection-arities -->
 ```typescript
 const onePerson: Query<Person> = session.query(person);
-const scalar: Person = onePerson.one();
-const scalarRows: readonly Person[] = onePerson.rows({ limit: 20n });
+const scalar: Person = await onePerson.one();
+const scalarRows: readonly Person[] = await onePerson.rows({ limit: 20n });
 
 const twoSlots: Query<readonly [Person, Event]> = session
   .query(person, event)
   .where(subject);
-const pairRows: readonly (readonly [Person, Event])[] = twoSlots.rows({
+const pairRows: readonly (readonly [Person, Event])[] = await twoSlots.rows({
   limit: 20n,
 });
 
@@ -335,14 +335,14 @@ void independentPairs;
 
 <!-- typed-query-example: typescript-terminals-and-collections -->
 ```typescript
-const orderedPeople: readonly Person[] = onePerson.rows({
+const orderedPeople: readonly Person[] = await onePerson.rows({
   limit: 50n,
   offset: 0n,
   orderBy: [person.field(Person.identifier).asc()],
 });
 
-const personCount: bigint = twoSlots.countBy(person);
-const anyPerson: boolean = twoSlots.existsBy(person);
+const personCount: bigint = await twoSlots.countBy(person);
+const anyPerson: boolean = await twoSlots.existsBy(person);
 
 const work: Query<Readonly<{
   person: Person;
@@ -355,7 +355,7 @@ const work: Query<Readonly<{
 const page: Page<Readonly<{
   person: Person;
   events: readonly Event[];
-}>> = work.pageBy(person, {
+}>> = await work.pageBy(person, {
   limit: 50n,
   offset: 0n,
   orderBy: [person.field(Person.identifier).asc()],
@@ -373,15 +373,15 @@ void page;
 // Owned: rows() opens and closes one read transaction on every exit path.
 const ownedSession = new QuerySession(db);
 const ownedPerson = ownedSession.exact(Person);
-const ownedRows = ownedSession.query(ownedPerson).rows({ limit: 10n });
+const ownedRows = await ownedSession.query(ownedPerson).rows({ limit: 10n });
 
 // Borrowed: only the caller closes the context, which remains reusable.
 const tx: RustTransactionContext = db.transaction("read");
 try {
   const borrowed = new QuerySession(tx);
   const borrowedPerson = borrowed.exact(Person);
-  const firstPage = borrowed.query(borrowedPerson).rows({ limit: 10n });
-  const secondPage = borrowed.query(borrowedPerson).rows({
+  const firstPage = await borrowed.query(borrowedPerson).rows({ limit: 10n });
+  const secondPage = await borrowed.query(borrowedPerson).rows({
     limit: 10n,
     offset: 10n,
   });

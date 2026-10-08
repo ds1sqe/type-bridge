@@ -67,6 +67,9 @@ test("generated manager calls preserve structured SDK diagnostics", () => {
   });
 });
 
+// Direct terminals are native Promises; a failure arrives as a rejection.
+const rejectNativeDiagnostic = async (): Promise<never> => throwNativeDiagnostic();
+
 function directExecutionFixture(): {
   projection: InstalledRuntimeProjection;
   query: never;
@@ -82,25 +85,25 @@ function directExecutionFixture(): {
     reduceByDiagnostic: () => "{}",
     reduceByFieldDiagnostic: () => "{}",
     reduceByFieldsDiagnostic: () => "{}",
-    executeFetchRowsOwned: throwNativeDiagnostic,
-    executeFetchRowsBorrowed: throwNativeDiagnostic,
-    executePageByOwned: throwNativeDiagnostic,
-    executePageByBorrowed: throwNativeDiagnostic,
-    executeCountByOwned: throwNativeDiagnostic,
-    executeCountByBorrowed: throwNativeDiagnostic,
-    executeExistsByOwned: throwNativeDiagnostic,
-    executeExistsByBorrowed: throwNativeDiagnostic,
-    executeReduceByOwned: throwNativeDiagnostic,
-    executeReduceByBorrowed: throwNativeDiagnostic,
-    executeReduceByFieldOwned: throwNativeDiagnostic,
-    executeReduceByFieldBorrowed: throwNativeDiagnostic,
-    executeReduceByFieldsOwned: throwNativeDiagnostic,
-    executeReduceByFieldsBorrowed: throwNativeDiagnostic,
+    executeFetchRowsOwned: rejectNativeDiagnostic,
+    executeFetchRowsBorrowed: rejectNativeDiagnostic,
+    executePageByOwned: rejectNativeDiagnostic,
+    executePageByBorrowed: rejectNativeDiagnostic,
+    executeCountByOwned: rejectNativeDiagnostic,
+    executeCountByBorrowed: rejectNativeDiagnostic,
+    executeExistsByOwned: rejectNativeDiagnostic,
+    executeExistsByBorrowed: rejectNativeDiagnostic,
+    executeReduceByOwned: rejectNativeDiagnostic,
+    executeReduceByBorrowed: rejectNativeDiagnostic,
+    executeReduceByFieldOwned: rejectNativeDiagnostic,
+    executeReduceByFieldBorrowed: rejectNativeDiagnostic,
+    executeReduceByFieldsOwned: rejectNativeDiagnostic,
+    executeReduceByFieldsBorrowed: rejectNativeDiagnostic,
   } as never;
   return { projection, query };
 }
 
-test("direct generated terminals project native diagnostics for both ownership paths", () => {
+test("direct generated terminals project native diagnostics for both ownership paths", async () => {
   const database = {} as RustDatabase;
   registerRustDatabaseHandle(database, {} as NativeRustDatabase);
   const transaction = {} as RustTransactionContext;
@@ -113,31 +116,29 @@ test("direct generated terminals project native diagnostics for both ownership p
   const field = {} as never;
   const calls: readonly [
     string,
-    (connection: RuntimeProjectionConnection) => unknown,
+    (connection: RuntimeProjectionConnection) => Promise<unknown>,
   ][] = [
     ["rows", (connection) =>
-      projection.executeRows(query, connection, [], 0n, 1n, "exactly_one")],
+      projection.direct(connection).rows(query, [], 0n, 1n, "exactly_one")],
     ["page", (connection) =>
-      projection.executePage(query, connection, root, [], 0n, 1n, true)],
+      projection.direct(connection).page(query, root, [], 0n, 1n, true)],
     ["count", (connection) =>
-      projection.executeCount(query, connection, root)],
+      projection.direct(connection).count(query, root)],
     ["exists", (connection) =>
-      projection.executeExists(query, connection, root)],
+      projection.direct(connection).exists(query, root)],
     ["reduce", (connection) =>
-      projection.executeReduce(query, connection, root, null, ["count"], [null])],
+      projection.direct(connection).reduce(query, root, null, ["count"], [null])],
     ["reduceByField", (connection) =>
-      projection.executeReduceByField(
+      projection.direct(connection).reduceByField(
         query,
-        connection,
         root,
         field,
         ["count"],
         [null],
       )],
     ["reduceByFields", (connection) =>
-      projection.executeReduceByFields(
+      projection.direct(connection).reduceByFields(
         query,
-        connection,
         root,
         [field],
         ["count"],
@@ -150,7 +151,7 @@ test("direct generated terminals project native diagnostics for both ownership p
     ["borrowed", transaction],
   ] as const) {
     for (const [terminal, invoke] of calls) {
-      assert.throws(invoke.bind(undefined, connection), (error: unknown) => {
+      await assert.rejects(invoke(connection), (error: unknown) => {
         assert.ok(error instanceof QueryV2Error, `${ownership} ${terminal}`);
         assert.equal(error.category, nativeDiagnostic.category);
         assert.equal(error.sdkCategory, nativeDiagnostic.sdkCategory);

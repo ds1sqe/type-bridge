@@ -1897,23 +1897,6 @@ impl NodeRuntimeProjection {
         })
     }
 
-    /// Build an opaque match session from this exact installed projection only.
-    #[napi(js_name = "matchSession")]
-    pub fn match_session(&self) -> napi::Result<NodeMatchSessionHandle> {
-        let registry = self
-            .package
-            .projection
-            .match_registry()
-            .map_err(orm_error)?;
-        Ok(NodeMatchSessionHandle::from_installed(
-            Arc::clone(&self.package.projection),
-            Arc::new(registry),
-            QueryExecutionResourceLimits::default(),
-            AnswerCancellation::default(),
-            type_bridge_contract::limits::QueryLimits::CANONICAL,
-        ))
-    }
-
     /// Build an opaque match session carrying the common resource policy and
     /// caller-owned cooperative cancellation signal.
     ///

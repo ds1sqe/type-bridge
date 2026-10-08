@@ -220,7 +220,7 @@
       "node": [
         {
           "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
-          "anchors": ["querySession.subtypes(Party)", "[Employee.typeKey, Manager.typeKey]"]
+          "anchors": ["session.subtypes(Party)", "[Manager.typeKey, insertedManager.iid]"]
         }
       ],
       "rust": [
@@ -316,7 +316,7 @@
       "node": [
         {
           "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
-          "anchors": ["aggregate.count()", "aggregate.median(scoreField)", "directTupleFieldGroupedAggregate = allPeopleQuery", ".groupBy(personVariable, eventVariable)"]
+          "anchors": ["aggregate.count()", "aggregate.median(scoreField)", "const tupleGrouped = await terminal(() => allPeopleQuery", ".groupBy(personVariable, eventVariable)"]
         }
       ],
       "rust": [
@@ -364,7 +364,7 @@
       "node": [
         {
           "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
-          "anchors": ["querySession.reachable", "remoteSession.reachable", ".allowCrossJoin(crossLeft, crossRight)"]
+          "anchors": ["session.reachable(", "assert.deepEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)", ".allowCrossJoin(crossLeft, crossRight)"]
         }
       ],
       "rust": [
@@ -416,7 +416,7 @@
       "node": [
         {
           "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
-          "anchors": ["new RemoteQuerySession", "remoteDirectQuery.one()", ".pageBy(remotePerson", "remoteNamed.person.iid"]
+          "anchors": ["new ExchangeConnection(advertisement, exchange)", "await terminal(() => pairQuery.one())", ".pageBy(personVariable, { limit: 10n, includeTotal: true })", "named: named.person.iid"]
         }
       ],
       "rust": [

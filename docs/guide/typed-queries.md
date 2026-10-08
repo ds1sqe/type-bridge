@@ -20,6 +20,8 @@ same package-scoped session. The connection decides where terminals run: a
 direct `Database` or `TransactionContext`, or a proxy connection (see
 [Proxy connections](#proxy-connections)). Composition is synchronous; every
 terminal is a coroutine on every connection, so Python code awaits it.
+TypeScript is the same: `new QuerySession(connection)` takes a `RustDatabase`,
+a transaction, or a proxy connection, and every terminal returns a `Promise`.
 
 Use `exact(Model)` for exactly one schema type and `subtypes(Model)` for a
 polymorphic binding. Concrete result evidence determines the generated class
@@ -228,10 +230,31 @@ advertisement bytes and a coroutine that sends one request and returns its
 reply; the caller owns transport, credentials, and retry policy. Either takes
 `answer_limits=`, the ceiling every session on the connection runs under.
 
-TypeScript uses the equivalent
-`new RemoteQuerySession(advertisementBytes, exchange, limits)` constructor.
-Composition remains local; one terminal performs one exchange and materializes
-through the same package projection as direct execution.
+TypeScript passes the same connections to the same `QuerySession`:
+
+```ts
+import {
+  ExchangeConnection,
+  Person,
+  QueryExecutionResourceLimits,
+  QuerySession,
+  connectProxy,
+} from "app-models";
+
+const session = new QuerySession(await connectProxy("https://typebridge.example"));
+
+const hosted = new QuerySession(new ExchangeConnection(advertisementBytes, exchange), {
+  resources: new QueryExecutionResourceLimits({ items: 100n, timeoutMilliseconds: 30_000n }),
+});
+const person = hosted.exact(Person);
+const rows = await hosted.query(person).rows({ limit: 50n });
+```
+
+`connectProxy` takes `advertisement`, `headers`, `tls`, and `answerLimits`
+options; `ExchangeConnection(advertisement, exchange, { answerLimits })` takes
+a function that sends one request and resolves to its reply. Composition
+remains local; one terminal performs one exchange and materializes through
+the same package projection as direct execution.
 
 Scripts without an event loop wrap a session in `type_bridge_core.blocking`,
 which runs each terminal to completion on a private event-loop thread:
@@ -285,8 +308,8 @@ let session = db
     .with_query_limits(QueryLimits::from_overrides([("canonical_bytes", 64 << 20)])?)?;
 ```
 
-Proxy sessions take the same value (`query_limits=` in Python, a fifth
-`RemoteQuerySession` constructor argument in TypeScript). C callers use
+Proxy sessions take the same option, since a proxy connection is passed to
+the same session. C callers use
 `<prefix>_query_session_open_with_limits` with an array of named overrides.
 
 Limits are named identically in every language. The engine validates them, so

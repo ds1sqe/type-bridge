@@ -87,26 +87,26 @@ interface NativeMatchQueryHandle {
     wherePredicate(predicate: NativeMatchPredicateHandle): NativeMatchQueryHandle;
     allowCrossJoin(left: NativeMatchBindingHandle, right: NativeMatchBindingHandle): NativeMatchQueryHandle;
     fetchRowsDiagnostic(orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): string;
-    executeFetchRowsOwned(database: NativeRustDatabase, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): NativeValidatedMatchResultHandle;
-    executeFetchRowsBorrowed(transaction: NativeRustTransactionContext, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): NativeValidatedMatchResultHandle;
-    executePageByOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): NativeValidatedMatchResultHandle;
-    executePageByBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): NativeValidatedMatchResultHandle;
-    executeCountByOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle): NativeValidatedMatchResultHandle;
-    executeCountByBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle): NativeValidatedMatchResultHandle;
-    executeExistsByOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle): NativeValidatedMatchResultHandle;
-    executeExistsByBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle): NativeValidatedMatchResultHandle;
+    executeFetchRowsOwned(database: NativeRustDatabase, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): Promise<NativeValidatedMatchResultHandle>;
+    executeFetchRowsBorrowed(transaction: NativeRustTransactionContext, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): Promise<NativeValidatedMatchResultHandle>;
+    executePageByOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): Promise<NativeValidatedMatchResultHandle>;
+    executePageByBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): Promise<NativeValidatedMatchResultHandle>;
+    executeCountByOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle): Promise<NativeValidatedMatchResultHandle>;
+    executeCountByBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle): Promise<NativeValidatedMatchResultHandle>;
+    executeExistsByOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle): Promise<NativeValidatedMatchResultHandle>;
+    executeExistsByBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle): Promise<NativeValidatedMatchResultHandle>;
     pageByDiagnostic(root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): string;
     countByDiagnostic(root: NativeMatchBindingHandle): string;
     existsByDiagnostic(root: NativeMatchBindingHandle): string;
     reduceByDiagnostic(root: NativeMatchBindingHandle, group: NativeMatchBindingHandle | null, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): string;
-    executeReduceByOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, group: NativeMatchBindingHandle | null, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativeValidatedMatchResultHandle;
-    executeReduceByBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, group: NativeMatchBindingHandle | null, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativeValidatedMatchResultHandle;
+    executeReduceByOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, group: NativeMatchBindingHandle | null, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
+    executeReduceByBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, group: NativeMatchBindingHandle | null, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
     reduceByFieldDiagnostic(root: NativeMatchBindingHandle, group: NativeMatchFieldHandle, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): string;
-    executeReduceByFieldOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, group: NativeMatchFieldHandle, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativeValidatedMatchResultHandle;
-    executeReduceByFieldBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, group: NativeMatchFieldHandle, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativeValidatedMatchResultHandle;
+    executeReduceByFieldOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, group: NativeMatchFieldHandle, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
+    executeReduceByFieldBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, group: NativeMatchFieldHandle, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
     reduceByFieldsDiagnostic(root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): string;
-    executeReduceByFieldsOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativeValidatedMatchResultHandle;
-    executeReduceByFieldsBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativeValidatedMatchResultHandle;
+    executeReduceByFieldsOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
+    executeReduceByFieldsBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
 }
 interface NativeValidatedMatchResultHandle {
     readonly [nativeMatchHandleKind]: "validated-result";
@@ -192,8 +192,7 @@ interface NativeRemoteModelQueryModule {
     NodeQueryExecutionResources: new (timeoutMilliseconds: bigint, items: bigint, bytes: bigint, graphNodes: bigint, attributeValues: bigint, collectionMembers: bigint, rolePlayers: bigint, statements: bigint) => NativeQueryExecutionResources;
     NodeQueryCancellation: new () => NativeQueryCancellation;
     NodeQueryLimits: new (names: string[], values: bigint[]) => NativeQueryLimits;
-    queryV2RemoteModelContext(authority: ReturnType<NativeModule["queryV2Authority"]>, advertisement: Uint8Array, maxItems: bigint, maxBytes: bigint, maxCollectionMembers: bigint, maxGraphNodes: bigint, maxAttributeValues: bigint, maxRolePlayers: bigint, deadlineMs?: bigint | null): NativeRemoteModelQueryContext;
-    queryV2RemoteModelContextWithResources(authority: ReturnType<NativeModule["queryV2Authority"]>, advertisement: Uint8Array, resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation): NativeRemoteModelQueryContext;
+    queryV2RemoteModelContextWithResources(authority: ReturnType<NativeModule["queryV2Authority"]>, advertisement: Uint8Array, resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation, answerLimits?: NativeQueryExecutionResources): NativeRemoteModelQueryContext;
     queryV2PrepareRemoteModelRows(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): NativePendingRemoteModelQuery;
     queryV2PrepareRemoteModelPage(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): NativePendingRemoteModelQuery;
     queryV2PrepareRemoteModelCount(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle): NativePendingRemoteModelQuery;
@@ -206,7 +205,6 @@ interface NativeRuntimeProjectionHandle {
     connectDirect(endpoint: string, database: string, username: string, password: string, httpPort: number, tlsMode: string, tlsRootCa?: string, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation): NativeRustDatabase;
     managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
     managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
-    matchSession(): NativeMatchSessionHandle;
     matchSessionWithResources(resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation, queryLimits?: NativeQueryLimits | null): NativeMatchSessionHandle;
     matchModelType(typeKey: string): string;
     validateAttributeValueJson(typeKey: string, valueJson: string): void;

@@ -162,14 +162,14 @@ interface NativeMatchQueryHandle {
     offset: bigint,
     limit: bigint,
     cardinality: NativeMatchRowCardinality,
-  ): NativeValidatedMatchResultHandle;
+  ): Promise<NativeValidatedMatchResultHandle>;
   executeFetchRowsBorrowed(
     transaction: NativeRustTransactionContext,
     orders: NativeMatchOrderHandle[],
     offset: bigint,
     limit: bigint,
     cardinality: NativeMatchRowCardinality,
-  ): NativeValidatedMatchResultHandle;
+  ): Promise<NativeValidatedMatchResultHandle>;
   executePageByOwned(
     database: NativeRustDatabase,
     root: NativeMatchBindingHandle,
@@ -177,7 +177,7 @@ interface NativeMatchQueryHandle {
     offset: bigint,
     limit: bigint,
     includeTotal: boolean,
-  ): NativeValidatedMatchResultHandle;
+  ): Promise<NativeValidatedMatchResultHandle>;
   executePageByBorrowed(
     transaction: NativeRustTransactionContext,
     root: NativeMatchBindingHandle,
@@ -185,23 +185,23 @@ interface NativeMatchQueryHandle {
     offset: bigint,
     limit: bigint,
     includeTotal: boolean,
-  ): NativeValidatedMatchResultHandle;
+  ): Promise<NativeValidatedMatchResultHandle>;
   executeCountByOwned(
     database: NativeRustDatabase,
     root: NativeMatchBindingHandle,
-  ): NativeValidatedMatchResultHandle;
+  ): Promise<NativeValidatedMatchResultHandle>;
   executeCountByBorrowed(
     transaction: NativeRustTransactionContext,
     root: NativeMatchBindingHandle,
-  ): NativeValidatedMatchResultHandle;
+  ): Promise<NativeValidatedMatchResultHandle>;
   executeExistsByOwned(
     database: NativeRustDatabase,
     root: NativeMatchBindingHandle,
-  ): NativeValidatedMatchResultHandle;
+  ): Promise<NativeValidatedMatchResultHandle>;
   executeExistsByBorrowed(
     transaction: NativeRustTransactionContext,
     root: NativeMatchBindingHandle,
-  ): NativeValidatedMatchResultHandle;
+  ): Promise<NativeValidatedMatchResultHandle>;
   pageByDiagnostic(
     root: NativeMatchBindingHandle,
     orders: NativeMatchOrderHandle[],
@@ -223,14 +223,14 @@ interface NativeMatchQueryHandle {
     group: NativeMatchBindingHandle | null,
     reducers: NativeMatchReduction[],
     inputs: (NativeMatchFieldHandle | null)[],
-  ): NativeValidatedMatchResultHandle;
+  ): Promise<NativeValidatedMatchResultHandle>;
   executeReduceByBorrowed(
     transaction: NativeRustTransactionContext,
     root: NativeMatchBindingHandle,
     group: NativeMatchBindingHandle | null,
     reducers: NativeMatchReduction[],
     inputs: (NativeMatchFieldHandle | null)[],
-  ): NativeValidatedMatchResultHandle;
+  ): Promise<NativeValidatedMatchResultHandle>;
   reduceByFieldDiagnostic(
     root: NativeMatchBindingHandle,
     group: NativeMatchFieldHandle,
@@ -243,14 +243,14 @@ interface NativeMatchQueryHandle {
     group: NativeMatchFieldHandle,
     reducers: NativeMatchReduction[],
     inputs: (NativeMatchFieldHandle | null)[],
-  ): NativeValidatedMatchResultHandle;
+  ): Promise<NativeValidatedMatchResultHandle>;
   executeReduceByFieldBorrowed(
     transaction: NativeRustTransactionContext,
     root: NativeMatchBindingHandle,
     group: NativeMatchFieldHandle,
     reducers: NativeMatchReduction[],
     inputs: (NativeMatchFieldHandle | null)[],
-  ): NativeValidatedMatchResultHandle;
+  ): Promise<NativeValidatedMatchResultHandle>;
   reduceByFieldsDiagnostic(
     root: NativeMatchBindingHandle,
     groups: NativeMatchFieldHandle[],
@@ -263,14 +263,14 @@ interface NativeMatchQueryHandle {
     groups: NativeMatchFieldHandle[],
     reducers: NativeMatchReduction[],
     inputs: (NativeMatchFieldHandle | null)[],
-  ): NativeValidatedMatchResultHandle;
+  ): Promise<NativeValidatedMatchResultHandle>;
   executeReduceByFieldsBorrowed(
     transaction: NativeRustTransactionContext,
     root: NativeMatchBindingHandle,
     groups: NativeMatchFieldHandle[],
     reducers: NativeMatchReduction[],
     inputs: (NativeMatchFieldHandle | null)[],
-  ): NativeValidatedMatchResultHandle;
+  ): Promise<NativeValidatedMatchResultHandle>;
 }
 
 interface NativeValidatedMatchResultHandle {
@@ -454,22 +454,12 @@ interface NativeRemoteModelQueryModule {
   ) => NativeQueryExecutionResources;
   NodeQueryCancellation: new () => NativeQueryCancellation;
   NodeQueryLimits: new (names: string[], values: bigint[]) => NativeQueryLimits;
-  queryV2RemoteModelContext(
-    authority: ReturnType<NativeModule["queryV2Authority"]>,
-    advertisement: Uint8Array,
-    maxItems: bigint,
-    maxBytes: bigint,
-    maxCollectionMembers: bigint,
-    maxGraphNodes: bigint,
-    maxAttributeValues: bigint,
-    maxRolePlayers: bigint,
-    deadlineMs?: bigint | null,
-  ): NativeRemoteModelQueryContext;
   queryV2RemoteModelContextWithResources(
     authority: ReturnType<NativeModule["queryV2Authority"]>,
     advertisement: Uint8Array,
     resources: NativeQueryExecutionResources,
     cancellation: NativeQueryCancellation,
+    answerLimits?: NativeQueryExecutionResources,
   ): NativeRemoteModelQueryContext;
   queryV2PrepareRemoteModelRows(
     query: NativeMatchQueryHandle,
@@ -539,7 +529,6 @@ interface NativeRuntimeProjectionHandle {
   ): NativeRustDatabase;
   managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
   managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
-  matchSession(): NativeMatchSessionHandle;
   matchSessionWithResources(
     resources: NativeQueryExecutionResources,
     cancellation: NativeQueryCancellation,
@@ -753,7 +742,6 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
   const queryV2ExecuteLocal = native.queryV2ExecuteLocal.bind(native);
   const queryV2RemoteCapabilities = native.queryV2RemoteCapabilities.bind(native);
   const queryV2PrepareRemote = native.queryV2PrepareRemote.bind(native);
-  const queryV2RemoteModelContext = native.queryV2RemoteModelContext.bind(native);
   const queryV2RemoteModelContextWithResources =
     native.queryV2RemoteModelContextWithResources.bind(native);
   const queryV2PrepareRemoteModelRows =
@@ -854,32 +842,6 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
         ),
       )) as (...args: never[]) => unknown,
   );
-  descriptors["queryV2RemoteModelContext"] = protectedMethodDescriptor(
-    native,
-    "queryV2RemoteModelContext",
-    ((
-      authority: Parameters<LoadedNativeModule["queryV2RemoteModelContext"]>[0],
-      advertisement: Uint8Array,
-      maxItems: bigint,
-      maxBytes: bigint,
-      maxCollectionMembers: bigint,
-      maxGraphNodes: bigint,
-      maxAttributeValues: bigint,
-      maxRolePlayers: bigint,
-      deadlineMs?: bigint | null,
-    ) =>
-      queryV2RemoteModelContext(
-        authority,
-        ownedByteSnapshot(advertisement, MAX_REMOTE_ENVELOPE_BYTES),
-        maxItems,
-        maxBytes,
-        maxCollectionMembers,
-        maxGraphNodes,
-        maxAttributeValues,
-        maxRolePlayers,
-        deadlineMs,
-      )) as (...args: never[]) => unknown,
-  );
   descriptors["queryV2RemoteModelContextWithResources"] = protectedMethodDescriptor(
     native,
     "queryV2RemoteModelContextWithResources",
@@ -888,11 +850,13 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
       advertisement: Uint8Array,
       resources: NativeQueryExecutionResources,
       cancellation: NativeQueryCancellation,
+      answerLimits?: NativeQueryExecutionResources,
     ) => queryV2RemoteModelContextWithResources(
       authority,
       ownedByteSnapshot(advertisement, MAX_REMOTE_ENVELOPE_BYTES),
       resources,
       cancellation,
+      answerLimits,
     )) as (...args: never[]) => unknown,
   );
   descriptors["queryV2PrepareRemoteModelRows"] = protectedMethodDescriptor(

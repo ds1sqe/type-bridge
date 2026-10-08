@@ -663,37 +663,43 @@ async function hydrateExact(
   const advertisement = remoteAdvertisement();
   let exchanges = 0;
   const declared = JSON.parse(model.typeKey);
-  const session = new package_.RemoteQuerySession(
-    advertisement,
-    async (request) => {
-      exchanges += 1;
-      const reply = hydratedRowsReply(
-        request,
-        advertisement,
-        graph,
-        declared,
-        rootNode,
-      );
-      if (corruptSignature) {
-        const signatureOffset = reply.lastIndexOf(Buffer.from('"signature":"'));
-        requireCondition(
-          signatureOffset >= 0,
-          "signed remote reply has no signature field",
+  const session = new package_.QuerySession(
+    new package_.ExchangeConnection(
+      advertisement,
+      async (request) => {
+        exchanges += 1;
+        const reply = hydratedRowsReply(
+          request,
+          advertisement,
+          graph,
+          declared,
+          rootNode,
         );
-        const mutated = Buffer.from(reply);
-        const byte = signatureOffset + Buffer.byteLength('"signature":"');
-        mutated[byte] = mutated[byte] === 0x30 ? 0x31 : 0x30;
-        return mutated;
-      }
-      return reply;
-    },
+        if (corruptSignature) {
+          const signatureOffset = reply.lastIndexOf(Buffer.from('"signature":"'));
+          requireCondition(
+            signatureOffset >= 0,
+            "signed remote reply has no signature field",
+          );
+          const mutated = Buffer.from(reply);
+          const byte = signatureOffset + Buffer.byteLength('"signature":"');
+          mutated[byte] = mutated[byte] === 0x30 ? 0x31 : 0x30;
+          return mutated;
+        }
+        return reply;
+      },
+    ),
     {
-      maxItems: 8n,
-      maxBytes: 1n << 20n,
-      maxCollectionMembers: 16n,
-      maxGraphNodes: 16n,
-      maxAttributeValues: 128n,
-      maxRolePlayers: 64n,
+      resources: new package_.QueryExecutionResourceLimits({
+        items: 8n,
+        bytes: 1n << 20n,
+        collectionMembers: 16n,
+        graphNodes: 16n,
+        attributeValues: 128n,
+        rolePlayers: 64n,
+        timeoutMilliseconds: 30_000n,
+        statements: 3n,
+      }),
     },
   );
   try {

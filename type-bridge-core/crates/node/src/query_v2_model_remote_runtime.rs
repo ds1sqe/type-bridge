@@ -14,9 +14,8 @@ use napi_derive::napi;
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
 use type_bridge_contract::query_remote::{
-    checked_remote_deadline, checked_remote_limit, remote_limit_invalid,
+    checked_remote_limit, remote_limit_invalid,
 };
-use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
     AnswerCancellation, PendingRemoteModelQueryV2, ProxyQueryConnection, QueryExecutionDeadline,
@@ -46,14 +45,13 @@ impl NodeRemoteModelQueryContext {
         env: &Env,
         authority: &NodeQueryV2Authority,
         advertisement: Unknown,
+        answer_limits: QueryExecutionResourceLimits,
         resources: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> napi::Result<Self> {
         let advertisement = owned_advertisement(env, advertisement)?;
-        // The caller's policy is also the connection's ceiling: a host-owned
-        // exchange has no separate connection-time policy.
         let connection =
-            ProxyQueryConnection::with_exchange(advertisement, authority.authority(), resources)
+            ProxyQueryConnection::with_exchange(advertisement, authority.authority(), answer_limits)
                 .map_err(napi_sdk_diagnostic)?;
         Ok(Self {
             connection,
@@ -199,46 +197,9 @@ impl NodePendingRemoteModelQuery {
     }
 }
 
-/// Snapshot and validate the non-I/O context shared by model-query terminals.
-#[napi(js_name = "queryV2RemoteModelContext")]
-#[allow(clippy::too_many_arguments, reason = "flat explicit limit contract")]
-pub fn query_v2_remote_model_context(
-    env: Env,
-    authority: &NodeQueryV2Authority,
-    advertisement: Unknown,
-    max_items: Unknown,
-    max_bytes: Unknown,
-    max_collection_members: Unknown,
-    max_graph_nodes: Unknown,
-    max_attribute_values: Unknown,
-    max_role_players: Unknown,
-    deadline_ms: Option<Unknown>,
-) -> napi::Result<NodeRemoteModelQueryContext> {
-    let limits = remote_limits_v2(
-        max_items,
-        max_bytes,
-        max_collection_members,
-        max_graph_nodes,
-        max_attribute_values,
-        max_role_players,
-        deadline_ms,
-    )?;
-    // A budget above a default is kept, not clamped; past a supported
-    // maximum it is refused by name.
-    let resources = QueryExecutionResourceLimits::from_remote(limits)
-        .validate()
-        .map_err(|refusal| napi::Error::new(napi::Status::InvalidArg, refusal.to_string()))?;
-    NodeRemoteModelQueryContext::new(
-        &env,
-        authority,
-        advertisement,
-        resources,
-        AnswerCancellation::default(),
-    )
-}
-
-/// Build the same remote context from the common direct/remote resource and
-/// cancellation owners.
+/// Build the remote context from the common direct/remote resource and
+/// cancellation owners. `answer_limits` is the caller-exchanged connection's
+/// ceiling; left out, the session's own resources are the ceiling.
 #[napi(js_name = "queryV2RemoteModelContextWithResources")]
 pub fn query_v2_remote_model_context_with_resources(
     env: Env,
@@ -246,12 +207,15 @@ pub fn query_v2_remote_model_context_with_resources(
     advertisement: Unknown,
     resources: &NodeQueryExecutionResources,
     cancellation: &NodeQueryCancellation,
+    answer_limits: Option<&NodeQueryExecutionResources>,
 ) -> napi::Result<NodeRemoteModelQueryContext> {
+    let resources = resources.inner();
     NodeRemoteModelQueryContext::new(
         &env,
         authority,
         advertisement,
-        resources.inner(),
+        answer_limits.map_or(resources, NodeQueryExecutionResources::inner),
+        resources,
         cancellation.inner(),
     )
 }
@@ -480,36 +444,6 @@ pub(crate) fn reduce_by_fields_request(
         .inner()
         .validate_reduce_by_fields(root.inner(), &groups, &terms)
         .map_err(crate::napi_orm_error)
-}
-
-#[allow(clippy::too_many_arguments, reason = "flat explicit limit contract")]
-fn remote_limits_v2(
-    max_items: Unknown,
-    max_bytes: Unknown,
-    max_collection_members: Unknown,
-    max_graph_nodes: Unknown,
-    max_attribute_values: Unknown,
-    max_role_players: Unknown,
-    deadline_ms: Option<Unknown>,
-) -> napi::Result<RemoteLimitsV2> {
-    let build = || -> Result<RemoteLimitsV2, Diagnostic> {
-        Ok(RemoteLimitsV2 {
-            deadline_ms: checked_remote_deadline(deadline_ms.map(node_limit).transpose()?)?,
-            max_bytes: checked_remote_limit(node_limit(max_bytes)?)?,
-            max_items: checked_remote_limit(node_limit(max_items)?)?,
-            max_collection_members: checked_remote_limit(node_limit(max_collection_members)?)?,
-            max_graph_nodes: checked_remote_limit(node_limit(max_graph_nodes)?)?,
-            max_attribute_values: checked_remote_limit(node_limit(max_attribute_values)?)?,
-            max_role_players: checked_remote_limit(node_limit(max_role_players)?)?,
-            max_statements: 3,
-        })
-    };
-    build().map_err(|diagnostic| napi_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))
-}
-
-fn node_limit(value: Unknown) -> Result<i128, Diagnostic> {
-    let value = BigInt::from_unknown(value).map_err(|_| remote_limit_invalid())?;
-    node_limit_bigint(&value)
 }
 
 fn node_limit_bigint(value: &BigInt) -> Result<i128, Diagnostic> {
