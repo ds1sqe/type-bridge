@@ -1,10 +1,14 @@
 # Installation
 
-**Security update:** Upgrade to TypeBridge 2.2.3. Its prebuilt distributions
+**Security update:** Upgrade to TypeBridge 2.2.4. Its prebuilt distributions
 use rustls 0.23.45, which fixes
 [RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc).
 Its server image also installs Debian's fixed Bookworm PCRE2 and Perl
 packages.
+TypeBridge 2.2.4 also stops bounded queries from wedging TypeDB 3.11–3.13
+when a transaction closes a paused stream, which could leave the database
+"in use" until the server restarted. Python batches running on several
+threads no longer leave the garbage collector disabled.
 The [2.2.1 post-release notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1)
 records the affected earlier release.
 
@@ -68,7 +72,7 @@ setup and the historical 2.0.0 Git declaration.
 
 ## C
 
-The [2.2.3 GitHub release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.3)
+The [2.2.4 GitHub release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.4)
 provides the ABI 1.6.0 shared runtime, standalone CLI, and generated C example
 for Ubuntu 24.04 on x86_64 GNU/Linux. Verify the signed archives before
 installation. C17 and C++17 applications use CMake or pkg-config; application
@@ -89,14 +93,14 @@ type-bridge --help
 It validates Split-YAML workspaces, creates and applies migrations, and
 generates configured Python, TypeScript, Rust, and C projections. Split-YAML
 workspace generation is the only active model-generation path. A standalone
-CLI archive for Ubuntu 24.04 x86_64 is also available from the 2.2.3 release.
+CLI archive for Ubuntu 24.04 x86_64 is also available from the 2.2.4 release.
 
 ## Server container
 
 The standalone V2 query server is published separately:
 
 ```bash
-docker pull ghcr.io/ds1sqe/type-bridge-server:2.2.3
+docker pull ghcr.io/ds1sqe/type-bridge-server:2.2.4
 ```
 
 Production deployments should use the immutable digest recorded in the release

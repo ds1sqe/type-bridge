@@ -1,17 +1,20 @@
 # TypeBridge Server Container
 
-**Security update:** Upgrade to TypeBridge 2.2.3. Its prebuilt distributions
+**Security update:** Upgrade to TypeBridge 2.2.4. Its prebuilt distributions
 use rustls 0.23.45, which fixes
 [RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc).
 Its server image also installs Debian's fixed Bookworm PCRE2 and Perl
 packages.
+TypeBridge 2.2.4 also stops bounded queries from wedging TypeDB 3.11–3.13
+when a transaction closes a paused stream, which could leave the database
+"in use" until the server restarted.
 The [2.2.1 post-release notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1)
 records the affected earlier release.
 
 The TypeBridge container product is the V2-capable standalone query server:
 
 ```text
-ghcr.io/ds1sqe/type-bridge-server:2.2.3
+ghcr.io/ds1sqe/type-bridge-server:2.2.4
 ```
 
 The image contains retained V1 routes and the public `v2-query` capability.
@@ -28,14 +31,14 @@ Release notes record the accepted multi-platform digest. Prefer it for
 deployments:
 
 ```bash
-export TYPE_BRIDGE_SERVER_IMAGE='ghcr.io/ds1sqe/type-bridge-server@sha256:7b518bcc972b2aa033dd75ec8ebe55a40009cafe54ad6e725f8eee6946f43c4f'
+export TYPE_BRIDGE_SERVER_IMAGE='ghcr.io/ds1sqe/type-bridge-server@sha256:b769d6be7152d6b3b79229e123996e64ed4948ec4c1ac73be6ab61ccb8232f93'
 docker pull "$TYPE_BRIDGE_SERVER_IMAGE"
 ```
 
-The stable `2.2.3` tag points to the same digest. After acceptance, `2.2`,
+The stable `2.2.4` tag points to the same digest. After acceptance, `2.2`,
 `2`, and `latest` are aliases of that exact stable manifest. Manual candidate
-workflows validate the exact `2.2.3` stable bytes without publishing them or
-moving aliases. Publication requires the annotated `v2.2.3` tag push.
+workflows validate the exact `2.2.4` stable bytes without publishing them or
+moving aliases. Publication requires the annotated `v2.2.4` tag push.
 
 Published platforms are `linux/amd64` and `linux/arm64`.
 
@@ -157,7 +160,7 @@ docker run --rm "$TYPE_BRIDGE_SERVER_IMAGE" --version
 
 The image deliberately has no shell `HEALTHCHECK`. `/health.version` remains
 the frozen V1 compatibility value `1.5.11`, while `--version`, the exact tag,
-and the OCI version label report `2.2.3`.
+and the OCI version label report `2.2.4`.
 
 ## Verify supply-chain evidence
 
@@ -168,7 +171,7 @@ Verify the tag signature with Cosign 3:
 ```bash
 cosign verify \
   --certificate-identity \
-    'https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2.2.3' \
+    'https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2.2.4' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   "$TYPE_BRIDGE_SERVER_IMAGE"
 ```
@@ -179,16 +182,16 @@ the compressed layer size, installed runtime packages, closed runtime file
 set, and the vulnerability/secret scan result.
 
 The build-provenance attestations bind the image to release source
-`50691fde386ecbd30d873f78a04cce69802ec995` and its tagged release workflow.
+`7050336375b90b5adc96d6741d4f3432e5216d34` and its tagged release workflow.
 Verify the source and signing identity:
 
 ```bash
 gh attestation verify "oci://$TYPE_BRIDGE_SERVER_IMAGE" \
   --repo ds1sqe/type-bridge \
-  --cert-identity 'https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2.2.3' \
+  --cert-identity 'https://github.com/ds1sqe/type-bridge/.github/workflows/release.yml@refs/tags/v2.2.4' \
   --cert-oidc-issuer https://token.actions.githubusercontent.com \
-  --source-digest 50691fde386ecbd30d873f78a04cce69802ec995 \
-  --source-ref refs/tags/v2.2.3 \
+  --source-digest 7050336375b90b5adc96d6741d4f3432e5216d34 \
+  --source-ref refs/tags/v2.2.4 \
   --predicate-type 'https://slsa.dev/provenance/v1'
 ```
 
