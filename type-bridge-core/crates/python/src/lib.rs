@@ -228,6 +228,18 @@ impl QueryCompiler {
         Ok(self.inner.compile(&core_clauses))
     }
 
+    /// Compile one node dict tagged with its kind (`{"Pattern": {...}}`):
+    /// a clause, pattern, statement, constraint, or value.
+    fn compile_node(&self, node: Bound<'_, PyAny>) -> PyResult<String> {
+        let node: core::ast::QueryNode = depythonize(&node).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "Failed to deserialize query node: {}",
+                e
+            ))
+        })?;
+        Ok(self.inner.compile_node(&node))
+    }
+
     /// Parse a TypeQL query string into a list of clause dicts (serde-tagged-enum format).
     fn parse(&self, py: Python<'_>, input: &str) -> PyResult<Py<PyAny>> {
         let clauses = core::query_parser::parse_typeql_query(input)

@@ -106,6 +106,8 @@ differently direct and through a proxy. Each entry says what to do instead.
   `type_bridge_core`: the flat-limit `query_v2_remote_model_context` (use
   `query_v2_remote_model_context_with_resources`),
   `revalidate_match_diagnostic`, and `validate_match_order_term_count`.
+- Rust: `ast::FetchItem` gains `Raw(String)` for raw fetch entries; an
+  exhaustive `match` on it needs that arm.
 - Generated TypeScript packages have one session. `QuerySession`, `Query`,
   and `GroupedQuery` run on every connection, and every terminal (`one`,
   `first`, `rows`, `pageBy`, `countBy`, `existsBy`, `aggregate`, grouped
@@ -324,6 +326,12 @@ differently direct and through a proxy. Each entry says what to do instead.
     `{prefix}_proxy_query_execute_{kind}`. The remote context stays as the
     exchange extension point for hosts that own the route. The C ABI
     version stays 1.6.0.
+- The core's TypeQL compiler renders any single node:
+  `QueryCompiler::compile_node` over the new `ast::QueryNode`, with
+  `compile_pattern`, `compile_statement`, `compile_constraint`, and
+  `compile_value` public, and a raw fetch entry `ast::FetchItem::Raw`.
+  Python's native `QueryCompiler.compile_node(dict)` takes the tagged node
+  form.
 - `type_bridge_core.blocking(obj)`: a blocking view of an object with
   coroutine methods, such as a generated session, for code without an event
   loop.
@@ -368,6 +376,21 @@ differently direct and through a proxy. Each entry says what to do instead.
   65,536 by the container; the caller's budget bounds them.
 - `selected_slots` validation messages no longer spell the number sixteen;
   the ceiling is reported in the `maximum` detail.
+- Python's raw builders render TypeQL through the Rust core only. Raw
+  `Query`/`QueryBuilder`, expressions, CRUD patterns, `to_insert_query`, and
+  `QueryCompiler.compile`/`compile_batch` send every node (clause, pattern,
+  statement, constraint, value, raw fetch string) to the core; the Python
+  renderer and its silent fallback are gone, and a node the core cannot
+  decode raises `ValueError`. Output is unchanged except:
+  - a `str` literal with a non-string declared value type
+    (`LiteralValue("2024-01-01", "date")`) renders unquoted in a pattern,
+    statement, constraint, or value compiled on its own, as it already did
+    inside a clause;
+  - a small double whose Python form has a negative exponent renders
+    positionally (`0.00001`, was `1e-05`) where Python rendered it;
+  - an integer outside the signed 64-bit range and a non-finite double have
+    no TypeQL literal and raise `ValueError` (they were rendered as a quoted
+    string or `nan`).
 
 ## [2.2.6] - 2026-10-16
 

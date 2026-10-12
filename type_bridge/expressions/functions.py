@@ -177,7 +177,7 @@ class FunctionQuery[T]:
         """Generate just the function call expression string."""
         from type_bridge.query.compiler import QueryCompiler
 
-        return QueryCompiler()._compile_value(self.to_call_ast())
+        return QueryCompiler().compile(self.to_call_ast())
 
     def to_match_let(
         self,

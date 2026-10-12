@@ -41,7 +41,6 @@ from type_bridge.query.ast import (
     UpdateClause,
     ValueComparisonPattern,
 )
-from type_bridge.query.compiler import QueryCompiler
 
 # ---------------------------------------------------------------------------
 # Rust availability
@@ -65,12 +64,6 @@ requires_rust = pytest.mark.skipif(not RUST_AVAILABLE, reason="type_bridge_core 
 # ---------------------------------------------------------------------------
 # Compiler / validator instances
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def python_compiler() -> QueryCompiler:
-    """A QueryCompiler that always uses the Python path."""
-    return QueryCompiler()
 
 
 @pytest.fixture

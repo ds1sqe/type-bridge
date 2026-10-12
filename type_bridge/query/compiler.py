@@ -1,9 +1,18 @@
-"""Compiler for converting AST nodes to TypeQL strings."""
+"""Compiler for converting AST nodes to TypeQL strings.
+
+The Rust core renders every node. This module only marshals the Python AST
+into the core's serde form.
+"""
 
 from __future__ import annotations
 
-import logging
+import math
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 from typing import Any
+
+import isodate
+from type_bridge_core import QueryCompiler as _CoreQueryCompiler
 
 from type_bridge.query.ast import (
     ArithmeticValue,
@@ -51,16 +60,45 @@ from type_bridge.query.ast import (
     ValueComparisonPattern,
 )
 
-logger = logging.getLogger(__name__)
+_core_compiler = _CoreQueryCompiler()
+_MIN_INTEGER = -(2**63)
+_MAX_INTEGER = 2**63 - 1
 
-try:
-    from type_bridge_core import (
-        QueryCompiler as _RustQueryCompiler,
-    )
 
-    _core_compiler: Any = _RustQueryCompiler()
-except ImportError:
-    _core_compiler = None
+def _literal_to_dict(literal: LiteralValue) -> dict[str, Any]:
+    """Marshal a literal into the core's typed form.
+
+    A ``str`` keeps its declared value type, so a parsed date or datetime
+    renders unquoted again. Any other Python value is typed by its class,
+    because callers attach a generic declared type (``"string"``) to dates,
+    decimals, and durations.
+    """
+    value = literal.value
+    if hasattr(value, "value"):
+        # Attribute instances and enum members carry the literal in `.value`.
+        value = value.value
+    if isinstance(value, str):
+        return {"value": value, "value_type": literal.value_type}
+    if isinstance(value, bool):
+        return {"value": value, "value_type": "boolean"}
+    if isinstance(value, int):
+        if not _MIN_INTEGER <= value <= _MAX_INTEGER:
+            raise ValueError(f"TypeQL integer literals are signed 64-bit; got {value}")
+        return {"value": value, "value_type": "long"}
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"TypeQL has no literal for the double {value}")
+        return {"value": value, "value_type": "double"}
+    if isinstance(value, Decimal):
+        return {"value": str(value), "value_type": "decimal"}
+    if isinstance(value, datetime):
+        value_type = "datetime" if value.tzinfo is None else "datetime-tz"
+        return {"value": value.isoformat(), "value_type": value_type}
+    if isinstance(value, date):
+        return {"value": value.isoformat(), "value_type": "date"}
+    if isinstance(value, timedelta | isodate.Duration):
+        return {"value": isodate.duration_isoformat(value), "value_type": "duration"}
+    return {"value": str(value), "value_type": "string"}
 
 
 def _value_to_dict(value: Value | str) -> dict[str, Any]:
@@ -68,10 +106,7 @@ def _value_to_dict(value: Value | str) -> dict[str, Any]:
     if isinstance(value, str):
         return {"type": "Variable", "data": value}
     if isinstance(value, LiteralValue):
-        return {
-            "type": "Literal",
-            "data": {"value": value.value, "value_type": value.value_type},
-        }
+        return {"type": "Literal", "data": _literal_to_dict(value)}
     if isinstance(value, FunctionCallValue):
         return {
             "type": "FunctionCall",
@@ -227,7 +262,7 @@ def _statement_to_dict(stmt: Statement) -> dict[str, Any]:
 def _fetch_item_to_dict(item: FetchItem | str) -> dict[str, Any]:
     """Convert a FetchItem AST node to a serde-compatible dict (externally tagged)."""
     if isinstance(item, str):
-        raise ValueError("Raw string fetch items not supported in Rust compiler")
+        return {"Raw": item}
     if isinstance(item, FetchAttribute):
         return {"Attribute": {"key": item.key, "var": item.var, "attr_name": item.attr_name}}
     if isinstance(item, FetchVariable):
@@ -291,300 +326,42 @@ def _clause_to_dict(clause: Clause) -> dict[str, Any]:
     raise ValueError(f"Unknown clause type: {type(clause).__name__}")
 
 
+def _node_to_dict(node: QueryNode) -> dict[str, Any]:
+    """Wrap one node in the core's ``QueryNode`` form."""
+    if isinstance(node, Clause):
+        return {"Clause": _clause_to_dict(node)}
+    if isinstance(node, Pattern):
+        return {"Pattern": _pattern_to_dict(node)}
+    if isinstance(node, Statement):
+        return {"Statement": _statement_to_dict(node)}
+    if isinstance(node, Constraint):
+        return {"Constraint": _constraint_to_dict(node)}
+    if isinstance(node, Value):
+        return {"Value": _value_to_dict(node)}
+    raise ValueError(f"Unknown node type: {type(node).__name__}")
+
+
 class QueryCompiler:
-    """Compiles AST nodes into TypeQL strings."""
+    """Compiles AST nodes into TypeQL strings with the Rust core."""
 
     def compile(self, node: QueryNode) -> str:
-        """Compile a single node to TypeQL."""
-        # Try Rust compiler for Clause nodes
-        if _core_compiler is not None and isinstance(node, Clause):
-            try:
-                return _core_compiler.compile_dicts([_clause_to_dict(node)])
-            except Exception:
-                logger.debug("Rust compiler failed, falling back to Python", exc_info=True)
+        """Compile a single clause, pattern, statement, constraint, or value.
 
-        if isinstance(node, Clause):
-            return self._compile_clause(node)
-        elif isinstance(node, Pattern):
-            return self._compile_pattern(node)
-        elif isinstance(node, Statement):
-            return self._compile_statement(node)
-        elif isinstance(node, Constraint):
-            return self._compile_constraint(node)
-        elif isinstance(node, Value):
-            return self._compile_value(node)
-        else:
-            raise ValueError(f"Unknown node type: {type(node).__name__}")
+        Raises:
+            ValueError: The node, or a value inside it, cannot be marshalled
+                to the core.
+        """
+        return _core_compiler.compile_node(_node_to_dict(node))
 
     def compile_batch(self, nodes: list[QueryNode], operation: str = "") -> str:
         """Compile a list of nodes into a single query string.
 
         Args:
-            nodes: List of clauses to compile
-            operation: Optional operation keyword (e.g., "match", "insert") to prepend
-                       if the nodes are just raw patterns/statements.
+            nodes: Nodes to compile, one per line.
+            operation: Optional operation keyword (e.g., "match", "insert") to
+                prepend when the nodes are bare patterns or statements.
         """
-        # Try Rust compiler if all nodes are Clauses
-        clauses = [n for n in nodes if isinstance(n, Clause)]
-        if _core_compiler is not None and len(clauses) == len(nodes):
-            try:
-                dicts = [_clause_to_dict(c) for c in clauses]
-                result = _core_compiler.compile_dicts(dicts)
-                if operation:
-                    return f"{operation}\n{result}"
-                return result
-            except Exception:
-                logger.debug("Rust compiler failed, falling back to Python", exc_info=True)
-
-        parts = [self.compile(node) for node in nodes]
-        query = "\n".join(parts)
+        query = "\n".join(self.compile(node) for node in nodes)
         if operation:
             return f"{operation}\n{query}"
         return query
-
-    # --- Clauses ---
-
-    def _compile_clause(self, clause: Clause) -> str:
-        if isinstance(clause, MatchClause):
-            patterns = [self._compile_pattern(p) for p in clause.patterns]
-            return "match\n" + ";\n".join(patterns) + ";"
-
-        elif isinstance(clause, MatchLetClause):
-            return self._compile_match_let(clause)
-
-        elif isinstance(clause, InsertClause):
-            statements = [self._compile_statement(s) for s in clause.statements]
-            return "insert\n" + ";\n".join(statements) + ";"
-
-        elif isinstance(clause, DeleteClause):
-            statements = [self._compile_statement(s) for s in clause.statements]
-            return "delete\n" + ";\n".join(statements) + ";"
-
-        elif isinstance(clause, UpdateClause):
-            statements = [self._compile_statement(s) for s in clause.statements]
-            # TypeDB 3.x typically uses 'delete' then 'insert' for updates,
-            # but 'update' keyword exists as syntactic sugar for simple attribute replacement.
-            # We assume the AST has already resolved this intent.
-            return "update\n" + ";\n".join(statements) + ";"
-
-        elif isinstance(clause, FetchClause):
-            compiled_items = [self._compile_fetch_item(item) for item in clause.items]
-            return "fetch {\n  " + ",\n  ".join(compiled_items) + "\n};"
-
-        elif isinstance(clause, ReduceClause):
-            assignments = [self._compile_reduce_assignment(a) for a in clause.assignments]
-            reduce_str = "reduce " + ", ".join(assignments)
-            if clause.group_by:
-                reduce_str += f" groupby {clause.group_by}"
-            return reduce_str + ";"
-
-        raise ValueError(f"Unknown clause type: {type(clause).__name__}")
-
-    def _compile_match_let(self, clause: MatchLetClause) -> str:
-        assignments = [self._compile_let_assignment(a) for a in clause.assignments]
-        return "match\n" + ";\n".join(assignments) + ";"
-
-    def _compile_let_assignment(self, assignment: LetAssignment) -> str:
-        vars_str = ", ".join(assignment.variables)
-        op = "in" if assignment.is_stream else "="
-        if isinstance(assignment.expression, Value):
-            expr_str = self._compile_value(assignment.expression)
-        else:
-            expr_str = assignment.expression
-        return f"let {vars_str} {op} {expr_str}"
-
-    # --- Patterns (Match) ---
-
-    def _compile_pattern(self, pattern: Pattern) -> str:
-        if isinstance(pattern, EntityPattern):
-            op = "isa!" if pattern.is_strict else "isa"
-            parts = [f"{pattern.variable} {op} {pattern.type_name}"]
-            for constraint in pattern.constraints:
-                parts.append(self._compile_constraint(constraint))
-            return ", ".join(parts)
-
-        elif isinstance(pattern, RelationPattern):
-            # TypeDB 3.x syntax: $r isa type (role: $player)
-            # Order matters: isa comes before role players
-            if pattern.role_players:
-                role_parts = [f"{rp.role}: {rp.player_var}" for rp in pattern.role_players]
-                roles_str = f"({', '.join(role_parts)})"
-                parts = [f"{pattern.variable} isa {pattern.type_name} {roles_str}"]
-            else:
-                parts = [f"{pattern.variable} isa {pattern.type_name}"]
-            for constraint in pattern.constraints:
-                parts.append(self._compile_constraint(constraint))
-            return ", ".join(parts)
-
-        elif isinstance(pattern, SubTypePattern):
-            return f"{pattern.variable} sub {pattern.parent_type}"
-
-        elif isinstance(pattern, HasPattern):
-            return f"{pattern.thing_var} has {pattern.attr_type} {pattern.attr_var}"
-
-        elif isinstance(pattern, ValueComparisonPattern):
-            if isinstance(pattern.value, Value):
-                val_str = self._compile_value(pattern.value)
-            else:
-                val_str = pattern.value
-            return f"{pattern.var} {pattern.operator} {val_str}"
-
-        elif isinstance(pattern, NotPattern):
-            sub_patterns = [self._compile_pattern(p) for p in pattern.patterns]
-            # not { $p1; $p2; };
-            inner = "; ".join(sub_patterns)
-            return f"not {{ {inner}; }}"
-
-        elif isinstance(pattern, OrPattern):
-            # { p1; p2; } or { p3; };
-            blocks = []
-            for alt in pattern.alternatives:
-                sub_patterns = [self._compile_pattern(p) for p in alt]
-                block_content = "; ".join(sub_patterns)
-                blocks.append(f"{{ {block_content}; }}")
-            return " or ".join(blocks)
-
-        elif isinstance(pattern, IidPattern):
-            return f"{pattern.variable} iid {pattern.iid}"
-
-        elif isinstance(pattern, AttributePattern):
-            # $a isa age; or $a isa age; $a 30;
-            parts = [f"{pattern.variable} isa {pattern.type_name}"]
-            if pattern.value is not None:
-                val_str = self._compile_value(pattern.value)
-                parts.append(f"{pattern.variable} {val_str}")
-            return "; ".join(parts)
-
-        elif isinstance(pattern, RawPattern):
-            return pattern.content
-
-        raise ValueError(f"Unknown pattern type: {type(pattern).__name__}")
-
-    # --- Statements (Insert/Delete) ---
-
-    def _compile_statement(self, stmt: Statement) -> str:
-        if isinstance(stmt, HasStatement):
-            val_str = self._compile_value(stmt.value)
-            return f"{stmt.subject_var} has {stmt.attr_name} {val_str}"
-
-        elif isinstance(stmt, IsaStatement):
-            return f"{stmt.variable} isa {stmt.type_name}"
-
-        elif isinstance(stmt, RelationStatement):
-            role_parts = [f"{rp.role}: {rp.player_var}" for rp in stmt.role_players]
-            roles_str = f"({', '.join(role_parts)})"
-            # TypeDB 3.x insert syntax: $var isa type, links (role: $player);
-            # or without variable: (role: $player) isa type;
-            if stmt.include_variable:
-                base = f"{stmt.variable} isa {stmt.type_name}, links {roles_str}"
-            else:
-                base = f"{roles_str} isa {stmt.type_name}"
-
-            # Add inline attributes (for insert statements without variable)
-            if stmt.attributes:
-                attr_parts = []
-                for attr in stmt.attributes:
-                    val_str = self._compile_value(attr.value)
-                    attr_parts.append(f"has {attr.attr_name} {val_str}")
-                return f"{base}, {', '.join(attr_parts)}"
-            return base
-
-        elif isinstance(stmt, DeleteThingStatement):
-            return f"{stmt.variable}"
-
-        elif isinstance(stmt, RawStatement):
-            return stmt.content
-
-        raise ValueError(f"Unknown statement type: {type(stmt).__name__}")
-
-    # --- Constraints ---
-
-    def _compile_constraint(self, constraint: Constraint) -> str:
-        if isinstance(constraint, IidConstraint):
-            return f"iid {constraint.iid}"
-
-        elif isinstance(constraint, HasConstraint):
-            if isinstance(constraint.value, Value):
-                val_str = self._compile_value(constraint.value)
-            else:
-                # It's a variable string
-                val_str = constraint.value
-            return f"has {constraint.attr_name} {val_str}"
-
-        elif isinstance(constraint, IsaConstraint):
-            op = "isa!" if constraint.strict else "isa"
-            return f"{op} {constraint.type_name}"
-
-        raise ValueError(f"Unknown constraint type: {type(constraint).__name__}")
-
-    # --- Values & Escaping ---
-
-    def _compile_value(self, value_node: Value) -> str:
-        if isinstance(value_node, ArithmeticValue):
-            left = (
-                self._compile_value(value_node.left)
-                if isinstance(value_node.left, Value)
-                else value_node.left
-            )
-            right = (
-                self._compile_value(value_node.right)
-                if isinstance(value_node.right, Value)
-                else value_node.right
-            )
-            return f"({left} {value_node.operator} {right})"
-
-        if isinstance(value_node, FunctionCallValue):
-            args_str = []
-            for arg in value_node.args:
-                if isinstance(arg, Value):
-                    args_str.append(self._compile_value(arg))
-                else:
-                    args_str.append(arg)
-            return f"{value_node.function}({', '.join(args_str)})"
-
-        # Use existing formatting logic from type_bridge.crud.formatting if available,
-        # otherwise implement robust escaping here.
-        # For Phase 1, we import the existing robust formatter.
-        from type_bridge.crud.formatting import format_value
-
-        if isinstance(value_node, LiteralValue):
-            return format_value(value_node.value)
-        raise ValueError(f"Unknown value type: {type(value_node).__name__}")
-
-    # --- Fetch Items ---
-
-    def _compile_fetch_item(self, item: FetchItem | str) -> str:
-        """Compile a fetch item to TypeQL string."""
-        # Backwards compatibility: raw strings pass through
-        if isinstance(item, str):
-            return item
-
-        if isinstance(item, FetchAttribute):
-            return f'"{item.key}": {item.var}.{item.attr_name}'
-
-        elif isinstance(item, FetchVariable):
-            return f'"{item.key}": {item.var}'
-
-        elif isinstance(item, FetchAttributeList):
-            return f'"{item.key}": [{item.var}.{item.attr_name}]'
-
-        elif isinstance(item, FetchFunction):
-            return f'"{item.key}": {item.func_name}({item.var})'
-
-        elif isinstance(item, FetchWildcard):
-            return f'"{item.key}": {item.var}.*'
-
-        elif isinstance(item, FetchNestedWildcard):
-            return f'"{item.key}": {{ {item.var}.* }}'
-
-        raise ValueError(f"Unknown fetch item type: {type(item).__name__}")
-
-    # --- Reduce/Aggregate ---
-
-    def _compile_reduce_assignment(self, assignment: ReduceAssignment) -> str:
-        """Compile a reduce assignment like $count = count($var)."""
-        if isinstance(assignment.expression, Value):
-            expr_str = self._compile_value(assignment.expression)
-        else:
-            expr_str = assignment.expression
-        return f"{assignment.variable} = {expr_str}"

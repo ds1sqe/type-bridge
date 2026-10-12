@@ -48,11 +48,7 @@ class Expression(ABC):
 
         compiler = QueryCompiler()
         patterns = self.to_ast(var)
-        # We need to compile each pattern and join them?
-        # Compiler has _compile_pattern.
-        # But _compile_pattern is private.
-        # compiler.compile() takes a Clause.
-        # We can create a temporary MatchClause?
+        # Render the patterns as one match body, without the keyword.
         from type_bridge.query.ast import MatchClause
 
         return compiler.compile(MatchClause(patterns=patterns)).replace("match\n", "").strip(";")

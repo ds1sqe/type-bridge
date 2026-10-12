@@ -1,10 +1,12 @@
-//! TypeQL query compiler — converts AST [`Clause`](crate::ast::Clause)s into TypeQL query strings.
+//! TypeQL query compiler — converts AST nodes ([`QueryNode`](crate::ast::QueryNode),
+//! usually [`Clause`](crate::ast::Clause)s) into TypeQL query strings.
 
 use crate::ast::{
-    Clause, Constraint, FetchItem, LetAssignment, LiteralValue, Pattern, ReduceAssignment,
-    SortField, Statement, TypedComparisonOperator, TypedFetchRows, TypedFunctionArgument,
-    TypedHydrateThings, TypedLiteral, TypedMatchPredicate, TypedMatchTarget, TypedMissingOrder,
-    TypedPageRematch, TypedRootScan, TypedScalarOperand, TypedSortDirection, Value,
+    Clause, Constraint, FetchItem, LetAssignment, LiteralValue, Pattern, QueryNode,
+    ReduceAssignment, SortField, Statement, TypedComparisonOperator, TypedFetchRows,
+    TypedFunctionArgument, TypedHydrateThings, TypedLiteral, TypedMatchPredicate, TypedMatchTarget,
+    TypedMissingOrder, TypedPageRematch, TypedRootScan, TypedScalarOperand, TypedSortDirection,
+    Value,
 };
 use crate::decimal::parse_decimal;
 use crate::reserved_words::is_reserved_word;
@@ -163,7 +165,8 @@ impl TypedParameterMode {
     }
 }
 
-/// Compiles a sequence of [`Clause`] AST nodes into a TypeQL query string.
+/// Compiles AST nodes into TypeQL. It is the only TypeQL renderer for the
+/// untyped AST; bindings send their nodes here instead of rendering them.
 pub struct QueryCompiler {}
 
 impl Default for QueryCompiler {
@@ -908,6 +911,18 @@ impl QueryCompiler {
         }
     }
 
+    /// Compile any single node: a clause, pattern, statement, constraint, or
+    /// value.
+    pub fn compile_node(&self, node: &QueryNode) -> String {
+        match node {
+            QueryNode::Clause(clause) => self.compile_clause(clause),
+            QueryNode::Pattern(pattern) => self.compile_pattern(pattern),
+            QueryNode::Statement(statement) => self.compile_statement(statement),
+            QueryNode::Constraint(constraint) => self.compile_constraint(constraint),
+            QueryNode::Value(value) => self.compile_value(value),
+        }
+    }
+
     /// Compile a single clause into its TypeQL string representation.
     pub fn compile_clause(&self, clause: &Clause) -> String {
         match clause {
@@ -996,7 +1011,8 @@ impl QueryCompiler {
         }
     }
 
-    fn compile_pattern(&self, pattern: &Pattern) -> String {
+    /// Compile one match pattern, without a trailing `;`.
+    pub fn compile_pattern(&self, pattern: &Pattern) -> String {
         match pattern {
             Pattern::Entity {
                 variable,
@@ -1101,7 +1117,8 @@ impl QueryCompiler {
         }
     }
 
-    fn compile_statement(&self, stmt: &Statement) -> String {
+    /// Compile one write statement, without a trailing `;`.
+    pub fn compile_statement(&self, stmt: &Statement) -> String {
         match stmt {
             Statement::Has {
                 subject_var,
@@ -1161,7 +1178,8 @@ impl QueryCompiler {
         }
     }
 
-    fn compile_constraint(&self, constraint: &Constraint) -> String {
+    /// Compile one pattern constraint (`has ...`, `iid ...`, `isa ...`).
+    pub fn compile_constraint(&self, constraint: &Constraint) -> String {
         match constraint {
             Constraint::Iid(iid) => format!("iid {}", iid),
             Constraint::Has { attr_name, value } => {
@@ -1173,7 +1191,8 @@ impl QueryCompiler {
         }
     }
 
-    fn compile_value(&self, value: &Value) -> String {
+    /// Compile one value expression.
+    pub fn compile_value(&self, value: &Value) -> String {
         match value {
             Value::Literal(lit) => self.format_literal(lit),
             Value::Variable(var) => var.clone(),
@@ -1264,6 +1283,7 @@ impl QueryCompiler {
             } => format!("\"{}\": {}({})", key, func_name, var),
             FetchItem::Wildcard { key, var } => format!("\"{}\": {}.*", key, var),
             FetchItem::NestedWildcard { key, var } => format!("\"{}\": {{ {}.* }}", key, var),
+            FetchItem::Raw(content) => content.clone(),
         }
     }
 
@@ -3051,6 +3071,95 @@ mod tests {
         assert!(result.contains("\"count\": count($p)"));
         assert!(result.contains("\"all\": $p.*"));
         assert!(result.contains("\"nested\": { $p.* }"));
+    }
+
+    #[test]
+    fn test_fetch_raw_item_passes_through() {
+        let c = compiler();
+        let clause = Clause::Fetch(vec![
+            FetchItem::Raw("\"raw_name\": $p.person-name".into()),
+            FetchItem::Variable {
+                key: "person".into(),
+                var: "$p".into(),
+            },
+        ]);
+        assert_eq!(
+            c.compile_clause(&clause),
+            "fetch {\n  \"raw_name\": $p.person-name,\n  \"person\": $p\n};"
+        );
+        let wire: FetchItem = serde_json::from_value(json!({"Raw": "\"k\": $p.*"})).unwrap();
+        assert_eq!(wire, FetchItem::Raw("\"k\": $p.*".into()));
+    }
+
+    /// Decode a node from the tagged form bindings send, then compile it.
+    fn compile_wire_node(node: serde_json::Value) -> String {
+        let node: QueryNode = serde_json::from_value(node).expect("query node wire form");
+        compiler().compile_node(&node)
+    }
+
+    #[test]
+    fn test_node_clause() {
+        let rendered = compile_wire_node(json!({"Clause": {"Match": [
+            {"type": "Entity", "data": {
+                "variable": "$p", "type_name": "person", "constraints": [], "is_strict": false
+            }}
+        ]}}));
+        assert_eq!(rendered, "match\n$p isa person;");
+    }
+
+    #[test]
+    fn test_node_pattern() {
+        let rendered = compile_wire_node(json!({"Pattern": {"type": "Entity", "data": {
+            "variable": "$p",
+            "type_name": "person",
+            "constraints": [{"type": "Has", "data": {
+                "attr_name": "name",
+                "value": {"type": "Literal", "data": {"value": "Alice", "value_type": "string"}}
+            }}],
+            "is_strict": true
+        }}}));
+        assert_eq!(rendered, "$p isa! person, has name \"Alice\"");
+    }
+
+    #[test]
+    fn test_node_statement() {
+        let rendered = compile_wire_node(json!({"Statement": {"type": "Relation", "data": {
+            "variable": "$r",
+            "type_name": "employment",
+            "role_players": [{"role": "employee", "player_var": "$p"}],
+            "include_variable": false,
+            "attributes": [{"type": "Has", "data": {
+                "subject_var": "$r",
+                "attr_name": "since",
+                "value": {"type": "Literal", "data": {"value": "2024-01-02", "value_type": "date"}}
+            }}]
+        }}}));
+        assert_eq!(
+            rendered,
+            "(employee: $p) isa employment, has since 2024-01-02"
+        );
+    }
+
+    #[test]
+    fn test_node_constraint() {
+        let rendered = compile_wire_node(json!({"Constraint": {"type": "Has", "data": {
+            "attr_name": "score",
+            "value": {"type": "Literal", "data": {"value": "1.50", "value_type": "decimal"}}
+        }}}));
+        assert_eq!(rendered, "has score 1.50dec");
+    }
+
+    #[test]
+    fn test_node_value() {
+        let rendered = compile_wire_node(json!({"Value": {"type": "Arithmetic", "data": {
+            "left": {"type": "Variable", "data": "$a"},
+            "operator": "+",
+            "right": {"type": "FunctionCall", "data": {
+                "function": "abs",
+                "args": [{"type": "Literal", "data": {"value": -2, "value_type": "long"}}]
+            }}
+        }}}));
+        assert_eq!(rendered, "($a + abs(-2))");
     }
 
     #[test]

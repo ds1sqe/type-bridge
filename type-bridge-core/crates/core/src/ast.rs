@@ -334,6 +334,27 @@ pub enum FetchItem {
         /// The variable whose attributes and nested things are fetched.
         var: String,
     },
+    /// A raw TypeQL fetch entry (e.g. `"name": $p.name`), passed through
+    /// without further processing, like [`Pattern::Raw`].
+    Raw(String),
+}
+
+/// Any node the compiler renders on its own.
+///
+/// Bindings send one node at a time, tagged with its kind
+/// (`{"Pattern": {...}}`), to [`QueryCompiler::compile_node`](crate::compiler::QueryCompiler::compile_node).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum QueryNode {
+    /// A top-level clause.
+    Clause(Clause),
+    /// A match pattern.
+    Pattern(Pattern),
+    /// A write statement.
+    Statement(Statement),
+    /// A pattern constraint.
+    Constraint(Constraint),
+    /// A value expression.
+    Value(Value),
 }
 
 /// A sort field specifying a variable and sort direction.

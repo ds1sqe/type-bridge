@@ -1,28 +1,42 @@
 """Unit tests for Query Compiler."""
 
-import logging
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+from typing import cast
 
 import pytest
 
-from type_bridge.query import compiler as compiler_module
 from type_bridge.query.ast import (
+    ArithmeticValue,
+    AttributePattern,
+    DeleteThingStatement,
     EntityPattern,
+    FetchClause,
+    FetchVariable,
     FunctionCallValue,
     HasConstraint,
+    HasPattern,
     HasStatement,
     IidConstraint,
+    IidPattern,
     InsertClause,
+    IsaConstraint,
     IsaStatement,
     LetAssignment,
     LiteralValue,
     MatchClause,
     MatchLetClause,
+    NotPattern,
+    OrPattern,
+    RawPattern,
+    RawStatement,
     RelationPattern,
     RelationStatement,
     RolePlayer,
+    SubTypePattern,
     UpdateClause,
     Value,
+    ValueComparisonPattern,
 )
 from type_bridge.query.compiler import QueryCompiler
 
@@ -41,33 +55,107 @@ def test_compile_simple_match(compiler):
     assert result == "match\n$p isa person;"
 
 
-def test_rust_fallback_preserves_released_debug_only_logging(monkeypatch, caplog):
-    """A successful V1 fallback must not create a warning/error signal."""
-
-    class RejectingCompiler:
-        def compile_dicts(self, _clauses):
-            raise RuntimeError("provider diagnostic containing query data")
-
-    monkeypatch.setattr(compiler_module, "_core_compiler", RejectingCompiler())
-    clause = MatchClause(
-        patterns=[EntityPattern(variable="$p", type_name="person", constraints=[])]
+def test_compile_is_native_and_surfaces_core_errors_as_value_error(compiler):
+    """There is no Python renderer to fall back to: a node the core cannot
+    decode is refused with ``ValueError``."""
+    assert not hasattr(compiler, "_compile_clause")
+    assert not hasattr(compiler, "_compile_value")
+    broken = RelationPattern(
+        variable="$r",
+        type_name="employment",
+        role_players=[RolePlayer(role="employee", player_var=cast(str, None))],
     )
 
-    with caplog.at_level(logging.DEBUG, logger="type_bridge.query.compiler"):
-        assert QueryCompiler().compile(clause) == "match\n$p isa person;"
-        assert QueryCompiler().compile_batch([clause]) == "match\n$p isa person;"
+    with pytest.raises(ValueError, match="Failed to deserialize query node"):
+        compiler.compile(broken)
 
-    records = [record for record in caplog.records if record.name == "type_bridge.query.compiler"]
-    assert [record.levelno for record in records] == [
-        logging.DEBUG,
-        logging.DEBUG,
-        logging.DEBUG,
+
+@pytest.mark.parametrize("value", [2**63, -(2**63) - 1, float("nan"), float("inf")])
+def test_literals_without_a_typeql_form_are_refused(compiler, value):
+    with pytest.raises(ValueError, match="TypeQL"):
+        compiler.compile(LiteralValue(value, "double"))
+
+
+def test_compile_each_node_kind(compiler):
+    """Patterns, statements, constraints, and values render on their own."""
+    assert (
+        compiler.compile(
+            EntityPattern(
+                variable="$p",
+                type_name="person",
+                constraints=[HasConstraint(attr_name="name", value="$n")],
+                is_strict=True,
+            )
+        )
+        == "$p isa! person, has name $n"
+    )
+    assert (
+        compiler.compile(NotPattern(patterns=[HasPattern("$p", "age", "$a")]))
+        == "not { $p has age $a; }"
+    )
+    assert (
+        compiler.compile(
+            OrPattern(alternatives=[[SubTypePattern("$t", "a")], [IidPattern("$t", "0x1")]])
+        )
+        == "{ $t sub a; } or { $t iid 0x1; }"
+    )
+    assert (
+        compiler.compile(AttributePattern("$a", "age", LiteralValue(30, "long")))
+        == "$a isa age; $a 30"
+    )
+    assert compiler.compile(ValueComparisonPattern("$a", ">", "$b")) == "$a > $b"
+    assert compiler.compile(RawPattern("$x has y 1")) == "$x has y 1"
+    assert (
+        compiler.compile(HasStatement("$p", "name", LiteralValue("Bob", "string")))
+        == '$p has name "Bob"'
+    )
+    assert compiler.compile(DeleteThingStatement("$p")) == "$p"
+    assert compiler.compile(RawStatement("$p has x 1")) == "$p has x 1"
+    assert compiler.compile(IidConstraint("0x1")) == "iid 0x1"
+    assert compiler.compile(IsaConstraint("person", strict=True)) == "isa! person"
+    assert (
+        compiler.compile(ArithmeticValue(FunctionCallValue("abs", ["$x"]), "*", "$y"))
+        == "(abs($x) * $y)"
+    )
+
+
+def test_compile_batch_joins_nodes_and_prefixes_the_operation(compiler):
+    patterns = [EntityPattern("$p", "person"), HasPattern("$p", "age", "$a")]
+    assert compiler.compile_batch(patterns) == "$p isa person\n$p has age $a"
+    assert compiler.compile_batch(patterns, "match") == "match\n$p isa person\n$p has age $a"
+
+
+def test_raw_fetch_items_pass_through(compiler):
+    fetch = FetchClause(items=['"raw_name": $p.person-name', FetchVariable(key="p", var="$p")])
+    assert compiler.compile(fetch) == 'fetch {\n  "raw_name": $p.person-name,\n  "p": $p\n};'
+
+
+def test_literals_render_by_python_type(compiler):
+    """Non-string values are typed by their class; strings keep their declared type."""
+
+    class Wrapped:
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+    cases = [
+        (LiteralValue(Decimal("123.45"), "string"), "123.45dec"),
+        (LiteralValue(datetime(2024, 1, 2, 3, 4, 5), "string"), "2024-01-02T03:04:05"),
+        (
+            LiteralValue(datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC), "datetime-tz"),
+            "2024-01-02T03:04:05+00:00",
+        ),
+        (LiteralValue(date(2024, 1, 2), "string"), "2024-01-02"),
+        (LiteralValue(timedelta(days=1, hours=2), "string"), "P1DT2H"),
+        (LiteralValue(1.5, "double"), "1.5"),
+        (LiteralValue(True, "string"), "true"),
+        (LiteralValue(7, "string"), "7"),
+        (LiteralValue(Wrapped("w"), "string"), '"w"'),
+        (LiteralValue(None, "string"), '"None"'),
+        (LiteralValue("2024-01-02", "date"), "2024-01-02"),
+        (LiteralValue('a "b"\n', "string"), '"a \\"b\\"\\n"'),
     ]
-    assert [record.getMessage() for record in records] == [
-        "Rust compiler failed, falling back to Python",
-        "Rust compiler failed, falling back to Python",
-        "Rust compiler failed, falling back to Python",
-    ]
+    for literal, expected in cases:
+        assert compiler.compile(literal) == expected, literal
 
 
 def test_compile_match_with_constraints(compiler):
@@ -186,7 +274,7 @@ def test_compile_value_unknown_type_raises_error(compiler):
     unknown = UnknownValue(data="test")
 
     with pytest.raises(ValueError, match="Unknown value type: UnknownValue"):
-        compiler._compile_value(unknown)
+        compiler.compile(unknown)
 
 
 class TestLetAssignment:

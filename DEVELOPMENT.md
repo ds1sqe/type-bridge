@@ -78,7 +78,8 @@ duplicated directory snapshot here.
 - Generated files are projections of canonical schema authority and must not be
   edited by hand.
 - Generated packages are Python's only typed query API. The raw TypeQL
-  builders (`Query`, `QueryBuilder`) remain; they are not schema authority.
+  builders (`Query`, `QueryBuilder`) remain and render through the Rust core;
+  they are not schema authority.
 - Split-YAML is the only active schema/model authoring authority. Python,
   TypeScript/Node, Rust, and C applications consume generated projections.
 - Rust releases starting with 2.0.1 resolve a complete, version-locked crates.io

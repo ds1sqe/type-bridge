@@ -1,41 +1,17 @@
-"""Benchmarks: Python vs Rust query compilation performance."""
+"""Benchmarks: query compilation in the Rust core, with and without marshalling."""
 
 from __future__ import annotations
 
 import pytest
 
-from type_bridge.query.ast import Clause
-from type_bridge.query.compiler import (
-    QueryCompiler,
-    _clause_to_dict,
-)
+from type_bridge.query.compiler import _clause_to_dict
 
 pytestmark = pytest.mark.benchmark
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _compile_python(compiler: QueryCompiler, clause: Clause) -> str:
-    """Force the Python codepath by calling the private method directly."""
-    return compiler._compile_clause(clause)
-
-
-def _compile_python_batch(compiler: QueryCompiler, clauses: list[Clause]) -> str:
-    """Force Python codepath for a batch."""
-    parts = [compiler._compile_clause(c) for c in clauses]
-    return "\n".join(parts)
-
-
-# ---------------------------------------------------------------------------
 # Simple match: $p isa person
 # ---------------------------------------------------------------------------
-
-
-def test_compile_simple_match_python(benchmark, python_compiler, simple_match):
-    benchmark(_compile_python, python_compiler, simple_match)
 
 
 @pytest.mark.skipif(
@@ -56,10 +32,6 @@ def test_compile_simple_match_rust(benchmark, rust_compiler, simple_match):
 # ---------------------------------------------------------------------------
 
 
-def test_compile_constrained_match_python(benchmark, python_compiler, match_with_constraints):
-    benchmark(_compile_python, python_compiler, match_with_constraints)
-
-
 @pytest.mark.skipif(
     not pytest.importorskip("type_bridge_core", reason="Rust core not installed"),
     reason="",
@@ -76,10 +48,6 @@ def test_compile_constrained_match_rust(benchmark, rust_compiler, match_with_con
 # ---------------------------------------------------------------------------
 # Complex query: 10 patterns (entity, relation, not, or, has, comparison)
 # ---------------------------------------------------------------------------
-
-
-def test_compile_complex_query_python(benchmark, python_compiler, complex_query):
-    benchmark(_compile_python, python_compiler, complex_query)
 
 
 @pytest.mark.skipif(
@@ -100,10 +68,6 @@ def test_compile_complex_query_rust(benchmark, rust_compiler, complex_query):
 # ---------------------------------------------------------------------------
 
 
-def test_compile_relation_insert_python(benchmark, python_compiler, relation_insert):
-    benchmark(_compile_python, python_compiler, relation_insert)
-
-
 @pytest.mark.skipif(
     not pytest.importorskip("type_bridge_core", reason="Rust core not installed"),
     reason="",
@@ -120,10 +84,6 @@ def test_compile_relation_insert_rust(benchmark, rust_compiler, relation_insert)
 # ---------------------------------------------------------------------------
 # Batch: 50 mixed clauses
 # ---------------------------------------------------------------------------
-
-
-def test_compile_batch_python(benchmark, python_compiler, batch_clauses):
-    benchmark(_compile_python_batch, python_compiler, batch_clauses)
 
 
 @pytest.mark.skipif(
@@ -198,10 +158,6 @@ def test_compile_e2e_batch_rust(benchmark, rust_compiler, batch_clauses):
 # ===========================================================================
 
 
-def test_compile_long_query_python(benchmark, python_compiler, long_query):
-    benchmark(_compile_python, python_compiler, long_query)
-
-
 @pytest.mark.skipif(
     not pytest.importorskip("type_bridge_core", reason="Rust core not installed"),
     reason="",
@@ -230,10 +186,6 @@ def test_compile_long_query_e2e_rust(benchmark, rust_compiler, long_query):
 # ===========================================================================
 # Deeply nested query: or-of-not-of-or, 3 levels
 # ===========================================================================
-
-
-def test_compile_deeply_nested_python(benchmark, python_compiler, deeply_nested_query):
-    benchmark(_compile_python, python_compiler, deeply_nested_query)
 
 
 @pytest.mark.skipif(
@@ -266,10 +218,6 @@ def test_compile_deeply_nested_e2e_rust(benchmark, rust_compiler, deeply_nested_
 # ===========================================================================
 
 
-def test_compile_graph_traversal_python(benchmark, python_compiler, graph_traversal_query):
-    benchmark(_compile_python, python_compiler, graph_traversal_query)
-
-
 @pytest.mark.skipif(
     not pytest.importorskip("type_bridge_core", reason="Rust core not installed"),
     reason="",
@@ -298,10 +246,6 @@ def test_compile_graph_traversal_e2e_rust(benchmark, rust_compiler, graph_traver
 # ===========================================================================
 # Heavy insert: 100 entities x 5 attributes = 600 statements
 # ===========================================================================
-
-
-def test_compile_heavy_insert_python(benchmark, python_compiler, heavy_insert):
-    benchmark(_compile_python, python_compiler, heavy_insert)
 
 
 @pytest.mark.skipif(
@@ -334,10 +278,6 @@ def test_compile_heavy_insert_e2e_rust(benchmark, rust_compiler, heavy_insert):
 # ===========================================================================
 
 
-def test_compile_large_fetch_python(benchmark, python_compiler, large_fetch):
-    benchmark(_compile_python, python_compiler, large_fetch)
-
-
 @pytest.mark.skipif(
     not pytest.importorskip("type_bridge_core", reason="Rust core not installed"),
     reason="",
@@ -356,10 +296,6 @@ def test_compile_large_fetch_rust(benchmark, rust_compiler, large_fetch):
 # ===========================================================================
 
 
-def test_compile_reduce_python(benchmark, python_compiler, reduce_query):
-    benchmark(_compile_python, python_compiler, reduce_query)
-
-
 @pytest.mark.skipif(
     not pytest.importorskip("type_bridge_core", reason="Rust core not installed"),
     reason="",
@@ -376,14 +312,6 @@ def test_compile_reduce_rust(benchmark, rust_compiler, reduce_query):
 # ===========================================================================
 # Realistic pipeline: match (9 patterns) + fetch (5 items) — 2 clauses
 # ===========================================================================
-
-
-def test_compile_realistic_pipeline_python(benchmark, python_compiler, realistic_pipeline):
-    def _run():
-        for clause in realistic_pipeline:
-            python_compiler._compile_clause(clause)
-
-    benchmark(_run)
 
 
 @pytest.mark.skipif(
@@ -414,10 +342,6 @@ def test_compile_realistic_pipeline_e2e_rust(benchmark, rust_compiler, realistic
 # ===========================================================================
 # Large batch: 200 mixed clauses
 # ===========================================================================
-
-
-def test_compile_large_batch_python(benchmark, python_compiler, large_batch):
-    benchmark(_compile_python_batch, python_compiler, large_batch)
 
 
 @pytest.mark.skipif(
@@ -479,10 +403,6 @@ def test_serde_overhead_large_batch(benchmark, large_batch):
 # ===========================================================================
 
 
-def test_compile_arithmetic_match_python(benchmark, python_compiler, arithmetic_match):
-    benchmark(_compile_python, python_compiler, arithmetic_match)
-
-
 @pytest.mark.skipif(
     not pytest.importorskip("type_bridge_core", reason="Rust core not installed"),
     reason="",
@@ -494,10 +414,6 @@ def test_compile_arithmetic_match_rust(benchmark, rust_compiler, arithmetic_matc
         rust_compiler.compile_dicts([d])
 
     benchmark(_run)
-
-
-def test_compile_nested_arithmetic_python(benchmark, python_compiler, nested_arithmetic):
-    benchmark(_compile_python, python_compiler, nested_arithmetic)
 
 
 @pytest.mark.skipif(
@@ -518,10 +434,6 @@ def test_compile_nested_arithmetic_rust(benchmark, rust_compiler, nested_arithme
 # ===========================================================================
 
 
-def test_compile_match_let_single_python(benchmark, python_compiler, match_let_single):
-    benchmark(_compile_python, python_compiler, match_let_single)
-
-
 @pytest.mark.skipif(
     not pytest.importorskip("type_bridge_core", reason="Rust core not installed"),
     reason="",
@@ -533,10 +445,6 @@ def test_compile_match_let_single_rust(benchmark, rust_compiler, match_let_singl
         rust_compiler.compile_dicts([d])
 
     benchmark(_run)
-
-
-def test_compile_match_let_multiple_python(benchmark, python_compiler, match_let_multiple):
-    benchmark(_compile_python, python_compiler, match_let_multiple)
 
 
 @pytest.mark.skipif(
@@ -557,10 +465,6 @@ def test_compile_match_let_multiple_rust(benchmark, rust_compiler, match_let_mul
 # ===========================================================================
 
 
-def test_compile_fetch_variable_python(benchmark, python_compiler, fetch_with_variable):
-    benchmark(_compile_python, python_compiler, fetch_with_variable)
-
-
 @pytest.mark.skipif(
     not pytest.importorskip("type_bridge_core", reason="Rust core not installed"),
     reason="",
@@ -577,10 +481,6 @@ def test_compile_fetch_variable_rust(benchmark, rust_compiler, fetch_with_variab
 # ===========================================================================
 # IsaConstraint compilation
 # ===========================================================================
-
-
-def test_compile_isa_constraint_python(benchmark, python_compiler, isa_constraint_match):
-    benchmark(_compile_python, python_compiler, isa_constraint_match)
 
 
 @pytest.mark.skipif(
@@ -601,10 +501,6 @@ def test_compile_isa_constraint_rust(benchmark, rust_compiler, isa_constraint_ma
 # ===========================================================================
 
 
-def test_compile_standalone_insert_python(benchmark, python_compiler, standalone_insert):
-    benchmark(_compile_python, python_compiler, standalone_insert)
-
-
 @pytest.mark.skipif(
     not pytest.importorskip("type_bridge_core", reason="Rust core not installed"),
     reason="",
@@ -618,10 +514,6 @@ def test_compile_standalone_insert_rust(benchmark, rust_compiler, standalone_ins
     benchmark(_run)
 
 
-def test_compile_standalone_delete_python(benchmark, python_compiler, standalone_delete):
-    benchmark(_compile_python, python_compiler, standalone_delete)
-
-
 @pytest.mark.skipif(
     not pytest.importorskip("type_bridge_core", reason="Rust core not installed"),
     reason="",
@@ -633,10 +525,6 @@ def test_compile_standalone_delete_rust(benchmark, rust_compiler, standalone_del
         rust_compiler.compile_dicts([d])
 
     benchmark(_run)
-
-
-def test_compile_standalone_update_python(benchmark, python_compiler, standalone_update):
-    benchmark(_compile_python, python_compiler, standalone_update)
 
 
 @pytest.mark.skipif(
