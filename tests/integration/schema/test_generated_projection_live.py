@@ -3663,6 +3663,13 @@ def test_generated_projection_round_trips_live_models(
             )
         )
         assert transaction_query.count_by(transaction_person_var) == 1
+        # Every terminal borrows the caller's transaction; none consumes it.
+        transaction_page = transaction_query.page_by(
+            transaction_person_var, limit=1, include_total=True
+        )
+        assert [candidate.iid for candidate in transaction_page] == [transaction_person.iid]
+        assert transaction_page.total == 1
+        assert transaction_query.exists_by(transaction_person_var) is True
         assert transaction_query.first().iid == transaction_person.iid
 
     assert person_manager.count() == 4

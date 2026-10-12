@@ -1,4 +1,4 @@
-"""Verify the intentional #174 Pyright diagnostics remain exact."""
+"""Verify the intentional query Pyright diagnostics remain exact."""
 
 from __future__ import annotations
 
@@ -9,9 +9,11 @@ from pathlib import Path
 from typing import Any
 
 HERE = Path(__file__).resolve().parent
-NEGATIVE = HERE.parent / "type-check-except" / "test_typed_query.py"
+NEGATIVES = {
+    HERE.parent / "type-check-except" / "test_typed_query.py": "# typed-query-error:",
+    HERE.parent / "type-check-except" / "test_query_v2_authoring_negative.py": "# query-v2-error:",
+}
 CONFIG = HERE / "pyrightconfig.query-negative.json"
-MARKER = "# typed-query-error:"
 
 
 def main() -> None:
@@ -30,25 +32,28 @@ def main() -> None:
         if diagnostic.get("severity") == "error"
     ]
     expected = {
-        line
-        for line, text in enumerate(NEGATIVE.read_text().splitlines(), start=1)
-        if MARKER in text
+        (path, line)
+        for path, marker in NEGATIVES.items()
+        for line, text in enumerate(path.read_text().splitlines(), start=1)
+        if marker in text
     }
     actual = {
-        diagnostic["range"]["start"]["line"] + 1
+        (Path(diagnostic["file"]).resolve(), diagnostic["range"]["start"]["line"] + 1)
         for diagnostic in diagnostics
-        if Path(diagnostic["file"]).resolve() == NEGATIVE
+        if Path(diagnostic["file"]).resolve() in NEGATIVES
     }
     foreign = [
-        diagnostic for diagnostic in diagnostics if Path(diagnostic["file"]).resolve() != NEGATIVE
+        diagnostic
+        for diagnostic in diagnostics
+        if Path(diagnostic["file"]).resolve() not in NEGATIVES
     ]
     if completed.returncode == 0 or actual != expected or foreign:
         raise SystemExit(
-            "negative typed-query fixture drifted:\n"
-            f"expected={sorted(expected)} actual={sorted(actual)} "
+            "negative query fixture drifted:\n"
+            f"expected={sorted(map(str, expected))} actual={sorted(map(str, actual))} "
             f"foreign={foreign}\n{json.dumps(payload, indent=2)}"
         )
-    print(f"negative typed-query fixture passed: {len(diagnostics)} diagnostics")
+    print(f"negative query fixture passed: {len(diagnostics)} diagnostics")
 
 
 if __name__ == "__main__":

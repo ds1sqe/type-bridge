@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from type_bridge_core import MatchRequestError, MatchSessionHandle, _QueryDescriptorRegistry
 
-from tests.unit.typed_query._support import corpus_error
+from tests.unit.typed_query._corpus import corpus_error
 
 GOLDEN = (
     Path(__file__).parents[3]

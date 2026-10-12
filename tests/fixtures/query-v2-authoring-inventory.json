@@ -241,9 +241,9 @@
         "family": "python_static_struct_rejection",
         "needles": [
           "builder.isa(value, \"struct\", \"record\", False)",
-          "typed-query-error: struct-is-not-queryable"
+          "query-v2-error: struct-is-not-queryable"
         ],
-        "path": "tests/unit/type-check-except/test_typed_query.py"
+        "path": "tests/unit/type-check-except/test_query_v2_authoring_negative.py"
       },
       {
         "family": "node_static_authoring_contract",
