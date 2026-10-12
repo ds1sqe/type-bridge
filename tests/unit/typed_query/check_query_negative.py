@@ -1,4 +1,4 @@
-"""Verify the intentional query Pyright diagnostics remain exact."""
+"""Verify the intentional query-v2 authoring Pyright diagnostics remain exact."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from typing import Any
 
 HERE = Path(__file__).resolve().parent
 NEGATIVES = {
-    HERE.parent / "type-check-except" / "test_typed_query.py": "# typed-query-error:",
     HERE.parent / "type-check-except" / "test_query_v2_authoring_negative.py": "# query-v2-error:",
 }
 CONFIG = HERE / "pyrightconfig.query-negative.json"

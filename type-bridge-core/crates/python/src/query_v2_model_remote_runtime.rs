@@ -11,16 +11,12 @@ use std::sync::Arc;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyList};
-use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
-use type_bridge_contract::query_remote::{checked_remote_deadline, checked_remote_limit};
-use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
     AnswerCancellation, OrderHandle, PendingRemoteModelQueryV2, ProjectedQueryOrigin,
     ProxyQueryConnection, QueryExecutionDeadline, QueryExecutionResourceLimits, QueryHandle,
-    QueryTarget, RowCardinality, ValidatedMatchRequest, lower_remote_query_diagnostic,
-    validate_order_term_count,
+    QueryTarget, RowCardinality, ValidatedMatchRequest, validate_order_term_count,
 };
 
 use crate::match_runtime::{
@@ -29,9 +25,7 @@ use crate::match_runtime::{
     borrow_reduce_terms, order_handles, parse_enum, py_match_error, py_match_orm_error,
     py_query_target_error, py_sdk_diagnostic, python_window, reduce_terms, validated_result_handle,
 };
-use crate::query_v2_runtime::{
-    PyQueryV2Authority, PythonBytes, python_limit, python_optional_limit,
-};
+use crate::query_v2_runtime::{PyQueryV2Authority, PythonBytes};
 use crate::validated_result_runtime::PyValidatedMatchResultHandle;
 
 /// A caller-exchanged proxy connection plus the session's resources and
@@ -110,63 +104,6 @@ impl PyPendingRemoteModelQuery {
             ),
         )
     }
-}
-
-/// Snapshot and validate the non-I/O context consumed by every remote
-/// model-query terminal.
-#[pyfunction]
-#[pyo3(signature = (
-    authority,
-    advertisement,
-    max_items,
-    max_bytes,
-    max_collection_members,
-    max_graph_nodes,
-    max_attribute_values,
-    max_role_players,
-    deadline_ms=None
-))]
-#[expect(clippy::too_many_arguments, reason = "flat explicit limit contract")]
-pub(crate) fn query_v2_remote_model_context(
-    py: Python<'_>,
-    authority: &PyQueryV2Authority,
-    advertisement: &Bound<'_, PyAny>,
-    max_items: &Bound<'_, PyAny>,
-    max_bytes: &Bound<'_, PyAny>,
-    max_collection_members: &Bound<'_, PyAny>,
-    max_graph_nodes: &Bound<'_, PyAny>,
-    max_attribute_values: &Bound<'_, PyAny>,
-    max_role_players: &Bound<'_, PyAny>,
-    deadline_ms: Option<&Bound<'_, PyAny>>,
-) -> PyResult<PyRemoteModelQueryContext> {
-    let advertisement = advertisement_snapshot(advertisement)?;
-    let parse = || -> Result<RemoteLimitsV2, Diagnostic> {
-        Ok(RemoteLimitsV2 {
-            deadline_ms: checked_remote_deadline(python_optional_limit(deadline_ms)?)?,
-            max_bytes: checked_remote_limit(python_limit(max_bytes)?)?,
-            max_items: checked_remote_limit(python_limit(max_items)?)?,
-            max_collection_members: checked_remote_limit(python_limit(max_collection_members)?)?,
-            max_graph_nodes: checked_remote_limit(python_limit(max_graph_nodes)?)?,
-            max_attribute_values: checked_remote_limit(python_limit(max_attribute_values)?)?,
-            max_role_players: checked_remote_limit(python_limit(max_role_players)?)?,
-            max_statements: 3,
-        })
-    };
-    let limits = parse()
-        .map_err(|diagnostic| py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))?;
-    // A budget above a default is kept, not clamped; past a supported
-    // maximum it is refused by name.
-    let resources = QueryExecutionResourceLimits::from_remote(limits)
-        .validate()
-        .map_err(|refusal| pyo3::exceptions::PyValueError::new_err(refusal.to_string()))?;
-    remote_context(
-        py,
-        authority,
-        advertisement,
-        resources,
-        resources,
-        AnswerCancellation::default(),
-    )
 }
 
 /// Build the same remote context from the common direct/remote resource and
@@ -436,7 +373,6 @@ fn bounded_order_handles(
 pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyRemoteModelQueryContext>()?;
     module.add_class::<PyPendingRemoteModelQuery>()?;
-    module.add_function(wrap_pyfunction!(query_v2_remote_model_context, module)?)?;
     module.add_function(wrap_pyfunction!(
         query_v2_remote_model_context_with_resources,
         module

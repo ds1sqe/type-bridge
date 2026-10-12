@@ -164,9 +164,9 @@ For an application operation:
 5. Run the equivalent bindings that advertise the operation.
 
 Do not subclass private query-engine classes, build runtime descriptors by
-hand, or widen generated values to `object`/`Any`. The retained V1/raw query
-facades may use private handwritten fixtures only in tests explicitly scoped to
-those unscheduled contracts.
+hand, or widen generated values to `object`/`Any`. The retained raw query
+builders may use private handwritten fixtures only in tests explicitly scoped
+to those contracts.
 
 Historical migration and TOML fixtures are read-only evidence. Tests may load,
 verify, convert, and adopt them, but must not use them as active authoring

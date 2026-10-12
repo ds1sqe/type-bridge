@@ -111,7 +111,7 @@ and applies the same result-shape validation for direct and remote execution.
 Bindings expose language-native typed builders without embedding pre-authored
 plan bytes.
 
-The separately retained raw/V1 query facades are isolated compatibility
+The raw TypeQL builders (`Query`, `QueryBuilder`) are retained compatibility
 contracts. Generated V2 packages do not depend on them except where an
 explicit raw query helper is documented.
 

@@ -89,6 +89,23 @@ differently direct and through a proxy. Each entry says what to do instead.
     built-in HTTP route. `RemoteQueryLimits(max_items=..., ...)` is
     `QueryExecutionResourceLimits(items=..., ...)`; its defaults are the
     statement count and deadline the flat limits used.
+- The handwritten Python typed-query facade `type_bridge.typed` is removed:
+  `QuerySession`, `Query`, `RemoteQuerySession`, `RemoteQuery`,
+  `RemoteQueryExchange`, `RemoteQueryLimits`, `Page`, `BoundVar`,
+  `BoundField`, `BoundRole`, `Collected`, `Predicate`, `QueryOrder`,
+  `Selection`, `FieldRef`, `RoleRef`, `TypedQueryCapabilityError`,
+  `TypedQueryConnectionError`, `TypedQueryMaterializationError`, and
+  `TypedQueryWindowError`. Use the generated package's own `QuerySession`,
+  `Query`, and tokens (`from your_generated_package import Query,
+  QuerySession`); every terminal is awaited, and a script without an event
+  loop wraps the session in `type_bridge_core.blocking(session)`. Generated
+  model stubs import their static descriptor protocols from
+  `type_bridge.fields._generated_descriptors`; a package generated earlier
+  still runs, but a type checker reports the missing module until it is
+  regenerated. Removed with it, from
+  `type_bridge_core`: the flat-limit `query_v2_remote_model_context` (use
+  `query_v2_remote_model_context_with_resources`),
+  `revalidate_match_diagnostic`, and `validate_match_order_term_count`.
 - Generated TypeScript packages have one session. `QuerySession`, `Query`,
   and `GroupedQuery` run on every connection, and every terminal (`one`,
   `first`, `rows`, `pageBy`, `countBy`, `existsBy`, `aggregate`, grouped

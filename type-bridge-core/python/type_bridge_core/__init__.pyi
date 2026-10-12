@@ -646,8 +646,8 @@ class PyRustTransactionContext:
 
     def __getattr__(self, name: str) -> Any: ...
 
-# Internal native typed-match seam. Public authoring types live in
-# ``type_bridge.typed``; these classes intentionally expose no state getters.
+# Internal native typed-match seam. Public authoring types live in the
+# generated package; these classes intentionally expose no state getters.
 class _QueryDescriptorRegistry:
     def __init__(self) -> None: ...
     def register_entity(self, descriptor: Mapping[str, Any]) -> Mapping[str, Any]: ...
@@ -1275,17 +1275,6 @@ class PendingRemoteModelQuery:
     def request_bytes(self) -> bytes: ...
     def decode_reply(self, response: bytes | bytearray) -> ValidatedMatchResultHandle: ...
 
-def query_v2_remote_model_context(
-    authority: QueryV2Authority,
-    advertisement: bytes | bytearray,
-    max_items: int,
-    max_bytes: int,
-    max_collection_members: int,
-    max_graph_nodes: int,
-    max_attribute_values: int,
-    max_role_players: int,
-    deadline_ms: int | None = ...,
-) -> RemoteModelQueryContext: ...
 def query_v2_remote_model_context_with_resources(
     authority: QueryV2Authority,
     advertisement: bytes | bytearray,
@@ -1360,8 +1349,6 @@ class UnknownEnumValueError(MatchRequestError, ValueError): ...
 class ProjectedCardinalityError(MatchRequestError, ValueError): ...
 
 def canonical_enum_spelling(kind: str, value: str) -> str: ...
-def revalidate_match_diagnostic(registry: _QueryDescriptorRegistry, diagnostic: str) -> str: ...
-def validate_match_order_term_count(actual: int) -> None: ...
 
 @final
 class MigrationIdentity:

@@ -77,8 +77,8 @@ duplicated directory snapshot here.
   extending that matrix requires complete artifact and public-consumer checks.
 - Generated files are projections of canonical schema authority and must not be
   edited by hand.
-- Separately retained V1 query surfaces stay available unless an exact future
-  inventory schedules their removal; they are not schema authority.
+- Generated packages are Python's only typed query API. The raw TypeQL
+  builders (`Query`, `QueryBuilder`) remain; they are not schema authority.
 - Split-YAML is the only active schema/model authoring authority. Python,
   TypeScript/Node, Rust, and C applications consume generated projections.
 - Rust releases starting with 2.0.1 resolve a complete, version-locked crates.io

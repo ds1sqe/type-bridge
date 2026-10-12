@@ -1,6 +1,5 @@
 {
   "include": [
-    "../type-check-except/test_typed_query.py",
     "../type-check-except/test_query_v2_authoring_negative.py"
   ],
   "extraPaths": ["../../..", "../../../type-bridge-core/python"],

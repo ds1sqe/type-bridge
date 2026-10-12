@@ -32,8 +32,9 @@ Python's package-root `Query` and `QueryBuilder` remain the mutable raw-TypeQL
 builders. TypeScript's package-root `TypedQuery<T, Row>` remains the separately
 unscheduled mutable compatibility query. Generated model managers provide the
 concise single-type CRUD/query path; generated `QuerySession` provides immutable
-multi-binding queries. None of these retained behaviors reopens model or schema
-declaration in the base SDK.
+multi-binding queries and is Python's only typed query API; the handwritten
+`type_bridge.typed` facade was removed in 2.3.0. None of these retained
+behaviors reopens model or schema declaration in the base SDK.
 
 `QuerySession.var(Model)` returns one `BoundVar[Model]`. Two calls for the same
 model have the same static type and different opaque runtime identities. New
@@ -739,9 +740,9 @@ API fact, not a fabricated runtime error.
 
 ## Legacy Compatibility Baseline
 
-The #189 cutover does not schedule the existing query facades themselves for
-removal. It does remove their use as active schema/model authoring authority.
-The retained boundary is therefore narrow:
+The #189 cutover removed the query facades' use as active schema/model
+authoring authority, and 2.3.0 removed the handwritten Python typed facade.
+The retained boundary is narrow:
 
 - Python package-root raw-TypeQL `Query`/`QueryBuilder` imports, in-place
   mutation, and build output remain;
@@ -750,8 +751,6 @@ The retained boundary is therefore narrow:
 - TypeScript package-root `TypedQuery<T, Row>` retains its two-parameter query
   behavior for released compatibility artifacts;
 - low-level Python and Node Query V2 authority remains public;
-- the Python `type_bridge.typed` implementation remains isolated compatibility
-  machinery, but generated applications import their package-local facade;
 - the former Node handwritten `/typed` registration surface and root model,
   field, role, attribute, flag, registry, and descriptor declarations are not
   active application paths.

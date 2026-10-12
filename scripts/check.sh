@@ -91,13 +91,7 @@ run_python() {
     run_step "pyright tests/" \
         uv run pyright tests/
 
-    run_step "typed Query negative Pyright contract" \
-        uv run python tests/contracts/typed_query/python/check_negative.py
-
-    run_step "owner-aware negative Pyright contract" \
-        uv run python tests/unit/typed_query/check_negative.py
-
-    run_step "typed Query API negative Pyright contract" \
+    run_step "query-v2 authoring negative Pyright contract" \
         uv run python tests/unit/typed_query/check_query_negative.py
 
     run_step "schema-codegen Python projection acceptance" \

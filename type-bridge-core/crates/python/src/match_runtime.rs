@@ -26,7 +26,6 @@ use type_bridge_orm::{
     RemoteModelQueryV2Error, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
     ShapeHandle, SortDirection, UnknownEnumValue, UnvalidatedMatchRequest, ValidatedMatchRequest,
     Window, lower_match_error, lower_remote_query_diagnostic, query_resource_closed_diagnostic,
-    validate_public_order_term_count,
 };
 
 use crate::orm_runtime::{
@@ -1790,25 +1789,6 @@ fn diagnostic_from_request(
         .map_err(|error| PyRuntimeError::new_err(format!("diagnostic was not UTF-8: {error}")))
 }
 
-fn revalidate_diagnostic(
-    registry: &DescriptorRegistry,
-    diagnostic: &str,
-) -> Result<String, MatchError> {
-    let unvalidated = UnvalidatedMatchRequest::from_canonical_bytes(diagnostic.as_bytes())?;
-    let validated = unvalidated.validate(registry)?;
-    validated.recheck_schema(registry)?;
-    Ok(diagnostic.to_owned())
-}
-
-#[pyfunction]
-fn revalidate_match_diagnostic(
-    registry: PyRef<'_, PyDescriptorRegistry>,
-    diagnostic: &str,
-) -> PyResult<String> {
-    let registry = registry.registry_arc();
-    revalidate_diagnostic(&registry, diagnostic).map_err(py_match_error)
-}
-
 /// Parse `value` with the core enum's one parser. An unknown spelling raises
 /// `UnknownEnumValueError` carrying the `unknown_enum_value` diagnostic.
 pub(crate) fn parse_enum<T>(value: &str) -> PyResult<T>
@@ -1941,13 +1921,6 @@ fn structured_py_error(
     }
 }
 
-/// Apply the canonical public-order ceiling before a Python iterable is
-/// materialized into native order handles.
-#[pyfunction]
-pub(crate) fn validate_match_order_term_count(actual: usize) -> PyResult<()> {
-    validate_public_order_term_count(actual).map_err(py_match_error)
-}
-
 /// Register the native typed-match handle seam on the extension module.
 pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add(
@@ -1998,8 +1971,6 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyQueryLimits>()?;
     module.add_class::<PyQueryCancellation>()?;
     crate::validated_result_runtime::register(module)?;
-    module.add_function(wrap_pyfunction!(revalidate_match_diagnostic, module)?)?;
-    module.add_function(wrap_pyfunction!(validate_match_order_term_count, module)?)?;
     module.add_function(wrap_pyfunction!(canonical_enum_spelling, module)?)?;
     module.add(
         "UnknownEnumValueError",
@@ -2037,6 +2008,17 @@ mod tests {
     };
 
     use super::*;
+
+    /// A canonical diagnostic must validate and recheck against its registry.
+    fn revalidate_diagnostic(
+        registry: &DescriptorRegistry,
+        diagnostic: &str,
+    ) -> Result<String, MatchError> {
+        let unvalidated = UnvalidatedMatchRequest::from_canonical_bytes(diagnostic.as_bytes())?;
+        let validated = unvalidated.validate(registry)?;
+        validated.recheck_schema(registry)?;
+        Ok(diagnostic.to_owned())
+    }
 
     fn registry() -> Arc<DescriptorRegistry> {
         let registry = Arc::new(DescriptorRegistry::new());
@@ -2645,7 +2627,6 @@ mod tests {
                 "QueryExecutionResourceLimits",
                 "QueryCancellation",
                 "MatchRequestError",
-                "revalidate_match_diagnostic",
             ] {
                 assert!(
                     module.hasattr(name).unwrap(),
