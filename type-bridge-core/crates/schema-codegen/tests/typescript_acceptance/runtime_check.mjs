@@ -773,6 +773,32 @@ await assert.rejects(
 assert.equal(beforeExchangeCount, 0);
 beforeExchangeSession.close();
 
+// An exchange connection given no answer limits is a proxy connection at the
+// wire defaults: a session given no resources sends the proxy defaults, not
+// the direct defaults its own `new QueryExecutionResourceLimits()` holds.
+const defaultExchangeLimits = [];
+const defaultExchangeSession = new QuerySession(
+  new ExchangeConnection(generatedAdvertisement, async (request) => {
+    defaultExchangeLimits.push(
+      JSON.parse(Buffer.from(request).toString("utf8")).limits,
+    );
+    return new TextEncoder().encode("{}");
+  }),
+);
+await assert.rejects(
+  defaultExchangeSession.query(defaultExchangeSession.exact(Person)).rows({ limit: 1n }),
+  (error) => error instanceof QueryV2Error,
+);
+defaultExchangeSession.close();
+assert.equal(defaultExchangeLimits.length, 1);
+assert.equal(BigInt(defaultExchangeLimits[0].max_items), native.DEFAULT_PROXY_QUERY_ITEMS);
+assert.equal(BigInt(defaultExchangeLimits[0].max_bytes), native.DEFAULT_PROXY_QUERY_BYTES);
+assert.equal(
+  BigInt(defaultExchangeLimits[0].max_graph_nodes),
+  native.DEFAULT_PROXY_QUERY_GRAPH_NODES,
+);
+assert.equal(new QueryExecutionResourceLimits().items, native.DEFAULT_DIRECT_QUERY_ITEMS);
+
 const duringDecodeCancellation = new QueryCancellation();
 let duringDecodeExchangeCount = 0;
 let serverExchangeCancelledAfterSend = false;

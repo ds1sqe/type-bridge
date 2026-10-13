@@ -421,7 +421,7 @@ impl RemoteCapabilities {
     fn validate_answer_limits(&self) -> Result<(), Diagnostic> {
         for (name, value) in &self.answer_limits {
             let field = answer_limit_field(name).ok_or_else(advertised_limits_invalid)?;
-            if *value == field.default || *value > field.maximum {
+            if *value == field.proxy_default || *value > field.maximum {
                 return Err(advertised_limits_invalid());
             }
         }

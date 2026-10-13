@@ -503,8 +503,10 @@ fn remote_limits(
 ) -> PyResult<RemoteLimitsV2> {
     let build = || -> Result<RemoteLimitsV2, Diagnostic> {
         // A low-level plan returns no hydration graph, so the graph budgets
-        // keep the answer policy's defaults.
-        let policy = type_bridge_orm::QueryExecutionResourceLimits::default();
+        // keep the proxy (wire) defaults this remote request travels under.
+        let policy = type_bridge_orm::QueryExecutionResourceLimits::default_for(
+            type_bridge_orm::AnswerTransport::Proxy,
+        );
         Ok(RemoteLimitsV2 {
             deadline_ms: checked_remote_deadline(python_optional_limit(deadline_ms)?)?,
             max_bytes: checked_remote_limit(python_limit(max_bytes)?)?,

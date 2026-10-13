@@ -14,9 +14,10 @@ use pyo3::types::{PyAny, PyBool, PyList};
 use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
-    AnswerCancellation, OrderHandle, PendingRemoteModelQueryV2, ProjectedQueryOrigin,
-    ProxyQueryConnection, QueryExecutionDeadline, QueryExecutionResourceLimits, QueryHandle,
-    QueryTarget, RowCardinality, ValidatedMatchRequest, validate_order_term_count,
+    AnswerCancellation, AnswerTransport, OrderHandle, PendingRemoteModelQueryV2,
+    ProjectedQueryOrigin, ProxyQueryConnection, QueryExecutionDeadline,
+    QueryExecutionResourceLimits, QueryHandle, QueryTarget, RowCardinality, ValidatedMatchRequest,
+    validate_order_term_count,
 };
 
 use crate::match_runtime::{
@@ -108,7 +109,8 @@ impl PyPendingRemoteModelQuery {
 
 /// Build the same remote context from the common direct/remote resource and
 /// cancellation owners. `answer_limits` is the caller-exchanged connection's
-/// ceiling; left out, the session's own resources are the ceiling.
+/// ceiling; left out, the proxy (wire) defaults are the ceiling, as for a
+/// `ProxyConnection` opened without answer limits.
 #[pyfunction]
 #[pyo3(signature = (authority, advertisement, resources, cancellation, *, answer_limits=None))]
 pub(crate) fn query_v2_remote_model_context_with_resources(
@@ -125,7 +127,10 @@ pub(crate) fn query_v2_remote_model_context_with_resources(
         py,
         authority,
         advertisement,
-        answer_limits.map_or(resources, |limits| limits.inner()),
+        answer_limits.map_or_else(
+            || QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy),
+            |limits| limits.inner(),
+        ),
         resources,
         cancellation.inner(),
     )

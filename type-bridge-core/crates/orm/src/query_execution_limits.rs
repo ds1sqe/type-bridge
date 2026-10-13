@@ -17,22 +17,39 @@ use crate::match_request::MatchExecutionLimits;
 use crate::projected_query::ProjectedQueryMaterializationLimits;
 use crate::session::backend::AnswerCancellation;
 
-/// Default generated-query execution duration in milliseconds.
-pub const DEFAULT_QUERY_TIMEOUT_MILLISECONDS: u64 = ANSWER_LIMIT_FIELDS[0].default;
-/// Default provider/result item count.
-pub const DEFAULT_QUERY_ITEMS: u64 = ANSWER_LIMIT_FIELDS[1].default;
-/// Default provider, reply, and projected payload bytes.
-pub const DEFAULT_QUERY_BYTES: u64 = ANSWER_LIMIT_FIELDS[2].default;
-/// Default hydrated/projected graph-node count.
-pub const DEFAULT_QUERY_GRAPH_NODES: u64 = ANSWER_LIMIT_FIELDS[3].default;
-/// Default hydrated/projected attribute-value count.
-pub const DEFAULT_QUERY_ATTRIBUTE_VALUES: u64 = ANSWER_LIMIT_FIELDS[4].default;
-/// Default collection members, including reduction cells.
-pub const DEFAULT_QUERY_COLLECTION_MEMBERS: u64 = ANSWER_LIMIT_FIELDS[5].default;
-/// Default relation-role-player references.
-pub const DEFAULT_QUERY_ROLE_PLAYERS: u64 = ANSWER_LIMIT_FIELDS[6].default;
-/// Default provider statements per terminal.
-pub const DEFAULT_QUERY_STATEMENTS: u32 = ANSWER_LIMIT_FIELDS[7].default as u32;
+/// Direct-session default execution duration in milliseconds.
+pub const DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS: u64 = ANSWER_LIMIT_FIELDS[0].direct_default;
+/// Direct-session default provider/result item count.
+pub const DEFAULT_DIRECT_QUERY_ITEMS: u64 = ANSWER_LIMIT_FIELDS[1].direct_default;
+/// Direct-session default provider, reply, and projected payload bytes.
+pub const DEFAULT_DIRECT_QUERY_BYTES: u64 = ANSWER_LIMIT_FIELDS[2].direct_default;
+/// Direct-session default hydrated/projected graph-node count.
+pub const DEFAULT_DIRECT_QUERY_GRAPH_NODES: u64 = ANSWER_LIMIT_FIELDS[3].direct_default;
+/// Direct-session default hydrated/projected attribute-value count.
+pub const DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES: u64 = ANSWER_LIMIT_FIELDS[4].direct_default;
+/// Direct-session default collection members, including reduction cells.
+pub const DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS: u64 = ANSWER_LIMIT_FIELDS[5].direct_default;
+/// Direct-session default relation-role-player references.
+pub const DEFAULT_DIRECT_QUERY_ROLE_PLAYERS: u64 = ANSWER_LIMIT_FIELDS[6].direct_default;
+/// Direct-session default provider statements per terminal.
+pub const DEFAULT_DIRECT_QUERY_STATEMENTS: u32 = ANSWER_LIMIT_FIELDS[7].direct_default as u32;
+
+/// Proxy-connection default execution duration in milliseconds.
+pub const DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS: u64 = ANSWER_LIMIT_FIELDS[0].proxy_default;
+/// Proxy-connection default provider/result item count.
+pub const DEFAULT_PROXY_QUERY_ITEMS: u64 = ANSWER_LIMIT_FIELDS[1].proxy_default;
+/// Proxy-connection default provider, reply, and projected payload bytes.
+pub const DEFAULT_PROXY_QUERY_BYTES: u64 = ANSWER_LIMIT_FIELDS[2].proxy_default;
+/// Proxy-connection default hydrated/projected graph-node count.
+pub const DEFAULT_PROXY_QUERY_GRAPH_NODES: u64 = ANSWER_LIMIT_FIELDS[3].proxy_default;
+/// Proxy-connection default hydrated/projected attribute-value count.
+pub const DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES: u64 = ANSWER_LIMIT_FIELDS[4].proxy_default;
+/// Proxy-connection default collection members, including reduction cells.
+pub const DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS: u64 = ANSWER_LIMIT_FIELDS[5].proxy_default;
+/// Proxy-connection default relation-role-player references.
+pub const DEFAULT_PROXY_QUERY_ROLE_PLAYERS: u64 = ANSWER_LIMIT_FIELDS[6].proxy_default;
+/// Proxy-connection default provider statements per terminal.
+pub const DEFAULT_PROXY_QUERY_STATEMENTS: u32 = ANSWER_LIMIT_FIELDS[7].proxy_default as u32;
 
 /// Longest execution duration a policy may ask for, in milliseconds.
 pub const MAX_QUERY_TIMEOUT_MILLISECONDS: u64 = ANSWER_LIMIT_FIELDS[0].maximum;
@@ -202,6 +219,19 @@ impl std::fmt::Display for QueryExecutionLimitsError {
 
 impl std::error::Error for QueryExecutionLimitsError {}
 
+/// The transport an answer policy runs on, which decides its defaults.
+///
+/// A direct session keeps the 2.2 in-process defaults. A proxy connection
+/// defaults to the wire ceilings, so an unconfigured remote answer fits one
+/// envelope and a default-configured server advertises no override.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum AnswerTransport {
+    /// An in-process session against the database.
+    Direct,
+    /// A connection to a TypeBridge query server.
+    Proxy,
+}
+
 /// The answer policy of one query terminal, the same on every transport.
 ///
 /// `items` bounds provider evidence and public rows, `bytes` bounds
@@ -213,7 +243,8 @@ impl std::error::Error for QueryExecutionLimitsError {}
 /// enforced before each provider call. No field is accepted and ignored on
 /// either lane.
 ///
-/// [`Default`] is the policy every session starts from. A caller may tighten
+/// [`Self::default_for`] is the policy a session starts from on its
+/// transport, and [`Default`] is the direct one. A caller may tighten
 /// any dimension, and may raise one by configuring it explicitly; only the
 /// timeout and the statement count have a supported maximum. A session never
 /// widens the policy of the connection it runs on
@@ -252,12 +283,43 @@ impl QueryExecutionResourceLimits {
         ANSWER_LIMIT_FIELDS[7].name,
     ];
 
+    /// The policy in force on `transport` when nothing was configured.
+    ///
+    /// This is the one place an unset policy becomes a default.
+    #[must_use]
+    pub const fn default_for(transport: AnswerTransport) -> Self {
+        match transport {
+            AnswerTransport::Direct => Self {
+                timeout_milliseconds: DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS,
+                items: DEFAULT_DIRECT_QUERY_ITEMS,
+                bytes: DEFAULT_DIRECT_QUERY_BYTES,
+                graph_nodes: DEFAULT_DIRECT_QUERY_GRAPH_NODES,
+                attribute_values: DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES,
+                collection_members: DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS,
+                role_players: DEFAULT_DIRECT_QUERY_ROLE_PLAYERS,
+                statements: DEFAULT_DIRECT_QUERY_STATEMENTS,
+            },
+            AnswerTransport::Proxy => Self {
+                timeout_milliseconds: DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
+                items: DEFAULT_PROXY_QUERY_ITEMS,
+                bytes: DEFAULT_PROXY_QUERY_BYTES,
+                graph_nodes: DEFAULT_PROXY_QUERY_GRAPH_NODES,
+                attribute_values: DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES,
+                collection_members: DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS,
+                role_players: DEFAULT_PROXY_QUERY_ROLE_PLAYERS,
+                statements: DEFAULT_PROXY_QUERY_STATEMENTS,
+            },
+        }
+    }
+
     /// Build a policy from named dimensions; an unnamed one keeps its
-    /// default. An unknown name or a value past its maximum is refused.
+    /// `transport` default. An unknown name or a value past its maximum is
+    /// refused.
     pub fn from_overrides<'name>(
+        transport: AnswerTransport,
         overrides: impl IntoIterator<Item = (&'name str, u64)>,
     ) -> Result<Self, QueryExecutionLimitsError> {
-        let mut policy = Self::default();
+        let mut policy = Self::default_for(transport);
         for (name, value) in overrides {
             let field =
                 answer_limit_field(name).ok_or_else(|| QueryExecutionLimitsError::Unknown {
@@ -286,20 +348,22 @@ impl QueryExecutionResourceLimits {
         Ok(policy)
     }
 
-    /// The dimensions that differ from their defaults, by stable name: the
-    /// form an executor advertises.
+    /// The dimensions that differ from the proxy (wire) defaults, by stable
+    /// name: the form an executor advertises. A server's ceilings are read
+    /// back with [`Self::from_overrides`] on [`AnswerTransport::Proxy`].
     #[must_use]
     pub fn overrides(self) -> BTreeMap<String, u64> {
         ANSWER_LIMIT_FIELDS
             .iter()
             .filter_map(|field| {
                 let value = self.get(field.name)?;
-                (value != field.default).then(|| (field.name.to_owned(), value))
+                (value != field.proxy_default).then(|| (field.name.to_owned(), value))
             })
             .collect()
     }
 
-    /// Construct a policy no looser than the default in any dimension.
+    /// Construct a policy no looser than the direct default, the loosest
+    /// default, in any dimension.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub const fn tightened(
@@ -313,14 +377,20 @@ impl QueryExecutionResourceLimits {
         statements: u32,
     ) -> Self {
         Self {
-            timeout_milliseconds: min_u64(timeout_milliseconds, DEFAULT_QUERY_TIMEOUT_MILLISECONDS),
-            items: min_u64(items, DEFAULT_QUERY_ITEMS),
-            bytes: min_u64(bytes, DEFAULT_QUERY_BYTES),
-            graph_nodes: min_u64(graph_nodes, DEFAULT_QUERY_GRAPH_NODES),
-            attribute_values: min_u64(attribute_values, DEFAULT_QUERY_ATTRIBUTE_VALUES),
-            collection_members: min_u64(collection_members, DEFAULT_QUERY_COLLECTION_MEMBERS),
-            role_players: min_u64(role_players, DEFAULT_QUERY_ROLE_PLAYERS),
-            statements: min_u32(statements, DEFAULT_QUERY_STATEMENTS),
+            timeout_milliseconds: min_u64(
+                timeout_milliseconds,
+                DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS,
+            ),
+            items: min_u64(items, DEFAULT_DIRECT_QUERY_ITEMS),
+            bytes: min_u64(bytes, DEFAULT_DIRECT_QUERY_BYTES),
+            graph_nodes: min_u64(graph_nodes, DEFAULT_DIRECT_QUERY_GRAPH_NODES),
+            attribute_values: min_u64(attribute_values, DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES),
+            collection_members: min_u64(
+                collection_members,
+                DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS,
+            ),
+            role_players: min_u64(role_players, DEFAULT_DIRECT_QUERY_ROLE_PLAYERS),
+            statements: min_u32(statements, DEFAULT_DIRECT_QUERY_STATEMENTS),
         }
     }
 
@@ -353,7 +423,7 @@ impl QueryExecutionResourceLimits {
         Self {
             timeout_milliseconds: limits
                 .deadline_ms
-                .unwrap_or(DEFAULT_QUERY_TIMEOUT_MILLISECONDS),
+                .unwrap_or(DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS),
             items: limits.max_items,
             bytes: limits.max_bytes,
             graph_nodes: limits.max_graph_nodes,
@@ -367,15 +437,19 @@ impl QueryExecutionResourceLimits {
     /// Describe the ceiling behind one resource-limit refusal.
     ///
     /// Returns the dimension's stable name, the value in force, and whether
-    /// that value is the default or one the caller configured. `None` for a
-    /// code that reports no policy dimension.
+    /// that value is `transport`'s default or one the caller configured.
+    /// `None` for a code that reports no policy dimension.
     #[must_use]
-    pub fn refusal_details(self, code: &str) -> Option<(&'static str, u64, &'static str)> {
+    pub fn refusal_details(
+        self,
+        transport: AnswerTransport,
+        code: &str,
+    ) -> Option<(&'static str, u64, &'static str)> {
         let name = DIMENSION_BY_REFUSAL_CODE
             .iter()
             .find_map(|(refusal, name)| (*refusal == code).then_some(*name))?;
         let value = self.get(name)?;
-        let source = if Self::default().get(name) == Some(value) {
+        let source = if Self::default_for(transport).get(name) == Some(value) {
             LIMIT_SOURCE_DEFAULT
         } else {
             LIMIT_SOURCE_CONFIGURED
@@ -488,17 +562,10 @@ impl QueryExecutionResourceLimits {
 }
 
 impl Default for QueryExecutionResourceLimits {
+    /// The direct-session default, [`Self::default_for`] on
+    /// [`AnswerTransport::Direct`].
     fn default() -> Self {
-        Self::tightened(
-            DEFAULT_QUERY_TIMEOUT_MILLISECONDS,
-            DEFAULT_QUERY_ITEMS,
-            DEFAULT_QUERY_BYTES,
-            DEFAULT_QUERY_GRAPH_NODES,
-            DEFAULT_QUERY_ATTRIBUTE_VALUES,
-            DEFAULT_QUERY_COLLECTION_MEMBERS,
-            DEFAULT_QUERY_ROLE_PLAYERS,
-            DEFAULT_QUERY_STATEMENTS,
-        )
+        Self::default_for(AnswerTransport::Direct)
     }
 }
 
@@ -553,14 +620,14 @@ mod tests {
     #[test]
     fn the_policy_tightens_per_dimension_and_validates_what_is_raised() {
         let plus_one = QueryExecutionResourceLimits::tightened(
-            DEFAULT_QUERY_TIMEOUT_MILLISECONDS + 1,
-            DEFAULT_QUERY_ITEMS + 1,
-            DEFAULT_QUERY_BYTES + 1,
-            DEFAULT_QUERY_GRAPH_NODES + 1,
-            DEFAULT_QUERY_ATTRIBUTE_VALUES + 1,
-            DEFAULT_QUERY_COLLECTION_MEMBERS + 1,
-            DEFAULT_QUERY_ROLE_PLAYERS + 1,
-            DEFAULT_QUERY_STATEMENTS + 1,
+            DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS + 1,
+            DEFAULT_DIRECT_QUERY_ITEMS + 1,
+            DEFAULT_DIRECT_QUERY_BYTES + 1,
+            DEFAULT_DIRECT_QUERY_GRAPH_NODES + 1,
+            DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES + 1,
+            DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS + 1,
+            DEFAULT_DIRECT_QUERY_ROLE_PLAYERS + 1,
+            DEFAULT_DIRECT_QUERY_STATEMENTS + 1,
         );
         assert_eq!(plus_one, QueryExecutionResourceLimits::default());
 
@@ -646,6 +713,138 @@ mod tests {
             per_terminal.constrained_by(connection),
             QueryExecutionResourceLimits::tightened(100, 2, 3, 4, 5, 6, 7, 1),
             "each field is intersected independently instead of inheriting one aggregate ceiling",
+        );
+    }
+
+    #[test]
+    fn each_transport_has_its_own_defaults() {
+        let direct = QueryExecutionResourceLimits::default_for(AnswerTransport::Direct);
+        assert_eq!(
+            direct,
+            QueryExecutionResourceLimits {
+                timeout_milliseconds: 30_000,
+                items: 100_000,
+                bytes: 64 * 1024 * 1024,
+                graph_nodes: 1_000_000,
+                attribute_values: 4_000_000,
+                collection_members: 1_000_000,
+                role_players: 1_000_000,
+                statements: 3,
+            },
+            "a direct session keeps the 2.2 in-process defaults"
+        );
+        assert_eq!(QueryExecutionResourceLimits::default(), direct);
+
+        let proxy = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
+        assert_eq!(
+            proxy,
+            QueryExecutionResourceLimits {
+                timeout_milliseconds: 30_000,
+                items: 65_536,
+                bytes: 32 * 1024 * 1024,
+                graph_nodes: 65_536,
+                attribute_values: 65_536,
+                collection_members: 65_536,
+                role_players: 65_536,
+                statements: 3,
+            },
+            "a proxy connection defaults to the wire ceilings"
+        );
+        assert_eq!(proxy.constrained_by(direct), proxy);
+    }
+
+    #[test]
+    fn overrides_are_relative_to_the_wire_defaults() {
+        let proxy = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
+        assert!(
+            proxy.overrides().is_empty(),
+            "a default-configured server advertises nothing"
+        );
+        assert_eq!(
+            QueryExecutionResourceLimits::from_overrides(AnswerTransport::Proxy, []),
+            Ok(proxy)
+        );
+        assert_eq!(
+            QueryExecutionResourceLimits::from_overrides(AnswerTransport::Direct, []),
+            Ok(QueryExecutionResourceLimits::default())
+        );
+
+        let advertised =
+            QueryExecutionResourceLimits::from_overrides(AnswerTransport::Proxy, [("items", 7)])
+                .expect("known dimension");
+        assert_eq!(
+            advertised,
+            QueryExecutionResourceLimits { items: 7, ..proxy }
+        );
+        assert_eq!(
+            advertised.overrides(),
+            BTreeMap::from([("items".to_owned(), 7)])
+        );
+        assert_eq!(
+            QueryExecutionResourceLimits::from_overrides(
+                AnswerTransport::Proxy,
+                advertised
+                    .overrides()
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), *value)),
+            ),
+            Ok(advertised),
+            "an advertisement round-trips"
+        );
+        assert_eq!(
+            QueryExecutionResourceLimits::default()
+                .overrides()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "attribute_values",
+                "bytes",
+                "collection_members",
+                "graph_nodes",
+                "items",
+                "role_players",
+            ]
+        );
+        assert!(matches!(
+            QueryExecutionResourceLimits::from_overrides(AnswerTransport::Direct, [("made_up", 1)]),
+            Err(QueryExecutionLimitsError::Unknown { .. })
+        ));
+        assert!(matches!(
+            QueryExecutionResourceLimits::from_overrides(
+                AnswerTransport::Proxy,
+                [("statements", 4)]
+            ),
+            Err(QueryExecutionLimitsError::OutOfRange(_))
+        ));
+    }
+
+    #[test]
+    fn refusals_name_the_default_of_their_own_transport() {
+        let direct = QueryExecutionResourceLimits::default_for(AnswerTransport::Direct);
+        let proxy = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
+        let code = "processed_item_limit";
+        assert_eq!(
+            direct.refusal_details(AnswerTransport::Direct, code),
+            Some(("items", 100_000, LIMIT_SOURCE_DEFAULT))
+        );
+        assert_eq!(
+            proxy.refusal_details(AnswerTransport::Proxy, code),
+            Some(("items", 65_536, LIMIT_SOURCE_DEFAULT))
+        );
+        assert_eq!(
+            proxy.refusal_details(AnswerTransport::Direct, code),
+            Some(("items", 65_536, LIMIT_SOURCE_CONFIGURED)),
+            "the proxy default is a configured value on a direct session"
+        );
+        assert_eq!(
+            direct.refusal_details(AnswerTransport::Proxy, code),
+            Some(("items", 100_000, LIMIT_SOURCE_CONFIGURED)),
+            "the direct default is a configured value on a proxy connection"
+        );
+        assert_eq!(
+            direct.refusal_details(AnswerTransport::Direct, "unrelated"),
+            None
         );
     }
 }

@@ -714,9 +714,10 @@ async fn write_transaction_preflight_and_reads_share_the_open_context() {
 #[tokio::test]
 async fn sdk_v3_rust_data_plane_fragment() {
     use crate::{
-        AnswerCancellation, DEFAULT_QUERY_ATTRIBUTE_VALUES, DEFAULT_QUERY_BYTES,
-        DEFAULT_QUERY_COLLECTION_MEMBERS, DEFAULT_QUERY_GRAPH_NODES, DEFAULT_QUERY_ITEMS,
-        DEFAULT_QUERY_ROLE_PLAYERS, DEFAULT_QUERY_STATEMENTS, DEFAULT_QUERY_TIMEOUT_MILLISECONDS,
+        AnswerCancellation, DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES, DEFAULT_DIRECT_QUERY_BYTES,
+        DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS, DEFAULT_DIRECT_QUERY_GRAPH_NODES,
+        DEFAULT_DIRECT_QUERY_ITEMS, DEFAULT_DIRECT_QUERY_ROLE_PLAYERS,
+        DEFAULT_DIRECT_QUERY_STATEMENTS, DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS,
         DirectConnectionPolicy, QueryExecutionResourceLimits,
     };
 
@@ -731,14 +732,14 @@ async fn sdk_v3_rust_data_plane_fragment() {
     assert!(cancellation.is_cancelled());
 
     let effective = QueryExecutionResourceLimits::tightened(
-        DEFAULT_QUERY_TIMEOUT_MILLISECONDS + 1,
-        DEFAULT_QUERY_ITEMS + 1,
-        DEFAULT_QUERY_BYTES + 1,
-        DEFAULT_QUERY_GRAPH_NODES + 1,
-        DEFAULT_QUERY_ATTRIBUTE_VALUES + 1,
-        DEFAULT_QUERY_COLLECTION_MEMBERS + 1,
-        DEFAULT_QUERY_ROLE_PLAYERS + 1,
-        DEFAULT_QUERY_STATEMENTS + 1,
+        DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS + 1,
+        DEFAULT_DIRECT_QUERY_ITEMS + 1,
+        DEFAULT_DIRECT_QUERY_BYTES + 1,
+        DEFAULT_DIRECT_QUERY_GRAPH_NODES + 1,
+        DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES + 1,
+        DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS + 1,
+        DEFAULT_DIRECT_QUERY_ROLE_PLAYERS + 1,
+        DEFAULT_DIRECT_QUERY_STATEMENTS + 1,
     );
     assert_eq!(effective, QueryExecutionResourceLimits::default());
     let policy = DirectConnectionPolicy::new(
@@ -754,14 +755,20 @@ async fn sdk_v3_rust_data_plane_fragment() {
     assert!(!policy_debug.contains("secret-that-must-not-appear"));
 
     let dimensions = [
-        ("timeout_milliseconds", DEFAULT_QUERY_TIMEOUT_MILLISECONDS),
-        ("items", DEFAULT_QUERY_ITEMS),
-        ("bytes", DEFAULT_QUERY_BYTES),
-        ("graph_nodes", DEFAULT_QUERY_GRAPH_NODES),
-        ("attribute_values", DEFAULT_QUERY_ATTRIBUTE_VALUES),
-        ("collection_members", DEFAULT_QUERY_COLLECTION_MEMBERS),
-        ("role_players", DEFAULT_QUERY_ROLE_PLAYERS),
-        ("statements", u64::from(DEFAULT_QUERY_STATEMENTS)),
+        (
+            "timeout_milliseconds",
+            DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS,
+        ),
+        ("items", DEFAULT_DIRECT_QUERY_ITEMS),
+        ("bytes", DEFAULT_DIRECT_QUERY_BYTES),
+        ("graph_nodes", DEFAULT_DIRECT_QUERY_GRAPH_NODES),
+        ("attribute_values", DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES),
+        (
+            "collection_members",
+            DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS,
+        ),
+        ("role_players", DEFAULT_DIRECT_QUERY_ROLE_PLAYERS),
+        ("statements", u64::from(DEFAULT_DIRECT_QUERY_STATEMENTS)),
     ]
     .into_iter()
     .map(|(dimension, hard_max)| {

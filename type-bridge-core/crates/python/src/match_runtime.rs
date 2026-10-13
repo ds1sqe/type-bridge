@@ -1941,32 +1941,73 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyMatchShapeHandle>()?;
     module.add_class::<PyMatchQueryHandle>()?;
     module.add_class::<PyQueryExecutionResourceLimits>()?;
-    // Answer-policy defaults, read from the core so Python holds no copies.
+    // Answer-policy defaults per transport, read from the core so Python
+    // holds no copies. A direct session (and an omitted
+    // `QueryExecutionResourceLimits` dimension) takes the direct values; a
+    // proxy connection without explicit limits takes the proxy values.
     module.add(
-        "DEFAULT_QUERY_TIMEOUT_MILLISECONDS",
-        type_bridge_orm::DEFAULT_QUERY_TIMEOUT_MILLISECONDS,
-    )?;
-    module.add("DEFAULT_QUERY_ITEMS", type_bridge_orm::DEFAULT_QUERY_ITEMS)?;
-    module.add("DEFAULT_QUERY_BYTES", type_bridge_orm::DEFAULT_QUERY_BYTES)?;
-    module.add(
-        "DEFAULT_QUERY_GRAPH_NODES",
-        type_bridge_orm::DEFAULT_QUERY_GRAPH_NODES,
+        "DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS",
+        type_bridge_orm::DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS,
     )?;
     module.add(
-        "DEFAULT_QUERY_ATTRIBUTE_VALUES",
-        type_bridge_orm::DEFAULT_QUERY_ATTRIBUTE_VALUES,
+        "DEFAULT_DIRECT_QUERY_ITEMS",
+        type_bridge_orm::DEFAULT_DIRECT_QUERY_ITEMS,
     )?;
     module.add(
-        "DEFAULT_QUERY_COLLECTION_MEMBERS",
-        type_bridge_orm::DEFAULT_QUERY_COLLECTION_MEMBERS,
+        "DEFAULT_DIRECT_QUERY_BYTES",
+        type_bridge_orm::DEFAULT_DIRECT_QUERY_BYTES,
     )?;
     module.add(
-        "DEFAULT_QUERY_ROLE_PLAYERS",
-        type_bridge_orm::DEFAULT_QUERY_ROLE_PLAYERS,
+        "DEFAULT_DIRECT_QUERY_GRAPH_NODES",
+        type_bridge_orm::DEFAULT_DIRECT_QUERY_GRAPH_NODES,
     )?;
     module.add(
-        "DEFAULT_QUERY_STATEMENTS",
-        type_bridge_orm::DEFAULT_QUERY_STATEMENTS,
+        "DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES",
+        type_bridge_orm::DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES,
+    )?;
+    module.add(
+        "DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS",
+        type_bridge_orm::DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS,
+    )?;
+    module.add(
+        "DEFAULT_DIRECT_QUERY_ROLE_PLAYERS",
+        type_bridge_orm::DEFAULT_DIRECT_QUERY_ROLE_PLAYERS,
+    )?;
+    module.add(
+        "DEFAULT_DIRECT_QUERY_STATEMENTS",
+        type_bridge_orm::DEFAULT_DIRECT_QUERY_STATEMENTS,
+    )?;
+    module.add(
+        "DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS",
+        type_bridge_orm::DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
+    )?;
+    module.add(
+        "DEFAULT_PROXY_QUERY_ITEMS",
+        type_bridge_orm::DEFAULT_PROXY_QUERY_ITEMS,
+    )?;
+    module.add(
+        "DEFAULT_PROXY_QUERY_BYTES",
+        type_bridge_orm::DEFAULT_PROXY_QUERY_BYTES,
+    )?;
+    module.add(
+        "DEFAULT_PROXY_QUERY_GRAPH_NODES",
+        type_bridge_orm::DEFAULT_PROXY_QUERY_GRAPH_NODES,
+    )?;
+    module.add(
+        "DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES",
+        type_bridge_orm::DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES,
+    )?;
+    module.add(
+        "DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS",
+        type_bridge_orm::DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS,
+    )?;
+    module.add(
+        "DEFAULT_PROXY_QUERY_ROLE_PLAYERS",
+        type_bridge_orm::DEFAULT_PROXY_QUERY_ROLE_PLAYERS,
+    )?;
+    module.add(
+        "DEFAULT_PROXY_QUERY_STATEMENTS",
+        type_bridge_orm::DEFAULT_PROXY_QUERY_STATEMENTS,
     )?;
     module.add_class::<PyQueryLimits>()?;
     module.add_class::<PyQueryCancellation>()?;

@@ -97,7 +97,9 @@ unsafe fn read_limits(
         // SAFETY: the complete descriptor was preflighted; unaligned read.
         Some(unsafe { limits.read_unaligned() })
     };
-    parse_common_limits(snapshot)
+    // A proxy connection opened without limits runs at the proxy (wire)
+    // defaults.
+    parse_common_limits(snapshot, type_bridge_orm::AnswerTransport::Proxy)
 }
 
 /// Validate and copy every option before any I/O.

@@ -355,6 +355,8 @@ export declare class ProxyConnection implements RuntimeProjectionRemote {
     private constructor();
     /** Open `endpoint` under `authority`, fetch or pin its advertisement, and verify it. */
     static connect(authority: QueryV2Authority, endpoint: string, options?: ProxyConnectionOptions): Promise<ProxyConnection>;
+    /** The ceiling every terminal on this connection is constrained by. */
+    get answerLimits(): QueryExecutionResourceLimits;
     rows(query: RuntimeProjectionMatchQuery, orders: RuntimeProjectionMatchOrder[], offset: bigint, limit: bigint, cardinality: "exactly_one" | "bounded_many"): Promise<RuntimeProjectionMatchResult>;
     page(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, orders: RuntimeProjectionMatchOrder[], offset: bigint, limit: bigint, includeTotal: boolean): Promise<RuntimeProjectionMatchResult>;
     count(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding): Promise<RuntimeProjectionMatchResult>;

@@ -20,7 +20,9 @@ use super::validation::ValidatedMatchRequest;
 use super::{ReducedValue, Reduction};
 use crate::_registry::DescriptorRegistry;
 use crate::error::OrmError;
-use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
+use crate::query_execution_limits::{
+    AnswerTransport, QueryExecutionDeadline, QueryExecutionResourceLimits,
+};
 use crate::query_v2::{
     QueryV2ExecutionError, execute_validated_model_query_borrowed,
     execute_validated_model_query_with_statement_limit,
@@ -147,7 +149,10 @@ impl MatchExecutionLimits {
         if error.details().contains_key("limit") {
             return error.into();
         }
-        match self.policy.refusal_details(error.code().as_str()) {
+        match self
+            .policy
+            .refusal_details(AnswerTransport::Direct, error.code().as_str())
+        {
             Some((limit, maximum, source)) => error
                 .with_detail("limit", limit)
                 .with_detail("maximum", maximum)
@@ -1227,7 +1232,7 @@ mod tests {
     use crate::_descriptor::{
         EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor,
     };
-    use crate::query_execution_limits::DEFAULT_QUERY_ITEMS;
+    use crate::query_execution_limits::DEFAULT_DIRECT_QUERY_ITEMS;
 
     use crate::_entity::Annotation;
     use crate::MatchErrorPath;
@@ -1328,7 +1333,7 @@ mod tests {
         let limits = MatchExecutionLimits::default();
         assert_eq!(
             (limits.policy.items, limits.policy.bytes),
-            (65_536, 32 * 1024 * 1024)
+            (100_000, 64 * 1024 * 1024)
         );
         assert_eq!(limits.policy, default);
         // A caller cannot widen the policy through the tightening constructor.
@@ -3441,7 +3446,10 @@ mod tests {
         assert_eq!(events.root_statements.len(), 2);
         assert!(events.root_statements[0].order.is_empty());
         assert_eq!(events.root_statements[0].offset, None);
-        assert_eq!(events.root_statements[0].limit, Some(DEFAULT_QUERY_ITEMS));
+        assert_eq!(
+            events.root_statements[0].limit,
+            Some(DEFAULT_DIRECT_QUERY_ITEMS)
+        );
         assert!(events.root_statements[1].order.is_empty());
         assert_eq!(events.root_statements[1].offset, None);
         assert_eq!(events.root_statements[1].limit, Some(1));
@@ -4007,7 +4015,7 @@ mod tests {
                 let total = &events.root_statements[0];
                 assert!(total.order.is_empty());
                 assert_eq!(total.offset, None);
-                assert_eq!(total.limit, Some(DEFAULT_QUERY_ITEMS));
+                assert_eq!(total.limit, Some(DEFAULT_DIRECT_QUERY_ITEMS));
             }
             assert_eq!(
                 events.rematch_statements[0].root_concept_ids,
@@ -4147,7 +4155,7 @@ mod tests {
     #[tokio::test]
     async fn a_raised_policy_returns_what_the_default_refuses() {
         let registry = person_registry();
-        let total = usize::try_from(DEFAULT_QUERY_ITEMS).unwrap() + 4_464;
+        let total = usize::try_from(DEFAULT_DIRECT_QUERY_ITEMS).unwrap() + 4_464;
         let iid = |index: usize| format!("0x{:x}", index + 1);
         let roots = || {
             vec![Ok((0..total)
@@ -4158,10 +4166,10 @@ mod tests {
             MatchExecutionLimits::from_policy(
                 // Scanning and hydration both draw on the item budget.
                 QueryExecutionResourceLimits {
-                    items: 200_000,
+                    items: 400_000,
                     bytes: 1 << 30,
-                    graph_nodes: 100_000,
-                    attribute_values: 100_000,
+                    graph_nodes: 200_000,
+                    attribute_values: 200_000,
                     ..QueryExecutionResourceLimits::default()
                 }
                 .validate()
@@ -4193,7 +4201,9 @@ mod tests {
             details(&refused),
             (
                 Some(crate::MatchErrorDetailValue::Text("items".into())),
-                Some(crate::MatchErrorDetailValue::Unsigned(DEFAULT_QUERY_ITEMS)),
+                Some(crate::MatchErrorDetailValue::Unsigned(
+                    DEFAULT_DIRECT_QUERY_ITEMS
+                )),
                 Some(crate::MatchErrorDetailValue::Text("default".into())),
             )
         );
@@ -4231,7 +4241,7 @@ mod tests {
 
         let rows = validate_match_request(
             &registry,
-            person_request(&registry, RowCardinality::Complete, 100_000),
+            person_request(&registry, RowCardinality::Complete, 200_000),
         )
         .unwrap();
         let hydrations = || {
@@ -5423,7 +5433,7 @@ mod tests {
         };
         window.offset = 2;
         let validated = validate_match_request(&registry, request).unwrap();
-        let solutions = (1..=DEFAULT_QUERY_ITEMS + 1)
+        let solutions = (1..=DEFAULT_DIRECT_QUERY_ITEMS + 1)
             .map(|index| {
                 let concept_id = format!("0x{index:x}");
                 solution(&[(0, &concept_id)], &[])

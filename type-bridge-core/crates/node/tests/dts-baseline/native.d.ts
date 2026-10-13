@@ -178,6 +178,7 @@ interface NativePendingRemoteModelQuery {
 }
 /** Native proxy connection over the built-in HTTP route. */
 export interface NativeProxyConnection {
+    readonly answerLimits: NativeQueryExecutionResources;
     rows(query: NativeMatchQueryHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): Promise<NativeValidatedMatchResultHandle>;
     page(query: NativeMatchQueryHandle, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): Promise<NativeValidatedMatchResultHandle>;
     count(query: NativeMatchQueryHandle, root: NativeMatchBindingHandle): Promise<NativeValidatedMatchResultHandle>;
@@ -193,14 +194,22 @@ interface NativeProxyConnectionModule {
 }
 /** Core limits the addon exports, so the package holds no copies. */
 interface NativeLimitsModule {
-    readonly DEFAULT_QUERY_TIMEOUT_MILLISECONDS: bigint;
-    readonly DEFAULT_QUERY_ITEMS: bigint;
-    readonly DEFAULT_QUERY_BYTES: bigint;
-    readonly DEFAULT_QUERY_GRAPH_NODES: bigint;
-    readonly DEFAULT_QUERY_ATTRIBUTE_VALUES: bigint;
-    readonly DEFAULT_QUERY_COLLECTION_MEMBERS: bigint;
-    readonly DEFAULT_QUERY_ROLE_PLAYERS: bigint;
-    readonly DEFAULT_QUERY_STATEMENTS: bigint;
+    readonly DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS: bigint;
+    readonly DEFAULT_DIRECT_QUERY_ITEMS: bigint;
+    readonly DEFAULT_DIRECT_QUERY_BYTES: bigint;
+    readonly DEFAULT_DIRECT_QUERY_GRAPH_NODES: bigint;
+    readonly DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES: bigint;
+    readonly DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS: bigint;
+    readonly DEFAULT_DIRECT_QUERY_ROLE_PLAYERS: bigint;
+    readonly DEFAULT_DIRECT_QUERY_STATEMENTS: bigint;
+    readonly DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS: bigint;
+    readonly DEFAULT_PROXY_QUERY_ITEMS: bigint;
+    readonly DEFAULT_PROXY_QUERY_BYTES: bigint;
+    readonly DEFAULT_PROXY_QUERY_GRAPH_NODES: bigint;
+    readonly DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES: bigint;
+    readonly DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS: bigint;
+    readonly DEFAULT_PROXY_QUERY_ROLE_PLAYERS: bigint;
+    readonly DEFAULT_PROXY_QUERY_STATEMENTS: bigint;
     readonly MAX_CANONICAL_BYTES: number;
     readonly MAX_REMOTE_ENVELOPE_BYTES: number;
     readonly MAX_DIAGNOSTIC_CODE_BYTES: number;

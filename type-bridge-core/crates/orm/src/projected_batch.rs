@@ -15,9 +15,10 @@ use type_bridge_contract::value::CanonicalValue;
 
 use crate::projected_model::{ProjectedCreate, ProjectionBrand};
 use crate::query_execution_limits::{
-    DEFAULT_QUERY_ATTRIBUTE_VALUES, DEFAULT_QUERY_BYTES, DEFAULT_QUERY_COLLECTION_MEMBERS,
-    DEFAULT_QUERY_GRAPH_NODES, DEFAULT_QUERY_ITEMS, DEFAULT_QUERY_ROLE_PLAYERS,
-    DEFAULT_QUERY_STATEMENTS, QueryExecutionDeadline, QueryExecutionResourceLimits,
+    DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES, DEFAULT_DIRECT_QUERY_BYTES,
+    DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS, DEFAULT_DIRECT_QUERY_GRAPH_NODES,
+    DEFAULT_DIRECT_QUERY_ITEMS, DEFAULT_DIRECT_QUERY_ROLE_PLAYERS, DEFAULT_DIRECT_QUERY_STATEMENTS,
+    QueryExecutionDeadline, QueryExecutionResourceLimits,
 };
 use crate::runtime_projection::InstalledRuntimeProjection;
 use crate::session::backend::AnswerCancellation;
@@ -198,7 +199,7 @@ impl ProjectedBatchBudgetState {
                 "batch_item_limit",
                 "items",
                 u64::MAX,
-                control.map_or(DEFAULT_QUERY_ITEMS, |control| control.limits.items),
+                control.map_or(DEFAULT_DIRECT_QUERY_ITEMS, |control| control.limits.items),
             ))
         })?;
         let limits = control.map_or(QueryExecutionResourceLimits::default(), |control| {
@@ -476,7 +477,7 @@ impl ProjectedBatch {
     /// ceiling before the binding duplicates or projects caller inputs.
     #[doc(hidden)]
     pub fn validate_binding_row_count(row_count: usize) -> Result<(), SdkExecutionDiagnostic> {
-        validate_row_count(row_count, DEFAULT_QUERY_ITEMS).map(|_| ())
+        validate_row_count(row_count, DEFAULT_DIRECT_QUERY_ITEMS).map(|_| ())
     }
 
     /// Validate the number of input proofs a binding reads for one row
@@ -586,7 +587,8 @@ impl ProjectedBatch {
             });
         }
         check_control(control)?;
-        let item_ceiling = control.map_or(DEFAULT_QUERY_ITEMS, |control| control.limits.items);
+        let item_ceiling =
+            control.map_or(DEFAULT_DIRECT_QUERY_ITEMS, |control| control.limits.items);
         let item_count = validate_row_count(row_count, item_ceiling)?;
         check_control(control)?;
         let mut normalized = reserved(row_count, ProjectedBatchReservationSite::Rows, probe)?;
@@ -1358,7 +1360,7 @@ fn row_path(index: usize) -> Vec<SdkDiagnosticPathSegment> {
     vec![
         SdkDiagnosticPathSegment::Argument(name("rows")),
         SdkDiagnosticPathSegment::Index(
-            u64::try_from(index).expect("batch row count is bounded by DEFAULT_QUERY_ITEMS"),
+            u64::try_from(index).expect("batch row count is bounded by DEFAULT_DIRECT_QUERY_ITEMS"),
         ),
     ]
 }
@@ -1397,7 +1399,7 @@ fn conflict(
     .try_with_detail(
         name("first_conflicting_index"),
         SdkDiagnosticDetailValue::Count(
-            u64::try_from(first).expect("batch row count is bounded by DEFAULT_QUERY_ITEMS"),
+            u64::try_from(first).expect("batch row count is bounded by DEFAULT_DIRECT_QUERY_ITEMS"),
         ),
     )
     .expect("batch conflict detail is bounded")
@@ -1521,13 +1523,13 @@ fn validate_row_count(row_count: usize, item_ceiling: u64) -> Result<u64, SdkExe
 
 fn hard_ceiling(dimension: &'static str) -> u64 {
     match dimension {
-        "items" => DEFAULT_QUERY_ITEMS,
-        "bytes" => DEFAULT_QUERY_BYTES,
-        "graph_nodes" => DEFAULT_QUERY_GRAPH_NODES,
-        "attribute_values" => DEFAULT_QUERY_ATTRIBUTE_VALUES,
-        "collection_members" => DEFAULT_QUERY_COLLECTION_MEMBERS,
-        "role_players" => DEFAULT_QUERY_ROLE_PLAYERS,
-        "statements" => u64::from(DEFAULT_QUERY_STATEMENTS),
+        "items" => DEFAULT_DIRECT_QUERY_ITEMS,
+        "bytes" => DEFAULT_DIRECT_QUERY_BYTES,
+        "graph_nodes" => DEFAULT_DIRECT_QUERY_GRAPH_NODES,
+        "attribute_values" => DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES,
+        "collection_members" => DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS,
+        "role_players" => DEFAULT_DIRECT_QUERY_ROLE_PLAYERS,
+        "statements" => u64::from(DEFAULT_DIRECT_QUERY_STATEMENTS),
         _ => u64::MAX,
     }
 }
@@ -1738,7 +1740,7 @@ plays:
                 };
                 let actual = statement_forecast(operation, requires_references, 1);
                 assert_eq!(actual, expected);
-                assert!(actual <= DEFAULT_QUERY_STATEMENTS);
+                assert!(actual <= DEFAULT_DIRECT_QUERY_STATEMENTS);
             }
         }
     }
@@ -1898,7 +1900,7 @@ plays:
                 u64::MAX,
                 u64::MAX,
                 u64::MAX,
-                DEFAULT_QUERY_STATEMENTS,
+                DEFAULT_DIRECT_QUERY_STATEMENTS,
             ),
             AnswerCancellation::default(),
         );
@@ -1922,7 +1924,7 @@ plays:
                 u64::MAX,
                 u64::MAX,
                 u64::MAX,
-                DEFAULT_QUERY_STATEMENTS,
+                DEFAULT_DIRECT_QUERY_STATEMENTS,
             ),
             AnswerCancellation::default(),
         );
@@ -2014,7 +2016,7 @@ plays:
             u64::MAX,
             u64::MAX,
             u64::MAX,
-            DEFAULT_QUERY_STATEMENTS,
+            DEFAULT_DIRECT_QUERY_STATEMENTS,
         );
         let cancellation = AnswerCancellation::default();
         let mut control = ProjectedBatchConstructionControl::try_new(
@@ -2206,7 +2208,7 @@ plays:
             u64::MAX,
             u64::MAX,
             u64::MAX,
-            DEFAULT_QUERY_STATEMENTS,
+            DEFAULT_DIRECT_QUERY_STATEMENTS,
         );
         let construction_cancellation = AnswerCancellation::default();
         let mut control = ProjectedBatchConstructionControl::try_new(
@@ -2272,7 +2274,7 @@ plays:
         let installed = installed();
         let rows = vec![
             ProjectedBatchRow::Delete { iid: "0x10".into() };
-            usize::try_from(DEFAULT_QUERY_ITEMS).unwrap() + 1
+            usize::try_from(DEFAULT_DIRECT_QUERY_ITEMS).unwrap() + 1
         ];
         let error = ProjectedBatch::try_new_with_reservation_probe(
             &installed,
@@ -2296,7 +2298,9 @@ plays:
         );
         assert_eq!(
             error.details().get(&name("maximum")),
-            Some(&SdkDiagnosticDetailValue::Count(DEFAULT_QUERY_GRAPH_NODES))
+            Some(&SdkDiagnosticDetailValue::Count(
+                DEFAULT_DIRECT_QUERY_GRAPH_NODES
+            ))
         );
         assert_eq!(
             error.details().get(&name("actual_saturated")),
@@ -2308,7 +2312,7 @@ plays:
             "batch_item_limit",
             "items",
             u64::MAX,
-            DEFAULT_QUERY_ITEMS,
+            DEFAULT_DIRECT_QUERY_ITEMS,
         ));
         assert_eq!(
             items.path(),
@@ -2323,7 +2327,7 @@ plays:
         );
         assert_eq!(
             items.details().get(&name("maximum")),
-            Some(&SdkDiagnosticDetailValue::Count(DEFAULT_QUERY_ITEMS))
+            Some(&SdkDiagnosticDetailValue::Count(DEFAULT_DIRECT_QUERY_ITEMS))
         );
         assert_eq!(
             items.details().get(&name("actual_saturated")),

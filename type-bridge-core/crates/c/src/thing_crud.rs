@@ -1493,7 +1493,8 @@ unsafe fn controlled_crud_call(
         // every output before delegating to the shared implementation.
         Some(unsafe { limits.read_unaligned() })
     };
-    let limits = parse_common_limits(descriptor)?.constrained_by(ceiling);
+    let limits = parse_common_limits(descriptor, type_bridge_orm::AnswerTransport::Direct)?
+        .constrained_by(ceiling);
     let cancellation = if cancellation.is_null() {
         AnswerCancellation::default()
     } else {

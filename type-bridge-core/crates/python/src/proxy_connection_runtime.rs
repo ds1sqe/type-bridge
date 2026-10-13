@@ -12,7 +12,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
 use type_bridge_orm::{
-    AnswerCancellation, ProviderRuntimeOwner, ProxyEndpoint, ProxyQueryConnection,
+    AnswerCancellation, AnswerTransport, ProviderRuntimeOwner, ProxyEndpoint, ProxyQueryConnection,
     QueryExecutionResourceLimits,
 };
 
@@ -84,10 +84,13 @@ impl PyProxyConnection {
                 })
             })
             .transpose()?;
+        // A proxy connection without explicit limits runs at the wire defaults,
+        // not the direct ones an omitted `QueryExecutionResourceLimits` takes.
         let limits = |value: Option<PyRef<'_, PyQueryExecutionResourceLimits>>| {
-            value.map_or_else(QueryExecutionResourceLimits::default, |limits| {
-                limits.inner()
-            })
+            value.map_or_else(
+                || QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy),
+                |limits| limits.inner(),
+            )
         };
         let connection_limits = limits(connection_limits);
         let answer_limits = limits(answer_limits);

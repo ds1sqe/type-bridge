@@ -7,31 +7,70 @@ use napi_derive::napi;
 use type_bridge_contract::diagnostic;
 use type_bridge_contract::limits;
 
-/// Default execution duration of a query terminal, in milliseconds.
+// Direct defaults: what an omitted `QueryExecutionResourceLimits` dimension
+// takes and what a direct session runs at.
+
+/// Direct-session default: execution duration of a query terminal, in milliseconds.
 #[napi]
-pub const DEFAULT_QUERY_TIMEOUT_MILLISECONDS: u64 =
-    type_bridge_orm::DEFAULT_QUERY_TIMEOUT_MILLISECONDS;
-/// Default provider/result item count.
+pub const DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS: u64 =
+    type_bridge_orm::DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS;
+/// Direct-session default: provider/result item count.
 #[napi]
-pub const DEFAULT_QUERY_ITEMS: u64 = type_bridge_orm::DEFAULT_QUERY_ITEMS;
-/// Default provider, reply, and projected payload bytes.
+pub const DEFAULT_DIRECT_QUERY_ITEMS: u64 = type_bridge_orm::DEFAULT_DIRECT_QUERY_ITEMS;
+/// Direct-session default: provider, reply, and projected payload bytes.
 #[napi]
-pub const DEFAULT_QUERY_BYTES: u64 = type_bridge_orm::DEFAULT_QUERY_BYTES;
-/// Default hydrated/projected graph-node count.
+pub const DEFAULT_DIRECT_QUERY_BYTES: u64 = type_bridge_orm::DEFAULT_DIRECT_QUERY_BYTES;
+/// Direct-session default: hydrated/projected graph-node count.
 #[napi]
-pub const DEFAULT_QUERY_GRAPH_NODES: u64 = type_bridge_orm::DEFAULT_QUERY_GRAPH_NODES;
-/// Default hydrated/projected attribute-value count.
+pub const DEFAULT_DIRECT_QUERY_GRAPH_NODES: u64 = type_bridge_orm::DEFAULT_DIRECT_QUERY_GRAPH_NODES;
+/// Direct-session default: hydrated/projected attribute-value count.
 #[napi]
-pub const DEFAULT_QUERY_ATTRIBUTE_VALUES: u64 = type_bridge_orm::DEFAULT_QUERY_ATTRIBUTE_VALUES;
-/// Default collection members, including reduction cells.
+pub const DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES: u64 =
+    type_bridge_orm::DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES;
+/// Direct-session default: collection members, including reduction cells.
 #[napi]
-pub const DEFAULT_QUERY_COLLECTION_MEMBERS: u64 = type_bridge_orm::DEFAULT_QUERY_COLLECTION_MEMBERS;
-/// Default relation-role-player references.
+pub const DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS: u64 =
+    type_bridge_orm::DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS;
+/// Direct-session default: relation-role-player references.
 #[napi]
-pub const DEFAULT_QUERY_ROLE_PLAYERS: u64 = type_bridge_orm::DEFAULT_QUERY_ROLE_PLAYERS;
-/// Default provider statements per terminal.
+pub const DEFAULT_DIRECT_QUERY_ROLE_PLAYERS: u64 =
+    type_bridge_orm::DEFAULT_DIRECT_QUERY_ROLE_PLAYERS;
+/// Direct-session default: provider statements per terminal.
 #[napi]
-pub const DEFAULT_QUERY_STATEMENTS: u64 = type_bridge_orm::DEFAULT_QUERY_STATEMENTS as u64;
+pub const DEFAULT_DIRECT_QUERY_STATEMENTS: u64 =
+    type_bridge_orm::DEFAULT_DIRECT_QUERY_STATEMENTS as u64;
+
+// Proxy (wire) defaults: what a proxy connection runs at when no answer
+// limits are given.
+
+/// Proxy (wire) default: execution duration of a query terminal, in milliseconds.
+#[napi]
+pub const DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS: u64 =
+    type_bridge_orm::DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS;
+/// Proxy (wire) default: provider/result item count.
+#[napi]
+pub const DEFAULT_PROXY_QUERY_ITEMS: u64 = type_bridge_orm::DEFAULT_PROXY_QUERY_ITEMS;
+/// Proxy (wire) default: provider, reply, and projected payload bytes.
+#[napi]
+pub const DEFAULT_PROXY_QUERY_BYTES: u64 = type_bridge_orm::DEFAULT_PROXY_QUERY_BYTES;
+/// Proxy (wire) default: hydrated/projected graph-node count.
+#[napi]
+pub const DEFAULT_PROXY_QUERY_GRAPH_NODES: u64 = type_bridge_orm::DEFAULT_PROXY_QUERY_GRAPH_NODES;
+/// Proxy (wire) default: hydrated/projected attribute-value count.
+#[napi]
+pub const DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES: u64 =
+    type_bridge_orm::DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES;
+/// Proxy (wire) default: collection members, including reduction cells.
+#[napi]
+pub const DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS: u64 =
+    type_bridge_orm::DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS;
+/// Proxy (wire) default: relation-role-player references.
+#[napi]
+pub const DEFAULT_PROXY_QUERY_ROLE_PLAYERS: u64 = type_bridge_orm::DEFAULT_PROXY_QUERY_ROLE_PLAYERS;
+/// Proxy (wire) default: provider statements per terminal.
+#[napi]
+pub const DEFAULT_PROXY_QUERY_STATEMENTS: u64 =
+    type_bridge_orm::DEFAULT_PROXY_QUERY_STATEMENTS as u64;
 
 /// Largest canonical artifact (declared schema, plan), in bytes.
 #[napi]
@@ -58,28 +97,49 @@ mod tests {
     use crate::NodeQueryExecutionResources;
 
     #[test]
-    fn omitted_answer_dimensions_take_the_exported_core_defaults() {
+    fn omitted_answer_dimensions_take_the_direct_defaults() {
+        use type_bridge_orm::{AnswerTransport, QueryExecutionResourceLimits};
+
         let resources =
             NodeQueryExecutionResources::new(None, None, None, None, None, None, None, None)
                 .expect("the core defaults are valid")
                 .inner();
+        assert_eq!(resources, QueryExecutionResourceLimits::default());
+        let direct = QueryExecutionResourceLimits::default_for(AnswerTransport::Direct);
         assert_eq!(
-            resources,
-            type_bridge_orm::QueryExecutionResourceLimits::default()
+            direct.timeout_milliseconds,
+            DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS
+        );
+        assert_eq!(direct.items, DEFAULT_DIRECT_QUERY_ITEMS);
+        assert_eq!(direct.bytes, DEFAULT_DIRECT_QUERY_BYTES);
+        assert_eq!(direct.graph_nodes, DEFAULT_DIRECT_QUERY_GRAPH_NODES);
+        assert_eq!(
+            direct.attribute_values,
+            DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES
         );
         assert_eq!(
-            resources.timeout_milliseconds,
-            DEFAULT_QUERY_TIMEOUT_MILLISECONDS
+            direct.collection_members,
+            DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS
         );
-        assert_eq!(resources.items, DEFAULT_QUERY_ITEMS);
-        assert_eq!(resources.bytes, DEFAULT_QUERY_BYTES);
-        assert_eq!(resources.graph_nodes, DEFAULT_QUERY_GRAPH_NODES);
-        assert_eq!(resources.attribute_values, DEFAULT_QUERY_ATTRIBUTE_VALUES);
+        assert_eq!(direct.role_players, DEFAULT_DIRECT_QUERY_ROLE_PLAYERS);
         assert_eq!(
-            resources.collection_members,
-            DEFAULT_QUERY_COLLECTION_MEMBERS
+            u64::from(direct.statements),
+            DEFAULT_DIRECT_QUERY_STATEMENTS
         );
-        assert_eq!(resources.role_players, DEFAULT_QUERY_ROLE_PLAYERS);
-        assert_eq!(u64::from(resources.statements), DEFAULT_QUERY_STATEMENTS);
+        let proxy = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
+        assert_eq!(
+            proxy.timeout_milliseconds,
+            DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS
+        );
+        assert_eq!(proxy.items, DEFAULT_PROXY_QUERY_ITEMS);
+        assert_eq!(proxy.bytes, DEFAULT_PROXY_QUERY_BYTES);
+        assert_eq!(proxy.graph_nodes, DEFAULT_PROXY_QUERY_GRAPH_NODES);
+        assert_eq!(proxy.attribute_values, DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES);
+        assert_eq!(
+            proxy.collection_members,
+            DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS
+        );
+        assert_eq!(proxy.role_players, DEFAULT_PROXY_QUERY_ROLE_PLAYERS);
+        assert_eq!(u64::from(proxy.statements), DEFAULT_PROXY_QUERY_STATEMENTS);
     }
 }

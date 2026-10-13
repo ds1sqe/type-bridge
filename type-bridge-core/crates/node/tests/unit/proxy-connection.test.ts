@@ -6,6 +6,7 @@ import path = require("node:path");
 import test = require("node:test");
 
 import { QueryV2Authority } from "../../typescript/index.js";
+import { loadNative } from "../../typescript/native.js";
 import {
   ProxyConnection,
   QueryExecutionResourceLimits,
@@ -120,6 +121,38 @@ test("a pinned advertisement connects without reaching the endpoint", async () =
   });
   assert.ok(connection instanceof ProxyConnection);
   assert.ok(Object.isFrozen(connection));
+  assert.equal(connection.answerLimits.items, 8n);
+});
+
+test("a proxy connection without answer limits runs at the proxy defaults", async () => {
+  const connection = await ProxyConnection.connect(authority(), await closedEndpoint(), {
+    advertisement: advertisement(),
+  });
+  const native = loadNative();
+  const limits = connection.answerLimits;
+  assert.deepEqual(
+    [
+      limits.timeoutMilliseconds,
+      limits.items,
+      limits.bytes,
+      limits.graphNodes,
+      limits.attributeValues,
+      limits.collectionMembers,
+      limits.rolePlayers,
+      limits.statements,
+    ],
+    [
+      native.DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
+      native.DEFAULT_PROXY_QUERY_ITEMS,
+      native.DEFAULT_PROXY_QUERY_BYTES,
+      native.DEFAULT_PROXY_QUERY_GRAPH_NODES,
+      native.DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES,
+      native.DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS,
+      native.DEFAULT_PROXY_QUERY_ROLE_PLAYERS,
+      native.DEFAULT_PROXY_QUERY_STATEMENTS,
+    ],
+  );
+  assert.notEqual(limits.items, new QueryExecutionResourceLimits().items);
 });
 
 test("proxy connect rejects JavaScript type confusion before native work", async () => {

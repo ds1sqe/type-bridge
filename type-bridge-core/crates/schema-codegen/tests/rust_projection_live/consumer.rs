@@ -20,7 +20,7 @@ use type_bridge::value::{
 use type_bridge::{
     AnswerCancellation, Connection, ConnectionOptions, Database, DirectConnectionPolicy, Error,
     ErrorCategory, ErrorDetail, TlsPolicy,
-    ErrorPathSegment, DEFAULT_QUERY_ITEMS, PageOptions, ProjectedManagerComparison,
+    ErrorPathSegment, DEFAULT_DIRECT_QUERY_ITEMS, PageOptions, ProjectedManagerComparison,
     QueryDiagnosticCategory, QueryDiagnosticPathKind, QueryExecutionResourceLimits, QuerySession,
     ProxyConnectionPolicy, ProxyDatabase, ProxyEndpoint, ProxyExchange, RowsOptions, aggregate,
 };
@@ -7346,7 +7346,7 @@ async fn generated_data_model_runtime_v3_live() {
         .await
         .expect_err("borrowed provider failure poisons transaction");
     assert_eq!(first_cause.code(), Some("provider_operation_failed"));
-    let limit = usize::try_from(DEFAULT_QUERY_ITEMS).expect("query item limit fits usize");
+    let limit = usize::try_from(DEFAULT_DIRECT_QUERY_ITEMS).expect("query item limit fits usize");
     let excessive = (0..=limit)
         .map(|index| ownership_edge_person_input(&format!("data-excessive-{index}"), &[], None))
         .collect();

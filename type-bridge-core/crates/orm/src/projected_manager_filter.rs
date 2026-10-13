@@ -25,7 +25,7 @@ use crate::projected_query::{
     ProjectedQueryOrigin, materialize_projected_manager_things_with_budget,
 };
 use crate::query_execution_limits::{
-    DEFAULT_QUERY_ATTRIBUTE_VALUES, DEFAULT_QUERY_BYTES, QueryExecutionDeadline,
+    DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES, DEFAULT_PROXY_QUERY_BYTES, QueryExecutionDeadline,
     QueryExecutionResourceLimits,
 };
 use crate::runtime_projection::InstalledRuntimeProjection;
@@ -272,29 +272,30 @@ impl ProjectedManagerFilter {
                     "The manager filter byte counter overflowed",
                     predicate_collection_path(&self.model),
                     u64::MAX,
-                    DEFAULT_QUERY_BYTES,
+                    DEFAULT_PROXY_QUERY_BYTES,
                     true,
                 )
             })?;
-        if u64::try_from(next_bytes).unwrap_or(u64::MAX) > DEFAULT_QUERY_BYTES {
+        if u64::try_from(next_bytes).unwrap_or(u64::MAX) > DEFAULT_PROXY_QUERY_BYTES {
             return Err(resource_limit(
                 "manager_filter_byte_limit",
                 "The manager filter exceeds the canonical byte ceiling",
                 predicate_collection_path(&self.model),
                 u64::try_from(next_bytes).unwrap_or(u64::MAX),
-                DEFAULT_QUERY_BYTES,
+                DEFAULT_PROXY_QUERY_BYTES,
                 true,
             ));
         }
         let next_attribute_values = self.measure.attribute_values.saturating_add(1);
-        if u64::try_from(next_attribute_values).unwrap_or(u64::MAX) > DEFAULT_QUERY_ATTRIBUTE_VALUES
+        if u64::try_from(next_attribute_values).unwrap_or(u64::MAX)
+            > DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES
         {
             return Err(resource_limit(
                 "manager_filter_attribute_value_limit",
                 "The manager filter exceeds the canonical literal ceiling",
                 predicate_collection_path(&self.model),
                 u64::try_from(next_attribute_values).unwrap_or(u64::MAX),
-                DEFAULT_QUERY_ATTRIBUTE_VALUES,
+                DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES,
                 false,
             ));
         }

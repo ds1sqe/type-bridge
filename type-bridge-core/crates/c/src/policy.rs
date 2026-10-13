@@ -6,10 +6,7 @@ use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
 };
 use type_bridge_orm::{
-    AnswerCancellation, DEFAULT_QUERY_ATTRIBUTE_VALUES, DEFAULT_QUERY_BYTES,
-    DEFAULT_QUERY_COLLECTION_MEMBERS, DEFAULT_QUERY_GRAPH_NODES, DEFAULT_QUERY_ITEMS,
-    DEFAULT_QUERY_ROLE_PLAYERS, DEFAULT_QUERY_STATEMENTS, DEFAULT_QUERY_TIMEOUT_MILLISECONDS,
-    QueryExecutionDeadline, QueryExecutionResourceLimits,
+    AnswerCancellation, AnswerTransport, QueryExecutionDeadline, QueryExecutionResourceLimits,
 };
 
 use crate::abi::TypeBridgeByteView;
@@ -75,31 +72,19 @@ fn invalid_limits() -> SdkExecutionDiagnostic {
     )
 }
 
-fn default_limits_descriptor() -> TypeBridgeQueryExecutionLimitsV1 {
-    TypeBridgeQueryExecutionLimitsV1 {
-        struct_size: size_of::<TypeBridgeQueryExecutionLimitsV1>() as u32,
-        version: LIMITS_VERSION,
-        timeout_milliseconds: DEFAULT_QUERY_TIMEOUT_MILLISECONDS,
-        items: DEFAULT_QUERY_ITEMS,
-        bytes: DEFAULT_QUERY_BYTES,
-        graph_nodes: DEFAULT_QUERY_GRAPH_NODES,
-        attribute_values: DEFAULT_QUERY_ATTRIBUTE_VALUES,
-        collection_members: DEFAULT_QUERY_COLLECTION_MEMBERS,
-        role_players: DEFAULT_QUERY_ROLE_PLAYERS,
-        statements: DEFAULT_QUERY_STATEMENTS,
-        reserved0: 0,
-        reserved: [0; 4],
-    }
-}
-
 /// Parse one optional frozen limits descriptor.
 ///
-/// A dimension may tighten or raise its default. A value above a
-/// dimension's supported maximum is refused, never clamped.
+/// A missing descriptor takes `transport`'s defaults: a direct database,
+/// transaction, or call the direct defaults, a remote context the proxy
+/// (wire) defaults. A dimension may tighten or raise its default. A value
+/// above a dimension's supported maximum is refused, never clamped.
 pub(crate) fn parse_common_limits(
     value: Option<TypeBridgeQueryExecutionLimitsV1>,
+    transport: AnswerTransport,
 ) -> Result<QueryExecutionResourceLimits, SdkExecutionDiagnostic> {
-    let value = value.unwrap_or_else(default_limits_descriptor);
+    let Some(value) = value else {
+        return Ok(QueryExecutionResourceLimits::default_for(transport));
+    };
     if value.struct_size as usize != size_of::<TypeBridgeQueryExecutionLimitsV1>()
         || value.version != LIMITS_VERSION
         || value.reserved0 != 0
@@ -121,12 +106,14 @@ pub(crate) fn parse_common_limits(
     .map_err(|_| invalid_limits())
 }
 
-/// Parse one optional limits descriptor and capture its absolute deadline.
+/// Parse one optional per-call limits descriptor and capture its absolute
+/// deadline. A missing descriptor takes the direct defaults; a proxy target
+/// constrains them by its connection ceiling at execution.
 pub(crate) fn parse_limits(
     value: Option<TypeBridgeQueryExecutionLimitsV1>,
     cancellation: &AnswerCancellation,
 ) -> Result<ParsedLimits, SdkExecutionDiagnostic> {
-    let resources = parse_common_limits(value)?;
+    let resources = parse_common_limits(value, AnswerTransport::Direct)?;
     let deadline = QueryExecutionDeadline::for_limits(resources);
     deadline.check(cancellation)?;
     Ok(ParsedLimits {
@@ -140,6 +127,21 @@ mod tests {
     use std::mem::{offset_of, size_of};
 
     use super::*;
+
+    #[test]
+    fn a_missing_descriptor_takes_its_transports_defaults() {
+        let direct = parse_common_limits(None, AnswerTransport::Direct).expect("direct defaults");
+        let proxy = parse_common_limits(None, AnswerTransport::Proxy).expect("proxy defaults");
+        assert_eq!(direct, QueryExecutionResourceLimits::default());
+        assert_eq!(direct.items, type_bridge_orm::DEFAULT_DIRECT_QUERY_ITEMS);
+        assert_eq!(direct.bytes, type_bridge_orm::DEFAULT_DIRECT_QUERY_BYTES);
+        assert_eq!(proxy.items, type_bridge_orm::DEFAULT_PROXY_QUERY_ITEMS);
+        assert_eq!(proxy.bytes, type_bridge_orm::DEFAULT_PROXY_QUERY_BYTES);
+        assert_ne!(direct, proxy);
+        // A direct session's per-call limits default to the direct policy.
+        let call = parse_limits(None, &AnswerCancellation::default()).expect("call defaults");
+        assert_eq!(call.resources, direct);
+    }
 
     #[cfg(target_pointer_width = "64")]
     #[test]

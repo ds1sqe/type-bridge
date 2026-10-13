@@ -36,9 +36,10 @@ use type_bridge_orm::{
 };
 #[cfg(test)]
 use type_bridge_orm::{
-    DEFAULT_QUERY_ATTRIBUTE_VALUES, DEFAULT_QUERY_BYTES, DEFAULT_QUERY_COLLECTION_MEMBERS,
-    DEFAULT_QUERY_GRAPH_NODES, DEFAULT_QUERY_ITEMS, DEFAULT_QUERY_ROLE_PLAYERS,
-    DEFAULT_QUERY_STATEMENTS, DEFAULT_QUERY_TIMEOUT_MILLISECONDS,
+    DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES, DEFAULT_PROXY_QUERY_BYTES,
+    DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS, DEFAULT_PROXY_QUERY_GRAPH_NODES,
+    DEFAULT_PROXY_QUERY_ITEMS, DEFAULT_PROXY_QUERY_ROLE_PLAYERS, DEFAULT_PROXY_QUERY_STATEMENTS,
+    DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
 };
 
 use crate::abi::{
@@ -4832,10 +4833,12 @@ pub unsafe extern "C" fn type_bridge_query_remote_context_open_v1(
         if advertisement.length > MAX_REMOTE_ENVELOPE_BYTES {
             return return_execution_error(remote_advertisement_limit(), out_diagnostics);
         }
-        let common = match parse_common_limits(limits_snapshot) {
-            Ok(value) => value,
-            Err(error) => return return_execution_error(error, out_diagnostics),
-        };
+        // A remote context opened without limits runs at the proxy (wire) defaults.
+        let common =
+            match parse_common_limits(limits_snapshot, type_bridge_orm::AnswerTransport::Proxy) {
+                Ok(value) => value,
+                Err(error) => return return_execution_error(error, out_diagnostics),
+            };
         let reservation = match ReservedBox::try_new(AllocationSite::QueryRemoteContextHandle) {
             Ok(value) => value,
             Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
@@ -7458,6 +7461,26 @@ mod tests {
         context
     }
 
+    #[test]
+    fn a_remote_context_without_limits_runs_at_the_proxy_defaults() {
+        let package = package("remotecontextdefaults");
+        let remote = remote_fixture(0x73);
+        // SAFETY: package and advertisement remain immutable.
+        let mut context = unsafe { open_remote_context(&package, &remote.advertisement) };
+        // SAFETY: the context was just opened and is closed below.
+        let ceiling = unsafe { &*context }.state.connection.answer_limits();
+        assert_eq!(
+            ceiling,
+            QueryExecutionResourceLimits::default_for(type_bridge_orm::AnswerTransport::Proxy),
+        );
+        assert_ne!(ceiling, QueryExecutionResourceLimits::default());
+        assert_eq!(
+            // SAFETY: the context is owned by this test.
+            unsafe { type_bridge_query_remote_context_close(&mut context) },
+            TypeBridgeStatus::Ok,
+        );
+    }
+
     unsafe fn prepare_remote(
         context: *const TypeBridgeQueryRemoteContext,
         terminal: *const TypeBridgeQueryTerminal,
@@ -8327,14 +8350,14 @@ mod tests {
         TypeBridgeQueryExecutionLimitsV1 {
             struct_size: size_of::<TypeBridgeQueryExecutionLimitsV1>() as u32,
             version: DESCRIPTOR_VERSION,
-            timeout_milliseconds: DEFAULT_QUERY_TIMEOUT_MILLISECONDS,
-            items: DEFAULT_QUERY_ITEMS,
-            bytes: DEFAULT_QUERY_BYTES,
-            graph_nodes: DEFAULT_QUERY_GRAPH_NODES,
-            attribute_values: DEFAULT_QUERY_ATTRIBUTE_VALUES,
-            collection_members: DEFAULT_QUERY_COLLECTION_MEMBERS,
-            role_players: DEFAULT_QUERY_ROLE_PLAYERS,
-            statements: DEFAULT_QUERY_STATEMENTS,
+            timeout_milliseconds: DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
+            items: DEFAULT_PROXY_QUERY_ITEMS,
+            bytes: DEFAULT_PROXY_QUERY_BYTES,
+            graph_nodes: DEFAULT_PROXY_QUERY_GRAPH_NODES,
+            attribute_values: DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES,
+            collection_members: DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS,
+            role_players: DEFAULT_PROXY_QUERY_ROLE_PLAYERS,
+            statements: DEFAULT_PROXY_QUERY_STATEMENTS,
             reserved0: 0,
             reserved: [0; 4],
         }
@@ -12054,13 +12077,13 @@ mod tests {
         // SAFETY: fixture owns exact generated handles.
         let built = unsafe { BuiltQuery::open(&package, TERMINAL_FIRST, ROWS_BOUNDED_MANY) };
         let ceiling = QueryExecutionResourceLimits::tightened(
-            DEFAULT_QUERY_TIMEOUT_MILLISECONDS,
-            DEFAULT_QUERY_ITEMS,
-            DEFAULT_QUERY_BYTES,
-            DEFAULT_QUERY_GRAPH_NODES,
-            DEFAULT_QUERY_ATTRIBUTE_VALUES,
-            DEFAULT_QUERY_COLLECTION_MEMBERS,
-            DEFAULT_QUERY_ROLE_PLAYERS,
+            DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
+            DEFAULT_PROXY_QUERY_ITEMS,
+            DEFAULT_PROXY_QUERY_BYTES,
+            DEFAULT_PROXY_QUERY_GRAPH_NODES,
+            DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES,
+            DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS,
+            DEFAULT_PROXY_QUERY_ROLE_PLAYERS,
             0,
         );
         let database = fake_database_with_answer_ceiling(&package, Vec::new(), Vec::new(), ceiling);
@@ -12182,7 +12205,7 @@ mod tests {
             )
         };
         let raised = TypeBridgeQueryExecutionLimitsV1 {
-            items: DEFAULT_QUERY_ITEMS * 2,
+            items: DEFAULT_PROXY_QUERY_ITEMS * 2,
             ..default_limits()
         };
         let one_item = TypeBridgeQueryExecutionLimitsV1 {
@@ -12272,26 +12295,27 @@ mod tests {
         // A dimension may be raised past its default and is kept as given.
         let raised = {
             let mut value = default_limits();
-            value.timeout_milliseconds = DEFAULT_QUERY_TIMEOUT_MILLISECONDS + 1;
-            value.items = DEFAULT_QUERY_ITEMS + 1;
-            value.bytes = DEFAULT_QUERY_BYTES + 1;
-            value.graph_nodes = DEFAULT_QUERY_GRAPH_NODES + 1;
-            value.attribute_values = DEFAULT_QUERY_ATTRIBUTE_VALUES + 1;
-            value.collection_members = DEFAULT_QUERY_COLLECTION_MEMBERS + 1;
-            value.role_players = DEFAULT_QUERY_ROLE_PLAYERS + 1;
+            value.timeout_milliseconds = DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS + 1;
+            value.items = DEFAULT_PROXY_QUERY_ITEMS + 1;
+            value.bytes = DEFAULT_PROXY_QUERY_BYTES + 1;
+            value.graph_nodes = DEFAULT_PROXY_QUERY_GRAPH_NODES + 1;
+            value.attribute_values = DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES + 1;
+            value.collection_members = DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS + 1;
+            value.role_players = DEFAULT_PROXY_QUERY_ROLE_PLAYERS + 1;
             value
         };
         assert_eq!(
-            parse_common_limits(Some(raised)).expect("a raised policy is admitted"),
+            parse_common_limits(Some(raised), type_bridge_orm::AnswerTransport::Direct)
+                .expect("a raised policy is admitted"),
             QueryExecutionResourceLimits {
-                timeout_milliseconds: DEFAULT_QUERY_TIMEOUT_MILLISECONDS + 1,
-                items: DEFAULT_QUERY_ITEMS + 1,
-                bytes: DEFAULT_QUERY_BYTES + 1,
-                graph_nodes: DEFAULT_QUERY_GRAPH_NODES + 1,
-                attribute_values: DEFAULT_QUERY_ATTRIBUTE_VALUES + 1,
-                collection_members: DEFAULT_QUERY_COLLECTION_MEMBERS + 1,
-                role_players: DEFAULT_QUERY_ROLE_PLAYERS + 1,
-                statements: DEFAULT_QUERY_STATEMENTS,
+                timeout_milliseconds: DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS + 1,
+                items: DEFAULT_PROXY_QUERY_ITEMS + 1,
+                bytes: DEFAULT_PROXY_QUERY_BYTES + 1,
+                graph_nodes: DEFAULT_PROXY_QUERY_GRAPH_NODES + 1,
+                attribute_values: DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES + 1,
+                collection_members: DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS + 1,
+                role_players: DEFAULT_PROXY_QUERY_ROLE_PLAYERS + 1,
+                statements: DEFAULT_PROXY_QUERY_STATEMENTS,
             },
         );
         // Past a supported maximum it is refused, never clamped.
@@ -12309,7 +12333,7 @@ mod tests {
         ];
         for refused in &unsupported {
             assert_eq!(
-                parse_common_limits(Some(*refused))
+                parse_common_limits(Some(*refused), type_bridge_orm::AnswerTransport::Direct)
                     .expect_err("a value past its supported maximum")
                     .code()
                     .as_str(),

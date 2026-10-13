@@ -1059,8 +1059,14 @@ unsafe fn preflight_database_config_v2(
             "The database configuration layout is invalid",
         ));
     }
-    let connection_limits = parse_common_limits(Some(config.connection_limits))?;
-    let answer_limits = parse_common_limits(Some(config.answer_limits))?;
+    let connection_limits = parse_common_limits(
+        Some(config.connection_limits),
+        type_bridge_orm::AnswerTransport::Direct,
+    )?;
+    let answer_limits = parse_common_limits(
+        Some(config.answer_limits),
+        type_bridge_orm::AnswerTransport::Direct,
+    )?;
     let deadline = QueryExecutionDeadline::for_limits(connection_limits);
     Ok(DatabaseConfigV2Preflight {
         config,
@@ -1079,7 +1085,7 @@ unsafe fn parse_call_limits(
         // SAFETY: unaligned reads admit hostile-but-readable C descriptor storage.
         Some(unsafe { limits.read_unaligned() })
     };
-    parse_common_limits(value)
+    parse_common_limits(value, type_bridge_orm::AnswerTransport::Direct)
 }
 
 unsafe fn copied_custom_root(
@@ -5325,14 +5331,14 @@ entities:
         assert!(cancellation.is_cancelled());
         assert_eq!(REQUIRED_SEMANTIC_PROFILE, b"typedb-3.12.1/v1");
         let limits = QueryExecutionResourceLimits::tightened(
-            type_bridge_orm::DEFAULT_QUERY_TIMEOUT_MILLISECONDS + 1,
-            type_bridge_orm::DEFAULT_QUERY_ITEMS + 1,
-            type_bridge_orm::DEFAULT_QUERY_BYTES + 1,
-            type_bridge_orm::DEFAULT_QUERY_GRAPH_NODES + 1,
-            type_bridge_orm::DEFAULT_QUERY_ATTRIBUTE_VALUES + 1,
-            type_bridge_orm::DEFAULT_QUERY_COLLECTION_MEMBERS + 1,
-            type_bridge_orm::DEFAULT_QUERY_ROLE_PLAYERS + 1,
-            type_bridge_orm::DEFAULT_QUERY_STATEMENTS + 1,
+            type_bridge_orm::DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS + 1,
+            type_bridge_orm::DEFAULT_DIRECT_QUERY_ITEMS + 1,
+            type_bridge_orm::DEFAULT_DIRECT_QUERY_BYTES + 1,
+            type_bridge_orm::DEFAULT_DIRECT_QUERY_GRAPH_NODES + 1,
+            type_bridge_orm::DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES + 1,
+            type_bridge_orm::DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS + 1,
+            type_bridge_orm::DEFAULT_DIRECT_QUERY_ROLE_PLAYERS + 1,
+            type_bridge_orm::DEFAULT_DIRECT_QUERY_STATEMENTS + 1,
         );
         assert_eq!(limits, QueryExecutionResourceLimits::default());
 

@@ -262,6 +262,10 @@ pub struct NodeQueryExecutionResources {
 }
 
 impl NodeQueryExecutionResources {
+    pub(crate) const fn from_inner(inner: QueryExecutionResourceLimits) -> Self {
+        Self { inner }
+    }
+
     pub(crate) const fn inner(&self) -> QueryExecutionResourceLimits {
         self.inner
     }
@@ -3568,14 +3572,14 @@ plays:
             })
         };
         let resources = NodeQueryExecutionResources::new(
-            wide(type_bridge_orm::DEFAULT_QUERY_TIMEOUT_MILLISECONDS + 1),
-            wide(type_bridge_orm::DEFAULT_QUERY_ITEMS + 1),
-            wide(type_bridge_orm::DEFAULT_QUERY_BYTES + 1),
-            wide(type_bridge_orm::DEFAULT_QUERY_GRAPH_NODES + 1),
-            wide(type_bridge_orm::DEFAULT_QUERY_ATTRIBUTE_VALUES + 1),
-            wide(type_bridge_orm::DEFAULT_QUERY_COLLECTION_MEMBERS + 1),
-            wide(type_bridge_orm::DEFAULT_QUERY_ROLE_PLAYERS + 1),
-            wide(u64::from(type_bridge_orm::DEFAULT_QUERY_STATEMENTS)),
+            wide(type_bridge_orm::DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS + 1),
+            wide(type_bridge_orm::DEFAULT_DIRECT_QUERY_ITEMS + 1),
+            wide(type_bridge_orm::DEFAULT_DIRECT_QUERY_BYTES + 1),
+            wide(type_bridge_orm::DEFAULT_DIRECT_QUERY_GRAPH_NODES + 1),
+            wide(type_bridge_orm::DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES + 1),
+            wide(type_bridge_orm::DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS + 1),
+            wide(type_bridge_orm::DEFAULT_DIRECT_QUERY_ROLE_PLAYERS + 1),
+            wide(u64::from(type_bridge_orm::DEFAULT_DIRECT_QUERY_STATEMENTS)),
         )
         .unwrap();
         let default = QueryExecutionResourceLimits::default();

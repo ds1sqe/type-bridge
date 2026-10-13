@@ -12,7 +12,8 @@ use std::sync::Arc;
 use napi::bindgen_prelude::{Array, Env, JsValue, Object, Reference, Unknown};
 use napi_derive::napi;
 use type_bridge_orm::{
-    ProviderRuntimeOwner, ProxyEndpoint, ProxyQueryConnection, QueryTarget, ValidatedMatchRequest,
+    AnswerTransport, ProviderRuntimeOwner, ProxyEndpoint, ProxyQueryConnection,
+    QueryExecutionResourceLimits, QueryTarget, ValidatedMatchRequest,
 };
 
 use crate::match_runtime::{
@@ -70,12 +71,13 @@ impl NodeProxyConnection {
             .map(|advertisement| owned_advertisement(&env, advertisement))
             .transpose()?;
         let authority = authority.authority();
-        let connection_limits = connection_limits
-            .map(NodeQueryExecutionResources::inner)
-            .unwrap_or_default();
-        let answer_limits = answer_limits
-            .map(NodeQueryExecutionResources::inner)
-            .unwrap_or_default();
+        // A proxy connection without explicit limits runs at the wire defaults,
+        // not the direct ones an omitted `QueryExecutionResourceLimits` takes.
+        let proxy_default = || QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
+        let connection_limits =
+            connection_limits.map_or_else(proxy_default, NodeQueryExecutionResources::inner);
+        let answer_limits =
+            answer_limits.map_or_else(proxy_default, NodeQueryExecutionResources::inner);
         let cancellation = cancellation
             .map(NodeQueryCancellation::inner)
             .unwrap_or_default();
@@ -99,6 +101,12 @@ impl NodeProxyConnection {
                 runtime: owner,
             })
         })
+    }
+
+    /// The ceiling every terminal on this connection is constrained by.
+    #[napi(getter)]
+    pub fn answer_limits(&self) -> NodeQueryExecutionResources {
+        NodeQueryExecutionResources::from_inner(self.connection.answer_limits())
     }
 
     /// Run a selected-row or exactly-one query.

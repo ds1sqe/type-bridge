@@ -685,15 +685,26 @@ class QueryLimits:
     def names() -> list[str]: ...
     def get(self, name: str) -> int: ...
 
-# Answer-policy defaults a `QueryExecutionResourceLimits()` dimension takes.
-DEFAULT_QUERY_TIMEOUT_MILLISECONDS: Final[int]
-DEFAULT_QUERY_ITEMS: Final[int]
-DEFAULT_QUERY_BYTES: Final[int]
-DEFAULT_QUERY_GRAPH_NODES: Final[int]
-DEFAULT_QUERY_ATTRIBUTE_VALUES: Final[int]
-DEFAULT_QUERY_COLLECTION_MEMBERS: Final[int]
-DEFAULT_QUERY_ROLE_PLAYERS: Final[int]
-DEFAULT_QUERY_STATEMENTS: Final[int]
+# Direct answer-policy defaults: what a `QueryExecutionResourceLimits()`
+# dimension takes when omitted, and what a direct session runs at.
+DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS: Final[int]
+DEFAULT_DIRECT_QUERY_ITEMS: Final[int]
+DEFAULT_DIRECT_QUERY_BYTES: Final[int]
+DEFAULT_DIRECT_QUERY_GRAPH_NODES: Final[int]
+DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES: Final[int]
+DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS: Final[int]
+DEFAULT_DIRECT_QUERY_ROLE_PLAYERS: Final[int]
+DEFAULT_DIRECT_QUERY_STATEMENTS: Final[int]
+# Proxy (wire) answer-policy defaults a proxy connection runs at when no
+# answer limits are given.
+DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS: Final[int]
+DEFAULT_PROXY_QUERY_ITEMS: Final[int]
+DEFAULT_PROXY_QUERY_BYTES: Final[int]
+DEFAULT_PROXY_QUERY_GRAPH_NODES: Final[int]
+DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES: Final[int]
+DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS: Final[int]
+DEFAULT_PROXY_QUERY_ROLE_PLAYERS: Final[int]
+DEFAULT_PROXY_QUERY_STATEMENTS: Final[int]
 
 @final
 class QueryExecutionResourceLimits:

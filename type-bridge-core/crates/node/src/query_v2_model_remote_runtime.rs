@@ -12,9 +12,9 @@ use napi_derive::napi;
 use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
-    AnswerCancellation, PendingRemoteModelQueryV2, ProxyQueryConnection, QueryExecutionDeadline,
-    QueryExecutionResourceLimits, RemoteModelQueryV2Error, RowCardinality, ValidatedMatchRequest,
-    Window, lower_remote_query_diagnostic, validate_order_term_count,
+    AnswerCancellation, AnswerTransport, PendingRemoteModelQueryV2, ProxyQueryConnection,
+    QueryExecutionDeadline, QueryExecutionResourceLimits, RemoteModelQueryV2Error, RowCardinality,
+    ValidatedMatchRequest, Window, lower_remote_query_diagnostic, validate_order_term_count,
 };
 
 use crate::match_runtime::{
@@ -196,7 +196,8 @@ impl NodePendingRemoteModelQuery {
 
 /// Build the remote context from the common direct/remote resource and
 /// cancellation owners. `answer_limits` is the caller-exchanged connection's
-/// ceiling; left out, the session's own resources are the ceiling.
+/// ceiling; left out, the proxy (wire) defaults are the ceiling, as for a
+/// `ProxyConnection` opened without answer limits.
 #[napi(js_name = "queryV2RemoteModelContextWithResources")]
 pub fn query_v2_remote_model_context_with_resources(
     env: Env,
@@ -211,7 +212,10 @@ pub fn query_v2_remote_model_context_with_resources(
         &env,
         authority,
         advertisement,
-        answer_limits.map_or(resources, NodeQueryExecutionResources::inner),
+        answer_limits.map_or_else(
+            || QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy),
+            NodeQueryExecutionResources::inner,
+        ),
         resources,
         cancellation.inner(),
     )

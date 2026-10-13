@@ -257,11 +257,14 @@ pub struct V2Section {
 
 impl V2Section {
     /// Resolve the configured answer ceilings, refusing unknown names and
-    /// values past a dimension's supported maximum.
+    /// values past a dimension's supported maximum. An unnamed dimension
+    /// keeps the proxy (wire) default, so an unconfigured server advertises
+    /// no answer limit.
     pub fn resolved_answer_limits(
         &self,
     ) -> Result<type_bridge_orm::QueryExecutionResourceLimits, String> {
         type_bridge_orm::QueryExecutionResourceLimits::from_overrides(
+            type_bridge_orm::AnswerTransport::Proxy,
             self.answer_limits
                 .iter()
                 .map(|(name, value)| (name.as_str(), *value)),
@@ -3452,7 +3455,7 @@ enabled = ["audit-log", "rate-limiter", "custom"]
 
     #[test]
     fn v2_answer_limits_resolve_by_name_and_refuse_unknown_or_unsupported_values() {
-        use type_bridge_orm::QueryExecutionResourceLimits;
+        use type_bridge_orm::{AnswerTransport, QueryExecutionResourceLimits};
 
         let section = |entries: &[(&str, u64)]| V2Section {
             answer_limits: entries
@@ -3461,17 +3464,31 @@ enabled = ["audit-log", "rate-limiter", "custom"]
                 .collect(),
             ..V2Section::default()
         };
-        assert_eq!(
-            section(&[]).resolved_answer_limits().expect("defaults"),
-            QueryExecutionResourceLimits::default()
+        let proxy = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
+        let defaults = section(&[]).resolved_answer_limits().expect("defaults");
+        assert_eq!(defaults, proxy);
+        assert!(
+            defaults.overrides().is_empty(),
+            "a default-configured server advertises an empty answer_limits map"
+        );
+        assert!(
+            V2Section::default()
+                .resolved_answer_limits()
+                .expect("defaults")
+                .overrides()
+                .is_empty()
         );
         let raised = section(&[("items", 1_000_000), ("bytes", 1 << 30)])
             .resolved_answer_limits()
             .expect("raised ceilings");
         assert_eq!((raised.items, raised.bytes), (1_000_000, 1 << 30));
+        assert_eq!(raised.graph_nodes, proxy.graph_nodes);
         assert_eq!(
-            raised.graph_nodes,
-            QueryExecutionResourceLimits::default().graph_nodes
+            raised.overrides(),
+            std::collections::BTreeMap::from([
+                ("bytes".to_owned(), 1 << 30),
+                ("items".to_owned(), 1_000_000),
+            ])
         );
 
         assert!(

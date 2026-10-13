@@ -23,7 +23,9 @@ use crate::match_request::{
     Capability, MatchError, MatchErrorCategory, MatchErrorPathSegment, ValidatedMatchRequest,
     ValidatedMatchResult,
 };
-use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
+use crate::query_execution_limits::{
+    AnswerTransport, QueryExecutionDeadline, QueryExecutionResourceLimits,
+};
 use crate::query_v2::failure;
 use crate::query_v2_adapter::adapt_match_request;
 use crate::query_v2_prepared::{
@@ -212,7 +214,8 @@ fn answer_limit_refusal(
         refusal.code().as_str().to_owned()
     };
     let held = QueryExecutionResourceLimits::from_remote(held);
-    let Some((limit, maximum, source)) = held.refusal_details(&released) else {
+    let Some((limit, maximum, source)) = held.refusal_details(AnswerTransport::Proxy, &released)
+    else {
         return refusal;
     };
     let wanted = QueryExecutionResourceLimits::from_remote(wanted);

@@ -13,7 +13,7 @@
     "decision": "no-change",
     "version": "1.6.0",
     "contract_path": "tests/contracts/c-abi.json",
-    "contract_sha256": "e14689c0a20db5f352ef01f9cf6c79ebdb4b011a810095c377e9a50c369cf1bd",
+    "contract_sha256": "0536db305571c66257da539dfabf694a0b7f6859af70fdb19ca09ee32077d037",
     "static_linkage": "unsupported",
     "shared_linkage": "artifact"
   },
@@ -194,7 +194,7 @@
     },
     {
       "path": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-      "sha256": "d51944f483b7c94db5bfc4adce69cb25a7ea1817b5252fb4aed54c41831f5382"
+      "sha256": "635e0094bbdfaae89ec285fad4ad30f86d99fccdbee61991240104822fa139c9"
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/CMakeLists.txt.in",

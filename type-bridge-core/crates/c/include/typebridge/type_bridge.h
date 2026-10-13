@@ -174,6 +174,22 @@ typedef struct type_bridge_query_remote_claim type_bridge_query_remote_claim_t;
 #define TYPE_BRIDGE_QUERY_DEFAULT_COLLECTION_MEMBERS UINT64_C(65536)
 #define TYPE_BRIDGE_QUERY_DEFAULT_ROLE_PLAYERS UINT64_C(65536)
 #define TYPE_BRIDGE_QUERY_DEFAULT_STATEMENTS 3u
+#define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_TIMEOUT_MILLISECONDS UINT64_C(30000)
+#define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_ITEMS UINT64_C(100000)
+#define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_BYTES UINT64_C(67108864)
+#define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_GRAPH_NODES UINT64_C(1000000)
+#define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_ATTRIBUTE_VALUES UINT64_C(4000000)
+#define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_COLLECTION_MEMBERS UINT64_C(1000000)
+#define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_ROLE_PLAYERS UINT64_C(1000000)
+#define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_STATEMENTS 3u
+#define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_TIMEOUT_MILLISECONDS UINT64_C(30000)
+#define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_ITEMS UINT64_C(65536)
+#define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_BYTES UINT64_C(33554432)
+#define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_GRAPH_NODES UINT64_C(65536)
+#define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_ATTRIBUTE_VALUES UINT64_C(65536)
+#define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_COLLECTION_MEMBERS UINT64_C(65536)
+#define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_ROLE_PLAYERS UINT64_C(65536)
+#define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_STATEMENTS 3u
 #define TYPE_BRIDGE_QUERY_REMOTE_ENVELOPE_BYTES_MAX 33554432u
 
 typedef uint32_t type_bridge_query_match_mode_t;
@@ -463,12 +479,17 @@ typedef struct type_bridge_query_execution_limits_v1 {
 } type_bridge_query_execution_limits_v1_t;
 
 /*
- * NULL execution limits select these canonical defaults. A non-NULL
- * descriptor's values are kept as given, never clamped: a dimension may
- * tighten or raise its default, and a value past its supported maximum (a
- * timeout past one day, more than 3 statements) is refused. A connection's
- * answer limits are a ceiling every call on it is constrained by. Every zero
- * field is an actual zero ceiling, never a request to substitute a default.
+ * NULL execution limits select the defaults of their transport: a direct
+ * database, transaction, or call takes TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_*,
+ * a proxy connection or remote context TYPE_BRIDGE_QUERY_PROXY_DEFAULT_*
+ * (what one remote envelope carries). TYPE_BRIDGE_QUERY_DEFAULT_* and this
+ * initializer keep their 2.2 values, which are the proxy defaults. A
+ * non-NULL descriptor's values are kept as given, never clamped: a
+ * dimension may tighten or raise its default, and a value past its
+ * supported maximum (a timeout past one day, more than 3 statements) is
+ * refused. A connection's answer limits are a ceiling every call on it is
+ * constrained by. Every zero field is an actual zero ceiling, never a
+ * request to substitute a default.
  * Direct execution reports the shared statement-limit diagnostic before its
  * first provider statement. Remote preparation preserves zero through the
  * authenticated request when the executor advertises that capability.

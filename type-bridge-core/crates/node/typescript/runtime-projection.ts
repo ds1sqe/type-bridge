@@ -1218,6 +1218,21 @@ export class ProxyConnection implements RuntimeProjectionRemote {
     return new ProxyConnection(native);
   }
 
+  /** The ceiling every terminal on this connection is constrained by. */
+  get answerLimits(): QueryExecutionResourceLimits {
+    const limits = this.#native.answerLimits;
+    return new QueryExecutionResourceLimits({
+      timeoutMilliseconds: limits.timeoutMilliseconds,
+      items: limits.items,
+      bytes: limits.bytes,
+      graphNodes: limits.graphNodes,
+      attributeValues: limits.attributeValues,
+      collectionMembers: limits.collectionMembers,
+      rolePlayers: limits.rolePlayers,
+      statements: limits.statements,
+    });
+  }
+
   rows(
     query: RuntimeProjectionMatchQuery,
     orders: RuntimeProjectionMatchOrder[],

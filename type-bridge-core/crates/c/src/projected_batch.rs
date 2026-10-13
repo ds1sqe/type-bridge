@@ -686,7 +686,10 @@ pub(crate) unsafe extern "C" fn type_bridge_projected_batch_builder_open_v1_impl
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
         // SAFETY: descriptor preflight fenced a complete optional limits value.
-        let limits = match parse_common_limits(unsafe { copied_limits(construction_limits) }) {
+        let limits = match parse_common_limits(
+            unsafe { copied_limits(construction_limits) },
+            type_bridge_orm::AnswerTransport::Direct,
+        ) {
             Ok(value) => value,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
@@ -939,7 +942,10 @@ unsafe fn execute_impl(
         }
 
         // SAFETY: execution preflight fenced a complete optional descriptor.
-        let call_limits = match parse_common_limits(unsafe { copied_limits(limits) }) {
+        let call_limits = match parse_common_limits(
+            unsafe { copied_limits(limits) },
+            type_bridge_orm::AnswerTransport::Direct,
+        ) {
             Ok(value) => value,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
@@ -2169,6 +2175,7 @@ plays:
         assert_eq!(unsafe { &*batch }.value.len(), 2);
         assert_eq!(
             unsafe { &*batch }.value.resource_ceiling(),
+            // An omitted C descriptor on a direct batch carries the direct defaults.
             QueryExecutionResourceLimits::default().effective()
         );
         close_batch(&mut batch);

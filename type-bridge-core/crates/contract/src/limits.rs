@@ -501,8 +501,14 @@ impl QueryLimits {
 pub struct AnswerLimitField {
     /// Stable public name.
     pub name: &'static str,
-    /// The value in force when nothing was configured.
-    pub default: u64,
+    /// The value in force for a direct session when nothing was configured.
+    pub direct_default: u64,
+    /// The value in force for a proxy connection when nothing was configured.
+    ///
+    /// This is the wire meaning of "default": an executor advertisement
+    /// never names a dimension at this value, so a default-configured server
+    /// advertises nothing.
+    pub proxy_default: u64,
     /// The largest value a peer may configure or advertise.
     pub maximum: u64,
 }
@@ -510,48 +516,58 @@ pub struct AnswerLimitField {
 /// The answer policy dimensions, in declaration order.
 ///
 /// This table is the one statement of their names, defaults, and supported
-/// maxima. Only the timeout and the statement count have a maximum below the
-/// type's: a day keeps deadline arithmetic exact, and no terminal issues
-/// more than three provider statements.
+/// maxima. A direct session keeps the 2.2 in-process defaults; a proxy
+/// connection defaults to the wire ceilings, which bound what one remote
+/// envelope carries. Only the timeout and the statement count have a maximum
+/// below the type's: a day keeps deadline arithmetic exact, and no terminal
+/// issues more than three provider statements.
 pub const ANSWER_LIMIT_FIELDS: [AnswerLimitField; 8] = [
     AnswerLimitField {
         name: "timeout_milliseconds",
-        default: 30_000,
+        direct_default: 30_000,
+        proxy_default: 30_000,
         maximum: 24 * 60 * 60 * 1000,
     },
     AnswerLimitField {
         name: "items",
-        default: MAX_CANONICAL_COLLECTION_LEN as u64,
+        direct_default: 100_000,
+        proxy_default: MAX_CANONICAL_COLLECTION_LEN as u64,
         maximum: u64::MAX,
     },
     AnswerLimitField {
         name: "bytes",
-        default: MAX_REMOTE_ENVELOPE_BYTES as u64,
+        direct_default: 64 * 1024 * 1024,
+        proxy_default: MAX_REMOTE_ENVELOPE_BYTES as u64,
         maximum: u64::MAX,
     },
     AnswerLimitField {
         name: "graph_nodes",
-        default: MAX_CANONICAL_COLLECTION_LEN as u64,
+        direct_default: 1_000_000,
+        proxy_default: MAX_CANONICAL_COLLECTION_LEN as u64,
         maximum: u64::MAX,
     },
     AnswerLimitField {
         name: "attribute_values",
-        default: MAX_CANONICAL_COLLECTION_LEN as u64,
+        direct_default: 4_000_000,
+        proxy_default: MAX_CANONICAL_COLLECTION_LEN as u64,
         maximum: u64::MAX,
     },
     AnswerLimitField {
         name: "collection_members",
-        default: MAX_CANONICAL_COLLECTION_LEN as u64,
+        direct_default: 1_000_000,
+        proxy_default: MAX_CANONICAL_COLLECTION_LEN as u64,
         maximum: u64::MAX,
     },
     AnswerLimitField {
         name: "role_players",
-        default: MAX_CANONICAL_COLLECTION_LEN as u64,
+        direct_default: 1_000_000,
+        proxy_default: MAX_CANONICAL_COLLECTION_LEN as u64,
         maximum: u64::MAX,
     },
     AnswerLimitField {
         name: "statements",
-        default: 3,
+        direct_default: 3,
+        proxy_default: 3,
         maximum: 3,
     },
 ];

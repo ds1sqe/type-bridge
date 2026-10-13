@@ -13,6 +13,7 @@ from pathlib import Path
 import generated_identical as identical
 import generated_v2._query as generated_query_module
 import generated_variant as variant
+import type_bridge_core
 from generated_ordered import CrudHook as OrderedCrudHook
 from generated_ordered import DirectConnectionPolicy as OrderedDirectConnectionPolicy
 from generated_ordered import Membership as OrderedMembership
@@ -1351,6 +1352,37 @@ assert after_exchange_count == 1
 assert not exchange_cancelled_after_send
 assert after_exchange_category == "cancelled"
 assert after_exchange_code == "provider_cancelled"
+
+
+# An exchange connection given no answer limits is a proxy connection at the
+# wire defaults: a session given no resources sends the proxy defaults, not
+# the direct defaults its own `QueryExecutionResourceLimits()` holds.
+async def _default_exchange_request_limits() -> dict[str, int]:
+    sent: list[dict[str, int]] = []
+
+    async def capturing_exchange(request: bytes) -> bytes:
+        sent.append(json.loads(request)["limits"])
+        return b"{}"
+
+    session = QuerySession(ExchangeConnection(generated_advertisement, capturing_exchange))
+    try:
+        await session.query(session.exact(Person)).rows(limit=1)
+    except MatchRequestError:
+        pass
+    session.close()
+    assert len(sent) == 1, sent
+    return sent[0]
+
+
+default_exchange_limits = asyncio.run(_default_exchange_request_limits())
+assert default_exchange_limits["max_items"] == type_bridge_core.DEFAULT_PROXY_QUERY_ITEMS, (
+    default_exchange_limits
+)
+assert default_exchange_limits["max_bytes"] == type_bridge_core.DEFAULT_PROXY_QUERY_BYTES
+assert (
+    default_exchange_limits["max_graph_nodes"] == type_bridge_core.DEFAULT_PROXY_QUERY_GRAPH_NODES
+)
+assert QueryExecutionResourceLimits().items == type_bridge_core.DEFAULT_DIRECT_QUERY_ITEMS
 remote_cancellation_observation = {
     "before_exchange": {
         "category": before_exchange_category,

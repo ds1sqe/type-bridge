@@ -11,10 +11,10 @@ use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::query_v2_prepared::QueryAuthority;
 use type_bridge_orm::{
-    AnswerCancellation, InstalledRuntimeProjection, ProxyEndpoint, ProxyHttpTransport,
-    ProxyQueryConnection, QueryExecutionDeadline, QueryExecutionResourceLimits, QueryTarget,
-    QueryTargetError, RemoteModelQueryV2Error, ValidatedMatchRequest, ValidatedMatchResult,
-    lower_remote_query_diagnostic,
+    AnswerCancellation, AnswerTransport, InstalledRuntimeProjection, ProxyEndpoint,
+    ProxyHttpTransport, ProxyQueryConnection, QueryExecutionDeadline, QueryExecutionResourceLimits,
+    QueryTarget, QueryTargetError, RemoteModelQueryV2Error, ValidatedMatchRequest,
+    ValidatedMatchResult, lower_remote_query_diagnostic,
 };
 
 use crate::Result;
@@ -47,6 +47,10 @@ enum ProxyRoute {
 
 /// Configuration of a proxy connection: where requests go, the answer-limit
 /// ceiling every session inherits, and optionally a pinned advertisement.
+///
+/// Both limits start at the proxy defaults
+/// ([`QueryExecutionResourceLimits::default_for`] on
+/// [`AnswerTransport::Proxy`]), the wire ceilings a default server enforces.
 pub struct ProxyConnectionPolicy {
     scope: Option<String>,
     semantic_profile: Option<String>,
@@ -79,8 +83,8 @@ impl ProxyConnectionPolicy {
         Self {
             scope: None,
             semantic_profile: None,
-            connection_limits: QueryExecutionResourceLimits::default(),
-            answer_limits: QueryExecutionResourceLimits::default(),
+            connection_limits: QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy),
+            answer_limits: QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy),
             route,
             advertisement: None,
         }
@@ -457,6 +461,23 @@ fn remote_model_hydration_error(error: RemoteModelQueryV2Error) -> Error {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_default_proxy_policy_carries_the_proxy_defaults() {
+        use super::{
+            AnswerTransport, ProxyConnectionPolicy, ProxyEndpoint, QueryExecutionResourceLimits,
+        };
+
+        let policy = ProxyConnectionPolicy::new(ProxyEndpoint::new("http://127.0.0.1:1"));
+        let proxy = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
+        assert_eq!(policy.answer_limits, proxy);
+        assert_eq!(policy.connection_limits, proxy);
+        assert_ne!(
+            proxy,
+            QueryExecutionResourceLimits::default(),
+            "a proxy connection does not inherit the looser direct defaults"
+        );
+    }
+
     use std::env;
     use std::fs::{self, OpenOptions};
     use std::io::Write as _;

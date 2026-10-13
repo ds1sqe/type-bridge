@@ -836,7 +836,8 @@ class ExchangeConnection(_Frozen):
     `exchange` sends one request to the server's query route and returns its
     reply; the host owns routing and authentication. `advertisement` is the
     server's capability advertisement. `answer_limits`, when given, is the
-    ceiling every session on this connection runs under.
+    ceiling every session on this connection runs under; left out, the proxy
+    (wire) defaults are.
     """
 
     __slots__ = ("__advertisement", "__answer_limits", "__exchange")
@@ -892,8 +893,8 @@ def connect_proxy(
 
     The server's advertisement is fetched from `endpoint`, or `advertisement`
     is used as given. `connection_limits` bounds that fetch; `answer_limits`
-    is the ceiling every session on the connection runs under. This call
-    blocks on the fetch.
+    is the ceiling every session on the connection runs under. Either left
+    out takes the proxy (wire) defaults. This call blocks on the fetch.
     """
     return ProxyConnection.connect(
         _installed_query_authority(),

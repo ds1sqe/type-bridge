@@ -2943,7 +2943,7 @@ export class GroupedQuery<out Group extends object> {
  * its reply; the host owns routing and authentication, and no retry is
  * performed. `advertisement` is the server's capability advertisement.
  * `answerLimits`, when given, is the ceiling every session on this
- * connection runs under.
+ * connection runs under; left out, the proxy (wire) defaults are.
  */
 export class ExchangeConnection {
   readonly #advertisement: Uint8Array;
@@ -3003,7 +3003,7 @@ export type QueryConnection =
  * The server's advertisement is fetched from `endpoint`, or
  * `options.advertisement` is used as given. `connectionLimits` bounds that
  * fetch; `answerLimits` is the ceiling every session on the connection runs
- * under.
+ * under. Either left out takes the proxy (wire) defaults.
  */
 export function connectProxy(
   endpoint: string,

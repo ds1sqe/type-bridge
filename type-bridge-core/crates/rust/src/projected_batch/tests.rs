@@ -17,7 +17,7 @@ use type_bridge_orm::session::backend::{
     TxType,
 };
 use type_bridge_orm::{
-    _ProviderVersion, ClassifiedCommitError, CommitFailureCertainty, DEFAULT_QUERY_ITEMS,
+    _ProviderVersion, ClassifiedCommitError, CommitFailureCertainty, DEFAULT_DIRECT_QUERY_ITEMS,
     Database as OrmDatabase, OrmError, ProjectedAttributeValue, ProjectedBatchResult,
     ProjectedBatchRow, ProjectedThing,
 };
@@ -1611,7 +1611,7 @@ async fn foreign_origin_package_and_model_fences_precede_provider_io() {
 
 #[tokio::test]
 async fn hard_row_cap_precedes_adapter_reservation_and_projection() {
-    let limit = usize::try_from(DEFAULT_QUERY_ITEMS).unwrap();
+    let limit = usize::try_from(DEFAULT_DIRECT_QUERY_ITEMS).unwrap();
     let allocation = reserved_binding_vec_inner::<()>(limit + 1, true).unwrap_err();
     assert_eq!(allocation.code(), Some("batch_item_limit"));
 
@@ -1639,13 +1639,13 @@ async fn hard_row_cap_precedes_adapter_reservation_and_projection() {
     assert_eq!(
         error.details().and_then(|details| details.get("actual")),
         Some(&ErrorDetail::Long(
-            i64::try_from(DEFAULT_QUERY_ITEMS + 1).unwrap()
+            i64::try_from(DEFAULT_DIRECT_QUERY_ITEMS + 1).unwrap()
         ))
     );
     assert_eq!(
         error.details().and_then(|details| details.get("maximum")),
         Some(&ErrorDetail::Long(
-            i64::try_from(DEFAULT_QUERY_ITEMS).unwrap()
+            i64::try_from(DEFAULT_DIRECT_QUERY_ITEMS).unwrap()
         ))
     );
     let mut relations = database.relations::<ProbeAssignment>();

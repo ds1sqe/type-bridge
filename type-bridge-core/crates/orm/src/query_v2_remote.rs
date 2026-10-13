@@ -37,7 +37,7 @@ use type_bridge_query::{
     MigrationAssertionValidationContext, OutputSchema, ValidatedQuery, validate_query_plan,
 };
 
-use crate::query_execution_limits::QueryExecutionResourceLimits;
+use crate::query_execution_limits::{AnswerTransport, QueryExecutionResourceLimits};
 use crate::query_v2::{
     DocumentFieldValue, QueryResultDocument, QueryResultRow, QueryRowValue, QueryV2Outcome,
     QueryV2ValidatedItemObserver, execute_with_provider_observer, failure,
@@ -1014,6 +1014,7 @@ pub(crate) fn advertised_answer_limits(
     advertisement: &RemoteCapabilities,
 ) -> Result<QueryExecutionResourceLimits, Diagnostic> {
     QueryExecutionResourceLimits::from_overrides(
+        AnswerTransport::Proxy,
         advertisement
             .answer_limits()
             .iter()
@@ -1161,7 +1162,7 @@ mod tests {
         let (execution, reply) = tighten_limits_v2(
             caller,
             ceilings,
-            QueryExecutionResourceLimits::default(),
+            QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy),
             request_expiry,
         );
         assert_eq!(execution.answer.max_bytes, 19);
@@ -1190,7 +1191,7 @@ mod tests {
         let (execution, reply) = tighten_limits_v2(
             unbounded,
             unbounded_ceiling(),
-            QueryExecutionResourceLimits::default(),
+            QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy),
             request_expiry,
         );
         assert_eq!(execution.answer.max_bytes, hard_bytes);
@@ -1206,7 +1207,7 @@ mod tests {
             items: 1_000_000,
             bytes: 1 << 30,
             graph_nodes: 2_000_000,
-            ..QueryExecutionResourceLimits::default()
+            ..QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy)
         };
         let (execution, reply) =
             tighten_limits_v2(unbounded, unbounded_ceiling(), raised, request_expiry);
