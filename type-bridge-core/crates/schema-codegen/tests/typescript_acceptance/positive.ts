@@ -40,6 +40,10 @@ import {
   type Query,
   QuerySession,
   ExchangeConnection,
+  RemoteQuerySession,
+  type RemoteQuery,
+  type RemoteQueryExchange,
+  type RemoteQueryLimits,
   type ProxyConnection,
   type QueryConnection,
   QueryExecutionResourceLimits,
@@ -218,6 +222,28 @@ const proxyRows: readonly Person[] = await proxySession
 const remoteSession = new QuerySession(exchangeConnection, {
   resources: new QueryExecutionResourceLimits({ items: 100n }),
 });
+// The 2.2.4 guide's remote example still compiles against the deprecated
+// aliases.
+const advertisementBytes: Uint8Array = advertisement;
+const legacyExchange: RemoteQueryExchange = exchange;
+const legacyLimits: RemoteQueryLimits = {
+  maxItems: 100n,
+  maxBytes: 8_388_608n,
+  maxCollectionMembers: 1_000n,
+  maxGraphNodes: 1_000n,
+  maxAttributeValues: 1_000n,
+  maxRolePlayers: 1_000n,
+  deadlineMs: 30_000n,
+};
+const remote = new RemoteQuerySession(
+  advertisementBytes,
+  legacyExchange,
+  legacyLimits,
+);
+const legacyPerson = remote.exact(Person);
+const legacyQuery: RemoteQuery<Person> = remote.query(legacyPerson);
+const legacyRows: readonly Person[] = await legacyQuery.rows({ limit: 50n });
+const legacySession: QuerySession = remote;
 const remotePersonVar = remoteSession.var(Person);
 const remotePartyVar = remoteSession.subtypes(Party);
 const remoteMinimum: IntegerInput = integerInput(remoteSession, Score.create(2n));
@@ -310,3 +336,5 @@ void remoteGroupedAggregate;
 void Employment.employee;
 void Event.subject;
 void Person.identifier;
+void legacyRows;
+void legacySession;

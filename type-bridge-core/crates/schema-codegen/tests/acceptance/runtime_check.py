@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import struct
+import warnings
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ from generated_v2 import (
     ExchangeConnection,
     FieldToken,
     FooBar,
+    GroupedQuery,
     Identifier,
     Interaction,
     Membership,
@@ -47,10 +49,15 @@ from generated_v2 import (
     ProjectedManagerComparison,
     ProjectedModelFilter,
     ProjectedModelManager,
+    Query,
     QueryCancellation,
     QueryExecutionResourceLimits,
     QueryLimits,
     QuerySession,
+    RemoteGroupedQuery,
+    RemoteQuery,
+    RemoteQueryLimits,
+    RemoteQuerySession,
     Robot,
     RobotId,
     RoleToken,
@@ -1386,6 +1393,105 @@ assert (
     default_exchange_limits["max_graph_nodes"] == type_bridge_core.DEFAULT_PROXY_QUERY_GRAPH_NODES
 )
 assert QueryExecutionResourceLimits().items == type_bridge_core.DEFAULT_DIRECT_QUERY_ITEMS
+
+
+# The 2.2 remote-session names are deprecated aliases: the 2.2.4 typed-query
+# guide's remote example runs unchanged, warns, and sends the same request and
+# gets the same outcome as the 2.3 spelling.
+async def _remote_example_outcome(legacy: bool) -> tuple[dict[str, object], str, str]:
+    sent: list[dict[str, object]] = []
+
+    async def exchange(request: bytes) -> bytes:
+        decoded = json.loads(request)
+        # Drop the per-request nonce and clock readings; the rest must match.
+        assert 0 < decoded["limits"]["deadline_ms"] <= 30_000, decoded["limits"]
+        for clock in ("nonce", "prepared_at_unix_ms", "expires_at_unix_ms"):
+            del decoded[clock]
+        del decoded["limits"]["deadline_ms"]
+        sent.append(decoded)
+        return b"{}"
+
+    advertisement_bytes = generated_advertisement
+    try:
+        if legacy:
+            # Verbatim from the 2.2.4 guide (docs/guide/typed-queries.md).
+            remote = RemoteQuerySession(
+                advertisement_bytes,
+                exchange,
+                RemoteQueryLimits(
+                    max_items=100,
+                    max_bytes=8_388_608,
+                    max_collection_members=1_000,
+                    max_graph_nodes=1_000,
+                    max_attribute_values=1_000,
+                    max_role_players=1_000,
+                    deadline_ms=30_000,
+                ),
+            )
+            person = remote.exact(Person)
+            rows = await remote.query(person).rows(limit=50)
+        else:
+            remote = QuerySession(
+                ExchangeConnection(advertisement_bytes, exchange),
+                resources=QueryExecutionResourceLimits(
+                    timeout_milliseconds=30_000,
+                    items=100,
+                    bytes=8_388_608,
+                    collection_members=1_000,
+                    graph_nodes=1_000,
+                    attribute_values=1_000,
+                    role_players=1_000,
+                ),
+            )
+            person = remote.exact(Person)
+            rows = await remote.query(person).rows(limit=50)
+    except MatchRequestError as error:
+        assert len(sent) == 1, sent
+        return sent[0], error.category, error.code
+    raise AssertionError(f"the offline exchange cannot produce rows: {rows!r}")
+
+
+with warnings.catch_warnings(record=True) as legacy_remote_warnings:
+    warnings.simplefilter("always")
+    legacy_remote_outcome = asyncio.run(_remote_example_outcome(legacy=True))
+assert sorted(
+    str(warning.message).split(" ", 1)[0]
+    for warning in legacy_remote_warnings
+    if warning.category is DeprecationWarning
+) == ["RemoteQueryLimits", "RemoteQuerySession"], [
+    str(warning.message) for warning in legacy_remote_warnings
+]
+assert all(warning.filename == __file__ for warning in legacy_remote_warnings), [
+    warning.filename for warning in legacy_remote_warnings
+]
+with warnings.catch_warnings():
+    warnings.simplefilter("error", DeprecationWarning)
+    current_remote_outcome = asyncio.run(_remote_example_outcome(legacy=False))
+assert legacy_remote_outcome == current_remote_outcome, (
+    legacy_remote_outcome,
+    current_remote_outcome,
+)
+assert legacy_remote_outcome[0]["limits"]["max_items"] == 100, legacy_remote_outcome
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    legacy_limits = RemoteQueryLimits(
+        max_items=1,
+        max_bytes=2,
+        max_collection_members=3,
+        max_graph_nodes=4,
+        max_attribute_values=5,
+        max_role_players=6,
+    )
+    legacy_session = RemoteQuerySession(
+        generated_advertisement, wide_remote_exchange, legacy_limits
+    )
+assert type(legacy_limits) is QueryExecutionResourceLimits
+assert isinstance(legacy_limits, RemoteQueryLimits)
+assert legacy_limits.timeout_milliseconds == QueryExecutionResourceLimits().timeout_milliseconds
+assert isinstance(legacy_session, QuerySession)
+assert isinstance(legacy_session.query(legacy_session.exact(Person)), RemoteQuery)
+assert RemoteQuery is Query and RemoteGroupedQuery is GroupedQuery
+legacy_session.close()
 remote_cancellation_observation = {
     "before_exchange": {
         "category": before_exchange_category,

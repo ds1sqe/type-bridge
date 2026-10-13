@@ -74,17 +74,17 @@ differently direct and through a proxy. Each entry says what to do instead.
   synchronous. `QuerySession(connection, *, resources, cancellation,
   query_limits)` takes the connection first and no projection, and
   `Model.query(connection, ...)` accepts the same options. Removed:
-  `RemoteQuerySession`, `RemoteQuery`, `RemoteGroupedQuery`,
-  `RemoteQueryLimits`, `QuerySession.remote_factory`, and the native
+  `QuerySession.remote_factory` and the native
   `PyRuntimeProjection.match_session()` (use
-  `match_session_with_resources`). To migrate:
+  `match_session_with_resources`); the 2.2 remote names remain as
+  deprecated aliases (see Deprecated). To migrate:
   - `await` each terminal; a script without an event loop wraps the session
     in `type_bridge_core.blocking(session)`, which runs each terminal to
     completion on a private thread.
-  - `RemoteQuerySession(advertisement, exchange, limits)` is
+  - `RemoteQuerySession(advertisement, exchange, limits)` becomes
     `QuerySession(ExchangeConnection(advertisement, exchange),
     resources=limits)`, or `QuerySession(connect_proxy(url))` for the
-    built-in HTTP route. `RemoteQueryLimits(max_items=..., ...)` is
+    built-in HTTP route. `RemoteQueryLimits(max_items=..., ...)` becomes
     `QueryExecutionResourceLimits(items=..., ...)`; its defaults are the
     statement count and deadline the flat limits used.
 - The handwritten Python typed-query facade `type_bridge.typed` is removed:
@@ -113,20 +113,19 @@ differently direct and through a proxy. Each entry says what to do instead.
   synchronous, and direct terminals no longer block the event loop.
   `new QuerySession(connection, { resources, cancellation, queryLimits })`
   takes a `RustDatabase`, a transaction, a `ProxyConnection`, or an
-  `ExchangeConnection`. Removed: `RemoteQuerySession`, `RemoteQuery`,
-  `RemoteGroupedQuery`, `RemoteQueryLimits`, and `RemoteQueryExchange`;
-  from `@type-bridge/node/runtime-projection`,
+  `ExchangeConnection`; the 2.2 remote names remain as deprecated aliases
+  (see Deprecated). Removed from `@type-bridge/node/runtime-projection`:
   `RuntimeProjectionRemoteLimits`, the seven
   `InstalledRuntimeProjection.execute*` methods (use `direct(connection)`),
   and the natives `matchSession()` without resources and the flat-limit
   `queryV2RemoteModelContext` (use `matchSessionWithResources` and
   `queryV2RemoteModelContextWithResources`). To migrate:
   - `await` each terminal.
-  - `new RemoteQuerySession(advertisement, exchange, limits)` is
+  - `new RemoteQuerySession(advertisement, exchange, limits)` becomes
     `new QuerySession(new ExchangeConnection(advertisement, exchange),
     { resources })`, or `new QuerySession(await connectProxy(url))` for the
     built-in HTTP route. Flat limits `{ maxItems, maxBytes, ..., deadlineMs }`
-    are `new QueryExecutionResourceLimits({ items, bytes, ...,
+    become `new QueryExecutionResourceLimits({ items, bytes, ...,
     timeoutMilliseconds })`.
 - Generated Python and TypeScript packages no longer check query windows,
   selection and aggregate caps, group-by keys, or reachability depth
@@ -415,6 +414,38 @@ differently direct and through a proxy. Each entry says what to do instead.
   - an integer outside the signed 64-bit range and a non-finite double have
     no TypeQL literal and raise `ValueError` (they were rendered as a quoted
     string or `nan`).
+
+### Deprecated
+
+Each name below builds its replacement and is removed in 3.0. 2.2 remote
+terminals were already awaited, so 2.2 remote-session code runs unchanged.
+
+- Generated Python packages (each constructor emits a
+  `DeprecationWarning`):
+  - `RemoteQuerySession(advertisement, exchange, limits, *, cancellation=None)`
+    is a `QuerySession` subclass that only builds
+    `QuerySession(ExchangeConnection(advertisement, exchange),
+    resources=limits, cancellation=cancellation)`.
+  - `RemoteQueryLimits(max_items=..., max_bytes=...,
+    max_collection_members=..., max_graph_nodes=..., max_attribute_values=...,
+    max_role_players=..., deadline_ms=None)` returns a
+    `QueryExecutionResourceLimits` (`items=`, `bytes=`, ...,
+    `timeout_milliseconds=`); `isinstance(limits, RemoteQueryLimits)` still
+    holds, but read the new field names (`limits.items`, not
+    `limits.max_items`).
+  - `RemoteQuery` is `Query`; `RemoteGroupedQuery` is `GroupedQuery`.
+- Generated TypeScript packages (`@deprecated` in the declarations):
+  - `new RemoteQuerySession(advertisement, exchange, limits, cancellation?)`
+    is a `QuerySession` subclass that only builds
+    `new QuerySession(new ExchangeConnection(advertisement, exchange),
+    { resources, cancellation })`.
+  - `RemoteQueryLimits` is the 2.2 shape `{ maxItems, maxBytes,
+    maxCollectionMembers, maxGraphNodes, maxAttributeValues, maxRolePlayers,
+    deadlineMs? }` or a `QueryExecutionResourceLimits`;
+    `RemoteQuerySession` converts the former. Use
+    `QueryExecutionResourceLimits`.
+  - `RemoteQuery` is `Query`, `RemoteGroupedQuery` is `GroupedQuery`, and
+    `RemoteQueryExchange` is the `ExchangeConnection` exchange callback type.
 
 ## [2.2.6] - 2026-10-16
 

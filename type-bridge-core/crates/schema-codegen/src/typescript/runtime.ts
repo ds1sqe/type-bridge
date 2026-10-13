@@ -3329,6 +3329,76 @@ export class QuerySession {
   }
 }
 
+// Deprecated 2.2 remote-session names, removed in 3.0. Each builds the 2.3
+// type it names; none adds behaviour.
+
+/** @deprecated Use {@link Query}; removed in 3.0. */
+export type RemoteQuery<Output> = Query<Output>;
+/** @deprecated Use {@link Query}; removed in 3.0. */
+export const RemoteQuery = Query;
+
+/** @deprecated Use {@link GroupedQuery}; removed in 3.0. */
+export type RemoteGroupedQuery<Group extends object> = GroupedQuery<Group>;
+/** @deprecated Use {@link GroupedQuery}; removed in 3.0. */
+export const RemoteGroupedQuery = GroupedQuery;
+
+/**
+ * @deprecated Use the `exchange` parameter type of {@link ExchangeConnection};
+ * removed in 3.0.
+ */
+export type RemoteQueryExchange = RuntimeProjectionRemoteExchange;
+
+/**
+ * @deprecated Use {@link QueryExecutionResourceLimits}; removed in 3.0. The
+ * 2.2 field shape, converted to `QueryExecutionResourceLimits` by
+ * {@link RemoteQuerySession}; `deadlineMs` left out takes the default
+ * timeout.
+ */
+export type RemoteQueryLimits =
+  | Readonly<{
+      maxItems: bigint;
+      maxBytes: bigint;
+      maxCollectionMembers: bigint;
+      maxGraphNodes: bigint;
+      maxAttributeValues: bigint;
+      maxRolePlayers: bigint;
+      deadlineMs?: bigint | null;
+    }>
+  | QueryExecutionResourceLimits;
+
+/**
+ * @deprecated Use
+ * `new QuerySession(new ExchangeConnection(advertisement, exchange), { resources })`;
+ * removed in 3.0.
+ */
+export class RemoteQuerySession extends QuerySession {
+  constructor(
+    advertisement: Uint8Array,
+    exchange: RemoteQueryExchange,
+    limits: RemoteQueryLimits,
+    cancellation?: QueryCancellation,
+  ) {
+    const resources =
+      limits instanceof QueryExecutionResourceLimits
+        ? limits
+        : new QueryExecutionResourceLimits({
+            ...(limits.deadlineMs === undefined || limits.deadlineMs === null
+              ? {}
+              : { timeoutMilliseconds: limits.deadlineMs }),
+            items: limits.maxItems,
+            bytes: limits.maxBytes,
+            collectionMembers: limits.maxCollectionMembers,
+            graphNodes: limits.maxGraphNodes,
+            attributeValues: limits.maxAttributeValues,
+            rolePlayers: limits.maxRolePlayers,
+          });
+    super(new ExchangeConnection(advertisement, exchange), {
+      resources,
+      ...(cancellation === undefined ? {} : { cancellation }),
+    });
+  }
+}
+
 /** Run a native composition call; a core refusal surfaces as `QueryV2Error`. */
 function coreCall<Result>(operation: () => Result): Result {
   return projectedManagerNativeCall(operation);

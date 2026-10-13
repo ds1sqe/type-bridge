@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import warnings
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from dataclasses import fields, is_dataclass
 from datetime import date, datetime, timedelta
@@ -1611,6 +1612,87 @@ class QuerySession(_Frozen):
         return binding(handle, model, self.__projection, subtypes=subtypes)
 
 
+# Deprecated 2.2 remote-session names, removed in 3.0. Each builds the 2.3
+# type it names; none adds behaviour.
+
+RemoteQuery = Query
+"""Deprecated: use `Query`; removed in 3.0."""
+
+RemoteGroupedQuery = GroupedQuery
+"""Deprecated: use `GroupedQuery`; removed in 3.0."""
+
+
+class _RemoteQueryLimitsType(type):
+    # `RemoteQueryLimits(...)` returns the native limits type, which cannot be
+    # subclassed; keep 2.2 `isinstance(limits, RemoteQueryLimits)` checks true.
+    def __instancecheck__(cls, instance: object) -> bool:
+        return type(instance) is QueryExecutionResourceLimits
+
+
+class RemoteQueryLimits(metaclass=_RemoteQueryLimitsType):
+    """Deprecated: use `QueryExecutionResourceLimits`; removed in 3.0.
+
+    Takes the 2.2 field names and returns a `QueryExecutionResourceLimits`.
+    `deadline_ms=None` takes the default timeout.
+    """
+
+    __slots__ = ()
+
+    def __new__(
+        cls,
+        *,
+        max_items: int,
+        max_bytes: int,
+        max_collection_members: int,
+        max_graph_nodes: int,
+        max_attribute_values: int,
+        max_role_players: int,
+        deadline_ms: int | None = None,
+    ) -> QueryExecutionResourceLimits:
+        warnings.warn(
+            "RemoteQueryLimits is deprecated and will be removed in 3.0; "
+            "use QueryExecutionResourceLimits",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return QueryExecutionResourceLimits(
+            timeout_milliseconds=deadline_ms,
+            items=max_items,
+            bytes=max_bytes,
+            graph_nodes=max_graph_nodes,
+            attribute_values=max_attribute_values,
+            collection_members=max_collection_members,
+            role_players=max_role_players,
+        )
+
+
+class RemoteQuerySession(QuerySession):
+    """Deprecated: use `QuerySession(ExchangeConnection(advertisement, exchange),
+    resources=limits)`; removed in 3.0."""
+
+    __slots__ = ()
+
+    def __init__(
+        self,
+        advertisement: bytes,
+        exchange: Callable[[bytes], Awaitable[bytes]],
+        limits: QueryExecutionResourceLimits,
+        *,
+        cancellation: QueryCancellation | None = None,
+    ) -> None:
+        warnings.warn(
+            "RemoteQuerySession is deprecated and will be removed in 3.0; use "
+            "QuerySession(ExchangeConnection(advertisement, exchange), resources=limits)",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        super().__init__(
+            ExchangeConnection(advertisement, exchange),
+            resources=limits,
+            cancellation=cancellation,
+        )
+
+
 def _require_projection(
     actual: PyRuntimeProjection,
     expected: PyRuntimeProjection,
@@ -1842,6 +1924,10 @@ __all__ = [
     "QueryLimits",
     "QueryOrder",
     "QuerySession",
+    "RemoteGroupedQuery",
+    "RemoteQuery",
+    "RemoteQueryLimits",
+    "RemoteQuerySession",
     "SubtypeBoundVar",
     "aggregate",
     "connect_proxy",

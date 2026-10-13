@@ -25,11 +25,16 @@ import {
   PROJECTION_FINGERPRINT_JSON,
   Person,
   PlayerStats,
+  GroupedQuery,
+  Query,
   QueryCancellation,
   QueryExecutionResourceLimits,
   QueryLimits,
   QuerySession,
   ExchangeConnection,
+  RemoteGroupedQuery,
+  RemoteQuery,
+  RemoteQuerySession,
   RUNTIME_PROJECTION_JSON,
   Robot,
   RobotId,
@@ -798,6 +803,83 @@ assert.equal(
   native.DEFAULT_PROXY_QUERY_GRAPH_NODES,
 );
 assert.equal(new QueryExecutionResourceLimits().items, native.DEFAULT_DIRECT_QUERY_ITEMS);
+
+// The 2.2 remote-session names are deprecated aliases: the 2.2.4 TypeScript
+// guide's remote example runs unchanged and sends the same request and gets
+// the same outcome as the 2.3 spelling.
+async function remoteExampleOutcome(legacy) {
+  const sent = [];
+  const exchange = async (request) => {
+    const decoded = JSON.parse(Buffer.from(request).toString("utf8"));
+    // Drop the per-request nonce and clock readings; the rest must match.
+    assert.ok(decoded.limits.deadline_ms > 0 && decoded.limits.deadline_ms <= 30_000);
+    delete decoded.nonce;
+    delete decoded.prepared_at_unix_ms;
+    delete decoded.expires_at_unix_ms;
+    delete decoded.limits.deadline_ms;
+    sent.push(decoded);
+    return new TextEncoder().encode("{}");
+  };
+  const advertisementBytes = generatedAdvertisement;
+  try {
+    if (legacy) {
+      // Verbatim from the 2.2.4 guide (docs/guide/typescript.md).
+      const remote = new RemoteQuerySession(
+        advertisementBytes,
+        exchange,
+        {
+          maxItems: 100n,
+          maxBytes: 8_388_608n,
+          maxCollectionMembers: 1_000n,
+          maxGraphNodes: 1_000n,
+          maxAttributeValues: 1_000n,
+          maxRolePlayers: 1_000n,
+          deadlineMs: 30_000n,
+        },
+      );
+      const person = remote.exact(Person);
+      const rows = await remote.query(person).rows({ limit: 50n });
+      assert.fail(`the offline exchange cannot produce rows: ${rows}`);
+    } else {
+      const remote = new QuerySession(
+        new ExchangeConnection(advertisementBytes, exchange),
+        {
+          resources: new QueryExecutionResourceLimits({
+            timeoutMilliseconds: 30_000n,
+            items: 100n,
+            bytes: 8_388_608n,
+            collectionMembers: 1_000n,
+            graphNodes: 1_000n,
+            attributeValues: 1_000n,
+            rolePlayers: 1_000n,
+          }),
+        },
+      );
+      const person = remote.exact(Person);
+      const rows = await remote.query(person).rows({ limit: 50n });
+      assert.fail(`the offline exchange cannot produce rows: ${rows}`);
+    }
+  } catch (error) {
+    assert.ok(error instanceof QueryV2Error, error);
+    assert.equal(sent.length, 1);
+    return [sent[0], error.category, error.code];
+  }
+}
+const legacyRemoteOutcome = await remoteExampleOutcome(true);
+assert.deepEqual(legacyRemoteOutcome, await remoteExampleOutcome(false));
+assert.equal(BigInt(legacyRemoteOutcome[0].limits.max_items), 100n);
+const legacyRemoteSession = new RemoteQuerySession(
+  generatedAdvertisement,
+  async () => new TextEncoder().encode("{}"),
+  new QueryExecutionResourceLimits({ items: 7n }),
+);
+assert.ok(legacyRemoteSession instanceof QuerySession);
+assert.ok(
+  legacyRemoteSession.query(legacyRemoteSession.exact(Person)) instanceof RemoteQuery,
+);
+assert.equal(RemoteQuery, Query);
+assert.equal(RemoteGroupedQuery, GroupedQuery);
+legacyRemoteSession.close();
 
 const duringDecodeCancellation = new QueryCancellation();
 let duringDecodeExchangeCount = 0;

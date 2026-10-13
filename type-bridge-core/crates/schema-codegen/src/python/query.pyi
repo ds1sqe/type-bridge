@@ -2791,3 +2791,37 @@ def connect_proxy(
     answer_limits: QueryExecutionResourceLimits | None = ...,
     cancellation: QueryCancellation | None = ...,
 ) -> ProxyConnection: ...
+
+# Deprecated 2.2 remote-session names, removed in 3.0. They warn at runtime
+# (`DeprecationWarning`) rather than here, so 2.2 code still type-checks
+# under strict settings.
+
+RemoteQuery = Query
+RemoteGroupedQuery = GroupedQuery
+
+class RemoteQueryLimits:
+    """Deprecated: use `QueryExecutionResourceLimits`; removed in 3.0."""
+
+    def __new__(
+        cls,
+        *,
+        max_items: int,
+        max_bytes: int,
+        max_collection_members: int,
+        max_graph_nodes: int,
+        max_attribute_values: int,
+        max_role_players: int,
+        deadline_ms: int | None = ...,
+    ) -> QueryExecutionResourceLimits: ...
+
+class RemoteQuerySession(QuerySession):
+    """Deprecated: use `QuerySession(ExchangeConnection(...), resources=...)`; removed in 3.0."""
+
+    def __init__(
+        self,
+        advertisement: bytes,
+        exchange: Callable[[bytes], Awaitable[bytes]],
+        limits: QueryExecutionResourceLimits,
+        *,
+        cancellation: QueryCancellation | None = ...,
+    ) -> None: ...
