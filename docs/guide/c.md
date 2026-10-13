@@ -115,7 +115,7 @@ options.endpoint = (type_bridge_byte_view_t){(const uint8_t *)url, strlen(url)};
 options.tls_mode = TYPE_BRIDGE_TLS_NATIVE_ROOTS; /* or _DISABLED, _CUSTOM_ROOT_CA */
 options.headers = &auth;
 options.header_count = 1;
-options.answer_limits = &ceiling; /* NULL selects the defaults */
+options.answer_limits = &ceiling; /* NULL selects the proxy defaults */
 
 type_bridge_proxy_connection_t *proxy = NULL;
 type_bridge_execution_diagnostics_t *diagnostics = NULL;

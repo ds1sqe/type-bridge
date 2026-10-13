@@ -228,7 +228,9 @@ connection, or takes a pinned `advertisement=`; `headers=` carries caller
 authentication. `ExchangeConnection(advertisement, exchange)` takes
 advertisement bytes and a coroutine that sends one request and returns its
 reply; the caller owns transport, credentials, and retry policy. Either takes
-`answer_limits=`, the ceiling every session on the connection runs under.
+`answer_limits=`, the ceiling every session on the connection runs under;
+without it a proxy connection uses the proxy defaults (65,536 items,
+32 MiB), lower than a direct connection's.
 
 TypeScript passes the same connections to the same `QuerySession`:
 

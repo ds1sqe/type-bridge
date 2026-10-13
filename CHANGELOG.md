@@ -12,27 +12,25 @@ differently direct and through a proxy. Each entry says what to do instead.
 - Generated packages need their embedded schema authority. A package
   installed without one is refused with `schema_authority_required`. Every
   generator has embedded it since 2.1.0; regenerate older packages.
-- Direct queries now apply the same limits as remote ones, because every
-  match request, direct or remote, from a generated package or a dynamic
-  registry, runs on one executor:
-  - Query limits: a predicate nested past `canonical_depth` is refused with
-    `canonical_json_too_deep` instead of running, and a dynamic descriptor
-    registry no longer falls back to the old executor when a request does
-    not fit. Raise the session's `QueryLimits` to run such a query.
-  - Answer limits: `Database::execute_match` and
-    `TransactionContext::execute_match` default to 65,536 items, 32 MiB, and
-    65,536 graph nodes, attribute values, collection members, and role
-    players, down from 100,000 items, 64 MiB, and one to four million
-    hydrated values. Raise `QueryExecutionResourceLimits` to return more.
+- Direct queries now apply the same query limits as remote ones, because
+  every match request, direct or remote, from a generated package or a
+  dynamic registry, runs on one executor: a predicate nested past
+  `canonical_depth` is refused with `canonical_json_too_deep` instead of
+  running, and a dynamic descriptor registry no longer falls back to the old
+  executor when a request does not fit. Raise the session's `QueryLimits` to
+  run such a query.
 - `QueryExecutionResourceLimits` constructors in Python, TypeScript/Node, and
   C no longer clamp a value above the default: they keep it, and refuse a
   timeout past one day or more than 3 statements. Pass the values you mean.
 - Renamed Rust constants: `MAX_QUERY_ITEMS`, `MAX_QUERY_BYTES`,
   `MAX_QUERY_GRAPH_NODES`, `MAX_QUERY_ATTRIBUTE_VALUES`,
   `MAX_QUERY_COLLECTION_MEMBERS`, and `MAX_QUERY_ROLE_PLAYERS` are
-  `DEFAULT_QUERY_*`; they are defaults, no longer ceilings.
-  `DEFAULT_QUERY_TIMEOUT_MILLISECONDS` and `DEFAULT_QUERY_STATEMENTS` are the
-  defaults of the two dimensions that keep a maximum
+  `DEFAULT_DIRECT_QUERY_*`, with the same values, beside the new
+  `DEFAULT_PROXY_QUERY_*`; they are defaults, no longer ceilings.
+  `DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS`,
+  `DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS`,
+  `DEFAULT_DIRECT_QUERY_STATEMENTS`, and `DEFAULT_PROXY_QUERY_STATEMENTS` are
+  the defaults of the two dimensions that keep a maximum
   (`MAX_QUERY_TIMEOUT_MILLISECONDS`, `MAX_QUERY_STATEMENTS`).
 - `ProjectedQueryMaterializationLimits::tightened` is replaced by `new`, and
   the `MAX_PROJECTED_QUERY_*` constants are removed; materialization takes
@@ -275,16 +273,18 @@ differently direct and through a proxy. Each entry says what to do instead.
   `[v2.query_limits]` and `[v2.answer_limits]`.
 - Configurable answer limits. How much a query may return is one policy,
   `QueryExecutionResourceLimits`, on both transports. A caller may raise a
-  dimension as well as tighten it: more than 65,536 items or 32 MiB can be
+  dimension as well as tighten it: more than its transport's default can be
   returned when the session, and through a proxy the executor too, are
   configured for it. Only `timeout_milliseconds` (one day) and `statements`
   (3) have a supported maximum; a value past it is refused by name.
 - Query-limit and answer-limit refusals report `limit`, `maximum`, and
   `source` (`default`, `configured`, or `advertised`).
-- `type_bridge_core.DEFAULT_QUERY_*` (`TIMEOUT_MILLISECONDS`, `ITEMS`,
+- `type_bridge_core.DEFAULT_DIRECT_QUERY_*` and
+  `type_bridge_core.DEFAULT_PROXY_QUERY_*` (`TIMEOUT_MILLISECONDS`, `ITEMS`,
   `BYTES`, `GRAPH_NODES`, `ATTRIBUTE_VALUES`, `COLLECTION_MEMBERS`,
-  `ROLE_PLAYERS`, `STATEMENTS`): the answer-limit defaults, read from the
-  Rust core. The TypeScript package no longer carries its own copies of
+  `ROLE_PLAYERS`, `STATEMENTS`), and the same names on the native Node
+  module: the answer-limit defaults of each transport, read from the Rust
+  core. The TypeScript package no longer carries its own copies of
   these defaults or of the codec byte ceilings; an omitted
   `QueryExecutionResourceLimits` dimension takes the core default in every
   language.
@@ -356,6 +356,24 @@ differently direct and through a proxy. Each entry says what to do instead.
 
 ### Changed
 
+- Answer-limit defaults are per transport. A direct session keeps the 2.2
+  values: 100,000 items, 64 MiB, 1,000,000 graph nodes, 4,000,000 attribute
+  values, 1,000,000 collection members and role players, 30 seconds, and 3
+  statements. Proxy connections and the server use the wire limits, as in
+  2.2: 65,536 items, graph nodes, attribute values, collection members, and
+  role players, and 32 MiB. One constructor chooses between them:
+  `QueryExecutionResourceLimits::default_for(AnswerTransport)`; `Default` is
+  the direct policy. An answer between the two defaults is returned direct and
+  refused through a proxy as a wire limit (`limit` `items` or `bytes`,
+  `source` `default`).
+  - C: a direct database, transaction, call, or batch without a limits
+    descriptor now gets the direct defaults, looser than 2.2.4's 65,536
+    items; a proxy connection or remote context gets the proxy defaults. The
+    header adds `TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_*` and
+    `TYPE_BRIDGE_QUERY_PROXY_DEFAULT_*`; the released
+    `TYPE_BRIDGE_QUERY_DEFAULT_*` keep their 2.2 values.
+  - Node: `ProxyConnection.answerLimits` reports the connection's ceiling,
+    as Python's `answer_limits` does.
 - C database, read-transaction, and proxy executes run through the Rust
   query target that the other SDKs use, and the C remote context (the
   caller-owned exchange) prepares requests through the Rust proxy

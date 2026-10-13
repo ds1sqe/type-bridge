@@ -159,8 +159,9 @@ limits cannot read an advertisement that names any, so leave the table out
 until every client is upgraded. Limit names and defaults are listed in the
 [typed-query contract](../development/typed-query-contract.md#query-limits).
 
-To let one query return more than the defaults allow, or to hold clients to
-less, name the answer ceilings to change under `[v2.answer_limits]`:
+The server starts from the proxy answer defaults (65,536 items, 32 MiB). To
+let one query return more than they allow, or to hold clients to less, name
+the answer ceilings to change under `[v2.answer_limits]`:
 
 ```toml
 [v2.answer_limits]

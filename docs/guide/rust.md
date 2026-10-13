@@ -295,7 +295,9 @@ let rows: Vec<Person> = session
 Both policies take `answer_limits(..)`, the ceiling every session of the
 connection is constrained by, and `connection_limits(..)`, the deadline for
 connecting. A session's resources are the stricter of its own and the
-ceiling, on either transport.
+ceiling, on either transport. With nothing configured, a session runs under
+its transport's defaults: the 2.2 executor defaults direct, the wire limits
+(65,536 items, 32 MiB) through a proxy.
 
 A proxy connection fetches the server's signed `/v2/capabilities`
 advertisement when it connects, or uses the exact bytes pinned with

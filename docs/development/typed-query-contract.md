@@ -633,19 +633,27 @@ keep them.
 ## Answer Limits
 
 How much a query may return is one policy on every transport,
-`QueryExecutionResourceLimits`. A direct execution and a proxy execution of
-the same request run under the same eight values.
+`QueryExecutionResourceLimits`, with the same eight dimensions. What an unset
+policy defaults to depends on the transport the session runs on: a direct
+session starts from the 2.2 executor defaults, a proxy connection (and the
+server) from what one remote envelope carries.
+`QueryExecutionResourceLimits::default_for(AnswerTransport)` is the one place
+an unset policy becomes a default; `Default` is the direct policy.
 
-| Limit | Default | Supported maximum | Bounds |
-| --- | ---: | ---: | --- |
-| `timeout_milliseconds` | 30,000 | 86,400,000 | Duration of one terminal |
-| `items` | 65,536 | none | Provider items read and rows returned; the scan and hydration both draw on it |
-| `bytes` | 32 MiB | none | Provider answer bytes, the reply envelope, and the projected result |
-| `graph_nodes` | 65,536 | none | Hydrated things, including nested role players |
-| `attribute_values` | 65,536 | none | Hydrated attribute values |
-| `collection_members` | 65,536 | none | Collected identities, group keys, and reducer cells |
-| `role_players` | 65,536 | none | Role-player references |
-| `statements` | 3 | 3 | Provider statements of one terminal |
+| Limit | Direct default | Proxy default | Supported maximum | Bounds |
+| --- | ---: | ---: | ---: | --- |
+| `timeout_milliseconds` | 30,000 | 30,000 | 86,400,000 | Duration of one terminal |
+| `items` | 100,000 | 65,536 | none | Provider items read and rows returned; the scan and hydration both draw on it |
+| `bytes` | 64 MiB | 32 MiB | none | Provider answer bytes, the reply envelope, and the projected result |
+| `graph_nodes` | 1,000,000 | 65,536 | none | Hydrated things, including nested role players |
+| `attribute_values` | 4,000,000 | 65,536 | none | Hydrated attribute values |
+| `collection_members` | 1,000,000 | 65,536 | none | Collected identities, group keys, and reducer cells |
+| `role_players` | 1,000,000 | 65,536 | none | Role-player references |
+| `statements` | 3 | 3 | 3 | Provider statements of one terminal |
+
+An answer between the two defaults is returned on a direct session and
+refused through a proxy with `limit` naming the dimension and `source`
+`default`; configure the proxy connection, and the executor, to return it.
 
 Rules that hold in every binding:
 
@@ -656,13 +664,15 @@ Rules that hold in every binding:
 - The executor, the reply codec, and projected materialization have no
   ceilings of their own. A result the policy admits is one every stage admits.
 - A result past a ceiling is refused with `resource_limit` and the details
-  `limit`, `maximum`, and `source`, as for query limits.
+  `limit`, `maximum`, and `source`, as for query limits. `source` is
+  `default` only when the value is the default of the session's transport.
 
 ### Remote agreement
 
 An executor states the answer ceilings it enforces in its capability
-advertisement, naming only those that differ from the defaults, so a default
-executor's advertisement bytes and fingerprint are unchanged. Each request
+advertisement, naming only those that differ from the proxy defaults, so a
+default executor's advertisement bytes and fingerprint are unchanged. Each
+request
 carries the caller's budget. The client asks for no more than the executor
 advertised, and the executor runs each request under the stricter of the
 request's budget and its own ceilings, per dimension. The reply is encoded
