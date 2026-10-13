@@ -209,7 +209,7 @@ def embedded_driver_versions() -> dict[int, str]:
     """Return all driver versions compiled into the Rust runtime, keyed by band.
 
     Delegates to ``type_bridge_core.embedded_driver_versions``.  The default
-    build returns ``{8: "3.11.5", 9: "3.12.3"}``; a
+    build returns ``{8: "3.11.5", 9: "3.13.6"}``; a
     single-band build returns only the one entry for its compiled band.
     """
     return _core.embedded_driver_versions()

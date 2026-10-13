@@ -852,7 +852,7 @@ class TestEmbeddedDriverVersions:
 
     def test_delegates_to_core(self, monkeypatch: pytest.MonkeyPatch):
         """embedded_driver_versions() delegates to type_bridge_core."""
-        fake = {8: "3.11.5", 9: "3.12.3"}
+        fake = {8: "3.11.5", 9: "3.13.6"}
         monkeypatch.setattr(type_bridge_core, "embedded_driver_versions", lambda: fake)
         result = _typedb_driver_mod.embedded_driver_versions()
         assert result == fake

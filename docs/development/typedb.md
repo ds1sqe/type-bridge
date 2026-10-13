@@ -46,9 +46,9 @@ A TypeDB driver speaks one protocol band. Server acceptance is asymmetric:
 | band 9 | 3.12 | 3.12 |
 
 The native runtime embeds the source-unmodified namespaced 3.11.5 provider and
-uses the official 3.12.3 driver. Band 8 is the safe unknown-server discovery
-path; a confirmed 3.12 server upgrades to band 9. No application-side provider
-selection is required.
+uses the official 3.13.6 driver, which speaks band 9 to 3.12 servers. Band 8
+is the safe unknown-server discovery path; a confirmed 3.12 server upgrades to
+band 9. No application-side provider selection is required.
 
 The Python `typedb-driver` extra is independent of generated ORM execution. It
 exists for direct driver calls. CPython 3.14 uses driver 3.12.3 and therefore

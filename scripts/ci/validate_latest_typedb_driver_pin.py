@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Require band 9 to bind the newest stable official 3.12.x driver and protocol."""
+"""Require band 9 to bind the newest stable official driver and protocol.
+
+The band-9 driver series is ``EXPECTED_SERIES``. The check also fails when
+crates.io publishes a stable ``typedb-driver`` on a newer minor line, so a new
+TypeDB minor is noticed and reviewed (window, semantic profile, driver series)
+instead of silently ignored.
+"""
 
 from __future__ import annotations
 
@@ -15,7 +21,8 @@ from typing import Any
 
 CRATE_NAME = "typedb-driver"
 PROTOCOL_CRATE_NAME = "typedb-protocol"
-EXPECTED_SERIES = (3, 12)
+EXPECTED_SERIES = (3, 13)
+SERIES_TEXT = f"{EXPECTED_SERIES[0]}.{EXPECTED_SERIES[1]}.x"
 CRATES_IO_URL = f"https://crates.io/api/v1/crates/{CRATE_NAME}"
 PROTOCOL_CRATES_IO_URL = f"https://crates.io/api/v1/crates/{PROTOCOL_CRATE_NAME}"
 CRATES_IO_LOCK_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
@@ -185,7 +192,7 @@ def _manifest_pin(path: Path) -> tuple[str, tuple[int, int, int]]:
     parsed = _stable_tuple(version)
     if parsed is None or parsed[:2] != EXPECTED_SERIES:
         raise ValidationError(
-            f"band 9 must exact-pin a stable 3.12.x {CRATE_NAME} release, not {requirement!r}"
+            f"band 9 must exact-pin a stable {SERIES_TEXT} {CRATE_NAME} release, not {requirement!r}"
         )
     _validate_band9_feature(manifest, dependencies)
     return version, parsed
@@ -416,16 +423,47 @@ def _latest_upstream(
         if parsed is not None and parsed[:2] == EXPECTED_SERIES:
             candidates.append((parsed, version, entry))
     if not candidates:
-        raise ValidationError("crates.io reports no non-yanked stable typedb-driver 3.12.x release")
+        raise ValidationError(
+            f"crates.io reports no non-yanked stable {CRATE_NAME} {SERIES_TEXT} release"
+        )
     latest = max(candidate[0] for candidate in candidates)
     selected = [candidate for candidate in candidates if candidate[0] == latest]
     if len(selected) != 1:
         raise ValidationError(
             "crates.io metadata must contain exactly one record for the newest non-yanked "
-            f"stable {CRATE_NAME} 3.12.x release, found {len(selected)}"
+            f"stable {CRATE_NAME} {SERIES_TEXT} release, found {len(selected)}"
         )
     parsed, version, entry = selected[0]
     return version, parsed, entry
+
+
+def _reject_newer_upstream_line(metadata: object) -> None:
+    """Fail when crates.io has a stable driver on a minor line past the series.
+
+    The comparison is keyed to ``EXPECTED_SERIES``, the newest TypeDB line
+    band 9 targets (the support window's top line once that line is admitted
+    in ``core/src/version.rs``). A newer line needs a deliberate support
+    decision, not a silent patch-only refresh.
+    """
+    versions = metadata.get("versions") if isinstance(metadata, dict) else None
+    if not isinstance(versions, list):
+        raise ValidationError("crates.io metadata has no versions array")
+    newer = sorted(
+        (parsed, entry["num"])
+        for entry in versions
+        if isinstance(entry, dict)
+        and entry.get("yanked") is False
+        and (parsed := _stable_tuple(entry.get("num"))) is not None
+        and parsed[:2] > EXPECTED_SERIES
+    )
+    if newer:
+        (major, minor, _), newest = newer[-1]
+        series = f"{EXPECTED_SERIES[0]}.{EXPECTED_SERIES[1]}"
+        raise ValidationError(
+            f"crates.io publishes stable {CRATE_NAME} {newest} on the {major}.{minor} line, "
+            f"newer than the supported {series} series; review TypeDB {major}.{minor} "
+            "support before moving band 9"
+        )
 
 
 def _version_checksum(
@@ -563,8 +601,9 @@ def validate(
         if parsed_pin != parsed_latest:
             raise ValidationError(
                 f"band 9 pins {CRATE_NAME} ={pin}, but the newest non-yanked stable "
-                f"3.12.x release is {latest}"
+                f"{SERIES_TEXT} release is {latest}"
             )
+        _reject_newer_upstream_line(driver_metadata)
     driver_entry = _driver_upstream(driver_metadata, pin)
     driver_checksum = _version_checksum(
         driver_entry,
@@ -650,7 +689,7 @@ def main(argv: list[str] | None = None) -> int:
         "committed-cutoff official" if arguments.committed_cutoff else "newest stable upstream"
     )
     print(
-        f"band 9 exact-pins {relationship} {CRATE_NAME} 3.12.x: ={pin}; "
+        f"band 9 exact-pins {relationship} {CRATE_NAME} {SERIES_TEXT}: ={pin}; "
         f"official {PROTOCOL_CRATE_NAME} provenance is bound"
     )
     return 0

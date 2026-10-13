@@ -16,7 +16,7 @@ RUNTIME_MANIFEST = REPO_ROOT / "type-bridge-core/crates/typedb-runtime/Cargo.tom
 WORKSPACE_MANIFEST = REPO_ROOT / "type-bridge-core/Cargo.toml"
 CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
 
-EXPECTED_DRIVERS = {8: "3.11.5", 9: "3.12.3"}
+EXPECTED_DRIVERS = {8: "3.11.5", 9: "3.13.6"}
 EXPECTED_SERVERS = {"typedb/typedb:3.11.5", "typedb/typedb:3.12.3"}
 
 
@@ -49,7 +49,7 @@ def test_runtime_manifest_has_only_band8_and_band9_features() -> None:
     assert features["default"] == ["band8", "band9"]
     assert set(features) == {"default", "band8", "band9"}
     assert dependencies["type-bridge-typedb-driver-b8"]["version"] == "=3.11.5"
-    assert dependencies["typedb-driver"]["version"] == "=3.12.3"
+    assert dependencies["typedb-driver"]["version"] == "=3.13.6"
     assert all("b7" not in name and "band7" not in name for name in dependencies)
 
 

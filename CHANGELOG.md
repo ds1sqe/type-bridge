@@ -367,6 +367,11 @@ differently direct and through a proxy. Each entry says what to do instead.
 
 ### Changed
 
+- Band 9 runs on the official Rust `typedb-driver` 3.13.6 (with
+  `typedb-protocol` 3.13.4), up from 3.12.3. It speaks the same band-9 wire
+  protocol to TypeDB 3.12 servers and includes upstream's fetch-kind decoding
+  fix. The supported server window is unchanged. The release pin check now
+  also fails when crates.io publishes a stable driver on a newer minor line.
 - Answer-limit defaults are per transport. A direct session keeps the 2.2
   values: 100,000 items, 64 MiB, 1,000,000 graph nodes, 4,000,000 attribute
   values, 1,000,000 collection members and role players, 30 seconds, and 3

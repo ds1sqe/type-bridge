@@ -668,7 +668,10 @@ pub const PINNED_DRIVER_VERSION: &str = "3.11.5";
 /// the band-9 dependency is refreshed, update this constant to match the new
 /// `Cargo.lock` entry — the `tests::cargo_lock_pin_b9` test will
 /// catch any divergence.
-pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.3";
+///
+/// The upstream driver line may run ahead of the support window: driver 3.13
+/// speaks the same band-9 wire protocol that TypeDB 3.12 servers accept.
+pub const PINNED_DRIVER_VERSION_B9: &str = "3.13.6";
 
 /// Protocol bands this build embeds a driver for, derived from the compiled-in
 /// band features.  This is the `embedded_bands` argument to
@@ -690,7 +693,7 @@ const EMBEDDED_BANDS: &[u8] = &[
 /// Each entry is `(band, version_string)` and is individually cfg-gated so only
 /// compiled-in bands appear in the slice (master-plan I6 — no hardcoded
 /// band-set literal).  The default build embeds both retained bands and returns
-/// `[(8, "3.11.5"), (9, "3.12.3")]`.
+/// `[(8, "3.11.5"), (9, "3.13.6")]`.
 ///
 /// This is the Rust-side source of truth for the Python `embedded_driver_versions()`
 /// binding — `crates/python/src/version.rs` wraps this function and exposes it
@@ -6316,12 +6319,21 @@ mod tests {
              PINNED_DRIVER_VERSION_B9 is {PINNED_DRIVER_VERSION_B9}; update the runtime constant"
         );
 
+        // The driver line may run ahead of the window (it speaks band 9 to the
+        // window's newest line) but must never fall behind it.
         let pinned: core_version::Version = PINNED_DRIVER_VERSION_B9.parse().unwrap();
+        let (top_major, top_minor) = core_version::MAX_SUPPORTED_LINE;
         assert_eq!(
-            core_version::band(&pinned),
+            core_version::band(&core_version::Version::new(top_major, top_minor, 0)),
             Some(9),
-            "pinned band-9 driver version {PINNED_DRIVER_VERSION_B9} left protocol band 9; \
-             review the gate expectations before accepting the bump"
+            "the window's newest line no longer negotiates band 9; \
+             review the band-9 driver pin"
+        );
+        assert!(
+            pinned.major == top_major && pinned.minor >= top_minor,
+            "pinned band-9 driver version {PINNED_DRIVER_VERSION_B9} is behind the \
+             window's newest line {top_major}.{top_minor}; review the gate expectations \
+             before accepting the bump"
         );
     }
 

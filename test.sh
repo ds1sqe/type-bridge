@@ -831,7 +831,7 @@ run_tls_transport_steps() {
                 TYPE_BRIDGE_TLS_NATIVE_ROOTS=1 \
                 TYPE_BRIDGE_TLS_EXPECTED_SERVER_VERSION=3.12.3 \
                 TYPE_BRIDGE_TLS_EXPECTED_DRIVER_BAND=9 \
-                TYPE_BRIDGE_TLS_EXPECTED_DRIVER_VERSION=3.12.3 \
+                TYPE_BRIDGE_TLS_EXPECTED_DRIVER_VERSION=3.13.6 \
             cargo test --manifest-path type-bridge-core/Cargo.toml \
                 -p type-bridge-typedb-runtime --test tls_live \
                 -- --nocapture --test-threads=1

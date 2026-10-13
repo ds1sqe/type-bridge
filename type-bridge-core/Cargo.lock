@@ -3490,9 +3490,9 @@ dependencies = [
 
 [[package]]
 name = "typedb-driver"
-version = "3.12.3"
+version = "3.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76c285253f1b328ea1773acf5a68d64fc3917b1c20066186a2c6a578e3dc3922"
+checksum = "cd7eb7cce9def748f4436b8047890e39bab25ce9f8314a3bf72b19f9baadb0c9"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -3515,9 +3515,9 @@ dependencies = [
 
 [[package]]
 name = "typedb-protocol"
-version = "3.12.0"
+version = "3.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01f6b7eb813a853349ff22f385c120c61d04d4648318c92072e7e04dd81cdc3f"
+checksum = "055a7816df94fbf63be32c095202a62e9fc9f2de2c9134768858b3056f76b2fa"
 dependencies = [
  "prost",
  "tonic",
