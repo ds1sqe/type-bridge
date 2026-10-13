@@ -1,7 +1,7 @@
 //! Remote execution of validated query plans over the versioned envelope.
 //!
 //! Both halves of one plan/result contract live here. The client half
-//! encodes a validated invocation into a [`RemoteQueryRequest`] and
+//! encodes a validated invocation into a [`RemoteQueryRequestV2`] and
 //! evidence-validates the returned outcome against the same derived output
 //! schema the local executor uses — oversized, replayed, foreign, or
 //! mistyped evidence is rejected before any host object is constructed.
