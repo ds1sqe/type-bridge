@@ -1247,14 +1247,11 @@ def _duplicate_observation(error: Exception) -> tuple[int, int]:
         raise AssertionError("ordered duplicate diagnostic changed its index domains")
     first_value = first.get("value")
     duplicate_value = duplicate.get("value")
-    # Count details are decimal strings in the host form (one representation
-    # in every binding).
-    if not all(
-        type(value) is str and value.isascii() and value.isdigit()
-        for value in (first_value, duplicate_value)
-    ):
-        raise AssertionError("ordered duplicate diagnostic indices are not decimal counts")
-    return int(first_value), int(duplicate_value)
+    # Count details are Python ints on the exception (decimal strings only in
+    # the JSON form).
+    if not all(type(value) is int and value >= 0 for value in (first_value, duplicate_value)):
+        raise AssertionError("ordered duplicate diagnostic indices are not counts")
+    return first_value, duplicate_value
 
 
 def _build_report(root: Path, package: Any, foreign: Any) -> dict[str, object]:

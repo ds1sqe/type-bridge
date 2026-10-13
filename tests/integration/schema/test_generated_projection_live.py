@@ -184,7 +184,7 @@ async def _core_rule_refusals(
         session.close()
     for name in ("selection", "group_keys", "terms"):
         details = refusals[name][2]
-        assert details["maximum"] == {"kind": "count", "value": str(width)}, (name, details)
+        assert details["maximum"] == {"kind": "count", "value": width}, (name, details)
     return dict(refusals)
 
 
@@ -3404,8 +3404,8 @@ def test_generated_projection_round_trips_live_models(
         person.aliases = [generated.Aliases(name) for name in ("a", "b", "c", "d")]
     assert isinstance(too_many_aliases.value, ValueError)
     assert too_many_aliases.value.code == "field_cardinality_violation"
-    assert too_many_aliases.value.details["actual_count"] == {"kind": "count", "value": "4"}
-    assert too_many_aliases.value.details["maximum_count"] == {"kind": "count", "value": "3"}
+    assert too_many_aliases.value.details["actual_count"] == {"kind": "count", "value": 4}
+    assert too_many_aliases.value.details["maximum_count"] == {"kind": "count", "value": 3}
     with pytest.raises(ProjectedCardinalityError) as missing_score:
         person.score = None
     assert missing_score.value.code == "missing_required_field"

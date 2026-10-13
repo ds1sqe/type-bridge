@@ -435,19 +435,16 @@ mod tests {
                 }
             );
 
-            for (expression, overflow) in [
-                (ffi::c_str!("True"), false),
-                (ffi::c_str!("1.0"), false),
-                (ffi::c_str!("-1"), true),
-                (ffi::c_str!("1 << 65"), true),
+            // 2.2 raised ValueError for every malformed window.
+            for expression in [
+                ffi::c_str!("True"),
+                ffi::c_str!("1.0"),
+                ffi::c_str!("-1"),
+                ffi::c_str!("1 << 65"),
             ] {
                 let value = py.eval(expression, None, None).expect("hostile value");
                 let error = python_window(&one, &value).expect_err("value must be rejected");
-                if overflow {
-                    assert!(error.is_instance_of::<pyo3::exceptions::PyOverflowError>(py));
-                } else {
-                    assert!(error.is_instance_of::<pyo3::exceptions::PyTypeError>(py));
-                }
+                assert!(error.is_instance_of::<pyo3::exceptions::PyValueError>(py));
             }
         });
     }

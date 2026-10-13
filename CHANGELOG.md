@@ -131,26 +131,28 @@ differently direct and through a proxy. Each entry says what to do instead.
 - Generated Python and TypeScript packages no longer check query windows,
   selection and aggregate caps, group-by keys, or reachability depth
   themselves; the Rust core refuses them with its structured diagnostic
-  (`MatchRequestError` in Python, the structured error with `category` and
-  `code` in TypeScript), the same on every connection. Catch the core codes
-  instead of the old host errors:
+  (in Python `InvalidQueryRequestError`, still a `ValueError`; in
+  TypeScript the structured error with `category` and `code`), the same on
+  every connection. TypeScript callers catch the core codes instead of the
+  old host errors:
   - a zero limit is `zero_window_limit` and an offset plus limit past the
-    unsigned 64-bit range is `window_overflow` (Python raised `ValueError`;
-    TypeScript accepted `limit: 0n` and now refuses it);
+    unsigned 64-bit range is `window_overflow` (TypeScript accepted
+    `limit: 0n` and now refuses it);
   - more selections than `selected_slots` is `selection_cap_exceeded`, no
     or too many aggregate terms are `empty_reducers` /
     `reducer_cap_exceeded`, and too many group-by fields are
     `field_group_tuple_cap_exceeded`, still raised by `group_by()` /
-    `groupBy()` (Python raised `ValueError`, TypeScript `RangeError`);
+    `groupBy()` (TypeScript raised `RangeError`);
   - a reachability minimum depth above its maximum is `reachable_bounds`,
     and a maximum above the predicate-depth ceiling (64) is
     `reachable_depth_limit`.
 
   The caps follow the session's `QueryLimits`: a session that lowers
   `selected_slots` is refused at its own limit, where the hosts used to
-  apply a fixed sixteen. Marshalling stays a host error: in Python a `bool`
-  or non-`int` window or depth raises `TypeError` and a negative or
-  too-large one raises `OverflowError` (depth used to raise `ValueError`); in
+  apply a fixed sixteen. Marshalling stays a host error with the 2.2
+  classes in Python: a malformed window (a `bool`, a non-`int`, or a value
+  outside the unsigned 64-bit range) raises `ValueError`, and a depth that
+  is not an `int` raises `TypeError` or outside 0 to 255 `ValueError`; in
   Node a window that is not a `u64` `bigint` or a depth that is not an
   integer from 0 to 255 is a native argument error (it was a `RangeError`).
   These are the same on every connection: a caller-exchanged session no
@@ -203,14 +205,14 @@ differently direct and through a proxy. Each entry says what to do instead.
 - A structured SDK diagnostic reaches Python and Node in one JSON form,
   defined by the Rust core (`SdkExecutionDiagnostic::host_json`): `version`,
   `category`, `sdk_category`, `query_category`, `code`, `message`, `path`,
-  `details`. `count`, `byte_count`, and `signed` detail values are decimal
-  strings in every language, because a `u64`/`i64` does not fit a JavaScript
-  number; path positions (`index`, `output_slot`, `binding`, `role_edge`)
-  stay numbers.
+  `details`. In the JSON form `count`, `byte_count`, and `signed` detail
+  values are decimal strings, because a `u64`/`i64` does not fit a
+  JavaScript number; path positions (`index`, `output_slot`, `binding`,
+  `role_edge`) stay numbers.
   - Python: `MatchRequestError` (and `UnknownEnumValueError`) keep their
-    classes and attribute names, but `details[...]["value"]` of a `count`,
-    `byte_count`, or `signed` detail is now a `str` (`"16"`, was `16`); use
-    `int(...)`. The exception also gains a `version` attribute.
+    classes and attribute names, and `count`, `byte_count`, and `signed`
+    detail values stay `int`, as in 2.2. The exception gains a `version`
+    attribute.
   - Node: the native error message of a structured diagnostic uses the keys
     `sdk_category` and `query_category` (was `sdkCategory`,
     `queryCategory`) and adds `version`. `QueryV2Error` properties are
@@ -259,6 +261,13 @@ differently direct and through a proxy. Each entry says what to do instead.
 
 ### Added
 
+- `type_bridge_core.InvalidQueryRequestError`, a subclass of both
+  `MatchRequestError` and `ValueError`, for the query refusals 2.2 raised as
+  `ValueError` (codes `zero_window_limit`, `window_overflow`,
+  `selection_cap_exceeded`, `empty_reducers`, `reducer_cap_exceeded`,
+  `field_group_tuple_cap_exceeded`, `reachable_bounds`,
+  `reachable_depth_limit`), so `except ValueError` still catches them. Python
+  exception `details` keep `int` counts; only the JSON form uses strings.
 - Configurable query limits. `QueryLimits` replaces the fixed ceilings on a
   query's encoded size, nesting depth, and structure, and a session can lower
   or raise them, including plans larger than 16 MiB. Python, TypeScript/Node,

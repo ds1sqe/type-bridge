@@ -280,7 +280,7 @@
     },
     {
       "id": "bounds.public-invalid-limit",
-      "description": "A zero limit passes the public language boundary unchanged and Rust refuses it. A negative or out-of-range integer is a host marshalling error (Python TypeError or OverflowError, a native argument error in Node) and never becomes a request.",
+      "description": "A zero limit passes the public language boundary unchanged and Rust refuses it. A negative or out-of-range integer is a host marshalling error (Python ValueError, as in 2.2; a native argument error in Node) and never becomes a request.",
       "features": ["positive_limit"],
       "operation": "fetch_rows",
       "transaction_mode": "none",

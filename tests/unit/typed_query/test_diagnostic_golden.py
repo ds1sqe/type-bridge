@@ -1,10 +1,23 @@
 """Cross-language golden for a representative retained query request."""
 
+import socket
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from type_bridge_core import MatchRequestError, MatchSessionHandle, _QueryDescriptorRegistry
+from type_bridge_core import (
+    InvalidQueryRequestError,
+    MatchRequestError,
+    MatchSessionHandle,
+    ProxyConnection,
+    _QueryDescriptorRegistry,
+)
 
+from tests.unit.query.test_query_v2_remote_runtime import (
+    PLAN_CAPABILITIES,
+    _advertisement,
+    _authority,
+)
 from tests.unit.typed_query._corpus import corpus_error
 
 GOLDEN = (
@@ -102,19 +115,19 @@ def test_public_named_page_matches_the_rust_and_node_golden() -> None:
         (
             "min_depth",
             -1,
-            OverflowError,
+            ValueError,
             "min_depth must be an integer from 0 to 255",
         ),
         (
             "max_depth",
             256,
-            OverflowError,
+            ValueError,
             "max_depth must be an integer from 0 to 255",
         ),
         (
             "min_depth",
             10**100,
-            OverflowError,
+            ValueError,
             "min_depth must be an integer from 0 to 255",
         ),
     ],
@@ -184,4 +197,73 @@ def test_native_group_fields_are_capped_at_the_group_by_call() -> None:
     assert (raised.value.category, raised.value.code) == corpus_error(
         "aggregate.seventeen-group-keys"
     )
-    assert raised.value.details["maximum"] == {"kind": "count", "value": "16"}
+    assert raised.value.details["maximum"] == {"kind": "count", "value": 16}
+
+
+def _closed_proxy() -> ProxyConnection:
+    # A pinned advertisement connects without reaching the endpoint, and the
+    # core refuses the plan before any request is sent.
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    return ProxyConnection.connect(
+        _authority(),
+        f"http://127.0.0.1:{port}",
+        advertisement=_advertisement(PLAN_CAPABILITIES),
+    )
+
+
+def _value_error_calls() -> dict[str, Callable[[], object]]:
+    session = MatchSessionHandle(_registry())
+    person = session.exact("person")
+    name = person.field("name")
+    query = session.query(session.positional([person.one()]))
+    proxy = _closed_proxy()
+    return {
+        "bounds.public-invalid-limit": lambda: query.execute_fetch_rows_proxy(
+            proxy, [], 0, 0, "bounded_many"
+        ),
+        "bounds.window-overflow": lambda: query.execute_fetch_rows_proxy(
+            proxy, [], 2**64 - 2, 2, "bounded_many"
+        ),
+        "selection.seventeen-slot-rejection": lambda: session.positional(
+            [session.exact("person").one() for _ in range(17)]
+        ),
+        "aggregate.empty-terms": lambda: query.execute_reduce_by_proxy(proxy, person, None, [], []),
+        "aggregate.seventeen-terms": lambda: query.execute_reduce_by_proxy(
+            proxy, person, None, ["count"] * 17, [None] * 17
+        ),
+        "aggregate.seventeen-group-keys": lambda: query.check_group_fields([name] * 17),
+        "reachability.reversed-bounds": lambda: _reachable(session, 3, 2),
+        "reachability.depth-ceiling": lambda: _reachable(session, 0, 65),
+    }
+
+
+@pytest.mark.parametrize("case_id", sorted(_value_error_calls()))
+def test_refusals_that_were_value_errors_stay_value_errors(case_id: str) -> None:
+    # type-bridge 2.2 raised ValueError for these; the core's refusal keeps
+    # that base beside MatchRequestError.
+    with pytest.raises(ValueError) as raised:
+        _value_error_calls()[case_id]()
+    assert type(raised.value) is InvalidQueryRequestError
+    assert isinstance(raised.value, MatchRequestError)
+    assert (raised.value.category, raised.value.code) == corpus_error(case_id)
+
+
+def test_other_plan_refusals_are_not_value_errors() -> None:
+    session = MatchSessionHandle(_registry())
+    with pytest.raises(MatchRequestError) as raised:
+        session.exact("missing")
+    assert raised.value.code == "unknown_descriptor"
+    assert not isinstance(raised.value, ValueError)
+
+
+def test_count_details_are_python_ints() -> None:
+    session = MatchSessionHandle(_registry())
+    person = session.exact("person")
+    query = session.query(session.positional([person.one()]))
+    with pytest.raises(MatchRequestError) as raised:
+        query.execute_reduce_by_proxy(_closed_proxy(), person, None, ["count"] * 17, [None] * 17)
+    assert raised.value.details["actual"] == {"kind": "count", "value": 17}
+    assert raised.value.details["maximum"] == {"kind": "count", "value": 16}
+    assert type(raised.value.details["maximum"]["value"]) is int

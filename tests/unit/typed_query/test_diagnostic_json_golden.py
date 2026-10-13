@@ -2,7 +2,9 @@
 
 A native exception carries one attribute per key of the core's diagnostic
 JSON form, so the attributes rebuild that JSON exactly as Node's native
-error message and the C diagnostics JSON give it.
+error message and the C diagnostics JSON give it. The one marshalling step:
+``count``, ``byte_count``, and ``signed`` detail values are Python ``int``
+on the exception and decimal strings in the JSON form.
 """
 
 import json
@@ -39,8 +41,25 @@ def _expected(case_id: str) -> dict[str, object]:
     return next(case["diagnostic"] for case in GOLDEN["cases"] if case["id"] == case_id)
 
 
+INTEGER_DETAIL_KINDS = frozenset({"count", "byte_count", "signed"})
+
+
+def _json_details(details: dict[str, dict[str, object]]) -> dict[str, dict[str, object]]:
+    """Rebuild the JSON form of exception ``details``: integers become decimal strings."""
+    form = {}
+    for name, detail in details.items():
+        if detail["kind"] in INTEGER_DETAIL_KINDS:
+            assert type(detail["value"]) is int, (name, detail)
+            detail = {**detail, "value": str(detail["value"])}
+        form[name] = detail
+    return form
+
+
 def _form(error: BaseException, keys: tuple[str, ...]) -> dict[str, object]:
-    return {key: getattr(error, key) for key in keys}
+    form = {key: getattr(error, key) for key in keys}
+    if isinstance(error, MatchRequestError):
+        form["details"] = _json_details(form["details"])
+    return form
 
 
 def test_group_key_cap_is_the_golden_sdk_json() -> None:

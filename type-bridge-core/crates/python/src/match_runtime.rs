@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use pyo3::exceptions::{PyException, PyOverflowError, PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyException, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAny, PyDict, PyInt, PyString, PyType};
@@ -15,7 +15,7 @@ use pythonize::pythonize;
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{FunctionId, TypeId};
 use type_bridge_contract::limits::QueryLimits;
-use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
+use type_bridge_contract::sdk_diagnostic::{SdkDiagnosticDetailValue, SdkExecutionDiagnostic};
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
     AnswerCancellation, BindingHandle, ComparisonOp, FieldHandle, FunctionArgumentHandle,
@@ -714,23 +714,29 @@ impl PyMatchSessionHandle {
 
 /// Marshal an exact Python `int` into a native unsigned integer.
 ///
-/// Type conversion only: `bool` and other non-`int` values raise
-/// `TypeError`, and a value outside the native range raises
-/// `OverflowError`. Query rules on the converted value (a zero limit, a
-/// window overflow, a depth ceiling) belong to the core and surface as
+/// Type conversion only, with the exception classes 2.2 raised: a value
+/// outside the native range raises `ValueError`, and `bool` or another
+/// non-`int` value raises `not_int` (`ValueError` for a window, `TypeError`
+/// for a depth). Query rules on the converted value (a zero limit, a window
+/// overflow, a depth ceiling) belong to the core and surface as
 /// `MatchRequestError`.
-fn exact_unsigned<T: TryFrom<i128>>(value: &Bound<'_, PyAny>, name: &str, max: u64) -> PyResult<T> {
-    let range = || PyOverflowError::new_err(format!("{name} must be an integer from 0 to {max}"));
+fn exact_unsigned<T: TryFrom<i128>>(
+    value: &Bound<'_, PyAny>,
+    name: &str,
+    max: u64,
+    not_int: fn(String) -> PyErr,
+) -> PyResult<T> {
+    let range = || PyValueError::new_err(format!("{name} must be an integer from 0 to {max}"));
     value
         .cast_exact::<PyInt>()
-        .map_err(|_| PyTypeError::new_err(format!("{name} must be an exact Python int")))?
+        .map_err(|_| not_int(format!("{name} must be an exact Python int")))?
         .extract::<i128>()
         .map_err(|_| range())
         .and_then(|value| T::try_from(value).map_err(|_| range()))
 }
 
 fn python_reachability_depth(value: &Bound<'_, PyAny>, name: &str) -> PyResult<u8> {
-    exact_unsigned(value, name, u64::from(u8::MAX))
+    exact_unsigned(value, name, u64::from(u8::MAX), PyTypeError::new_err)
 }
 
 pub(crate) fn python_window(
@@ -738,8 +744,8 @@ pub(crate) fn python_window(
     limit: &Bound<'_, PyAny>,
 ) -> PyResult<Window> {
     Ok(Window {
-        offset: exact_unsigned(offset, "offset", u64::MAX)?,
-        limit: exact_unsigned(limit, "limit", u64::MAX)?,
+        offset: exact_unsigned(offset, "offset", u64::MAX, PyValueError::new_err)?,
+        limit: exact_unsigned(limit, "limit", u64::MAX, PyValueError::new_err)?,
     })
 }
 
@@ -1867,6 +1873,33 @@ static UNKNOWN_ENUM_VALUE_ERROR: ValueErrorType = ValueErrorType::new(
     "A spelling no core enum parser accepts (code `unknown_enum_value`).",
 );
 
+static INVALID_QUERY_REQUEST_ERROR: ValueErrorType = ValueErrorType::new(
+    "InvalidQueryRequestError",
+    "A query composition refusal that type-bridge 2.2 raised as `ValueError`: \
+     a window, selection, reducer, or group-by cap, or reachability depth \
+     bounds (codes `zero_window_limit`, `window_overflow`, \
+     `selection_cap_exceeded`, `empty_reducers`, `reducer_cap_exceeded`, \
+     `field_group_tuple_cap_exceeded`, `reachable_bounds`, \
+     `reachable_depth_limit`).",
+);
+
+/// The structured class for `diagnostic` that also derives from
+/// `ValueError`, for the refusals 2.2 raised as `ValueError`.
+fn value_error_type(diagnostic: &SdkExecutionDiagnostic) -> Option<&'static ValueErrorType> {
+    matches!(
+        diagnostic.code().as_str(),
+        "zero_window_limit"
+            | "window_overflow"
+            | "selection_cap_exceeded"
+            | "empty_reducers"
+            | "reducer_cap_exceeded"
+            | "field_group_tuple_cap_exceeded"
+            | "reachable_bounds"
+            | "reachable_depth_limit"
+    )
+    .then_some(&INVALID_QUERY_REQUEST_ERROR)
+}
+
 static PROJECTED_CARDINALITY_ERROR: ValueErrorType = ValueErrorType::new(
     "ProjectedCardinalityError",
     "A generated model member holds a value count outside its projected \
@@ -1893,6 +1926,9 @@ pub(crate) fn py_match_error(error: MatchError) -> PyErr {
 }
 
 pub(crate) fn py_sdk_diagnostic(diagnostic: SdkExecutionDiagnostic) -> PyErr {
+    if let Some(error_type) = value_error_type(&diagnostic) {
+        return py_value_error_diagnostic(error_type, &diagnostic);
+    }
     Python::attach(|py| {
         let py_error = MatchRequestError::new_err(diagnostic.message().as_str());
         structured_py_error(py, py_error, &diagnostic)
@@ -1902,6 +1938,10 @@ pub(crate) fn py_sdk_diagnostic(diagnostic: SdkExecutionDiagnostic) -> PyErr {
 /// Set one attribute on `py_error` per key of the diagnostic's canonical host
 /// JSON form (`version`, `category`, `sdk_category`, `query_category`,
 /// `code`, `message`, `path`, `details`).
+///
+/// The JSON form carries `count`, `byte_count`, and `signed` detail values as
+/// decimal strings so JSON numbers never lose precision; Python ints do not,
+/// so the exception's `details` hold them as `int`.
 fn structured_py_error(
     py: Python<'_>,
     py_error: PyErr,
@@ -1910,6 +1950,24 @@ fn structured_py_error(
     let attach = || -> PyResult<()> {
         let value = py_error.value(py);
         let form = pythonize(py, &diagnostic.host_json())?.cast_into::<PyDict>()?;
+        if let Some(details) = form.get_item("details")? {
+            let details = details.cast_into::<PyDict>()?;
+            for (name, detail) in diagnostic.details() {
+                let number = match detail {
+                    SdkDiagnosticDetailValue::Count(number)
+                    | SdkDiagnosticDetailValue::ByteCount(number) => {
+                        number.into_pyobject(py)?.into_any()
+                    }
+                    SdkDiagnosticDetailValue::Signed(number) => {
+                        number.into_pyobject(py)?.into_any()
+                    }
+                    _ => continue,
+                };
+                if let Some(tagged) = details.get_item(name.as_str())? {
+                    tagged.cast_into::<PyDict>()?.set_item("value", number)?;
+                }
+            }
+        }
         for (key, item) in form.iter() {
             value.setattr(key.cast_into::<PyString>()?, item)?;
         }
@@ -2020,6 +2078,10 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add(
         "ProjectedCardinalityError",
         PROJECTED_CARDINALITY_ERROR.get(module.py())?,
+    )?;
+    module.add(
+        "InvalidQueryRequestError",
+        INVALID_QUERY_REQUEST_ERROR.get(module.py())?,
     )?;
     Ok(())
 }
@@ -2459,7 +2521,7 @@ mod tests {
             assert_eq!(
                 details,
                 serde_json::json!({
-                    "actual_bytes": {"kind": "byte_count", "value": "2"}
+                    "actual_bytes": {"kind": "byte_count", "value": 2}
                 })
             );
         });

@@ -356,7 +356,7 @@ except ValueError as error:
     # The core's refusal: ProjectedCardinalityError is a ValueError.
     assert type(error).__name__ == "ProjectedCardinalityError"
     assert getattr(error, "code", None) == "role_cardinality_violation"
-    assert getattr(error, "details", {}).get("actual_count") == {"kind": "count", "value": "3"}
+    assert getattr(error, "details", {}).get("actual_count") == {"kind": "count", "value": 3}
 else:
     raise AssertionError("role maximum cardinality was not enforced")
 
@@ -416,8 +416,8 @@ except MatchRequestError as error:
     assert error.sdk_category == "invalid_input"
     assert error.code == "ordered_distinct_duplicate"
     assert error.details == {
-        "duplicate_index": {"kind": "count", "value": "1"},
-        "first_index": {"kind": "count", "value": "0"},
+        "duplicate_index": {"kind": "count", "value": 1},
+        "first_index": {"kind": "count", "value": 0},
     }
 else:
     raise AssertionError("ordered ownership reassignment accepted a duplicate scalar")
@@ -982,7 +982,7 @@ except MatchRequestError as error:
         {"kind": "contract_identity", "value": "person"},
     ]
     assert error.details == {
-        "attempt": {"kind": "signed", "value": "-7"},
+        "attempt": {"kind": "signed", "value": -7},
         "expected": {"kind": "query_identity_list", "value": ["person", "employee"]},
         "retryable": {"kind": "boolean", "value": False},
         "subject": {"kind": "query_identity", "value": "person"},
@@ -990,7 +990,7 @@ except MatchRequestError as error:
     attempt_detail = error.details["attempt"]
     assert isinstance(attempt_detail, dict)
     attempt_value = attempt_detail["value"]
-    assert isinstance(attempt_value, str)
+    assert type(attempt_value) is int
     diagnostic_serialized = json.dumps(
         {"message": error.message, "path": error.path, "details": error.details},
         sort_keys=True,
@@ -1089,8 +1089,11 @@ def expect_core_refusal(
             asyncio.run(outcome)
     except MatchRequestError as error:
         assert (error.category, error.code) == ("invalid_plan", code), (error.category, error.code)
+        # 2.2 raised ValueError for these refusals; the core's class keeps it.
+        assert isinstance(error, ValueError), type(error)
+        assert type(error).__name__ == "InvalidQueryRequestError", type(error)
         if maximum is not None:
-            assert error.details["maximum"] == {"kind": "count", "value": str(maximum)}, error.details
+            assert error.details["maximum"] == {"kind": "count", "value": maximum}, error.details
             assert error.details["limit"] == {
                 "kind": "query_identity",
                 "value": "selected_slots",
@@ -1146,9 +1149,9 @@ for session_slots in (None, 4):
             ),
             code,
         )
-    # Marshalling stays a host error: a bool is not an int, and a value
-    # outside the native unsigned range does not convert.
-    for hostile, error_type in ((True, TypeError), (-1, OverflowError), (256, OverflowError)):
+    # Marshalling stays a host error with the 2.2 classes: a bool is not an
+    # int (TypeError), and a depth outside 0..255 is a ValueError.
+    for hostile, error_type in ((True, TypeError), (-1, ValueError), (256, ValueError)):
         try:
             core_rule_session.reachable(
                 core_person,

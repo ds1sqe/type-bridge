@@ -14999,7 +14999,7 @@ class BoundaryIterator:
             assert_eq!(
                 details,
                 serde_json::json!({
-                    "first_conflicting_index": {"kind": "count", "value": "0"},
+                    "first_conflicting_index": {"kind": "count", "value": 0},
                 }),
             );
             {
@@ -15046,7 +15046,7 @@ class BoundaryIterator:
             assert_eq!(
                 details,
                 serde_json::json!({
-                    "first_conflicting_index": {"kind": "count", "value": "0"},
+                    "first_conflicting_index": {"kind": "count", "value": 0},
                 }),
             );
             {
@@ -15097,7 +15097,7 @@ class BoundaryIterator:
             assert_eq!(
                 details,
                 serde_json::json!({
-                    "first_conflicting_index": {"kind": "count", "value": "0"},
+                    "first_conflicting_index": {"kind": "count", "value": 0},
                 }),
             );
             {
@@ -16380,8 +16380,8 @@ class CyclicFinalizer:
             assert_eq!(
                 details,
                 serde_json::json!({
-                    "actual_occurrence_count": {"kind": "count", "value": "0"},
-                    "expected_occurrence_count": {"kind": "count", "value": "1"},
+                    "actual_occurrence_count": {"kind": "count", "value": 0},
+                    "expected_occurrence_count": {"kind": "count", "value": 1},
                     "foreign_package": {"kind": "boolean", "value": false},
                 }),
             );
@@ -16588,7 +16588,7 @@ class CyclicFinalizer:
         code: &str,
         message: &str,
         [owner, member]: [Value; 2],
-        [actual, minimum, maximum]: [&str; 3],
+        [actual, minimum, maximum]: [u64; 3],
     ) -> Value {
         json!({
             "version": 1,
@@ -16695,7 +16695,7 @@ class CyclicFinalizer:
                         "field_cardinality_violation",
                         "The projected ownership violates its exact cardinality",
                         person_field("aliases"),
-                        ["3", "0", "2"],
+                        [3, 0, 2],
                     ),
                 ),
                 (
@@ -16704,7 +16704,7 @@ class CyclicFinalizer:
                         "missing_required_field",
                         "A required projected ownership has no value",
                         person_field("identifier"),
-                        ["0", "1", "1"],
+                        [0, 1, 1],
                     ),
                 ),
             ] {
@@ -16752,7 +16752,7 @@ class CyclicFinalizer:
                         json!({"kind": "relation", "label": "container"}),
                         json!({"kind": "role", "value": {"declaring_relation": "container", "label": "item"}}),
                     ],
-                    ["3", "0", "2"],
+                    [3, 0, 2],
                 )
             );
 
@@ -16770,7 +16770,7 @@ class CyclicFinalizer:
                         json!({"kind": "relation", "label": "membership"}),
                         json!({"kind": "role", "value": {"declaring_relation": "membership", "label": "member"}}),
                     ],
-                    ["0", "1", "1"],
+                    [0, 1, 1],
                 )
             );
         });
