@@ -290,7 +290,7 @@ pub enum TxType {
     Schema,
 }
 
-type_bridge_contract::enum_spellings!(TxType, "transaction_type", canonical {
+type_bridge_contract::enum_spellings!(TxType, "transaction_type", folded, canonical {
     "read" => Read,
     "write" => Write,
     "schema" => Schema,

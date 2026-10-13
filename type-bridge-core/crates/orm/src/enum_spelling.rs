@@ -162,7 +162,7 @@ mod tests {
         }
         for spelling in ValueTypeTag::ACCEPTED {
             let value: ValueTypeTag = spelling.parse().unwrap();
-            assert_eq!(serde_name(value), *spelling);
+            assert_eq!(serde_name(value), value.spelling());
         }
         assert_eq!(serde_name(SortDirection::Descending), "descending");
         assert_eq!(serde_name(MissingOrder::First), "first");
@@ -181,9 +181,16 @@ mod tests {
         );
         assert_eq!(canonical_enum_spelling("owner_lookup", "exact"), Ok("eq"));
         assert!(canonical_enum_spelling("owner_lookup", "like").is_err());
-        assert!(canonical_enum_spelling("transaction_type", "READ").is_err());
+        assert_eq!(
+            canonical_enum_spelling("transaction_type", " READ "),
+            Ok("read")
+        );
+        assert!(canonical_enum_spelling("transaction_type", "read only").is_err());
         assert!(canonical_enum_spelling("value_type", "datetime_tz").is_err());
-        assert!(canonical_enum_spelling("scalar_domain", "datetime-tz").is_err());
+        assert_eq!(
+            canonical_enum_spelling("scalar_domain", "datetime-tz"),
+            Ok("datetime_tz")
+        );
         assert_eq!(
             canonical_enum_spelling("given_column_type", "long"),
             Ok("integer")

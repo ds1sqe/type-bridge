@@ -174,6 +174,9 @@ crate::enum_spellings!(ValueTypeTag, "scalar_domain", canonical {
     "datetime_tz" => DateTimeTz,
     "decimal" => Decimal,
     "duration" => Duration,
+}, aliases {
+    // Node 2.2 accepted the TypeQL spelling for this scalar domain.
+    "datetime-tz" => DateTimeTz,
 });
 
 impl ValueTypeTag {

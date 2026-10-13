@@ -50,4 +50,6 @@ test("aliases resolve to their canonical spelling", () => {
   assert.equal(native.canonicalEnumSpelling("manager_lookup", "exact"), "eq");
   assert.equal(native.canonicalEnumSpelling("manager_lookup", "like"), "regex");
   assert.equal(native.canonicalEnumSpelling("scalar_domain", "datetime_tz"), "datetime_tz");
+  assert.equal(native.canonicalEnumSpelling("scalar_domain", "datetime-tz"), "datetime_tz");
+  assert.equal(native.canonicalEnumSpelling("transaction_type", " READ "), "read");
 });

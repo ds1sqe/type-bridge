@@ -830,6 +830,20 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn attribute_values_accept_the_2_2_datetime_tz_spelling() {
+        for spelling in ["datetime_tz", "datetime-tz"] {
+            let value = serde_json::json!({
+                "value_type": spelling,
+                "value": "2026-10-25T00:30:00Z",
+            });
+            assert_eq!(
+                attribute_value_from_js(&value, Some(ValueType::DateTimeTz)).unwrap(),
+                AttributeValue::DateTimeTZ("2026-10-25T00:30:00Z".to_owned())
+            );
+        }
+    }
+
     struct AdministrationBackend {
         databases: Arc<Mutex<BTreeSet<String>>>,
     }

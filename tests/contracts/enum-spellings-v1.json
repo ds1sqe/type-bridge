@@ -155,9 +155,9 @@
     },
     {
       "id": "transaction_type.unknown",
-      "description": "Transaction types are exact lowercase; bindings no longer trim or case-fold.",
+      "description": "Transaction types are trimmed and ASCII case-folded (2.2 behaviour); other words are refused as given.",
       "kind": "transaction_type",
-      "value": "READ",
+      "value": "commit",
       "expected": {
         "category": "invalid_input",
         "code": "unknown_enum_value",
@@ -168,7 +168,7 @@
           },
           "value": {
             "kind": "query_identity",
-            "value": "READ"
+            "value": "commit"
           },
           "accepted": {
             "kind": "query_identity_list",
@@ -217,9 +217,9 @@
     },
     {
       "id": "scalar_domain.unknown",
-      "description": "The scalar domain is spelled datetime_tz; the TypeQL spelling is not an alias.",
+      "description": "The scalar domain is spelled datetime_tz, with the TypeQL spelling datetime-tz as an alias; other spellings are refused.",
       "kind": "scalar_domain",
-      "value": "datetime-tz",
+      "value": "datetimetz",
       "expected": {
         "category": "invalid_input",
         "code": "unknown_enum_value",
@@ -230,7 +230,7 @@
           },
           "value": {
             "kind": "query_identity",
-            "value": "datetime-tz"
+            "value": "datetimetz"
           },
           "accepted": {
             "kind": "query_identity_list",
@@ -243,7 +243,8 @@
               "datetime",
               "datetime_tz",
               "decimal",
-              "duration"
+              "duration",
+              "datetime-tz"
             ]
           }
         }

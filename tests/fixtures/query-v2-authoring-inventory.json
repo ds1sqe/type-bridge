@@ -2246,7 +2246,8 @@
               "datetime",
               "datetime_tz",
               "decimal",
-              "duration"
+              "duration",
+              "datetime-tz"
             ]
           },
           "kind": {

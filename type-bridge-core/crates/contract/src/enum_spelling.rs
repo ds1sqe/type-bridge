@@ -146,20 +146,35 @@ impl From<UnknownEnumValue> for Diagnostic {
     }
 }
 
+/// Fold a spelling for a parser declared `folded`: surrounding whitespace
+/// trimmed and ASCII letters lowercased. Other parsers match exactly.
+#[doc(hidden)]
+#[must_use]
+pub fn normalize_spelling(value: &str, folded: bool) -> std::borrow::Cow<'_, str> {
+    if folded {
+        std::borrow::Cow::Owned(value.trim().to_ascii_lowercase())
+    } else {
+        std::borrow::Cow::Borrowed(value)
+    }
+}
+
 /// Give a closed enum its one parser.
 ///
 /// Generates `KIND`, `ACCEPTED` (canonical spellings, then aliases), a
 /// `const fn spelling(self)` returning each variant's canonical spelling,
 /// and `FromStr` with [`UnknownEnumValue`] as the error. The `canonical`
 /// block must name every variant exactly once; the exhaustive `spelling`
-/// match enforces it at compile time.
+/// match enforces it at compile time. Writing `folded,` before `canonical`
+/// makes the parser trim surrounding whitespace and ignore ASCII case
+/// (canonical spellings and aliases must then be lowercase); a rejected
+/// spelling is still reported exactly as given.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! enum_spellings {
     (
-        $ty:ty, $kind:literal,
-        canonical { $($spelling:literal => $variant:ident),+ $(,)? }
-        $(, aliases { $($alias:literal => $alias_variant:ident),+ $(,)? })? $(,)?
+        @impl $ty:ty, $kind:literal, $folded:literal,
+        canonical { $($spelling:literal => $variant:ident),+ }
+        $(, aliases { $($alias:literal => $alias_variant:ident),+ })?
     ) => {
         impl $ty {
             /// Stable enum kind name used in `unknown_enum_value` details.
@@ -181,7 +196,7 @@ macro_rules! enum_spellings {
             type Err = $crate::enum_spelling::UnknownEnumValue;
 
             fn from_str(value: &str) -> ::core::result::Result<Self, Self::Err> {
-                match value {
+                match $crate::enum_spelling::normalize_spelling(value, $folded).as_ref() {
                     $($spelling => Ok(Self::$variant),)+
                     $($($alias => Ok(Self::$alias_variant),)+)?
                     _ => Err($crate::enum_spelling::UnknownEnumValue::new(
@@ -192,6 +207,28 @@ macro_rules! enum_spellings {
                 }
             }
         }
+    };
+    (
+        $ty:ty, $kind:literal, folded,
+        canonical { $($spelling:literal => $variant:ident),+ $(,)? }
+        $(, aliases { $($alias:literal => $alias_variant:ident),+ $(,)? })? $(,)?
+    ) => {
+        $crate::enum_spellings!(
+            @impl $ty, $kind, true,
+            canonical { $($spelling => $variant),+ }
+            $(, aliases { $($alias => $alias_variant),+ })?
+        );
+    };
+    (
+        $ty:ty, $kind:literal,
+        canonical { $($spelling:literal => $variant:ident),+ $(,)? }
+        $(, aliases { $($alias:literal => $alias_variant:ident),+ $(,)? })? $(,)?
+    ) => {
+        $crate::enum_spellings!(
+            @impl $ty, $kind, false,
+            canonical { $($spelling => $variant),+ }
+            $(, aliases { $($alias => $alias_variant),+ })?
+        );
     };
 }
 
@@ -218,10 +255,27 @@ mod tests {
         assert_eq!("uno".parse(), Ok(Sample::One));
         assert_eq!(Sample::One.spelling(), "one");
         let error = "One".parse::<Sample>().unwrap_err();
+        assert_eq!(" one ".parse::<Sample>().unwrap_err().value(), " one ");
         assert_eq!(
             (error.kind(), error.value(), error.accepted()),
             ("sample", "One", Sample::ACCEPTED)
         );
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Folded {
+        One,
+    }
+
+    enum_spellings!(Folded, "folded", folded, canonical { "one" => One });
+
+    #[test]
+    fn folded_parser_trims_and_ignores_ascii_case() {
+        assert_eq!("ONE".parse(), Ok(Folded::One));
+        assert_eq!(" One\t".parse(), Ok(Folded::One));
+        assert_eq!((Folded::KIND, Folded::One.spelling()), ("folded", "one"));
+        let error = "o ne".parse::<Folded>().unwrap_err();
+        assert_eq!((error.value(), error.accepted()), ("o ne", &["one"][..]));
     }
 
     #[test]

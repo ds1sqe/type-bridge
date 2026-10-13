@@ -175,13 +175,10 @@ differently direct and through a proxy. Each entry says what to do instead.
   `MatchRequestError` and `ValueError`, so `except ValueError` still
   catches it; TypeScript raises the structured error with that `code`
   instead of a plain native argument error. The old message texts are gone.
-  Accepted spellings changed:
-  - transaction types are exact lowercase (`read`, `write`, `schema`); the
-    native `transaction()` / `execute_with_rows()` no longer trim or
-    case-fold (`"READ"` is refused);
-  - Node `compareValueJson` / `functionValueJson` take the scalar-domain
-    spelling `datetime_tz` only (generated code always sent it); the
-    TypeQL spelling `datetime-tz` there was an alias and is refused;
+  As in 2.2, transaction types are trimmed and ASCII case-folded (`" READ "`
+  opens a read transaction), and Node `compareValueJson` /
+  `functionValueJson` accept the TypeQL spelling `datetime-tz` as an alias
+  of the scalar domain `datetime_tz`. Accepted spellings changed:
   - row cardinality also accepts `complete`, which the core validates;
   - TypeScript `QuerySession.var(model, mode)` refuses a mode other than
     `exact` or `subtypes` with the structured error (was `TypeError`); the

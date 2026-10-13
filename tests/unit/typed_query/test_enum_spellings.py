@@ -49,6 +49,12 @@ def test_aliases_resolve_to_their_canonical_spelling() -> None:
     assert canonical_enum_spelling("owner_lookup", "exact") == "eq"
     assert canonical_enum_spelling("value_type", "datetime-tz") == "datetime-tz"
     assert canonical_enum_spelling("given_column_type", "long") == "integer"
+    assert canonical_enum_spelling("scalar_domain", "datetime-tz") == "datetime_tz"
+
+
+@pytest.mark.parametrize("spelling", ["read", "READ", " read ", "Read\t"])
+def test_transaction_types_are_trimmed_and_case_folded(spelling: str) -> None:
+    assert canonical_enum_spelling("transaction_type", spelling) == "read"
 
 
 def _registry() -> _QueryDescriptorRegistry:
