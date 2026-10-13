@@ -10,9 +10,10 @@
 //! | Item | Role |
 //! |------|------|
 //! | [`MIN_SUPPORTED`](crate::version::MIN_SUPPORTED) | Floor of the support window (`3.11.0`) |
-//! | [`MAX_SUPPORTED_LINE`](crate::version::MAX_SUPPORTED_LINE) | Ceiling of the support window as `(major, minor)` (`3.12`) |
+//! | [`MAX_SUPPORTED_LINE`](crate::version::MAX_SUPPORTED_LINE) | Ceiling of the support window as `(major, minor)` (`3.13`) |
 //! | [`window_contains`](crate::version::window_contains) | Range predicate combining both bounds |
 //! | [`semantic_profile_id`](crate::version::semantic_profile_id) | Map any supported patch release to its frozen schema semantic profile |
+//! | [`GeneratedPackageRelease`](crate::version::GeneratedPackageRelease) | Exact TypeDB release a generated package's profile connects to |
 //! | [`band`](crate::version::band) | Band a driver natively speaks (data; measured against live servers) |
 //! | [`server_accepted_bands`](crate::version::server_accepted_bands) | Bands a server accepts connections from (data; measured) |
 //! | [`negotiate_server_band`](crate::version::negotiate_server_band) | Pick the embedded band to connect a server with |
@@ -159,15 +160,18 @@ pub const MIN_SUPPORTED: Version = Version::new(3, 11, 0);
 
 /// Ceiling of the TypeDB support window as `(major, minor)`, inclusive.
 ///
-/// Any patch release on this line is in-window (`3.12.0`, `3.12.1`, …).
-/// The first version on the **next** minor (`3.13.0`) is out of window.
-pub const MAX_SUPPORTED_LINE: (u32, u32) = (3, 12);
+/// Any patch release on this line is in-window (`3.13.0`, `3.13.6`, …).
+/// The first version on the **next** minor (`3.14.0`) is out of window.
+pub const MAX_SUPPORTED_LINE: (u32, u32) = (3, 13);
 
 /// Frozen schema semantic profile for every supported TypeDB 3.11 patch.
 pub const TYPEDB_3_11_SEMANTIC_PROFILE_ID: &str = "typedb-3.11.5/v1";
 
 /// Frozen schema semantic profile for every supported TypeDB 3.12 patch.
 pub const TYPEDB_3_12_SEMANTIC_PROFILE_ID: &str = "typedb-3.12.1/v1";
+
+/// Frozen schema semantic profile for every supported TypeDB 3.13 patch.
+pub const TYPEDB_3_13_SEMANTIC_PROFILE_ID: &str = "typedb-3.13.6/v1";
 
 // ---------------------------------------------------------------------------
 // Window predicate
@@ -177,7 +181,7 @@ pub const TYPEDB_3_12_SEMANTIC_PROFILE_ID: &str = "typedb-3.12.1/v1";
 ///
 /// A version is in-window when:
 /// - `v >= MIN_SUPPORTED` (i.e. at least `3.11.0`), **and**
-/// - `(v.major, v.minor) <= MAX_SUPPORTED_LINE` (i.e. at most `3.12.x`).
+/// - `(v.major, v.minor) <= MAX_SUPPORTED_LINE` (i.e. at most `3.13.x`).
 pub fn window_contains(v: &Version) -> bool {
     *v >= MIN_SUPPORTED && (v.major, v.minor) <= MAX_SUPPORTED_LINE
 }
@@ -196,7 +200,50 @@ pub fn semantic_profile_id(v: &Version) -> Option<&'static str> {
     match (v.major, v.minor) {
         (3, 11) => Some(TYPEDB_3_11_SEMANTIC_PROFILE_ID),
         (3, 12) => Some(TYPEDB_3_12_SEMANTIC_PROFILE_ID),
+        (3, 13) => Some(TYPEDB_3_13_SEMANTIC_PROFILE_ID),
         _ => None,
+    }
+}
+
+/// Exact TypeDB release a generated package connects to, selected by the
+/// package's semantic profile.
+///
+/// Generated packages connect only to the one release their profile was
+/// proven against. The set is closed: a value exists only for a profile
+/// listed here, so callers cannot require an arbitrary version.
+///
+/// | Package profile | Required server |
+/// |-----------------|-----------------|
+/// | `typedb-3.12.1/v1` | `3.12.3` |
+/// | `typedb-3.13.6/v1` | `3.13.6` |
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GeneratedPackageRelease {
+    server: Version,
+}
+
+impl GeneratedPackageRelease {
+    /// Return the exact release for a generated package's semantic profile,
+    /// or `None` when generated packages on that profile cannot connect.
+    #[must_use]
+    pub fn for_profile(profile: &str) -> Option<Self> {
+        let server = match profile {
+            TYPEDB_3_12_SEMANTIC_PROFILE_ID => Version::new(3, 12, 3),
+            TYPEDB_3_13_SEMANTIC_PROFILE_ID => Version::new(3, 13, 6),
+            _ => return None,
+        };
+        Some(Self { server })
+    }
+
+    /// The exact server release the package requires.
+    #[must_use]
+    pub const fn server(self) -> Version {
+        self.server
+    }
+
+    /// Whether `observed` is exactly the required release.
+    #[must_use]
+    pub fn admits(self, observed: &Version) -> bool {
+        *observed == self.server
     }
 }
 
@@ -216,7 +263,8 @@ pub fn semantic_profile_id(v: &Version) -> Option<&'static str> {
 /// |-----------|------|
 /// | 3.11 | `8` (protocol 8) |
 /// | 3.12 | `9` (protocol 3.12.0-rc0) |
-/// | anything else (incl. 3.9, 3.13, 2.x) | `None` |
+/// | 3.13 | `9` (protocol 3.13.4; wire-compatible with 3.12, measured live) |
+/// | anything else (incl. 3.9, 3.14, 2.x) | `None` |
 ///
 /// When TypeDB ships a new minor line, measure it live and extend **both**
 /// this map and [`server_accepted_bands`] — together they are the only data
@@ -228,8 +276,8 @@ pub fn band(v: &Version) -> Option<u8> {
     }
     match v.minor {
         11 => Some(8),
-        12 => Some(9),
-        // 3.9 was never released; 3.13+ not yet mapped.
+        12 | 13 => Some(9),
+        // 3.9 was never released; 3.14+ not yet mapped.
         _ => None,
     }
 }
@@ -244,6 +292,10 @@ pub fn band(v: &Version) -> Option<u8> {
 /// per-version band cannot express that, so servers carry an accepted *set*
 /// and drivers keep their single native [`band`].
 ///
+/// Server 3.13 is listed as band 9 only: drivers 3.12.3 and 3.13.6 were
+/// measured against it, a band-8 (3.11.5) driver was not, so band 8 is not
+/// claimed. The default build embeds band 9, so it serves 3.13 natively.
+///
 /// HAZARD (measured live on 3.11.5): a band-9 connection attempt does not
 /// just fail against a 3.11 server — it crashes the server process.  Never
 /// probe band 9 against a server of unknown version; discover through
@@ -255,6 +307,7 @@ pub fn band(v: &Version) -> Option<u8> {
 /// |-------------|---------|
 /// | 3.11 | `[8]` |
 /// | 3.12 | `[9, 8]` |
+/// | 3.13 | `[9]` |
 /// | anything else | `[]` |
 pub fn server_accepted_bands(v: &Version) -> &'static [u8] {
     if v.major != 3 {
@@ -263,6 +316,7 @@ pub fn server_accepted_bands(v: &Version) -> &'static [u8] {
     match v.minor {
         11 => &[8],
         12 => &[9, 8],
+        13 => &[9],
         _ => &[],
     }
 }
@@ -350,7 +404,7 @@ pub fn check_supported(driver: &Version, server: &Version) -> Result<(), Version
 /// # Errors
 ///
 /// - [`VersionError::Unsupported`] when `server` lies outside the support
-///   window (below-window `3.7`, above-window `3.13`) **or** is in-window but
+///   window (below-window `3.7`, above-window `3.14`) **or** is in-window but
 ///   has no accepted bands (e.g. a future `3.9` line, only reachable if the
 ///   window ever widens past the band map).  This path names no band — it is
 ///   the same window-class rejection an out-of-range server gets today.
@@ -1574,7 +1628,7 @@ pub enum VersionError {
 }
 
 /// Human-readable window string used consistently in error messages.
-const WINDOW_HUMAN: &str = "3.11.0–3.12.x";
+const WINDOW_HUMAN: &str = "3.11.0–3.13.x";
 
 impl fmt::Display for VersionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1702,8 +1756,15 @@ mod tests {
     }
 
     #[test]
-    fn window_rejects_3_13_0() {
-        assert!(!window_contains(&Version::new(3, 13, 0)));
+    fn window_accepts_3_13_line() {
+        assert!(window_contains(&Version::new(3, 13, 0)));
+        assert!(window_contains(&Version::new(3, 13, 6)));
+        assert!(window_contains(&Version::new(3, 13, 99)));
+    }
+
+    #[test]
+    fn window_rejects_3_14_0() {
+        assert!(!window_contains(&Version::new(3, 14, 0)));
     }
 
     #[test]
@@ -1722,6 +1783,10 @@ mod tests {
                 semantic_profile_id(&Version::new(3, 12, patch)),
                 Some(TYPEDB_3_12_SEMANTIC_PROFILE_ID)
             );
+            assert_eq!(
+                semantic_profile_id(&Version::new(3, 13, patch)),
+                Some(TYPEDB_3_13_SEMANTIC_PROFILE_ID)
+            );
         }
     }
 
@@ -1730,11 +1795,31 @@ mod tests {
         for version in [
             Version::new(2, 12, 1),
             Version::new(3, 10, 99),
-            Version::new(3, 13, 0),
+            Version::new(3, 14, 0),
             Version::new(4, 11, 5),
         ] {
             assert_eq!(semantic_profile_id(&version), None);
         }
+    }
+
+    #[test]
+    fn generated_packages_bind_one_exact_release_per_profile() {
+        let release = |profile| GeneratedPackageRelease::for_profile(profile).map(|r| r.server());
+        assert_eq!(
+            release(TYPEDB_3_12_SEMANTIC_PROFILE_ID),
+            Some(Version::new(3, 12, 3))
+        );
+        assert_eq!(
+            release(TYPEDB_3_13_SEMANTIC_PROFILE_ID),
+            Some(Version::new(3, 13, 6))
+        );
+        assert_eq!(release(TYPEDB_3_11_SEMANTIC_PROFILE_ID), None);
+        assert_eq!(release("typedb-3.14.0/v1"), None);
+
+        let r313 = GeneratedPackageRelease::for_profile(TYPEDB_3_13_SEMANTIC_PROFILE_ID).unwrap();
+        assert!(r313.admits(&Version::new(3, 13, 6)));
+        assert!(!r313.admits(&Version::new(3, 13, 5)));
+        assert!(!r313.admits(&Version::new(3, 12, 3)));
     }
 
     // -- band ----------------------------------------------------------------
@@ -1763,8 +1848,14 @@ mod tests {
     }
 
     #[test]
-    fn band_3_13_is_none() {
-        assert_eq!(band(&Version::new(3, 13, 0)), None);
+    fn band_3_13_is_9() {
+        assert_eq!(band(&Version::new(3, 13, 0)), Some(9));
+        assert_eq!(band(&Version::new(3, 13, 6)), Some(9));
+    }
+
+    #[test]
+    fn band_3_14_is_none() {
+        assert_eq!(band(&Version::new(3, 14, 0)), None);
     }
 
     #[test]
@@ -1793,8 +1884,15 @@ mod tests {
     }
 
     #[test]
+    fn server_3_13_accepts_band9_only() {
+        // Measured: drivers 3.12.3 and 3.13.6 round-trip against 3.13.6.
+        // Band 8 is unmeasured on 3.13 and therefore not claimed.
+        assert_eq!(server_accepted_bands(&Version::new(3, 13, 6)), &[9]);
+    }
+
+    #[test]
     fn server_unmapped_accepts_nothing() {
-        assert!(server_accepted_bands(&Version::new(3, 13, 0)).is_empty());
+        assert!(server_accepted_bands(&Version::new(3, 14, 0)).is_empty());
         assert!(server_accepted_bands(&Version::new(2, 28, 0)).is_empty());
     }
 
@@ -1816,6 +1914,15 @@ mod tests {
             negotiate_server_band(&Version::new(3, 12, 0), &[8, 9]),
             Some(9)
         );
+    }
+
+    #[test]
+    fn negotiate_3_13_requires_band9() {
+        assert_eq!(
+            negotiate_server_band(&Version::new(3, 13, 6), &[8, 9]),
+            Some(9)
+        );
+        assert_eq!(negotiate_server_band(&Version::new(3, 13, 6), &[8]), None);
     }
 
     #[test]
@@ -1874,6 +1981,52 @@ mod tests {
         assert!(
             matches!(err, VersionError::BandMismatch { .. }),
             "expected BandMismatch, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_band9_drivers_and_3_12_3_13_servers_accept_each_other() {
+        // Measured: drivers 3.12.3 and 3.13.6 against servers 3.12.3 and 3.13.6.
+        for driver in [Version::new(3, 12, 3), Version::new(3, 13, 6)] {
+            for server in [Version::new(3, 12, 3), Version::new(3, 13, 6)] {
+                assert!(
+                    check_supported(&driver, &server).is_ok(),
+                    "{driver} x {server}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn check_driver_3115_server_3136_reject_band_mismatch() {
+        let err = check_supported(&Version::new(3, 11, 5), &Version::new(3, 13, 6)).unwrap_err();
+        assert!(
+            matches!(err, VersionError::BandMismatch { .. }),
+            "expected BandMismatch, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_driver_3136_server_3115_reject_band_mismatch() {
+        let err = check_supported(&Version::new(3, 13, 6), &Version::new(3, 11, 5)).unwrap_err();
+        assert!(
+            matches!(err, VersionError::BandMismatch { .. }),
+            "expected BandMismatch, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_driver_3140_rejects_window() {
+        let err = check_supported(&Version::new(3, 14, 0), &Version::new(3, 13, 6)).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                VersionError::Unsupported {
+                    component: "driver",
+                    ..
+                }
+            ),
+            "expected Unsupported(driver), got {err:?}"
         );
     }
 
@@ -1952,9 +2105,24 @@ mod tests {
     }
 
     #[test]
-    fn server_3130_reject_window() {
+    fn server_3136_band9_accepts() {
+        assert!(check_server_supported(&Version::new(3, 13, 0), &[8, 9]).is_ok());
+        assert!(check_server_supported(&Version::new(3, 13, 6), &[9]).is_ok());
+    }
+
+    #[test]
+    fn server_3136_band8_only_build_is_unavailable() {
+        let err = check_server_supported(&Version::new(3, 13, 6), &[8]).unwrap_err();
+        assert!(
+            matches!(err, VersionError::EmbeddedUnavailable { .. }),
+            "expected EmbeddedUnavailable, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn server_3140_reject_window() {
         // Above the ceiling — window class.
-        let err = check_server_supported(&Version::new(3, 13, 0), &[8, 9]).unwrap_err();
+        let err = check_server_supported(&Version::new(3, 14, 0), &[8, 9]).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -2035,7 +2203,7 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("2.28.0"), "missing detected version: {msg}");
         assert!(msg.contains("3.11.0"), "missing window floor: {msg}");
-        assert!(msg.contains("3.12.x"), "missing window ceiling: {msg}");
+        assert!(msg.contains("3.13.x"), "missing window ceiling: {msg}");
     }
 
     #[test]

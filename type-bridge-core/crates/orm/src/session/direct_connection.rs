@@ -5,7 +5,7 @@ use std::fmt;
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic, SdkProviderOperation,
 };
-use type_bridge_core_lib::version::{DEFAULT_HTTP_PORT, TYPEDB_3_12_SEMANTIC_PROFILE_ID};
+use type_bridge_core_lib::version::{DEFAULT_HTTP_PORT, GeneratedPackageRelease};
 
 use super::backend::AnswerCancellation;
 use super::real_driver::{
@@ -118,7 +118,7 @@ pub(super) fn prepare_direct_connection(
     let answer_limits = policy.answer_limits.effective();
     let deadline = QueryExecutionDeadline::for_limits(connection_limits);
 
-    require_exact_package_profile(installed)?;
+    let release = require_exact_package_profile(installed)?;
     check_control(deadline, cancellation)?;
 
     validate_noncredential_text(
@@ -167,7 +167,8 @@ pub(super) fn prepare_direct_connection(
         server_version: None,
     }
     .prepare_transport()
-    .map_err(lower_tls_configuration)?;
+    .map_err(lower_tls_configuration)?
+    .with_generated_package_requirement(release);
     check_control(deadline, cancellation)?;
 
     validate_credential(
@@ -221,22 +222,22 @@ pub(super) fn lower_secure_connection(error: SecureConnectError) -> SdkExecution
     lower_execution_error(error, SdkProviderOperation::Connect)
 }
 
+/// Resolve the exact provider release the package's semantic profile binds.
 fn require_exact_package_profile(
     installed: &InstalledRuntimeProjection,
-) -> Result<(), SdkExecutionDiagnostic> {
-    let profile = installed
+) -> Result<GeneratedPackageRelease, SdkExecutionDiagnostic> {
+    installed
         .projection()
         .semantic_fingerprint()
         .as_fingerprint()
         .semantic_profile()
-        .map(|profile| profile.as_str());
-    if profile == Some(TYPEDB_3_12_SEMANTIC_PROFILE_ID) {
-        return Ok(());
-    }
-    Err(unsupported(
-        "direct_connection_semantic_profile_unsupported",
-        "The generated package semantic profile is unsupported for direct connection",
-    ))
+        .and_then(|profile| GeneratedPackageRelease::for_profile(profile.as_str()))
+        .ok_or_else(|| {
+            unsupported(
+                "direct_connection_semantic_profile_unsupported",
+                "The generated package semantic profile is unsupported for direct connection",
+            )
+        })
 }
 
 fn validate_noncredential_text(

@@ -243,7 +243,7 @@ pub(crate) fn validate_collection_profile(
     declared: &DeclaredSchema,
     profile: &SemanticProfileId,
 ) -> Result<(), SchemaDiagnostics> {
-    if profile.as_str() == "typedb-3.12.1/v1" {
+    if matches!(profile.as_str(), "typedb-3.12.1/v1" | "typedb-3.13.6/v1") {
         return Ok(());
     }
     for fact in declared.facts() {
@@ -256,7 +256,7 @@ pub(crate) fn validate_collection_profile(
             return Err(crate::yaml::diagnostic(
                 DiagnosticCategory::UnsupportedCapability,
                 "ordered_collection_profile_unsupported",
-                "ordered collection facts require the typedb-3.12.1/v1 semantic profile",
+                "ordered collection facts require the typedb-3.12.1/v1 or typedb-3.13.6/v1 semantic profile",
                 declared.source(&fact.id()).cloned(),
             ));
         }

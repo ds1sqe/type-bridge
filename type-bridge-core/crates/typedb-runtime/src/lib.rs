@@ -1105,17 +1105,22 @@ impl PreparedSecureConnectOptions {
         self
     }
 
-    /// Require the exact provider version owned by the current generated
-    /// package policy.
+    /// Require the exact provider release owned by a generated package's
+    /// semantic profile.
     ///
-    /// This is deliberately not an arbitrary version-taking lane. It clears
-    /// the released caller-version shortcut so the authoritative HTTP probe
-    /// always runs before any driver or credential construction.
+    /// This is deliberately not an arbitrary version-taking lane: the release
+    /// comes only from the closed [`core_version::GeneratedPackageRelease`]
+    /// map. It clears the released caller-version shortcut so the
+    /// authoritative HTTP probe always runs before any driver or credential
+    /// construction.
     #[doc(hidden)]
     #[must_use]
-    pub fn with_generated_3_12_3_requirement(mut self) -> Self {
+    pub fn with_generated_package_requirement(
+        mut self,
+        release: core_version::GeneratedPackageRelease,
+    ) -> Self {
         self.server_version = None;
-        self.required_server_version = Some(core_version::Version::new(3, 12, 3));
+        self.required_server_version = Some(release.server());
         self
     }
 }
@@ -1943,7 +1948,8 @@ async fn grpc_fallback_driver(
     // Band 9 is deliberately NOT probed blindly: a band-9 connection attempt
     // against a 3.11 server crashes the server outright (measured live on
     // 3.11.5).  The fallback therefore discovers the server through band 8 —
-    // accepted by every band-{8,9} server — and only upgrades to the native
+    // accepted by every 3.11 and 3.12 server; a 3.13 server is not measured
+    // on band 8 and is refused after discovery — and only upgrades to the native
     // band-9 protocol once the reported version proves the server accepts it.
     #[cfg(feature = "band8")]
     {
@@ -4222,14 +4228,14 @@ mod tests {
         let error = SecureConnectError::Runtime(RuntimeError::UnsupportedVersion(
             core_version::VersionError::Unsupported {
                 component: "server",
-                found: core_version::Version::new(3, 13, 0),
+                found: core_version::Version::new(3, 14, 0),
             },
         ));
         let diagnostic = error
             .credential_safe_diagnostic()
             .expect("closed version diagnostics remain actionable");
-        assert!(diagnostic.contains("server version 3.13.0"), "{diagnostic}");
-        assert!(diagnostic.contains("3.11.0–3.12.x"), "{diagnostic}");
+        assert!(diagnostic.contains("server version 3.14.0"), "{diagnostic}");
+        assert!(diagnostic.contains("3.11.0–3.13.x"), "{diagnostic}");
     }
 
     #[test]
@@ -5242,42 +5248,56 @@ mod tests {
 
     #[tokio::test]
     async fn generated_exact_version_rejects_after_one_probe_before_driver_construction() {
-        let probe_calls = Arc::new(AtomicUsize::new(0));
-        let observed_calls = Arc::clone(&probe_calls);
-        let result = gated_driver_prepared_with_probe(
-            "not a provider endpoint and must not reach address parsing",
-            "credential must not be used",
-            "credential must not be used",
-            prepared_controlled_probe(test_connection_control(
-                1,
-                32,
-                2,
-                RuntimeAnswerCancellation::default(),
-            ))
-            .with_generated_3_12_3_requirement(),
-            move |_address, _port, _mode| {
-                observed_calls.fetch_add(1, Ordering::AcqRel);
-                Ok(core_version::Version::new(3, 12, 0))
-            },
-        )
-        .await;
-        let error = match result {
-            Ok(_) => panic!("a generated package requires exact TypeDB 3.12.3"),
-            Err(error) => error,
-        };
+        for (profile, observed, expected) in [
+            (
+                core_version::TYPEDB_3_12_SEMANTIC_PROFILE_ID,
+                core_version::Version::new(3, 12, 0),
+                core_version::Version::new(3, 12, 3),
+            ),
+            (
+                core_version::TYPEDB_3_13_SEMANTIC_PROFILE_ID,
+                core_version::Version::new(3, 12, 3),
+                core_version::Version::new(3, 13, 6),
+            ),
+        ] {
+            let release = core_version::GeneratedPackageRelease::for_profile(profile)
+                .expect("generated profiles map to an exact release");
+            let probe_calls = Arc::new(AtomicUsize::new(0));
+            let observed_calls = Arc::clone(&probe_calls);
+            let result = gated_driver_prepared_with_probe(
+                "not a provider endpoint and must not reach address parsing",
+                "credential must not be used",
+                "credential must not be used",
+                prepared_controlled_probe(test_connection_control(
+                    1,
+                    32,
+                    2,
+                    RuntimeAnswerCancellation::default(),
+                ))
+                .with_generated_package_requirement(release),
+                move |_address, _port, _mode| {
+                    observed_calls.fetch_add(1, Ordering::AcqRel);
+                    Ok(observed)
+                },
+            )
+            .await;
+            let error = match result {
+                Ok(_) => panic!("a generated {profile} package requires exact TypeDB {expected}"),
+                Err(error) => error,
+            };
 
-        assert_eq!(probe_calls.load(Ordering::Acquire), 1);
-        assert!(matches!(
-            error,
-            SecureConnectError::Runtime(RuntimeError::UnsupportedVersion(
-                core_version::VersionError::FeatureUnsupported {
-                    server,
-                    required,
-                    ..
-                }
-            )) if server == core_version::Version::new(3, 12, 0)
-                && required == core_version::Version::new(3, 12, 3)
-        ));
+            assert_eq!(probe_calls.load(Ordering::Acquire), 1);
+            assert!(matches!(
+                error,
+                SecureConnectError::Runtime(RuntimeError::UnsupportedVersion(
+                    core_version::VersionError::FeatureUnsupported {
+                        server,
+                        required,
+                        ..
+                    }
+                )) if server == observed && required == expected
+            ));
+        }
     }
 
     #[tokio::test]

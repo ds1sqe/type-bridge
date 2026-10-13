@@ -232,13 +232,12 @@ impl Database {
     {
         let prepared =
             super::direct_connection::prepare_direct_connection(installed, policy, &cancellation)?;
-        let transport = prepared.transport.with_generated_3_12_3_requirement();
         Self::connect_prepared_secure_with_control(
             &prepared.endpoint,
             &prepared.database,
             &prepared.username,
             &prepared.password,
-            transport,
+            prepared.transport,
             prepared.connection_limits,
             prepared.answer_limits,
             prepared.deadline,

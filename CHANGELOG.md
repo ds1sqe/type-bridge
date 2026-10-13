@@ -263,6 +263,12 @@ differently direct and through a proxy. Each entry says what to do instead.
 
 ### Added
 
+- TypeDB 3.13 servers are supported for queries and CRUD. The support window
+  is 3.11.0–3.13.x; 3.13 servers negotiate the band-9 driver and use the
+  semantic profile `typedb-3.13.6/v1`. Generated packages on that profile
+  connect to exactly TypeDB 3.13.6. TypeDB 3.14 and newer are refused.
+  Connected migration commands still require TypeDB 3.12.3 and the
+  `typedb-3.12.1/v1` profile.
 - `type_bridge_core.InvalidQueryRequestError`, a subclass of both
   `MatchRequestError` and `ValueError`, for the query refusals 2.2 raised as
   `ValueError` (codes `zero_window_limit`, `window_overflow`,

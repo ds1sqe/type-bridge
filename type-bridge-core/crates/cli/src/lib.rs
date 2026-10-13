@@ -2659,40 +2659,44 @@ mod migration_command_tests {
 
     #[test]
     fn unsupported_execution_profile_rejects_before_credentials_or_filesystem_mutation() {
-        let directory = tempfile::tempdir().expect("workspace directory");
-        let manifest = write_workspace_manifest(directory.path(), "typedb-3.11.5/v1");
-        let workspace = load_workspace(&manifest).expect("workspace loads");
+        // A workspace on a query-only profile (3.11.5) or on the 3.13.6 line,
+        // whose migration authority is not frozen yet, never reaches setup.
+        for profile in ["typedb-3.11.5/v1", "typedb-3.13.6/v1"] {
+            let directory = tempfile::tempdir().expect("workspace directory");
+            let manifest = write_workspace_manifest(directory.path(), profile);
+            let workspace = load_workspace(&manifest).expect("workspace loads");
 
-        for action in [
-            ConnectedAction::Apply {
-                approvals: Vec::new(),
-            },
-            ConnectedAction::Verify,
-            ConnectedAction::Adopt {
-                archive_directory: directory.path().join("missing-archive"),
-                name: "0000_archive_frontier".to_owned(),
-            },
-        ] {
-            let error = run_connected(&workspace, "dev", action)
-                .expect_err("every connected migration operation uses the exact profile");
+            for action in [
+                ConnectedAction::Apply {
+                    approvals: Vec::new(),
+                },
+                ConnectedAction::Verify,
+                ConnectedAction::Adopt {
+                    archive_directory: directory.path().join("missing-archive"),
+                    name: "0000_archive_frontier".to_owned(),
+                },
+            ] {
+                let error = run_connected(&workspace, "dev", action)
+                    .expect_err("every connected migration operation uses the exact profile");
 
+                assert!(
+                    error.contains("migration_typedb_semantic_profile_unsupported"),
+                    "{error}"
+                );
+                assert!(error.contains(profile), "{error}");
+                assert!(error.contains("typedb-3.12.1/v1"), "{error}");
+                assert!(
+                    !error.contains("credential environment variable")
+                        && !error.contains("cannot connect")
+                        && !error.contains("cannot check database"),
+                    "profile gate ran after external setup: {error}"
+                );
+            }
             assert!(
-                error.contains("migration_typedb_semantic_profile_unsupported"),
-                "{error}"
-            );
-            assert!(error.contains("typedb-3.11.5/v1"), "{error}");
-            assert!(error.contains("typedb-3.12.1/v1"), "{error}");
-            assert!(
-                !error.contains("credential environment variable")
-                    && !error.contains("cannot connect")
-                    && !error.contains("cannot check database"),
-                "profile gate ran after external setup: {error}"
+                !directory.path().join("migrations/v2").exists(),
+                "profile rejection must not create the migration directory"
             );
         }
-        assert!(
-            !directory.path().join("migrations/v2").exists(),
-            "profile rejection must not create the migration directory"
-        );
     }
 }
 

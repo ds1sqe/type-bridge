@@ -55,6 +55,7 @@ def _run_validator(
     protocol_versions: list[dict[str, object]] | None = None,
     feature_block: str | None = None,
     committed_cutoff: bool = False,
+    window_source: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     manifest = tmp_path / "Cargo.toml"
     dependency = dependency or (f'typedb-driver = {{ version = "{requirement}", optional = true }}')
@@ -119,6 +120,8 @@ def _run_validator(
     ]
     if committed_cutoff:
         arguments.append("--committed-cutoff")
+    if window_source is not None:
+        arguments.extend(["--window-source", str(window_source)])
     return subprocess.run(
         arguments,
         check=False,
@@ -801,3 +804,22 @@ def test_release_workflow_binds_the_driver_cutoff_before_cargo_publication() -> 
         "needs: [release-tag-preflight, publish-node-npm, validate-release-identity]"
         in workflow[cargo_publish:]
     )
+
+
+@pytest.mark.parametrize(
+    ("declaration", "message"),
+    [
+        ("pub const MAX_SUPPORTED_LINE: (u32, u32) = (3, 12);", "top line is 3.12"),
+        ("// no window here", "exactly one MAX_SUPPORTED_LINE"),
+    ],
+)
+def test_band9_series_must_equal_the_window_top_line(
+    tmp_path: Path, declaration: str, message: str
+) -> None:
+    window_source = tmp_path / "version.rs"
+    window_source.write_text(declaration + "\n", encoding="utf-8")
+
+    result = _run_validator(tmp_path, "=3.13.0", [_version("3.13.0")], window_source=window_source)
+
+    assert result.returncode == 1
+    assert message in result.stderr

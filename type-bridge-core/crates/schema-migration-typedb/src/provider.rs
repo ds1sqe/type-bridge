@@ -909,7 +909,7 @@ mod tests {
             "migration_typedb_server_version_unknown"
         );
 
-        for version in [(3, 11, 5), (3, 12, 0), (3, 12, 2)] {
+        for version in [(3, 11, 5), (3, 12, 0), (3, 12, 2), (3, 13, 6)] {
             let error = require_supported_server_version(Some(version))
                 .expect_err("every non-exact server must reject");
             assert_eq!(

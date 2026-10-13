@@ -12,6 +12,7 @@ use type_bridge_contract::sdk_diagnostic::{
     SdkCommitFailureOutcome, SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
     SdkProviderOperation,
 };
+use type_bridge_core_lib::version::GeneratedPackageRelease;
 use type_bridge_orm::{
     AnswerCancellation, ConnectOptions, Database, OrmError, PreparedSecureConnectOptions,
     QueryExecutionDeadline, QueryExecutionResourceLimits, SecureConnectError, SecureConnectOptions,
@@ -42,7 +43,6 @@ const MAX_ADDRESS_BYTES: usize = 4 * 1024;
 const MAX_DATABASE_NAME_BYTES: usize = 256;
 const MAX_USERNAME_BYTES: usize = 4 * 1024;
 const MAX_PASSWORD_BYTES: usize = 64 * 1024;
-const REQUIRED_SEMANTIC_PROFILE: &[u8] = b"typedb-3.12.1/v1";
 
 type ConnectFuture = Pin<Box<dyn Future<Output = Result<Database, OrmError>> + Send + 'static>>;
 type ControlledConnectFuture =
@@ -1244,8 +1244,11 @@ fn increment_child(counter: &AtomicUsize) -> Result<(), SdkExecutionDiagnostic> 
         })
 }
 
-fn package_is_exact_for_database(package: &SchemaPackageState) -> bool {
-    package.semantic_profile == REQUIRED_SEMANTIC_PROFILE
+/// Exact provider release bound by the package's semantic profile, if any.
+fn package_release_for_database(package: &SchemaPackageState) -> Option<GeneratedPackageRelease> {
+    std::str::from_utf8(&package.semantic_profile)
+        .ok()
+        .and_then(GeneratedPackageRelease::for_profile)
 }
 
 fn open_runtime(
@@ -1540,7 +1543,7 @@ pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
         // SAFETY: caller retains both immutable parent handles during the call.
         let runtime = unsafe { &*runtime };
         let package = unsafe { &*package };
-        if !package_is_exact_for_database(package.state()) {
+        let Some(release) = package_release_for_database(package.state()) else {
             return return_execution_error(
                 unsupported(
                     "c_database_semantic_profile_unsupported",
@@ -1548,7 +1551,7 @@ pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
                 ),
                 out_diagnostics,
             );
-        }
+        };
         let cancellation = invocation_cancellation(cancellation);
         // SAFETY: preparation copies all caller-owned views before provider dispatch.
         let prepared = match unsafe { prepare_database_config_v2(preflight, Some(&cancellation)) } {
@@ -1592,13 +1595,13 @@ pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
             };
         if !database
             .server_version()
-            .is_some_and(|version| version.major == 3 && version.minor == 12 && version.patch == 3)
+            .is_some_and(|version| release.admits(&version))
         {
             let _ = database.close();
             return return_execution_error(
                 unsupported(
                     "c_database_server_version_not_exact",
-                    "The C database ABI requires an authoritative TypeDB 3.12.3 server",
+                    "The C database ABI requires the authoritative TypeDB release bound by the package semantic profile",
                 ),
                 out_diagnostics,
             );
@@ -1621,7 +1624,7 @@ pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
             runtime: Arc::clone(&runtime.state),
             _package: Arc::clone(package.state()),
             database: Arc::new(database),
-            server_version: b"3.12.3".to_vec(),
+            server_version: release.server().to_string().into_bytes(),
             transaction_children: AtomicUsize::new(0),
         };
         // SAFETY: the initialized output remains writable.
@@ -1673,7 +1676,7 @@ pub unsafe extern "C" fn type_bridge_database_open_v1(
         // SAFETY: caller retains both immutable parent handles during the call.
         let runtime = unsafe { &*runtime };
         let package = unsafe { &*package };
-        if !package_is_exact_for_database(package.state()) {
+        let Some(release) = package_release_for_database(package.state()) else {
             return return_execution_error(
                 unsupported(
                     "c_database_semantic_profile_unsupported",
@@ -1681,7 +1684,7 @@ pub unsafe extern "C" fn type_bridge_database_open_v1(
                 ),
                 out_diagnostics,
             );
-        }
+        };
         if is_cancelled(cancellation) {
             return cancellation_error(out_diagnostics);
         }
@@ -1702,13 +1705,13 @@ pub unsafe extern "C" fn type_bridge_database_open_v1(
         };
         if !database
             .server_version()
-            .is_some_and(|version| version.major == 3 && version.minor == 12 && version.patch == 3)
+            .is_some_and(|version| release.admits(&version))
         {
             let _ = database.close();
             return return_execution_error(
                 unsupported(
                     "c_database_server_version_not_exact",
-                    "The C database ABI requires an authoritative TypeDB 3.12.3 server",
+                    "The C database ABI requires the authoritative TypeDB release bound by the package semantic profile",
                 ),
                 out_diagnostics,
             );
@@ -1721,7 +1724,7 @@ pub unsafe extern "C" fn type_bridge_database_open_v1(
             runtime: Arc::clone(&runtime.state),
             _package: Arc::clone(package.state()),
             database: Arc::new(database),
-            server_version: b"3.12.3".to_vec(),
+            server_version: release.server().to_string().into_bytes(),
             transaction_children: AtomicUsize::new(0),
         };
         // SAFETY: the initialized output remains writable.
@@ -5329,7 +5332,16 @@ entities:
         assert!(!cancellation.is_cancelled());
         cancellation.cancel();
         assert!(cancellation.is_cancelled());
-        assert_eq!(REQUIRED_SEMANTIC_PROFILE, b"typedb-3.12.1/v1");
+        assert_eq!(
+            GeneratedPackageRelease::for_profile("typedb-3.12.1/v1")
+                .map(|release| release.server()),
+            Some(Version::new(3, 12, 3))
+        );
+        assert_eq!(
+            GeneratedPackageRelease::for_profile("typedb-3.13.6/v1")
+                .map(|release| release.server()),
+            Some(Version::new(3, 13, 6))
+        );
         let limits = QueryExecutionResourceLimits::tightened(
             type_bridge_orm::DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS + 1,
             type_bridge_orm::DEFAULT_DIRECT_QUERY_ITEMS + 1,

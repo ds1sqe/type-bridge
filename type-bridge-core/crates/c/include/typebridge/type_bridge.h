@@ -543,9 +543,10 @@ typedef struct type_bridge_runtime_config_v1 {
  * rejects comma-delimited endpoint lists until a per-endpoint HTTP probe
  * policy is defined. `http_port` is the authoritative TypeDB HTTP
  * version-probe port. The C ABI never accepts a caller-claimed server version
- * and admits only a detected exact 3.12.1. database_open_v1 also requires the
- * verified package's exact typedb-3.12.1/v1 semantic profile; other verified
- * profiles return TYPE_BRIDGE_STATUS_UNSUPPORTED before provider I/O.
+ * and admits only the detected exact release bound by the verified package's
+ * semantic profile: 3.12.3 for typedb-3.12.1/v1, 3.13.6 for typedb-3.13.6/v1.
+ * Other verified profiles return TYPE_BRIDGE_STATUS_UNSUPPORTED before
+ * provider I/O.
  */
 typedef struct type_bridge_database_config_v1 {
   uint32_t struct_size;
