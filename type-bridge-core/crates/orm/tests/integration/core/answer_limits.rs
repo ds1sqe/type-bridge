@@ -208,7 +208,10 @@ async fn default_answer_limits_follow_the_transport_live() {
         )
     );
 
-    db.execute_raw(&format!("match $e isa {item_type}; delete $e;"), TxType::Write)
-        .await
-        .expect("remove the fixture entities");
+    db.execute_raw(
+        &format!("match $e isa {item_type}; delete $e;"),
+        TxType::Write,
+    )
+    .await
+    .expect("remove the fixture entities");
 }

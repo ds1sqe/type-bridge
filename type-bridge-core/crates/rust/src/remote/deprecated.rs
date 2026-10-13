@@ -90,7 +90,10 @@ impl RemoteConnectionOptions {
 
 /// The 2.2 answer budget: [`QueryExecutionResourceLimits`] built from the
 /// 2.2 constructor arguments, with the proxy-default timeout and statements.
-#[deprecated(since = "2.3.0", note = "use QueryExecutionResourceLimits; removed in 3.0")]
+#[deprecated(
+    since = "2.3.0",
+    note = "use QueryExecutionResourceLimits; removed in 3.0"
+)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RemoteQueryLimits {
     resources: QueryExecutionResourceLimits,
@@ -185,8 +188,8 @@ mod tests {
 
     #[test]
     fn remote_connection_options_build_the_matching_policy() {
-        let limits = RemoteQueryLimits::new(100, 8 << 20, 1_000, 1_000, 1_000, 1_000)
-            .deadline_ms(30_000);
+        let limits =
+            RemoteQueryLimits::new(100, 8 << 20, 1_000, 1_000, 1_000, 1_000).deadline_ms(30_000);
         let resources = QueryExecutionResourceLimits::from(limits);
         assert_eq!(
             resources,
@@ -205,7 +208,10 @@ mod tests {
         let generated = RemoteConnectionOptions::generated(limits, Offline);
         let expected = ProxyConnectionPolicy::with_exchange(Offline).answer_limits(resources);
         assert_eq!(fields(&generated), fields(&expected));
-        assert!(matches!(generated.route, super::super::ProxyRoute::Exchange(_)));
+        assert!(matches!(
+            generated.route,
+            super::super::ProxyRoute::Exchange(_)
+        ));
 
         let scoped = RemoteConnectionOptions::new("scope", "profile", limits, Offline);
         let expected = ProxyConnectionPolicy::with_exchange(Offline)

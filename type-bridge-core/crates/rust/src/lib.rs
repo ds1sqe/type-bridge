@@ -86,12 +86,12 @@ pub use type_bridge_orm::{
     MAX_QUERY_TIMEOUT_MILLISECONDS, ProjectedManagerComparison, QueryExecutionDeadline,
     QueryExecutionLimitOutOfRange, QueryExecutionLimitsError, QueryExecutionResourceLimits,
 };
-pub use type_bridge_orm::{ProxyEndpoint, TlsPolicy};
 #[allow(deprecated)]
 pub use type_bridge_orm::{
     DirectTls, MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
     MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS,
 };
+pub use type_bridge_orm::{ProxyEndpoint, TlsPolicy};
 pub use type_bridge_orm_derive::SelectedRow;
 #[cfg(feature = "typedb")]
 pub use type_bridge_schema_migration::{

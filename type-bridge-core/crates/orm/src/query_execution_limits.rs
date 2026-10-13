@@ -58,22 +58,40 @@ pub const MAX_QUERY_TIMEOUT_MILLISECONDS: u64 = ANSWER_LIMIT_FIELDS[0].maximum;
 pub const MAX_QUERY_STATEMENTS: u32 = ANSWER_LIMIT_FIELDS[7].maximum as u32;
 
 /// The 2.2 name of [`DEFAULT_PROXY_QUERY_ITEMS`], with the same value.
-#[deprecated(since = "2.3.0", note = "use DEFAULT_PROXY_QUERY_ITEMS; removed in 3.0")]
+#[deprecated(
+    since = "2.3.0",
+    note = "use DEFAULT_PROXY_QUERY_ITEMS; removed in 3.0"
+)]
 pub const MAX_QUERY_ITEMS: u64 = DEFAULT_PROXY_QUERY_ITEMS;
 /// The 2.2 name of [`DEFAULT_PROXY_QUERY_BYTES`], with the same value.
-#[deprecated(since = "2.3.0", note = "use DEFAULT_PROXY_QUERY_BYTES; removed in 3.0")]
+#[deprecated(
+    since = "2.3.0",
+    note = "use DEFAULT_PROXY_QUERY_BYTES; removed in 3.0"
+)]
 pub const MAX_QUERY_BYTES: u64 = DEFAULT_PROXY_QUERY_BYTES;
 /// The 2.2 name of [`DEFAULT_PROXY_QUERY_GRAPH_NODES`], with the same value.
-#[deprecated(since = "2.3.0", note = "use DEFAULT_PROXY_QUERY_GRAPH_NODES; removed in 3.0")]
+#[deprecated(
+    since = "2.3.0",
+    note = "use DEFAULT_PROXY_QUERY_GRAPH_NODES; removed in 3.0"
+)]
 pub const MAX_QUERY_GRAPH_NODES: u64 = DEFAULT_PROXY_QUERY_GRAPH_NODES;
 /// The 2.2 name of [`DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES`], with the same value.
-#[deprecated(since = "2.3.0", note = "use DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES; removed in 3.0")]
+#[deprecated(
+    since = "2.3.0",
+    note = "use DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES; removed in 3.0"
+)]
 pub const MAX_QUERY_ATTRIBUTE_VALUES: u64 = DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES;
 /// The 2.2 name of [`DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS`], with the same value.
-#[deprecated(since = "2.3.0", note = "use DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS; removed in 3.0")]
+#[deprecated(
+    since = "2.3.0",
+    note = "use DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS; removed in 3.0"
+)]
 pub const MAX_QUERY_COLLECTION_MEMBERS: u64 = DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS;
 /// The 2.2 name of [`DEFAULT_PROXY_QUERY_ROLE_PLAYERS`], with the same value.
-#[deprecated(since = "2.3.0", note = "use DEFAULT_PROXY_QUERY_ROLE_PLAYERS; removed in 3.0")]
+#[deprecated(
+    since = "2.3.0",
+    note = "use DEFAULT_PROXY_QUERY_ROLE_PLAYERS; removed in 3.0"
+)]
 pub const MAX_QUERY_ROLE_PLAYERS: u64 = DEFAULT_PROXY_QUERY_ROLE_PLAYERS;
 
 /// One absolute monotonic deadline shared by every stage of one query terminal.

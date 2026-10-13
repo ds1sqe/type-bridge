@@ -186,6 +186,8 @@ pub use query_v2_model_remote::{
     prepare_remote_model_query_v2, prepare_remote_model_query_v2_with_budget,
 };
 pub use runtime_projection::InstalledRuntimeProjection;
+#[allow(deprecated)]
+pub use session::DirectTls;
 #[doc(hidden)]
 pub use session::TransactionContextState;
 pub use session::backend::AnswerCancellation;
@@ -198,8 +200,6 @@ pub use session::{
     ConnectOptions, DirectConnectionPolicy, PreparedSecureConnectOptions, SecureConnectError,
     SecureConnectOptions, SecureResult, TlsMode,
 };
-#[allow(deprecated)]
-pub use session::DirectTls;
 pub use session::{
     Database, DatabaseConnectionAuthority, GivenColumnType, GivenRowsSpec, GivenValue,
     ProxyEndpoint, ProxyHttpTransport, TlsPolicy, Transaction, TransactionContext, TxType,
