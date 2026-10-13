@@ -22,6 +22,12 @@ use crate::error::Error;
 use crate::query::QuerySession;
 use crate::schema::{Schema, SchemaPackage, Unbound};
 
+mod deprecated;
+#[allow(deprecated)]
+pub use deprecated::{
+    RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits, RemoteQueryTransport,
+};
+
 /// A caller-owned exchange with a TypeBridge server, for hosts that route or
 /// authenticate requests themselves. [`ProxyConnectionPolicy::new`] uses the
 /// built-in HTTP transport instead.

@@ -25,8 +25,9 @@ differently direct and through a proxy. Each entry says what to do instead.
 - Renamed Rust constants: `MAX_QUERY_ITEMS`, `MAX_QUERY_BYTES`,
   `MAX_QUERY_GRAPH_NODES`, `MAX_QUERY_ATTRIBUTE_VALUES`,
   `MAX_QUERY_COLLECTION_MEMBERS`, and `MAX_QUERY_ROLE_PLAYERS` are
-  `DEFAULT_DIRECT_QUERY_*`, with the same values, beside the new
-  `DEFAULT_PROXY_QUERY_*`; they are defaults, no longer ceilings.
+  `DEFAULT_PROXY_QUERY_*`, with the same values, beside the new, larger
+  `DEFAULT_DIRECT_QUERY_*`; they are defaults, no longer ceilings. The
+  `MAX_QUERY_*` names remain as deprecated aliases (see Deprecated).
   `DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS`,
   `DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS`,
   `DEFAULT_DIRECT_QUERY_STATEMENTS`, and `DEFAULT_PROXY_QUERY_STATEMENTS` are
@@ -65,8 +66,10 @@ differently direct and through a proxy. Each entry says what to do instead.
   (`generated(limits, transport)` is
   `with_exchange(transport).answer_limits(limits)`; `new(scope, profile,
   limits, transport)` adds `.authority(scope, profile)`), and `DirectTls` to
-  `TlsPolicy`. `RemoteQueryLimits` is removed; pass
-  `QueryExecutionResourceLimits`.
+  `TlsPolicy`; pass `QueryExecutionResourceLimits` where 2.2 took
+  `RemoteQueryLimits`. The 2.2 names remain as deprecated aliases (see
+  Deprecated), so 2.2 `RemoteDatabase` code compiles; only the
+  `Connection<S>` return of `connect` breaks.
 - Generated Python packages have one async session. `QuerySession`,
   `Query`, and `GroupedQuery` run on every connection, and every terminal
   (`one`, `first`, `rows`, `page_by`, `count_by`, `exists_by`, `aggregate`,
@@ -446,6 +449,28 @@ terminals were already awaited, so 2.2 remote-session code runs unchanged.
     `QueryExecutionResourceLimits`.
   - `RemoteQuery` is `Query`, `RemoteGroupedQuery` is `GroupedQuery`, and
     `RemoteQueryExchange` is the `ExchangeConnection` exchange callback type.
+- Rust (`#[deprecated]`):
+  - `RemoteDatabase<S>` is `ProxyDatabase<S>`.
+  - `RemoteQueryTransport` is the 2.2 trait; every implementation is a
+    `ProxyExchange`. Implement `ProxyExchange`.
+  - `RemoteConnectionOptions::generated(limits, transport)` returns
+    `ProxyConnectionPolicy::with_exchange(transport).answer_limits(limits)`,
+    and `RemoteConnectionOptions::new(scope, profile, limits, transport)`
+    adds `.authority(scope, profile)`. `RemoteConnectionOptions` itself is
+    only these constructors, because `ProxyConnectionPolicy::new` now takes
+    a `ProxyEndpoint`; name `ProxyConnectionPolicy` in type positions.
+  - `RemoteQueryLimits::new(max_items, max_bytes, max_collection_members,
+    max_graph_nodes, max_attribute_values, max_role_players)` with
+    `.deadline_ms(ms)` converts into `QueryExecutionResourceLimits` with
+    the matching fields, the proxy default statements, and the proxy
+    default timeout unless `deadline_ms` sets one. Use
+    `QueryExecutionResourceLimits`.
+  - `DirectTls` is `TlsPolicy` (`type_bridge`, `type_bridge_orm`, and
+    `type_bridge_orm::session`).
+  - `MAX_QUERY_ITEMS`, `MAX_QUERY_BYTES`, `MAX_QUERY_GRAPH_NODES`,
+    `MAX_QUERY_ATTRIBUTE_VALUES`, `MAX_QUERY_COLLECTION_MEMBERS`, and
+    `MAX_QUERY_ROLE_PLAYERS` (`type_bridge` and `type_bridge_orm`) equal the
+    matching `DEFAULT_PROXY_QUERY_*`, their 2.2 values.
 
 ## [2.2.6] - 2026-10-16
 

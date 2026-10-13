@@ -28,6 +28,8 @@ pub use database::{
 pub use direct_connection::DirectConnectionPolicy;
 pub use legacy_writer::{require_legacy_writer_open, require_legacy_writer_open_in_transaction};
 pub use proxy_connection::{ProxyEndpoint, ProxyHttpTransport};
+#[allow(deprecated)]
+pub use tls_policy::DirectTls;
 pub use tls_policy::TlsPolicy;
 pub use transaction::Transaction;
 

@@ -176,6 +176,11 @@ pub use query_execution_limits::{
     MAX_QUERY_TIMEOUT_MILLISECONDS, QueryExecutionDeadline, QueryExecutionLimitOutOfRange,
     QueryExecutionLimitsError, QueryExecutionResourceLimits,
 };
+#[allow(deprecated)]
+pub use query_execution_limits::{
+    MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
+    MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS,
+};
 pub use query_v2_model_remote::{
     ClaimedRemoteModelReplyV2, PendingRemoteModelQueryV2, RemoteModelQueryV2Error,
     prepare_remote_model_query_v2, prepare_remote_model_query_v2_with_budget,
@@ -193,6 +198,8 @@ pub use session::{
     ConnectOptions, DirectConnectionPolicy, PreparedSecureConnectOptions, SecureConnectError,
     SecureConnectOptions, SecureResult, TlsMode,
 };
+#[allow(deprecated)]
+pub use session::DirectTls;
 pub use session::{
     Database, DatabaseConnectionAuthority, GivenColumnType, GivenRowsSpec, GivenValue,
     ProxyEndpoint, ProxyHttpTransport, TlsPolicy, Transaction, TransactionContext, TxType,

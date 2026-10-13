@@ -14,6 +14,10 @@ pub(crate) enum TlsPolicyKind {
     CustomRoot(PathBuf),
 }
 
+/// The 2.2 name of [`TlsPolicy`].
+#[deprecated(since = "2.3.0", note = "use TlsPolicy; removed in 3.0")]
+pub type DirectTls = TlsPolicy;
+
 /// Closed TLS policy for one generated-package direct or proxy connection.
 ///
 /// The variants are intentionally private so contradictory trust input cannot

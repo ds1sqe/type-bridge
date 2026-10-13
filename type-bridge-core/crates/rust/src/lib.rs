@@ -58,6 +58,10 @@ pub use query::{
 };
 pub use relation_manager::{RelationManager, RelationSubtypeManager};
 pub use remote::{ProxyConnectionPolicy, ProxyDatabase, ProxyExchange};
+#[allow(deprecated)]
+pub use remote::{
+    RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits, RemoteQueryTransport,
+};
 pub use schema::{Schema, SchemaPackage, Unbound};
 pub use session::{ConnectionOptions, Database, DatabaseCreateOutcome, DatabaseDeleteOutcome};
 #[cfg(feature = "typedb")]
@@ -83,6 +87,11 @@ pub use type_bridge_orm::{
     QueryExecutionLimitOutOfRange, QueryExecutionLimitsError, QueryExecutionResourceLimits,
 };
 pub use type_bridge_orm::{ProxyEndpoint, TlsPolicy};
+#[allow(deprecated)]
+pub use type_bridge_orm::{
+    DirectTls, MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
+    MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS,
+};
 pub use type_bridge_orm_derive::SelectedRow;
 #[cfg(feature = "typedb")]
 pub use type_bridge_schema_migration::{
