@@ -105,7 +105,12 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
 
     # In addition to the CLI/recovery selectors, CI gates the production V2
     # server, generated Rust, generated C, and C runtime live probes exactly.
-    assert workflow.count(gate_call) == len(positive_tests) + 8
+    assert workflow.count(gate_call) == len(positive_tests) + 10
+    for selector in (
+        "fetch_write_commit_failure_reaches_driver_and_v1_query",
+        "typedb::client::tests::integration_classified_commit_isolation_conflict",
+    ):
+        assert workflow.count(selector) == 1
     assert local.count(gate_call) == 11
     assert local.count("fetch_write_commit_failure_reaches_driver_and_v1_query") == 1
     assert (
@@ -120,6 +125,31 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
         assert workflow.count(test_name) == 1
     for test_name in positive_tests | migration_recovery_tests:
         assert local.count(test_name) == 1
+
+
+def test_commit_failure_regressions_use_exact_selection_on_the_supported_server() -> None:
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    steps = {step["name"]: step for step in workflow["jobs"]["rust-integration"]["steps"]}
+    for name, selector, target in (
+        (
+            "Run fetch write commit failure regression",
+            "fetch_write_commit_failure_reaches_driver_and_v1_query",
+            "--test v2_query_integration_tests",
+        ),
+        (
+            "Run classified commit isolation conflict regression",
+            "typedb::client::tests::integration_classified_commit_isolation_conflict",
+            "--lib",
+        ),
+    ):
+        step = steps[name]
+        assert step["if"] == "matrix.typedb-server == 'typedb/typedb:3.12.3'"
+        assert step["env"]["TYPEDB_ADDRESS"] == "localhost:1729"
+        assert step["env"]["TYPEDB_HTTP_PORT"] == "8000"
+        assert step["run"].count("scripts/ci/run_exact_ignored_rust_test.sh") == 1
+        assert step["run"].count(selector) == 1
+        assert "-p type-bridge-server --features v2-query" in step["run"]
+        assert target in step["run"]
 
 
 def test_release_named_ignored_rust_tests_use_the_exact_selection_gate() -> None:
