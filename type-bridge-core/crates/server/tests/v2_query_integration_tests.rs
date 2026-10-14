@@ -857,3 +857,152 @@ async fn production_binary_serves_v1_health_and_v2_query() {
     .await
     .expect("delete production-server smoke database");
 }
+
+#[tokio::test]
+#[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
+async fn fetch_write_commit_failure_reaches_driver_and_v1_query() {
+    use type_bridge_core_lib::ast::{Clause, FetchItem, Statement};
+    use type_bridge_server::config::TypeDBSection;
+    use type_bridge_server::error::PipelineError;
+    use type_bridge_server::pipeline::PipelineBuilder;
+    use type_bridge_server::transport::http::create_router;
+    use type_bridge_server::typedb::TypeDBClient;
+
+    let config = TypeDBSection {
+        address: std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into()),
+        database: format!("tb_server_fetch_commit_{}", std::process::id()),
+        username: std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into()),
+        password: std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into()),
+        http_port: std::env::var("TYPEDB_HTTP_PORT")
+            .unwrap_or_else(|_| "8000".into())
+            .parse()
+            .expect("TYPEDB_HTTP_PORT is a u16"),
+        server_version: None,
+    };
+    let client = TypeDBClient::connect(&config)
+        .await
+        .expect("connect driver");
+    client.create_database(&config.database).await.unwrap();
+    client
+        .execute(
+            &config.database,
+            "define attribute name, value string; attribute age, value integer; \
+             entity person, owns name @key, owns age;",
+            "schema",
+        )
+        .await
+        .expect("define keyed person");
+    let read = "match $p isa person; fetch { \"person\": { $p.* } };";
+    let insert = "insert $p isa person, has name \"Alice\", has age 30; \
+                  fetch { \"person\": { $p.* } };";
+    let original = client
+        .execute(&config.database, insert, "write")
+        .await
+        .unwrap();
+    assert_eq!(original.as_array().unwrap().len(), 1);
+    assert_eq!(
+        client
+            .execute(&config.database, read, "read")
+            .await
+            .unwrap(),
+        original
+    );
+
+    let duplicate = "insert $p isa person, has name \"Alice\", has age 99; \
+                     fetch { \"person\": { $p.* } };";
+    let error = client
+        .execute(&config.database, duplicate, "write")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, PipelineError::QueryExecution(_)),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains("key constraint violation"),
+        "{error}"
+    );
+    assert_eq!(
+        client
+            .execute(&config.database, read, "read")
+            .await
+            .unwrap(),
+        original
+    );
+
+    let missing_key = "insert $p isa person, has age 99; fetch { \"person\": { $p.* } };";
+    let error = client
+        .execute(&config.database, missing_key, "write")
+        .await
+        .unwrap_err();
+    eprintln!("missing-key commit failure: {error}");
+    assert!(error.to_string().contains("Commit failed:"), "{error}");
+    assert_eq!(
+        client
+            .execute(&config.database, read, "read")
+            .await
+            .unwrap(),
+        original
+    );
+
+    let router = create_router(Arc::new(
+        PipelineBuilder::new(TypeDBClient::connect(&config).await.unwrap())
+            .with_default_database(&config.database)
+            .build()
+            .unwrap(),
+    ));
+    for (statement, expected_error) in [
+        (
+            "$p isa person, has name \"Alice\", has age 99",
+            "key constraint violation",
+        ),
+        ("$p isa person, has age 99", "Commit failed:"),
+    ] {
+        let clauses = vec![
+            Clause::Insert(vec![Statement::Raw(statement.into())]),
+            Clause::Fetch(vec![FetchItem::NestedWildcard {
+                key: "person".into(),
+                var: "$p".into(),
+            }]),
+        ];
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/query")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "transaction_type": "write",
+                            "clauses": clauses,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["status"], "error");
+        assert_eq!(body["error"]["code"], "QUERY_EXECUTION_ERROR");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(expected_error),
+            "{body}"
+        );
+        assert_eq!(
+            client
+                .execute(&config.database, read, "read")
+                .await
+                .unwrap(),
+            original
+        );
+    }
+    client.delete_database(&config.database).await.unwrap();
+}

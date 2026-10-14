@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use super::ExecuteError;
 use crate::error::PipelineError;
 
 /// Boxed future returned by async trait methods.
@@ -41,7 +42,7 @@ pub(crate) trait TransactionOps: Send {
     fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResultKind, PipelineError>>;
 
     /// Commit this transaction.
-    fn commit(&mut self) -> BoxFuture<'_, Result<(), PipelineError>>;
+    fn commit(&mut self) -> BoxFuture<'_, Result<(), ExecuteError>>;
 }
 
 /// Abstraction over a TypeDB driver connection.

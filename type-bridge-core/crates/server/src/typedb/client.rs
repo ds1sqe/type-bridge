@@ -1,3 +1,4 @@
+use super::ExecuteError;
 use super::backend::{DriverBackend, QueryResultKind, TransactionType};
 #[cfg(feature = "v2-query")]
 use super::real_driver::sanitize_prepared_connect_error;
@@ -112,6 +113,21 @@ impl TypeDBClient {
         typeql: &str,
         tx_type: &str,
     ) -> Result<serde_json::Value, PipelineError> {
+        self.execute_classified(database, typeql, tx_type)
+            .await
+            .map_err(PipelineError::from)
+    }
+
+    /// Execute a query while retaining driver commit certainty and text.
+    ///
+    /// A rejected commit stored no changes. An indeterminate commit may have
+    /// succeeded, so callers must establish its outcome before retrying.
+    pub async fn execute_classified(
+        &self,
+        database: &str,
+        typeql: &str,
+        tx_type: &str,
+    ) -> Result<serde_json::Value, ExecuteError> {
         let transaction_type = parse_transaction_type(tx_type)?;
 
         let mut tx = self
@@ -141,7 +157,7 @@ impl TypeDBClient {
             }
             QueryResultKind::Documents(docs) => {
                 if needs_commit {
-                    let _ = tx.commit().await;
+                    tx.commit().await?;
                 }
                 serde_json::Value::Array(docs)
             }
@@ -230,7 +246,7 @@ mod tests {
     struct MockTransaction {
         query_result: Option<QueryResultKind>,
         query_error: Option<String>,
-        commit_error: Option<String>,
+        commit_error: Option<ExecuteError>,
         committed: Arc<AtomicBool>,
         query_called: Arc<AtomicBool>,
     }
@@ -257,7 +273,13 @@ mod tests {
         }
 
         fn with_commit_error(mut self, msg: &str) -> Self {
-            self.commit_error = Some(msg.to_string());
+            self.commit_error = Some(
+                super::super::CommitFailure {
+                    certainty: super::super::CommitCertainty::Indeterminate,
+                    message: msg.to_string(),
+                }
+                .into(),
+            );
             self
         }
     }
@@ -281,12 +303,12 @@ mod tests {
 
         fn commit(
             &mut self,
-        ) -> Pin<Box<dyn Future<Output = Result<(), PipelineError>> + Send + '_>> {
+        ) -> Pin<Box<dyn Future<Output = Result<(), ExecuteError>> + Send + '_>> {
             self.committed.store(true, Ordering::SeqCst);
             let error = self.commit_error.take();
             Box::pin(async move {
                 if let Some(msg) = error {
-                    return Err(PipelineError::QueryExecution(msg));
+                    return Err(msg);
                 }
                 Ok(())
             })
@@ -305,7 +327,7 @@ mod tests {
     }
 
     struct MockBackend {
-        transaction: std::sync::Mutex<Option<MockTransaction>>,
+        transaction: std::sync::Mutex<Option<Box<dyn TransactionOps>>>,
         open_error: Option<String>,
         is_open: bool,
         open_called: Arc<AtomicUsize>,
@@ -315,7 +337,7 @@ mod tests {
     impl MockBackend {
         fn new(tx: MockTransaction) -> Self {
             Self {
-                transaction: std::sync::Mutex::new(Some(tx)),
+                transaction: std::sync::Mutex::new(Some(Box::new(tx))),
                 open_error: None,
                 is_open: true,
                 open_called: Arc::new(AtomicUsize::new(0)),
@@ -369,10 +391,7 @@ mod tests {
                 if let Some(msg) = error {
                     return Err(PipelineError::QueryExecution(msg));
                 }
-                Ok(
-                    Box::new(tx.expect("MockBackend: no transaction configured"))
-                        as Box<dyn TransactionOps>,
-                )
+                Ok(tx.expect("MockBackend: no transaction configured"))
             })
         }
 
@@ -631,18 +650,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_docs_commit_error_ignored() {
+    async fn execute_docs_commit_error_propagated() {
         let docs = vec![serde_json::json!({"doc": "data"})];
-        let tx = MockTransaction::new(QueryResultKind::Documents(docs.clone()))
+        let tx = MockTransaction::new(QueryResultKind::Documents(docs))
             .with_commit_error("commit failed");
         let client = make_client(MockBackend::new(tx));
 
-        // Documents + write: commit error is intentionally ignored (let _ = ...)
         let result = client
             .execute("db", "insert $x isa thing;", "write")
             .await
-            .unwrap();
-        assert_eq!(result, serde_json::Value::Array(docs));
+            .unwrap_err();
+        assert!(
+            matches!(result, PipelineError::QueryExecution(msg) if msg == "Commit failed: commit failed")
+        );
     }
 
     #[tokio::test]
@@ -691,6 +711,67 @@ mod tests {
         assert!(
             matches!(&err, PipelineError::QueryExecution(msg) if msg.contains("commit failed"))
         );
+    }
+
+    const STC2: &str = "[STC2] Commit in database 'bench' failed with isolation conflict: Transaction uses a lock held by a concurrent commit.";
+
+    #[tokio::test]
+    async fn classified_and_legacy_execute_preserve_commit_contracts() {
+        use crate::typedb::{CommitCertainty, CommitFailure};
+        for certainty in [CommitCertainty::Rejected, CommitCertainty::Indeterminate] {
+            for result in [
+                QueryResultKind::Ok,
+                QueryResultKind::Rows(vec![]),
+                QueryResultKind::Documents(vec![]),
+            ] {
+                for classified in [true, false] {
+                    let mut tx = MockTransaction::new(result.clone());
+                    tx.commit_error = Some(
+                        CommitFailure {
+                            certainty,
+                            message: STC2.into(),
+                        }
+                        .into(),
+                    );
+                    let client = make_client(MockBackend::new(tx));
+                    if classified {
+                        let error = client
+                            .execute_classified("bench", "update", "write")
+                            .await
+                            .unwrap_err();
+                        assert!(matches!(error, ExecuteError::Commit(failure)
+                            if failure.certainty == certainty && failure.message == STC2));
+                    } else {
+                        let error = client
+                            .execute("bench", "update", "write")
+                            .await
+                            .unwrap_err();
+                        assert!(matches!(error, PipelineError::QueryExecution(message)
+                            if message == format!("Commit failed: {STC2}")));
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn classified_execute_preserves_pipeline_errors() {
+        let client = make_client(MockBackend::failing("open failed"));
+        assert!(
+            matches!(client.execute_classified("db", "match", "read").await,
+            Err(ExecuteError::Pipeline(PipelineError::QueryExecution(message))) if message == "open failed")
+        );
+        let client = make_client(MockBackend::new(MockTransaction::failing_query(
+            "query failed",
+        )));
+        assert!(
+            matches!(client.execute_classified("db", "match", "read").await,
+            Err(ExecuteError::Pipeline(PipelineError::QueryExecution(message))) if message == "query failed")
+        );
+        assert!(matches!(
+            client.execute_classified("db", "match", "invalid").await,
+            Err(ExecuteError::Pipeline(PipelineError::QueryExecution(_)))
+        ));
     }
 
     #[tokio::test]
@@ -1050,6 +1131,68 @@ mod tests {
             .delete_database(&database)
             .await
             .expect("cleanup delete failed");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires running TypeDB server"]
+    async fn integration_classified_commit_isolation_conflict() {
+        use crate::typedb::CommitCertainty;
+        let config = live_config();
+        let client = TypeDBClient::connect(&config).await.unwrap();
+        let database = format!("commit_certainty_{}", uuid::Uuid::new_v4().simple());
+        client.create_database(&database).await.unwrap();
+        client.execute(&database,
+            "define attribute id, value string; attribute score, value integer; entity item, owns id @key, owns score;",
+            "schema").await.unwrap();
+        client
+            .execute(
+                &database,
+                "insert $x isa item, has id \"ITEM-1\", has score 0;",
+                "write",
+            )
+            .await
+            .unwrap();
+        // The public client owns transaction lifetime. Supply the second real
+        // transaction through the test backend to coordinate overlapping writes.
+        let mut a = client
+            .backend
+            .open_transaction(&database, TransactionType::Write)
+            .await
+            .unwrap();
+        let mut b = client
+            .backend
+            .open_transaction(&database, TransactionType::Write)
+            .await
+            .unwrap();
+        let update = "match $x isa item, has id \"ITEM-1\"; update $x has score 2;";
+        a.query("match $x isa item, has id \"ITEM-1\"; update $x has score 1;")
+            .await
+            .unwrap();
+        b.query(update).await.unwrap();
+        a.commit().await.unwrap();
+        let backend = MockBackend::new(MockTransaction::new(QueryResultKind::Ok));
+        *backend.transaction.lock().unwrap() = Some(b);
+        let conflict_client = make_client(backend);
+        let error = conflict_client
+            .execute_classified(&database, update, "write")
+            .await
+            .unwrap_err();
+        match error {
+            ExecuteError::Commit(failure) => {
+                assert_eq!(failure.certainty, CommitCertainty::Rejected);
+                assert!(failure.message.contains("[STC2]"), "{}", failure.message);
+                assert!(
+                    failure.message.contains("isolation conflict"),
+                    "{}",
+                    failure.message
+                );
+                println!("Rejected: {}", failure.message);
+            }
+            other => panic!("expected classified STC2 commit failure: {other:?}"),
+        }
+        drop(conflict_client);
+        drop(a);
+        client.delete_database(&database).await.unwrap();
     }
 
     #[tokio::test]
