@@ -849,6 +849,15 @@ run_live_lane() {
             -p type-bridge-server --features v2-query \
             --lib
 
+    # Connects without an HTTP port, so discovery takes the band-8 gRPC
+    # fallback and must reach the lane server's own band.
+    run_step "runtime gRPC-only fallback discovery" \
+        timeout --foreground 10m \
+        env TYPEDB_GRPC_FALLBACK_ADDRESS="$TYPEDB_ADDRESS" \
+            TYPEDB_GRPC_FALLBACK_VERSION="$typedb_server_version" \
+        cargo test --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-typedb-runtime --test grpc_fallback_live
+
     printf "${BOLD}━━━ Generated Rust projection (integration) ━━━${RESET}\n\n"
     if [[ -n "$sdk_report_dir" ]]; then
         run_step "emit Rust sdk-v2 deterministic proof fragment" \
