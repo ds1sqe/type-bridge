@@ -4099,7 +4099,12 @@ mod tests {
             .with_max_level(tracing::Level::TRACE)
             .with_writer(capture.clone())
             .finish();
-        tracing::subscriber::with_default(subscriber, emit);
+        tracing::subscriber::with_default(subscriber, || {
+            // Another test thread may have cached a callsite as uninteresting
+            // while no subscriber was set; re-evaluate before emitting.
+            tracing::callsite::rebuild_interest_cache();
+            emit();
+        });
         let bytes = capture.bytes.lock().expect("trace capture lock").clone();
         String::from_utf8(bytes).expect("tracing formatter emits UTF-8")
     }
