@@ -51,6 +51,12 @@ let pipeline = PipelineBuilder::new(my_executor)
 let output = pipeline.execute_query(input).await?;
 ```
 
+`TypeDBClient::execute_classified` returns `ExecuteError`, preserving a driver
+commit failure as `CommitFailure` with its original text and `CommitCertainty`
+(`Rejected` or `Indeterminate`). A rejected transaction stored no changes; an
+indeterminate commit may have succeeded. The existing `execute` method keeps
+returning `PipelineError` with the released error text.
+
 ## Architecture
 
 ```text

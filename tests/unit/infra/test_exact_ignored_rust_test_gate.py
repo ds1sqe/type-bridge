@@ -106,8 +106,9 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
     # In addition to the CLI/recovery selectors, CI gates the production V2
     # server, generated Rust, generated C, and C runtime live probes exactly.
     assert workflow.count(gate_call) == len(positive_tests) + 8
-    assert local.count(gate_call) == 10
+    assert local.count(gate_call) == 11
     assert local.count("fetch_write_commit_failure_reaches_driver_and_v1_query") == 1
+    assert local.count("typedb::client::tests::integration_classified_commit_isolation_conflict") == 1
     assert "-- --ignored --exact --nocapture" not in local
     for test_name in (
         positive_tests

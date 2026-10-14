@@ -312,6 +312,22 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "typedb")]
+    #[tokio::test]
+    async fn classified_commit_failures_keep_released_v1_body_bytes() {
+        use crate::typedb::{CommitCertainty, CommitFailure, ExecuteError};
+        for certainty in [CommitCertainty::Rejected, CommitCertainty::Indeterminate] {
+            let error = ExecuteError::Commit(CommitFailure {
+                certainty,
+                message: "constraint violated".into(),
+            });
+            let response = PipelineError::from(error).into_response();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(bytes.as_ref(), br#"{"status":"error","error":{"code":"QUERY_EXECUTION_ERROR","message":"Query execution error: Commit failed: constraint violated"}}"#);
+        }
+    }
+
     #[tokio::test]
     async fn into_response_body_structure() {
         let resp = PipelineError::Config("bad config".into()).into_response();

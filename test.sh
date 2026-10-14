@@ -609,6 +609,15 @@ if [[ "$integration" == 1 ]]; then
             -p type-bridge-server --features v2-query \
             --test v2_query_integration_tests
 
+    run_step "type-bridge-server classified commit certainty regression" \
+        timeout --foreground 10m \
+        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+        bash scripts/ci/run_exact_ignored_rust_test.sh \
+            typedb::client::tests::integration_classified_commit_isolation_conflict \
+            --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-server --features v2-query \
+            --lib
+
     printf "${BOLD}━━━ Generated Rust projection (integration) ━━━${RESET}\n\n"
     if [[ -n "$sdk_report_dir" ]]; then
         run_step "emit Rust sdk-v2 deterministic proof fragment" \

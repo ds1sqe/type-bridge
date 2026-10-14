@@ -7,6 +7,7 @@ compile_error!(
     "type-bridge-server: the `typedb` machinery requires at least one band feature; enable `band8` and/or `band9` (both are default)"
 );
 
+use super::{CommitCertainty, CommitFailure, ExecuteError};
 use type_bridge_typedb_runtime as runtime;
 
 use runtime::PreparedSecureConnectOptions;
@@ -124,12 +125,12 @@ impl TransactionOps for RealTransaction {
         })
     }
 
-    fn commit(&mut self) -> BoxFuture<'_, Result<(), PipelineError>> {
+    fn commit(&mut self) -> BoxFuture<'_, Result<(), ExecuteError>> {
         Box::pin(async move {
             self.inner
                 .commit_classified()
                 .await
-                .map_err(PipelineError::from)
+                .map_err(ExecuteError::from)
         })
     }
 }
@@ -260,18 +261,25 @@ impl From<runtime::RuntimeError> for PipelineError {
     }
 }
 
-impl From<runtime::RuntimeCommitError> for PipelineError {
+impl From<runtime::RuntimeCommitError> for ExecuteError {
     fn from(error: runtime::RuntimeCommitError) -> Self {
         match error {
-            runtime::RuntimeCommitError::Runtime(error) => error.into(),
-            // The V1 HTTP contract pins the exact released body bytes
-            // "Query execution error: Commit failed: {driver text}"; going
-            // through the classified runtime Display would inject a
-            // "Transaction error:" prefix the released clients never saw.
-            runtime::RuntimeCommitError::Driver { message, .. } => {
-                Self::QueryExecution(format!("Commit failed: {message}"))
+            runtime::RuntimeCommitError::Runtime(error) => Self::Pipeline(error.into()),
+            runtime::RuntimeCommitError::Driver { certainty, message } => CommitFailure {
+                certainty: match certainty {
+                    runtime::CommitFailureCertainty::DefinitelyAborted => CommitCertainty::Rejected,
+                    runtime::CommitFailureCertainty::Unknown => CommitCertainty::Indeterminate,
+                },
+                message,
             }
+            .into(),
         }
+    }
+}
+
+impl From<runtime::RuntimeCommitError> for PipelineError {
+    fn from(error: runtime::RuntimeCommitError) -> Self {
+        ExecuteError::from(error).into()
     }
 }
 
@@ -491,6 +499,34 @@ mod tests {
             PipelineError::QueryExecution(message)
                 if message == "Resource limit [solution_scan_limit]: selected query exceeded its solution scan ceiling"
         ));
+    }
+
+    #[test]
+    fn runtime_commit_certainty_maps_to_server_certainty() {
+        for (runtime_certainty, expected) in [
+            (
+                runtime::CommitFailureCertainty::DefinitelyAborted,
+                CommitCertainty::Rejected,
+            ),
+            (
+                runtime::CommitFailureCertainty::Unknown,
+                CommitCertainty::Indeterminate,
+            ),
+        ] {
+            let error = ExecuteError::from(runtime::RuntimeCommitError::Driver {
+                certainty: runtime_certainty,
+                message: "driver text".into(),
+            });
+            assert!(matches!(error, ExecuteError::Commit(failure)
+                if failure.certainty == expected && failure.message == "driver text"));
+        }
+        let error = ExecuteError::from(runtime::RuntimeCommitError::Runtime(
+            runtime::RuntimeError::Transaction("already closed".into()),
+        ));
+        assert!(
+            matches!(error, ExecuteError::Pipeline(PipelineError::QueryExecution(message))
+            if message == "already closed")
+        );
     }
 
     #[test]

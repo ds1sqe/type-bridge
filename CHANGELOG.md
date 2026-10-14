@@ -4,6 +4,12 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `TypeDBClient::execute_classified` preserves commit-failure certainty and
+  driver text, distinguishing rejected commits from indeterminate outcomes
+  while retaining the existing `execute` error contract (#251).
+
 ### Fixed
 
 - Write queries ending in `fetch` now return commit failures instead of
