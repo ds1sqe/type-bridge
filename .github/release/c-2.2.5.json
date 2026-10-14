@@ -1,7 +1,7 @@
 {
   "abi": "1.6.0",
   "artifact_disposition": "unchanged; promotion is a separate signed record",
-  "certificate_identity": "https://github.com/ds1sqe/type-bridge/.github/workflows/c-release.yml@refs/tags/v2.2.4",
+  "certificate_identity": "https://github.com/ds1sqe/type-bridge/.github/workflows/c-release.yml@refs/tags/v2.2.5",
   "certificate_issuer": "https://token.actions.githubusercontent.com",
   "ci_artifacts": {
     "c-artifact-clean-consumer-linux-x86_64-gnu": [
@@ -505,8 +505,10 @@
       "Prove verify does not create databases": "skipped",
       "Run CLI empty-workspace replay lifecycle": "skipped",
       "Run Rust ORM integration suite": "success",
+      "Run classified commit isolation conflict regression": "skipped",
       "Run compiled C runtime transaction live smoke": "skipped",
       "Run connected migration rollback and reapply lifecycle": "skipped",
+      "Run fetch write commit failure regression": "skipped",
       "Run generated C entity and relation CRUD live smoke": "skipped",
       "Run generated C17 and C++17 ordered live smoke": "skipped",
       "Run generated Rust projection live smoke": "success",
@@ -537,8 +539,10 @@
       "Prove verify does not create databases": "success",
       "Run CLI empty-workspace replay lifecycle": "success",
       "Run Rust ORM integration suite": "success",
+      "Run classified commit isolation conflict regression": "success",
       "Run compiled C runtime transaction live smoke": "success",
       "Run connected migration rollback and reapply lifecycle": "success",
+      "Run fetch write commit failure regression": "success",
       "Run generated C entity and relation CRUD live smoke": "success",
       "Run generated C17 and C++17 ordered live smoke": "success",
       "Run generated Rust projection live smoke": "success",
@@ -758,27 +762,27 @@
       "Wait for TypeDB server to be ready": "success"
     }
   },
-  "ci_workflow_sha256": "10ebf78d7d31420150b71c54d507dff99471008a538459ba9e4d27d2e478696e",
+  "ci_workflow_sha256": "aebc3772de233853aa6203d931594b6a465963694e28713c520cc7345c9a5cc7",
   "cosign_version": "3.0.6",
-  "evidence": "type-bridge-c-evidence-2.2.4.tar.gz",
+  "evidence": "type-bridge-c-evidence-2.2.5.tar.gz",
   "format": "typebridge.c-release-policy/v1",
   "linkage": "shared",
-  "promotion_record": "type-bridge-c-promotion-2.2.4.json",
+  "promotion_record": "type-bridge-c-promotion-2.2.5.json",
   "public_files": {
-    "tb_sdkv3-c-de6ec4acca4cfc7ba35cfbbd969dce49c7bf3b709532fca43ac41ed482606264.tar.gz": "type-bridge-c-sdk-example-2.2.4.tar.gz",
-    "type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz": "type-bridge-c-runtime-2.2.4-abi-1.6-x86_64-unknown-linux-gnu.tar.gz",
-    "type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz": "type-bridge-cli-2.2.4-x86_64-unknown-linux-gnu.tar.gz"
+    "tb_sdkv3-c-de6ec4acca4cfc7ba35cfbbd969dce49c7bf3b709532fca43ac41ed482606264.tar.gz": "type-bridge-c-sdk-example-2.2.5.tar.gz",
+    "type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz": "type-bridge-c-runtime-2.2.5-abi-1.6-x86_64-unknown-linux-gnu.tar.gz",
+    "type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz": "type-bridge-cli-2.2.5-x86_64-unknown-linux-gnu.tar.gz"
   },
   "recovery": "draft-only; absent-or-identical payloads; verify and retain existing signatures",
   "repository": "ds1sqe/type-bridge",
   "repository_id": 1085407082,
   "runner": "ubuntu-24.04",
   "semantic_profile": "typedb-3.12.1/v1",
-  "tag": "v2.2.4",
+  "tag": "v2.2.5",
   "target": "x86_64-unknown-linux-gnu",
   "typedb": "3.12.3",
-  "verification_artifact": "c-verified-release-2.2.4",
-  "verification_receipt": "type-bridge-c-verification-2.2.4.json",
+  "verification_artifact": "c-verified-release-2.2.5",
+  "verification_receipt": "type-bridge-c-verification-2.2.5.json",
   "verification_steps": {
     "Capture exact successful master CI artifacts": "success",
     "Checkout exact release source": "success",
@@ -792,6 +796,6 @@
     "Upload immutable verified C release bundle": "success",
     "Wait for the exact TypeDB fixture": "success"
   },
-  "version": "2.2.4",
+  "version": "2.2.5",
   "workflow": ".github/workflows/c-release.yml"
 }

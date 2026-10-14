@@ -18,7 +18,7 @@ CRATE_PUBLISH_HELPER = REPO_ROOT / "scripts/ci/publish_crate_idempotently.sh"
 CRATE_RELEASE_GRAPH = REPO_ROOT / "scripts/ci/release_crates_graph.sh"
 FRESH_RUNTIME_PROBE = REPO_ROOT / "scripts/ci/validate_fresh_typedb_runtime_package.sh"
 RUST_RELEASE_ARTIFACT_VALIDATOR = REPO_ROOT / "scripts/ci/validate_rust_release_artifacts.py"
-STABLE_PUBLICATION_GUARD = "if: github.event_name == 'push' && github.ref == 'refs/tags/v2.2.4'"
+STABLE_PUBLICATION_GUARD = "if: github.event_name == 'push' && github.ref == 'refs/tags/v2.2.5'"
 QEMU_ACTION = "docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130"
 QEMU_BINFMT_IMAGE = (
     "docker.io/tonistiigi/binfmt@"
@@ -198,7 +198,7 @@ def assert_stable_only_release_mutations(workflow: str) -> None:
         assert "      always() &&\n      !cancelled() &&\n" in block
         guard = yaml.load(block, Loader=yaml.BaseLoader)[name]["if"]
         assert "github.event_name == 'push'" in guard
-        assert "github.ref == 'refs/tags/v2.2.4'" in guard
+        assert "github.ref == 'refs/tags/v2.2.5'" in guard
         assert "github.event_name == 'workflow_dispatch'" not in block
         assert "needs.release-tag-preflight.result == 'success'" in block
 
@@ -206,7 +206,7 @@ def assert_stable_only_release_mutations(workflow: str) -> None:
     assert cargo.count("    if: >-\n") == 1
     assert "      always() &&\n      !cancelled() &&\n" in cargo
     assert "github.event_name == 'push'" in cargo
-    assert "github.ref == 'refs/tags/v2.2.4'" in cargo
+    assert "github.ref == 'refs/tags/v2.2.5'" in cargo
     assert "github.event_name == 'workflow_dispatch'" not in cargo
     assert "needs.release-tag-preflight.result == 'success'" in cargo
     assert "needs.publish-node-npm.result == 'success'" in cargo
@@ -593,10 +593,10 @@ def test_each_core_wheel_executes_v2_authoring_on_its_native_target() -> None:
 def test_release_channels_have_fixed_non_attacker_controlled_identities() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     document = yaml.load(workflow, Loader=yaml.BaseLoader)
-    assert document["on"]["push"] == {"tags": ["v2.2.4"]}
+    assert document["on"]["push"] == {"tags": ["v2.2.5"]}
     assert document["on"]["workflow_dispatch"]["inputs"] == {
         "release_channel": {
-            "description": "Validate the 2.2.4 release identity",
+            "description": "Validate the 2.2.5 release identity",
             "required": "true",
             "type": "choice",
             "default": "candidate",
@@ -604,9 +604,9 @@ def test_release_channels_have_fixed_non_attacker_controlled_identities() -> Non
         }
     }
     assert document["env"] == {
-        "RELEASE_TAG": "v2.2.4",
-        "RELEASE_VERSION": "2.2.4",
-        "PYTHON_RELEASE_VERSION": "2.2.4",
+        "RELEASE_TAG": "v2.2.5",
+        "RELEASE_VERSION": "2.2.5",
+        "PYTHON_RELEASE_VERSION": "2.2.5",
         "SERVER_OCI_MINOR_ALIAS": "2.2",
         "RELEASE_CHANNEL": "${{ github.event_name == 'workflow_dispatch' && inputs.release_channel || 'stable' }}",
         "RELEASE_REVISION": "${{ github.sha }}",
@@ -638,7 +638,7 @@ def test_candidate_guard_gate_rejects_an_unguarded_mutation_job(job: str) -> Non
 def test_cargo_publication_rejects_a_broadened_stable_tag_guard() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     block = job_block(workflow, "publish-crates")
-    guarded = "      github.ref == 'refs/tags/v2.2.4' &&\n"
+    guarded = "      github.ref == 'refs/tags/v2.2.5' &&\n"
     assert guarded in block
     hostile_workflow = workflow.replace(block, block.replace(guarded, "", 1), 1)
 
@@ -714,7 +714,7 @@ def test_python_npm_publication_is_serial_after_global_candidate_gates() -> None
     assert needs_line(cargo_publish) == (
         "    needs: [release-tag-preflight, publish-node-npm, validate-release-identity]"
     )
-    assert "github.ref == 'refs/tags/v2.2.4'" in cargo_publish
+    assert "github.ref == 'refs/tags/v2.2.5'" in cargo_publish
     assert "needs.publish-node-npm.result == 'success'" in cargo_publish
     assert "CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}" in cargo_publish
     assert "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}" in preflight
@@ -1015,7 +1015,7 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
         assert f"          {test}\n          --manifest-path" in rust_integration
     # The same live job also gates the unsupported-version probe, two recovery
     # probes, generated Rust, generated C, and C runtime with exact selection.
-    assert rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) + 7
+    assert rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) + 9
     assert "unsupported_server_apply_creates_neither_database_live" in rust_integration
     assert "runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3" in rust_integration
     assert "control_schema_and_fenced_lease_round_trip_on_3_12_3" in rust_integration
@@ -1381,7 +1381,7 @@ def test_npm_publication_uses_the_accepted_tarball() -> None:
     assert publish.count('--tag "$RELEASE_TAG"') == 2
     assert "--allow-prerelease" not in publish
     assert "environment: release" in publish
-    assert "github.ref == 'refs/tags/v2.2.4'" in publish
+    assert "github.ref == 'refs/tags/v2.2.5'" in publish
     assert "name: Install pinned npm publisher" in publish
     assert "npm install --global --ignore-scripts npm@11.18.0" in publish
     assert 'test "$(npm --version)" = "11.18.0"' in publish

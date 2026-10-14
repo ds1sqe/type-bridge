@@ -4,6 +4,8 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.5] - 2026-10-14
+
 ### Added
 
 - `TypeDBClient::execute_classified` preserves commit-failure certainty and
@@ -13,7 +15,13 @@ All notable changes to TypeBridge will be documented in this file.
 ### Fixed
 
 - Write queries ending in `fetch` now return commit failures instead of
-  returning documents for writes that were never stored.
+  returning documents for writes that were never stored (#252).
+
+### Security
+
+- Updated `quinn-proto` to 0.11.19 for RUSTSEC-2026-0338 through
+  RUSTSEC-2026-0342, addressing memory-exhaustion and connection-ID
+  retirement issues in QUIC handling.
 
 ## [2.2.4] - 2026-10-08
 

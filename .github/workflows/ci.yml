@@ -1630,6 +1630,28 @@ jobs:
               --test v2_query_integration_tests "$test_name" \
               -- --ignored --exact --nocapture
 
+      - name: Run fetch write commit failure regression
+        if: matrix.typedb-server == 'typedb/typedb:3.12.3'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          scripts/ci/run_exact_ignored_rust_test.sh
+          fetch_write_commit_failure_reaches_driver_and_v1_query
+          --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-server --features v2-query --test v2_query_integration_tests
+
+      - name: Run classified commit isolation conflict regression
+        if: matrix.typedb-server == 'typedb/typedb:3.12.3'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          scripts/ci/run_exact_ignored_rust_test.sh
+          typedb::client::tests::integration_classified_commit_isolation_conflict
+          --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-server --features v2-query --lib
+
       - name: Prepare Rust sdk report output
         id: prepare-rust-sdk-v1
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'

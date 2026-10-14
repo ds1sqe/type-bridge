@@ -9,12 +9,12 @@ consume the generated package rather than constructing emitters itself.
 
 ```toml
 [dependencies]
-type-bridge-schema-codegen = "2.2.4"
+type-bridge-schema-codegen = "2.2.5"
 ```
 
 Generator integrations begin with `PythonEmitter`, `TypeScriptEmitter`,
 `RustEmitter`, or the internal `CEmitter` from the
-[crate API](https://docs.rs/type-bridge-schema-codegen/2.2.4). Only pass
+[crate API](https://docs.rs/type-bridge-schema-codegen/2.2.5). Only pass
 projections produced by the canonical schema engine, and write every file in
 the returned `GeneratedPackage` as one atomic generation operation.
 
@@ -27,9 +27,9 @@ close, recovery, and alias checks. The package remains unpublished until
 its release acceptance checks pass.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
-2.2.4 and requires Rust 1.88+. Generated runtime packages follow the TypeBridge
+2.2.5 and requires Rust 1.88+. Generated runtime packages follow the TypeBridge
 2.1 support matrix: TypeDB 3.11.x–3.12.x and a 3.12.1 V2 semantic baseline.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
-[API documentation](https://docs.rs/type-bridge-schema-codegen/2.2.4) ·
+[API documentation](https://docs.rs/type-bridge-schema-codegen/2.2.5) ·
 [MIT license](https://github.com/ds1sqe/type-bridge/blob/master/LICENSE)
