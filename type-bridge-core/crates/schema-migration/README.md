@@ -20,9 +20,9 @@ verified plan under the matching managed scope and lowering profile; use
 for the TypeDB-backed provider.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
-2.2.6 and requires Rust 1.88+. The shipped lowering profile is pinned to TypeDB
-3.12.1; the wider runtime supports TypeDB 3.11.x–3.12.x where capabilities
-allow.
+2.2.6 and requires Rust 1.88+. The shipped lowering profiles are pinned to TypeDB
+3.12.1 and 3.13.6, which share one rule set; the wider runtime supports TypeDB
+3.11.x–3.13.x where capabilities allow.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
 [API documentation](https://docs.rs/type-bridge-schema-migration/2.2.6) ·

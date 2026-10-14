@@ -16,7 +16,7 @@ a matching shadow report only as evidence for the explicitly shared domain.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
 2.2.6, requires Rust 1.88+, and evaluates schemas against the TypeDB 3.12.1 V2
-semantic baseline. The wider runtime supports TypeDB 3.11.x–3.12.x.
+semantic baseline. The wider runtime supports TypeDB 3.11.x–3.13.x.
 
 ## Corpus completion criterion
 

@@ -20,9 +20,9 @@ or compare only the resulting verified schema values. Split YAML remains the
 authoring source; emitted authority artifacts are generated outputs.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
-2.2.6 and requires Rust 1.88+. Resolution accepts the frozen TypeDB 3.11.5 and
-3.12.1 V2 semantic profiles; database-facing TypeBridge components support
-TypeDB 3.11.x–3.12.x.
+2.2.6 and requires Rust 1.88+. Resolution accepts the frozen TypeDB 3.11.5,
+3.12.1, and 3.13.6 V2 semantic profiles; database-facing TypeBridge components
+support TypeDB 3.11.x–3.13.x.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
 [API documentation](https://docs.rs/type-bridge-schema/2.2.6) ·

@@ -28,7 +28,7 @@ its release acceptance checks pass.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
 2.2.6 and requires Rust 1.88+. Generated runtime packages follow the TypeBridge
-2.1 support matrix: TypeDB 3.11.x–3.12.x and a 3.12.1 V2 semantic baseline.
+support matrix: TypeDB 3.11.x–3.13.x and a 3.13.6 V2 semantic baseline.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
 [API documentation](https://docs.rs/type-bridge-schema-codegen/2.2.6) ·

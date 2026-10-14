@@ -2,23 +2,30 @@
 
 ## Server and driver compatibility
 
-TypeBridge 2.1 supports TypeDB 3.11.x–3.12.x. The live release matrix uses
-3.11.5 and 3.12.3, and 3.12.3 is the V2 conformance baseline. Generated Python,
-TypeScript/Node, and Rust applications share this exact window.
+TypeBridge supports TypeDB 3.11.x–3.13.x. The live release matrix uses
+3.11.5, 3.12.3, and 3.13.6, and 3.13.6 is the recommended server and the V2
+conformance baseline. Generated Python, TypeScript/Node, and Rust applications
+share this exact window.
 
-Generated live acceptance executes the same application operation set on both
-verified tags. Its 3.11 fixture omits only plays-side `@doc` annotations, which
+Run the newest supported TypeDB. TypeBridge adds each new TypeDB minor line in
+its next release; a server newer than the window is refused until then. The
+window of each earlier TypeBridge release is listed in
+[TypeDB versions](../getting-started/installation.md#typedb-versions).
+
+Generated live acceptance executes the same application operation set on every
+verified tag. Its 3.11 fixture omits only plays-side `@doc` annotations, which
 are unavailable before 3.12; an offline source guard pins that as the complete
-difference from the 3.12 fixture.
+difference from the 3.12 and 3.13 fixtures.
 
 | Dimension | Supported value |
 | --- | --- |
-| TypeDB servers | 3.11.x–3.12.x |
-| Verified tags | 3.11.5, 3.12.3 |
-| Generated CRUD/query acceptance | 3.11.5 and 3.12.3 |
-| Connected V2 migration execution | exactly 3.12.3 |
+| TypeDB servers | 3.11.x–3.13.x |
+| Verified tags | 3.11.5, 3.12.3, 3.13.6 |
+| Recommended server | 3.13.6 |
+| Generated CRUD/query acceptance | 3.11.5, 3.12.3, and 3.13.6 |
+| Connected V2 migration execution | exactly 3.12.3 or 3.13.6, matching the workspace profile |
 | Protocol providers | band 8 and band 9 |
-| V2 conformance baseline | 3.12.3 |
+| V2 conformance baseline | 3.13.6 |
 | CPython | 3.12–3.14 |
 | Node | 18+; primary lane 20 |
 | Public Rust SDK | Rust 1.88+ |
@@ -27,33 +34,43 @@ Versions outside the window fail before TypeBridge opens an application data
 transaction.
 
 The wider window applies to generated application operations and query
-execution. `migration apply`, `migration verify`, and `migration adopt` have a
-narrower authority contract: the workspace semantic profile must be
-`typedb-3.12.1/v1`, and the negotiated server must be exactly 3.12.3. The
-profile name remains stable because it identifies frozen schema semantics, not
-the selected compatible server patch. Connected commands reject before database creation
-or migration state work otherwise. Offline `schema check`, `schema generate`,
-`migration make`, and `migration plan` remain available for either supported
-semantic profile.
+execution. `migration apply`, `migration verify`, `migration adopt`,
+`migration rollback --execute`, and `migration upgrade-profile` have a
+narrower authority contract. They run on exactly two pairs of workspace
+semantic profile and negotiated server:
+
+| Semantic profile | TypeDB server |
+| --- | --- |
+| `typedb-3.12.1/v1` | exactly 3.12.3 |
+| `typedb-3.13.6/v1` | exactly 3.13.6 |
+
+A profile name identifies frozen schema semantics, not the selected compatible
+server patch. Connected commands reject any other pair before database creation
+or migration state work. Offline `schema check`, `schema generate`,
+`migration make`, and `migration plan` remain available for every supported
+semantic profile. To move an existing history from 3.12 to 3.13, see
+[Move a history to a new TypeDB line](../guide/migrations.md#move-a-history-to-a-new-typedb-line).
 
 ### Protocol providers
 
 A TypeDB driver speaks one protocol band. Server acceptance is asymmetric:
 
-| Provider | Driver line | Accepted servers |
+| Provider | Driver | Accepted servers |
 | --- | --- | --- |
-| band 8 | 3.11 | 3.11, 3.12 |
-| band 9 | 3.12 | 3.12 |
+| band 8 | namespaced `typedb-driver` 3.11.5 | 3.11, 3.12 |
+| band 9 | official `typedb-driver` 3.13.6 | 3.12, 3.13 |
 
-The native runtime embeds the source-unmodified namespaced 3.11.5 provider and
-uses the official 3.13.6 driver, which speaks band 9 to 3.12 servers. Band 8
-is the safe unknown-server discovery path; a confirmed 3.12 server upgrades to
-band 9. No application-side provider selection is required.
+Band 8 does not serve TypeDB 3.13. The native runtime embeds the
+source-unmodified namespaced 3.11.5 provider and uses the official 3.13.6
+driver for band 9. Band 8 is the safe unknown-server discovery path; a
+confirmed 3.12 or 3.13 server upgrades to band 9. No application-side provider
+selection is required.
 
 The Python `typedb-driver` extra is independent of generated ORM execution. It
-exists for direct driver calls. CPython 3.14 uses driver 3.12.3 and therefore
-requires a 3.12 server for those direct calls; the embedded TypeBridge runtime
-still supports both server lines.
+exists for direct driver calls and accepts `typedb-driver>=3.11,<3.14`. On
+CPython 3.14, where only band-9 drivers publish wheels, it accepts
+`>=3.12.3,<3.14`, so direct driver calls there need a 3.12 or 3.13 server; the
+embedded TypeBridge runtime still supports every server line in the window.
 
 ### Version discovery
 
@@ -275,7 +292,7 @@ USE_DOCKER=false TYPEDB_HTTP_PORT=9000 ./test.sh --no-isolated
 
 Focused version/provider tests live in `crates/core`, `crates/typedb-runtime`,
 binding session tests, generated live acceptance, and the release identity
-validators. Positive live support covers only 3.11/3.12; older versions appear
+validators. Positive live support covers only 3.11–3.13; older versions appear
 only as rejection evidence.
 
 ## Maintainer checklist

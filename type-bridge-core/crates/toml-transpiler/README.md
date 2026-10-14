@@ -33,8 +33,8 @@ The converter validates the complete TOML document before returning TypeQL and
 performs no filesystem or database I/O. It has no optional features.
 
 The crate is released in lockstep with TypeBridge 2.2.6 and requires Rust
-1.88+. Database-facing TypeBridge 2.1 components support TypeDB
-3.11.x–3.12.x, with 3.12.1 as the V2 semantic baseline.
+1.88+. Database-facing TypeBridge components support TypeDB
+3.11.x–3.13.x, with 3.13.6 as the V2 semantic baseline.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
 [API documentation](https://docs.rs/type-bridge-toml-transpiler/2.2.6) ·

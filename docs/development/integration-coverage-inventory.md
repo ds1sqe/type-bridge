@@ -77,8 +77,9 @@ schema-authoring examples and are not imported by generated packages.
 
 ## Provider and TLS Coverage
 
-Ordinary live lanes exercise the retained TypeDB 3.11 and 3.12 provider window.
-The 3.12.3 lane is the full generated-projection conformance baseline. Dedicated
+Ordinary live lanes exercise the TypeDB 3.11–3.13 provider window on 3.11.5,
+3.12.3, and 3.13.6. The 3.12.3 and 3.13.6 lanes run the full
+generated-projection conformance sets; 3.13.6 is the baseline. Dedicated
 TLS lanes run generated Python, Node, and Rust applications with a verified
 custom root, alongside the retained low-level Query V2 transport probe.
 

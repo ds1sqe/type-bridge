@@ -20,8 +20,8 @@ confined to the validated workspace authority.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
 2.2.6 and requires Rust 1.88+. Each workspace selects one frozen
-`typedb-3.11.5/v1` or `typedb-3.12.1/v1` semantic profile; database operations
-support TypeDB 3.11.x–3.12.x where capabilities permit.
+`typedb-3.11.5/v1`, `typedb-3.12.1/v1`, or `typedb-3.13.6/v1` semantic profile;
+database operations support TypeDB 3.11.x–3.13.x where capabilities permit.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
 [API documentation](https://docs.rs/type-bridge-workspace/2.2.6) ·
