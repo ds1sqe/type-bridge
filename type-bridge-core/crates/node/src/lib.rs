@@ -17,6 +17,10 @@ mod query_v2_builder_runtime;
 mod query_v2_model_remote_runtime;
 pub mod query_v2_runtime;
 mod runtime_projection;
+#[cfg(test)]
+#[path = "../../../../tests/support/sdk_profile_matrix.rs"]
+#[allow(dead_code)]
+mod sdk_profile_matrix;
 
 #[cfg(feature = "contract-test-adapter")]
 pub use contract_test_adapter::{

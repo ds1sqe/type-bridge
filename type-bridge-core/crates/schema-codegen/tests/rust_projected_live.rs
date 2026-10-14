@@ -7,6 +7,7 @@ use type_bridge_contract::projection::RuntimeProjection;
 use type_bridge_schema_codegen::{GeneratedPackage, RustEmitter};
 
 mod support;
+use support::sdk_profile_matrix::{self, SdkProfile};
 use support::{Stage, cargo_with_env as cargo, repository_root as repository, write_package};
 
 const PRODUCER: &str = include_str!("rust_acceptance/projected_live.rs");
@@ -15,6 +16,7 @@ const ADDRESS_ENV: &str = "TYPE_BRIDGE_PROJECTED_LIVE_ADDRESS";
 const DATABASE_ENV: &str = "TYPE_BRIDGE_PROJECTED_LIVE_DATABASE";
 const HTTP_PORT_ENV: &str = "TYPE_BRIDGE_PROJECTED_LIVE_HTTP_PORT";
 const ROOT_ENV: &str = "TYPE_BRIDGE_PROJECTED_REPOSITORY_ROOT";
+const PROFILE_ENV: &str = "TYPE_BRIDGE_PROJECTED_LIVE_PROFILE";
 const MAX_PRODUCER_BYTES: usize = 1024 * 1024;
 const FORBIDDEN_PRODUCER_MARKERS: [&str; 5] = [
     "compare_projected_live",
@@ -24,13 +26,18 @@ const FORBIDDEN_PRODUCER_MARKERS: [&str; 5] = [
     "load_contract",
 ];
 
-fn project_from_source(source: &str) -> RuntimeProjection {
-    support::rust_projection(source, "rust-projected-live.yaml")
+fn project_from_source(source: &str, profile: &SdkProfile) -> RuntimeProjection {
+    support::rust_projection_on(
+        source,
+        "rust-projected-live.yaml",
+        &profile.semantic_profile,
+    )
 }
 
-fn emit_from_source(source: &str) -> GeneratedPackage {
+fn emit_from_source(source: &str, profile: &SdkProfile) -> GeneratedPackage {
+    let authority = support::authority_with(source, support::TEST_SCOPE, &profile.semantic_profile);
     RustEmitter::new()
-        .emit(&project_from_source(source), &support::authority(source))
+        .emit(&project_from_source(source, profile), &authority)
         .expect("Projected live Rust package emits")
 }
 
@@ -106,6 +113,7 @@ fn rust_projected_live_producer_is_bounded_and_expectation_independent() {
         DATABASE_ENV,
         HTTP_PORT_ENV,
         ROOT_ENV,
+        PROFILE_ENV,
     ] {
         assert!(PRODUCER.contains(required), "producer omits {required}");
     }
@@ -125,7 +133,9 @@ fn generated_rust_projected_live_producer_compiles_and_rejects_foreign_shape_bef
     let stage = Stage::new();
     let generated = stage.path().join("generated");
     let consumer = stage.path().join("consumer");
-    write_package(&emit_from_source(&sdk_source()), &generated);
+    let profile = sdk_profile_matrix::requested(3);
+    let profile_json = support::sdk_profile_entry_json(&profile);
+    write_package(&emit_from_source(&sdk_source(), &profile), &generated);
     write_consumer(&consumer);
     let manifest = consumer.join("Cargo.toml");
     let checked = cargo(
@@ -150,7 +160,10 @@ fn generated_rust_projected_live_producer_compiles_and_rejects_foreign_shape_bef
     );
 
     fs::remove_dir_all(&generated).expect("local generated package is removed");
-    write_package(&emit_from_source(&foreign_sdk_source()), &generated);
+    write_package(
+        &emit_from_source(&foreign_sdk_source(), &profile),
+        &generated,
+    );
     let rejected = cargo(
         &[
             "run",
@@ -160,7 +173,7 @@ fn generated_rust_projected_live_producer_compiles_and_rejects_foreign_shape_bef
             "--manifest-path",
             manifest.to_str().expect("consumer manifest is UTF-8"),
         ],
-        &[],
+        &[(PROFILE_ENV, profile_json.as_ref())],
     );
     assert!(
         !rejected.status.success(),
@@ -207,7 +220,9 @@ fn generated_rust_projected_live_producer_runs_when_explicitly_configured() {
     let stage = Stage::new();
     let generated = stage.path().join("generated");
     let consumer = stage.path().join("consumer");
-    write_package(&emit_from_source(&sdk_source()), &generated);
+    let profile = sdk_profile_matrix::requested(3);
+    let profile_json = support::sdk_profile_entry_json(&profile);
+    write_package(&emit_from_source(&sdk_source(), &profile), &generated);
     write_consumer(&consumer);
     let manifest = consumer.join("Cargo.toml");
     let output = cargo(
@@ -222,6 +237,7 @@ fn generated_rust_projected_live_producer_runs_when_explicitly_configured() {
         &[
             (OUTPUT_ENV, report.as_os_str()),
             (ROOT_ENV, repository().as_os_str()),
+            (PROFILE_ENV, profile_json.as_ref()),
         ],
     );
     assert!(
@@ -248,6 +264,7 @@ fn generated_rust_projected_live_producer_runs_when_explicitly_configured() {
         &[
             (OUTPUT_ENV, report.as_os_str()),
             (ROOT_ENV, repository().as_os_str()),
+            (PROFILE_ENV, profile_json.as_ref()),
         ],
     );
     assert!(

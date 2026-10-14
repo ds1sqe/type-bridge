@@ -2273,7 +2273,7 @@ mod tests {
                 "test_id": "python.native_direct_cancellation",
             }],
             "run_nonce": nonce,
-            "semantic_profile": "typedb-3.12.1/v1",
+            "semantic_profile": crate::sdk_profile_matrix::requested(2).semantic_profile,
         });
         let mut payload = serde_json::to_vec(&fragment).unwrap();
         payload.push(b'\n');

@@ -3,6 +3,9 @@
 #[path = "../../../../../tests/support/rust_locks.rs"]
 pub mod locks;
 
+#[path = "../../../../../tests/support/sdk_profile_matrix.rs"]
+pub mod sdk_profile_matrix;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
@@ -389,9 +392,22 @@ pub fn sdk_v2_proof_paths(value: &std::ffi::OsStr) -> Result<Vec<PathBuf>, Strin
     Ok(paths)
 }
 
+/// Validate fragments produced on the offline fixture profile, `TEST_PROFILE`.
 pub fn validate_sdk_v2_proof_fragments(
     root: &Path,
     binding: &str,
+    run_nonce: &str,
+    fragment_paths: &[PathBuf],
+) -> Result<BTreeMap<SdkV2ProofLane, Value>, String> {
+    validate_sdk_v2_proof_fragments_on(root, binding, TEST_PROFILE, run_nonce, fragment_paths)
+}
+
+/// Validate fragments a live run produced on `semantic_profile`, the sdk-v2
+/// matrix profile the run's report targets.
+pub fn validate_sdk_v2_proof_fragments_on(
+    root: &Path,
+    binding: &str,
+    semantic_profile: &str,
     run_nonce: &str,
     fragment_paths: &[PathBuf],
 ) -> Result<BTreeMap<SdkV2ProofLane, Value>, String> {
@@ -441,7 +457,7 @@ pub fn validate_sdk_v2_proof_fragments(
         )?;
         if proof_string(&fragment["format"], "proof fragment format")? != SDK_V2_PROOF_FORMAT
             || proof_string(&fragment["semantic_profile"], "proof fragment profile")?
-                != TEST_PROFILE
+                != semantic_profile
         {
             return Err("proof fragment format/profile is not sdk-v2 v1".to_owned());
         }
@@ -779,7 +795,24 @@ pub fn cargo_with_env(arguments: &[&str], environment: &[(&str, &std::ffi::OsStr
     command.output().unwrap()
 }
 
+/// `entry` as the JSON object a generated live producer reads from its
+/// profile environment variable.
+pub fn sdk_profile_entry_json(entry: &sdk_profile_matrix::SdkProfile) -> String {
+    serde_json::json!({
+        "semantic_profile": entry.semantic_profile,
+        "live_server_version": entry.live_server_version,
+        "expected_fingerprints": entry.expected_fingerprints,
+    })
+    .to_string()
+}
+
 pub fn rust_projection(source: &str, document: &str) -> RuntimeProjection {
+    rust_projection_on(source, document, TEST_PROFILE)
+}
+
+/// Rust projection of `source` under `profile`, for live producers that run on
+/// the requested sdk matrix profile rather than the offline fixture profile.
+pub fn rust_projection_on(source: &str, document: &str, profile: &str) -> RuntimeProjection {
     let documents = SchemaDocumentSet::parse([(
         DocumentId::new(document).expect("static document ID is canonical"),
         source,
@@ -788,7 +821,7 @@ pub fn rust_projection(source: &str, document: &str) -> RuntimeProjection {
     let declared = normalize_documents(&documents).expect("Rust fixture schema normalizes");
     let resolved = resolve(
         &declared,
-        &SemanticProfileId::new("typedb-3.12.1/v1").expect("profile is canonical"),
+        &SemanticProfileId::new(profile).expect("profile is canonical"),
     )
     .expect("Rust fixture schema resolves");
     let emitter = RustEmitter::new();

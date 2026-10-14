@@ -956,7 +956,7 @@ const remoteCancellationObservation = {
   server_exchange_cancelled_after_send: serverExchangeCancelledAfterSend,
 };
 
-function proofSourceIdentity(root, relative) {
+function proofSourceBytes(root, relative) {
   const path = resolve(root, relative);
   const metadata = lstatSync(path);
   if (!metadata.isFile() || metadata.isSymbolicLink()) {
@@ -972,13 +972,17 @@ function proofSourceIdentity(root, relative) {
       if (count === 0) throw new Error(`sdk-v2 proof source was truncated: ${relative}`);
       offset += count;
     }
-    return {
-      path: relative,
-      sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
-    };
+    return bytes;
   } finally {
     closeSync(descriptor);
   }
+}
+
+function proofSourceIdentity(root, relative) {
+  return {
+    path: relative,
+    sha256: crypto.createHash("sha256").update(proofSourceBytes(root, relative)).digest("hex"),
+  };
 }
 
 function canonicalProofValue(value) {
@@ -991,6 +995,28 @@ function canonicalProofValue(value) {
     );
   }
   return value;
+}
+
+/**
+ * The sdk-vN profile-matrix profile a proof fragment reports:
+ * `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`, else the catalog's own profile
+ * (mirrors `scripts/ci/sdk_profile_matrix.py` `requested`).
+ */
+function sdkProofProfile(root, version) {
+  const base = `tests/contracts/sdk_conformance/sdk-v${version}`;
+  const read = (name) => JSON.parse(proofSourceBytes(root, `${base}/${name}`).toString("utf8"));
+  const profile = process.env.TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE
+    || read(`catalog-v${version}.json`).fixture.semantic_profile;
+  const matrix = read(`profiles-v${version}.json`);
+  if (
+    matrix.set !== `sdk-v${version}`
+    || typeof matrix.profiles !== "object"
+    || matrix.profiles === null
+    || !Object.hasOwn(matrix.profiles, profile)
+  ) {
+    throw new Error(`sdk-v${version} has no profile-matrix entry for ${JSON.stringify(profile)}`);
+  }
+  return profile;
 }
 
 function emitSdkV2RemoteProofFragment() {
@@ -1029,7 +1055,7 @@ function emitSdkV2RemoteProofFragment() {
   const fragment = {
     format: "typebridge.sdk-v2-proof-fragment/v1",
     binding: "node",
-    semantic_profile: "typedb-3.12.1/v1",
+    semantic_profile: sdkProofProfile(root, 2),
     run_nonce: runNonce,
     contract: Object.fromEntries(
       Object.entries(contractPaths).map(([name, relative]) => [
@@ -1145,7 +1171,7 @@ function emitSdkV3PackageProofFragment() {
   const testId = "node.generated_package_v3_integrity";
   const fragment = {
     format: "typebridge.sdk-v3-proof-fragment/v1", binding: "node",
-    semantic_profile: "typedb-3.12.1/v1", run_nonce: runNonce,
+    semantic_profile: sdkProofProfile(root, 3), run_nonce: runNonce,
     contract: Object.fromEntries(Object.entries(contractPaths).map(([name, relative]) => [name, proofSourceIdentity(root, relative)])),
     producer: { id: "node.generated-package-v3-proof", sources: producerPaths.map((relative) => proofSourceIdentity(root, relative)) },
     results: [

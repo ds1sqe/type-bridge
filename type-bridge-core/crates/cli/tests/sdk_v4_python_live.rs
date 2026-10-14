@@ -7,6 +7,8 @@ use std::process::Command;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+mod support;
+
 const CONSUMER: &str = include_str!("sdk_v4_python_live/consumer.py");
 
 fn fixture() -> PathBuf {
@@ -41,8 +43,9 @@ fn result(case: &str, capability: &str, proof: &str, observation: Value) -> Valu
 }
 
 #[test]
-#[ignore = "requires an isolated exact TypeDB 3.12.3 server and maturin"]
-fn generated_python_emits_complete_v4_report_on_3_12_3() {
+#[ignore = "requires an isolated TypeDB server matching the sdk-v4 profile matrix and maturin"]
+fn generated_python_emits_complete_v4_report() {
+    let server_version = support::requested_v4_server_version_blocking();
     let temporary = tempfile::tempdir().expect("isolated workspace creates");
     copy_tree(&fixture(), temporary.path());
     let generation = Command::new(env!("CARGO_BIN_EXE_type-bridge"))
@@ -145,7 +148,7 @@ fn generated_python_emits_complete_v4_report_on_3_12_3() {
         "manifest": source_identity(&root, "tests/contracts/sdk_conformance/manifest-v1.json"),
         "catalog": source_identity(&root, "tests/contracts/sdk_conformance/sdk-v4/catalog-v4.json"),
         "journey": source_identity(&root, "tests/contracts/sdk_conformance/sdk-v4/journey-v4.json"),
-        "server_version": "3.12.3",
+        "server_version": server_version,
         "results": [
             result("sdk.runtime.database-administration", "runtime.database-administration", "direct_runtime", observation["administration"].clone()),
             result("sdk.migration.rollback", "migration.reverse-cli", "direct_runtime", observation["rollback"].clone()),

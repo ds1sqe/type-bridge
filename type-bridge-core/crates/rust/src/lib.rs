@@ -28,6 +28,10 @@ mod relation_codec;
 mod relation_manager;
 mod remote;
 pub mod schema;
+#[cfg(test)]
+#[path = "../../../../tests/support/sdk_profile_matrix.rs"]
+#[allow(dead_code)]
+mod sdk_profile_matrix;
 pub mod session;
 mod transaction;
 pub mod value;

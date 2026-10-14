@@ -26,6 +26,10 @@ pub mod query_v2_runtime;
 pub mod runtime_projection;
 pub mod schema;
 #[cfg(test)]
+#[path = "../../../../tests/support/sdk_profile_matrix.rs"]
+#[allow(dead_code)]
+mod sdk_profile_matrix;
+#[cfg(test)]
 mod test_isolation;
 pub mod transpiler;
 mod validated_result_runtime;

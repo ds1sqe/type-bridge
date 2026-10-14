@@ -14,8 +14,7 @@ use type_bridge::{ConnectionOptions, Database as GeneratedDatabase, ProjectedMan
 use type_bridge_orm::session::{ConnectOptions, Database as AdminDatabase, TxType};
 
 const REPORT_FORMAT: &str = "typebridge.manager-filter-live-report/v1";
-const SEMANTIC_PROFILE: &str = "typedb-3.12.1/v1";
-const SERVER_VERSION: &str = "3.12.3";
+const PROFILE_ENV: &str = "TYPE_BRIDGE_MANAGER_LIVE_PROFILE";
 const OUTPUT_ENV: &str = "TYPE_BRIDGE_MANAGER_LIVE_REPORT";
 const ADDRESS_ENV: &str = "TYPE_BRIDGE_MANAGER_LIVE_ADDRESS";
 const DATABASE_ENV: &str = "TYPE_BRIDGE_MANAGER_LIVE_DATABASE";
@@ -25,7 +24,6 @@ const USERNAME: &str = "admin";
 const PASSWORD: &str = "password";
 const MAX_AUTHORITY_BYTES: u64 = 1024 * 1024;
 const MAX_REPORT_BYTES: usize = 256 * 1024;
-const EXPECTED_SEMANTIC_FINGERPRINT: &str = "{\"algorithm\":\"sha256\",\"canonicalization\":\"typebridge.schema-canonical-json/v1\",\"digest\":\"3c8d072b60c575b4c0381c1ea44088a9c18e01ed52e90730311aadccb72cd0c8\",\"domain\":\"typebridge.schema.semantic\",\"semantic_profile\":\"typedb-3.12.1/v1\"}";
 
 const AUTHORITY_FILES: [(&str, &str, &str); 3] = [
     (
@@ -123,6 +121,35 @@ fn required_environment(name: &'static str) -> ProducerResult<String> {
         ));
     }
     Ok(value)
+}
+
+/// The sdk-v3 matrix entry the harness selected: the profile this report
+/// declares, its exact live server, and its expected semantic fingerprint.
+struct Profile {
+    semantic_profile: String,
+    server_version: String,
+    semantic_fingerprint: Value,
+}
+
+fn parse_profile() -> ProducerResult<Profile> {
+    let raw = required_environment(PROFILE_ENV)?;
+    let entry: Value = serde_json::from_str(&raw)
+        .map_err(|error| ProducerError::caused("invalid_profile", PROFILE_ENV, error))?;
+    let text = |field: &str| {
+        entry[field].as_str().map(str::to_owned).ok_or_else(|| {
+            ProducerError::new("invalid_profile", format!("{PROFILE_ENV} lacks {field}"))
+        })
+    };
+    Ok(Profile {
+        semantic_profile: text("semantic_profile")?,
+        server_version: text("live_server_version")?,
+        semantic_fingerprint: entry["expected_fingerprints"]["semantic"].clone(),
+    })
+}
+
+fn generated_semantic_fingerprint_matches(profile: &Profile) -> bool {
+    serde_json::from_str::<Value>(SEMANTIC_SCHEMA_FINGERPRINT_JSON)
+        .is_ok_and(|generated| generated == profile.semantic_fingerprint)
 }
 
 fn parse_config() -> ProducerResult<Config> {
@@ -747,7 +774,11 @@ async fn manager_observation(database: &GeneratedDatabase<AppSchema>) -> Produce
     }
 }
 
-async fn run_database(config: &Config, authority: &Authority) -> ProducerResult<Value> {
+async fn run_database(
+    config: &Config,
+    server_version: &str,
+    authority: &Authority,
+) -> ProducerResult<Value> {
     let admin = live(
         AdminDatabase::connect_with_options(
             &config.address,
@@ -768,10 +799,10 @@ async fn run_database(config: &Config, authority: &Authority) -> ProducerResult<
         let detected = admin.server_version().ok_or_else(|| {
             ProducerError::new("missing_server_version", "provider version is absent")
         })?;
-        if detected.to_string() != SERVER_VERSION {
+        if detected.to_string() != server_version {
             return Err(ProducerError::new(
                 "server_version_mismatch",
-                format!("expected {SERVER_VERSION}, detected {detected}"),
+                format!("expected {server_version}, detected {detected}"),
             ));
         }
         if live(admin.database_exists().await, "check database absence")? {
@@ -914,7 +945,8 @@ fn publish(path: &Path, report: Value) -> ProducerResult<()> {
 }
 
 async fn run() -> ProducerResult<()> {
-    if SEMANTIC_SCHEMA_FINGERPRINT_JSON != EXPECTED_SEMANTIC_FINGERPRINT {
+    let profile = parse_profile()?;
+    if !generated_semantic_fingerprint_matches(&profile) {
         return Err(ProducerError::new(
             "generated_package_mismatch",
             "generated crate is not the exact Sdk V3 projection",
@@ -930,7 +962,7 @@ async fn run() -> ProducerResult<()> {
     }
     let config = parse_config()?;
     let authority = load_authority(&config.repository)?;
-    let observation = run_database(&config, &authority).await?;
+    let observation = run_database(&config, &profile.server_version, &authority).await?;
     publish(
         &config.output,
         json!({
@@ -938,7 +970,7 @@ async fn run() -> ProducerResult<()> {
             "binding": "rust",
             "format": REPORT_FORMAT,
             "observation": observation,
-            "semantic_profile": SEMANTIC_PROFILE,
+            "semantic_profile": profile.semantic_profile,
         }),
     )
 }

@@ -286,7 +286,7 @@ def query_live(directory: Path, environment: dict[str, str], nonce: str) -> None
     )
     run(
         rust_live(
-            "live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3",
+            "live_c17_generated_person_and_membership_crud_round_trips_on_profile_server",
             "c_projection_live",
         ),
         env=c_env,
@@ -612,7 +612,7 @@ def codec_live(directory: Path, environment: dict[str, str]) -> None:
     }
     run(
         rust_live(
-            "live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3",
+            "live_c17_generated_person_and_membership_crud_round_trips_on_profile_server",
             "c_projection_live",
         ),
         env=c_env,

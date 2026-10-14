@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Produce Node's TypeDB-3.12.3 Manager-filter report. */
+/** Produce Node's Manager-filter report on one exact sdk-v3 matrix server. */
 
 import crypto from "node:crypto";
 import {
@@ -8,11 +8,12 @@ import {
   fstatSync,
   lstatSync,
   openSync,
+  readFileSync,
   readSync,
 } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, isAbsolute, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   ProducerError,
@@ -38,6 +39,53 @@ export const SEMANTIC_SCHEMA_FINGERPRINT = Object.freeze({
   domain: "typebridge.schema.semantic",
   semantic_profile: SEMANTIC_PROFILE,
 });
+// `SEMANTIC_PROFILE` and the fingerprint above are the sdk-v3 catalog's own
+// identity. A run reports the sdk-v3 profile-matrix entry it selects instead.
+export const SEMANTIC_PROFILE_ENV = "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE";
+export const PROFILE_MATRIX_RELATIVE =
+  "tests/contracts/sdk_conformance/sdk-v3/profiles-v3.json";
+const MODULE_REPOSITORY_ROOT = fileURLToPath(new URL("../../../../../", import.meta.url));
+
+/**
+ * Select the sdk-v3 profile-matrix entry a run reports: the profile named by
+ * `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`, else the catalog's own profile
+ * (mirrors `scripts/ci/sdk_profile_matrix.py` `requested`).
+ */
+export function profileIdentity(root = MODULE_REPOSITORY_ROOT, environment = {}) {
+  const profile = environment[SEMANTIC_PROFILE_ENV] || SEMANTIC_PROFILE;
+  let matrix;
+  try {
+    matrix = JSON.parse(readFileSync(resolve(root, PROFILE_MATRIX_RELATIVE), "utf8"));
+  } catch (error) {
+    throw new ProducerError(
+      "invalid_profile_matrix",
+      "sdk-v3 profile matrix is unreadable",
+      { cause: error },
+    );
+  }
+  const profiles = matrix?.set === "sdk-v3" ? matrix.profiles : undefined;
+  const entry =
+    profiles !== null && typeof profiles === "object" && Object.hasOwn(profiles, profile)
+      ? profiles[profile]
+      : undefined;
+  const semantic = entry?.expected_fingerprints?.semantic;
+  requireCondition(
+    typeof entry?.live_server_version === "string" &&
+      semantic?.semantic_profile === profile,
+    "semantic_profile_mismatch",
+    `sdk-v3 has no profile-matrix entry for ${JSON.stringify(profile)}`,
+  );
+  return Object.freeze({
+    semanticProfile: profile,
+    liveServerVersion: entry.live_server_version,
+    semantic,
+  });
+}
+
+/** The sdk-v3 catalog's own matrix entry; the default of offline seams. */
+export function catalogIdentity() {
+  return profileIdentity(MODULE_REPOSITORY_ROOT, {});
+}
 
 export const OUTPUT_ENV = "TYPE_BRIDGE_MANAGER_LIVE_REPORT";
 export const ADDRESS_ENV = "TYPE_BRIDGE_MANAGER_LIVE_ADDRESS";
@@ -237,7 +285,7 @@ async function importGenerated(packageRoot, name) {
   }
 }
 
-export async function loadGeneratedPackages(packageRoot) {
+export async function loadGeneratedPackages(packageRoot, identity = catalogIdentity()) {
   const local = await importGenerated(packageRoot, LOCAL_PACKAGE);
   const foreign = await importGenerated(packageRoot, FOREIGN_PACKAGE);
   let runtime;
@@ -265,7 +313,7 @@ export async function loadGeneratedPackages(packageRoot) {
     );
   }
   requireCondition(
-    canonicalString(semantic) === canonicalString(SEMANTIC_SCHEMA_FINGERPRINT),
+    canonicalString(semantic) === canonicalString(identity.semantic),
     "generated_package_identity",
     "local package is not the frozen Sdk V3 projection",
   );
@@ -873,12 +921,13 @@ async function runOwnedDatabase({
   providerSchema,
   records,
   tlsRootCa,
+  liveServerVersion = catalogIdentity().liveServerVersion,
 }) {
   const detected = await detectServerVersion(address, port, tlsRootCa !== undefined);
-  if (detected !== "3.12.3") {
+  if (detected !== liveServerVersion) {
     throw new ProducerError(
       "server_version_mismatch",
-      `exact TypeDB 3.12.3 required, detected ${JSON.stringify(detected)}`,
+      `exact TypeDB ${liveServerVersion} required, detected ${JSON.stringify(detected)}`,
     );
   }
   const bootstrap = runtime.RustDatabase.connect(address, databaseName, {
@@ -1008,9 +1057,10 @@ export async function main(environment = process.env) {
         `${TLS_ROOT_CA_ENV} must not be empty`,
       );
     }
+    const identity = profileIdentity(root, environment);
     const { authority, sources } = sourceAuthority(root);
     const { local, foreign, runtime } =
-      await loadGeneratedPackages(packageRoot);
+      await loadGeneratedPackages(packageRoot, identity);
     const records = personRecords(
       jsonObject(sources.journey, "Manager journey"),
     );
@@ -1027,13 +1077,14 @@ export async function main(environment = process.env) {
       providerSchema,
       records,
       tlsRootCa,
+      liveServerVersion: identity.liveServerVersion,
     });
     publishReport(output, {
       authority,
       binding: "node",
       format: REPORT_FORMAT,
       observation,
-      semantic_profile: SEMANTIC_PROFILE,
+      semantic_profile: identity.semanticProfile,
     });
     return 0;
   } catch (error) {

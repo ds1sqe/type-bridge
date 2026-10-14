@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import hashlib
 import importlib
 import importlib.util
@@ -17,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import make_dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -61,6 +62,7 @@ SDK_V2_JOURNEY = ROOT / SDK_V2_JOURNEY_RELATIVE
 SDK_V3_JOURNEY = ROOT / SDK_V3_JOURNEY_RELATIVE
 SDK_V3_PROVIDER_SCHEMA = ROOT / "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql"
 SDK_V2_PROOF_LOADER = ROOT / "scripts/ci/proof_fragments.py"
+SDK_PROFILE_MATRIX_LOADER = ROOT / "scripts/ci/sdk_profile_matrix.py"
 
 
 class _StringValue(Protocol):
@@ -261,29 +263,96 @@ def _source_identity(relative_path: str, raw: bytes) -> dict[str, str]:
     return {"path": relative_path, "sha256": hashlib.sha256(raw).hexdigest()}
 
 
-# Mirrors `GeneratedPackageRelease::for_profile` (type-bridge-core `core::version`):
-# a generated package admits exactly the server release its profile names.
-PROFILE_SERVER_VERSIONS = {"typedb-3.12.1/v1": "3.12.3", "typedb-3.13.6/v1": "3.13.6"}
 # Generated live fixtures follow `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`; new
 # workspaces and the default TypeDB image use TypeDB 3.13.6.
 DEFAULT_ACCEPTANCE_PROFILE = "typedb-3.13.6/v1"
-# The sdk-v1..v6 conformance contracts are frozen to this profile.
-SDK_PROFILE = "typedb-3.12.1/v1"
 
 
-def _require_profile_server_version(semantic_profile: str, detected: str | None) -> None:
-    expected = PROFILE_SERVER_VERSIONS.get(semantic_profile)
-    if expected is None:
-        raise AssertionError(f"{semantic_profile} names no exact TypeDB server release")
-    if detected != expected:
+def _load_ci_module(name: str, path: Path) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"{path.relative_to(ROOT)} is not importable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@functools.cache
+def _profile_matrix() -> ModuleType:
+    """`scripts/ci/sdk_profile_matrix.py`: the per-set TypeDB version matrix."""
+    return _load_ci_module("_typebridge_sdk_profile_matrix", SDK_PROFILE_MATRIX_LOADER)
+
+
+def _matrix_error(code: str, message: str) -> AssertionError:
+    return AssertionError(f"{code}: {message}")
+
+
+def _require_profile_server_version(
+    semantic_profile: str, detected: str | None, version: int = 1
+) -> Any:
+    """Return sdk-v{version}'s matrix entry for ``semantic_profile``.
+
+    The detected server must be exactly the entry's live server. A generated
+    package admits exactly the server release its profile names
+    (`GeneratedPackageRelease::for_profile` in type-bridge-core `core::version`);
+    the sdk-v1 matrix is that table for the acceptance profiles.
+    """
+    identity = _profile_matrix().select(version, semantic_profile, error=_matrix_error)
+    if detected != identity.live_server_version:
         raise AssertionError(
             f"{semantic_profile} packages require the actual detected TypeDB server "
-            f"version {expected}; detected {detected!r}"
+            f"version {identity.live_server_version}; detected {detected!r}"
         )
+    return identity
 
 
-def _require_sdk_server_version(detected: str | None) -> None:
-    _require_profile_server_version(SDK_PROFILE, detected)
+def _requested_sdk_profile(
+    version: int,
+    generated_profile: str,
+    detected: str | None,
+    environment: Mapping[str, str] | None = None,
+) -> Any:
+    """Return the sdk-v{version} matrix entry a report of this run declares.
+
+    The profile is `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`, else the catalog's
+    own; the generated package and the detected server must both be on it.
+    """
+    identity = _profile_matrix().requested(version, environment=environment, error=_matrix_error)
+    if generated_profile != identity.semantic_profile:
+        raise AssertionError(
+            f"sdk-v{version} reports target {identity.semantic_profile}; "
+            f"the generated package uses {generated_profile}"
+        )
+    return _require_profile_server_version(identity.semantic_profile, detected, version)
+
+
+def _generated_profile(generated: ModuleType) -> str:
+    profile = json.loads(generated.SEMANTIC_SCHEMA_FINGERPRINT_JSON)["semantic_profile"]
+    assert isinstance(profile, str)
+    return profile
+
+
+def _sdk_python_fingerprints(
+    identity: Any, generated: ModuleType
+) -> tuple[dict[str, object], dict[str, object]]:
+    """The entry's semantic and Python projection fingerprints, which ``generated`` must carry."""
+    expected = identity.expected_fingerprints
+    if expected is None:
+        raise AssertionError(
+            f"{identity.set_id} pins no fingerprints for {identity.semantic_profile}"
+        )
+    semantic = expected["semantic"]
+    projection = expected["projections"]["python"]
+    if (
+        json.loads(generated.SEMANTIC_SCHEMA_FINGERPRINT_JSON) != semantic
+        or json.loads(generated.PROJECTION_FINGERPRINT_JSON) != projection
+    ):
+        raise AssertionError(
+            f"generated Python package is not the {identity.set_id} projection "
+            f"for {identity.semantic_profile}"
+        )
+    return semantic, projection
 
 
 def _sdk_results(
@@ -324,7 +393,9 @@ def _sdk_results(
     return sorted(results, key=lambda result: (result["case_id"], result["proof_kind"]))
 
 
-def _load_sdk_v2_proof_observations() -> dict[tuple[str, str], dict[str, object]]:
+def _load_sdk_v2_proof_observations(
+    semantic_profile: str,
+) -> dict[tuple[str, str], dict[str, object]]:
     raw_paths = os.environ.get("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS")
     run_nonce = os.environ.get("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE")
     if raw_paths is None or run_nonce is None:
@@ -332,21 +403,14 @@ def _load_sdk_v2_proof_observations() -> dict[tuple[str, str], dict[str, object]
     path_values = raw_paths.split(os.pathsep)
     if not path_values or any(not value for value in path_values):
         raise AssertionError("sdk-v2 proof fragment paths must be a nonempty path list")
-    spec = importlib.util.spec_from_file_location(
-        "_typebridge_proof_fragments",
-        SDK_V2_PROOF_LOADER,
-    )
-    if spec is None or spec.loader is None:
-        raise AssertionError("sdk-v2 proof fragment validator is not importable")
-    loader = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = loader
-    spec.loader.exec_module(loader)
+    loader = _load_ci_module("_typebridge_proof_fragments", SDK_V2_PROOF_LOADER)
     load_proof_fragments = loader.CONTRACTS[2].load_proof_fragments
     loaded = load_proof_fragments(
         [Path(value) for value in path_values],
         expected_binding="python",
         run_nonce=run_nonce,
         root=ROOT,
+        semantic_profile=semantic_profile,
     )
     if not isinstance(loaded, dict):
         raise AssertionError("sdk-v2 proof fragment validator returned an invalid map")
@@ -365,6 +429,7 @@ def _load_sdk_v2_proof_observations() -> dict[tuple[str, str], dict[str, object]
 
 def _sdk_report(
     generated: ModuleType,
+    identity: Any,
     catalog_raw: bytes,
     catalog: dict[str, object],
     journey_raw: bytes,
@@ -382,6 +447,7 @@ def _sdk_report(
     assert isinstance(provider_schema_relative, str)
     assert isinstance(journey_relative, str)
     assert journey_relative == SDK_JOURNEY_RELATIVE
+    semantic_fingerprint, projection_fingerprint = _sdk_python_fingerprints(identity, generated)
     return {
         "format": "typebridge.sdk-conformance-report/v1",
         "binding": "python",
@@ -390,16 +456,16 @@ def _sdk_report(
         "fixture": {
             "id": fixture["id"],
             "version": fixture["version"],
-            "semantic_profile": fixture["semantic_profile"],
+            "semantic_profile": identity.semantic_profile,
             "schema": _source_identity(schema_relative, (ROOT / schema_relative).read_bytes()),
             "provider_schema": _source_identity(
                 provider_schema_relative,
                 (ROOT / provider_schema_relative).read_bytes(),
             ),
             "journey": _source_identity(journey_relative, journey_raw),
-            "semantic_fingerprint": json.loads(generated.SEMANTIC_SCHEMA_FINGERPRINT_JSON),
+            "semantic_fingerprint": semantic_fingerprint,
             "projection_target": projection_targets["python"],
-            "projection_fingerprint": json.loads(generated.PROJECTION_FINGERPRINT_JSON),
+            "projection_fingerprint": projection_fingerprint,
         },
         "results": results,
     }
@@ -407,6 +473,7 @@ def _sdk_report(
 
 def _sdk_v2_report(
     generated: ModuleType,
+    identity: Any,
     catalog_raw: bytes,
     catalog: dict[str, object],
     journey_raw: bytes,
@@ -424,6 +491,7 @@ def _sdk_v2_report(
     assert isinstance(provider_schema_relative, str)
     assert isinstance(journey_relative, str)
     assert journey_relative == SDK_V2_JOURNEY_RELATIVE
+    semantic_fingerprint, projection_fingerprint = _sdk_python_fingerprints(identity, generated)
     return {
         "format": "typebridge.sdk-conformance-report/v2",
         "binding": "python",
@@ -432,16 +500,16 @@ def _sdk_v2_report(
         "fixture": {
             "id": fixture["id"],
             "version": fixture["version"],
-            "semantic_profile": fixture["semantic_profile"],
+            "semantic_profile": identity.semantic_profile,
             "schema": _source_identity(schema_relative, (ROOT / schema_relative).read_bytes()),
             "provider_schema": _source_identity(
                 provider_schema_relative,
                 (ROOT / provider_schema_relative).read_bytes(),
             ),
             "journey": _source_identity(journey_relative, journey_raw),
-            "semantic_fingerprint": json.loads(generated.SEMANTIC_SCHEMA_FINGERPRINT_JSON),
+            "semantic_fingerprint": semantic_fingerprint,
             "projection_target": projection_targets["python"],
-            "projection_fingerprint": json.loads(generated.PROJECTION_FINGERPRINT_JSON),
+            "projection_fingerprint": projection_fingerprint,
         },
         "results": results,
     }
@@ -501,11 +569,14 @@ def _publish_sdk_report(raw_path: str, report: dict[str, object]) -> None:
 
 def _publish_sdk_v3_python_supplement(
     generated: ModuleType,
+    detected: str | None,
     observations: dict[tuple[str, str], dict[str, object]],
 ) -> None:
     raw_path = os.environ.get("TYPE_BRIDGE_SDK_V3_PYTHON_SUPPLEMENT")
     if raw_path is None:
         return
+    identity = _requested_sdk_profile(3, _generated_profile(generated), detected)
+    semantic_fingerprint, projection_fingerprint = _sdk_python_fingerprints(identity, generated)
     _, journey = _load_json_object(SDK_V3_JOURNEY)
     expected = journey["expected_observations"]
     assert isinstance(expected, dict)
@@ -524,10 +595,10 @@ def _publish_sdk_v3_python_supplement(
     supplement = {
         "format": "typebridge.sdk-v3-live-supplement/v1",
         "binding": "python",
-        "semantic_profile": SDK_PROFILE,
+        "semantic_profile": identity.semantic_profile,
         "producer": "python.generated-data-model-runtime-v3-live",
-        "semantic_fingerprint": json.loads(generated.SEMANTIC_SCHEMA_FINGERPRINT_JSON),
-        "projection_fingerprint": json.loads(generated.PROJECTION_FINGERPRINT_JSON),
+        "semantic_fingerprint": semantic_fingerprint,
+        "projection_fingerprint": projection_fingerprint,
         "results": results,
     }
     _publish_sdk_report(raw_path, supplement)
@@ -2088,20 +2159,88 @@ def _wait_for_port(port: int, process: subprocess.Popen[bytes], timeout: float) 
     raise AssertionError("generated remote server never became reachable")
 
 
-def test_sdk_report_server_version_gate_is_exact() -> None:
-    _require_sdk_server_version("3.12.3")
-    for detected in (None, "3.11.5", "3.12.0", "3.12.2", "3.13.0", "3.13.6"):
-        with pytest.raises(AssertionError, match="actual detected TypeDB server version 3.12.3"):
-            _require_sdk_server_version(detected)
-
-
-def test_generated_profile_server_gate_follows_the_package_profile() -> None:
-    _require_profile_server_version("typedb-3.13.6/v1", "3.13.6")
-    for detected in (None, "3.12.3", "3.13.5", "3.14.0"):
-        with pytest.raises(AssertionError, match="actual detected TypeDB server version 3.13.6"):
-            _require_profile_server_version("typedb-3.13.6/v1", detected)
-    with pytest.raises(AssertionError, match="names no exact TypeDB server release"):
+def test_generated_profile_server_gate_reads_the_matrix() -> None:
+    for profile, server in (("typedb-3.12.1/v1", "3.12.3"), ("typedb-3.13.6/v1", "3.13.6")):
+        assert _require_profile_server_version(profile, server).semantic_profile == profile
+        for detected in (None, "3.11.5", "3.12.2", "3.13.5", "3.14.0"):
+            with pytest.raises(
+                AssertionError, match=f"actual detected TypeDB server version {server}"
+            ):
+                _require_profile_server_version(profile, detected)
+    with pytest.raises(AssertionError, match="semantic_profile_mismatch"):
         _require_profile_server_version("typedb-3.11.5/v1", "3.11.5")
+
+
+@pytest.mark.parametrize("version", [1, 2, 3, 5])
+def test_sdk_reports_declare_the_requested_matrix_profile(version: int) -> None:
+    catalog_profile = _profile_matrix().catalog_profile(version)
+    entries = _profile_matrix().load_matrix(version)
+    default = entries[catalog_profile]
+    assert (
+        _requested_sdk_profile(
+            version, catalog_profile, default.live_server_version, environment={}
+        ).semantic_profile
+        == catalog_profile
+    )
+    requested = {"TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE": "typedb-3.13.6/v1"}
+    identity = _requested_sdk_profile(version, "typedb-3.13.6/v1", "3.13.6", requested)
+    assert (identity.semantic_profile, identity.live_server_version) == (
+        "typedb-3.13.6/v1",
+        "3.13.6",
+    )
+    with pytest.raises(AssertionError, match="actual detected TypeDB server version 3.13.6"):
+        _requested_sdk_profile(version, "typedb-3.13.6/v1", "3.12.3", requested)
+    with pytest.raises(AssertionError, match="the generated package uses"):
+        _requested_sdk_profile(version, "typedb-3.12.1/v1", "3.13.6", requested)
+    with pytest.raises(AssertionError, match="the generated package uses"):
+        _requested_sdk_profile(version, "typedb-3.13.6/v1", "3.13.6", environment={})
+    with pytest.raises(AssertionError, match="semantic_profile_mismatch"):
+        _requested_sdk_profile(
+            version,
+            "typedb-3.11.5/v1",
+            "3.11.5",
+            {"TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE": "typedb-3.11.5/v1"},
+        )
+
+
+def _fingerprinted_package(identity: Any) -> ModuleType:
+    package = ModuleType("_fingerprinted_package")
+    fingerprints = identity.expected_fingerprints
+    vars(package).update(
+        SEMANTIC_SCHEMA_FINGERPRINT_JSON=json.dumps(fingerprints["semantic"]),
+        PROJECTION_FINGERPRINT_JSON=json.dumps(fingerprints["projections"]["python"]),
+    )
+    return package
+
+
+@pytest.mark.parametrize(
+    ("version", "build", "catalog_path"),
+    [(1, "_sdk_report", SDK_CATALOG), (2, "_sdk_v2_report", SDK_V2_CATALOG)],
+)
+def test_sdk_reports_emit_the_matrix_fingerprints_of_their_profile(
+    version: int, build: str, catalog_path: Path
+) -> None:
+    entries = _profile_matrix().load_matrix(version)
+    identity = entries["typedb-3.13.6/v1"]
+    catalog_raw, catalog = _load_json_object(catalog_path)
+    journey_relative = catalog["journey_path"]
+    assert isinstance(journey_relative, str)
+    journey_raw = (ROOT / journey_relative).read_bytes()
+    builder = globals()[build]
+    report = builder(
+        _fingerprinted_package(identity), identity, catalog_raw, catalog, journey_raw, []
+    )
+    fixture = report["fixture"]
+    assert fixture["semantic_profile"] == "typedb-3.13.6/v1"
+    assert fixture["semantic_fingerprint"] == identity.expected_fingerprints["semantic"]
+    assert (
+        fixture["projection_fingerprint"] == identity.expected_fingerprints["projections"]["python"]
+    )
+    catalog_entry = entries[_profile_matrix().catalog_profile(version)]
+    assert fixture["semantic_fingerprint"] != catalog_entry.expected_fingerprints["semantic"]
+    stale = _fingerprinted_package(catalog_entry)
+    with pytest.raises(AssertionError, match="is not the sdk-v.* projection for typedb-3.13.6/v1"):
+        builder(stale, identity, catalog_raw, catalog, journey_raw, [])
 
 
 def _make_generated_person(
@@ -2192,8 +2331,8 @@ def generated_v3_package(
 ) -> Iterator[ModuleType]:
     """Import the exact Sdk V3 Python projection generated for this run."""
     _, _, semantic_profile = _acceptance_contract(clean_db)
-    if semantic_profile != SDK_PROFILE:
-        pytest.skip(f"Sdk V3 requires the {SDK_PROFILE} semantic profile")
+    if semantic_profile not in _profile_matrix().supported_profiles(3):
+        pytest.skip(f"sdk-v3 has no matrix entry for {semantic_profile}")
     supplied_stage = os.environ.get("TYPE_BRIDGE_GENERATED_PYTHON_STAGE")
     if supplied_stage is None:
         stage = tmp_path / "generated-v3-projection"
@@ -2212,6 +2351,12 @@ def generated_v3_package(
     else:
         stage = Path(supplied_stage).resolve()
     package = stage / "generated_ordered" / "__init__.py"
+    if supplied_stage is None and not package.exists():
+        # The provider schema is profile-independent; only the fixture script
+        # decides which profiles get the ordered sdk-v3 package.
+        pytest.skip(
+            f"prepare_generated_live_fixture.sh emits no sdk-v3 package for {semantic_profile}"
+        )
     if not package.is_file() or package.is_symlink():
         raise AssertionError(f"supplied generated Python V3 fixture is incomplete: {package}")
     ordered_authority = stage / "schema-authority-ordered.json"
@@ -2237,7 +2382,8 @@ def generated_data_model_runtime_v3_live(
     generated_v3_package: ModuleType,
 ) -> None:
     generated = generated_v3_package
-    _require_sdk_server_version(clean_db.detected_server_version())
+    detected = clean_db.detected_server_version()
+    _require_profile_server_version(_generated_profile(generated), detected, 3)
     clean_db.execute_query(
         SDK_V3_PROVIDER_SCHEMA.read_text(encoding="utf-8"),
         transaction_type="schema",
@@ -2685,7 +2831,7 @@ def generated_data_model_runtime_v3_live(
             },
         },
     }
-    _publish_sdk_v3_python_supplement(generated, observations)
+    _publish_sdk_v3_python_supplement(generated, detected, observations)
 
     for value in put_links:
         network_manager.delete(value)
@@ -2711,7 +2857,7 @@ def test_generated_canonical_serialization_v5_live(
     if raw_evidence is None:
         pytest.skip("Sdk V5 Python live evidence was not requested")
     generated = generated_v3_package
-    _require_sdk_server_version(clean_db.detected_server_version())
+    _requested_sdk_profile(5, _generated_profile(generated), clean_db.detected_server_version())
     clean_db.execute_query(
         SDK_V3_PROVIDER_SCHEMA.read_text(encoding="utf-8"),
         transaction_type="schema",
@@ -3345,6 +3491,8 @@ def test_generated_projection_round_trips_live_models(
     sdk_v2_journey: dict[str, object] | None = None
     sdk_v2_results: list[dict[str, object]] | None = None
     sdk_v2_proof_observations: dict[tuple[str, str], dict[str, object]] | None = None
+    sdk_identity: Any = None
+    sdk_v2_identity: Any = None
     if (
         sdk_report_path is not None
         and sdk_v2_report_path is not None
@@ -3352,9 +3500,9 @@ def test_generated_projection_round_trips_live_models(
     ):
         raise AssertionError("sdk-v1 and sdk-v2 reports require distinct paths")
     if sdk_report_path is not None:
-        if semantic_profile != SDK_PROFILE:
-            raise AssertionError(f"sdk reports may only be emitted for {SDK_PROFILE}")
-        _require_sdk_server_version(clean_db.detected_server_version())
+        sdk_identity = _requested_sdk_profile(
+            1, semantic_profile, clean_db.detected_server_version()
+        )
         _validate_sdk_report_path(sdk_report_path)
         catalog_raw, sdk_catalog = _load_json_object(SDK_CATALOG)
         journey_raw, sdk_journey = _load_json_object(SDK_JOURNEY)
@@ -3364,13 +3512,15 @@ def test_generated_projection_round_trips_live_models(
         assert sdk_journey["fixture_id"] == sdk_fixture["id"]
         assert sdk_journey["version"] == sdk_fixture["version"]
     if sdk_v2_report_path is not None:
-        if semantic_profile != SDK_PROFILE:
-            raise AssertionError(f"sdk-v2 reports require {SDK_PROFILE}")
-        _require_sdk_server_version(clean_db.detected_server_version())
+        sdk_v2_identity = _requested_sdk_profile(
+            2, semantic_profile, clean_db.detected_server_version()
+        )
         _validate_sdk_report_path(sdk_v2_report_path)
         sdk_v2_catalog_raw, sdk_v2_catalog = _load_json_object(SDK_V2_CATALOG)
         sdk_v2_journey_raw, sdk_v2_journey = _load_json_object(SDK_V2_JOURNEY)
-        sdk_v2_proof_observations = _load_sdk_v2_proof_observations()
+        sdk_v2_proof_observations = _load_sdk_v2_proof_observations(
+            sdk_v2_identity.semantic_profile
+        )
         assert sdk_v2_journey["format"] == "typebridge.sdk-journey/v2"
         sdk_v2_fixture = sdk_v2_catalog["fixture"]
         assert isinstance(sdk_v2_fixture, dict)
@@ -4643,6 +4793,7 @@ def test_generated_projection_round_trips_live_models(
             sdk_report_path,
             _sdk_report(
                 generated,
+                sdk_identity,
                 catalog_raw,
                 sdk_catalog,
                 journey_raw,
@@ -4658,6 +4809,7 @@ def test_generated_projection_round_trips_live_models(
             sdk_v2_report_path,
             _sdk_v2_report(
                 generated,
+                sdk_v2_identity,
                 sdk_v2_catalog_raw,
                 sdk_v2_catalog,
                 sdk_v2_journey_raw,

@@ -1,14 +1,15 @@
 #![cfg(unix)]
 
 mod support;
+use support::sdk_profile_matrix::{self, SdkProfile};
 use support::{
-    Stage, authority_for, command_exists, compile_c_consumer, native_library, repository_root,
-    runtime_include, write_package,
+    Stage, command_exists, compile_c_consumer, native_library, repository_root, runtime_include,
+    write_package,
 };
 
 #[path = "support/c_provider.rs"]
 mod c_provider;
-use c_provider::{IsolatedDatabase, SETUP_LOCK};
+use c_provider::{EXPECTED_SERVER_VERSION_ENV, IsolatedDatabase, SETUP_LOCK, profiled_authority};
 
 use std::collections::BTreeMap;
 use std::env;
@@ -33,7 +34,6 @@ const WRONG_OWNER_COMPILE_FAIL: &str = include_str!("c_manager_live/wrong_owner_
 const WRONG_SCALAR_COMPILE_FAIL: &str = include_str!("c_manager_live/wrong_scalar_compile_fail.c");
 
 const REPORT_FORMAT: &str = "typebridge.manager-filter-live-report/v1";
-const SEMANTIC_PROFILE: &str = "typedb-3.12.1/v1";
 const FACT_PREFIX: &str = "TYPE_BRIDGE_C_MANAGER_LIVE_FACT\t";
 const REPORT_ENV: &str = "TYPE_BRIDGE_MANAGER_LIVE_REPORT";
 const ADDRESS_ENV: &str = "TYPE_BRIDGE_MANAGER_LIVE_ADDRESS";
@@ -65,15 +65,21 @@ struct EmittedFixture {
     foreign: GeneratedPackage,
 }
 
-fn emitted_fixture() -> EmittedFixture {
+fn emitted_fixture(profile: &SdkProfile) -> EmittedFixture {
     let needle = "      foo__bar: { card: { min: 0, max: 1 } }";
     assert_eq!(SOURCE.matches(needle).count(), 1, "foo__bar fact is unique");
     let foreign_source = SOURCE.replacen(needle, "      foo__bar: { card: { min: 0, max: 2 } }", 1);
-    let (local_schema, local_authority) = authority_for(SOURCE, "sdk-v3.yaml", "sdk-v3-c-manager");
-    let (foreign_schema, foreign_authority) = authority_for(
+    let (local_schema, local_authority) = profiled_authority(
+        SOURCE,
+        "sdk-v3.yaml",
+        "sdk-v3-c-manager",
+        &profile.semantic_profile,
+    );
+    let (foreign_schema, foreign_authority) = profiled_authority(
         &foreign_source,
         "sdk-v3-foreign-foo-bar.yaml",
         "sdk-v3-c-manager-foreign",
+        &profile.semantic_profile,
     );
     let emitter = CEmitter::new();
     let emit = |schema: &type_bridge_schema::ResolvedSchema,
@@ -236,13 +242,13 @@ fn report_authority(root: &Path) -> BTreeMap<&'static str, Value> {
         .collect()
 }
 
-fn publish_report(path: &Path, root: &Path, observation: Value) {
+fn publish_report(path: &Path, root: &Path, profile: &SdkProfile, observation: Value) {
     let report = json!({
         "authority": report_authority(root),
         "binding": "c",
         "format": REPORT_FORMAT,
         "observation": observation,
-        "semantic_profile": SEMANTIC_PROFILE,
+        "semantic_profile": profile.semantic_profile,
     });
     let mut bytes = to_canonical_json(&report).expect("C manager report canonicalizes");
     bytes.push(b'\n');
@@ -296,7 +302,7 @@ fn c_manager_live_producer_is_bounded_and_expectation_independent() {
 
 #[test]
 fn strict_c17_manager_live_consumer_compiles() {
-    let fixture = emitted_fixture();
+    let fixture = emitted_fixture(&sdk_profile_matrix::requested(3));
     let stage = Stage::new();
     let local = stage.path().join("local");
     let foreign = stage.path().join("foreign");
@@ -343,7 +349,8 @@ fn c_manager_live_runs_when_explicitly_configured() {
         );
     }
     let report = report_destination();
-    let fixture = emitted_fixture();
+    let profile = sdk_profile_matrix::requested(3);
+    let fixture = emitted_fixture(&profile);
     let stage = Stage::new();
     let local = stage.path().join("local");
     let foreign = stage.path().join("foreign");
@@ -382,6 +389,10 @@ fn c_manager_live_runs_when_explicitly_configured() {
                 "TYPEDB_PASSWORD".to_owned(),
                 env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned()),
             ),
+            (
+                EXPECTED_SERVER_VERSION_ENV.to_owned(),
+                profile.live_server_version.clone(),
+            ),
         ])
         .collect::<Vec<_>>();
     let mut database = stage_setup(stage.path(), environment.clone());
@@ -407,6 +418,7 @@ fn c_manager_live_runs_when_explicitly_configured() {
     publish_report(
         &report,
         &repository_root(),
+        &profile,
         observation.expect("successful C producer has observation"),
     );
 }

@@ -1,14 +1,14 @@
 #![cfg(unix)]
 
 mod support;
+use support::sdk_profile_matrix::{self, SdkProfile};
 use support::{
-    Stage, authority_for, command_exists, compile_c_consumer, native_library, repository_root,
-    write_package,
+    Stage, command_exists, compile_c_consumer, native_library, repository_root, write_package,
 };
 
 #[path = "support/c_provider.rs"]
 mod c_provider;
-use c_provider::{IsolatedDatabase, SETUP_LOCK};
+use c_provider::{EXPECTED_SERVER_VERSION_ENV, IsolatedDatabase, SETUP_LOCK, profiled_authority};
 
 use std::collections::BTreeMap;
 use std::env;
@@ -31,7 +31,6 @@ const PROVIDER_SCHEMA: &str =
 const CONSUMER: &str = include_str!("c_projected_live/consumer.c");
 
 const REPORT_FORMAT: &str = "typebridge.projected-live-report/v1";
-const SEMANTIC_PROFILE: &str = "typedb-3.12.1/v1";
 const FACT_PREFIX: &str = "TYPE_BRIDGE_C_PROJECTED_LIVE_FACT\t";
 const REPORT_ENV: &str = "TYPE_BRIDGE_PROJECTED_LIVE_REPORT";
 const ADDRESS_ENV: &str = "TYPE_BRIDGE_PROJECTED_LIVE_ADDRESS";
@@ -69,17 +68,23 @@ struct EmittedFixture {
     foreign: GeneratedPackage,
 }
 
-fn emitted_fixture() -> EmittedFixture {
+fn emitted_fixture(profile: &SdkProfile) -> EmittedFixture {
     let foreign_source = SOURCE.replace(
         "card: { min: 0, max: 3 }\n        ordered: true\n        distinct: true\n      score:",
         "card: { min: 0, max: 2 }\n        ordered: true\n        distinct: true\n      score:",
     );
     assert_ne!(foreign_source, SOURCE, "foreign C schema mutation applies");
-    let (local_schema, local_authority) = authority_for(SOURCE, "sdk-v3.yaml", "sdk-v3-c-live");
-    let (foreign_schema, foreign_authority) = authority_for(
+    let (local_schema, local_authority) = profiled_authority(
+        SOURCE,
+        "sdk-v3.yaml",
+        "sdk-v3-c-live",
+        &profile.semantic_profile,
+    );
+    let (foreign_schema, foreign_authority) = profiled_authority(
         &foreign_source,
         "sdk-v3-foreign.yaml",
         "sdk-v3-c-live-foreign",
+        &profile.semantic_profile,
     );
     let emitter = CEmitter::new();
     let emit = |schema: &type_bridge_schema::ResolvedSchema,
@@ -219,13 +224,18 @@ fn authority(root: &Path) -> BTreeMap<&'static str, Value> {
         .collect()
 }
 
-fn publish_report(path: &Path, root: &Path, observations: BTreeMap<String, Value>) {
+fn publish_report(
+    path: &Path,
+    root: &Path,
+    profile: &SdkProfile,
+    observations: BTreeMap<String, Value>,
+) {
     let report = json!({
         "authority": authority(root),
         "binding": "c",
         "format": REPORT_FORMAT,
         "observations": observations,
-        "semantic_profile": SEMANTIC_PROFILE,
+        "semantic_profile": profile.semantic_profile,
     });
     let mut bytes = to_canonical_json(&report).expect("C live report canonicalizes");
     bytes.push(b'\n');
@@ -270,7 +280,12 @@ fn report_publisher_is_bounded_create_new_and_non_overwriting() {
         .into_iter()
         .map(|name| (name.to_owned(), json!({"observed": true})))
         .collect();
-    publish_report(&destination, &repository_root(), observations);
+    publish_report(
+        &destination,
+        &repository_root(),
+        &sdk_profile_matrix::requested(3),
+        observations,
+    );
     let bytes = fs::read(&destination).expect("published report reads");
     assert!(bytes.len() <= MAX_REPORT_BYTES);
     assert_eq!(bytes.last(), Some(&b'\n'));
@@ -280,7 +295,12 @@ fn report_publisher_is_bounded_create_new_and_non_overwriting() {
         .collect();
     assert!(
         std::panic::catch_unwind(|| {
-            publish_report(&destination, &repository_root(), observations);
+            publish_report(
+                &destination,
+                &repository_root(),
+                &sdk_profile_matrix::requested(3),
+                observations,
+            );
         })
         .is_err(),
         "a pre-existing report must not be replaced",
@@ -356,7 +376,7 @@ fn failed_setup_only_cleans_after_the_creation_marker() {
 
 #[test]
 fn strict_c17_projected_live_consumer_compiles_with_both_available_compilers() {
-    let fixture = emitted_fixture();
+    let fixture = emitted_fixture(&sdk_profile_matrix::requested(3));
     let stage = Stage::new();
     let local = stage.path().join("local");
     let foreign = stage.path().join("foreign");
@@ -380,9 +400,10 @@ fn strict_c17_projected_live_consumer_compiles_with_both_available_compilers() {
 }
 
 #[test]
-#[ignore = "requires an isolated exact TypeDB 3.12.1 server and C shared library"]
+#[ignore = "requires an isolated TypeDB server of the requested SDK profile and C shared library"]
 fn generated_c17_projected_live_subset_round_trips_exact_3_12_1() {
     let root = repository_root();
+    let profile = sdk_profile_matrix::requested(3);
     let report = report_destination();
     let address = required_environment(ADDRESS_ENV);
     let http_port = required_environment(HTTP_PORT_ENV);
@@ -395,7 +416,7 @@ fn generated_c17_projected_live_subset_round_trips_exact_3_12_1() {
         .find(|compiler| command_exists(compiler))
         .expect("GCC or Clang is required for generated C live acceptance");
     let library = native_library();
-    let fixture = emitted_fixture();
+    let fixture = emitted_fixture(&profile);
     let stage = Stage::new();
     let local = stage.path().join("local");
     let foreign = stage.path().join("foreign");
@@ -415,6 +436,10 @@ fn generated_c17_projected_live_subset_round_trips_exact_3_12_1() {
         (DATABASE_ENV.to_owned(), database),
         ("TYPEDB_USERNAME".to_owned(), username),
         ("TYPEDB_PASSWORD".to_owned(), password),
+        (
+            EXPECTED_SERVER_VERSION_ENV.to_owned(),
+            profile.live_server_version.clone(),
+        ),
     ];
     let mut isolated = stage_setup(stage.path(), environment.clone());
     isolated.setup();
@@ -436,5 +461,5 @@ fn generated_c17_projected_live_subset_round_trips_exact_3_12_1() {
     );
     let observations = parse_observations(&output.stdout);
     isolated.cleanup();
-    publish_report(&report, &root, observations);
+    publish_report(&report, &root, &profile, observations);
 }

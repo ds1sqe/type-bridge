@@ -210,3 +210,69 @@ fn every_profile_matrix_entry_reproduces_from_its_fixture_source() {
             .expect("inventory writes");
     }
 }
+
+#[path = "../../../../tests/support/sdk_profile_matrix.rs"]
+#[allow(dead_code)]
+mod producer_selection;
+
+#[test]
+fn producers_select_each_profiles_exact_live_server() {
+    let root = producer_selection::repository_root();
+    for set in 1..=6 {
+        for (profile, server) in [
+            ("typedb-3.12.1/v1", "3.12.3"),
+            ("typedb-3.13.6/v1", "3.13.6"),
+        ] {
+            let entry = producer_selection::select_from(&root, set, profile);
+            assert_eq!(entry.semantic_profile, profile, "sdk-v{set}");
+            assert_eq!(entry.live_server_version, server, "sdk-v{set} {profile}");
+            entry.require_server_version(Some(server));
+        }
+    }
+}
+
+#[test]
+fn producers_default_to_the_catalog_profile() {
+    let root = producer_selection::repository_root();
+    for requested in [None, Some("")] {
+        let entry = producer_selection::requested_from(&root, 1, requested);
+        assert_eq!(entry.semantic_profile, "typedb-3.12.1/v1");
+        assert_eq!(entry.live_server_version, "3.12.3");
+    }
+}
+
+#[test]
+#[should_panic(expected = "sdk-v2 has no matrix entry")]
+fn producers_reject_an_unknown_profile() {
+    let root = producer_selection::repository_root();
+    producer_selection::requested_from(&root, 2, Some("typedb-9.9.9/v1"));
+}
+
+#[test]
+#[should_panic(expected = "actual detected TypeDB server version")]
+fn producers_reject_another_live_server() {
+    let root = producer_selection::repository_root();
+    producer_selection::select_from(&root, 4, "typedb-3.13.6/v1")
+        .require_server_version(Some("3.12.3"));
+}
+
+#[test]
+fn sdk_v2_fingerprints_name_the_selected_profile() {
+    let root = producer_selection::repository_root();
+    let entry = producer_selection::requested_from(&root, 2, Some("typedb-3.13.6/v1"));
+    let fingerprints = &entry.expected_fingerprints;
+    assert_eq!(
+        fingerprints["semantic"]["semantic_profile"],
+        "typedb-3.13.6/v1"
+    );
+    let projections = fingerprints["projections"]
+        .as_object()
+        .expect("sdk-v2 pins per-binding projections");
+    assert_eq!(projections.len(), 4);
+    for (binding, projection) in projections {
+        assert_eq!(
+            projection["semantic_profile"], "typedb-3.13.6/v1",
+            "{binding}"
+        );
+    }
+}

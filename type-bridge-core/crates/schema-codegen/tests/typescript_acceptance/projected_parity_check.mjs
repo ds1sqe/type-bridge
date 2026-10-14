@@ -9,6 +9,7 @@ import {
   fsyncSync,
   lstatSync,
   openSync,
+  readFileSync,
   readSync,
   writeSync,
 } from "node:fs";
@@ -16,7 +17,11 @@ import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const REPORT_FORMAT = "typebridge.projected-parity-report/v1";
+// The sdk-v3 catalog's own profile; a run reports the matrix profile it selects.
 export const SEMANTIC_PROFILE = "typedb-3.12.1/v1";
+export const SEMANTIC_PROFILE_ENV = "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE";
+export const PROFILE_MATRIX_RELATIVE =
+  "tests/contracts/sdk_conformance/sdk-v3/profiles-v3.json";
 export const OUTPUT_ENV = "TYPE_BRIDGE_PROJECTED_PARITY_REPORT";
 export const REPOSITORY_ROOT_ENV = "TYPE_BRIDGE_PROJECTED_REPOSITORY_ROOT";
 export const MAX_REPORT_BYTES = 256 * 1024;
@@ -36,6 +41,34 @@ export class ProducerError extends Error {
 
 function requireCondition(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+/**
+ * Select the sdk-v3 profile-matrix profile a run reports: the profile named by
+ * `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`, else the catalog's own profile
+ * (mirrors `scripts/ci/sdk_profile_matrix.py` `requested`).
+ */
+export function selectedProfile(root, environment = {}) {
+  const profile = environment[SEMANTIC_PROFILE_ENV] || SEMANTIC_PROFILE;
+  let matrix;
+  try {
+    matrix = JSON.parse(readFileSync(resolve(root, PROFILE_MATRIX_RELATIVE), "utf8"));
+  } catch {
+    throw new ProducerError("invalid_profile_matrix", "sdk-v3 profile matrix is unreadable");
+  }
+  const profiles = matrix?.set === "sdk-v3" ? matrix.profiles : undefined;
+  if (
+    profiles === null ||
+    typeof profiles !== "object" ||
+    !Object.hasOwn(profiles, profile) ||
+    typeof profiles[profile]?.live_server_version !== "string"
+  ) {
+    throw new ProducerError(
+      "semantic_profile_mismatch",
+      `sdk-v3 has no profile-matrix entry for ${JSON.stringify(profile)}`,
+    );
+  }
+  return profile;
 }
 
 function canonicalValue(value, ancestors = new Set()) {
@@ -1408,7 +1441,7 @@ async function foreignHydrationRejection(package_, foreign) {
   return { diagnostic: rejection.diagnostic, publicResultPublished };
 }
 
-async function buildReport(root, package_, foreign) {
+async function buildReport(root, package_, foreign, semanticProfile = selectedProfile(root)) {
   await proveAuthenticatedHydration(package_);
   const constructed = constructedObservations(package_);
   const hydrated = await hydratedObservations(package_);
@@ -1724,7 +1757,7 @@ async function buildReport(root, package_, foreign) {
     binding: "node",
     format: REPORT_FORMAT,
     observations,
-    semantic_profile: SEMANTIC_PROFILE,
+    semantic_profile: semanticProfile,
   };
 }
 
@@ -1734,7 +1767,8 @@ export async function main() {
       import("./generated_projected/dist/index.js"),
       import("./generated_projected_foreign/dist/index.js"),
     ]);
-    const report = await buildReport(repositoryRoot(), package_, foreign);
+    const root = repositoryRoot();
+    const report = await buildReport(root, package_, foreign, selectedProfile(root, process.env));
     publishReport(outputPath(), report);
     return 0;
   } catch (error) {

@@ -17,11 +17,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import c_package_artifacts as packages
+import sdk_profile_matrix as profile_matrix
 import standalone_cli_artifact as cli
 
 ROOT = Path(__file__).resolve().parents[2]
 FORMAT = "typebridge.c-artifact-clean-consumer/v1"
 DISPOSITION = "artifact-only-unpublished-unsupported"
+EXPECTED_SERVER_VERSION_ENV = "TYPE_BRIDGE_EXPECTED_SERVER_VERSION"
 FULL_CONSUMER = ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection_live/consumer.c"
 QUERY_CONSUMER = (
     ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection_live/query_consumer.c"
@@ -332,6 +334,7 @@ def connected(
         "TYPEDB_USERNAME": username,
         "TYPEDB_PASSWORD": password,
         "TYPE_BRIDGE_C_REMOTE_PORT": remote_port,
+        EXPECTED_SERVER_VERSION_ENV: expected_server_version(),
     }
     with tempfile.TemporaryDirectory(prefix="type-bridge-c-artifact-connected-") as temporary:
         root = Path(temporary)
@@ -512,6 +515,12 @@ def setup_workspace(root: Path) -> Path:
     return manifest
 
 
+def expected_server_version() -> str:
+    """The exact live server of the requested sdk-v2 profile."""
+
+    return profile_matrix.requested(2).live_server_version
+
+
 def fixture_environment(
     *, address: str, http_port: str, database: str, username: str, password: str
 ) -> dict[str, str]:
@@ -522,7 +531,7 @@ def fixture_environment(
         "TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE": database,
         "TYPEDB_USERNAME": username,
         "TYPEDB_PASSWORD": password,
-        "TYPE_BRIDGE_C_EXPECTED_PROVIDER_PATCH": "3",
+        EXPECTED_SERVER_VERSION_ENV: expected_server_version(),
     }
 
 

@@ -73,7 +73,7 @@ fn publish_v3_package_fragment(results: Vec<Value>) {
         },
         "results": results,
         "run_nonce": nonce,
-        "semantic_profile": "typedb-3.12.1/v1",
+        "semantic_profile": support::sdk_profile_matrix::requested(3).semantic_profile,
     });
     let mut bytes = to_canonical_json(&fragment).expect("V3 package fragment canonicalizes");
     bytes.push(b'\n');
@@ -113,6 +113,18 @@ fn emit_from_source(source: &str) -> GeneratedPackage {
     let authority = support::authority(source);
     RustEmitter::new()
         .emit(&project_from_source(source), &authority)
+        .unwrap()
+}
+
+/// `source` emitted on `profile`, for producers whose reports declare the
+/// requested sdk matrix profile.
+fn emit_on(source: &str, profile: &str) -> GeneratedPackage {
+    let authority = support::authority_with(source, support::TEST_SCOPE, profile);
+    RustEmitter::new()
+        .emit(
+            &support::rust_projection_on(source, "rust-acceptance.yaml", profile),
+            &authority,
+        )
         .unwrap()
 }
 
@@ -3910,6 +3922,7 @@ fn run_projected_consumer(
     target_dir: &std::ffi::OsStr,
     report: &Path,
     repository: &Path,
+    semantic_profile: &str,
 ) -> Output {
     let executable = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     Command::new(executable)
@@ -3924,6 +3937,7 @@ fn run_projected_consumer(
         .env("CARGO_TARGET_DIR", target_dir)
         .env("TYPE_BRIDGE_PROJECTED_RUST_REPORT", report)
         .env("TYPE_BRIDGE_PROJECTED_REPOSITORY_ROOT", repository)
+        .env("TYPE_BRIDGE_PROJECTED_SEMANTIC_PROFILE", semantic_profile)
         .output()
         .unwrap()
 }
@@ -3957,8 +3971,9 @@ fn generated_rust_projected_parity_producer() {
         schema, foreign_schema,
         "foreign projection mutation is applied"
     );
-    write_package(&emit_from_source(&schema), &generated);
-    write_package(&emit_from_source(&foreign_schema), &foreign);
+    let profile = support::sdk_profile_matrix::requested(3).semantic_profile;
+    write_package(&emit_on(&schema, &profile), &generated);
+    write_package(&emit_on(&foreign_schema, &profile), &foreign);
     rename_generated_package(&foreign, "type-bridge-generated-schema-foreign");
     write_projected_consumer(&producer, PROJECTED_PARITY);
     write_projected_consumer(&negative, PROJECTED_FOREIGN_NEGATIVE);
@@ -4009,6 +4024,7 @@ fn generated_rust_projected_parity_producer() {
         target_dir.as_os_str(),
         &report,
         &repository,
+        &profile,
     );
     assert!(
         output.status.success(),
@@ -4026,6 +4042,7 @@ fn generated_rust_projected_parity_producer() {
         target_dir.as_os_str(),
         &report,
         &repository,
+        &profile,
     );
     drop(_guard);
     assert!(

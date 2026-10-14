@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Run generated projected-value and manager acceptance on TypeDB 3.12.3."""
+"""Run generated projected-value and manager acceptance on the sdk-v3 profile server.
+
+The semantic profile comes from ``TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE``
+(default: the profile sdk-v3 was frozen on); the guard requires that matrix
+entry's exact live server and every producer runs under that profile.
+"""
 
 from __future__ import annotations
 
@@ -21,6 +26,7 @@ from pathlib import Path
 from types import ModuleType
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sdk_profile_matrix
 from persist_binding_reports import PublishError, publish
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -36,7 +42,7 @@ import sys
 
 from type_bridge import Database
 
-action, address, raw_port, *names = sys.argv[1:]
+action, address, raw_port, expected, *names = sys.argv[1:]
 if action not in {"assert-absent", "cleanup"} or not names:
     raise SystemExit("invalid Projected database guard invocation")
 port = int(raw_port)
@@ -48,8 +54,8 @@ for name in names:
         database.connect()
         connected = True
         detected = database.detected_server_version()
-        if detected != "3.12.3":
-            failures.append(f"{name}: exact TypeDB 3.12.3 required, detected {detected!r}")
+        if detected != expected:
+            failures.append(f"{name}: exact TypeDB {expected} required, detected {detected!r}")
             continue
         exists = database.database_exists()
         if action == "assert-absent" and exists:
@@ -378,6 +384,7 @@ def _live_environment(
         profile.REPORT_ENV: str(report),
         profile.DATABASE_ENV: database,
         profile.REPOSITORY_ENV: str(ROOT),
+        sdk_profile_matrix.SEMANTIC_PROFILE_ENV: sdk_profile_matrix.requested(3).semantic_profile,
         "TMPDIR": str(layout.scratch),
     }
 
@@ -397,6 +404,7 @@ def _database_guard(
             action,
             fixture.address,
             fixture.http_port,
+            sdk_profile_matrix.requested(3).live_server_version,
             *databases,
         ),
         cwd=ROOT,

@@ -24,6 +24,7 @@ use type_bridge_schema::{
 use type_bridge_schema_codegen::{CEmitter, GeneratedPackage};
 
 mod support;
+use support::sdk_profile_matrix::{self, SdkProfile};
 use support::{
     Stage as TempDirectory, base64, command_exists, free_port, native_library, repository_root,
     runtime_include, write_package,
@@ -243,10 +244,12 @@ const SDK_V2_MANIFEST_TRANSITION_CASES: [&str; 17] = [
 static TEMP_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn emitted_package() -> GeneratedPackage {
-    emitted_package_authority_and_fingerprints().0
+    emitted_package_authority_and_fingerprints(support::TEST_PROFILE).0
 }
 
-fn emitted_package_authority_and_fingerprints() -> (GeneratedPackage, Vec<u8>, Value, Value) {
+fn emitted_package_authority_and_fingerprints(
+    semantic_profile: &str,
+) -> (GeneratedPackage, Vec<u8>, Value, Value) {
     let emitter = CEmitter::new();
     let documents = SchemaDocumentSet::parse([(
         DocumentId::new("c-projection-live.yaml").expect("document ID is valid"),
@@ -254,7 +257,7 @@ fn emitted_package_authority_and_fingerprints() -> (GeneratedPackage, Vec<u8>, V
     )])
     .expect("shared acceptance schema parses");
     let declared = normalize_documents(&documents).expect("shared acceptance schema normalizes");
-    let profile = SemanticProfileId::new(support::TEST_PROFILE).expect("test profile is valid");
+    let profile = SemanticProfileId::new(semantic_profile).expect("live profile is valid");
     let resolved = resolve(&declared, &profile).expect("shared acceptance schema resolves");
     let resources = emitter
         .code_resources_for(&resolved)
@@ -268,7 +271,7 @@ fn emitted_package_authority_and_fingerprints() -> (GeneratedPackage, Vec<u8>, V
     )
     .expect("shared acceptance schema projects to C");
     let authority =
-        support::authority_for_declared(&declared, "c-projection-live", support::TEST_PROFILE);
+        support::authority_for_declared(&declared, "c-projection-live", semantic_profile);
     let authority_bytes = encode_schema_authority(&authority);
     let semantic_fingerprint = serde_json::to_value(projection.semantic_fingerprint())
         .expect("C semantic fingerprint serializes");
@@ -285,11 +288,11 @@ fn emitted_package_authority_and_fingerprints() -> (GeneratedPackage, Vec<u8>, V
     )
 }
 
-fn emitted_query_package() -> GeneratedPackage {
-    emitted_query_package_and_authority().0
+fn emitted_query_package(semantic_profile: &str) -> GeneratedPackage {
+    emitted_query_package_and_authority(semantic_profile).0
 }
 
-fn emitted_query_package_and_authority() -> (GeneratedPackage, Vec<u8>) {
+fn emitted_query_package_and_authority(semantic_profile: &str) -> (GeneratedPackage, Vec<u8>) {
     let emitter = CEmitter::new();
     let documents = SchemaDocumentSet::parse([(
         DocumentId::new("sdk-v3.yaml").expect("Sdk V3 document ID is valid"),
@@ -297,7 +300,7 @@ fn emitted_query_package_and_authority() -> (GeneratedPackage, Vec<u8>) {
     )])
     .expect("exact Sdk V3 schema parses");
     let declared = normalize_documents(&documents).expect("exact Sdk V3 schema normalizes");
-    let profile = SemanticProfileId::new(support::TEST_PROFILE).expect("test profile is valid");
+    let profile = SemanticProfileId::new(semantic_profile).expect("live profile is valid");
     let resolved = resolve(&declared, &profile).expect("exact Sdk V3 schema resolves");
     let resources = emitter
         .code_resources_for(&resolved)
@@ -310,8 +313,7 @@ fn emitted_query_package_and_authority() -> (GeneratedPackage, Vec<u8>) {
         &resources,
     )
     .expect("exact Sdk V3 schema projects to ordered C");
-    let authority =
-        support::authority_for_declared(&declared, "sdk-v3-c-query", support::TEST_PROFILE);
+    let authority = support::authority_for_declared(&declared, "sdk-v3-c-query", semantic_profile);
     let authority_bytes = encode_schema_authority(&authority);
     let package = emitter
         .emit(&projection, &authority)
@@ -319,7 +321,7 @@ fn emitted_query_package_and_authority() -> (GeneratedPackage, Vec<u8>) {
     (package, authority_bytes)
 }
 
-fn sdk_v3_fingerprints() -> (Value, Value) {
+fn sdk_v3_fingerprints(semantic_profile: &str) -> (Value, Value) {
     let emitter = CEmitter::new();
     let documents = SchemaDocumentSet::parse([(
         DocumentId::new("sdk-v3.yaml").expect("Sdk V3 document ID is valid"),
@@ -327,7 +329,7 @@ fn sdk_v3_fingerprints() -> (Value, Value) {
     )])
     .expect("exact Sdk V3 schema parses");
     let declared = normalize_documents(&documents).expect("exact Sdk V3 schema normalizes");
-    let profile = SemanticProfileId::new(support::TEST_PROFILE).expect("test profile is valid");
+    let profile = SemanticProfileId::new(semantic_profile).expect("live profile is valid");
     let resolved = resolve(&declared, &profile).expect("exact Sdk V3 schema resolves");
     let resources = emitter
         .code_resources_for(&resolved)
@@ -348,7 +350,31 @@ fn sdk_v3_fingerprints() -> (Value, Value) {
     )
 }
 
-fn publish_sdk_v3_c_live_supplement() {
+/// The profile's matrix fingerprints, once this build is shown to reproduce
+/// them; reports carry the matrix entry, never the catalog's top level.
+fn matrix_fingerprints(
+    profile: &SdkProfile,
+    semantic: &Value,
+    projection: &Value,
+) -> (Value, Value) {
+    let expected = &profile.expected_fingerprints;
+    assert_eq!(
+        &expected["semantic"], semantic,
+        "C live semantic fingerprint differs from the {} matrix entry",
+        profile.semantic_profile
+    );
+    assert_eq!(
+        &expected["projections"]["c"], projection,
+        "C live projection fingerprint differs from the {} matrix entry",
+        profile.semantic_profile
+    );
+    (
+        expected["semantic"].clone(),
+        expected["projections"]["c"].clone(),
+    )
+}
+
+fn publish_sdk_v3_c_live_supplement(profile: &SdkProfile) {
     let Some(destination) = env::var_os("TYPE_BRIDGE_SDK_V3_C_SUPPLEMENT") else {
         return;
     };
@@ -373,7 +399,9 @@ fn publish_sdk_v3_c_live_supplement() {
         ("unkeyed_entity_iid_lifecycle", "direct_runtime"),
         ("unkeyed_relation_iid_lifecycle", "direct_runtime"),
     ];
-    let (semantic_fingerprint, projection_fingerprint) = sdk_v3_fingerprints();
+    let (semantic, projection) = sdk_v3_fingerprints(&profile.semantic_profile);
+    let (semantic_fingerprint, projection_fingerprint) =
+        matrix_fingerprints(profile, &semantic, &projection);
     let supplement = json!({
         "binding": "c",
         "format": "typebridge.sdk-v3-live-supplement/v1",
@@ -386,7 +414,7 @@ fn publish_sdk_v3_c_live_supplement() {
             "proof_kind": proof_kind,
         })).collect::<Vec<_>>(),
         "semantic_fingerprint": semantic_fingerprint,
-        "semantic_profile": "typedb-3.12.1/v1",
+        "semantic_profile": profile.semantic_profile,
     });
     let mut bytes = to_canonical_json(&supplement).expect("C V3 live supplement canonicalizes");
     bytes.push(b'\n');
@@ -461,7 +489,7 @@ fn query_successor_consumers_compile_as_strict_c17_and_cpp17() {
         "G++ or Clang++ is required for generated C++17 checks"
     );
     let stage = TempDirectory::new();
-    write_package(&emitted_query_package(), stage.path());
+    write_package(&emitted_query_package(support::TEST_PROFILE), stage.path());
     let full_consumer = stage.path().join("full_consumer.c");
     fs::write(&full_consumer, CONSUMER).expect("full ordered C consumer is staged");
     for compiler in &c_compilers {
@@ -665,8 +693,14 @@ fn validated_sdk_v2_proofs(
                 .expect("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE must be UTF-8");
             let paths = support::sdk_v2_proof_paths(&fragments)
                 .expect("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS must be a valid path list");
-            support::validate_sdk_v2_proof_fragments(root, "c", &nonce, &paths)
-                .expect("C sdk-v2 proof fragments must validate")
+            support::validate_sdk_v2_proof_fragments_on(
+                root,
+                "c",
+                &support::sdk_profile_matrix::requested(2).semantic_profile,
+                &nonce,
+                &paths,
+            )
+            .expect("C sdk-v2 proof fragments must validate")
         }
         (Some(_), _, _) => panic!(
             "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS and TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE are both required for a V2 report"
@@ -857,6 +891,7 @@ fn sdk_v2_report_results(
 
 fn build_sdk_v2_report(
     root: &Path,
+    profile: &SdkProfile,
     semantic_fingerprint: Value,
     projection_fingerprint: Value,
     observations: &BTreeMap<support::SdkV2ProofLane, Value>,
@@ -884,14 +919,8 @@ fn build_sdk_v2_report(
         serde_json::json!(SDK_V2_MANIFEST_TRANSITION_CASES),
         "sdk-v2 manifest transition ledger drifted"
     );
-    assert_eq!(
-        catalog["expected_fingerprints"]["semantic"], semantic_fingerprint,
-        "C live semantic fingerprint differs from the catalog"
-    );
-    assert_eq!(
-        catalog["expected_fingerprints"]["projections"]["c"], projection_fingerprint,
-        "C live projection fingerprint differs from the catalog"
-    );
+    let (semantic_fingerprint, projection_fingerprint) =
+        matrix_fingerprints(profile, &semantic_fingerprint, &projection_fingerprint);
     serde_json::json!({
         "binding": "c",
         "catalog": support::sdk_v2_source_identity(root, SDK_V2_CATALOG_PATH)
@@ -907,7 +936,7 @@ fn build_sdk_v2_report(
             "schema": support::sdk_v2_source_identity(root, SDK_SCHEMA_PATH)
                 .expect("sdk-v2 schema identity is valid"),
             "semantic_fingerprint": semantic_fingerprint,
-            "semantic_profile": support::TEST_PROFILE,
+            "semantic_profile": profile.semantic_profile,
             "version": 2,
         },
         "format": "typebridge.sdk-conformance-report/v2",
@@ -920,12 +949,14 @@ fn build_sdk_v2_report(
 fn publish_sdk_v2_report(
     path: &Path,
     root: &Path,
+    profile: &SdkProfile,
     semantic_fingerprint: Value,
     projection_fingerprint: Value,
     observations: &BTreeMap<support::SdkV2ProofLane, Value>,
 ) {
     let report = build_sdk_v2_report(
         root,
+        profile,
         semantic_fingerprint,
         projection_fingerprint,
         observations,
@@ -1110,8 +1141,14 @@ fn emitted_sdk_v2_c_proof_fragment_validates() {
         .expect("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE is required");
     let paths =
         support::sdk_v2_proof_paths(&fragments).expect("C sdk-v2 proof paths must be valid");
-    let observations = support::validate_sdk_v2_proof_fragments(&root, "c", &nonce, &paths)
-        .expect("emitted C sdk-v2 proof fragment must validate");
+    let observations = support::validate_sdk_v2_proof_fragments_on(
+        &root,
+        "c",
+        &support::sdk_profile_matrix::requested(2).semantic_profile,
+        &nonce,
+        &paths,
+    )
+    .expect("emitted C sdk-v2 proof fragment must validate");
     assert_eq!(
         observations.keys().cloned().collect::<BTreeSet<_>>(),
         support::sdk_v2_proof_lanes(&root, "c").expect("C proof allowlist validates"),
@@ -1138,9 +1175,14 @@ fn sdk_v2_c_catalog_report_builder_preflight_is_exact_and_nonpublishing() {
         .expect("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE is required");
     let paths =
         support::sdk_v2_proof_paths(&fragments).expect("C sdk-v2 proof paths must be valid");
-    let fragment_observations =
-        support::validate_sdk_v2_proof_fragments(&root, "c", &nonce, &paths)
-            .expect("emitted C sdk-v2 proof fragment must validate");
+    let fragment_observations = support::validate_sdk_v2_proof_fragments_on(
+        &root,
+        "c",
+        &support::sdk_profile_matrix::requested(2).semantic_profile,
+        &nonce,
+        &paths,
+    )
+    .expect("emitted C sdk-v2 proof fragment must validate");
     assert_eq!(fragment_observations.len(), 3);
 
     let journey: Value = serde_json::from_slice(
@@ -1176,10 +1218,12 @@ fn sdk_v2_c_catalog_report_builder_preflight_is_exact_and_nonpublishing() {
     assert_eq!(observations.len(), 34);
     assert_sdk_v2_observations_match_journey(&root, &observations);
 
+    let profile = sdk_profile_matrix::requested(2);
     let (_, _, semantic_fingerprint, projection_fingerprint) =
-        emitted_package_authority_and_fingerprints();
+        emitted_package_authority_and_fingerprints(&profile.semantic_profile);
     let report = build_sdk_v2_report(
         &root,
+        &profile,
         semantic_fingerprint.clone(),
         projection_fingerprint.clone(),
         &observations,
@@ -1434,13 +1478,15 @@ fn failed_live_setup_still_runs_idempotent_database_cleanup() {
 
 /// Exact C acceptance: ordinary generated C invokes nominal Person and
 /// Membership CRUD, typed direct query, schema-function, and caller-transport
-/// remote query facades against one isolated exact TypeDB 3.12.3 database.
+/// remote query facades against one isolated database on the exact TypeDB
+/// server of the requested SDK profile (`TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`).
 /// Rust is used only for schema setup, the V2 acceptance server, and guaranteed
 /// process/database cleanup; the C caller performs the sole remote exchange.
 #[test]
-#[ignore = "requires an isolated exact TypeDB 3.12.3 server and C shared library"]
-fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
+#[ignore = "requires an isolated TypeDB server of the requested SDK profile and C shared library"]
+fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server() {
     let repository_root = repository_root();
+    let profile = sdk_profile_matrix::requested(2);
     let sdk_v2_report = requested_sdk_v2_report();
     let sdk_v5_evidence = requested_sdk_v5_evidence();
     assert!(
@@ -1467,11 +1513,12 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
     let stage = TempDirectory::new();
     let (package, authority_bytes, semantic_fingerprint, projection_fingerprint) =
         if sdk_v5_evidence.is_some() {
-            let (package, authority) = emitted_query_package_and_authority();
-            let (semantic, projection) = sdk_v3_fingerprints();
+            let (package, authority) =
+                emitted_query_package_and_authority(&profile.semantic_profile);
+            let (semantic, projection) = sdk_v3_fingerprints(&profile.semantic_profile);
             (package, authority, semantic, projection)
         } else {
-            emitted_package_authority_and_fingerprints()
+            emitted_package_authority_and_fingerprints(&profile.semantic_profile)
         };
     write_package(&package, stage.path());
     let consumer = stage.path().join("consumer.c");
@@ -1555,8 +1602,8 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
         ("TYPEDB_USERNAME".to_owned(), username.clone()),
         ("TYPEDB_PASSWORD".to_owned(), password.clone()),
         (
-            "TYPE_BRIDGE_C_EXPECTED_PROVIDER_PATCH".to_owned(),
-            "3".to_owned(),
+            "TYPE_BRIDGE_EXPECTED_SERVER_VERSION".to_owned(),
+            profile.live_server_version.clone(),
         ),
     ];
     let mut isolated = IsolatedDatabase {
@@ -1723,6 +1770,7 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
         publish_sdk_v2_report(
             &report,
             &repository_root,
+            &profile,
             semantic_fingerprint,
             projection_fingerprint,
             &sdk_v2_observations,
@@ -1750,10 +1798,11 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
 /// Query activation gate for the ordered C-v3/ABI-1.6 surface. The same
 /// source is compiled and executed as strict C17 and C++17. It deliberately
 /// leaves ordered attributes and ordered role-player lists empty because exact
-/// TypeDB 3.12.3 cannot supply list-instance evidence.
+/// TypeDB servers of the supported profiles cannot supply list-instance evidence.
 #[test]
-#[ignore = "requires an isolated exact TypeDB 3.12.3 server and C shared library"]
+#[ignore = "requires an isolated TypeDB server of the requested SDK profile and C shared library"]
 fn generated_data_model_runtime_v3_live() {
+    let profile = sdk_profile_matrix::requested(3);
     let c_compiler = c_compilers()
         .into_iter()
         .next()
@@ -1775,7 +1824,10 @@ fn generated_data_model_runtime_v3_live() {
     let password = env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned());
 
     let stage = TempDirectory::new();
-    write_package(&emitted_query_package(), stage.path());
+    write_package(
+        &emitted_query_package(&profile.semantic_profile),
+        stage.path(),
+    );
     let package_source = stage.path().join("query_package.c");
     let package_object = stage.path().join("query_package.o");
     let c_source = stage.path().join("query_consumer.c");
@@ -1893,8 +1945,8 @@ fn generated_data_model_runtime_v3_live() {
         ("TYPEDB_USERNAME".to_owned(), username),
         ("TYPEDB_PASSWORD".to_owned(), password),
         (
-            "TYPE_BRIDGE_C_EXPECTED_PROVIDER_PATCH".to_owned(),
-            "3".to_owned(),
+            "TYPE_BRIDGE_EXPECTED_SERVER_VERSION".to_owned(),
+            profile.live_server_version.clone(),
         ),
     ];
     let mut isolated = IsolatedDatabase {
@@ -1958,5 +2010,5 @@ fn generated_data_model_runtime_v3_live() {
             );
         }
     }
-    publish_sdk_v3_c_live_supplement();
+    publish_sdk_v3_c_live_supplement(&profile);
 }

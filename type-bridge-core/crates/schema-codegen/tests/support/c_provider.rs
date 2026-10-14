@@ -4,7 +4,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use type_bridge_contract::fingerprint::SemanticProfileId;
+use type_bridge_contract::schema::DocumentId;
+use type_bridge_schema::{
+    ResolvedSchema, SchemaDocumentSet, VerifiedSchemaAuthority, normalize_documents, resolve,
+};
+
 pub const DATABASE_CREATED_MARKER: &str = "C test database created";
+/// Names the profile's exact live TypeDB server for the provider setup and
+/// the C consumer; the harness takes it from the SDK profile matrix.
+pub const EXPECTED_SERVER_VERSION_ENV: &str = "TYPE_BRIDGE_EXPECTED_SERVER_VERSION";
 pub const SETUP: &str = include_str!("../../../../../tests/support/provider/main.rs");
 pub const SETUP_LOCK: &[u8] = include_bytes!("../../../../../tests/support/provider/Cargo.lock");
 
@@ -115,4 +124,24 @@ pub fn stage_setup(
         active: false,
         env_prefix,
     }
+}
+
+/// Resolve `source` and build its authority under `semantic_profile`, so a
+/// live package carries the profile its report names.
+pub fn profiled_authority(
+    source: &str,
+    document: &str,
+    scope: &str,
+    semantic_profile: &str,
+) -> (ResolvedSchema, VerifiedSchemaAuthority) {
+    let documents = SchemaDocumentSet::parse([(
+        DocumentId::new(document).expect("C live document ID is valid"),
+        source,
+    )])
+    .expect("C live schema parses");
+    let declared = normalize_documents(&documents).expect("C live schema normalizes");
+    let profile = SemanticProfileId::new(semantic_profile).expect("C live profile is valid");
+    let resolved = resolve(&declared, &profile).expect("C live schema resolves");
+    let authority = crate::support::authority_for_declared(&declared, scope, semantic_profile);
+    (resolved, authority)
 }

@@ -621,6 +621,10 @@ fn emitted_ordered_projected_fixture() -> OrderedProjectedEmittedFixture {
 mod temp;
 use temp::TempDirectory;
 
+#[path = "../../../../tests/support/sdk_profile_matrix.rs"]
+#[allow(dead_code)]
+mod sdk_profile_matrix;
+
 fn write_package(package: &GeneratedPackage, root: &Path) {
     for (relative, contents) in package.files() {
         let path = root.join(relative);
@@ -6232,7 +6236,9 @@ impl Drop for IsolatedLiveDatabase<'_> {
 }
 
 /// Live transaction acceptance: a compiled C17 consumer owns the complete
-/// runtime/database/transaction lifecycle against an isolated TypeDB 3.12.3.
+/// runtime/database/transaction lifecycle against an isolated database on the
+/// exact TypeDB server of the requested SDK profile: the sdk-v2 matrix entry
+/// for `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`, else the catalog's profile.
 ///
 /// Run through the repository integration lane, or directly after building
 /// the shared library:
@@ -6242,13 +6248,14 @@ impl Drop for IsolatedLiveDatabase<'_> {
 /// TYPEDB_ADDRESS=127.0.0.1:<grpc-port> TYPEDB_HTTP_PORT=<http-port> \
 /// TYPE_BRIDGE_C_INTG_DATABASE=type_bridge_c_runtime_live_<unique> \
 /// cargo test --locked -p type-bridge-c --test schema_package_abi \
-///   live_c17_consumer_exercises_exact_3_12_3_transaction_lifecycle \
+///   live_c17_consumer_exercises_profile_server_transaction_lifecycle \
 ///   -- --exact --ignored --nocapture
 /// ```
 #[cfg(unix)]
 #[test]
-#[ignore = "requires an isolated exact TypeDB 3.12.3 server and the C shared library"]
-fn live_c17_consumer_exercises_exact_3_12_3_transaction_lifecycle() {
+#[ignore = "requires an isolated TypeDB server of the requested SDK profile and the C shared library"]
+fn live_c17_consumer_exercises_profile_server_transaction_lifecycle() {
+    let profile = sdk_profile_matrix::requested(2);
     let native_library = native_library().unwrap_or_else(|| {
         panic!("build the TypeBridge C shared library before running the exact C runtime live test")
     });
@@ -6325,6 +6332,9 @@ int main(void) {
   const char *database_name = getenv("TYPE_BRIDGE_C_INTG_DATABASE");
   const char *username = getenv("TYPEDB_USERNAME");
   const char *password = getenv("TYPEDB_PASSWORD");
+  /* The harness selects the server from the SDK profile matrix. */
+  const char *expected_server_version =
+      getenv("TYPE_BRIDGE_EXPECTED_SERVER_VERSION");
   const uint32_t http_port = required_http_port();
   type_bridge_schema_package_t *package = NULL;
   type_bridge_diagnostics_t *package_diagnostics = NULL;
@@ -6343,6 +6353,8 @@ int main(void) {
   type_bridge_database_config_v1_t database_config;
 
   CHECK(address != NULL && address[0] != '\0');
+  CHECK(expected_server_version != NULL &&
+        expected_server_version[0] != '\0');
   CHECK(database_name != NULL && database_name[0] != '\0');
   CHECK(username != NULL && username[0] != '\0');
   CHECK(password != NULL);
@@ -6370,7 +6382,7 @@ int main(void) {
   CHECK(database != NULL && diagnostics == NULL);
   CHECK(type_bridge_database_server_version(database, &version) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(same_text(version, "3.12.3"));
+  CHECK(same_text(version, expected_server_version));
 
   /* Database ownership retains the verified package authority. */
   CHECK(type_bridge_schema_package_close(&package) == TYPE_BRIDGE_STATUS_OK);
@@ -6490,11 +6502,10 @@ int main(void) {
     let detected = administrator
         .server_version()
         .expect("the live administration connection has authoritative version evidence");
-    assert_eq!(
-        (detected.major, detected.minor, detected.patch),
-        (3, 12, 3),
-        "the exact C runtime live test requires TypeDB 3.12.3"
-    );
+    profile.require_server_version(Some(&format!(
+        "{}.{}.{}",
+        detected.major, detected.minor, detected.patch
+    )));
     assert!(
         !administration_runtime
             .block_on(administrator.database_exists())
@@ -6517,6 +6528,10 @@ int main(void) {
         .env("TYPE_BRIDGE_C_INTG_DATABASE", &database_name)
         .env("TYPEDB_USERNAME", &username)
         .env("TYPEDB_PASSWORD", &password)
+        .env(
+            "TYPE_BRIDGE_EXPECTED_SERVER_VERSION",
+            &profile.live_server_version,
+        )
         .output()
         .expect("the exact C runtime live consumer launches");
 

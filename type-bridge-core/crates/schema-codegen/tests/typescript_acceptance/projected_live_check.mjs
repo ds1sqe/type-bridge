@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Produce Node's exact-TypeDB-3.12.3 Projected live-subset report. */
+/** Produce Node's Projected live-subset report on one exact sdk-v3 matrix server. */
 
 import crypto from "node:crypto";
 import {
@@ -8,6 +8,7 @@ import {
   fstatSync,
   lstatSync,
   openSync,
+  readFileSync,
   readSync,
 } from "node:fs";
 import { createRequire } from "node:module";
@@ -45,6 +46,55 @@ export const PROJECTION_FINGERPRINT = Object.freeze({
   domain: "typebridge.binding.projection",
   semantic_profile: SEMANTIC_PROFILE,
 });
+// `SEMANTIC_PROFILE` and the two fingerprints above are the sdk-v3 catalog's own
+// identity. A run reports the sdk-v3 profile-matrix entry it selects instead.
+export const SEMANTIC_PROFILE_ENV = "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE";
+export const PROFILE_MATRIX_RELATIVE =
+  "tests/contracts/sdk_conformance/sdk-v3/profiles-v3.json";
+const MODULE_REPOSITORY_ROOT = fileURLToPath(new URL("../../../../../", import.meta.url));
+
+/**
+ * Select the sdk-v3 profile-matrix entry a run reports: the profile named by
+ * `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`, else the catalog's own profile
+ * (mirrors `scripts/ci/sdk_profile_matrix.py` `requested`).
+ */
+export function profileIdentity(root = MODULE_REPOSITORY_ROOT, environment = {}) {
+  const profile = environment[SEMANTIC_PROFILE_ENV] || SEMANTIC_PROFILE;
+  let matrix;
+  try {
+    matrix = JSON.parse(readFileSync(resolve(root, PROFILE_MATRIX_RELATIVE), "utf8"));
+  } catch (error) {
+    throw new ProducerError(
+      "invalid_profile_matrix",
+      "sdk-v3 profile matrix is unreadable",
+      { cause: error },
+    );
+  }
+  const profiles = matrix?.set === "sdk-v3" ? matrix.profiles : undefined;
+  const entry =
+    profiles !== null && typeof profiles === "object" && Object.hasOwn(profiles, profile)
+      ? profiles[profile]
+      : undefined;
+  const fingerprints = entry?.expected_fingerprints;
+  requireCondition(
+    typeof entry?.live_server_version === "string" &&
+      fingerprints?.semantic?.semantic_profile === profile &&
+      fingerprints?.projections?.node?.semantic_profile === profile,
+    "semantic_profile_mismatch",
+    `sdk-v3 has no profile-matrix entry for ${JSON.stringify(profile)}`,
+  );
+  return Object.freeze({
+    semanticProfile: profile,
+    liveServerVersion: entry.live_server_version,
+    semantic: fingerprints.semantic,
+    projection: fingerprints.projections.node,
+  });
+}
+
+/** The sdk-v3 catalog's own matrix entry; the default of offline seams. */
+export function catalogIdentity() {
+  return profileIdentity(MODULE_REPOSITORY_ROOT, {});
+}
 
 export const OUTPUT_ENV = "TYPE_BRIDGE_PROJECTED_LIVE_REPORT";
 export const ADDRESS_ENV = "TYPE_BRIDGE_PROJECTED_LIVE_ADDRESS";
@@ -254,7 +304,7 @@ function packageObject(value, label) {
   return value;
 }
 
-export function validateGeneratedPackage(package_) {
+export function validateGeneratedPackage(package_, identity = catalogIdentity()) {
   let semantic;
   let runtimeProjection;
   try {
@@ -272,14 +322,13 @@ export function validateGeneratedPackage(package_) {
   let identityMatches = false;
   try {
     identityMatches =
-      canonicalString(semantic) ===
-        canonicalString(SEMANTIC_SCHEMA_FINGERPRINT) &&
+      canonicalString(semantic) === canonicalString(identity.semantic) &&
       canonicalString(runtimeProjection.semantic_fingerprint) ===
-        canonicalString(SEMANTIC_SCHEMA_FINGERPRINT) &&
+        canonicalString(identity.semantic) &&
       canonicalString(JSON.parse(package_.PROJECTION_FINGERPRINT_JSON)) ===
-        canonicalString(PROJECTION_FINGERPRINT) &&
+        canonicalString(identity.projection) &&
       canonicalString(runtimeProjection.projection_fingerprint) ===
-        canonicalString(PROJECTION_FINGERPRINT) &&
+        canonicalString(identity.projection) &&
       runtimeProjection.target === "typescript";
   } catch {
     identityMatches = false;
@@ -327,7 +376,7 @@ function regularPackagePath(path, label, directory) {
   }
 }
 
-export async function loadGeneratedPackage(packageRoot) {
+export async function loadGeneratedPackage(packageRoot, identity = catalogIdentity()) {
   const generatedRoot = resolve(packageRoot, "generated_projected");
   const manifest = resolve(generatedRoot, "package.json");
   const entry = resolve(generatedRoot, "dist/index.js");
@@ -347,7 +396,7 @@ export async function loadGeneratedPackage(packageRoot) {
       { cause: error },
     );
   }
-  validateGeneratedPackage(package_);
+  validateGeneratedPackage(package_, identity);
   if (
     runtime === null ||
     typeof runtime !== "object" ||
@@ -1175,6 +1224,7 @@ export async function runOwnedDatabase({
   cleanupOrder,
   versionDetector = detectServerVersion,
   journeyRunner = runJourney,
+  liveServerVersion = catalogIdentity().liveServerVersion,
 }) {
   const database = runtime.RustDatabase.connect(address, databaseName, {
     httpPort: port,
@@ -1184,11 +1234,11 @@ export async function runOwnedDatabase({
   let failure;
   try {
     const detected = await versionDetector(address, port);
-    if (detected !== "3.12.3") {
+    if (detected !== liveServerVersion) {
       throw new ProducerError(
         "server_version_mismatch",
-        "live evidence requires the actually detected TypeDB server version 3.12.3; " +
-          `detected ${JSON.stringify(detected)}`,
+        "live evidence requires the actually detected TypeDB server version " +
+          `${liveServerVersion}; detected ${JSON.stringify(detected)}`,
       );
     }
     if (database.databaseExists()) {
@@ -1260,13 +1310,13 @@ export async function runOwnedDatabase({
   return observations;
 }
 
-export function buildReport(authority, observations) {
+export function buildReport(authority, observations, identity = catalogIdentity()) {
   return {
     authority,
     binding: "node",
     format: REPORT_FORMAT,
     observations,
-    semantic_profile: SEMANTIC_PROFILE,
+    semantic_profile: identity.semanticProfile,
   };
 }
 
@@ -1283,8 +1333,9 @@ export async function produce(environment = process.env) {
   const address = requiredEnvironment(ADDRESS_ENV, environment);
   const databaseName = requiredEnvironment(DATABASE_ENV, environment);
   const port = httpPort(environment);
+  const identity = profileIdentity(root, environment);
   const { authority, sources } = sourceAuthority(root);
-  const { package_, runtime } = await loadGeneratedPackage(packageRoot);
+  const { package_, runtime } = await loadGeneratedPackage(packageRoot, identity);
   const { records, createOrder, cleanupOrder } = parseJourney(sources.journey);
   let providerSchema;
   try {
@@ -1308,8 +1359,9 @@ export async function produce(environment = process.env) {
     records,
     createOrder,
     cleanupOrder,
+    liveServerVersion: identity.liveServerVersion,
   });
-  publishReport(output, buildReport(authority, observations));
+  publishReport(output, buildReport(authority, observations, identity));
 }
 
 export async function main(environment = process.env) {

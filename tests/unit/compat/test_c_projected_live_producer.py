@@ -39,7 +39,8 @@ def test_c_projected_live_producer_is_independent_and_exactly_authority_bound() 
     ):
         assert digest in harness
     assert 'const REPORT_FORMAT: &str = "typebridge.projected-live-report/v1"' in harness
-    assert 'const SEMANTIC_PROFILE: &str = "typedb-3.12.1/v1"' in harness
+    assert "sdk_profile_matrix::requested(3)" in harness
+    assert '"semantic_profile": profile.semantic_profile' in harness
     assert '"binding": "c"' in harness
     assert "foreign_fingerprint" in harness
     assert "assert_ne!(" in harness
@@ -115,5 +116,10 @@ def test_c_projected_live_requires_exact_ports_database_and_provider_version() -
     assert "byte.is_ascii_digit()" in setup
     assert "*cursor < (unsigned char)'0'" in consumer
     assert "parsed > 65535ul" in consumer
-    assert "(version.major, version.minor, version.patch),\n        (3, 12, 3)" in setup
-    assert 'text_is(version, "3.12.3")' in consumer
+    assert (
+        "EXPECTED_SERVER_VERSION_ENV.to_owned(),\n            profile.live_server_version"
+        in harness
+    )
+    assert 'required("TYPE_BRIDGE_EXPECTED_SERVER_VERSION")' in setup
+    assert 'getenv("TYPE_BRIDGE_EXPECTED_SERVER_VERSION")' in consumer
+    assert "text_is(version, expected_server_version)" in consumer

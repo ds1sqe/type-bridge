@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { link, lstat, mkdtemp, mkdir, open, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
@@ -35,8 +36,6 @@ const PROFILE_SERVER_VERSIONS: Readonly<Record<string, string>> = {
 // Generated live fixtures follow `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`;
 // new workspaces and the default TypeDB image use TypeDB 3.13.6.
 const DEFAULT_ACCEPTANCE_PROFILE = "typedb-3.13.6/v1";
-// The sdk-v1..v6 conformance contracts are frozen to this profile.
-const SDK_PROFILE = "typedb-3.12.1/v1";
 const TYPEDB_VERSION = process.env.TYPEDB_VERSION ?? "3.13.6";
 const IS_TYPEDB_3_11 = TYPEDB_VERSION.startsWith("3.11.");
 const PROVIDER_SCHEMA = resolve(
@@ -72,6 +71,103 @@ const SDK_V2_PROOF_VALIDATOR = resolve(
   ROOT,
   "scripts/ci/proof_fragments.py",
 );
+
+const SEMANTIC_PROFILE_ENV = "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE";
+const SDK_SET_VERSIONS = [1, 2, 3, 4, 5, 6] as const;
+
+/** One `sdk-vN/profiles-vN.json` entry: the identity a report carries on a profile. */
+interface SdkProfileIdentity {
+  readonly set: string;
+  readonly semanticProfile: string;
+  readonly liveServerVersion: string;
+  /** Semantic and per-binding projection fingerprints; sdk-v1..v3 only. */
+  readonly expectedFingerprints: any;
+}
+
+function sdkContractRelative(version: number, name: string): string {
+  return `tests/contracts/sdk_conformance/sdk-v${version}/${name}-v${version}.json`;
+}
+
+function sdkProfileMatrix(version: number): Record<string, any> {
+  const matrix = JSON.parse(
+    readFileSync(resolve(ROOT, sdkContractRelative(version, "profiles")), "utf8"),
+  );
+  if (
+    matrix?.format !== "typebridge.sdk-profile-matrix/v1"
+    || matrix.set !== `sdk-v${version}`
+    || matrix.catalog_path !== sdkContractRelative(version, "catalog")
+    || matrix.profiles === null
+    || typeof matrix.profiles !== "object"
+  ) {
+    throw new Error(`sdk-v${version} profile matrix is not the committed shape`);
+  }
+  return matrix.profiles;
+}
+
+/**
+ * Select the `sdk-vN` profile-matrix entry a report producer targets: the
+ * explicit `profile`, else `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`, else the
+ * catalog's own profile (mirrors `scripts/ci/sdk_profile_matrix.py` `requested`).
+ */
+function sdkProfileIdentity(
+  version: number,
+  profile?: string,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): SdkProfileIdentity {
+  const selected = profile
+    ?? (environment[SEMANTIC_PROFILE_ENV] || JSON.parse(
+      readFileSync(resolve(ROOT, sdkContractRelative(version, "catalog")), "utf8"),
+    ).fixture.semantic_profile);
+  const profiles = sdkProfileMatrix(version);
+  const entry = Object.hasOwn(profiles, selected) ? profiles[selected] : undefined;
+  if (typeof entry?.live_server_version !== "string") {
+    throw new Error(`sdk-v${version} has no profile-matrix entry for ${JSON.stringify(selected)}`);
+  }
+  const fingerprints = entry.expected_fingerprints;
+  if (
+    fingerprints !== undefined
+    && [fingerprints.semantic, ...Object.values(fingerprints.projections ?? {})]
+      .some((value: any) => value?.semantic_profile !== selected)
+  ) {
+    throw new Error(`sdk-v${version} entry ${selected} fingerprints name another profile`);
+  }
+  return {
+    set: `sdk-v${version}`,
+    semanticProfile: selected,
+    liveServerVersion: entry.live_server_version,
+    expectedFingerprints: fingerprints,
+  };
+}
+
+/** The sdk-vN identity reports carry; the generated package must target it. */
+function sdkReportIdentity(version: number): SdkProfileIdentity {
+  const identity = sdkProfileIdentity(version);
+  if (identity.semanticProfile !== REMOTE_PROFILE) {
+    throw new Error(
+      `${identity.set} reports target ${identity.semanticProfile} `
+      + `but the generated package targets ${REMOTE_PROFILE}`,
+    );
+  }
+  return identity;
+}
+
+/** Require the generated package's fingerprints to be the matrix entry's. */
+function requireSdkFingerprints(
+  identity: SdkProfileIdentity,
+  semanticFingerprint: Record<string, unknown>,
+  projectionFingerprint: Record<string, unknown>,
+): void {
+  assert.deepEqual(
+    semanticFingerprint,
+    identity.expectedFingerprints.semantic,
+    `${identity.set} semantic fingerprint differs from its ${identity.semanticProfile} entry`,
+  );
+  assert.deepEqual(
+    projectionFingerprint,
+    identity.expectedFingerprints.projections.node,
+    `${identity.set} node projection fingerprint differs from its ${identity.semanticProfile} entry`,
+  );
+}
 
 function sourceIdentity(path: string, raw: Uint8Array): Record<string, string> {
   return { path, sha256: createHash("sha256").update(raw).digest("hex") };
@@ -268,6 +364,7 @@ function loadSdkV2ProofObservations(): ReadonlyMap<string, Record<string, unknow
 }
 
 async function sdkReport(
+  identity: SdkProfileIdentity,
   catalogRaw: Buffer,
   catalog: any,
   journeyRaw: Buffer,
@@ -275,6 +372,7 @@ async function sdkReport(
   projectionFingerprint: Record<string, unknown>,
   results: readonly Record<string, unknown>[],
 ): Promise<Record<string, unknown>> {
+  requireSdkFingerprints(identity, semanticFingerprint, projectionFingerprint);
   const fixture = catalog.fixture;
   const schemaRaw = await readFile(resolve(ROOT, fixture.schema_path));
   const providerSchemaRaw = await readFile(resolve(ROOT, fixture.provider_schema_path));
@@ -288,19 +386,20 @@ async function sdkReport(
     fixture: {
       id: fixture.id,
       version: fixture.version,
-      semantic_profile: fixture.semantic_profile,
+      semantic_profile: identity.semanticProfile,
       schema: sourceIdentity(fixture.schema_path, schemaRaw),
       provider_schema: sourceIdentity(fixture.provider_schema_path, providerSchemaRaw),
       journey: sourceIdentity(catalog.journey_path, journeyRaw),
-      semantic_fingerprint: semanticFingerprint,
+      semantic_fingerprint: identity.expectedFingerprints.semantic,
       projection_target: catalog.projection_targets.node,
-      projection_fingerprint: projectionFingerprint,
+      projection_fingerprint: identity.expectedFingerprints.projections.node,
     },
     results,
   };
 }
 
 async function sdkV2Report(
+  identity: SdkProfileIdentity,
   catalogRaw: Buffer,
   catalog: any,
   journeyRaw: Buffer,
@@ -308,6 +407,7 @@ async function sdkV2Report(
   projectionFingerprint: Record<string, unknown>,
   results: readonly Record<string, unknown>[],
 ): Promise<Record<string, unknown>> {
+  requireSdkFingerprints(identity, semanticFingerprint, projectionFingerprint);
   const fixture = catalog.fixture;
   const schemaRaw = await readFile(resolve(ROOT, fixture.schema_path));
   const providerSchemaRaw = await readFile(resolve(ROOT, fixture.provider_schema_path));
@@ -321,13 +421,13 @@ async function sdkV2Report(
     fixture: {
       id: fixture.id,
       version: fixture.version,
-      semantic_profile: fixture.semantic_profile,
+      semantic_profile: identity.semanticProfile,
       schema: sourceIdentity(fixture.schema_path, schemaRaw),
       provider_schema: sourceIdentity(fixture.provider_schema_path, providerSchemaRaw),
       journey: sourceIdentity(catalog.journey_path, journeyRaw),
-      semantic_fingerprint: semanticFingerprint,
+      semantic_fingerprint: identity.expectedFingerprints.semantic,
       projection_target: catalog.projection_targets.node,
-      projection_fingerprint: projectionFingerprint,
+      projection_fingerprint: identity.expectedFingerprints.projections.node,
     },
     results,
   };
@@ -395,8 +495,13 @@ function requireProfileServerVersion(profile: string, detected: string | null): 
   }
 }
 
-function requireSdkServerVersion(detected: string | null): void {
-  requireProfileServerVersion(SDK_PROFILE, detected);
+function requireSdkServerVersion(identity: SdkProfileIdentity, detected: string | null): void {
+  if (detected !== identity.liveServerVersion) {
+    throw new Error(
+      `${identity.set} reports on ${identity.semanticProfile} require the actual detected `
+      + `TypeDB server version ${identity.liveServerVersion}; detected ${JSON.stringify(detected)}`,
+    );
+  }
 }
 
 function typeDBVersionEndpoint(address: string, httpPort: number, tls: boolean): string {
@@ -1797,12 +1902,34 @@ async function waitForPort(port: number, child: ChildProcess, timeoutMs: number)
   throw new Error("timed out waiting for generated remote query server");
 }
 
-test("sdk report server-version gate is exact", () => {
-  assert.doesNotThrow(() => requireSdkServerVersion("3.12.3"));
-  for (const detected of [null, "3.11.5", "3.12.0", "3.12.2", "3.13.0", "3.13.6"] as const) {
+test("sdk report identity follows the profile matrix", () => {
+  for (const version of SDK_SET_VERSIONS) {
+    const profiles = Object.keys(sdkProfileMatrix(version));
+    const catalogProfile = JSON.parse(
+      readFileSync(resolve(ROOT, sdkContractRelative(version, "catalog")), "utf8"),
+    ).fixture.semantic_profile;
+    assert.ok(profiles.includes(catalogProfile));
+    assert.equal(sdkProfileIdentity(version, undefined, {}).semanticProfile, catalogProfile);
+    assert.equal(
+      sdkProfileIdentity(version, undefined, { [SEMANTIC_PROFILE_ENV]: "" }).semanticProfile,
+      catalogProfile,
+    );
+    const servers = profiles.map((profile) => sdkProfileIdentity(version, profile).liveServerVersion);
+    for (const profile of profiles) {
+      const identity = sdkProfileIdentity(version, undefined, { [SEMANTIC_PROFILE_ENV]: profile });
+      assert.equal(identity.semanticProfile, profile);
+      assert.equal(identity.expectedFingerprints === undefined, version > 3);
+      assert.doesNotThrow(() => requireSdkServerVersion(identity, identity.liveServerVersion));
+      for (const detected of [null, ...servers.filter((server) => server !== identity.liveServerVersion)]) {
+        assert.throws(
+          () => requireSdkServerVersion(identity, detected),
+          /actual detected TypeDB server version/,
+        );
+      }
+    }
     assert.throws(
-      () => requireSdkServerVersion(detected),
-    /actual detected TypeDB server version 3\.12\.3/,
+      () => sdkProfileIdentity(version, "typedb-0.0.0/v1"),
+      /has no profile-matrix entry/,
     );
   }
 });
@@ -1833,6 +1960,8 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
   let failure: unknown;
   let preparedSdkReport: Record<string, unknown> | undefined;
   let preparedSdkV2Report: Record<string, unknown> | undefined;
+  let sdkIdentity: SdkProfileIdentity | undefined;
+  let sdkV2Identity: SdkProfileIdentity | undefined;
   const sdkReportPath = process.env.TYPE_BRIDGE_SDK_REPORT;
   const sdkV2ReportPath = process.env.TYPE_BRIDGE_SDK_REPORT_V2;
   if (
@@ -1948,11 +2077,10 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       );
     }
     if (sdkReportPath !== undefined) {
-      if (REMOTE_PROFILE !== SDK_PROFILE) {
-        throw new Error(`sdk reports may only be emitted for ${SDK_PROFILE}`);
-      }
+      sdkIdentity = sdkReportIdentity(1);
       await validateSdkReportPath(sdkReportPath);
       requireSdkServerVersion(
+        sdkIdentity,
         await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
       );
       sdkCatalogRaw = await readFile(SDK_CATALOG);
@@ -1964,11 +2092,10 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       assert.equal(sdkJourney.version, sdkCatalog.fixture.version);
     }
     if (sdkV2ReportPath !== undefined) {
-      if (REMOTE_PROFILE !== SDK_PROFILE) {
-        throw new Error(`sdk-v2 reports may only be emitted for ${SDK_PROFILE}`);
-      }
+      sdkV2Identity = sdkReportIdentity(2);
       await validateSdkReportPath(sdkV2ReportPath);
       requireSdkServerVersion(
+        sdkV2Identity,
         await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
       );
       sdkV2CatalogRaw = await readFile(SDK_V2_CATALOG);
@@ -3023,7 +3150,11 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
           sdkCatalog,
           sdkJourney,
         );
+        if (sdkIdentity === undefined) {
+          throw new Error("sdk-v1 profile was not selected after report preflight");
+        }
         preparedSdkReport = await sdkReport(
+          sdkIdentity,
           sdkCatalogRaw,
           sdkCatalog,
           sdkJourneyRaw,
@@ -3051,7 +3182,11 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
           sdkV2Journey,
           sdkV2ProofObservations,
         );
+        if (sdkV2Identity === undefined) {
+          throw new Error("sdk-v2 profile was not selected after report preflight");
+        }
         preparedSdkV2Report = await sdkV2Report(
+          sdkV2Identity,
           sdkV2CatalogRaw,
           sdkV2Catalog,
           sdkV2JourneyRaw,
@@ -3120,22 +3255,14 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     throw failure;
   }
   if (sdkReportPath !== undefined) {
-    assert.equal(
-      REMOTE_PROFILE,
-      SDK_PROFILE,
-      `sdk reports may only be emitted for ${SDK_PROFILE}`,
-    );
+    assert.equal(sdkIdentity?.semanticProfile, REMOTE_PROFILE);
     if (preparedSdkReport === undefined) {
       throw new Error("sdk report was not prepared after the successful journey");
     }
     await publishSdkReport(sdkReportPath, preparedSdkReport);
   }
   if (sdkV2ReportPath !== undefined) {
-    assert.equal(
-      REMOTE_PROFILE,
-      SDK_PROFILE,
-      `sdk-v2 reports may only be emitted for ${SDK_PROFILE}`,
-    );
+    assert.equal(sdkV2Identity?.semanticProfile, REMOTE_PROFILE);
     if (preparedSdkV2Report === undefined) {
       throw new Error("sdk-v2 report was not prepared after the successful journey");
     }
@@ -3145,7 +3272,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
 
 test(
   "node.generated_data_model_runtime_v3_live",
-  { skip: IS_TYPEDB_3_11 || REMOTE_PROFILE !== SDK_PROFILE, timeout: 360_000 },
+  { skip: IS_TYPEDB_3_11 || !Object.hasOwn(sdkProfileMatrix(3), REMOTE_PROFILE), timeout: 360_000 },
   async () => {
     const suppliedStage = process.env.TYPE_BRIDGE_GENERATED_NODE_STAGE;
     const stage = suppliedStage === undefined
@@ -3470,6 +3597,16 @@ test(
 
       const supplementPath = process.env.TYPE_BRIDGE_SDK_V3_NODE_SUPPLEMENT;
       if (supplementPath !== undefined) {
+        const identity = sdkReportIdentity(3);
+        requireSdkServerVersion(
+          identity,
+          await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
+        );
+        requireSdkFingerprints(
+          identity,
+          JSON.parse(generated.SEMANTIC_SCHEMA_FINGERPRINT_JSON),
+          JSON.parse(generated.PROJECTION_FINGERPRINT_JSON),
+        );
         const observations = sdkV3SupplementObservations();
         const journey = JSON.parse(await readFile(SDK_V3_JOURNEY, "utf8"));
         const results = [...observations.entries()].map(([key, observation]) => {
@@ -3489,10 +3626,10 @@ test(
         await publishSdkReport(supplementPath, {
           format: "typebridge.sdk-v3-live-supplement/v1",
           binding: "node",
-          semantic_profile: SDK_PROFILE,
+          semantic_profile: identity.semanticProfile,
           producer: "node.generated-data-model-runtime-v3-live",
-          semantic_fingerprint: JSON.parse(generated.SEMANTIC_SCHEMA_FINGERPRINT_JSON),
-          projection_fingerprint: JSON.parse(generated.PROJECTION_FINGERPRINT_JSON),
+          semantic_fingerprint: identity.expectedFingerprints.semantic,
+          projection_fingerprint: identity.expectedFingerprints.projections.node,
           results,
         });
       }
@@ -3521,7 +3658,7 @@ test(
   "node.generated_canonical_serialization_v5_live",
   {
     skip: IS_TYPEDB_3_11
-      || REMOTE_PROFILE !== SDK_PROFILE
+      || !Object.hasOwn(sdkProfileMatrix(5), REMOTE_PROFILE)
       || process.env.TYPE_BRIDGE_SDK_V5_NODE_EVIDENCE === undefined,
     timeout: 360_000,
   },
@@ -3569,7 +3706,12 @@ test(
 
       database = connectIntegration();
       database.resetDatabase();
-      requireSdkServerVersion(await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT));
+      // The v5 assembler stamps the lane's `server_version`; this gate keeps the
+      // evidence on that exact server.
+      requireSdkServerVersion(
+        sdkReportIdentity(5),
+        await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
+      );
       defineSchema(database, await readFile(SDK_V3_PROVIDER_SCHEMA, "utf8"));
       const personManager = Person.manager(database);
       const employmentManager = Employment.manager(database);

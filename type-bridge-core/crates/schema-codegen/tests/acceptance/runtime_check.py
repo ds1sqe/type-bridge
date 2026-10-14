@@ -1,8 +1,10 @@
 import asyncio
 import hashlib
+import importlib.util
 import json
 import os
 import struct
+import sys
 import warnings
 import weakref
 from collections.abc import Callable
@@ -1519,6 +1521,34 @@ def _proof_source_identity(root: Path, relative: str) -> dict[str, str]:
     return {"path": relative, "sha256": digest}
 
 
+def _proof_semantic_profile(root: Path, version: int) -> str:
+    """Return the sdk-v{version} matrix profile a proof fragment declares.
+
+    The profile is TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE, else the catalog's
+    own; the generated packages under proof must be on it.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_typebridge_sdk_profile_matrix", root / "scripts/ci/sdk_profile_matrix.py"
+    )
+    if spec is None or spec.loader is None:
+        raise AssertionError("sdk profile matrix is not importable")
+    matrix = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = matrix
+    spec.loader.exec_module(matrix)
+    profile = matrix.requested(
+        version,
+        root=root,
+        error=lambda code, message: AssertionError(f"{code}: {message}"),
+    ).semantic_profile
+    generated_profile = json.loads(SEMANTIC_SCHEMA_FINGERPRINT_JSON)["semantic_profile"]
+    if generated_profile != profile:
+        raise AssertionError(
+            f"sdk-v{version} proof fragments target {profile}; "
+            f"the generated package uses {generated_profile}"
+        )
+    return profile
+
+
 def _emit_sdk_v2_remote_proof_fragment() -> None:
     raw_destination = os.environ.get("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT")
     if raw_destination is None:
@@ -1554,7 +1584,7 @@ def _emit_sdk_v2_remote_proof_fragment() -> None:
     fragment = {
         "format": "typebridge.sdk-v2-proof-fragment/v1",
         "binding": "python",
-        "semantic_profile": "typedb-3.12.1/v1",
+        "semantic_profile": _proof_semantic_profile(root, 2),
         "run_nonce": run_nonce,
         "contract": {
             name: _proof_source_identity(root, relative)
@@ -1739,7 +1769,7 @@ def _emit_sdk_v3_package_proof_fragment() -> None:
     fragment = {
         "format": "typebridge.sdk-v3-proof-fragment/v1",
         "binding": "python",
-        "semantic_profile": "typedb-3.12.1/v1",
+        "semantic_profile": _proof_semantic_profile(root, 3),
         "run_nonce": run_nonce,
         "contract": {
             name: _proof_source_identity(root, path) for name, path in contract_paths.items()

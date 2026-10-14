@@ -347,7 +347,28 @@ const SDK_PROVIDER_SCHEMA_PATH: &str =
 const SDK_JOURNEY_PATH: &str = "tests/contracts/sdk_conformance/sdk-v1/journey-v1.json";
 const SDK_V2_CATALOG_PATH: &str = "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json";
 const SDK_V2_JOURNEY_PATH: &str = "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json";
-const SDK_PROFILE: &str = "typedb-3.12.1/v1";
+/// Matrix entries the harness selected for this run's semantic profile, keyed
+/// `sdk-vN`; each carries `semantic_profile`, `live_server_version`, and for
+/// sdk-v1..v3 `expected_fingerprints`.
+const SDK_PROFILE_ENTRIES_ENV: &str = "TYPE_BRIDGE_SDK_PROFILE_ENTRIES";
+
+fn sdk_matrix_entry(set: u8) -> Value {
+    let entries: Value = serde_json::from_str(
+        &env::var(SDK_PROFILE_ENTRIES_ENV)
+            .unwrap_or_else(|_| panic!("{SDK_PROFILE_ENTRIES_ENV} is required")),
+    )
+    .unwrap_or_else(|error| panic!("{SDK_PROFILE_ENTRIES_ENV} is JSON: {error}"));
+    let entry = entries[format!("sdk-v{set}")].clone();
+    assert!(
+        entry.is_object(),
+        "{SDK_PROFILE_ENTRIES_ENV} carries the sdk-v{set} entry"
+    );
+    entry
+}
+
+fn sdk_matrix_profile(entry: &Value) -> &str {
+    sdk_string(&entry["semantic_profile"], "sdk matrix semantic profile")
+}
 
 fn sdk_env_path(name: &str) -> PathBuf {
     PathBuf::from(env::var_os(name).unwrap_or_else(|| panic!("{name} is required")))
@@ -721,7 +742,7 @@ fn sdk_version_endpoint() -> String {
     assert_ne!(
         env::var("TYPE_BRIDGE_RUST_PROJECTION_TLS").as_deref(),
         Ok("1"),
-        "sdk evidence is accepted only from the plaintext 3.12.1 lane"
+        "sdk evidence is accepted only from the plaintext lane"
     );
     let address = env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1729".to_owned());
     let address_url = if address.contains("://") {
@@ -747,7 +768,8 @@ fn sdk_version_endpoint() -> String {
     format!("http://{host}:{http_port}/v1/version")
 }
 
-async fn require_sdk_server_version() {
+async fn require_sdk_server_version(entry: &Value) {
+    let expected = sdk_string(&entry["live_server_version"], "sdk matrix live server");
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(StdDuration::from_secs(30))
@@ -780,8 +802,8 @@ async fn require_sdk_server_version() {
         serde_json::from_slice(&body).expect("sdk TypeDB version body is valid JSON");
     assert_eq!(
         document.get("version").and_then(Value::as_str),
-        Some("3.12.3"),
-        "sdk evidence requires the actual detected TypeDB server version 3.12.3"
+        Some(expected),
+        "sdk evidence requires the actual detected TypeDB server version {expected}"
     );
 }
 
@@ -2291,7 +2313,9 @@ async fn sdk_v2_lifecycle_lane(
 async fn run_sdk_journey(db: &Database<AppSchema>) {
     let report_path = sdk_env_path("TYPE_BRIDGE_SDK_REPORT");
     validate_sdk_report_path(&report_path);
-    require_sdk_server_version().await;
+    let entry = sdk_matrix_entry(1);
+    let sdk_profile = sdk_matrix_profile(&entry);
+    require_sdk_server_version(&entry).await;
     let manifest_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_MANIFEST"))
         .expect("staged sdk manifest is readable");
     let catalog_bytes =
@@ -2311,12 +2335,12 @@ async fn run_sdk_journey(db: &Database<AppSchema>) {
     );
     assert_eq!(
         sdk_string(&journey["semantic_profile"], "sdk semantic profile"),
-        SDK_PROFILE
+        sdk_string(&catalog["fixture"]["semantic_profile"], "sdk catalog profile")
     );
     assert_eq!(
         env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")
             .expect("generated live semantic profile is configured"),
-        SDK_PROFILE
+        sdk_profile
     );
     assert_eq!(
         sdk_string(&catalog["fixture"]["schema_path"], "sdk schema path"),
@@ -2614,14 +2638,22 @@ async fn run_sdk_journey(db: &Database<AppSchema>) {
             &semantic_fingerprint["semantic_profile"],
             "semantic fingerprint profile",
         ),
-        SDK_PROFILE
+        sdk_profile
     );
     assert_eq!(
         sdk_string(
             &projection_fingerprint["semantic_profile"],
             "projection fingerprint profile",
         ),
-        SDK_PROFILE
+        sdk_profile
+    );
+    assert_eq!(
+        semantic_fingerprint,
+        entry["expected_fingerprints"]["semantic"]
+    );
+    assert_eq!(
+        projection_fingerprint,
+        entry["expected_fingerprints"]["projections"]["rust"]
     );
     let report = json!({
         "format": "typebridge.sdk-conformance-report/v1",
@@ -2631,7 +2663,7 @@ async fn run_sdk_journey(db: &Database<AppSchema>) {
         "fixture": {
             "id": sdk_string(&journey["fixture_id"], "sdk fixture ID"),
             "version": journey["version"].clone(),
-            "semantic_profile": SDK_PROFILE,
+            "semantic_profile": sdk_profile,
             "schema": sdk_source_identity(SDK_SCHEMA_PATH, &schema_bytes),
             "provider_schema": sdk_source_identity(
                 SDK_PROVIDER_SCHEMA_PATH,
@@ -2650,7 +2682,9 @@ async fn run_sdk_journey(db: &Database<AppSchema>) {
 async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
     let report_path = sdk_env_path("TYPE_BRIDGE_SDK_REPORT_V2");
     validate_sdk_report_path(&report_path);
-    require_sdk_server_version().await;
+    let entry = sdk_matrix_entry(2);
+    let sdk_profile = sdk_matrix_profile(&entry);
+    require_sdk_server_version(&entry).await;
     let manifest_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_MANIFEST_V2"))
         .expect("staged sdk-v2 manifest is readable");
     let catalog_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_CATALOG_V2"))
@@ -2673,12 +2707,12 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
     assert_eq!(journey["version"], 2);
     assert_eq!(
         sdk_string(&journey["semantic_profile"], "sdk-v2 semantic profile"),
-        SDK_PROFILE
+        sdk_string(&catalog["fixture"]["semantic_profile"], "sdk-v2 catalog profile")
     );
     assert_eq!(
         env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")
             .expect("generated live semantic profile is configured"),
-        SDK_PROFILE
+        sdk_profile
     );
     assert_eq!(
         sdk_string(&catalog["fixture"]["schema_path"], "sdk-v2 schema path",),
@@ -3203,11 +3237,11 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
         .expect("generated sdk-v2 projection fingerprint is valid JSON");
     assert_eq!(
         semantic_fingerprint,
-        catalog["expected_fingerprints"]["semantic"]
+        entry["expected_fingerprints"]["semantic"]
     );
     assert_eq!(
         projection_fingerprint,
-        catalog["expected_fingerprints"]["projections"]["rust"]
+        entry["expected_fingerprints"]["projections"]["rust"]
     );
     let report = json!({
         "format": "typebridge.sdk-conformance-report/v2",
@@ -3217,7 +3251,7 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
         "fixture": {
             "id": sdk_string(&journey["fixture_id"], "sdk-v2 fixture ID"),
             "version": journey["version"].clone(),
-            "semantic_profile": SDK_PROFILE,
+            "semantic_profile": sdk_profile,
             "schema": sdk_source_identity(SDK_SCHEMA_PATH, &schema_bytes),
             "provider_schema": sdk_source_identity(
                 SDK_PROVIDER_SCHEMA_PATH,
@@ -6236,7 +6270,7 @@ async fn generated_canonical_serialization_v5_live() {
         println!("generated Sdk V5 Rust live evidence: not requested");
         return;
     };
-    require_sdk_server_version().await;
+    require_sdk_server_version(&sdk_matrix_entry(5)).await;
     let db = database().await;
     let person = db
         .entities::<Person>()
@@ -6392,7 +6426,8 @@ async fn generated_data_model_runtime_v3_live() {
         println!("generated Sdk V3 Rust live supplement: not requested");
         return;
     };
-    require_sdk_server_version().await;
+    let entry = sdk_matrix_entry(3);
+    require_sdk_server_version(&entry).await;
     let db = database().await;
 
     let person_baseline = db.entities::<Person>().count().await.expect("person count");
@@ -7540,6 +7575,14 @@ async fn generated_data_model_runtime_v3_live() {
         .expect("generated V3 semantic fingerprint is valid JSON");
     let projection_fingerprint: Value = serde_json::from_str(PROJECTION_FINGERPRINT_JSON)
         .expect("generated V3 projection fingerprint is valid JSON");
+    assert_eq!(
+        semantic_fingerprint,
+        entry["expected_fingerprints"]["semantic"]
+    );
+    assert_eq!(
+        projection_fingerprint,
+        entry["expected_fingerprints"]["projections"]["rust"]
+    );
     let results = [
         (
             "borrowed_transaction_lifecycle",
@@ -7596,7 +7639,7 @@ async fn generated_data_model_runtime_v3_live() {
         "format": "typebridge.sdk-v3-live-supplement/v1",
         "binding": "rust",
         "producer": "type-bridge-rust.generated-data-model-runtime-v3-live",
-        "semantic_profile": SDK_PROFILE,
+        "semantic_profile": sdk_matrix_profile(&entry),
         "semantic_fingerprint": semantic_fingerprint,
         "projection_fingerprint": projection_fingerprint,
         "results": results,

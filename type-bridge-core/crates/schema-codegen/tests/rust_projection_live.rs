@@ -17,6 +17,7 @@ use type_bridge_schema::{
 use type_bridge_schema_codegen::RustEmitter;
 
 mod support;
+use support::sdk_profile_matrix::{self, SdkProfile};
 use support::{Stage, base64, free_port};
 
 const SCHEMA: &str = include_str!("acceptance/schema.yaml");
@@ -44,7 +45,6 @@ const SDK_V3_CATALOG: &[u8] =
 const SDK_V3_JOURNEY: &[u8] =
     include_bytes!("../../../../tests/contracts/sdk_conformance/sdk-v3/journey-v3.json");
 const SDK_V2_CATALOG_RELATIVE: &str = "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json";
-const SDK_PROFILE: &str = "typedb-3.12.1/v1";
 /// The generated live fixture profile when `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`
 /// is unset; it pairs with TypeDB 3.13.6, the default server image.
 const DEFAULT_ACCEPTANCE_PROFILE: &str = "typedb-3.13.6/v1";
@@ -119,6 +119,31 @@ fn manifest_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "\\\\")
 }
 
+/// The sdk-v{set} matrix entry for the generated fixture's profile; panics when
+/// the set has no entry for it.
+fn sdk_matrix_entry(set: u8, profile_name: &str) -> SdkProfile {
+    sdk_profile_matrix::select_from(&sdk_profile_matrix::repository_root(), set, profile_name)
+}
+
+/// The matrix entries the consumer's SDK lanes emit, as `{"sdk-vN": entry}`.
+fn sdk_profile_entries(profile_name: &str) -> String {
+    let entries = [1, 2, 3, 5]
+        .into_iter()
+        .map(|set| {
+            let entry = sdk_matrix_entry(set, profile_name);
+            (
+                format!("sdk-v{set}"),
+                serde_json::json!({
+                    "semantic_profile": entry.semantic_profile,
+                    "live_server_version": entry.live_server_version,
+                    "expected_fingerprints": entry.expected_fingerprints,
+                }),
+            )
+        })
+        .collect::<serde_json::Map<String, Value>>();
+    serde_json::to_string(&entries).expect("sdk matrix entries serialize")
+}
+
 fn requested_sdk_report(profile_name: &str) -> Option<PathBuf> {
     let raw = env::var_os("TYPE_BRIDGE_SDK_REPORT")?;
     let raw = raw
@@ -128,10 +153,7 @@ fn requested_sdk_report(profile_name: &str) -> Option<PathBuf> {
         raw.len() <= 4096,
         "TYPE_BRIDGE_SDK_REPORT exceeds 4096 UTF-8 bytes"
     );
-    assert_eq!(
-        profile_name, SDK_PROFILE,
-        "sdk reports are frozen to {SDK_PROFILE}"
-    );
+    sdk_matrix_entry(1, profile_name);
     let path = PathBuf::from(raw);
     assert!(
         path.is_absolute(),
@@ -163,10 +185,7 @@ fn requested_sdk_v2_report(profile_name: &str) -> Option<PathBuf> {
         raw.len() <= 4096,
         "TYPE_BRIDGE_SDK_REPORT_V2 exceeds 4096 UTF-8 bytes"
     );
-    assert_eq!(
-        profile_name, SDK_PROFILE,
-        "sdk-v2 reports are frozen to {SDK_PROFILE}"
-    );
+    sdk_matrix_entry(2, profile_name);
     let path = PathBuf::from(raw);
     assert!(
         path.is_absolute(),
@@ -193,7 +212,7 @@ fn requested_sdk_v2_report(profile_name: &str) -> Option<PathBuf> {
 
 fn requested_sdk_v3_supplement(profile_name: &str) -> Option<PathBuf> {
     let raw = env::var_os("TYPE_BRIDGE_SDK_V3_RUST_SUPPLEMENT")?;
-    assert_eq!(profile_name, SDK_PROFILE);
+    sdk_matrix_entry(3, profile_name);
     let path = PathBuf::from(raw);
     assert!(
         path.is_absolute(),
@@ -211,7 +230,7 @@ fn requested_sdk_v3_supplement(profile_name: &str) -> Option<PathBuf> {
 
 fn requested_sdk_v5_evidence(profile_name: &str) -> Option<PathBuf> {
     let raw = env::var_os("TYPE_BRIDGE_SDK_V5_RUST_EVIDENCE")?;
-    assert_eq!(profile_name, SDK_PROFILE);
+    sdk_matrix_entry(5, profile_name);
     let path = PathBuf::from(raw);
     assert!(path.is_absolute(), "Sdk V5 evidence path must be absolute");
     let parent = path.parent().expect("Sdk V5 evidence has a parent");
@@ -369,9 +388,10 @@ fn generated_rust_projection_round_trips_exact_live_models() {
         .expect("schema-codegen lives beneath the repository root")
         .to_path_buf();
     let sdk_v2_validated_observations = sdk_v2_report.as_ref().map(|_| {
-        let observations = support::validate_sdk_v2_proof_fragments(
+        let observations = support::validate_sdk_v2_proof_fragments_on(
             &repository_root,
             "rust",
+            &profile_name,
             sdk_v2_proof_run_nonce
                 .as_deref()
                 .expect("sdk-v2 proof nonce was captured"),
@@ -819,6 +839,18 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
         .env_remove("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS")
         .env_remove("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE")
         .env_remove("TYPE_BRIDGE_SDK_V2_VALIDATED_OBSERVATIONS");
+    if sdk_report.is_some()
+        || sdk_v2_report.is_some()
+        || sdk_v3_supplement.is_some()
+        || sdk_v5_evidence.is_some()
+    {
+        consumer_command.env(
+            "TYPE_BRIDGE_SDK_PROFILE_ENTRIES",
+            sdk_profile_entries(&profile_name),
+        );
+    } else {
+        consumer_command.env_remove("TYPE_BRIDGE_SDK_PROFILE_ENTRIES");
+    }
     if sdk_v3_supplement.is_some() {
         consumer_command.arg("generated_data_model_runtime_v3_live");
     } else if sdk_v5_evidence.is_some() {

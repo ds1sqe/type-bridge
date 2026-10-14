@@ -70,7 +70,7 @@ async fn main() {
     );
     let database = type_bridge::Database::connect(options)
         .await
-        .expect("exact TypeDB 3.12.3 connects")
+        .expect("exact TypeDB server connects")
         .with_schema(SCHEMA)
         .expect("generated schema authority binds");
     assert_eq!(

@@ -395,7 +395,7 @@ def test_full_c_preserves_versioned_layout_with_named_suites(
             "query_live",
             "test_generated_projection_round_trips_live_models",
             "generated package round-trips exact models on TypeDB",
-            "live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3",
+            "live_c17_generated_person_and_membership_crud_round_trips_on_profile_server",
         ),
         (
             "model_live",
@@ -407,7 +407,7 @@ def test_full_c_preserves_versioned_layout_with_named_suites(
             "codec_live",
             "test_generated_canonical_serialization_v5_live",
             "node.generated_canonical_serialization_v5_live",
-            "live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3",
+            "live_c17_generated_person_and_membership_crud_round_trips_on_profile_server",
         ),
     ],
 )

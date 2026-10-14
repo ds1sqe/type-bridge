@@ -99,7 +99,7 @@ fn publish_v3_data_fragment(results: Vec<Value>) {
         "producer": {"id": "type-bridge-rust.generated-data-v3-proof", "sources": sources.iter().map(|path| v3_data_source_identity(&root, path)).collect::<Vec<_>>()},
         "results": results,
         "run_nonce": nonce,
-        "semantic_profile": "typedb-3.12.1/v1",
+        "semantic_profile": crate::sdk_profile_matrix::requested(3).semantic_profile,
     });
     let mut bytes = type_bridge_contract::codec::to_canonical_json(&fragment)
         .expect("V3 data fragment canonicalizes");

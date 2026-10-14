@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Produce Python's exact-TypeDB-3.12.3 Projected live subset report."""
+"""Produce Python's exact-server Projected live subset report on one sdk-v3 matrix profile."""
 
 from __future__ import annotations
 
 import hashlib
 import importlib
+import importlib.util
 import json
 import os
 import stat
@@ -19,7 +20,12 @@ from typing import Any
 from type_bridge import Database
 
 REPORT_FORMAT = "typebridge.projected-live-report/v1"
+# `main` reports on the sdk-v3 matrix entry it selects from
+# `scripts/ci/sdk_profile_matrix.py`. These constants are the sdk-v3 catalog's
+# own entry: the journey's frozen identity and the helpers' default identity.
+PROFILE_MATRIX_RELATIVE = "scripts/ci/sdk_profile_matrix.py"
 SEMANTIC_PROFILE = "typedb-3.12.1/v1"
+LIVE_SERVER_VERSION = "3.12.3"
 SEMANTIC_SCHEMA_FINGERPRINT = {
     "algorithm": "sha256",
     "canonicalization": "typebridge.schema-canonical-json/v1",
@@ -138,11 +144,23 @@ def _source_authority(root: Path) -> tuple[dict[str, dict[str, str]], dict[str, 
         if digest != SOURCE_SHA256[label]:
             raise ProducerError(
                 "authority_hash_mismatch",
-                f"Projected {label} is not the frozen exact-3.12.1 authority",
+                f"Projected {label} is not the frozen Sdk V3 authority",
             )
         authority[label] = {"path": relative, "sha256": digest}
         sources[label] = raw
     return authority, sources
+
+
+def _profile_matrix(root: Path) -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "_typebridge_sdk_profile_matrix", root / PROFILE_MATRIX_RELATIVE
+    )
+    if spec is None or spec.loader is None:
+        raise ProducerError("invalid_profile_matrix", "sdk profile matrix is not importable")
+    matrix = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = matrix
+    spec.loader.exec_module(matrix)
+    return matrix
 
 
 def _required_environment(name: str, environment: Mapping[str, str]) -> str:
@@ -222,7 +240,9 @@ def _publish_report(path: Path, report: object) -> None:
         raise ProducerError("output_write_failed", "report could not be written") from error
 
 
-def _load_package(package_root: Path) -> Any:
+def _load_package(
+    package_root: Path, semantic_fingerprint: Mapping[str, object] = SEMANTIC_SCHEMA_FINGERPRINT
+) -> Any:
     package_directory = package_root / "generated_projected"
     initializer = package_directory / "__init__.py"
     for path, label, directory in (
@@ -256,7 +276,7 @@ def _load_package(package_root: Path) -> Any:
         raise ProducerError(
             "generated_package_identity", "generated package has no semantic identity"
         ) from error
-    if type(semantic) is not dict or semantic != SEMANTIC_SCHEMA_FINGERPRINT:
+    if type(semantic) is not dict or semantic != semantic_fingerprint:
         raise ProducerError(
             "generated_package_identity",
             "generated package is not the frozen Sdk V3 schema projection",
@@ -828,6 +848,7 @@ def _run_owned_database(
     records: dict[str, dict[str, Any]],
     create_order: Sequence[str],
     cleanup_order: Sequence[str],
+    live_server_version: str = LIVE_SERVER_VERSION,
     *,
     database_factory: Callable[..., Database] = Database,
     journey_runner: Callable[
@@ -844,11 +865,11 @@ def _run_owned_database(
     try:
         database.connect()
         detected = database.detected_server_version()
-        if detected != "3.12.3":
+        if detected != live_server_version:
             raise ProducerError(
                 "server_version_mismatch",
-                "live evidence requires the actual detected TypeDB server version 3.12.3; "
-                f"detected {detected!r}",
+                "live evidence requires the actual detected TypeDB server version "
+                f"{live_server_version}; detected {detected!r}",
             )
         if database.database_exists():
             raise ProducerError(
@@ -888,14 +909,16 @@ def _package_root(environment: Mapping[str, str]) -> Path:
 
 
 def _build_report(
-    authority: dict[str, dict[str, str]], observations: dict[str, object]
+    authority: dict[str, dict[str, str]],
+    observations: dict[str, object],
+    semantic_profile: str = SEMANTIC_PROFILE,
 ) -> dict[str, object]:
     return {
         "authority": authority,
         "binding": "python",
         "format": REPORT_FORMAT,
         "observations": observations,
-        "semantic_profile": SEMANTIC_PROFILE,
+        "semantic_profile": semantic_profile,
     }
 
 
@@ -908,7 +931,11 @@ def main(environment: Mapping[str, str] = os.environ) -> int:
         database_name = _required_environment(DATABASE_ENV, environment)
         http_port = _http_port(environment)
         authority, sources = _source_authority(root)
-        package = _load_package(package_root)
+        # TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE, else the sdk-v3 catalog's own profile.
+        identity = _profile_matrix(root).requested(
+            3, environment=environment, root=root, error=ProducerError
+        )
+        package = _load_package(package_root, identity.expected_fingerprints["semantic"])
         journey = _json_object(sources["journey"], "Projected journey")
         records, create_order, cleanup_order = _record_index(journey)
         try:
@@ -924,8 +951,9 @@ def main(environment: Mapping[str, str] = os.environ) -> int:
             records,
             create_order,
             cleanup_order,
+            identity.live_server_version,
         )
-        _publish_report(output, _build_report(authority, observations))
+        _publish_report(output, _build_report(authority, observations, identity.semantic_profile))
     except (AssertionError, OSError, ProducerError, RuntimeError, ValueError) as error:
         print(f"Python Projected live producer rejected: {error}", file=sys.stderr)
         return 1

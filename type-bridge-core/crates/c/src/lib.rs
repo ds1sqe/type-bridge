@@ -22,6 +22,10 @@ mod query;
 mod relation_crud;
 mod runtime;
 mod schema_package;
+#[cfg(test)]
+#[path = "../../../../tests/support/sdk_profile_matrix.rs"]
+#[allow(dead_code)]
+mod sdk_profile_matrix;
 mod thing_crud;
 
 pub use abi::{

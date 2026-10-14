@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Produce Python's TypeDB-3.12.3 Manager-filter report."""
+"""Produce Python's live Manager-filter report on one sdk-v3 matrix profile."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import importlib
+import importlib.util
 import json
 import os
 import stat
@@ -23,14 +24,9 @@ from type_bridge_core import MatchRequestError
 from type_bridge import Database
 
 REPORT_FORMAT = "typebridge.manager-filter-live-report/v1"
-SEMANTIC_PROFILE = "typedb-3.12.1/v1"
-SEMANTIC_SCHEMA_FINGERPRINT = {
-    "algorithm": "sha256",
-    "canonicalization": "typebridge.schema-canonical-json/v1",
-    "digest": "3c8d072b60c575b4c0381c1ea44088a9c18e01ed52e90730311aadccb72cd0c8",
-    "domain": "typebridge.schema.semantic",
-    "semantic_profile": SEMANTIC_PROFILE,
-}
+# The sdk-v3 TypeDB version matrix: the report's profile, its exact live server
+# and the semantic fingerprint the local package must carry.
+PROFILE_MATRIX_RELATIVE = "scripts/ci/sdk_profile_matrix.py"
 
 OUTPUT_ENV = "TYPE_BRIDGE_MANAGER_LIVE_REPORT"
 ADDRESS_ENV = "TYPE_BRIDGE_MANAGER_LIVE_ADDRESS"
@@ -114,11 +110,23 @@ def _source_authority(root: Path) -> tuple[dict[str, dict[str, str]], dict[str, 
         if digest != SOURCE_SHA256[label]:
             raise ProducerError(
                 "authority_hash_mismatch",
-                f"Manager {label} is not the frozen exact-3.12.1 authority",
+                f"Manager {label} is not the frozen Sdk V3 authority",
             )
         authority[label] = {"path": relative, "sha256": digest}
         sources[label] = raw
     return authority, sources
+
+
+def _profile_matrix(root: Path) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "_typebridge_sdk_profile_matrix", root / PROFILE_MATRIX_RELATIVE
+    )
+    if spec is None or spec.loader is None:
+        raise ProducerError("invalid_profile_matrix", "sdk profile matrix is not importable")
+    matrix = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = matrix
+    spec.loader.exec_module(matrix)
+    return matrix
 
 
 def _required_environment(name: str, environment: Mapping[str, str]) -> str:
@@ -221,10 +229,12 @@ def _semantic_fingerprint(package: ModuleType) -> dict[str, object]:
     return value
 
 
-def _require_packages(local: ModuleType, foreign: ModuleType) -> None:
+def _require_packages(
+    local: ModuleType, foreign: ModuleType, semantic_fingerprint: dict[str, object]
+) -> None:
     local_semantic = _semantic_fingerprint(local)
     foreign_semantic = _semantic_fingerprint(foreign)
-    if local_semantic != SEMANTIC_SCHEMA_FINGERPRINT:
+    if local_semantic != semantic_fingerprint:
         raise ProducerError(
             "generated_package_identity",
             "local package is not the frozen Sdk V3 projection",
@@ -266,12 +276,14 @@ def _json_object(raw: bytes, label: str) -> dict[str, Any]:
     return value
 
 
-def _person_records(journey: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _person_records(
+    journey: dict[str, Any], catalog_profile: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
     if (
         journey.get("format") != "typebridge.sdk-journey/v3"
         or journey.get("fixture_id") != "sdk-v3"
         or journey.get("version") != 3
-        or journey.get("semantic_profile") != SEMANTIC_PROFILE
+        or journey.get("semantic_profile") != catalog_profile
     ):
         raise ProducerError("invalid_journey", "sdk-v3 identity drifted")
     records = journey.get("records")
@@ -585,6 +597,7 @@ def _run_owned_database(
     ada: dict[str, Any],
     dana: dict[str, Any],
     tls_root_ca: str | None,
+    live_server_version: str,
 ) -> dict[str, object]:
     bootstrap = Database(
         address=address,
@@ -600,10 +613,10 @@ def _run_owned_database(
     try:
         bootstrap.connect()
         detected = bootstrap.detected_server_version()
-        if detected != "3.12.3":
+        if detected != live_server_version:
             raise ProducerError(
                 "server_version_mismatch",
-                f"exact TypeDB 3.12.3 required, detected {detected!r}",
+                f"exact TypeDB {live_server_version} required, detected {detected!r}",
             )
         if bootstrap.database_exists():
             raise ProducerError("database_preexisting", "isolated database must be absent")
@@ -708,11 +721,14 @@ def main(environment: Mapping[str, str] = os.environ) -> int:
         if tls_root_ca == "":
             raise ProducerError("invalid_tls_root_ca", f"{TLS_ROOT_CA_ENV} must not be empty")
         authority, sources = _source_authority(root)
+        matrix = _profile_matrix(root)
+        # TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE, else the sdk-v3 catalog's own profile.
+        identity = matrix.requested(3, environment=environment, root=root, error=ProducerError)
         local = _load_package(package_root, LOCAL_PACKAGE)
         foreign = _load_package(package_root, FOREIGN_PACKAGE)
-        _require_packages(local, foreign)
+        _require_packages(local, foreign, identity.expected_fingerprints["semantic"])
         journey = _json_object(sources["journey"], "Manager journey")
-        ada, dana = _person_records(journey)
+        ada, dana = _person_records(journey, matrix.catalog_profile(3, root=root))
         try:
             provider_schema = sources["provider"].decode("utf-8")
         except UnicodeDecodeError as error:
@@ -739,6 +755,7 @@ def main(environment: Mapping[str, str] = os.environ) -> int:
             ada,
             dana,
             tls_root_ca,
+            identity.live_server_version,
         )
         observation["rejections"] = rejections
         first = observation.get("first")
@@ -750,7 +767,7 @@ def main(environment: Mapping[str, str] = os.environ) -> int:
             "binding": "python",
             "format": REPORT_FORMAT,
             "observation": observation,
-            "semantic_profile": SEMANTIC_PROFILE,
+            "semantic_profile": identity.semantic_profile,
         }
         _publish_report(output, report)
     except (AssertionError, OSError, ProducerError, RuntimeError, ValueError) as error:

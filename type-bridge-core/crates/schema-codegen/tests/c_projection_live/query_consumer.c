@@ -820,6 +820,9 @@ int main(void) {
   const char *database_name = getenv("TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE");
   const char *username = getenv("TYPEDB_USERNAME");
   const char *password = getenv("TYPEDB_PASSWORD");
+  /* The harness selects the server from the SDK profile matrix. */
+  const char *expected_server_version =
+      getenv("TYPE_BRIDGE_EXPECTED_SERVER_VERSION");
   const char *http_port_text = getenv("TYPEDB_HTTP_PORT");
   char *http_end = NULL;
   unsigned long http_port = 0ul;
@@ -844,6 +847,8 @@ int main(void) {
       TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
 
   CHECK(address != NULL && address[0] != '\0');
+  CHECK(expected_server_version != NULL &&
+        expected_server_version[0] != '\0');
   CHECK(database_name != NULL && database_name[0] != '\0');
   CHECK(username != NULL && username[0] != '\0');
   CHECK(password != NULL);
@@ -887,7 +892,7 @@ int main(void) {
                                      &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(type_bridge_database_server_version(database, &version) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(same_text(version, "3.12.3"));
+  CHECK(same_text(version, expected_server_version));
 
   CHECK(type_bridge_read_transaction_open_v2(database, &limits, NULL,
                                              &read_transaction, &diagnostics) ==

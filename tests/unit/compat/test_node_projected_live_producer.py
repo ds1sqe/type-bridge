@@ -485,7 +485,7 @@ def test_report_envelope_source_independence_and_public_crud_boundary() -> None:
     assert "RustDatabase.connect" in source
     assert "3c8d072b60c575b4c0381c1ea44088a9c18e01ed52e90730311aadccb72cd0c8" in source
     assert source.index("await runOwnedDatabase({") < source.index(
-        "publishReport(output, buildReport(authority, observations))"
+        "publishReport(output, buildReport(authority, observations, identity))"
     )
 
     envelope = """

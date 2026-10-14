@@ -657,7 +657,7 @@ if [[ "$integration" == 1 ]]; then
                 TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
                 TYPE_BRIDGE_C_INTG_DATABASE="type_bridge_c_runtime_live_${$}" \
             bash scripts/ci/run_exact_ignored_rust_test.sh \
-                live_c17_consumer_exercises_exact_3_12_3_transaction_lifecycle \
+                live_c17_consumer_exercises_profile_server_transaction_lifecycle \
                 --manifest-path type-bridge-core/Cargo.toml --locked \
                 -p type-bridge-c --test schema_package_abi
 
@@ -678,7 +678,7 @@ if [[ "$integration" == 1 ]]; then
                 ACCEPTANCE_TARGET_DIR="$ROOT/type-bridge-core/target/tmp_c_projection_live_target" \
                 "${sdk_c_env[@]}" \
             bash scripts/ci/run_exact_ignored_rust_test.sh \
-                live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3 \
+                live_c17_generated_person_and_membership_crud_round_trips_on_profile_server \
                 --manifest-path type-bridge-core/Cargo.toml --locked \
                 -p type-bridge-schema-codegen --test c_projection_live
     else

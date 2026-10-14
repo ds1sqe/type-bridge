@@ -46,7 +46,7 @@ use type_bridge_orm::{
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents};
 
 const REPORT_FORMAT: &str = "typebridge.projected-parity-report/v1";
-const SEMANTIC_PROFILE: &str = "typedb-3.12.1/v1";
+const SEMANTIC_PROFILE_ENV: &str = "TYPE_BRIDGE_PROJECTED_SEMANTIC_PROFILE";
 const REPORT_ENV: &str = "TYPE_BRIDGE_PROJECTED_RUST_REPORT";
 const ROOT_ENV: &str = "TYPE_BRIDGE_PROJECTED_REPOSITORY_ROOT";
 const MANAGED_SCOPE: &str = "schema-codegen-acceptance";
@@ -720,7 +720,7 @@ async fn foreign_hydration_diagnostic(
     let authority = QueryAuthority::from_declared_bytes(
         &foreign_declared_schema(root)?,
         MANAGED_SCOPE,
-        SEMANTIC_PROFILE,
+        &semantic_profile()?,
     )?;
     if !authority.matches_semantic_fingerprint(foreign.projection().semantic_fingerprint()) {
         return Err("foreign query authority does not match the installed foreign package".into());
@@ -1691,7 +1691,7 @@ fn build_report(
         "binding": "rust",
         "format": REPORT_FORMAT,
         "observations": observations,
-        "semantic_profile": SEMANTIC_PROFILE,
+        "semantic_profile": semantic_profile()?,
     }))
 }
 
@@ -1721,6 +1721,14 @@ fn source_identity(
         "path": relative,
         "sha256": format!("{:x}", Sha256::digest(bytes)),
     }))
+}
+
+/// The sdk-v3 matrix profile the harness projected the generated packages on.
+fn semantic_profile() -> Result<String, Box<dyn std::error::Error>> {
+    env::var(SEMANTIC_PROFILE_ENV)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{SEMANTIC_PROFILE_ENV} must be set").into())
 }
 
 fn output_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
