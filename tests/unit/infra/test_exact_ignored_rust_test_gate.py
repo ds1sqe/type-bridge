@@ -134,7 +134,11 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
     ):
         assert workflow.count(test_name) == 1
     for test_name in positive_tests | migration_recovery_tests:
-        assert local.count(test_name) == 1
+        # Documented examples also name their profile gate in the local loop.
+        expected = (
+            2 if test_name == "documented_examples_initial_constraints_apply_and_verify_live" else 1
+        )
+        assert local.count(test_name) == expected
 
 
 def test_commit_failure_regressions_use_exact_selection_on_the_supported_server() -> None:

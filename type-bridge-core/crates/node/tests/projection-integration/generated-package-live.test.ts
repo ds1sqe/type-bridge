@@ -2934,13 +2934,24 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
           SMOKE_TYPEDB_USERNAME: TYPEDB_USERNAME,
           SMOKE_TYPEDB_PASSWORD: TYPEDB_PASSWORD,
           SMOKE_TYPEDB_HTTP_PORT: String(TYPEDB_HTTP_PORT),
+          ...(process.env.TYPEDB_TLS_ROOT_CA === undefined
+            ? {}
+            : {
+                SMOKE_TYPEDB_TLS: "true",
+                SMOKE_TYPEDB_TLS_ROOT_CA: process.env.TYPEDB_TLS_ROOT_CA,
+              }),
+          // The remote query client below uses HTTP, independently of TypeDB TLS.
+          SMOKE_TLS_CERT: undefined,
+          SMOKE_TLS_KEY: undefined,
           SMOKE_DATABASE: INTG_DATABASE,
           SMOKE_AUTHORITY_B64: authority.toString("base64"),
           SMOKE_PORT: String(port),
         },
-        stdio: "ignore",
+        stdio: ["ignore", "ignore", "pipe"],
       },
     );
+    let serverStderr = "";
+    server.stderr?.on("data", (chunk: Buffer) => { serverStderr += chunk.toString(); });
     try {
       await waitForPort(port, server, 300_000);
       const advertisementResponse = await fetch(`http://127.0.0.1:${port}/v2/capabilities`);
@@ -3195,6 +3206,9 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
           results,
         );
       }
+    } catch (error) {
+      process.stderr.write(serverStderr);
+      throw error;
     } finally {
       if (server.exitCode === null) {
         const exited = new Promise((resolveExit) => server.once("exit", resolveExit));

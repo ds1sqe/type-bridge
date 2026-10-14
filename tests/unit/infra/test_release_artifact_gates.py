@@ -1052,7 +1052,10 @@ def test_generated_and_low_level_queries_are_required_in_the_tls_lane() -> None:
         "tests/integration/queries/test_query_v2_binding_smoke.py"
         "::test_prepared_plan_executes_locally_and_remotely"
     ) in tls_lane
-    assert '"$NODE_DIR/tests/integration/queries/query-v2-smoke.test.ts"' in tls_lane
+    assert 'node "$NODE_DIR/scripts/run-integration.js"' in tls_lane
+    assert "tests/integration/queries/query-v2-smoke.test.js" in tls_lane
+    node_parity = tls_lane.split('run_step "TLS generated Node application parity"', 1)[1]
+    assert 'TYPEDB_VERSION="$lane_server"' in node_parity
     assert "test_remote_query_session_parity.py" not in tls_lane
     assert "typed-remote-query-parity.test.ts" not in tls_lane
     assert tls_lane.count("TYPEDB_TLS_ROOT_CA") >= 4

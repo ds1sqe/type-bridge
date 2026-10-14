@@ -124,3 +124,36 @@ def test_upgrade_lane_always_runs_two_servers() -> None:
         assert variable in upgrade
     assert 'stop_typedb "$from_project"' in upgrade
     assert 'stop_typedb "$to_project"' in upgrade
+
+
+@pytest.mark.parametrize("profile", ["typedb-3.12.1/v1", "typedb-3.13.6/v1"])
+def test_migration_steps_forward_profile_and_gate_documented_examples(profile: str) -> None:
+    source = TEST_SH.read_text(encoding="utf-8")
+    function = source[source.index("run_live_migration_steps() {") :]
+    function = function[: function.index("\n}\n") + 3]
+    # Stub execution to exercise both branches without Cargo or a live server.
+    probe = "\n".join(
+        [
+            'run_step() { printf "%s\\n" "$*"; }',
+            function,
+            'migration_profile_env=("TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE=$lane_profile")',
+            "run_live_migration_steps",
+        ]
+    )
+    result = subprocess.run(
+        ["bash", "-c", probe],
+        env={**os.environ, "lane_profile": profile},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    lines = result.stdout.splitlines()
+    for label in ("connected rollback and reapply", "interrupted-plan fenced recovery"):
+        command = next(line for line in lines if line.startswith(label))
+        assert f"TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE={profile}" in command
+    examples = "documented_examples_initial_constraints_apply_and_verify_live"
+    if profile == "typedb-3.13.6/v1":
+        assert any(line.startswith("cargo test") and examples in line for line in lines)
+    else:
+        assert not any(line.startswith("cargo test") and examples in line for line in lines)
+        assert "examples require typedb-3.13.6/v1" in result.stdout

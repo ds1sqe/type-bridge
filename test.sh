@@ -603,6 +603,11 @@ run_live_migration_steps() {
         verify_never_creates_databases_live \
         adopt_legacy_history_then_evolve_live \
         shipped_python_converter_to_native_adoption_live; do
+        if [[ "$cli_live_test" == documented_examples_initial_constraints_apply_and_verify_live \
+            && "$lane_profile" != typedb-3.13.6/v1 ]]; then
+            printf "${CYAN}Skipping documented examples on profile %s: examples require typedb-3.13.6/v1.${RESET}\n\n" "$lane_profile"
+            continue
+        fi
         run_step "cargo test -p type-bridge-cli --test e2e_workspace_live $cli_live_test" \
             timeout --foreground 10m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
@@ -618,6 +623,7 @@ run_live_migration_steps() {
         timeout --foreground 10m \
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE="type_bridge_local_rollback_${$}" \
+            "${migration_profile_env[@]}" \
         bash scripts/ci/run_exact_ignored_rust_test.sh \
             runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3 \
             --manifest-path type-bridge-core/Cargo.toml --locked \
@@ -626,6 +632,7 @@ run_live_migration_steps() {
         timeout --foreground 10m \
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE="type_bridge_local_recovery_${$}" \
+            "${migration_profile_env[@]}" \
         bash scripts/ci/run_exact_ignored_rust_test.sh \
             control_schema_and_fenced_lease_round_trip_on_3_12_3 \
             --manifest-path type-bridge-core/Cargo.toml --locked \
@@ -1178,13 +1185,14 @@ run_tls_transport_steps() {
             SMOKE_TLS_CERT="$fixture_server_cert" \
             SMOKE_TLS_KEY="$fixture_server_key" \
             NODE_EXTRA_CA_CERTS="$fixture_root_ca" \
-        node --test \
-            "$NODE_DIR/tests/integration/queries/query-v2-smoke.test.ts"
+        node "$NODE_DIR/scripts/run-integration.js" \
+            tests/integration/queries/query-v2-smoke.test.js
 
     run_step "TLS generated Node application parity" \
         timeout --foreground 10m \
         env TYPE_BRIDGE_NODE_NATIVE_PATH="$node_native" \
             TYPEDB_ADDRESS="$tls_address" \
+            TYPEDB_VERSION="$lane_server" \
             TYPEDB_HTTP_PORT="$tls_http_port" \
             TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
             SMOKE_TLS_CERT="$fixture_server_cert" \
