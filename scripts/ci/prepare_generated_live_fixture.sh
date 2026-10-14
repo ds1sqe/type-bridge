@@ -22,8 +22,8 @@ ACCEPTANCE_DIR="$CORE_DIR/crates/schema-codegen/tests/acceptance"
 SDK_V3_DIR="$ROOT_DIR/tests/contracts/sdk_conformance/sdk-v3"
 # The fixture packages admit exactly the TypeDB server their profile names
 # (typedb-3.12.1/v1 -> 3.12.3, typedb-3.13.6/v1 -> 3.13.6). The default
-# follows the default TypeDB image; the frozen sdk-v3 ordered fixtures exist
-# only for typedb-3.12.1/v1.
+# follows the default TypeDB image. The sdk-v3 ordered/projected packages are
+# built for every profile the sdk-v3 version matrix lists.
 semantic_profile="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-typedb-3.13.6/v1}"
 output_dir="$(realpath -m "$requested_output")"
 
@@ -45,6 +45,11 @@ if [[ -e "$output_dir" ]] && [[ -n "$(find "$output_dir" -mindepth 1 -print -qui
     exit 2
 fi
 mkdir -p "$output_dir"
+
+sdk_v3_profile="$(
+    python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import sdk_profile_matrix as m; print("yes" if sys.argv[2] in m.supported_profiles(3) else "no")' \
+        "$ROOT_DIR/scripts/ci" "$semantic_profile"
+)"
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/type-bridge-generated-live.XXXXXX")"
 ordered_foreign_schema="$scratch/schema-ordered-foreign.yaml"
@@ -122,7 +127,7 @@ if [[ "$binding" == python* ]]; then
             "$ACCEPTANCE_DIR/schema-ordered.yaml" no
         generate_workspace "$ordered"
         cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_ordered"
-    elif [[ "$semantic_profile" == "typedb-3.12.1/v1" ]]; then
+    elif [[ "$sdk_v3_profile" == "yes" ]]; then
         ordered="$scratch/ordered"
         write_workspace \
             "$ordered" python generated_ordered generated-python-ordered \
@@ -171,7 +176,7 @@ write_workspace \
 generate_workspace "$foreign"
 cp -R "$foreign/generated/generated_foreign" "$output_dir/generated_foreign"
 
-if [[ "$semantic_profile" == "typedb-3.12.1/v1" ]]; then
+if [[ "$sdk_v3_profile" == "yes" ]]; then
     ordered="$scratch/ordered"
     write_workspace \
         "$ordered" typescript generated_ordered generated-node-ordered \

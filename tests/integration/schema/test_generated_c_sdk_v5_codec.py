@@ -28,6 +28,8 @@ def generate_package(stage: Path, schema: Path, *, app_label: str, scope: str) -
     (workspace / "schema/schema.yaml").write_text(
         "format: typebridge.schema-set/v1\nsources: [fragments/*.yaml]\n"
     )
+    # Offline and byte-checked against the frozen sdk-v5 vectors, so the profile
+    # stays the catalog's own (typedb-3.12.1/v1) on every lane.
     (workspace / "typebridge.yaml").write_text(
         f"""format: typebridge.workspace/v1
 schema:
