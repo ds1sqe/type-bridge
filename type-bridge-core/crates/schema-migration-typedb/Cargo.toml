@@ -27,6 +27,9 @@ type-bridge-schema-migration = { path = "../schema-migration", version = "2.2.6"
 
 [dev-dependencies]
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "time"] }
+# The live profile-upgrade test moves databases between TypeDB servers with
+# the driver's export and import; same pin as type-bridge-typedb-runtime.
+typedb-driver = "=3.13.6"
 
 [lints]
 workspace = true

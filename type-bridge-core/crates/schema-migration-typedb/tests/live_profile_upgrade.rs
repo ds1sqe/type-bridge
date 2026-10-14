@@ -6,20 +6,17 @@
 //!
 //! - `TYPE_BRIDGE_MIGRATION_UPGRADE_FROM`: address of a TypeDB 3.12.3 server.
 //! - `TYPE_BRIDGE_MIGRATION_UPGRADE_TO`: address of a TypeDB 3.13.6 server.
-//! - `TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE` (optional, default `typedb`): a
-//!   TypeDB distribution whose `console` subcommand runs `database export`
-//!   and `database import` against both servers.
 //! - `TYPE_BRIDGE_MIGRATION_UPGRADE_FROM_HTTP_PORT` /
 //!   `TYPE_BRIDGE_MIGRATION_UPGRADE_TO_HTTP_PORT` (optional, default 8000):
 //!   each server's HTTP port, so both servers can run on one host.
 //!
-//! `TYPEDB_USERNAME`/`TYPEDB_PASSWORD` apply to both servers. Without the two
-//! addresses the test returns immediately.
+//! `TYPEDB_USERNAME`/`TYPEDB_PASSWORD` apply to both servers. The databases
+//! move between them with the TypeDB driver's export and import. Without the
+//! two addresses the test returns immediately.
 
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -45,12 +42,15 @@ use type_bridge_schema_migration_typedb::{
     execution_capability_vocabulary, migration_server_for_profile,
 };
 
+#[path = "../../../../tests/support/typedb_database_move.rs"]
+mod database_move;
+
+use database_move::move_database;
+
 /// Address of the TypeDB 3.12.3 server the history is first applied on.
 const UPGRADE_FROM_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_FROM";
 /// Address of the TypeDB 3.13.6 server the history moves to.
 const UPGRADE_TO_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_TO";
-/// TypeDB distribution used for `database export` and `database import`.
-const UPGRADE_CONSOLE_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE";
 /// Optional HTTP ports of the two servers; both default to TypeDB's 8000,
 /// which two servers on one host cannot share.
 const UPGRADE_FROM_HTTP_PORT_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_FROM_HTTP_PORT";
@@ -134,37 +134,6 @@ async fn connect(address: &str, name: &str, profile: MigrationProfile) -> Arc<Da
         profile.semantic_profile_id().as_str()
     );
     Arc::new(database)
-}
-
-/// Run one TypeDB console command against `address`.
-fn console(address: &str, command: &str) {
-    let (username, password) = credentials();
-    let program = env::var(UPGRADE_CONSOLE_ENV).unwrap_or_else(|_| "typedb".to_owned());
-    let status = Command::new(&program)
-        .args([
-            "console",
-            "--address",
-            address,
-            "--username",
-            &username,
-            "--password",
-            &password,
-            "--tls-disabled",
-            "--command",
-            command,
-        ])
-        .status()
-        .unwrap_or_else(|error| panic!("{UPGRADE_CONSOLE_ENV}={program:?} cannot run: {error}"));
-    assert!(status.success(), "console `{command}` on {address} failed");
-}
-
-/// Move one database between servers with TypeDB export and import.
-fn move_database(name: &str, from: &str, to: &str, files: &Path) {
-    let schema = files.join(format!("{name}.typeql"));
-    let data = files.join(format!("{name}.typedb"));
-    let (schema, data) = (schema.display(), data.display());
-    console(from, &format!("database export {name} {schema} {data}"));
-    console(to, &format!("database import {name} {schema} {data}"));
 }
 
 fn declared(labels: &[&str]) -> DeclaredSchema {
@@ -309,8 +278,10 @@ async fn runner_upgrades_a_3_12_history_to_3_13_at_a_profile_bridge_and_replays_
 
     // 2. Move both databases to the 3.13.6 server.
     let files = TempDirectory::new("export");
-    move_database(&managed_name, &from, &to, files.path());
-    move_database(&journal_name, &from, &to, files.path());
+    let (username, password) = credentials();
+    for name in [&managed_name, &journal_name] {
+        move_database(name, &from, &to, &username, &password, files.path()).await;
+    }
     let to_managed = connect(&to, &managed_name, NEW).await;
     let to_journal = connect(&to, &journal_name, NEW).await;
 

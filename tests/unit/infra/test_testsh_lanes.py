@@ -107,19 +107,19 @@ def test_live_step_gates_follow_the_lane_not_a_pinned_server() -> None:
     assert 'if [[ "$lane_in_sdk_matrix" != 1 ]]; then' in tls
 
 
-def test_upgrade_lane_runs_two_servers_with_an_external_console() -> None:
+def test_upgrade_lane_always_runs_two_servers() -> None:
     source = TEST_SH.read_text(encoding="utf-8")
     upgrade = source[source.index("run_upgrade_lane() {") :]
     upgrade = upgrade[: upgrade.index("\n}\n")]
     assert 'start_typedb 3.12.3 "$from_project" 0' in upgrade
     assert 'start_typedb 3.13.6 "$to_project" 0' in upgrade
-    assert "the typedb/typedb images ship no console" in upgrade
+    assert "CONSOLE" not in upgrade
+    assert "return 0" not in upgrade
     for variable in (
         "TYPE_BRIDGE_MIGRATION_UPGRADE_FROM=",
         "TYPE_BRIDGE_MIGRATION_UPGRADE_FROM_HTTP_PORT=",
         "TYPE_BRIDGE_MIGRATION_UPGRADE_TO=",
         "TYPE_BRIDGE_MIGRATION_UPGRADE_TO_HTTP_PORT=",
-        "TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE=",
     ):
         assert variable in upgrade
     assert 'stop_typedb "$from_project"' in upgrade

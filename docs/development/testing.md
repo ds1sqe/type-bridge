@@ -146,15 +146,9 @@ TLS steps assert the band-9 driver and apply a workspace migration.
 The upgrade lane starts a 3.12.3 and a 3.13.6 server together and moves a
 migration history across a profile bridge
 (`live_profile_upgrade` and the CLI `upgrade-profile` test). The tests move
-databases with `typedb console` export and import, which the `typedb/typedb`
-images do not include. Point `TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE` at the
-`typedb` launcher of a TypeDB distribution that includes the console;
-otherwise the lane is skipped with a notice:
-
-```bash
-TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE=/opt/typedb-all-linux-x86_64/typedb \
-    ./test.sh --typedb all
-```
+the databases between the servers with the Rust TypeDB driver's database
+export and import, so the lane needs no TypeDB console and always runs under
+`./test.sh --typedb all`.
 
 On the 3.12.3 and 3.13.6 lanes, a compiled generated C17 consumer independently
 verifies the detected server version and exercises read close, write commit,

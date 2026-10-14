@@ -3147,6 +3147,7 @@ dependencies = [
  "type-bridge-schema-migration-typedb",
  "type-bridge-typedb-runtime",
  "type-bridge-workspace",
+ "typedb-driver",
 ]
 
 [[package]]
@@ -3371,6 +3372,7 @@ dependencies = [
  "type-bridge-schema",
  "type-bridge-schema-compat",
  "type-bridge-schema-migration",
+ "typedb-driver",
 ]
 
 [[package]]

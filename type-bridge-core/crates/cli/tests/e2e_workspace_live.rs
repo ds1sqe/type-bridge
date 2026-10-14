@@ -33,6 +33,11 @@ use type_bridge_orm::session::backend::QueryV2AnswerLimits;
 use type_bridge_orm::session::database::Database;
 use type_bridge_orm::{ConnectOptions, SecureConnectOptions, TlsMode};
 
+#[path = "../../../../tests/support/typedb_database_move.rs"]
+mod database_move;
+
+use database_move::move_database;
+
 const MANAGED_SCOPE: &str = "e2e-smoke";
 /// Environment variable naming the workspace semantic profile the live suite
 /// runs under; the CLI requires the TypeDB server that profile pairs with.
@@ -1754,8 +1759,6 @@ class _DisabledMigration(Migration):
 const UPGRADE_FROM_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_FROM";
 /// Address of the TypeDB 3.13.6 server the history moves to.
 const UPGRADE_TO_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_TO";
-/// TypeDB distribution used for `database export` and `database import`.
-const UPGRADE_CONSOLE_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE";
 /// Optional HTTP ports of the two servers; both default to TypeDB's 8000,
 /// which two servers on one host cannot share.
 const UPGRADE_FROM_HTTP_PORT_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_FROM_HTTP_PORT";
@@ -1797,39 +1800,6 @@ fn write_upgrade_manifest(workspace: &Path, profile: &str, from: &str, to: &str,
         ),
     )
     .expect("manifest writes");
-}
-
-/// Move one database between servers with TypeDB console export and import.
-fn console_move_database(name: &str, from: &str, to: &str, files: &Path) {
-    let username = std::env::var("TYPEDB_USERNAME").expect("username is set");
-    let password = std::env::var("TYPEDB_PASSWORD").expect("password is set");
-    let program = std::env::var(UPGRADE_CONSOLE_ENV).unwrap_or_else(|_| "typedb".to_owned());
-    let schema = files.join(format!("{name}.typeql"));
-    let data = files.join(format!("{name}.typedb"));
-    let (schema, data) = (schema.display(), data.display());
-    for (address, command) in [
-        (from, format!("database export {name} {schema} {data}")),
-        (to, format!("database import {name} {schema} {data}")),
-    ] {
-        let status = Command::new(&program)
-            .args([
-                "console",
-                "--address",
-                address,
-                "--username",
-                &username,
-                "--password",
-                &password,
-                "--tls-disabled",
-                "--command",
-                &command,
-            ])
-            .status()
-            .unwrap_or_else(|error| {
-                panic!("{UPGRADE_CONSOLE_ENV}={program:?} cannot run: {error}")
-            });
-        assert!(status.success(), "console `{command}` on {address} failed");
-    }
 }
 
 fn assert_failure_contains(output: &std::process::Output, step: &str, needle: &str) {
@@ -1890,8 +1860,9 @@ async fn upgrade_profile_moves_a_3_12_history_to_3_13_live() {
 
     // 2. Move both databases to the 3.13.6 server.
     let files = tempfile::tempdir().expect("export directory");
-    console_move_database(&database_name, &from, &to, files.path());
-    console_move_database(&journal_name, &from, &to, files.path());
+    for name in [&database_name, &journal_name] {
+        move_database(name, &from, &to, &username, &password, files.path()).await;
+    }
 
     // 3. The workspace moves to 3.13.6; ordinary commands name the upgrade.
     write_upgrade_manifest(root, "typedb-3.13.6/v1", &from, &to, &database_name);

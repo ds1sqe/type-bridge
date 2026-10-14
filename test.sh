@@ -83,10 +83,6 @@ Usage: ./test.sh [--no-integration] [--proxy] [--tls] [--no-isolated]
                     3.12.3 -> 3.13.6 profile-upgrade lane. The offline tiers run once.
                     Each line runs on its own isolated server and semantic profile.
 
-The upgrade lane needs a TypeDB console (the typedb/typedb images ship none): set
-TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE to a TypeDB distribution's `typedb` launcher
-that includes `typedb console`; without it the lane is skipped.
-
 Override assigned ports with TYPEDB_PORT / TYPEDB_HTTP_PORT.  By default, isolated
 mode lets the engine pick free ports per worktree; the derived project name is
 tb-<worktree-basename>. For external `--no-isolated --tls`, set
@@ -171,7 +167,6 @@ CALLER_TYPEDB_PORT="${TYPEDB_PORT:-}"
 CALLER_TYPEDB_HTTP_PORT="${TYPEDB_HTTP_PORT:-}"
 CALLER_TYPEDB_ADDRESS="$TYPEDB_ADDRESS"
 CALLER_ACCEPTANCE_PROFILE="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-}"
-CALLER_UPGRADE_CONSOLE="${TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE:-}"
 
 # ── TypeDB lanes ─────────────────────────────────────────────────────────────
 # Each supported TypeDB line and the semantic profile its live tier runs under.
@@ -1231,21 +1226,10 @@ run_lane_tls() {
 # ── Two-server profile-upgrade lane (--typedb all) ───────────────────────────
 # A history applied on 3.12.3 moves to 3.13.6 through a profile bridge. Both
 # servers run at once as separate compose projects; the tests move databases
-# with TypeDB console export/import.
+# with the TypeDB driver's export and import.
 run_upgrade_lane() {
     local from_project to_project from_port from_http_port to_port to_http_port
     printf "${BOLD}━━━ Profile upgrade 3.12.3 -> 3.13.6 (two servers) ━━━${RESET}\n\n"
-    if [[ -z "$CALLER_UPGRADE_CONSOLE" ]]; then
-        printf "${CYAN}Skipping the profile-upgrade lane: the typedb/typedb images ship no console for database export/import. Set TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE to a TypeDB distribution's typedb launcher that includes console.${RESET}\n\n"
-        return 0
-    fi
-    if ! command -v "$CALLER_UPGRADE_CONSOLE" >/dev/null 2>&1; then
-        printf "${RED}TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE is not executable: %s${RESET}\n\n" \
-            "$CALLER_UPGRADE_CONSOLE" >&2
-        fail=$((fail + 1))
-        failures+=("[upgrade] TypeDB console for the profile-upgrade lane")
-        return 0
-    fi
     local lane_pass_start="$pass"
     lane_fail_start="$fail"
     lane_label="upgrade"
@@ -1263,7 +1247,6 @@ run_upgrade_lane() {
         "TYPE_BRIDGE_MIGRATION_UPGRADE_FROM_HTTP_PORT=$from_http_port"
         "TYPE_BRIDGE_MIGRATION_UPGRADE_TO=localhost:$to_port"
         "TYPE_BRIDGE_MIGRATION_UPGRADE_TO_HTTP_PORT=$to_http_port"
-        "TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE=$CALLER_UPGRADE_CONSOLE"
     )
     run_step "connected history crosses a profile bridge and replays on 3.13.6" \
         timeout --foreground 10m \
