@@ -536,8 +536,7 @@ fn genesis_constraints_on_new_types_are_proven_data_free() {
         .expect("discover constrained genesis");
     assert_eq!(discovered.manifests().count(), 1);
 
-    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
-        .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering binding");
     let plan = build_verified_migration_apply_plan(
         &discovered,
         &BTreeSet::new(),

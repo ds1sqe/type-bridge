@@ -16,10 +16,14 @@ use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 
 use type_bridge_schema::SafetyClass;
 
-use crate::profile::{classify_operation_transition, typedb_3_12_1_profile};
-use crate::{SchemaLoweringProfileFingerprint, SchemaLoweringProfileId, profile_fingerprint};
+use type_bridge_contract::fingerprint::SemanticProfileId;
+use type_bridge_schema::ManagedDeltaContext;
+
+use crate::profile::{MigrationProfile, classify_operation_transition};
+use crate::{SchemaLoweringProfileFingerprint, SchemaLoweringProfileId};
 
 const CODE_PROFILE_MISMATCH: &str = "schema_lowering_profile_mismatch";
+const CODE_SEMANTIC_PROFILE_UNSUPPORTED: &str = "schema_lowering_semantic_profile_unsupported";
 const CODE_CAPABILITY_MISMATCH: &str = "schema_lowering_capability_mismatch";
 const CODE_CONTEXT_MISMATCH: &str = "schema_lowering_fact_context_mismatch";
 const CODE_REQUIRES_ASSERTION: &str = "schema_lowering_requires_assertion";
@@ -150,7 +154,8 @@ impl SchemaFactCatalog {
     }
 }
 
-/// Fixed lowering-profile identity plus provider capabilities available to the caller.
+/// Registry-selected lowering-profile identity plus provider capabilities
+/// available to the caller.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SchemaLoweringBinding {
     profile_id: SchemaLoweringProfileId,
@@ -159,14 +164,15 @@ pub struct SchemaLoweringBinding {
 }
 
 impl SchemaLoweringBinding {
-    /// Bind caller capabilities to the exact compiled lowering profile.
+    /// Bind caller capabilities to the exact compiled lowering profile named
+    /// by `profile_id`.
     pub fn new(
         profile_id: SchemaLoweringProfileId,
         profile_fingerprint: SchemaLoweringProfileFingerprint,
         available_capabilities: CapabilitySet,
     ) -> Result<Self, SchemaLoweringDiagnostic> {
-        let profile = typedb_3_12_1_profile();
-        if profile_id != profile.id || profile_fingerprint != crate::profile_fingerprint() {
+        let registry = MigrationProfile::for_lowering_profile_id(&profile_id);
+        if registry.is_none_or(|registry| profile_fingerprint != registry.fingerprint()) {
             return Err(SchemaLoweringDiagnostic::new(
                 CODE_PROFILE_MISMATCH,
                 "schema lowering profile identity or fingerprint does not match the compiled registry",
@@ -179,14 +185,30 @@ impl SchemaLoweringBinding {
         })
     }
 
-    /// Bind capabilities to the current compiled profile.
-    pub fn current(
+    /// Bind capabilities to the compiled registry for a semantic profile.
+    pub fn for_semantic_profile(
+        semantic_profile: &SemanticProfileId,
         available_capabilities: CapabilitySet,
     ) -> Result<Self, SchemaLoweringDiagnostic> {
+        let registry =
+            MigrationProfile::for_semantic_profile(semantic_profile).ok_or_else(|| {
+                SchemaLoweringDiagnostic::new(
+                    CODE_SEMANTIC_PROFILE_UNSUPPORTED,
+                    "no schema-transition registry exists for the semantic profile",
+                )
+            })?;
         Self::new(
-            typedb_3_12_1_profile().id.clone(),
-            profile_fingerprint(),
+            registry.lowering_profile_id(),
+            registry.fingerprint(),
             available_capabilities,
+        )
+    }
+
+    /// Bind a delta context's capabilities to its semantic profile's registry.
+    pub fn for_context(context: &ManagedDeltaContext) -> Result<Self, SchemaLoweringDiagnostic> {
+        Self::for_semantic_profile(
+            context.semantic_profile(),
+            context.available_capabilities().clone(),
         )
     }
 
@@ -1081,8 +1103,12 @@ mod tests {
     }
 
     fn full_binding() -> SchemaLoweringBinding {
-        SchemaLoweringBinding::current(typedb_3_12_1_profile().required_capabilities.clone())
-            .unwrap()
+        let profile = MigrationProfile::Typedb3_12_1;
+        SchemaLoweringBinding::for_semantic_profile(
+            &profile.semantic_profile_id(),
+            profile.profile().required_capabilities.clone(),
+        )
+        .unwrap()
     }
 
     fn dump(
@@ -1501,7 +1527,11 @@ mod tests {
             output.push_str(error.code());
             output.push('\n');
         }
-        let no_capabilities = SchemaLoweringBinding::current(CapabilitySet::new()).unwrap();
+        let no_capabilities = SchemaLoweringBinding::for_semantic_profile(
+            &MigrationProfile::Typedb3_12_1.semantic_profile_id(),
+            CapabilitySet::new(),
+        )
+        .unwrap();
         let capability_error = lower_operation(
             0,
             &SchemaOperation::define(vec![type_fact]).unwrap(),
@@ -1517,7 +1547,10 @@ mod tests {
         output.push('\n');
         let profile_error = SchemaLoweringBinding::new(
             SchemaLoweringProfileId::typedb_3_12_1(),
-            SchemaLoweringProfileFingerprint::compute(b"wrong profile bytes"),
+            SchemaLoweringProfileFingerprint::compute(
+                &SchemaLoweringProfileId::typedb_3_12_1(),
+                b"wrong profile bytes",
+            ),
             CapabilitySet::new(),
         )
         .unwrap_err();

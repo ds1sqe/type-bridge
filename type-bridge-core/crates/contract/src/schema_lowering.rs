@@ -12,12 +12,24 @@ use crate::fingerprint::{
     CanonicalizationVersion, Fingerprint, FingerprintDomain, SemanticProfileId,
 };
 
-/// The only schema-lowering profile admitted by this V2 contract revision.
+/// Schema-lowering profile for the TypeDB 3.12.1 semantic profile.
 pub const TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID: &str = "typedb-3.12.1-schema-lowering/v1";
+/// Schema-lowering profile for the TypeDB 3.13.6 semantic profile.
+pub const TYPEDB_3_13_6_SCHEMA_LOWERING_PROFILE_ID: &str = "typedb-3.13.6-schema-lowering/v1";
 /// Fingerprint domain for schema-lowering profile documents.
 pub const SCHEMA_LOWERING_PROFILE_FINGERPRINT_DOMAIN: &str = "typebridge.schema.lowering-profile";
 /// Canonicalization version for schema-lowering profile documents.
 pub const SCHEMA_LOWERING_PROFILE_CANONICALIZATION: &str = "typebridge.schema-lowering-profile/v1";
+
+/// The semantic-to-lowering profile mapping; this is its only definition.
+///
+/// `typedb-3.11.5/v1` has no registry of its own and keeps lowering through
+/// the 3.12.1 registry, as its existing manifests are bound to it.
+const SCHEMA_LOWERING_PROFILES: [(&str, &str); 3] = [
+    ("typedb-3.11.5/v1", TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID),
+    ("typedb-3.12.1/v1", TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID),
+    ("typedb-3.13.6/v1", TYPEDB_3_13_6_SCHEMA_LOWERING_PROFILE_ID),
+];
 
 /// Validation failure for a schema-lowering profile identity or fingerprint.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -46,7 +58,7 @@ impl Error for SchemaLoweringProfileValidationError {}
 pub struct SchemaLoweringProfileId(String);
 
 impl SchemaLoweringProfileId {
-    /// Validates the fixed V2 schema-lowering profile identifier.
+    /// Validates one of the closed V2 schema-lowering profile identifiers.
     pub fn new(value: impl Into<String>) -> Result<Self, SchemaLoweringProfileValidationError> {
         let value = value.into();
         SemanticProfileId::new(value.clone()).map_err(|error| {
@@ -54,7 +66,10 @@ impl SchemaLoweringProfileId {
                 "invalid schema-lowering profile id: {error}"
             ))
         })?;
-        if value != TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID {
+        if !SCHEMA_LOWERING_PROFILES
+            .iter()
+            .any(|(_, lowering)| *lowering == value)
+        {
             return Err(SchemaLoweringProfileValidationError::new(format!(
                 "unsupported schema-lowering profile id: {value}"
             )));
@@ -66,6 +81,20 @@ impl SchemaLoweringProfileId {
     pub fn typedb_3_12_1() -> Self {
         Self::new(TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID)
             .expect("the fixed schema-lowering profile id is valid")
+    }
+
+    /// Returns the fixed TypeDB 3.13.6 profile identifier.
+    pub fn typedb_3_13_6() -> Self {
+        Self::new(TYPEDB_3_13_6_SCHEMA_LOWERING_PROFILE_ID)
+            .expect("the fixed schema-lowering profile id is valid")
+    }
+
+    /// Returns the lowering profile for a semantic profile, if one exists.
+    pub fn for_semantic_profile(semantic_profile: &SemanticProfileId) -> Option<Self> {
+        SCHEMA_LOWERING_PROFILES
+            .iter()
+            .find(|(semantic, _)| *semantic == semantic_profile.as_str())
+            .map(|(_, lowering)| Self((*lowering).to_owned()))
     }
 
     /// Returns the wire spelling.
@@ -104,14 +133,15 @@ impl<'de> Deserialize<'de> for SchemaLoweringProfileId {
 pub struct SchemaLoweringProfileFingerprint(Fingerprint);
 
 impl SchemaLoweringProfileFingerprint {
-    /// Fingerprints canonical schema-lowering profile bytes with the fixed metadata.
-    pub fn compute(canonical_bytes: &[u8]) -> Self {
+    /// Fingerprints canonical schema-lowering profile bytes with the fixed
+    /// metadata; the lowering profile id is the fingerprint's profile scope.
+    pub fn compute(profile_id: &SchemaLoweringProfileId, canonical_bytes: &[u8]) -> Self {
         let domain = FingerprintDomain::new(SCHEMA_LOWERING_PROFILE_FINGERPRINT_DOMAIN)
             .expect("the fixed schema-lowering fingerprint domain is valid");
         let canonicalization =
             CanonicalizationVersion::new(SCHEMA_LOWERING_PROFILE_CANONICALIZATION)
                 .expect("the fixed schema-lowering canonicalization is valid");
-        let profile = SemanticProfileId::new(TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID)
+        let profile = SemanticProfileId::new(profile_id.as_str())
             .expect("the fixed schema-lowering profile id is a valid semantic profile id");
         Self(Fingerprint::compute(
             domain,
@@ -137,7 +167,6 @@ impl SchemaLoweringProfileFingerprint {
         let expected = [
             ("domain", SCHEMA_LOWERING_PROFILE_FINGERPRINT_DOMAIN),
             ("canonicalization", SCHEMA_LOWERING_PROFILE_CANONICALIZATION),
-            ("semantic_profile", TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID),
         ];
         for (field, expected_value) in expected {
             if value.get(field).and_then(serde_json::Value::as_str) != Some(expected_value) {
@@ -145,6 +174,14 @@ impl SchemaLoweringProfileFingerprint {
                     "schema-lowering fingerprint has invalid {field}"
                 )));
             }
+        }
+        let profile = value
+            .get("semantic_profile")
+            .and_then(serde_json::Value::as_str);
+        if profile.is_none_or(|profile| SchemaLoweringProfileId::new(profile).is_err()) {
+            return Err(SchemaLoweringProfileValidationError::new(
+                "schema-lowering fingerprint has invalid semantic_profile",
+            ));
         }
         Ok(())
     }
@@ -178,26 +215,29 @@ pub struct SchemaLoweringProfileBinding {
 }
 
 impl SchemaLoweringProfileBinding {
-    /// Bind the fixed profile identity to a complete canonical registry document.
+    /// Bind a closed profile identity to a complete canonical registry document.
     ///
     /// This validates canonical JSON and requires the document's top-level `id`
-    /// to equal the frozen profile identity before computing its content fingerprint.
+    /// to be one of the closed profile identities before computing its content
+    /// fingerprint under that identity.
     pub fn from_canonical_profile_bytes(
         canonical_profile_bytes: &[u8],
     ) -> Result<Self, Diagnostic> {
         let value: serde_json::Value = from_canonical_json(canonical_profile_bytes)?;
-        if value.get("id").and_then(serde_json::Value::as_str)
-            != Some(TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID)
-        {
+        let Some(id) = value
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|id| SchemaLoweringProfileId::new(id).ok())
+        else {
             return Err(Diagnostic::stable(
                 DiagnosticCategory::InvalidContract,
                 "schema_lowering_profile_id_mismatch",
-                "canonical schema-lowering profile bytes do not carry the frozen profile id",
+                "canonical schema-lowering profile bytes do not carry a frozen profile id",
             ));
-        }
+        };
         Ok(Self {
-            fingerprint: SchemaLoweringProfileFingerprint::compute(canonical_profile_bytes),
-            id: SchemaLoweringProfileId::typedb_3_12_1(),
+            fingerprint: SchemaLoweringProfileFingerprint::compute(&id, canonical_profile_bytes),
+            id,
         })
     }
 

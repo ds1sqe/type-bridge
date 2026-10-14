@@ -326,8 +326,7 @@ async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_3() {
     );
     let graph = MigrationHistoryGraph::from_verified([first.clone(), second.clone()])
         .expect("verified history");
-    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
-        .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering binding");
     let plan = build_verified_migration_apply_plan(
         &graph,
         &BTreeSet::new(),
@@ -430,8 +429,7 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
         &context,
     );
     let graph = MigrationHistoryGraph::from_verified([expand.clone()]).expect("expand history");
-    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
-        .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering binding");
     let expand_plan = build_verified_migration_apply_plan(
         &graph,
         &BTreeSet::new(),

@@ -243,3 +243,76 @@ fn contract_profile_identity_and_fingerprint_decode_fail_closed() {
     wrong_domain["domain"] = serde_json::Value::String("typebridge.schema.other".into());
     assert!(serde_json::from_value::<SchemaLoweringProfileFingerprint>(wrong_domain).is_err());
 }
+
+#[test]
+fn per_profile_registries_share_rules_and_differ_only_in_identity() {
+    use type_bridge_contract::fingerprint::SemanticProfileId;
+    use type_bridge_schema_migration::{
+        MigrationProfile, TYPEDB_3_13_6_SCHEMA_LOWERING_PROFILE_ID, lowering_profile_binding,
+    };
+
+    let old = MigrationProfile::Typedb3_12_1;
+    let new = MigrationProfile::Typedb3_13_6;
+    assert_eq!(old.profile(), typedb_3_12_1_profile());
+    assert_eq!(old.canonical_bytes(), canonical_profile_bytes());
+    assert_eq!(old.fingerprint(), profile_fingerprint());
+
+    let registry = new.profile();
+    assert_eq!(
+        registry.id.as_str(),
+        TYPEDB_3_13_6_SCHEMA_LOWERING_PROFILE_ID
+    );
+    assert_eq!(registry.semantic_profile.as_str(), "typedb-3.13.6/v1");
+    assert_eq!(registry.provider_version, "3.13.6");
+    assert_eq!(registry.fact_rules, old.profile().fact_rules);
+    assert_eq!(registry.annotation_rules, old.profile().annotation_rules);
+    assert_eq!(registry.safety_rules, old.profile().safety_rules);
+    assert_eq!(
+        registry.interface_defaults,
+        old.profile().interface_defaults
+    );
+    assert_eq!(
+        registry.required_capabilities,
+        old.profile().required_capabilities
+    );
+    assert_eq!(registry.evidence, old.profile().evidence);
+    assert_ne!(new.fingerprint(), old.fingerprint());
+
+    // Apart from the identity fields the canonical documents are identical.
+    let strip = |profile: MigrationProfile| {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&profile.canonical_bytes()).unwrap();
+        for field in ["id", "semantic_profile", "provider_version"] {
+            value.as_object_mut().unwrap().remove(field).unwrap();
+        }
+        value
+    };
+    assert_eq!(strip(new), strip(old));
+
+    for profile in MigrationProfile::ALL {
+        let semantic = profile.semantic_profile_id();
+        assert_eq!(
+            MigrationProfile::for_semantic_profile(&semantic),
+            Some(profile)
+        );
+        assert_eq!(
+            MigrationProfile::for_lowering_profile_id(&profile.lowering_profile_id()),
+            Some(profile)
+        );
+        let binding = lowering_profile_binding(&semantic).unwrap();
+        assert_eq!(binding.id(), &profile.lowering_profile_id());
+        assert_eq!(binding.fingerprint(), &profile.fingerprint());
+        assert_eq!(profile.binding().unwrap(), binding);
+    }
+    let legacy = SemanticProfileId::new("typedb-3.11.5/v1").unwrap();
+    assert_eq!(MigrationProfile::for_semantic_profile(&legacy), Some(old));
+    let unsupported = SemanticProfileId::new("typedb-9.9.9/v1").unwrap();
+    assert_eq!(MigrationProfile::for_semantic_profile(&unsupported), None);
+    assert_eq!(
+        lowering_profile_binding(&unsupported)
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "schema_lowering_semantic_profile_unsupported"
+    );
+}

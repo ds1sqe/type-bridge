@@ -469,8 +469,7 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_3() {
     let migration = verified_manifest(&base, &target, &context);
     let graph =
         MigrationHistoryGraph::from_verified([migration.clone()]).expect("verified history");
-    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
-        .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering binding");
     let plan = build_verified_migration_apply_plan(
         &graph,
         &BTreeSet::new(),

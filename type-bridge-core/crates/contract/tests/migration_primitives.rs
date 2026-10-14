@@ -24,7 +24,9 @@ use type_bridge_contract::schema_delta::{
 use type_bridge_contract::schema_fingerprint::{
     ManagedDeclaredIdentityFingerprint, ManagedSemanticSchemaFingerprint,
 };
-use type_bridge_contract::schema_lowering::SchemaLoweringProfileBinding;
+use type_bridge_contract::schema_lowering::{
+    SchemaLoweringProfileBinding, SchemaLoweringProfileFingerprint, SchemaLoweringProfileId,
+};
 
 fn capability(value: &str) -> CapabilityId {
     CapabilityId::new(value).unwrap()
@@ -190,6 +192,64 @@ fn registry_owned_profile_bindings_are_exact_and_closed() {
 
     let unknown = SemanticProfileId::new("typedb-9.9.9/v1").unwrap();
     assert!(SemanticProfileBinding::resolve(unknown).is_err());
+}
+
+#[test]
+fn schema_lowering_profile_ids_are_a_closed_per_semantic_profile_set() {
+    let pairs = [
+        ("typedb-3.12.1/v1", "typedb-3.12.1-schema-lowering/v1"),
+        ("typedb-3.13.6/v1", "typedb-3.13.6-schema-lowering/v1"),
+    ];
+    for (semantic, lowering) in pairs {
+        let semantic = SemanticProfileId::new(semantic).unwrap();
+        let id = SchemaLoweringProfileId::for_semantic_profile(&semantic).unwrap();
+        assert_eq!(id.as_str(), lowering);
+        assert_eq!(SchemaLoweringProfileId::new(lowering).unwrap(), id);
+        let wire = serde_json::to_string(&id).unwrap();
+        assert_eq!(
+            serde_json::from_str::<SchemaLoweringProfileId>(&wire).unwrap(),
+            id
+        );
+    }
+    assert_eq!(
+        SchemaLoweringProfileId::typedb_3_13_6().as_str(),
+        "typedb-3.13.6-schema-lowering/v1"
+    );
+    for unknown in [
+        "typedb-3.11.5-schema-lowering/v1",
+        "typedb-3.13.6-schema-lowering/v2",
+    ] {
+        assert!(SchemaLoweringProfileId::new(unknown).is_err());
+        assert!(serde_json::from_str::<SchemaLoweringProfileId>(&format!("{unknown:?}")).is_err());
+    }
+    // 3.11.5 keeps lowering through the 3.12.1 registry.
+    let legacy = SemanticProfileId::new("typedb-3.11.5/v1").unwrap();
+    assert_eq!(
+        SchemaLoweringProfileId::for_semantic_profile(&legacy),
+        Some(SchemaLoweringProfileId::typedb_3_12_1())
+    );
+    let unknown = SemanticProfileId::new("typedb-9.9.9/v1").unwrap();
+    assert!(SchemaLoweringProfileId::for_semantic_profile(&unknown).is_none());
+
+    let lowering_3_13 = SchemaLoweringProfileBinding::from_canonical_profile_bytes(
+        br#"{"id":"typedb-3.13.6-schema-lowering/v1","rules":[]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        lowering_3_13.id(),
+        &SchemaLoweringProfileId::typedb_3_13_6()
+    );
+    let fingerprint = serde_json::to_value(lowering_3_13.fingerprint()).unwrap();
+    assert_eq!(
+        fingerprint["semantic_profile"],
+        "typedb-3.13.6-schema-lowering/v1"
+    );
+    let decoded: SchemaLoweringProfileFingerprint =
+        serde_json::from_value(fingerprint.clone()).unwrap();
+    assert_eq!(&decoded, lowering_3_13.fingerprint());
+    let mut unknown_scope = fingerprint;
+    unknown_scope["semantic_profile"] = "typedb-3.13.6/v1".into();
+    assert!(serde_json::from_value::<SchemaLoweringProfileFingerprint>(unknown_scope).is_err());
 }
 
 #[test]

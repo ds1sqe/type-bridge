@@ -2924,8 +2924,12 @@ mod tests {
             SemanticProfileId::new(profile).expect("semantic profile"),
             capabilities.clone(),
         );
-        let lowering =
-            SchemaLoweringBinding::current(capabilities).expect("schema lowering binding");
+        // A valid 3.12.1 lowering binding, so only the context profile can refuse.
+        let lowering = SchemaLoweringBinding::for_semantic_profile(
+            &type_bridge_schema_migration::MigrationProfile::Typedb3_12_1.semantic_profile_id(),
+            capabilities,
+        )
+        .expect("schema lowering binding");
         (
             TypeDbMigrationRunner::new(
                 managed,

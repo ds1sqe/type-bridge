@@ -269,8 +269,7 @@ fn backfill_apply_evidence_retains_exact_manifest_position_and_requires_approval
     )
     .unwrap();
     let graph = MigrationHistoryGraph::from_verified([manifest.clone()]).unwrap();
-    let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone()).unwrap();
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
     let rejected = build_verified_migration_apply_plan(
         &graph,
         &BTreeSet::new(),
@@ -484,8 +483,7 @@ fn linear_apply_plan_is_deterministic_relowered_and_frontier_bound() {
     );
     let graph =
         MigrationHistoryGraph::from_verified([first.clone(), second.clone()]).expect("history");
-    let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering");
     let build = || {
         build_verified_migration_apply_plan(
             &graph,
@@ -577,8 +575,7 @@ fn coordinator_stale_gate_uses_the_full_applied_set_not_only_graph_heads() {
     let graph =
         MigrationHistoryGraph::from_verified([first.clone(), second.clone(), third.clone()])
             .expect("history");
-    let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering");
     let complete = build_verified_migration_apply_plan(
         &graph,
         &BTreeSet::new(),
@@ -667,8 +664,7 @@ fn zero_group_applied_checkpoint_failure_is_retry_safe_at_manifest_position() {
     )
     .expect("legacy bridge");
     let graph = MigrationHistoryGraph::from_verified([bridge.clone()]).expect("history");
-    let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering");
     let plan = build_verified_migration_apply_plan(
         &graph,
         &BTreeSet::new(),
@@ -735,8 +731,7 @@ fn committed_group_checkpoint_failure_retains_transaction_group_position() {
     let context = context();
     let migration = manifest("0001_company", Vec::new(), &source, &target, &context);
     let graph = MigrationHistoryGraph::from_verified([migration.clone()]).expect("history");
-    let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering");
     let plan = build_verified_migration_apply_plan(
         &graph,
         &BTreeSet::new(),
@@ -831,8 +826,7 @@ fn assertion_apply_step_retains_validated_plan_bound_to_exact_source_state() {
     .expect("migration draft");
     let manifest = build_verified_manifest(draft, (&source, &context)).expect("verified manifest");
     let graph = MigrationHistoryGraph::from_verified([manifest.clone()]).expect("history graph");
-    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
-        .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering binding");
     let plan = build_verified_migration_apply_plan(
         &graph,
         &BTreeSet::new(),
@@ -1035,8 +1029,7 @@ fn explicit_safety_policy_rejects_before_execution_evidence_is_returned() {
     let context = context();
     let migration = manifest("0001_company", Vec::new(), &base, &target, &context);
     let graph = MigrationHistoryGraph::from_verified([migration]).expect("history");
-    let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering");
     assert!(
         build_verified_migration_apply_plan(
             &graph,
@@ -1063,8 +1056,7 @@ fn divergent_branch_sources_are_not_guessed_into_one_apply_chain() {
     let second = manifest("0002_right", Vec::new(), &base, &right, &context);
     let targets = BTreeSet::from([first.id().clone(), second.id().clone()]);
     let graph = MigrationHistoryGraph::from_verified([first, second]).expect("history");
-    let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering");
     assert!(
         build_verified_migration_apply_plan(
             &graph,
@@ -1103,8 +1095,7 @@ fn new_subtype_migration_lowers_without_assertion_coverage() {
         &context,
     );
     let graph = MigrationHistoryGraph::from_verified([verified]).expect("verified history");
-    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
-        .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering binding");
     let plan = build_verified_migration_apply_plan(
         &graph,
         &BTreeSet::new(),
@@ -1143,8 +1134,7 @@ fn destructive_manifest_requires_an_identity_bound_approval() {
     let migration = manifest("0001_drop_company", Vec::new(), &base, &target, &context);
     assert_eq!(migration.safety(), SafetyClass::Destructive);
     let graph = MigrationHistoryGraph::from_verified([migration.clone()]).expect("history");
-    let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering");
     let policy = MigrationSafetyPolicy::default_policy();
 
     let preview = build_verified_migration_apply_preview(
@@ -1242,8 +1232,7 @@ fn destructive_reject_policy_wins_over_a_valid_approval() {
     let migration = manifest("0001_drop_company", Vec::new(), &base, &target, &context);
     let approval = MigrationApplyApproval::for_manifest(&migration).expect("bound approval");
     let graph = MigrationHistoryGraph::from_verified([migration]).expect("history");
-    let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering");
     let policy = MigrationSafetyPolicy::default_policy()
         .with_decision(SafetyClass::Destructive, SafetyPolicyDecision::Reject)
         .expect("rejecting policy");

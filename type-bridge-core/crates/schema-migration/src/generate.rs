@@ -36,7 +36,7 @@ use crate::manifest::{
     SchemaMigrationDraft, VerifiedSchemaMigrationManifest, build_verified_manifest,
     delta_diagnostic, encode_verified_manifest, verify_assertion_coverage,
 };
-use crate::profile::schema_lowering_profile_binding;
+use crate::profile::lowering_profile_binding;
 use crate::{MigrationAuthoringLock, MigrationDirectory};
 use type_bridge_contract::managed_scope::SemanticProfileBinding;
 
@@ -291,7 +291,7 @@ pub fn render_migration_preview(
     manifest: &VerifiedSchemaMigrationManifest,
     context: &ManagedDeltaContext,
 ) -> Result<String, MigrationPreviewError> {
-    let binding = SchemaLoweringBinding::current(context.available_capabilities().clone())?;
+    let binding = SchemaLoweringBinding::for_context(context)?;
     let safety_profile = SafetyDerivationProfile::new(
         manifest.semantic_profile().clone(),
         manifest.lowering_profile().clone(),
@@ -566,7 +566,7 @@ fn author_steps(
 ) -> Result<Vec<MigrationStep>, Diagnostic> {
     let safety_profile = SafetyDerivationProfile::new(
         SemanticProfileBinding::resolve(context.semantic_profile().clone())?,
-        schema_lowering_profile_binding()?,
+        lowering_profile_binding(context.semantic_profile())?,
     )?;
     let resolved = resolve(source, context.semantic_profile()).map_err(|diagnostics| {
         diagnostics

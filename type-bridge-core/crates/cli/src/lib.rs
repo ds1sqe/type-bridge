@@ -352,10 +352,9 @@ fn run_migration_rollback(
         .manifests()
         .map(|(id, _)| id.clone())
         .collect::<BTreeSet<_>>();
-    let lowering = type_bridge_schema_migration::SchemaLoweringBinding::current(
-        workspace.delta_context().available_capabilities().clone(),
-    )
-    .map_err(display)?;
+    let lowering =
+        type_bridge_schema_migration::SchemaLoweringBinding::for_context(workspace.delta_context())
+            .map_err(display)?;
     let plan = type_bridge_schema_migration::build_verified_migration_rollback_preview(
         &graph,
         &applied,
@@ -1444,10 +1443,9 @@ async fn run_connected_async(
     let genesis = workspace
         .migration_genesis_in(&migration_directory)
         .map_err(display)?;
-    let lowering = type_bridge_schema_migration::SchemaLoweringBinding::current(
-        workspace.delta_context().available_capabilities().clone(),
-    )
-    .map_err(display)?;
+    let lowering =
+        type_bridge_schema_migration::SchemaLoweringBinding::for_context(workspace.delta_context())
+            .map_err(display)?;
     let runner = type_bridge_schema_migration_typedb::TypeDbMigrationRunner::new(
         managed,
         journal,

@@ -39,7 +39,7 @@ use crate::legacy::{
     LEGACY_APPLIED_SET_ALGORITHM, LEGACY_APPLIED_SET_CANONICALIZATION, LEGACY_CHECKSUM_ALGORITHM,
     LegacyAppliedSetDigest, LegacyMigrationChecksum, LegacyMigrationId, LegacyMigrationReference,
 };
-use crate::profile::schema_lowering_profile_binding;
+use crate::profile::lowering_profile_binding;
 
 const MANIFEST_SCHEMA_CANONICALIZATION: &str = "typebridge.schema-c14n/v2";
 const MANIFEST_CODEC: &str = "typebridge.canonical-json/v1";
@@ -324,7 +324,7 @@ pub fn build_verified_manifest(
     }
     let semantic_profile =
         SemanticProfileBinding::resolve(delta_context.semantic_profile().clone())?;
-    let lowering_profile = schema_lowering_profile_binding()?;
+    let lowering_profile = lowering_profile_binding(delta_context.semantic_profile())?;
     let safety_profile =
         SafetyDerivationProfile::new(semantic_profile.clone(), lowering_profile.clone())?;
 

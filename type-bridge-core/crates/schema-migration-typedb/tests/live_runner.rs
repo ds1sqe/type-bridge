@@ -409,8 +409,7 @@ async fn runner_applies_discovered_chain_incrementally_on_3_12_3() {
     write_manifest(directory.path(), &first);
     write_manifest(directory.path(), &second);
 
-    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
-        .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering binding");
     let runner = TypeDbMigrationRunner::new(
         Arc::clone(&managed),
         Arc::clone(&journal),
@@ -553,8 +552,7 @@ async fn runner_rejects_fresh_list_projection_drift_before_target_or_checkpoint_
         Arc::clone(&journal),
         genesis,
         context.clone(),
-        SchemaLoweringBinding::current(context.available_capabilities().clone())
-            .expect("lowering binding"),
+        SchemaLoweringBinding::for_context(&context).expect("lowering binding"),
         MigrationSafetyPolicy::default_policy(),
     );
     let holder = LeaseHolderId::new("live-list-drift").expect("holder");
@@ -671,8 +669,7 @@ async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3() {
     write_manifest(directory.path(), &first);
     write_manifest(directory.path(), &second);
 
-    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
-        .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering binding");
     let runner = TypeDbMigrationRunner::new(
         Arc::clone(&managed),
         Arc::clone(&journal),
@@ -932,8 +929,7 @@ async fn runner_imports_a_completed_legacy_frontier_on_3_12_3() {
     write_manifest(canonical_directory.path(), &bridge);
     write_manifest(canonical_directory.path(), &follow);
 
-    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
-        .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering binding");
     let runner = TypeDbMigrationRunner::new(
         Arc::clone(&managed),
         Arc::clone(&journal),
@@ -1185,8 +1181,7 @@ async fn runner_verifies_the_migration_state_triad_on_3_12_3() {
     write_manifest(directory.path(), &first);
     write_manifest(directory.path(), &second);
 
-    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
-        .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering binding");
     let runner = TypeDbMigrationRunner::new(
         Arc::clone(&managed),
         Arc::clone(&journal),

@@ -94,14 +94,15 @@ pub use verify::{MigrationDriftFinding, MigrationVerifyReport, verify_migration_
 
 pub use profile::{
     AnnotationKind, AnnotationSubjectKind, AnnotationTransition, EvidenceFlag, EvidenceRequirement,
-    FactKind, FactTransition, InterfaceDefault, InterfaceKind, LoweringMechanism, SafetyScenario,
-    SafetyScenarioRule, SchemaLoweringProfile, TransitionRule, annotation_transition_rule,
-    canonical_profile_bytes, fact_transition_rule, migration_runtime_capability_vocabulary,
-    profile_fingerprint, schema_lowering_profile_binding, typedb_3_12_1_profile,
+    FactKind, FactTransition, InterfaceDefault, InterfaceKind, LoweringMechanism, MigrationProfile,
+    SafetyScenario, SafetyScenarioRule, SchemaLoweringProfile, TransitionRule,
+    annotation_transition_rule, canonical_profile_bytes, fact_transition_rule,
+    lowering_profile_binding, migration_runtime_capability_vocabulary, profile_fingerprint,
+    schema_lowering_profile_binding, typedb_3_12_1_profile,
 };
 pub use type_bridge_contract::schema_lowering::{
     SCHEMA_LOWERING_PROFILE_CANONICALIZATION, SCHEMA_LOWERING_PROFILE_FINGERPRINT_DOMAIN,
     SchemaLoweringProfileFingerprint, SchemaLoweringProfileId,
-    TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID,
+    TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID, TYPEDB_3_13_6_SCHEMA_LOWERING_PROFILE_ID,
 };
 pub use type_bridge_schema::{SafetyClass, SafetyClassificationError, classify_operation_safety};

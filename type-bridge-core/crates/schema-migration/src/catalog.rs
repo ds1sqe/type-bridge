@@ -78,7 +78,7 @@ impl MigrationCatalog {
         target: &MigrationApplyTarget,
     ) -> Result<VerifiedMigrationApplyPlan, MigrationApplyPlanError> {
         let context = self.execution_context()?;
-        let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())?;
+        let lowering = SchemaLoweringBinding::for_context(context)?;
         build_verified_migration_apply_preview(&self.graph, applied, target, context, &lowering)
     }
 
@@ -89,7 +89,7 @@ impl MigrationCatalog {
         removals: &BTreeSet<MigrationId>,
     ) -> Result<VerifiedMigrationRollbackPlan, MigrationApplyPlanError> {
         let context = self.execution_context()?;
-        let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())?;
+        let lowering = SchemaLoweringBinding::for_context(context)?;
         build_verified_migration_rollback_preview(
             &self.graph,
             applied,
@@ -108,7 +108,7 @@ impl MigrationCatalog {
         approvals: &[MigrationApplyApproval],
     ) -> Result<VerifiedMigrationApplyPlan, MigrationApplyPlanError> {
         let context = self.execution_context()?;
-        let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())?;
+        let lowering = SchemaLoweringBinding::for_context(context)?;
         build_verified_migration_apply_plan(
             &self.graph,
             applied,
@@ -129,7 +129,7 @@ impl MigrationCatalog {
         approvals: &[MigrationApplyApproval],
     ) -> Result<VerifiedMigrationRollbackPlan, MigrationApplyPlanError> {
         let context = self.execution_context()?;
-        let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())?;
+        let lowering = SchemaLoweringBinding::for_context(context)?;
         build_verified_migration_rollback_plan(
             &self.graph,
             applied,
