@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import c_artifact_journey as artifact_journey
 import compare_sdk_conformance_v5 as codec_contract
 import compare_sdk_conformance_v6 as conformance
+import sdk_profile_matrix as profile_matrix
 import standalone_cli_artifact as cli_artifact
 from persist_binding_reports import PublishError, publish_files
 
@@ -38,6 +40,31 @@ SURFACE_CONSUMER_FORMAT = "typebridge.sdk-v6-surface-consumer/v1"
 
 class RunnerError(RuntimeError):
     """An SDK producer, comparator, or report publication failed."""
+
+
+def _runner_error(_code: str, message: str) -> RunnerError:
+    return RunnerError(message)
+
+
+def lane(profile: str | None, environment: Mapping[str, str]) -> profile_matrix.ProfileIdentity:
+    """The matrix entry a run targets.
+
+    ``profile`` (``--semantic-profile``) wins, then
+    ``TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE``, then the catalogs' own profile.
+    Every conformance set must list it.
+    """
+
+    if profile is None:
+        profile = environment.get(profile_matrix.SEMANTIC_PROFILE_ENV) or (
+            profile_matrix.catalog_profile(6)
+        )
+    return profile_matrix.select_lane(profile, error=_runner_error)
+
+
+def typedb_version(environment: Mapping[str, str]) -> str:
+    """The exact TypeDB server version the run's profile names."""
+
+    return environment.get("TYPEDB_VERSION") or lane(None, environment).live_server_version
 
 
 def run(
@@ -562,7 +589,7 @@ def codec_live(directory: Path, environment: dict[str, str]) -> None:
     node_env = environment | {
         "TYPE_BRIDGE_SDK_V5_NODE_EVIDENCE": str(directory / "node-live.json"),
         "TYPE_BRIDGE_NODE_INTG_DATABASE": f"type_bridge_v5_node_{os.getpid()}",
-        "TYPEDB_VERSION": "3.12.3",
+        "TYPEDB_VERSION": typedb_version(environment),
     }
     run(["npm", "run", "typecheck:projection-integration"], cwd=NODE, env=node_env)
     node_live("node.generated_canonical_serialization_v5_live", node_env)
@@ -770,7 +797,11 @@ def administration(directory: Path, environment: dict[str, str]) -> tuple[Path, 
     try:
         env = environment.copy()
         env.update(
-            {"TYPEDB_IMAGE": "typedb/typedb:3.12.3", "TYPEDB_PORT": "0", "TYPEDB_HTTP_PORT": "0"}
+            {
+                "TYPEDB_IMAGE": f"typedb/typedb:{typedb_version(environment)}",
+                "TYPEDB_PORT": "0",
+                "TYPEDB_HTTP_PORT": "0",
+            }
         )
         run([*compose, "up", "-d", "--wait", "typedb"], env=env)
         driver_port = published_port(project, "1729")
@@ -909,6 +940,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--address", default="127.0.0.1:1729")
     parser.add_argument("--http-port", default="8000")
+    parser.add_argument(
+        "--semantic-profile",
+        help=(
+            "semantic profile to run (default: TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE, "
+            "else the catalogs' own profile); selects the exact TypeDB server"
+        ),
+    )
     artifact_inputs = (
         "predecessors",
         "acceptance",
@@ -941,10 +979,11 @@ def main(argv: list[str] | None = None) -> int:
                     "TYPEDB_PASSWORD": "password",
                 }
             )
-        if arguments.suite in {"queries", "models"}:
-            environment["TYPEDB_VERSION"] = "3.12.3"
-        if arguments.suite == "queries":
-            environment["TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE"] = "typedb-3.12.1/v1"
+        # Producers, fixtures, assemblers and comparers all read one profile and
+        # its exact server so a run cannot mix TypeDB lines.
+        identity = lane(arguments.semantic_profile, environment)
+        environment[profile_matrix.SEMANTIC_PROFILE_ENV] = identity.semantic_profile
+        environment["TYPEDB_VERSION"] = identity.live_server_version
         with tempfile.TemporaryDirectory(prefix=f"typebridge-sdk-{arguments.suite}-") as value:
             reports = execute(arguments.suite, Path(value), environment, arguments)
             publish_files(reports, output, checkout=ROOT)

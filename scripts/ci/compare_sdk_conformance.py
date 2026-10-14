@@ -10,9 +10,13 @@ import re
 import stat
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import sdk_profile_matrix as profile_matrix  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest-v1.json"
@@ -137,6 +141,7 @@ class Contracts:
     projection_targets: dict[str, str]
     semantic_fingerprint: dict[str, Any]
     projection_fingerprints: dict[str, dict[str, Any]]
+    semantic_profile: str
 
 
 def _duplicate_key_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -313,8 +318,8 @@ def _validate_journey(value: Any) -> dict[str, dict[str, Any]]:
         raise ContractError("invalid_journey_format", "journey format is not v1")
     if journey["fixture_id"] != "sdk-v1" or journey["version"] != 1:
         raise ContractError("invalid_fixture_identity", "journey fixture identity is not v1")
-    if journey["semantic_profile"] != "typedb-3.12.1/v1":
-        raise ContractError("semantic_profile_mismatch", "journey profile is not 3.12.1/v1")
+    if journey["semantic_profile"] not in profile_matrix.supported_profiles(1):
+        raise ContractError("semantic_profile_mismatch", "journey profile is not a matrix profile")
 
     records = _exact_object(journey["records"], {"person", "membership"}, "journey records")
     person = _exact_object(records["person"], {"model", "fields", "update"}, "person record")
@@ -468,7 +473,7 @@ def _validate_catalog(
     if fixture != {
         "id": "sdk-v1",
         "version": 1,
-        "semantic_profile": "typedb-3.12.1/v1",
+        "semantic_profile": catalog_profile(fixture, 1),
         "schema_path": SCHEMA_RELATIVE,
         "provider_schema_path": PROVIDER_SCHEMA_RELATIVE,
     }:
@@ -496,6 +501,7 @@ def _validate_catalog(
         label="expected semantic fingerprint",
         domain="typebridge.schema.semantic",
         canonicalization="typebridge.schema-canonical-json/v1",
+        semantic_profile=fixture["semantic_profile"],
     )
     projection_fingerprints_value = _exact_object(
         expected_fingerprints["projections"],
@@ -509,6 +515,7 @@ def _validate_catalog(
             label=f"expected {binding} projection fingerprint",
             domain="typebridge.binding.projection",
             canonicalization="typebridge.binding-projection/v1",
+            semantic_profile=fixture["semantic_profile"],
         )
     if len({item["digest"] for item in projection_fingerprints.values()}) != len(REPORT_BINDINGS):
         raise ContractError(
@@ -700,6 +707,80 @@ def load_contracts(
         projection_targets=projection_targets,
         semantic_fingerprint=semantic_fingerprint,
         projection_fingerprints=projection_fingerprints,
+        semantic_profile=catalog_fixture["semantic_profile"],
+    )
+
+
+def catalog_profile(fixture: dict[str, Any], version: int) -> str:
+    """Return the catalog's frozen profile once it is a matrix entry."""
+
+    profile = fixture["semantic_profile"]
+    if profile not in profile_matrix.supported_profiles(version):
+        raise ContractError(
+            "semantic_profile_mismatch", f"sdk-v{version} catalog profile is not a matrix profile"
+        )
+    return profile
+
+
+def for_report_profile(contracts: Any, reports: list[LoadedJson], version: int) -> Any:
+    """Rebind ``contracts`` to the matrix entry of the profile the reports share.
+
+    The catalog's top-level identity is the entry for its own profile, so a
+    report set on that profile keeps ``contracts`` unchanged. Reports that
+    declare no readable profile also keep it, so exact report validation
+    reports them with its usual codes.
+    """
+
+    profile = profile_matrix.shared_value(
+        (
+            profile_matrix.report_field(report.value, "fixture", "semantic_profile")
+            for report in reports
+        ),
+        "semantic profile",
+        error=ContractError,
+    )
+    return contracts if profile is None else for_profile(contracts, profile, version)
+
+
+def for_profile(contracts: Any, profile: str, version: int) -> Any:
+    """Rebind ``contracts`` to the ``sdk-v{version}`` matrix entry for ``profile``.
+
+    The catalog's own profile keeps ``contracts`` unchanged; any other profile
+    must be a matrix entry and replaces the expected fingerprints.
+    """
+
+    if profile == contracts.semantic_profile:
+        return contracts
+    identity = profile_matrix.select(version, profile, error=ContractError)
+    fingerprints = identity.expected_fingerprints
+    if fingerprints is None:
+        raise ContractError("invalid_profile_matrix", f"sdk-v{version} pins no fingerprints")
+    semantic = _validate_fingerprint(
+        fingerprints["semantic"],
+        label="matrix semantic fingerprint",
+        domain="typebridge.schema.semantic",
+        canonicalization="typebridge.schema-canonical-json/v1",
+        semantic_profile=identity.semantic_profile,
+    )
+    projections = _exact_object(
+        fingerprints["projections"],
+        set(contracts.projection_fingerprints),
+        "matrix projection fingerprints",
+    )
+    return replace(
+        contracts,
+        semantic_profile=identity.semantic_profile,
+        semantic_fingerprint=semantic,
+        projection_fingerprints={
+            binding: _validate_fingerprint(
+                projections[binding],
+                label=f"matrix {binding} projection fingerprint",
+                domain="typebridge.binding.projection",
+                canonicalization="typebridge.binding-projection/v1",
+                semantic_profile=identity.semantic_profile,
+            )
+            for binding in contracts.projection_fingerprints
+        },
     )
 
 
@@ -727,6 +808,7 @@ def _validate_fingerprint(
     label: str,
     domain: str,
     canonicalization: str,
+    semantic_profile: str,
 ) -> dict[str, Any]:
     fingerprint = _exact_object(
         value,
@@ -741,7 +823,7 @@ def _validate_fingerprint(
         raise ContractError(
             "fingerprint_canonicalization_mismatch", f"{label} canonicalization is invalid"
         )
-    if fingerprint["semantic_profile"] != "typedb-3.12.1/v1":
+    if fingerprint["semantic_profile"] != semantic_profile:
         raise ContractError("semantic_profile_mismatch", f"{label} profile is invalid")
     digest = fingerprint["digest"]
     if type(digest) is not str or SHA256_RE.fullmatch(digest) is None:
@@ -834,7 +916,7 @@ def _validate_report(report: LoadedJson, contracts: Contracts) -> dict[str, Any]
     )
     if fixture["id"] != "sdk-v1" or _integer(fixture["version"], "fixture version") != 1:
         raise ContractError("invalid_fixture_identity", f"{binding} report fixture is not v1")
-    if fixture["semantic_profile"] != "typedb-3.12.1/v1":
+    if fixture["semantic_profile"] != contracts.semantic_profile:
         raise ContractError("semantic_profile_mismatch", f"{binding} report profile is invalid")
     _validate_source_identity(
         fixture["schema"],
@@ -862,6 +944,7 @@ def _validate_report(report: LoadedJson, contracts: Contracts) -> dict[str, Any]
         label="semantic fingerprint",
         domain="typebridge.schema.semantic",
         canonicalization="typebridge.schema-canonical-json/v1",
+        semantic_profile=contracts.semantic_profile,
     )
     if semantic_fingerprint != contracts.semantic_fingerprint:
         raise ContractError(
@@ -879,6 +962,7 @@ def _validate_report(report: LoadedJson, contracts: Contracts) -> dict[str, Any]
         label="projection fingerprint",
         domain="typebridge.binding.projection",
         canonicalization="typebridge.binding-projection/v1",
+        semantic_profile=contracts.semantic_profile,
     )
     if projection_fingerprint != contracts.projection_fingerprints[binding]:
         raise ContractError(
@@ -1025,7 +1109,7 @@ def _derive_summary(reports: dict[str, dict[str, Any]], contracts: Contracts) ->
         "fixture": {
             "id": "sdk-v1",
             "version": 1,
-            "semantic_profile": "typedb-3.12.1/v1",
+            "semantic_profile": contracts.semantic_profile,
             "manifest": {"path": MANIFEST_RELATIVE, "sha256": contracts.manifest.sha256},
             "catalog": {"path": CATALOG_RELATIVE, "sha256": contracts.catalog.sha256},
             "schema": {"path": SCHEMA_RELATIVE, "sha256": contracts.schema.sha256},
@@ -1052,8 +1136,8 @@ def _derive_summary(reports: dict[str, dict[str, Any]], contracts: Contracts) ->
 def compare_reports(report_paths: list[Path]) -> dict[str, Any]:
     """Validate three reports and return a deterministic derived summary."""
 
-    contracts = load_contracts()
     loaded = [_load_json(path, f"report {path}", require_canonical=True) for path in report_paths]
+    contracts = for_report_profile(load_contracts(), loaded, 1)
     reports: dict[str, dict[str, Any]] = {}
     for report in loaded:
         validated = _validate_report(report, contracts)

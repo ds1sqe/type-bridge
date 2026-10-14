@@ -15,6 +15,7 @@ from typing import Any, NoReturn
 
 import c_artifact_journey as artifact_journey
 import compare_sdk_conformance_v6 as conformance
+import sdk_profile_matrix as profile_matrix
 import sdk_v6_surfaces as surfaces
 from persist_binding_reports import publish_bytes
 
@@ -94,6 +95,7 @@ def _predecessors(values: list[bytes], binding: str) -> list[dict[str, Any]]:
     if len(values) != len(versions):
         reject("predecessor_report_scope_drift", "historical report inventory is not exact")
     output = []
+    profiles: list[Any] = []
     for version, raw in zip(versions, values, strict=True):
         try:
             report = json.loads(raw, object_pairs_hook=conformance.unique_object)
@@ -107,8 +109,23 @@ def _predecessors(values: list[bytes], binding: str) -> list[dict[str, Any]]:
             reject("predecessor_report_identity_drift", f"V{version} format drifted")
         if report.get("binding") != binding:
             reject("predecessor_report_identity_drift", f"V{version} binding drifted")
+        profiles.append(_predecessor_profile(version, report))
         output.append({"version": version, "sha256": hashlib.sha256(raw).hexdigest()})
+    # A V6 report binds one TypeDB line; its predecessors must not mix profiles.
+    profile_matrix.shared_value(profiles, "semantic profile", error=AssemblyError)
     return output
+
+
+def _predecessor_profile(version: int, report: dict[str, Any]) -> Any:
+    """The semantic profile a predecessor report declares or implies."""
+
+    if version <= 3:
+        return profile_matrix.report_field(report, "fixture", "semantic_profile")
+    server = report.get("server_version")
+    if type(server) is not str:
+        # Shape belongs to the predecessor's own comparer, not to this binding.
+        return None
+    return profile_matrix.select_server(version, server, error=AssemblyError).semantic_profile
 
 
 def assemble_report(

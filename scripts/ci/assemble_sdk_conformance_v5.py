@@ -8,6 +8,7 @@ import base64
 import binascii
 import hashlib
 import json
+import os
 import stat
 import sys
 from pathlib import Path
@@ -16,6 +17,7 @@ from typing import Any, NoReturn
 import compare_sdk_conformance_v5 as conformance
 import compare_sdk_v5_corpora as corpora
 import compare_sdk_v5_operational as operational
+import sdk_profile_matrix as profile_matrix
 from persist_binding_reports import publish_bytes
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -97,9 +99,21 @@ def validate_nonce(value: Any) -> str:
 
 
 def assemble_report(
-    evidence: dict[str, Any], *, binding: str, run_nonce: str, root: Path = ROOT
+    evidence: dict[str, Any],
+    *,
+    binding: str,
+    run_nonce: str,
+    root: Path = ROOT,
+    semantic_profile: str | None = None,
 ) -> dict[str, Any]:
+    """Assemble one V5 report on ``semantic_profile`` (default: the catalog's own)."""
+
     contracts = conformance.load_contracts(root)
+    lane = profile_matrix.select(
+        5,
+        semantic_profile or profile_matrix.catalog_profile(5),
+        error=AssemblyError,
+    )
     exact_keys(
         evidence,
         {
@@ -193,7 +207,7 @@ def assemble_report(
             "path": conformance.RECORD_CONTRACT,
             "sha256": conformance.sha256(root / conformance.RECORD_CONTRACT),
         },
-        "server_version": "3.12.3",
+        "server_version": lane.live_server_version,
         "results": results,
         "cleanup": evidence["cleanup"],
     }
@@ -408,7 +422,12 @@ def main() -> int:
             if arguments.evidence is None
             else load_evidence(arguments.evidence)
         )
-        report = assemble_report(evidence, binding=arguments.binding, run_nonce=arguments.run_nonce)
+        report = assemble_report(
+            evidence,
+            binding=arguments.binding,
+            run_nonce=arguments.run_nonce,
+            semantic_profile=os.environ.get(profile_matrix.SEMANTIC_PROFILE_ENV) or None,
+        )
         publish(arguments.output, report)
     except (AssemblyError, conformance.ContractError, CompositionError) as error:
         code = getattr(error, "code", "assembly_failure")

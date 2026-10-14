@@ -12,11 +12,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import sdk_profile_matrix as profile_matrix  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
 
 FORMAT = "typebridge.sdk-v3-artifact-observation/v1"
 
-SEMANTIC_PROFILE = "typedb-3.12.1/v1"
+# Offline generation artifacts are produced on the sdk-v3 catalog profile.
+SEMANTIC_PROFILE = profile_matrix.catalog_profile(3)
 
 MAX_ARTIFACT_BYTES = 64 * 1024
 

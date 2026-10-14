@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import stat
 import sys
 from pathlib import Path
@@ -16,13 +17,15 @@ import compare_projected_live as projected_live
 import compare_projected_parity as projected_parity
 import compare_sdk_conformance_v3 as conformance
 import proof_fragments as fragments
+import sdk_profile_matrix as profile_matrix
 import validate_generation_artifact as generation
 from persist_binding_reports import publish_bytes
 
 ROOT = Path(__file__).resolve().parents[2]
 LIVE_FORMAT = "typebridge.sdk-v3-live-observations/v1"
 REPORT_FORMAT = "typebridge.sdk-conformance-report/v3"
-SEMANTIC_PROFILE = "typedb-3.12.1/v1"
+# The sdk-v3 catalog profile, used when a run names no other matrix profile.
+SEMANTIC_PROFILE = profile_matrix.catalog_profile(3)
 MAX_LIVE_BYTES = 512 * 1024
 MAX_REPORT_BYTES = 1024 * 1024
 SUPPLEMENT_FORMAT = "typebridge.sdk-v3-live-supplement/v1"
@@ -117,7 +120,7 @@ def _live_observations(
 ) -> dict[tuple[str, str], dict[str, Any]]:
     if live["format"] != LIVE_FORMAT:
         raise AssemblyError("invalid_live_format", "live bundle format is not V3")
-    if live["binding"] != binding or live["semantic_profile"] != SEMANTIC_PROFILE:
+    if live["binding"] != binding or live["semantic_profile"] != contracts.semantic_profile:
         raise AssemblyError("live_identity_mismatch", "live binding or semantic profile differs")
     if live["producer"] != contracts.report_producers[binding]["id"]:
         raise AssemblyError("producer_identity_mismatch", "live producer identity is not frozen")
@@ -195,7 +198,7 @@ def assemble_report(
         "fixture": {
             "id": "sdk-v3",
             "version": 3,
-            "semantic_profile": SEMANTIC_PROFILE,
+            "semantic_profile": contracts.semantic_profile,
             "schema": _source_identity(conformance.SCHEMA_RELATIVE, contracts.schema),
             "provider_schema": _source_identity(
                 conformance.PROVIDER_SCHEMA_RELATIVE, contracts.provider_schema
@@ -331,8 +334,14 @@ def compose_bundle(
     }
 
 
+def _contracts(arguments: argparse.Namespace) -> conformance.Contracts:
+    """The sdk-v3 contracts rebound to the profile the run names."""
+
+    return conformance.for_profile(conformance.load_contracts(), arguments.semantic_profile, 3)
+
+
 def compose_inputs(arguments: argparse.Namespace) -> dict[str, Any]:
-    contracts = conformance.load_contracts()
+    contracts = _contracts(arguments)
     parity, live, manager = _validated_feature_reports(
         arguments.projected_parity,
         arguments.projected_live,
@@ -366,6 +375,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--binding", required=True, choices=conformance.REPORT_BINDINGS)
     parser.add_argument("--live-observations", required=False, type=Path)
     parser.add_argument("--run-nonce", required=True)
+    parser.add_argument(
+        "--semantic-profile",
+        default=os.environ.get(profile_matrix.SEMANTIC_PROFILE_ENV) or SEMANTIC_PROFILE,
+        help="sdk-v3 matrix profile the evidence ran on (default: "
+        "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE, else the catalog's own profile)",
+    )
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("fragments", nargs="+", type=Path)
     parser.add_argument("--projected-parity", required=False, type=Path)
@@ -406,12 +421,13 @@ def main(argv: list[str] | None = None) -> int:
     ):
         parser.error("choose existing evidence or composition inputs, not both")
     try:
-        contracts = conformance.load_contracts()
+        contracts = _contracts(arguments)
         proof_observations = fragments.CONTRACTS[3].load_proof_fragments(
             arguments.fragments,
             expected_binding=arguments.binding,
             run_nonce=arguments.run_nonce,
             root=ROOT,
+            semantic_profile=contracts.semantic_profile,
         )
         live = (
             compose_inputs(arguments)

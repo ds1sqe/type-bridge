@@ -11,6 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import sdk_profile_matrix as profile_matrix  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest-v1.json"
 CATALOG_RELATIVE = "tests/contracts/sdk_conformance/sdk-v4/catalog-v4.json"
@@ -165,6 +169,15 @@ def _validate_source_identity(identity: Any, relative: str, root: Path, label: s
         _reject("stale_source_identity", f"{label} source identity is stale")
 
 
+def _matrix_servers() -> set[str]:
+    """Exact TypeDB servers the sdk-v4 profile matrix admits."""
+
+    return {
+        entry.live_server_version
+        for entry in profile_matrix.load_matrix(4, error=ContractError).values()
+    }
+
+
 def _validate_report(report: dict[str, Any], observation_refs: tuple[str, ...]) -> None:
     _exact_keys(
         report,
@@ -182,7 +195,10 @@ def _validate_report(report: dict[str, Any], observation_refs: tuple[str, ...]) 
     )
     if report["format"] != "typebridge.sdk-conformance-report/v4":
         _reject("invalid_report_schema", "report format is not V4")
-    if report["binding"] not in EXPECTED_BINDINGS or report["server_version"] != "3.12.3":
+    if (
+        report["binding"] not in EXPECTED_BINDINGS
+        or report["server_version"] not in _matrix_servers()
+    ):
         _reject("invalid_report_schema", "report binding or server version is invalid")
     if not isinstance(report["results"], list) or len(report["results"]) != 8:
         _reject("invalid_report_schema", "report must contain exactly eight results")
@@ -426,6 +442,11 @@ def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
 
     if tuple(reports) != EXPECTED_BINDINGS:
         _reject("binding_order_drift", "V4 reports are not supplied in canonical order")
+    profile_matrix.shared_value(
+        (report["server_version"] for report in reports.values()),
+        "server version",
+        error=ContractError,
+    )
 
     capabilities = {
         capability.get("case_ids", ())[0]: capability

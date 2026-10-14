@@ -53,6 +53,35 @@ profile or imply that C is a supported or distributed SDK; C remains an
 internal, unsupported foundation until its full application contract is
 complete.
 
+## TypeDB version matrix
+
+Each set `sdk-vN` runs on every supported TypeDB line. Its catalog keeps the
+identity it was frozen on (`typedb-3.12.1/v1` on exact TypeDB 3.12.3), and
+`sdk-vN/profiles-vN.json` lists the identity a conforming report carries per
+semantic profile:
+
+```json
+{
+  "format": "typebridge.sdk-profile-matrix/v1",
+  "set": "sdk-v2",
+  "catalog_path": "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json",
+  "profiles": {
+    "typedb-3.12.1/v1": {"live_server_version": "3.12.3", "expected_fingerprints": {}},
+    "typedb-3.13.6/v1": {"live_server_version": "3.13.6", "expected_fingerprints": {}}
+  }
+}
+```
+
+`expected_fingerprints` (semantic plus one projection per report binding) is
+present only for sets whose catalog pins fingerprints (v1-v3); the entry for
+the catalog's own profile repeats the catalog's values. Comparers read the
+profile (v1-v3) or server version (v4, v5) the reports declare, require one
+shared value per comparison, and validate against that entry. Producers and
+the runner select the entry from `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`
+(or `--semantic-profile`), defaulting to the catalog's own profile.
+`schema-codegen/tests/sdk_profile_matrix.rs` recomputes every fingerprint
+entry from the fixture source.
+
 ## Remaining shared gaps
 
 The manifest retains these broader gaps until their complete public lifecycle

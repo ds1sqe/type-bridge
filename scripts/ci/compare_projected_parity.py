@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sdk_profile_matrix as profile_matrix  # noqa: E402
 from compare_sdk_conformance import (  # noqa: E402, F401
     ContractError,
     _duplicate_key_object,
@@ -27,7 +28,8 @@ JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"
 
 REPORT_FORMAT = "typebridge.projected-parity-report/v1"
 SUMMARY_FORMAT = "typebridge.projected-parity-summary/v1"
-SEMANTIC_PROFILE = "typedb-3.12.1/v1"
+# The sdk-v3 catalog profile; reports may carry any sdk-v3 matrix profile.
+SEMANTIC_PROFILE = profile_matrix.catalog_profile(3)
 REPORT_BINDINGS = ("python", "node", "rust", "c")
 OBSERVATION_REFS = (
     "canonical_scalar_values",
@@ -252,7 +254,9 @@ def load_contract() -> ProjectedParityContract:
     )
 
 
-def expected_report(binding: str, contract: ProjectedParityContract) -> dict[str, Any]:
+def expected_report(
+    binding: str, contract: ProjectedParityContract, semantic_profile: str = SEMANTIC_PROFILE
+) -> dict[str, Any]:
     """Return the one exact report shape a binding producer must emit."""
 
     if binding not in REPORT_BINDINGS:
@@ -260,7 +264,7 @@ def expected_report(binding: str, contract: ProjectedParityContract) -> dict[str
     return {
         "format": REPORT_FORMAT,
         "binding": binding,
-        "semantic_profile": SEMANTIC_PROFILE,
+        "semantic_profile": semantic_profile,
         "authority": copy.deepcopy(contract.authority),
         "observations": copy.deepcopy(contract.observations),
     }
@@ -282,7 +286,9 @@ def _load_report(path: Path, contract: ProjectedParityContract) -> tuple[str, di
     binding = report["binding"]
     if type(binding) is not str or binding not in REPORT_BINDINGS:
         raise ContractError("unknown_binding", f"report {path} has an unknown binding")
-    expected = expected_report(binding, contract)
+    expected = expected_report(
+        binding, contract, profile_matrix.declared_profile(3, report, SEMANTIC_PROFILE)
+    )
     if report != expected:
         raise ContractError(
             "projected_observation_mismatch",
@@ -309,7 +315,11 @@ def compare_reports(paths: list[Path]) -> dict[str, Any]:
     observation_sha256 = hashlib.sha256(canonical_json_bytes(contract.observations)).hexdigest()
     return {
         "format": SUMMARY_FORMAT,
-        "semantic_profile": SEMANTIC_PROFILE,
+        "semantic_profile": profile_matrix.shared_value(
+            (report["semantic_profile"] for report in reports.values()),
+            "semantic profile",
+            error=ContractError,
+        ),
         "bindings": list(REPORT_BINDINGS),
         "authority": copy.deepcopy(contract.authority),
         "observation_sha256": observation_sha256,

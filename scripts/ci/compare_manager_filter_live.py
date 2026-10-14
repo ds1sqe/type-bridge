@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare four exact-TypeDB-3.12.1 Manager-filter reports."""
+"""Compare four Manager-filter reports that share one sdk-v3 matrix profile."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sdk_profile_matrix as profile_matrix  # noqa: E402
 from compare_sdk_conformance import (  # noqa: E402, F401
     ContractError,
     _duplicate_key_object,
@@ -30,7 +31,8 @@ PROVIDER_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.t
 
 REPORT_FORMAT = "typebridge.manager-filter-live-report/v1"
 SUMMARY_FORMAT = "typebridge.manager-filter-live-summary/v1"
-SEMANTIC_PROFILE = "typedb-3.12.1/v1"
+# The sdk-v3 catalog profile; reports may carry any sdk-v3 matrix profile.
+SEMANTIC_PROFILE = profile_matrix.catalog_profile(3)
 REPORT_BINDINGS = ("python", "node", "rust", "c")
 REPORT_OUTPUT_ENV = "TYPE_BRIDGE_MANAGER_LIVE_REPORT"
 REPORT_WRITE_SEMANTICS = "create_new"
@@ -286,7 +288,9 @@ def load_contract() -> ManagerManagerLiveContract:
     )
 
 
-def expected_report(binding: str, contract: ManagerManagerLiveContract) -> dict[str, Any]:
+def expected_report(
+    binding: str, contract: ManagerManagerLiveContract, semantic_profile: str = SEMANTIC_PROFILE
+) -> dict[str, Any]:
     """Return the one exact canonical report value admitted for a binding."""
 
     if binding not in REPORT_BINDINGS:
@@ -296,7 +300,7 @@ def expected_report(binding: str, contract: ManagerManagerLiveContract) -> dict[
         "binding": binding,
         "format": REPORT_FORMAT,
         "observation": copy.deepcopy(contract.observation),
-        "semantic_profile": SEMANTIC_PROFILE,
+        "semantic_profile": semantic_profile,
     }
 
 
@@ -320,7 +324,9 @@ def _load_report(
     binding = report["binding"]
     if type(binding) is not str or binding not in REPORT_BINDINGS:
         raise ContractError("unknown_binding", f"report {path} has an unknown binding")
-    if report != expected_report(binding, contract):
+    if report != expected_report(
+        binding, contract, profile_matrix.declared_profile(3, report, SEMANTIC_PROFILE)
+    ):
         raise ContractError(
             "manager_live_observation_mismatch",
             f"{binding} report differs from the independently derived manager contract",
@@ -354,7 +360,11 @@ def compare_reports(paths: list[Path]) -> dict[str, Any]:
         "observation_sha256": hashlib.sha256(
             canonical_json_bytes(contract.observation)
         ).hexdigest(),
-        "semantic_profile": SEMANTIC_PROFILE,
+        "semantic_profile": profile_matrix.shared_value(
+            (report["semantic_profile"] for report in reports.values()),
+            "semantic profile",
+            error=ContractError,
+        ),
     }
 
 

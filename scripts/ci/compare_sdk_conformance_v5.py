@@ -11,6 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import sdk_profile_matrix as profile_matrix  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = "tests/contracts/sdk_conformance/manifest-v1.json"
 CATALOG = "tests/contracts/sdk_conformance/sdk-v5/catalog-v5.json"
@@ -373,6 +377,15 @@ def validate_observation(index: int, value: Any) -> None:
                 reject("invalid_observation_value", f"lifecycle.{field} is false")
 
 
+def matrix_servers() -> set[str]:
+    """Exact TypeDB servers the sdk-v5 profile matrix admits."""
+
+    return {
+        entry.live_server_version
+        for entry in profile_matrix.load_matrix(5, error=ContractError).values()
+    }
+
+
 def validate_report(report: dict[str, Any], contracts: Contracts, root: Path) -> None:
     exact_keys(
         report,
@@ -391,7 +404,7 @@ def validate_report(report: dict[str, Any], contracts: Contracts, root: Path) ->
     )
     if report["format"] != "typebridge.sdk-conformance-report/v5":
         reject("invalid_report_schema", "report format is not V5")
-    if report["binding"] not in BINDINGS or report["server_version"] != "3.12.3":
+    if report["binding"] not in BINDINGS or report["server_version"] not in matrix_servers():
         reject("invalid_report_schema", "report binding or server version is invalid")
     validate_identity(report["manifest"], MANIFEST, root, "manifest")
     validate_identity(report["catalog"], CATALOG, root, "catalog")
@@ -450,6 +463,11 @@ def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
         reports[binding] = report
     if tuple(reports) != BINDINGS:
         reject("binding_order_drift", "V5 reports are not in canonical binding order")
+    profile_matrix.shared_value(
+        (report["server_version"] for report in reports.values()),
+        "server version",
+        error=ContractError,
+    )
 
     capabilities = {
         item.get("case_ids", ())[0]: item
