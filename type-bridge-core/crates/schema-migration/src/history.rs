@@ -529,6 +529,131 @@ pub fn discover_verified_migration_chain_with_evidence_in(
     genesis_source: &DeclaredSchema,
     context: &ManagedDeltaContext,
 ) -> Result<(MigrationHistoryGraph, CanonicalMigrationHistoryEvidence), Diagnostic> {
+    let (graph, evidence) = discover_any_profile_history_in(directory, genesis_source, context)?;
+    require_workspace_profile_heads(&graph, context.semantic_profile())?;
+    Ok((graph, evidence))
+}
+
+/// Where a canonical history stands for `migration upgrade-profile`.
+#[derive(Debug)]
+pub enum MigrationProfileUpgrade {
+    /// The history ends wholly on an older profile at one head. A bridge from
+    /// `from` with `parent` as its only parent moves it to the workspace.
+    Pending {
+        /// The verified history, every manifest on `from`.
+        graph: MigrationHistoryGraph,
+        /// The profile the history is on.
+        from: MigrationProfile,
+        /// The single history head the bridge continues.
+        parent: MigrationId,
+    },
+    /// The history already crosses into the workspace profile at `bridge`.
+    Bridged {
+        /// The verified bridged history.
+        graph: MigrationHistoryGraph,
+        /// The profile-upgrade bridge identity.
+        bridge: MigrationId,
+    },
+}
+
+/// Discover a history that the workspace profile may have moved past.
+///
+/// Ordinary discovery refuses a history wholly on an older profile with
+/// `migration_history_profile_upgrade_required`. This entry point replays it
+/// anyway, each manifest under its own profile, and reports either the single
+/// older-profile head to author a bridge from or the bridge already present.
+/// It refuses an empty history, several heads, a history already on the
+/// workspace profile (`migration_upgrade_profile_same_profile`) and one on a
+/// newer profile (`migration_upgrade_profile_downgrade`).
+pub fn discover_history_for_profile_upgrade_in(
+    directory: &MigrationDirectory,
+    genesis_source: &DeclaredSchema,
+    workspace: &ManagedDeltaContext,
+) -> Result<MigrationProfileUpgrade, Diagnostic> {
+    let target =
+        MigrationProfile::for_semantic_profile(workspace.semantic_profile()).ok_or_else(|| {
+            upgrade_failure(
+                "migration_upgrade_profile_unsupported_target",
+                "the workspace semantic profile is not a migration profile",
+            )
+            .with_detail(
+                "workspace_profile",
+                workspace.semantic_profile().as_str().to_owned(),
+            )
+        })?;
+    let (graph, _) = discover_any_profile_history_in(directory, genesis_source, workspace)?;
+    let bridge = graph
+        .manifests()
+        .find(|(_, manifest)| manifest.is_profile_bridge())
+        .map(|(id, _)| id.clone());
+    if let Some(bridge) = bridge {
+        require_workspace_profile_heads(&graph, workspace.semantic_profile())?;
+        return Ok(MigrationProfileUpgrade::Bridged { graph, bridge });
+    }
+    let parent = match graph.heads() {
+        [] => {
+            return Err(upgrade_failure(
+                "migration_upgrade_profile_empty_history",
+                "an empty migration history has no TypeDB line to upgrade from",
+            ));
+        }
+        [head] => head.clone(),
+        _ => {
+            return Err(upgrade_failure(
+                "migration_upgrade_profile_divergent_heads",
+                "a profile upgrade needs one history head; merge the heads first",
+            ));
+        }
+    };
+    // Without a bridge the lineage rules keep every manifest on one profile.
+    let history_profile = graph.manifests[&parent].semantic_profile().id();
+    let from = MigrationProfile::for_semantic_profile(history_profile).ok_or_else(|| {
+        upgrade_failure(
+            "migration_upgrade_profile_unsupported_history",
+            "the migration history is on a profile with no migration registry",
+        )
+        .with_detail("history_profile", history_profile.as_str().to_owned())
+    })?;
+    let refusal = match from.cmp(&target) {
+        std::cmp::Ordering::Less => {
+            return Ok(MigrationProfileUpgrade::Pending {
+                graph,
+                from,
+                parent,
+            });
+        }
+        std::cmp::Ordering::Equal => upgrade_failure(
+            "migration_upgrade_profile_same_profile",
+            "the migration history is already on the workspace profile",
+        ),
+        std::cmp::Ordering::Greater => upgrade_failure(
+            "migration_upgrade_profile_downgrade",
+            "the migration history is on a newer profile than the workspace",
+        ),
+    };
+    Err(refusal
+        .with_detail("history_profile", history_profile.as_str().to_owned())
+        .with_detail(
+            "workspace_profile",
+            workspace.semantic_profile().as_str().to_owned(),
+        ))
+}
+
+fn upgrade_failure(code: &'static str, message: &'static str) -> Diagnostic {
+    Diagnostic::new(
+        DiagnosticCategory::InvalidContract,
+        DiagnosticCode::new(code).expect("static profile-upgrade diagnostic code"),
+        message,
+    )
+}
+
+/// Discover and replay-verify a history without requiring its heads to be on
+/// the workspace profile. Lineage rules still apply.
+fn discover_any_profile_history_in(
+    directory: &MigrationDirectory,
+    genesis_source: &DeclaredSchema,
+    context: &ManagedDeltaContext,
+) -> Result<(MigrationHistoryGraph, CanonicalMigrationHistoryEvidence), Diagnostic> {
     let candidates = collect_canonical_candidates(directory)?;
     let mut headers = Vec::with_capacity(candidates.len());
     let mut index_by_id = BTreeMap::new();
@@ -582,7 +707,6 @@ pub fn discover_verified_migration_chain_with_evidence_in(
     }
     let graph =
         MigrationHistoryGraph::from_verified(verified_by_id.into_values().collect::<Vec<_>>())?;
-    require_workspace_profile_heads(&graph, context.semantic_profile())?;
     let evidence = CanonicalMigrationHistoryEvidence::from_candidates(candidates);
     Ok((graph, evidence))
 }

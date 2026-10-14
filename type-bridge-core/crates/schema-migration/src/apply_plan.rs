@@ -609,11 +609,21 @@ fn build_verified_migration_apply_plan_inner(
             .first()
             .map(|entry| entry.manifest().source_schema().clone())
     });
-    let source_state = state_from_applied.or_else(|| {
-        migrations
-            .first()
-            .map(|entry| entry.manifest().source_state().clone())
-    });
+    // A plan that starts at a profile-upgrade bridge executes under the
+    // bridge's newer profile. The live state it observes first is the bridge
+    // target (the frontier schema under the new profile), not the older-
+    // profile frontier state the bridge continues. Older-profile manifests
+    // never enter a plan: the lowering-binding check above refuses them.
+    let source_state = match migrations.first() {
+        Some(first) if first.manifest().is_profile_bridge() => {
+            Some(first.manifest().target_state().clone())
+        }
+        _ => state_from_applied.or_else(|| {
+            migrations
+                .first()
+                .map(|entry| entry.manifest().source_state().clone())
+        }),
+    };
     let mut resulting_applied = applied.clone();
     resulting_applied.extend(migrations.iter().map(|entry| entry.manifest().id().clone()));
     let target_frontier = graph.applied_frontier(&resulting_applied)?;

@@ -57,11 +57,11 @@ pub use generate::{
     write_generated_migration_under_lock,
 };
 pub use history::{
-    CanonicalMigrationHistoryEvidence, MigrationHistoryGraph,
+    CanonicalMigrationHistoryEvidence, MigrationHistoryGraph, MigrationProfileUpgrade,
     canonical_history_declared_legacy_bridge_count_in, canonical_history_declares_legacy_bridge_in,
-    discover_verified_migration_chain, discover_verified_migration_chain_in,
-    discover_verified_migration_chain_with_evidence_in, discover_verified_migrations,
-    discover_verified_migrations_in, require_adoption_authority_pair,
+    discover_history_for_profile_upgrade_in, discover_verified_migration_chain,
+    discover_verified_migration_chain_in, discover_verified_migration_chain_with_evidence_in,
+    discover_verified_migrations, discover_verified_migrations_in, require_adoption_authority_pair,
     require_adoption_authority_pair_state,
 };
 pub use history_bundle::{
