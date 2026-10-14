@@ -1,3 +1,5 @@
+mod support;
+
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
@@ -150,11 +152,13 @@ async fn databases() -> (Arc<Database>, Arc<Database>) {
             .await
             .expect("connect isolated journal database"),
     );
+    support::assert_live_server(&managed);
+    support::assert_live_server(&journal);
     (managed, journal)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn legacy_writer_fence_survives_a_live_struct_valued_schema_export_on_3_12_3() {
     let (managed, journal) = databases().await;
     let fingerprint = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -288,8 +292,7 @@ fn context() -> ManagedDeltaContext {
     ManagedDeltaContext::new(
         type_bridge_contract::managed_scope::ManagedScopeId::new("runner-live-scope")
             .expect("scope"),
-        type_bridge_contract::fingerprint::SemanticProfileId::new("typedb-3.12.1/v1")
-            .expect("profile"),
+        support::live_profile(),
         execution_capability_vocabulary().expect("execution capability vocabulary"),
     )
 }
@@ -364,7 +367,7 @@ fn write_manifest(directory: &Path, manifest: &VerifiedSchemaMigrationManifest) 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn runner_applies_discovered_chain_incrementally_on_3_12_3() {
     let (managed, journal) = databases().await;
     let context = context();
@@ -513,7 +516,7 @@ async fn runner_applies_discovered_chain_incrementally_on_3_12_3() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn runner_rejects_fresh_list_projection_drift_before_target_or_checkpoint_on_3_12_3() {
     let (managed, journal) = databases().await;
     let context = context();
@@ -643,7 +646,7 @@ async fn runner_rejects_fresh_list_projection_drift_before_target_or_checkpoint_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3() {
     let (managed, journal) = databases().await;
     let context = context();
@@ -783,7 +786,7 @@ async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn legacy_writer_allows_reserved_label_collisions_without_frozen_capabilities_on_3_12_3() {
     let (managed, journal) = databases().await;
     let collision_schema = r#"define
@@ -838,7 +841,7 @@ entity typebridge-internal-v2-legacy-cutover;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn runner_imports_a_completed_legacy_frontier_on_3_12_3() {
     let (managed, journal) = databases().await;
     let context = context();
@@ -1156,7 +1159,7 @@ fun compatibility-writer-probe($candidate: person) -> { person }:
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn runner_verifies_the_migration_state_triad_on_3_12_3() {
     let (managed, journal) = databases().await;
     let context = context();

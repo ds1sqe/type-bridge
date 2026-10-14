@@ -34,7 +34,20 @@ use type_bridge_orm::session::database::Database;
 use type_bridge_orm::{ConnectOptions, SecureConnectOptions, TlsMode};
 
 const MANAGED_SCOPE: &str = "e2e-smoke";
-const PROFILE: &str = "typedb-3.12.1/v1";
+/// Environment variable naming the workspace semantic profile the live suite
+/// runs under; the CLI requires the TypeDB server that profile pairs with.
+const PROFILE_ENV: &str = "TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE";
+
+fn live_profile() -> String {
+    let profile = std::env::var(PROFILE_ENV).unwrap_or_else(|_| "typedb-3.12.1/v1".to_owned());
+    let id = type_bridge_contract::fingerprint::SemanticProfileId::new(&profile)
+        .unwrap_or_else(|error| panic!("{PROFILE_ENV}={profile:?} is invalid: {error}"));
+    assert!(
+        type_bridge_schema_migration_typedb::migration_server_for_profile(&id).is_some(),
+        "{PROFILE_ENV}={profile} cannot run connected migrations"
+    );
+    profile
+}
 
 fn connect_options(http_port: &str) -> ConnectOptions {
     let http_port = http_port.parse::<u16>().unwrap_or_else(|error| {
@@ -147,12 +160,13 @@ fn write_manifest(workspace: &Path, address: &str, http_port: &str, databases: &
              username: env:TYPEDB_USERNAME\n      password: env:TYPEDB_PASSWORD\n",
         ));
     }
+    let profile = live_profile();
     fs::write(
         workspace.join("typebridge.yaml"),
         format!(
             "format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  \
              ownership: exclusive\n  managed-scope: {MANAGED_SCOPE}\ncompatibility:\n  \
-             semantic-profile: {PROFILE}\nmigrations:\n  directory: migrations/v2\n  \
+             semantic-profile: {profile}\nmigrations:\n  directory: migrations/v2\n  \
              app-label: smoke\nenvironments:\n{environments}",
         ),
     )
@@ -160,12 +174,13 @@ fn write_manifest(workspace: &Path, address: &str, http_port: &str, databases: &
 }
 
 fn write_tls_manifest(workspace: &Path, address: &str, http_port: u16, database: &str) {
+    let profile = live_profile();
     fs::write(
         workspace.join("typebridge.yaml"),
         format!(
             "format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  \
              ownership: exclusive\n  managed-scope: {MANAGED_SCOPE}\ncompatibility:\n  \
-             semantic-profile: {PROFILE}\nmigrations:\n  directory: migrations/v2\n  \
+             semantic-profile: {profile}\nmigrations:\n  directory: migrations/v2\n  \
              app-label: smoke\nenvironments:\n  tls-live:\n    database: {database}\n    \
              uri: {address}\n    http-port: '{http_port}'\n    tls: 'true'\n    \
              tls-root-ca: certs/root-ca.pem\n    migrate: 'true'\n    credential:\n      \
@@ -354,7 +369,7 @@ async fn empty_workspace_to_replayed_history_live() {
     let authority = QueryAuthority::from_declared_bytes(
         &declared_bytes_with_nickname(false),
         MANAGED_SCOPE,
-        PROFILE,
+        &live_profile(),
     )
     .expect("first authority");
     let plan = person_name_plan_bytes(&authority);
@@ -408,7 +423,7 @@ async fn empty_workspace_to_replayed_history_live() {
     let evolved_authority = QueryAuthority::from_declared_bytes(
         &declared_bytes_with_nickname(true),
         MANAGED_SCOPE,
-        PROFILE,
+        &live_profile(),
     )
     .expect("evolved authority");
     let evolved_plan = person_name_plan_bytes(&evolved_authority);
@@ -476,7 +491,7 @@ async fn empty_workspace_to_replayed_history_live() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.1 server"]
+#[ignore = "requires an isolated TypeDB 3.12.3 server (the documented examples' profile)"]
 async fn documented_examples_initial_constraints_apply_and_verify_live() {
     let address = std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into());
     let http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap_or_else(|_| "8000".into());

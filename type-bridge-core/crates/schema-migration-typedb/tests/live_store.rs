@@ -1,3 +1,5 @@
+mod support;
+
 use std::collections::BTreeSet;
 use std::env;
 use std::sync::Arc;
@@ -5,7 +7,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::FormatVersion;
-use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration::{
@@ -20,9 +21,9 @@ use type_bridge_schema::{ManagedDeltaContext, SafetyClass, diff_managed, inverse
 use type_bridge_schema_migration::{
     AppliedRecord, ExecutionScope, GroupEventRecord, GroupJournalEventKind, LeaseHolderId,
     MigrationApplyTarget, MigrationExecutionJournal, MigrationHistoryGraph, MigrationLeaseStore,
-    MigrationSafetyPolicy, PlanRecord, SafetyPolicyDecision, SchemaLoweringBinding,
-    SchemaMigrationDraft, VerifiedSchemaMigrationManifest, build_verified_manifest,
-    build_verified_migration_apply_plan, typedb_3_12_1_profile,
+    MigrationProfile, MigrationSafetyPolicy, PlanRecord, SafetyPolicyDecision,
+    SchemaLoweringBinding, SchemaMigrationDraft, VerifiedSchemaMigrationManifest,
+    build_verified_manifest, build_verified_migration_apply_plan,
 };
 use type_bridge_schema_migration_typedb::{
     JOURNAL_CONTROL_SCHEMA_TYPEQL, TypeDbExecutionBinding, TypeDbMigrationStore,
@@ -81,6 +82,8 @@ async fn databases() -> (Arc<Database>, Arc<Database>) {
         journal.database_name(),
         derived_journal_database_name(managed.database_name())
     );
+    support::assert_live_server(&managed);
+    support::assert_live_server(&journal);
     (managed, journal)
 }
 
@@ -114,10 +117,15 @@ fn declared(labels: &[&str]) -> DeclaredSchema {
 }
 
 fn context_for_scope(scope: ManagedScopeId) -> ManagedDeltaContext {
+    let profile = support::live_profile();
     ManagedDeltaContext::new(
         scope,
-        SemanticProfileId::new("typedb-3.12.1/v1").expect("profile"),
-        typedb_3_12_1_profile().required_capabilities.clone(),
+        profile.clone(),
+        MigrationProfile::for_semantic_profile(&profile)
+            .expect("live profile has a schema-transition registry")
+            .profile()
+            .required_capabilities
+            .clone(),
     )
 }
 
@@ -162,7 +170,7 @@ fn additive_policy() -> MigrationSafetyPolicy {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn foreign_journal_schema_rejects_without_mutating_either_database() {
     let (managed, journal) = databases().await;
     let mut transaction = journal
@@ -201,7 +209,7 @@ async fn foreign_journal_schema_rejects_without_mutating_either_database() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn different_provider_authority_rejects_before_mutating_either_database() {
     let (managed, journal) = databases().await;
     let (address, _, username, password, options) = connection();
@@ -241,7 +249,7 @@ async fn different_provider_authority_rejects_before_mutating_either_database() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn missing_and_wrong_journal_owner_reject_unchanged_before_managed_fence() {
     let (managed, journal) = databases().await;
     let mut transaction = journal
@@ -308,7 +316,7 @@ async fn missing_and_wrong_journal_owner_reject_unchanged_before_managed_fence()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn concurrent_bootstrap_is_singleton_and_read_only_verify_never_bootstraps() {
     let (managed, journal) = databases().await;
     let scope_id = ManagedScopeId::new("concurrent-journal-scope").unwrap();
@@ -384,7 +392,7 @@ async fn concurrent_bootstrap_is_singleton_and_read_only_verify_never_bootstraps
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn control_schema_and_fenced_lease_round_trip_on_3_12_3() {
     let (managed_database, journal_database) = databases().await;
     let scope_id = ManagedScopeId::new("journal-live-scope").expect("managed scope id");

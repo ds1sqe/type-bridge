@@ -1,3 +1,5 @@
+mod support;
+
 use std::collections::BTreeSet;
 use std::env;
 use std::sync::Arc;
@@ -76,6 +78,8 @@ async fn databases() -> (Arc<Database>, Arc<Database>) {
             .await
             .expect("connect isolated journal database"),
     );
+    support::assert_live_server(&managed);
+    support::assert_live_server(&journal);
     (managed, journal)
 }
 
@@ -172,8 +176,7 @@ async fn query_document_count(database: &Database, query: &str) -> usize {
 fn context() -> ManagedDeltaContext {
     ManagedDeltaContext::new(
         ManagedScopeId::new("provider-live-scope").expect("scope"),
-        type_bridge_contract::fingerprint::SemanticProfileId::new("typedb-3.12.1/v1")
-            .expect("profile"),
+        support::live_profile(),
         execution_capability_vocabulary().expect("execution capability vocabulary"),
     )
 }
@@ -186,7 +189,7 @@ fn migration_id(name: &str) -> MigrationId {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn raw_attribute_type_undefinition_removes_its_dependencies_on_3_12_3() {
     let (managed, journal) = databases().await;
     let mut define = managed
@@ -299,7 +302,7 @@ fn conditional_manifest(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_3() {
     let (managed, journal_database) = databases().await;
     let context = context();
@@ -415,7 +418,7 @@ async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_3() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
     let (managed, journal_database) = databases().await;
     let context = context();

@@ -1239,15 +1239,12 @@ async fn run_connected_async(
             application; set `migrate: true` in the manifest to allow it"
         ));
     }
-    let supported = &type_bridge_schema_migration::typedb_3_12_1_profile().semantic_profile;
-    if config.semantic_profile() != supported {
-        return Err(format!(
-            "workspace semantic profile {:?} cannot run connected TypeDB migration operations \
-             [migration_typedb_semantic_profile_unsupported]; expected {:?}",
-            config.semantic_profile().as_str(),
-            supported.as_str(),
-        ));
-    }
+    // Only the profiles paired with an exact server run connected migrations;
+    // the provider rechecks the negotiated server against this pair.
+    type_bridge_schema_migration_typedb::require_supported_migration_profile(
+        config.semantic_profile(),
+    )
+    .map_err(display)?;
     environment
         .requirements()
         .ensure_supported_by(&execution_capability_vocabulary().map_err(display)?)
@@ -2655,45 +2652,69 @@ mod migration_command_tests {
         );
     }
 
+    fn connected_actions(directory: &Path) -> [ConnectedAction; 3] {
+        [
+            ConnectedAction::Apply {
+                approvals: Vec::new(),
+            },
+            ConnectedAction::Verify,
+            ConnectedAction::Adopt {
+                archive_directory: directory.join("missing-archive"),
+                name: "0000_archive_frontier".to_owned(),
+            },
+        ]
+    }
+
     #[test]
     fn unsupported_execution_profile_rejects_before_credentials_or_filesystem_mutation() {
-        // A workspace on a query-only profile (3.11.5) or on the 3.13.6 line,
-        // whose migration authority is not frozen yet, never reaches setup.
-        for profile in ["typedb-3.11.5/v1", "typedb-3.13.6/v1"] {
+        // A workspace on a query-only profile (3.11.5) never reaches setup.
+        let profile = "typedb-3.11.5/v1";
+        let directory = tempfile::tempdir().expect("workspace directory");
+        let manifest = write_workspace_manifest(directory.path(), profile);
+        let workspace = load_workspace(&manifest).expect("workspace loads");
+
+        for action in connected_actions(directory.path()) {
+            let error = run_connected(&workspace, "dev", action)
+                .expect_err("every connected migration operation uses a paired profile");
+
+            assert!(
+                error.contains("migration_typedb_semantic_profile_unsupported"),
+                "{error}"
+            );
+            assert!(error.contains(profile), "{error}");
+            assert!(error.contains("typedb-3.12.1/v1"), "{error}");
+            assert!(error.contains("typedb-3.13.6/v1"), "{error}");
+            assert!(
+                !error.contains("credential environment variable")
+                    && !error.contains("cannot connect")
+                    && !error.contains("cannot check database"),
+                "profile gate ran after external setup: {error}"
+            );
+        }
+        assert!(
+            !directory.path().join("migrations/v2").exists(),
+            "profile rejection must not create the migration directory"
+        );
+    }
+
+    #[test]
+    fn paired_execution_profiles_pass_the_profile_gate() {
+        for profile in ["typedb-3.12.1/v1", "typedb-3.13.6/v1"] {
             let directory = tempfile::tempdir().expect("workspace directory");
             let manifest = write_workspace_manifest(directory.path(), profile);
             let workspace = load_workspace(&manifest).expect("workspace loads");
 
-            for action in [
-                ConnectedAction::Apply {
-                    approvals: Vec::new(),
-                },
-                ConnectedAction::Verify,
-                ConnectedAction::Adopt {
-                    archive_directory: directory.path().join("missing-archive"),
-                    name: "0000_archive_frontier".to_owned(),
-                },
-            ] {
+            for action in connected_actions(directory.path()) {
+                // The fixture has no migration directory or archive, so each
+                // action stops at the directory step after the profile gate.
                 let error = run_connected(&workspace, "dev", action)
-                    .expect_err("every connected migration operation uses the exact profile");
-
+                    .expect_err("the fixture cannot complete a connected operation");
                 assert!(
-                    error.contains("migration_typedb_semantic_profile_unsupported"),
-                    "{error}"
+                    !error.contains("migration_typedb_semantic_profile_unsupported"),
+                    "{profile} must pass the profile gate: {error}"
                 );
-                assert!(error.contains(profile), "{error}");
-                assert!(error.contains("typedb-3.12.1/v1"), "{error}");
-                assert!(
-                    !error.contains("credential environment variable")
-                        && !error.contains("cannot connect")
-                        && !error.contains("cannot check database"),
-                    "profile gate ran after external setup: {error}"
-                );
+                assert!(error.contains("migration directory"), "{error}");
             }
-            assert!(
-                !directory.path().join("migrations/v2").exists(),
-                "profile rejection must not create the migration directory"
-            );
         }
     }
 }

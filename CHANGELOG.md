@@ -267,8 +267,18 @@ differently direct and through a proxy. Each entry says what to do instead.
   is 3.11.0–3.13.x; 3.13 servers negotiate the band-9 driver and use the
   semantic profile `typedb-3.13.6/v1`. Generated packages on that profile
   connect to exactly TypeDB 3.13.6. TypeDB 3.14 and newer are refused.
-  Connected migration commands still require TypeDB 3.12.3 and the
-  `typedb-3.12.1/v1` profile.
+- Connected migrations (`migration apply`, `verify`, `adopt`, and
+  `rollback`) run on TypeDB 3.13.6 with the workspace profile
+  `typedb-3.13.6/v1`. Each profile runs on exactly one server:
+  `typedb-3.12.1/v1` on 3.12.3 and `typedb-3.13.6/v1` on 3.13.6; any other
+  pair is refused with `migration_typedb_server_version_unsupported`, which
+  names the server the profile expects, and any other profile with
+  `migration_typedb_semantic_profile_unsupported` before credentials or the
+  filesystem are touched. Existing 3.12 histories move to the new profile
+  with `migration upgrade-profile --to typedb-3.13.6/v1`.
+  `require_supported_migration_server_for_profile`,
+  `require_supported_migration_profile`, and `migration_server_for_profile`
+  in `type_bridge_schema_migration_typedb` expose the pairing.
 - `type_bridge_core.InvalidQueryRequestError`, a subclass of both
   `MatchRequestError` and `ValueError`, for the query refusals 2.2 raised as
   `ValueError` (codes `zero_window_limit`, `window_overflow`,
@@ -482,6 +492,9 @@ terminals were already awaited, so 2.2 remote-session code runs unchanged.
     `MAX_QUERY_ATTRIBUTE_VALUES`, `MAX_QUERY_COLLECTION_MEMBERS`, and
     `MAX_QUERY_ROLE_PLAYERS` (`type_bridge` and `type_bridge_orm`) equal the
     matching `DEFAULT_PROXY_QUERY_*`, their 2.2 values.
+  - `type_bridge_schema_migration_typedb::require_supported_migration_server`
+    still requires exactly TypeDB 3.12.3, the `typedb-3.12.1/v1` server. Use
+    `require_supported_migration_server_for_profile`.
 
 ## [2.2.6] - 2026-10-16
 
