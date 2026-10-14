@@ -392,7 +392,11 @@ fn emitted_fixture() -> EmittedFixture {
     )])
     .expect("C ABI fixture parses");
     let declared = normalize_documents(&documents).expect("C ABI fixture normalizes");
-    let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile is valid");
+    let profile = SemanticProfileId::new(
+        std::env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")
+            .unwrap_or_else(|_| "typedb-3.12.1/v1".to_owned()),
+    )
+    .expect("profile is valid");
     let resolved = resolve(&declared, &profile).expect("C ABI fixture resolves");
     let available: CapabilitySet = BUILTIN_SCHEMA_CAPABILITY_IDS
         .iter()

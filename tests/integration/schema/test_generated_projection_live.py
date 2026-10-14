@@ -4822,6 +4822,8 @@ def test_generated_direct_terminals_run_under_the_connection_answer_ceiling(
     clean_db: Database,
     generated_package: ModuleType,
 ) -> None:
+    if (clean_db.detected_server_version() or "").startswith("3.11."):
+        pytest.skip("TypeDB 3.11 has no direct-connection profile")
     generated = generated_package
     _, provider_schema, _ = _acceptance_contract(clean_db)
     clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")

@@ -18,7 +18,8 @@ use type_bridge::value::{
     Decimal as QueryDecimal, Double as QueryDouble, Regex, Text,
 };
 use type_bridge::{
-    AnswerCancellation, Connection, ConnectionOptions, Database, DirectConnectionPolicy, Error,
+    AnswerCancellation, AnswerTransport, Connection, ConnectionOptions, Database,
+    DirectConnectionPolicy, Error,
     ErrorCategory, ErrorDetail, TlsPolicy,
     ErrorPathSegment, DEFAULT_DIRECT_QUERY_ITEMS, PageOptions, ProjectedManagerComparison,
     QueryDiagnosticCategory, QueryDiagnosticPathKind, QueryExecutionResourceLimits, QuerySession,
@@ -2137,7 +2138,8 @@ async fn sdk_v2_remote_cancellation(
 }
 
 fn sdk_v2_resource_limit_base() -> Value {
-    let hard = QueryExecutionResourceLimits::default();
+    // The frozen SDK-v2 journey records the wire/proxy defaults.
+    let hard = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
     // Every dimension but the statement count may be raised past its default
     // and is kept as given.
     let raised = QueryExecutionResourceLimits {
@@ -5418,6 +5420,12 @@ async fn role_player_refusal(
 
 #[tokio::test]
 async fn generated_one_program_under_direct_and_proxy_connections() {
+    let semantics: Value = serde_json::from_str(SEMANTIC_SCHEMA_FINGERPRINT_JSON)
+        .expect("generated semantic fingerprint JSON");
+    if semantics["semantic_profile"].as_str() == Some("typedb-3.11.5/v1") {
+        eprintln!("skipping direct/proxy connection parity: TypeDB 3.11 has no direct-connection profile");
+        return;
+    }
     let db = database().await;
     let workers = [
         db.entities::<Person>()

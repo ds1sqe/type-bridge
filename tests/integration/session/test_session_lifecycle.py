@@ -43,6 +43,14 @@ class TestDatabaseLifecycle:
             with warnings.catch_warnings():
                 warnings.simplefilter("error", DeprecationWarning)
                 database.connect()
+                from type_bridge import typedb_driver, version
+
+                server = database.detected_server_version()
+                assert server is not None
+                try:
+                    version.ensure_supported(typedb_driver.driver_version(), server)
+                except version.UnsupportedVersionError as error:
+                    pytest.skip(f"installed typedb-driver cannot serve this lane: {error}")
                 _ = database.driver
             assert database.detected_server_version() is not None
         finally:

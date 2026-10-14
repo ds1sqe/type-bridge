@@ -45,9 +45,21 @@ DECLARED_B64 = (
     "cGVyc29uIn19fX1dLCJmb3JtYXRfdmVyc2lvbiI6MSwicmVxdWlyZWRfY2FwYWJpbGl0aWVzIjpbXX0="
 )
 SCOPE = "binding-smoke"
-PROFILE = "typedb-3.12.1/v1"
-CROSS_BINDING_PLAN_FINGERPRINT = "d605b3bc6e8a9c59a03d2a79d7ec497dd637109b2cbf70ebaa5ac4b951f53502"
-CROSS_BINDING_INVOCATION_SHA256 = "ca5bc9a7657a21c5cf330e99a678a4c0fc25d803828f456c8b520625f54143b7"
+PROFILE = os.getenv("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE", "typedb-3.12.1/v1")
+if PROFILE == "typedb-3.13.6/v1":
+    CROSS_BINDING_PLAN_FINGERPRINT = (
+        "9aa0f2385b35cb48a625d4c9690d667fdc8f14aac0671aff4997e05dca43602a"
+    )
+    CROSS_BINDING_INVOCATION_SHA256 = (
+        "2f3c6983c8b577d71ba875ebc94d2ed9e0c129fdeb77af0c6aff9d14d9c5893b"
+    )
+else:
+    CROSS_BINDING_PLAN_FINGERPRINT = (
+        "d605b3bc6e8a9c59a03d2a79d7ec497dd637109b2cbf70ebaa5ac4b951f53502"
+    )
+    CROSS_BINDING_INVOCATION_SHA256 = (
+        "ca5bc9a7657a21c5cf330e99a678a4c0fc25d803828f456c8b520625f54143b7"
+    )
 
 ROOT = Path(__file__).resolve().parents[3]
 CORE_DIR = ROOT / "type-bridge-core"
@@ -77,6 +89,10 @@ def _server_authority(declared: bytes) -> bytes:
     with tempfile.TemporaryDirectory(prefix="type-bridge-v2-binding-authority-") as stage_text:
         stage = Path(stage_text)
         shutil.copytree(AUTHORITY_WORKSPACE, stage, dirs_exist_ok=True)
+        manifest = stage / "typebridge.yaml"
+        manifest.write_text(
+            manifest.read_text().replace("typedb-3.12.1/v1", PROFILE), encoding="utf-8"
+        )
         subprocess.run(
             [
                 "cargo",

@@ -1,4 +1,4 @@
-//! End-to-end V2 query execution against TypeDB 3.12.1.
+//! End-to-end V2 query execution against the selected TypeDB lane.
 
 use std::env;
 use std::time::Duration;
@@ -39,6 +39,11 @@ use type_bridge_orm::session::backend::{
 use type_bridge_orm::{Database, TxType};
 use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan};
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema, managed_schema_state, resolve};
+
+fn live_semantic_profile() -> String {
+    env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")
+        .unwrap_or_else(|_| "typedb-3.12.1/v1".to_owned())
+}
 
 struct LiveQueryFixture {
     managed: type_bridge_contract::schema_delta::ManagedSchemaState,
@@ -187,7 +192,7 @@ fn live_fixture(suffix: &str) -> LiveQueryFixture {
     });
     let declared =
         DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
-    let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+    let profile = SemanticProfileId::new(live_semantic_profile()).unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
     let managed = managed_schema_state(
         &declared,
@@ -565,7 +570,7 @@ async fn scalar_schema_function_calls_execute_live() {
     let declared =
         DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
     let profile =
-        type_bridge_contract::fingerprint::SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+        type_bridge_contract::fingerprint::SemanticProfileId::new(live_semantic_profile()).unwrap();
     let resolved = type_bridge_schema::resolve(&declared, &profile).unwrap();
     let managed = type_bridge_schema::managed_schema_state(
         &declared,
@@ -751,7 +756,7 @@ async fn reduce_stages_group_and_total_live() {
     });
     let declared =
         DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
-    let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+    let profile = SemanticProfileId::new(live_semantic_profile()).unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
     let managed = managed_schema_state(
         &declared,
@@ -959,7 +964,7 @@ async fn try_blocks_carry_optional_columns_live() {
     });
     let declared =
         DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
-    let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+    let profile = SemanticProfileId::new(live_semantic_profile()).unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
     let managed = managed_schema_state(
         &declared,
@@ -1279,7 +1284,7 @@ async fn document_fetch_returns_typed_documents_live() {
     });
     let declared =
         DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
-    let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+    let profile = SemanticProfileId::new(live_semantic_profile()).unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
     let managed = managed_schema_state(
         &declared,
@@ -1479,7 +1484,7 @@ async fn local_functions_execute_per_row_live() {
     });
     let declared =
         DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
-    let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+    let profile = SemanticProfileId::new(live_semantic_profile()).unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
     let managed = managed_schema_state(
         &declared,
@@ -1760,7 +1765,7 @@ async fn bounded_reachability_executes_live() {
     });
     let declared =
         DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
-    let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+    let profile = SemanticProfileId::new(live_semantic_profile()).unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
     let managed = managed_schema_state(
         &declared,
@@ -2336,7 +2341,7 @@ async fn remote_envelope_parity_corpus_live() {
     });
     let declared =
         DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap();
-    let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+    let profile = SemanticProfileId::new(live_semantic_profile()).unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
     let managed = managed_schema_state(
         &declared,
@@ -2950,14 +2955,18 @@ async fn prepared_facade_executes_locally_and_remotely_live() {
         encode_declared_schema(&declared).unwrap()
     };
     let authority = Arc::new(
-        QueryAuthority::from_declared_bytes(&declared_bytes, "query-v2-live", "typedb-3.12.1/v1")
-            .expect("authority from declared bytes"),
+        QueryAuthority::from_declared_bytes(
+            &declared_bytes,
+            "query-v2-live",
+            &live_semantic_profile(),
+        )
+        .expect("authority from declared bytes"),
     );
     let local_authority = Arc::new(
         QueryAuthority::from_declared_bytes_query_only(
             &declared_bytes,
             "query-v2-live",
-            "typedb-3.12.1/v1",
+            &live_semantic_profile(),
             &db,
         )
         .expect("query-only authority from declared bytes"),

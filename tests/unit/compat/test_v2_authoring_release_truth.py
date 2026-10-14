@@ -78,9 +78,11 @@ def test_binding_smokes_pin_one_advanced_cross_language_authored_identity() -> N
             assert operation in text, (
                 f"{path.relative_to(ROOT)} lost advanced authored operation {operation}"
             )
+        assert "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE" in text
+        assert '"typedb-3.13.6/v1"' in text
         identities.append(tuple(re.findall(r'"([0-9a-f]{64})"', text)))
     assert identities[0] == identities[1]
-    assert len(identities[0]) == 2
+    assert len(identities[0]) == 4
 
 
 def test_typed_query_guide_is_projection_scoped_and_names_remote_reducers() -> None:
