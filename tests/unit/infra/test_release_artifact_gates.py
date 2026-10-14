@@ -1040,7 +1040,7 @@ def test_generated_and_low_level_queries_are_required_in_the_tls_lane() -> None:
     """TLS must cover generated applications as well as the retained low-level facade."""
     test_script = (REPO_ROOT / "test.sh").read_text(encoding="utf-8")
     start = test_script.index("run_tls_transport_steps() {")
-    end = test_script.index('\n}\n\nif [[ "$tls" == 1 ]]', start)
+    end = test_script.index("\n}\n", start)
     tls_lane = test_script[start:end]
 
     assert (

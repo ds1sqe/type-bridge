@@ -486,7 +486,7 @@ def test_check_local_integration_and_ci_persist_the_same_exact_live_gate() -> No
     ):
         assert owned in local
     local_gate = local.index("scripts/ci/run_generated_live.py")
-    exact_detection = local.index('if [[ "$typedb_server_version" == "3.12.3" ]]')
+    exact_detection = local.index('if [[ "$lane_in_sdk_matrix" == 1 ]]')
     rust_integration = local.index('printf "${BOLD}━━━ Rust (integration)')
     assert exact_detection < local_gate < rust_integration
 

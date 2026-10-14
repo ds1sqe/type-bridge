@@ -9,6 +9,9 @@
 //! - `TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE` (optional, default `typedb`): a
 //!   TypeDB distribution whose `console` subcommand runs `database export`
 //!   and `database import` against both servers.
+//! - `TYPE_BRIDGE_MIGRATION_UPGRADE_FROM_HTTP_PORT` /
+//!   `TYPE_BRIDGE_MIGRATION_UPGRADE_TO_HTTP_PORT` (optional, default 8000):
+//!   each server's HTTP port, so both servers can run on one host.
 //!
 //! `TYPEDB_USERNAME`/`TYPEDB_PASSWORD` apply to both servers. Without the two
 //! addresses the test returns immediately.
@@ -48,6 +51,10 @@ const UPGRADE_FROM_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_FROM";
 const UPGRADE_TO_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_TO";
 /// TypeDB distribution used for `database export` and `database import`.
 const UPGRADE_CONSOLE_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE";
+/// Optional HTTP ports of the two servers; both default to TypeDB's 8000,
+/// which two servers on one host cannot share.
+const UPGRADE_FROM_HTTP_PORT_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_FROM_HTTP_PORT";
+const UPGRADE_TO_HTTP_PORT_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_TO_HTTP_PORT";
 
 const OLD: MigrationProfile = MigrationProfile::Typedb3_12_1;
 const NEW: MigrationProfile = MigrationProfile::Typedb3_13_6;
@@ -86,9 +93,34 @@ fn credentials() -> (String, String) {
     )
 }
 
+/// Connect options for `address`, with the HTTP port set for that endpoint.
+fn connect_options(address: &str) -> ConnectOptions {
+    let port = [
+        (UPGRADE_FROM_ENV, UPGRADE_FROM_HTTP_PORT_ENV),
+        (UPGRADE_TO_ENV, UPGRADE_TO_HTTP_PORT_ENV),
+    ]
+    .into_iter()
+    .find(|(endpoint, _)| env::var(endpoint).as_deref() == Ok(address))
+    .and_then(|(_, port_env)| env::var(port_env).ok().map(|port| (port_env, port)));
+    let Some((port_env, port)) = port else {
+        return ConnectOptions::default();
+    };
+    let http_port = port
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .unwrap_or_else(|| {
+            panic!("{port_env} must be an integer from 1 through 65535, got {port:?}")
+        });
+    ConnectOptions {
+        http_port,
+        ..ConnectOptions::default()
+    }
+}
+
 async fn connect(address: &str, name: &str, profile: MigrationProfile) -> Arc<Database> {
     let (username, password) = credentials();
-    let options = ConnectOptions::default();
+    let options = connect_options(address);
     type_bridge_orm::ensure_database_exists(address, name, &username, &password, options)
         .await
         .expect("create isolated database");

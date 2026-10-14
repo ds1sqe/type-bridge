@@ -12,6 +12,8 @@
 #   ./test.sh --proxy          additionally run the -m proxy suite (proxy stack)
 #   ./test.sh --tls            additionally run the isolated TLS transport lane
 #   ./test.sh --no-isolated    use an already-running TypeDB instead of managing one
+#   ./test.sh --typedb all     run the live tier on every supported TypeDB line, then the
+#                              two-server profile-upgrade lane
 #
 # Flags compose, e.g. `./test.sh --tls --no-isolated`. Args after `--` are forwarded to the
 # pytest invocations (e.g. `./test.sh -- -k some_test`).
@@ -61,11 +63,13 @@ integration=1
 proxy=0
 tls=0
 isolated=1
+typedb_request=""
 pytest_args=()
 
 usage() {
     cat <<'EOF'
-Usage: ./test.sh [--no-integration] [--proxy] [--tls] [--no-isolated] [-- <pytest args>]
+Usage: ./test.sh [--no-integration] [--proxy] [--tls] [--no-isolated]
+                 [--typedb <3.11.5|3.12.3|3.13.6|all>] [-- <pytest args>]
 
   --no-integration  Run only the offline tiers (Rust, Python unit, Node unit/dts,
                     and the internal C foundation).
@@ -74,6 +78,14 @@ Usage: ./test.sh [--no-integration] [--proxy] [--tls] [--no-isolated] [-- <pytes
                     mode this starts a test-only TLS endpoint in front of TypeDB.
   --no-isolated     Use an already-running TypeDB (USE_DOCKER=false) instead of
                     managing a container. Default is isolated: test.sh owns a TypeDB.
+  --typedb LINE     Run the live tier on one supported TypeDB line (default 3.13.6),
+                    or on each line with `all`; `all` then runs the two-server
+                    3.12.3 -> 3.13.6 profile-upgrade lane. The offline tiers run once.
+                    Each line runs on its own isolated server and semantic profile.
+
+The upgrade lane needs a TypeDB console (the typedb/typedb images ship none): set
+TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE to a TypeDB distribution's `typedb` launcher
+that includes `typedb console`; without it the lane is skipped.
 
 Override assigned ports with TYPEDB_PORT / TYPEDB_HTTP_PORT.  By default, isolated
 mode lets the engine pick free ports per worktree; the derived project name is
@@ -95,6 +107,15 @@ while [[ $# -gt 0 ]]; do
         --proxy)          proxy=1 ;;
         --tls)            tls=1 ;;
         --no-isolated)    isolated=0 ;;
+        --typedb)
+            if [[ $# -lt 2 ]]; then
+                printf "${RED}--typedb needs a TypeDB line or 'all'${RESET}\n\n" >&2
+                usage
+                exit 1
+            fi
+            shift
+            typedb_request="$1" ;;
+        --typedb=*)       typedb_request="${1#--typedb=}" ;;
         --)               shift; pytest_args=("$@"); break ;;
         -h|--help)        usage; exit 0 ;;
         *) printf "${RED}unknown flag: %s${RESET}\n\n" "$1" >&2; usage; exit 1 ;;
@@ -143,6 +164,26 @@ CALLER_TYPEDB_TLS_ROOT_CA="${TYPEDB_TLS_ROOT_CA:-}"
 CALLER_TYPEDB_TLS_PORT="${TYPEDB_TLS_PORT:-}"
 unset TYPEDB_TLS_ADDRESS TYPEDB_TLS_HTTP_PORT TYPEDB_TLS_ROOT_CA TYPEDB_TLS_PORT
 
+# Caller pins for the managed server and its lane, captured once so each lane
+# starts from them instead of from the previous lane's discovered values.
+CALLER_TYPEDB_IMAGE="${TYPEDB_IMAGE:-}"
+CALLER_TYPEDB_PORT="${TYPEDB_PORT:-}"
+CALLER_TYPEDB_HTTP_PORT="${TYPEDB_HTTP_PORT:-}"
+CALLER_TYPEDB_ADDRESS="$TYPEDB_ADDRESS"
+CALLER_ACCEPTANCE_PROFILE="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-}"
+CALLER_UPGRADE_CONSOLE="${TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE:-}"
+
+# ── TypeDB lanes ─────────────────────────────────────────────────────────────
+# Each supported TypeDB line and the semantic profile its live tier runs under.
+# 3.13.6 is the default line.
+TYPEDB_LANES=(3.11.5 3.12.3 3.13.6)
+declare -A LANE_PROFILES=(
+    [3.11.5]=typedb-3.11.5/v1
+    [3.12.3]=typedb-3.12.1/v1
+    [3.13.6]=typedb-3.13.6/v1
+)
+default_lane="3.13.6"
+
 # ── Step runner (mirrors scripts/check.sh) ───────────────────────────────────
 pass=0
 fail=0
@@ -158,7 +199,7 @@ run_step() {
     else
         printf "${RED}  ✗ %s${RESET}\n\n" "$name"
         fail=$((fail + 1))
-        failures+=("$name")
+        failures+=("${lane_label:+[$lane_label] }$name")
     fi
 }
 
@@ -249,8 +290,11 @@ print(
 # One shared TypeDB serves the Rust, Python, and Node integration tiers — the CI shape,
 # reproduced locally. The proxy tier (--proxy) owns its own stack via proxy_lifecycle.py.
 compose=""
-typedb_started=0
+started_projects=()
 sdk_report_dir=""
+lane_label=""
+lane_fail_start=0
+lane_summaries=()
 preserve_sdk_evidence="${TYPE_BRIDGE_PRESERVE_SDK_EVIDENCE:-0}"
 if [[ "$preserve_sdk_evidence" != 0 && "$preserve_sdk_evidence" != 1 ]]; then
     printf "${RED}TYPE_BRIDGE_PRESERVE_SDK_EVIDENCE must be 0 or 1.${RESET}\n" >&2
@@ -278,67 +322,83 @@ profile_server_version() {
         "$ROOT/scripts/ci" "$1"
 }
 
-start_typedb() {
-    detect_compose
-    local proj
-    local services=(typedb)
-    # The lane's server: the one TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE pairs
-    # with, else the default line. The TLS endpoint fronts the same server.
-    # An explicit caller image remains authoritative.
-    local lane_server="3.13.6"
-    if [[ -n "${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-}" ]]; then
-        lane_server="$(profile_server_version "$TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")"
+# Resolve the lane a semantic profile names: its line in the lane table, else
+# the server the SDK profile matrix pairs it with.
+lane_for_profile() {
+    local server
+    for server in "${TYPEDB_LANES[@]}"; do
+        if [[ "${LANE_PROFILES[$server]}" == "$1" ]]; then
+            printf '%s' "$server"
+            return 0
+        fi
+    done
+    profile_server_version "$1"
+}
+
+# The compose project of one managed server. A single lane keeps the worktree
+# project; multi-server runs suffix it so each server is its own project.
+lane_compose_project() {
+    local suffix="$1"
+    if [[ -z "$suffix" ]]; then
+        compose_project
+    else
+        printf '%s-%s' "$(compose_project)" "${suffix//./-}"
     fi
-    local typedb_image="${TYPEDB_IMAGE:-typedb/typedb:${lane_server}}"
-    proj="$(compose_project)"
-    if [[ "$tls" == 1 ]]; then
+}
+
+# Discover an engine-assigned host port. 'compose port' can return empty
+# immediately after 'up -d' while the port mapping propagates, so we retry up
+# to 3 times with a 1-second gap. Docker may print one line per address family
+# (IPv4 + IPv6); the port number is the same on both, so the last line works.
+discover_port() {
+    local proj="$1"
+    local service="$2"
+    local container_port="$3"
+    local out=""
+    for _ in {1..3}; do
+        out="$($compose -f docker-compose.yml -p "$proj" port "$service" "$container_port" 2>/dev/null || true)"
+        [[ -n "$out" ]] && break
+        sleep 1
+    done
+    printf '%s' "$out" | tail -1 | sed 's/.*://'
+}
+
+# start_typedb <server> <project> <with-tls>: start one isolated TypeDB of that
+# line as its own compose project, wait until it serves gRPC and HTTP, and set
+# started_port / started_http_port (and the TLS endpoint when <with-tls> is 1).
+# An explicit caller image or port remains authoritative.
+start_typedb() {
+    local lane_server="$1"
+    local proj="$2"
+    local with_tls="$3"
+    local services=(typedb)
+    local typedb_image="${CALLER_TYPEDB_IMAGE:-typedb/typedb:${lane_server}}"
+    if [[ "$with_tls" == 1 ]]; then
         services+=(typedb-tls)
     fi
 
-    printf "${BOLD}━━━ TypeDB (isolated, project %s) ━━━${RESET}\n\n" "$proj"
+    printf "${BOLD}━━━ TypeDB %s (isolated, project %s) ━━━${RESET}\n\n" "$lane_server" "$proj"
+    started_projects+=("$proj")
     env \
         TYPEDB_IMAGE="$typedb_image" \
+        TYPEDB_PORT="${CALLER_TYPEDB_PORT:-0}" \
+        TYPEDB_HTTP_PORT="${CALLER_TYPEDB_HTTP_PORT:-0}" \
         TYPEDB_TLS_PORT="${CALLER_TYPEDB_TLS_PORT:-0}" \
         TYPEDB_TLS_HTTP_PORT="${CALLER_TYPEDB_TLS_HTTP_PORT:-0}" \
         $compose -f docker-compose.yml -p "$proj" up -d "${services[@]}"
-    typedb_started=1
 
-    # Discover the engine-assigned host ports for the two TypeDB container ports.
-    # 'compose port' can return empty immediately after 'up -d' while the port
-    # mapping propagates, so we retry up to 3 times with a 1-second gap.
-    # Docker may print one line per address family (IPv4 + IPv6); taking the last
-    # line is deterministic because the IPv6 line always follows the IPv4 line when
-    # both appear, and the port number is the same on both — last line always works.
-    _discover_port() {
-        local service="$1"
-        local container_port="$2"
-        local out=""
-        for _ in {1..3}; do
-            out="$($compose -f docker-compose.yml -p "$proj" port "$service" "$container_port" 2>/dev/null || true)"
-            [[ -n "$out" ]] && break
-            sleep 1
-        done
-        printf '%s' "$out" | tail -1 | sed 's/.*://'
-    }
-
-    # Only override when the caller did NOT explicitly set the port.
-    if [[ -z "${TYPEDB_PORT:-}" ]]; then
-        TYPEDB_PORT="$(_discover_port typedb 1729)"
-    fi
-    if [[ -z "${TYPEDB_HTTP_PORT:-}" ]]; then
-        TYPEDB_HTTP_PORT="$(_discover_port typedb 8000)"
-    fi
-
-    if [[ -z "$TYPEDB_PORT" || -z "$TYPEDB_HTTP_PORT" ]]; then
+    started_port="${CALLER_TYPEDB_PORT:-$(discover_port "$proj" typedb 1729)}"
+    started_http_port="${CALLER_TYPEDB_HTTP_PORT:-$(discover_port "$proj" typedb 8000)}"
+    if [[ -z "$started_port" || -z "$started_http_port" ]]; then
         printf "${RED}Could not discover TypeDB gRPC and HTTP host ports after up -d${RESET}\n" >&2
         exit 1
     fi
 
-    printf "${BOLD}━━━ TypeDB (project %s, port %s) ━━━${RESET}\n\n" "$proj" "$TYPEDB_PORT"
+    printf "${BOLD}━━━ TypeDB (project %s, port %s) ━━━${RESET}\n\n" "$proj" "$started_port"
 
     local typedb_ready=0
     for _ in {1..45}; do
-        if timeout 2 bash -c "</dev/tcp/127.0.0.1/${TYPEDB_PORT}" 2>/dev/null \
+        if timeout 2 bash -c "</dev/tcp/127.0.0.1/${started_port}" 2>/dev/null \
             && timeout 3 python3 -c '
 import sys
 import urllib.request
@@ -349,7 +409,7 @@ with urllib.request.urlopen(
 ) as response:
     if not response.read(1):
         raise SystemExit(1)
-' "$TYPEDB_HTTP_PORT" >/dev/null 2>&1; then
+' "$started_http_port" >/dev/null 2>&1; then
             typedb_ready=1
             break
         fi
@@ -360,11 +420,11 @@ with urllib.request.urlopen(
         exit 1
     fi
     printf "${GREEN}TypeDB ready on gRPC %s and HTTP %s${RESET}\n\n" \
-        "$TYPEDB_PORT" "$TYPEDB_HTTP_PORT"
+        "$started_port" "$started_http_port"
 
-    if [[ "$tls" == 1 ]]; then
-        TYPEDB_TLS_PORT="${CALLER_TYPEDB_TLS_PORT:-$(_discover_port typedb-tls 1729)}"
-        TYPEDB_TLS_HTTP_PORT="${CALLER_TYPEDB_TLS_HTTP_PORT:-$(_discover_port typedb-tls 8000)}"
+    if [[ "$with_tls" == 1 ]]; then
+        TYPEDB_TLS_PORT="${CALLER_TYPEDB_TLS_PORT:-$(discover_port "$proj" typedb-tls 1729)}"
+        TYPEDB_TLS_HTTP_PORT="${CALLER_TYPEDB_TLS_HTTP_PORT:-$(discover_port "$proj" typedb-tls 8000)}"
         if [[ -z "$TYPEDB_TLS_PORT" || -z "$TYPEDB_TLS_HTTP_PORT" ]]; then
             printf "${RED}Could not discover isolated TLS endpoint ports${RESET}\n" >&2
             exit 1
@@ -408,14 +468,74 @@ with urllib.request.urlopen(
 }
 
 stop_typedb() {
-    if [[ "$typedb_started" == 1 ]]; then
-        local proj
-        proj="$(compose_project)"
-        printf "\n${BOLD}━━━ Tearing down TypeDB ━━━${RESET}\n"
-        $compose -f docker-compose.yml -p "$proj" down -v || true
-    fi
+    local proj="$1"
+    local remaining=()
+    local started
+    printf "\n${BOLD}━━━ Tearing down TypeDB (project %s) ━━━${RESET}\n" "$proj"
+    $compose -f docker-compose.yml -p "$proj" down -v || true
+    for started in "${started_projects[@]}"; do
+        [[ "$started" != "$proj" ]] && remaining+=("$started")
+    done
+    started_projects=("${remaining[@]}")
 }
-trap stop_typedb EXIT
+
+# Tear down every server still up, also when a lane exits early.
+stop_all_typedb() {
+    local proj
+    for proj in "${started_projects[@]}"; do
+        stop_typedb "$proj"
+    done
+}
+trap stop_all_typedb EXIT
+
+# Resolve the lanes this run covers.
+typedb_lanes=()
+if [[ -n "$typedb_request" ]]; then
+    if [[ "$typedb_request" == all ]]; then
+        typedb_lanes=("${TYPEDB_LANES[@]}")
+    elif [[ ${LANE_PROFILES[$typedb_request]+x} == x ]]; then
+        typedb_lanes=("$typedb_request")
+    else
+        printf "${RED}--typedb must be one of %s or all, got %s${RESET}\n\n" \
+            "${TYPEDB_LANES[*]}" "$typedb_request" >&2
+        usage
+        exit 1
+    fi
+    if [[ "$isolated" != 1 ]]; then
+        printf "${RED}--typedb selects the managed server; with --no-isolated the running server is the lane.${RESET}\n" >&2
+        exit 2
+    fi
+    # The lane fixes its image and profile; a caller pin would contradict it.
+    # Under `all`, pinned ports or addresses would also be shared by servers.
+    lane_pins=()
+    [[ -n "$CALLER_TYPEDB_IMAGE" ]] && lane_pins+=(TYPEDB_IMAGE)
+    [[ -n "$CALLER_ACCEPTANCE_PROFILE" ]] && lane_pins+=(TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE)
+    [[ -n "${TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE:-}" ]] && lane_pins+=(TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE)
+    if ((${#typedb_lanes[@]} > 1)); then
+        [[ -n "$CALLER_TYPEDB_PORT" ]] && lane_pins+=(TYPEDB_PORT)
+        [[ -n "$CALLER_TYPEDB_HTTP_PORT" ]] && lane_pins+=(TYPEDB_HTTP_PORT)
+        [[ -n "$CALLER_TYPEDB_ADDRESS" ]] && lane_pins+=(TYPEDB_ADDRESS)
+        [[ -n "$CALLER_TYPEDB_TLS_PORT" ]] && lane_pins+=(TYPEDB_TLS_PORT)
+        [[ -n "$CALLER_TYPEDB_TLS_HTTP_PORT" ]] && lane_pins+=(TYPEDB_TLS_HTTP_PORT)
+        [[ -n "$CALLER_TYPEDB_TLS_ADDRESS" ]] && lane_pins+=(TYPEDB_TLS_ADDRESS)
+    fi
+    if ((${#lane_pins[@]} > 0)); then
+        printf "${RED}%s pin one server or profile; unset them with --typedb %s.${RESET}\n" \
+            "${lane_pins[*]}" "$typedb_request" >&2
+        exit 2
+    fi
+    unset lane_pins
+elif [[ "$isolated" == 1 && -n "$CALLER_ACCEPTANCE_PROFILE" ]]; then
+    # Without --typedb, a requested semantic profile still picks its line.
+    profile_lane="$(lane_for_profile "$CALLER_ACCEPTANCE_PROFILE")"
+    typedb_lanes=("$profile_lane")
+    unset profile_lane
+elif [[ "$isolated" == 1 ]]; then
+    typedb_lanes=("$default_lane")
+else
+    # --no-isolated: the running server decides the lane after detection.
+    typedb_lanes=("")
+fi
 
 # ── Offline tiers (always) ───────────────────────────────────────────────────
 printf "${BOLD}━━━ Rust ━━━${RESET}\n\n"
@@ -478,11 +598,69 @@ run_step "npm run test:unit" bash -c "cd '$NODE_DIR' && npm run test:unit"
 run_step "npm run test:dts"  bash -c "cd '$NODE_DIR' && npm run test:dts"
 run_step "npm run dts:parity" bash -c "cd '$NODE_DIR' && npm run dts:parity"
 
-# ── Integration tiers ────────────────────────────────────────────────────────
-if [[ "$integration" == 1 ]]; then
-    [[ "$isolated" == 1 ]] && start_typedb
+# ── Integration tiers (one run per TypeDB lane) ──────────────────────────────
+# Connected migrations need a migration profile, which TypeDB 3.11 lacks.
+run_live_migration_steps() {
+    printf "${BOLD}━━━ CLI workspace lifecycle (integration) ━━━${RESET}\n\n"
+    for cli_live_test in \
+        empty_workspace_to_replayed_history_live \
+        documented_examples_initial_constraints_apply_and_verify_live \
+        verify_never_creates_databases_live \
+        adopt_legacy_history_then_evolve_live \
+        shipped_python_converter_to_native_adoption_live; do
+        run_step "cargo test -p type-bridge-cli --test e2e_workspace_live $cli_live_test" \
+            timeout --foreground 10m \
+            env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+                TYPE_BRIDGE_TEST_PYTHON="$ROOT/.venv/bin/python" \
+                "${migration_profile_env[@]}" \
+            bash scripts/ci/run_exact_ignored_rust_test.sh "$cli_live_test" \
+                --manifest-path type-bridge-core/Cargo.toml \
+                -p type-bridge-cli --test e2e_workspace_live
+    done
 
-    # After start_typedb, TYPEDB_PORT is either caller-provided or discovered.
+    printf "${BOLD}━━━ Connected migration recovery (integration) ━━━${RESET}\n\n"
+    run_step "connected rollback and reapply lifecycle" \
+        timeout --foreground 10m \
+        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE="type_bridge_local_rollback_${$}" \
+        bash scripts/ci/run_exact_ignored_rust_test.sh \
+            runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3 \
+            --manifest-path type-bridge-core/Cargo.toml --locked \
+            -p type-bridge-schema-migration-typedb --test live_runner
+    run_step "interrupted-plan fenced recovery lifecycle" \
+        timeout --foreground 10m \
+        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE="type_bridge_local_recovery_${$}" \
+        bash scripts/ci/run_exact_ignored_rust_test.sh \
+            control_schema_and_fenced_lease_round_trip_on_3_12_3 \
+            --manifest-path type-bridge-core/Cargo.toml --locked \
+            -p type-bridge-schema-migration-typedb --test live_store
+}
+
+# run_live_lane <server>: run every live step against one TypeDB line: a fresh
+# isolated server of that line, or the running server under --no-isolated
+# (empty <server>). Lane state is global so the step helpers can read it.
+run_live_lane() {
+    local requested_server="$1"
+    local lane_project=""
+    local lane_pass_start="$pass"
+    lane_fail_start="$fail"
+    lane_label="$requested_server"
+    sdk_report_dir=""
+    TYPEDB_PORT="$CALLER_TYPEDB_PORT"
+    TYPEDB_HTTP_PORT="$CALLER_TYPEDB_HTTP_PORT"
+    TYPEDB_ADDRESS="$CALLER_TYPEDB_ADDRESS"
+    if [[ "$isolated" == 1 ]]; then
+        if ((${#typedb_lanes[@]} > 1)); then
+            lane_project="$(lane_compose_project "typedb-$requested_server")"
+        else
+            lane_project="$(lane_compose_project "")"
+        fi
+        start_typedb "$requested_server" "$lane_project" "$tls"
+        TYPEDB_PORT="$started_port"
+        TYPEDB_HTTP_PORT="$started_http_port"
+    fi
+
     # For --no-isolated, fall back to the conventional default.
     TYPEDB_PORT="${TYPEDB_PORT:-1730}"
     TYPEDB_HTTP_PORT="${TYPEDB_HTTP_PORT:-8000}"
@@ -494,13 +672,36 @@ if [[ "$integration" == 1 ]]; then
             "$TYPEDB_ADDRESS" "$TYPEDB_HTTP_PORT"
     )"
     printf "${CYAN}Detected TypeDB %s${RESET}\n\n" "$typedb_server_version"
+    lane_label="$typedb_server_version"
+    if [[ "$isolated" == 1 && -z "$CALLER_TYPEDB_IMAGE" \
+        && "$typedb_server_version" != "$requested_server" ]]; then
+        printf "${RED}The TypeDB %s lane detected server %s.${RESET}\n" \
+            "$requested_server" "$typedb_server_version" >&2
+        exit 1
+    fi
 
     # Generated live fixtures admit exactly the server their semantic profile
     # names, so pair the fixture profile with the detected server.
-    case "$typedb_server_version" in
-        3.12.3) export TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-typedb-3.12.1/v1}" ;;
-        3.13.6) export TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-typedb-3.13.6/v1}" ;;
-    esac
+    lane_profile="${CALLER_ACCEPTANCE_PROFILE:-${LANE_PROFILES[$typedb_server_version]:-}}"
+    if [[ -n "$lane_profile" ]]; then
+        export TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE="$lane_profile"
+    else
+        unset TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE
+    fi
+    # Steps bound to the SDK conformance contracts (report fan-in, projected
+    # exact-live parity, C live, TLS) run where the profile is in the SDK
+    # version matrix and pairs with this server: 3.12.3 and 3.13.6.
+    lane_in_sdk_matrix=0
+    if [[ -n "$lane_profile" ]] \
+        && lane_matrix_server="$(profile_server_version "$lane_profile" 2>/dev/null)" \
+        && [[ "$lane_matrix_server" == "$typedb_server_version" ]]; then
+        lane_in_sdk_matrix=1
+    fi
+    # TypeDB 3.11 has no migration profile: connected migrations refuse it.
+    lane_migrations=1
+    if [[ "$typedb_server_version" == 3.11.* ]]; then
+        lane_migrations=0
+    fi
     # Live workspace tests author their manifests on
     # TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE; keep it on the lane's profile.
     migration_profile_env=()
@@ -518,7 +719,7 @@ if [[ "$integration" == 1 ]]; then
     # Python report producer. Keep targeted Python runs useful instead of
     # allocating a fan-in that can never become complete; the unfiltered full
     # suite remains the local conformance gate.
-    if [[ "$typedb_server_version" == "3.12.3" && ${#pytest_args[@]} -eq 0 ]]; then
+    if [[ "$lane_in_sdk_matrix" == 1 && ${#pytest_args[@]} -eq 0 ]]; then
         sdk_report_dir="$(
             mktemp -d "${TMPDIR:-/tmp}/typebridge-sdk.XXXXXXXXXX"
         )"
@@ -573,7 +774,7 @@ if [[ "$integration" == 1 ]]; then
             "TYPE_BRIDGE_SDK_REPORT_V2=$sdk_report_dir/v2/rust.json"
             "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$sdk_rust_fragment"
             "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$sdk_rust_nonce"
-            "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE=typedb-3.12.1/v1"
+            "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE=$lane_profile"
         )
         sdk_python_env=(
             "TYPE_BRIDGE_SDK_REPORT=$sdk_report_dir/python.json"
@@ -587,7 +788,7 @@ if [[ "$integration" == 1 ]]; then
             "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$sdk_node_direct_fragment:$sdk_node_remote_fragment"
             "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$sdk_node_nonce"
             "TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON=$sdk_validator_python"
-            "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE=typedb-3.12.1/v1"
+            "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE=$lane_profile"
         )
         sdk_c_env=(
             "TYPE_BRIDGE_SDK_REPORT_V2=$sdk_report_dir/v2/c.json"
@@ -595,18 +796,18 @@ if [[ "$integration" == 1 ]]; then
             "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$sdk_c_nonce"
         )
         printf "${CYAN}Sdk reports: %s${RESET}\n\n" "$sdk_report_dir"
-    elif [[ "$typedb_server_version" == "3.12.3" ]]; then
+    elif [[ "$lane_in_sdk_matrix" == 1 ]]; then
         printf "${CYAN}Sdk report fan-in skipped because forwarded pytest arguments may change collection.${RESET}\n\n"
     fi
 
-    if [[ "$typedb_server_version" == "3.12.3" ]]; then
+    if [[ "$lane_in_sdk_matrix" == 1 ]]; then
         printf "${BOLD}━━━ Projected exact-live parity (integration) ━━━${RESET}\n\n"
-        run_step "four-binding exact-TypeDB-3.12.3 Projected live fan-in" \
+        run_step "four-binding exact-TypeDB-$typedb_server_version Projected live fan-in" \
             env TYPE_BRIDGE_PROJECTED_LIVE_ADDRESS="$TYPEDB_ADDRESS" \
                 TYPE_BRIDGE_PROJECTED_LIVE_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             uv run python scripts/ci/run_generated_live.py projected
     else
-        printf "${CYAN}Projected exact-live fan-in requires TypeDB 3.12.3; skipping %s.${RESET}\n\n" \
+        printf "${CYAN}Projected exact-live fan-in requires a profile in the SDK matrix; skipping TypeDB %s.${RESET}\n\n" \
             "$typedb_server_version"
     fi
 
@@ -667,7 +868,7 @@ if [[ "$integration" == 1 ]]; then
             --manifest-path type-bridge-core/Cargo.toml \
             -p type-bridge-schema-codegen --test rust_projection_live
 
-    if [[ "$typedb_server_version" == "3.12.3" ]]; then
+    if [[ "$lane_in_sdk_matrix" == 1 ]]; then
         printf "${BOLD}━━━ C runtime transactions (integration) ━━━${RESET}\n\n"
         run_step "compiled C17 runtime and transaction lifecycle" \
             timeout --foreground 10m \
@@ -700,44 +901,24 @@ if [[ "$integration" == 1 ]]; then
                 --manifest-path type-bridge-core/Cargo.toml --locked \
                 -p type-bridge-schema-codegen --test c_projection_live
     else
-        printf "${CYAN}Generated C entity and relation CRUD live smoke is intentionally limited to exact TypeDB 3.12.3; skipping %s.${RESET}\n\n" \
+        printf "${CYAN}C runtime and generated C CRUD live smoke need a profile in the SDK matrix; skipping TypeDB %s.${RESET}\n\n" \
             "$typedb_server_version"
     fi
 
-    printf "${BOLD}━━━ CLI workspace lifecycle (integration) ━━━${RESET}\n\n"
-    for cli_live_test in \
-        empty_workspace_to_replayed_history_live \
-        documented_examples_initial_constraints_apply_and_verify_live \
-        verify_never_creates_databases_live \
-        adopt_legacy_history_then_evolve_live \
-        shipped_python_converter_to_native_adoption_live; do
-        run_step "cargo test -p type-bridge-cli --test e2e_workspace_live $cli_live_test" \
+    if [[ "$lane_migrations" == 1 ]]; then
+        run_live_migration_steps
+    else
+        printf "${CYAN}Connected migrations refuse TypeDB %s (no migration profile); skipping the CLI workspace and recovery lifecycles.${RESET}\n\n" \
+            "$typedb_server_version"
+        printf "${BOLD}━━━ Unsupported-server migration refusal (integration) ━━━${RESET}\n\n"
+        run_step "unsupported migration apply creates no databases" \
             timeout --foreground 10m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
-                TYPE_BRIDGE_TEST_PYTHON="$ROOT/.venv/bin/python" \
-                "${migration_profile_env[@]}" \
-            bash scripts/ci/run_exact_ignored_rust_test.sh "$cli_live_test" \
+            bash scripts/ci/run_exact_ignored_rust_test.sh \
+                unsupported_server_apply_creates_neither_database_live \
                 --manifest-path type-bridge-core/Cargo.toml \
                 -p type-bridge-cli --test e2e_workspace_live
-    done
-
-    printf "${BOLD}━━━ Connected migration recovery (integration) ━━━${RESET}\n\n"
-    run_step "connected rollback and reapply lifecycle" \
-        timeout --foreground 10m \
-        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
-            TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE="type_bridge_local_rollback_${$}" \
-        bash scripts/ci/run_exact_ignored_rust_test.sh \
-            runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3 \
-            --manifest-path type-bridge-core/Cargo.toml --locked \
-            -p type-bridge-schema-migration-typedb --test live_runner
-    run_step "interrupted-plan fenced recovery lifecycle" \
-        timeout --foreground 10m \
-        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
-            TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE="type_bridge_local_recovery_${$}" \
-        bash scripts/ci/run_exact_ignored_rust_test.sh \
-            control_schema_and_fenced_lease_round_trip_on_3_12_3 \
-            --manifest-path type-bridge-core/Cargo.toml --locked \
-            -p type-bridge-schema-migration-typedb --test live_store
+    fi
 
     printf "${BOLD}━━━ Python (integration) ━━━${RESET}\n\n"
     if [[ -n "$sdk_report_dir" ]]; then
@@ -827,7 +1008,63 @@ if [[ "$integration" == 1 ]]; then
                 "$sdk_report_dir/v2/c.json" \
                 "$sdk_v2_summary"
     fi
-fi
+
+    if [[ "$tls" == 1 ]]; then
+        run_lane_tls
+    fi
+    finish_sdk_evidence
+    lane_summaries+=("TypeDB $lane_label: $((pass - lane_pass_start)) passed, $((fail - lane_fail_start)) failed")
+    if [[ -n "$lane_project" ]]; then
+        stop_typedb "$lane_project"
+    fi
+    lane_label=""
+}
+
+# Remove one lane's accepted sdk evidence, or keep it for diagnosis when the
+# lane failed or preservation was requested.
+finish_sdk_evidence() {
+    if [[ -n "$sdk_report_dir" ]]; then
+        if ((fail == lane_fail_start)) && [[ "$preserve_sdk_evidence" == 0 ]]; then
+            rm -f -- \
+                "$sdk_report_dir/python.json" \
+                "$sdk_report_dir/node.json" \
+                "$sdk_report_dir/rust.json" \
+                "$sdk_report_dir/v2/python.json" \
+                "$sdk_report_dir/v2/node.json" \
+                "$sdk_report_dir/v2/rust.json" \
+                "$sdk_report_dir/v2/c.json" \
+                "$sdk_report_dir/v2/python-direct-proof.json" \
+                "$sdk_report_dir/v2/python-remote-proof.json" \
+                "$sdk_report_dir/v2/node-direct-proof.json" \
+                "$sdk_report_dir/v2/node-remote-proof.json" \
+                "$sdk_report_dir/v2/rust-proof.json" \
+                "$sdk_report_dir/v2/c-proof.json" \
+                "$sdk_report_dir/summary-v1.json" \
+                "$sdk_report_dir/summary-v2.json"
+            if ! rmdir -- "$sdk_report_dir/v2"; then
+                printf "${RED}Could not remove accepted sdk-v2 report directory: %s${RESET}\n\n" \
+                    "$sdk_report_dir/v2" >&2
+                fail=$((fail + 1))
+                failures+=("remove accepted sdk-v2 report directory")
+            fi
+            if rmdir -- "$sdk_report_dir"; then
+                printf "${GREEN}Removed accepted sdk reports: %s${RESET}\n\n" \
+                    "$sdk_report_dir"
+            else
+                printf "${RED}Could not remove accepted sdk report directory: %s${RESET}\n\n" \
+                    "$sdk_report_dir" >&2
+                fail=$((fail + 1))
+                failures+=("remove accepted sdk report directory")
+            fi
+        elif ((fail > lane_fail_start)); then
+            printf "${CYAN}Preserved sdk reports for diagnosis: %s${RESET}\n\n" \
+                "$sdk_report_dir"
+        else
+            printf "${CYAN}Preserved accepted sdk evidence by request: %s${RESET}\n\n" \
+                "$sdk_report_dir"
+        fi
+    fi
+}
 
 # ── TLS transport tier (opt-in) ──────────────────────────────────────────────
 # The ordinary integration matrix above remains plaintext. Live TLS variables
@@ -962,10 +1199,14 @@ run_tls_transport_steps() {
         npm --prefix "$NODE_DIR" run test:projection-integration
 }
 
-if [[ "$tls" == 1 ]]; then
+run_lane_tls() {
     printf "${BOLD}━━━ TLS transport (opt-in) ━━━${RESET}\n\n"
-    if [[ "$integration" != 1 ]]; then
-        printf "${CYAN}Skipping TLS transport: --no-integration disables live tiers.${RESET}\n\n"
+    if [[ "$lane_in_sdk_matrix" != 1 ]]; then
+        # The TLS lane asserts the band-9 driver identity and applies a
+        # workspace migration; TypeDB 3.11 is served by band 8 and refuses
+        # migrations.
+        printf "${CYAN}Skipping TLS transport on TypeDB %s: it needs a profile in the SDK matrix.${RESET}\n\n" \
+            "$typedb_server_version"
     elif [[ "$isolated" != 1 ]]; then
         if [[ -z "$CALLER_TYPEDB_TLS_ADDRESS" \
             || -z "$CALLER_TYPEDB_TLS_HTTP_PORT" \
@@ -985,6 +1226,79 @@ if [[ "$tls" == 1 ]]; then
             "$TYPEDB_TLS_ROOT_CA" \
             1
     fi
+}
+
+# ── Two-server profile-upgrade lane (--typedb all) ───────────────────────────
+# A history applied on 3.12.3 moves to 3.13.6 through a profile bridge. Both
+# servers run at once as separate compose projects; the tests move databases
+# with TypeDB console export/import.
+run_upgrade_lane() {
+    local from_project to_project from_port from_http_port to_port to_http_port
+    printf "${BOLD}━━━ Profile upgrade 3.12.3 -> 3.13.6 (two servers) ━━━${RESET}\n\n"
+    if [[ -z "$CALLER_UPGRADE_CONSOLE" ]]; then
+        printf "${CYAN}Skipping the profile-upgrade lane: the typedb/typedb images ship no console for database export/import. Set TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE to a TypeDB distribution's typedb launcher that includes console.${RESET}\n\n"
+        return 0
+    fi
+    if ! command -v "$CALLER_UPGRADE_CONSOLE" >/dev/null 2>&1; then
+        printf "${RED}TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE is not executable: %s${RESET}\n\n" \
+            "$CALLER_UPGRADE_CONSOLE" >&2
+        fail=$((fail + 1))
+        failures+=("[upgrade] TypeDB console for the profile-upgrade lane")
+        return 0
+    fi
+    local lane_pass_start="$pass"
+    lane_fail_start="$fail"
+    lane_label="upgrade"
+    from_project="$(lane_compose_project upgrade-3.12.3)"
+    to_project="$(lane_compose_project upgrade-3.13.6)"
+    start_typedb 3.12.3 "$from_project" 0
+    from_port="$started_port"
+    from_http_port="$started_http_port"
+    start_typedb 3.13.6 "$to_project" 0
+    to_port="$started_port"
+    to_http_port="$started_http_port"
+
+    local upgrade_env=(
+        "TYPE_BRIDGE_MIGRATION_UPGRADE_FROM=localhost:$from_port"
+        "TYPE_BRIDGE_MIGRATION_UPGRADE_FROM_HTTP_PORT=$from_http_port"
+        "TYPE_BRIDGE_MIGRATION_UPGRADE_TO=localhost:$to_port"
+        "TYPE_BRIDGE_MIGRATION_UPGRADE_TO_HTTP_PORT=$to_http_port"
+        "TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE=$CALLER_UPGRADE_CONSOLE"
+    )
+    run_step "connected history crosses a profile bridge and replays on 3.13.6" \
+        timeout --foreground 10m \
+        env "${upgrade_env[@]}" \
+        bash scripts/ci/run_exact_ignored_rust_test.sh \
+            runner_upgrades_a_3_12_history_to_3_13_at_a_profile_bridge_and_replays_it \
+            --manifest-path type-bridge-core/Cargo.toml --locked \
+            -p type-bridge-schema-migration-typedb --test live_profile_upgrade
+    run_step "CLI upgrade-profile moves a 3.12 history to 3.13" \
+        timeout --foreground 10m \
+        env "${upgrade_env[@]}" \
+        bash scripts/ci/run_exact_ignored_rust_test.sh \
+            upgrade_profile_moves_a_3_12_history_to_3_13_live \
+            --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-cli --test e2e_workspace_live
+
+    lane_summaries+=("Profile upgrade 3.12.3 -> 3.13.6: $((pass - lane_pass_start)) passed, $((fail - lane_fail_start)) failed")
+    stop_typedb "$from_project"
+    stop_typedb "$to_project"
+    lane_label=""
+}
+
+if [[ "$integration" == 1 ]]; then
+    if [[ "$isolated" == 1 ]]; then
+        detect_compose
+    fi
+    for typedb_lane in "${typedb_lanes[@]}"; do
+        run_live_lane "$typedb_lane"
+    done
+    unset typedb_lane
+    if [[ "$typedb_request" == all ]]; then
+        run_upgrade_lane
+    fi
+elif [[ "$tls" == 1 ]]; then
+    printf "${CYAN}Skipping TLS transport: --no-integration disables live tiers.${RESET}\n\n"
 fi
 
 # ── Proxy tier (opt-in; owns its own stack via proxy_lifecycle.py) ───────────
@@ -1001,49 +1315,10 @@ if [[ "$proxy" == 1 ]]; then
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
-if [[ -n "$sdk_report_dir" ]]; then
-    if ((fail == 0)) && [[ "$preserve_sdk_evidence" == 0 ]]; then
-        rm -f -- \
-            "$sdk_report_dir/python.json" \
-            "$sdk_report_dir/node.json" \
-            "$sdk_report_dir/rust.json" \
-            "$sdk_report_dir/v2/python.json" \
-            "$sdk_report_dir/v2/node.json" \
-            "$sdk_report_dir/v2/rust.json" \
-            "$sdk_report_dir/v2/c.json" \
-            "$sdk_report_dir/v2/python-direct-proof.json" \
-            "$sdk_report_dir/v2/python-remote-proof.json" \
-            "$sdk_report_dir/v2/node-direct-proof.json" \
-            "$sdk_report_dir/v2/node-remote-proof.json" \
-            "$sdk_report_dir/v2/rust-proof.json" \
-            "$sdk_report_dir/v2/c-proof.json" \
-            "$sdk_report_dir/summary-v1.json" \
-            "$sdk_report_dir/summary-v2.json"
-        if ! rmdir -- "$sdk_report_dir/v2"; then
-            printf "${RED}Could not remove accepted sdk-v2 report directory: %s${RESET}\n\n" \
-                "$sdk_report_dir/v2" >&2
-            fail=$((fail + 1))
-            failures+=("remove accepted sdk-v2 report directory")
-        fi
-        if rmdir -- "$sdk_report_dir"; then
-            printf "${GREEN}Removed accepted sdk reports: %s${RESET}\n\n" \
-                "$sdk_report_dir"
-        else
-            printf "${RED}Could not remove accepted sdk report directory: %s${RESET}\n\n" \
-                "$sdk_report_dir" >&2
-            fail=$((fail + 1))
-            failures+=("remove accepted sdk report directory")
-        fi
-    elif ((fail > 0)); then
-        printf "${CYAN}Preserved sdk reports for diagnosis: %s${RESET}\n\n" \
-            "$sdk_report_dir"
-    else
-        printf "${CYAN}Preserved accepted sdk evidence by request: %s${RESET}\n\n" \
-            "$sdk_report_dir"
-    fi
-fi
-
 printf "${BOLD}━━━ Summary ━━━${RESET}\n"
+for lane_summary in "${lane_summaries[@]}"; do
+    printf "  %s\n" "$lane_summary"
+done
 printf "${GREEN}  ✓ %d passed${RESET}\n" "$pass"
 if ((fail > 0)); then
     printf "${RED}  ✗ %d failed:${RESET}\n" "$fail"

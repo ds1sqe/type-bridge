@@ -166,10 +166,17 @@ def test_compose_and_local_harness_default_to_the_band9_server() -> None:
         assert match.group(1) == expected
 
     harness = (REPO_ROOT / "test.sh").read_text(encoding="utf-8")
-    # The harness lane defaults to the band-9 server unless the requested
-    # semantic profile pairs with another; the TLS lane shares that server.
-    assert harness.count('local lane_server="3.13.6"') == 1
-    assert harness.count("${TYPEDB_IMAGE:-typedb/typedb:${lane_server}}") == 1
+    # The harness lane defaults to the band-9 server unless --typedb or the
+    # requested semantic profile picks another line; the TLS lane shares it.
+    assert harness.count('default_lane="3.13.6"') == 1
+    assert harness.count("${CALLER_TYPEDB_IMAGE:-typedb/typedb:${lane_server}}") == 1
+    assert "TYPEDB_LANES=(3.11.5 3.12.3 3.13.6)" in harness
+    for server, profile in (
+        ("3.11.5", "typedb-3.11.5/v1"),
+        ("3.12.3", "typedb-3.12.1/v1"),
+        ("3.13.6", "typedb-3.13.6/v1"),
+    ):
+        assert f"    [{server}]={profile}\n" in harness
     assert re.search(r"typedb/typedb:3\.1[0-9]\.[0-9]", harness) is None
     assert "TYPE_BRIDGE_TLS_EXPECTED_SERVER_VERSION=3." not in harness
 

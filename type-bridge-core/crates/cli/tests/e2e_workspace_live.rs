@@ -1756,6 +1756,25 @@ const UPGRADE_FROM_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_FROM";
 const UPGRADE_TO_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_TO";
 /// TypeDB distribution used for `database export` and `database import`.
 const UPGRADE_CONSOLE_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE";
+/// Optional HTTP ports of the two servers; both default to TypeDB's 8000,
+/// which two servers on one host cannot share.
+const UPGRADE_FROM_HTTP_PORT_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_FROM_HTTP_PORT";
+const UPGRADE_TO_HTTP_PORT_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_TO_HTTP_PORT";
+
+/// The HTTP port set for the upgrade endpoint at `address`, if any.
+fn upgrade_http_port(address: &str) -> Option<String> {
+    [
+        (UPGRADE_FROM_ENV, UPGRADE_FROM_HTTP_PORT_ENV),
+        (UPGRADE_TO_ENV, UPGRADE_TO_HTTP_PORT_ENV),
+    ]
+    .into_iter()
+    .find(|(endpoint, _)| std::env::var(endpoint).as_deref() == Ok(address))
+    .and_then(|(_, port)| std::env::var(port).ok())
+}
+
+fn upgrade_connect_options(address: &str) -> ConnectOptions {
+    upgrade_http_port(address).map_or_else(ConnectOptions::default, |port| connect_options(&port))
+}
 
 fn write_upgrade_manifest(workspace: &Path, profile: &str, from: &str, to: &str, database: &str) {
     let mut environments = String::new();
@@ -1764,6 +1783,9 @@ fn write_upgrade_manifest(workspace: &Path, profile: &str, from: &str, to: &str,
             "  {name}:\n    database: {database}\n    uri: {address}\n    migrate: 'true'\n    \
              credential:\n      username: env:TYPEDB_USERNAME\n      password: env:TYPEDB_PASSWORD\n",
         ));
+        if let Some(port) = upgrade_http_port(address) {
+            environments.push_str(&format!("    http-port: '{port}'\n"));
+        }
     }
     fs::write(
         workspace.join("typebridge.yaml"),
@@ -1899,7 +1921,7 @@ async fn upgrade_profile_moves_a_3_12_history_to_3_13_live() {
         &database_name,
         &username,
         &password,
-        ConnectOptions::default(),
+        upgrade_connect_options(&to),
     )
     .await
     .expect("moved managed database connects");
@@ -1967,7 +1989,7 @@ async fn upgrade_profile_moves_a_3_12_history_to_3_13_live() {
                 name,
                 &username,
                 &password,
-                ConnectOptions::default(),
+                upgrade_connect_options(address),
             )
             .await
             .expect("isolated database connects");

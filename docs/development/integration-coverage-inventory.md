@@ -31,7 +31,7 @@ path.
 | Python | `crates/schema-codegen/tests/acceptance/check.py`, emitter tests, Pyright positive/negative fixtures | `tests/integration/schema/test_generated_projection_live.py` |
 | TypeScript/Node | `crates/schema-codegen/tests/typescript_acceptance/check.mjs`, emitter tests, TypeScript compile fixtures | `crates/node/tests/projection-integration/generated-package-live.test.ts` via `npm run test:projection-integration` |
 | Rust | schema-codegen Rust acceptance and an external generated consumer crate | `crates/schema-codegen/tests/rust_projection_live.rs` and its external consumer |
-| Internal C foundation | `crates/schema-codegen/tests/c_emitter.rs`, C ABI suites, and installed C17/C++17 consumers via `./scripts/check.sh c` | Exact-3.12.3 generated CRUD and typed-query consumers via `./test.sh` |
+| Internal C foundation | `crates/schema-codegen/tests/c_emitter.rs`, C ABI suites, and installed C17/C++17 consumers via `./scripts/check.sh c` | Generated CRUD and typed-query consumers on the 3.12.3 and 3.13.6 lanes of `./test.sh` |
 
 The three current public SDK live applications cover model construction, scalar
 and multivalue ownership, references, entity/relation CRUD, batch operations

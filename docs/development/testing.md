@@ -98,8 +98,8 @@ siblings, strict identity-first validation, and reusable borrowed reads without
 adding C runtime exports.
 
 The full integration suite runs the ordinary generated C17 CRUD and typed-query
-consumer and strict generated C17/C++17 ABI-1.6 successor consumers against
-exact TypeDB 3.12.3. A focused four-binding lane compares the same generated
+consumer and strict generated C17/C++17 ABI-1.6 successor consumers on the
+3.12.3 and 3.13.6 lanes. A focused four-binding lane compares the same generated
 Python, Node, Rust, and C manager-filter observation. The successor lane leaves
 ordered attributes and ordered role-player lists empty and therefore does not
 claim live list-instance evidence. These checks do not make C a supported SDK
@@ -114,15 +114,49 @@ uv run python scripts/ci/run_generated_live.py manager
 ### Live integration
 
 ```bash
-./test.sh
+./test.sh                          # live tier on TypeDB 3.13.6 (default line)
+./test.sh --typedb 3.12.3          # live tier on one supported line
+./test.sh --typedb all             # every line, then the two-server upgrade lane
+./test.sh --typedb all --tls       # the same, with the TLS lane on each line
 ```
 
-The default lane creates and removes an isolated TypeDB. `--no-integration`
-runs offline Rust, Python, Node, and internal C-foundation tiers.
-`--no-isolated` uses an existing server. The retained live matrix covers TypeDB
-3.11 and 3.12 provider paths; 3.12.3 is the V2 conformance baseline.
+Each live lane creates and removes its own isolated TypeDB and runs under that
+line's semantic profile: 3.11.5 with `typedb-3.11.5/v1`, 3.12.3 with
+`typedb-3.12.1/v1`, and 3.13.6 with `typedb-3.13.6/v1`. The offline tiers run
+once. With `--typedb all`, each line is its own compose project
+(`tb-<worktree>-typedb-<line>`), and the summary lists every lane.
+`--no-integration` runs offline Rust, Python, Node, and internal C-foundation
+tiers. `--no-isolated` uses an existing server; its version picks the lane.
 
-On the exact 3.12.3 lane, a compiled generated C17 consumer independently
+| Live step | 3.11.5 | 3.12.3 | 3.13.6 |
+| --- | --- | --- | --- |
+| Rust ORM, production V2 server, generated Rust | yes | yes | yes |
+| Python and Node integration, generated projections | yes | yes | yes |
+| SDK report fan-in, projected exact-live parity | — | yes | yes |
+| C runtime and generated C CRUD live | — | yes | yes |
+| CLI workspace and migration recovery lifecycles | — | yes | yes |
+| Unsupported-server migration refusal | yes | — | — |
+| TLS lane (`--tls`) | — | yes | yes |
+
+Steps bound to the SDK conformance contracts run where the lane's profile is in
+the SDK version matrix. Connected migrations refuse TypeDB 3.11, so that lane
+proves the refusal instead of the lifecycles. Its TLS lane is skipped too: the
+TLS steps assert the band-9 driver and apply a workspace migration.
+
+The upgrade lane starts a 3.12.3 and a 3.13.6 server together and moves a
+migration history across a profile bridge
+(`live_profile_upgrade` and the CLI `upgrade-profile` test). The tests move
+databases with `typedb console` export and import, which the `typedb/typedb`
+images do not include. Point `TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE` at the
+`typedb` launcher of a TypeDB distribution that includes the console;
+otherwise the lane is skipped with a notice:
+
+```bash
+TYPE_BRIDGE_MIGRATION_UPGRADE_CONSOLE=/opt/typedb-all-linux-x86_64/typedb \
+    ./test.sh --typedb all
+```
+
+On the 3.12.3 and 3.13.6 lanes, a compiled generated C17 consumer independently
 verifies the detected server version and exercises read close, write commit,
 rollback, active-write close, and parent-in-use behavior. A separate generated
 C17 consumer exercises the exact Person and Membership database/read/write

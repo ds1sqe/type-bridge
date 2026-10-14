@@ -533,7 +533,7 @@ def test_local_runner_allocates_and_compares_three_distinct_reports() -> None:
     source = (ROOT / "test.sh").read_text(encoding="utf-8")
     collapsed = " ".join(source.replace("\\\n", " ").split())
 
-    assert 'if [[ "$typedb_server_version" == "3.12.3" ]]; then' in source
+    assert 'if [[ "$lane_in_sdk_matrix" == 1 ]]; then' in source
     assert 'mktemp -d "${TMPDIR:-/tmp}/typebridge-sdk.XXXXXXXXXX"' in source
     for binding in comparator.REPORT_BINDINGS:
         assignment = f'"TYPE_BRIDGE_SDK_REPORT=$sdk_report_dir/{binding}.json"'

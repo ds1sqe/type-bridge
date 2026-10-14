@@ -111,11 +111,21 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
         "typedb::client::tests::integration_classified_commit_isolation_conflict",
     ):
         assert workflow.count(selector) == 1
-    assert local.count(gate_call) == 11
+    assert local.count(gate_call) == 14
     assert local.count("fetch_write_commit_failure_reaches_driver_and_v1_query") == 1
     assert (
         local.count("typedb::client::tests::integration_classified_commit_isolation_conflict") == 1
     )
+    upgrade_tests = {
+        "runner_upgrades_a_3_12_history_to_3_13_at_a_profile_bridge_and_replays_it",
+        "upgrade_profile_moves_a_3_12_history_to_3_13_live",
+    }
+
+    # The local harness also gates the 3.11 refusal probe and the two-server
+    # upgrade lane.
+    assert local.count("unsupported_server_apply_creates_neither_database_live") == 1
+    for test_name in upgrade_tests:
+        assert local.count(test_name) == 1
     assert "-- --ignored --exact --nocapture" not in local
     for test_name in (
         positive_tests

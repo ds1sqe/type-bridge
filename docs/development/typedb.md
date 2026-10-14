@@ -258,10 +258,13 @@ Node, Rust, CLI, and server paths.
 
 ## Testing provider behavior
 
-The full suite manages an isolated 3.12.3 server by default:
+The full suite manages an isolated 3.13.6 server by default; `--typedb` picks
+another supported line or runs each of them (see
+[Testing](testing.md#live-integration)):
 
 ```bash
 ./test.sh
+./test.sh --typedb all
 ```
 
 Use a retained existing server deliberately:

@@ -410,7 +410,10 @@ def test_local_full_suite_emits_fragments_then_fans_in_both_versions() -> None:
         assert variable in source
     assert "${!runner_owned_sdk_variable+x}" in source
     assert "is runner-owned; unset it before invoking test.sh" in source
-    assert 'if [[ "$typedb_server_version" == "3.12.3" && ${#pytest_args[@]} -eq 0 ]]' in source
+    assert 'if [[ "$lane_in_sdk_matrix" == 1 && ${#pytest_args[@]} -eq 0 ]]' in source
+    # Producers report under the lane's profile, never a frozen literal.
+    assert source.count('"TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE=$lane_profile"') == 2
+    assert "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE=typedb-" not in source
     assert "forwarded pytest arguments may change collection" in source
     assert 'mktemp -d "${TMPDIR:-/tmp}/typebridge-sdk.XXXXXXXXXX"' in source
     assert 'sdk_report_dir="$(cd "$sdk_report_dir" && pwd -P)"' in source
@@ -465,8 +468,10 @@ def test_local_full_suite_emits_fragments_then_fans_in_both_versions() -> None:
     assert "log_sdk_evidence_sha256" in source
     assert 'sha256sum -- "$@"' in source
     hash_step = source.index('run_step "validate and log sdk report and summary SHA-256 evidence"')
-    cleanup = source.index("# ── Summary")
-    assert hash_step < cleanup
+    # Each lane removes or preserves its own evidence once its steps ran.
+    cleanup = source.index("finish_sdk_evidence() {")
+    assert hash_step < source.index("    finish_sdk_evidence\n") < cleanup
+    assert "((fail == lane_fail_start))" in source[cleanup:]
     for report in (
         "python.json",
         "node.json",
