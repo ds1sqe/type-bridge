@@ -600,6 +600,15 @@ if [[ "$integration" == 1 ]]; then
             -p type-bridge-server --features v2-query \
             --test v2_query_integration_tests
 
+    run_step "type-bridge-server fetch write commit failure regression" \
+        timeout --foreground 10m \
+        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+        bash scripts/ci/run_exact_ignored_rust_test.sh \
+            fetch_write_commit_failure_reaches_driver_and_v1_query \
+            --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-server --features v2-query \
+            --test v2_query_integration_tests
+
     printf "${BOLD}━━━ Generated Rust projection (integration) ━━━${RESET}\n\n"
     if [[ -n "$sdk_report_dir" ]]; then
         run_step "emit Rust sdk-v2 deterministic proof fragment" \

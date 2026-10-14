@@ -141,7 +141,7 @@ impl TypeDBClient {
             }
             QueryResultKind::Documents(docs) => {
                 if needs_commit {
-                    let _ = tx.commit().await;
+                    tx.commit().await?;
                 }
                 serde_json::Value::Array(docs)
             }
@@ -631,18 +631,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_docs_commit_error_ignored() {
+    async fn execute_docs_commit_error_propagated() {
         let docs = vec![serde_json::json!({"doc": "data"})];
-        let tx = MockTransaction::new(QueryResultKind::Documents(docs.clone()))
+        let tx = MockTransaction::new(QueryResultKind::Documents(docs))
             .with_commit_error("commit failed");
         let client = make_client(MockBackend::new(tx));
 
-        // Documents + write: commit error is intentionally ignored (let _ = ...)
         let result = client
             .execute("db", "insert $x isa thing;", "write")
             .await
-            .unwrap();
-        assert_eq!(result, serde_json::Value::Array(docs));
+            .unwrap_err();
+        assert!(matches!(result, PipelineError::QueryExecution(msg) if msg == "commit failed"));
     }
 
     #[tokio::test]
