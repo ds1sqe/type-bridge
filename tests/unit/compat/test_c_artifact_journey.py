@@ -154,6 +154,10 @@ def test_tls_consumer_captures_custom_root_without_template_markers() -> None:
     assert b"\n+" not in source
     assert b"TYPE_BRIDGE_TLS_CUSTOM_ROOT_CA" in source
     assert b"memset(pem, 0xa5" in source
+    # The expected server is the lane's, passed in rather than compiled in.
+    assert b"if (argc != 8) return 10;" in source
+    assert b"memcmp(version.data, argv[7], version.length)" in source
+    assert b'"3.1' not in source
 
 
 def test_connected_marker_authority_is_exact_and_duplicate_free() -> None:

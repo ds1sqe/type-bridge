@@ -271,18 +271,28 @@ detect_compose() {
     fi
 }
 
+# Print the exact TypeDB server a semantic profile pairs with, from the SDK
+# conformance version matrix. Fails closed on a profile outside the matrix.
+profile_server_version() {
+    python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import sdk_profile_matrix as m; print(m.select_lane(sys.argv[2]).live_server_version)' \
+        "$ROOT/scripts/ci" "$1"
+}
+
 start_typedb() {
     detect_compose
     local proj
     local services=(typedb)
-    local typedb_image="${TYPEDB_IMAGE:-typedb/typedb:3.13.6}"
+    # The lane's server: the one TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE pairs
+    # with, else the default line. The TLS endpoint fronts the same server.
+    # An explicit caller image remains authoritative.
+    local lane_server="3.13.6"
+    if [[ -n "${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-}" ]]; then
+        lane_server="$(profile_server_version "$TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")"
+    fi
+    local typedb_image="${TYPEDB_IMAGE:-typedb/typedb:${lane_server}}"
     proj="$(compose_project)"
     if [[ "$tls" == 1 ]]; then
         services+=(typedb-tls)
-        # The TLS workspace fixtures declare typedb-3.12.1/v1, and connected
-        # migration execution requires that profile's exact server. An
-        # explicit caller override remains authoritative.
-        typedb_image="${TYPEDB_IMAGE:-typedb/typedb:3.12.3}"
     fi
 
     printf "${BOLD}━━━ TypeDB (isolated, project %s) ━━━${RESET}\n\n" "$proj"
@@ -491,6 +501,14 @@ if [[ "$integration" == 1 ]]; then
         3.12.3) export TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-typedb-3.12.1/v1}" ;;
         3.13.6) export TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-typedb-3.13.6/v1}" ;;
     esac
+    # Live workspace tests author their manifests on
+    # TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE; keep it on the lane's profile.
+    migration_profile_env=()
+    if [[ -n "${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-}" ]]; then
+        migration_profile_env=(
+            "TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE=${TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE:-$TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE}"
+        )
+    fi
 
     sdk_rust_env=()
     sdk_python_env=()
@@ -697,6 +715,7 @@ if [[ "$integration" == 1 ]]; then
             timeout --foreground 10m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
                 TYPE_BRIDGE_TEST_PYTHON="$ROOT/.venv/bin/python" \
+                "${migration_profile_env[@]}" \
             bash scripts/ci/run_exact_ignored_rust_test.sh "$cli_live_test" \
                 --manifest-path type-bridge-core/Cargo.toml \
                 -p type-bridge-cli --test e2e_workspace_live
@@ -826,6 +845,12 @@ run_tls_transport_steps() {
     if [[ -n "$node_native" ]]; then
         node_native="$ROOT/$node_native"
     fi
+    # The TLS endpoint fronts the lane's server: the one its semantic profile
+    # pairs with, else the detected server when no profile is paired.
+    local lane_server="$typedb_server_version"
+    if [[ -n "${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-}" ]]; then
+        lane_server="$(profile_server_version "$TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")"
+    fi
 
     if [[ "$required_topology" == 1 ]]; then
         run_step "TLS runtime HTTP + gRPC lifecycle" \
@@ -836,7 +861,7 @@ run_tls_transport_steps() {
                 SSL_CERT_FILE="$fixture_root_ca" \
                 TYPE_BRIDGE_TLS_LIVE_REQUIRED=1 \
                 TYPE_BRIDGE_TLS_NATIVE_ROOTS=1 \
-                TYPE_BRIDGE_TLS_EXPECTED_SERVER_VERSION=3.12.3 \
+                TYPE_BRIDGE_TLS_EXPECTED_SERVER_VERSION="$lane_server" \
                 TYPE_BRIDGE_TLS_EXPECTED_DRIVER_BAND=9 \
                 TYPE_BRIDGE_TLS_EXPECTED_DRIVER_VERSION=3.13.6 \
             cargo test --manifest-path type-bridge-core/Cargo.toml \
@@ -865,7 +890,7 @@ run_tls_transport_steps() {
                 RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-stable}" \
             uv run python scripts/ci/run_generated_live.py manager-tls
     else
-        printf "${CYAN}External TLS runtime proof is custom-root only; native-root and exact-topology assertions require the isolated 3.12.3 lane.${RESET}\n\n"
+        printf "${CYAN}External TLS runtime proof is custom-root only; native-root and exact-topology assertions require the isolated lane.${RESET}\n\n"
         run_step "TLS runtime HTTP + gRPC lifecycle (external custom-root)" \
             timeout --foreground 10m \
             env TYPEDB_TLS_ADDRESS="$tls_address" \
@@ -881,6 +906,7 @@ run_tls_transport_steps() {
         env TYPEDB_TLS_ADDRESS="$tls_address" \
             TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
             TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
+            "${migration_profile_env[@]}" \
         bash scripts/ci/run_exact_ignored_rust_test.sh \
             tls_workspace_apply_and_verify_live \
             --manifest-path type-bridge-core/Cargo.toml \
