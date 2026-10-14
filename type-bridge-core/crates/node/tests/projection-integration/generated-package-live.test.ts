@@ -26,13 +26,26 @@ const NODE_RUNTIME_PACKAGE = process.env.TYPE_BRIDGE_NODE_PACKAGE_ROOT ?? NODE_S
 const CORE = resolve(NODE_SOURCE_PACKAGE, "../..");
 const ROOT = resolve(CORE, "..");
 const ACCEPTANCE = resolve(CORE, "crates/schema-codegen/tests/acceptance");
-const TYPEDB_VERSION = process.env.TYPEDB_VERSION ?? "3.12.1";
+// Mirrors `GeneratedPackageRelease::for_profile` (type-bridge-core `core::version`):
+// a generated package admits exactly the server release its profile names.
+const PROFILE_SERVER_VERSIONS: Readonly<Record<string, string>> = {
+  "typedb-3.12.1/v1": "3.12.3",
+  "typedb-3.13.6/v1": "3.13.6",
+};
+// Generated live fixtures follow `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`;
+// new workspaces and the default TypeDB image use TypeDB 3.13.6.
+const DEFAULT_ACCEPTANCE_PROFILE = "typedb-3.13.6/v1";
+// The sdk-v1..v6 conformance contracts are frozen to this profile.
+const SDK_PROFILE = "typedb-3.12.1/v1";
+const TYPEDB_VERSION = process.env.TYPEDB_VERSION ?? "3.13.6";
 const IS_TYPEDB_3_11 = TYPEDB_VERSION.startsWith("3.11.");
 const PROVIDER_SCHEMA = resolve(
   ACCEPTANCE,
   IS_TYPEDB_3_11 ? "provider-3.11.5.tql" : "provider-3.12.1.tql",
 );
-const REMOTE_PROFILE = IS_TYPEDB_3_11 ? "typedb-3.11.5/v1" : "typedb-3.12.1/v1";
+const REMOTE_PROFILE = IS_TYPEDB_3_11
+  ? "typedb-3.11.5/v1"
+  : process.env.TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE ?? DEFAULT_ACCEPTANCE_PROFILE;
 const SDK_MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest-v1.json";
 const SDK_CATALOG_RELATIVE =
   "tests/contracts/sdk_conformance/sdk-v1/catalog-v1.json";
@@ -369,13 +382,21 @@ async function validateSdkReportPath(rawPath: string): Promise<string> {
   return parent;
 }
 
-function requireSdkServerVersion(detected: string | null): void {
-  if (detected !== "3.12.3") {
+function requireProfileServerVersion(profile: string, detected: string | null): void {
+  const expected = PROFILE_SERVER_VERSIONS[profile];
+  if (expected === undefined) {
+    throw new Error(`${profile} names no exact TypeDB server release`);
+  }
+  if (detected !== expected) {
     throw new Error(
-      "sdk reports require the actual detected TypeDB server version 3.12.3; "
+      `${profile} packages require the actual detected TypeDB server version ${expected}; `
       + `detected ${JSON.stringify(detected)}`,
     );
   }
+}
+
+function requireSdkServerVersion(detected: string | null): void {
+  requireProfileServerVersion(SDK_PROFILE, detected);
 }
 
 function typeDBVersionEndpoint(address: string, httpPort: number, tls: boolean): string {
@@ -1778,12 +1799,26 @@ async function waitForPort(port: number, child: ChildProcess, timeoutMs: number)
 
 test("sdk report server-version gate is exact", () => {
   assert.doesNotThrow(() => requireSdkServerVersion("3.12.3"));
-  for (const detected of [null, "3.11.5", "3.12.0", "3.12.2", "3.13.0"] as const) {
+  for (const detected of [null, "3.11.5", "3.12.0", "3.12.2", "3.13.0", "3.13.6"] as const) {
     assert.throws(
       () => requireSdkServerVersion(detected),
     /actual detected TypeDB server version 3\.12\.3/,
     );
   }
+});
+
+test("generated profile server gate follows the package profile", () => {
+  assert.doesNotThrow(() => requireProfileServerVersion("typedb-3.13.6/v1", "3.13.6"));
+  for (const detected of [null, "3.12.3", "3.13.5", "3.14.0"] as const) {
+    assert.throws(
+      () => requireProfileServerVersion("typedb-3.13.6/v1", detected),
+      /actual detected TypeDB server version 3\.13\.6/,
+    );
+  }
+  assert.throws(
+    () => requireProfileServerVersion("typedb-3.11.5/v1", "3.11.5"),
+    /names no exact TypeDB server release/,
+  );
 });
 
 test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, { timeout: 360_000 }, async () => {
@@ -1906,9 +1941,15 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     let sdkV2ProofObservations:
       | ReadonlyMap<string, Record<string, unknown>>
       | undefined;
+    if (!IS_TYPEDB_3_11) {
+      requireProfileServerVersion(
+        REMOTE_PROFILE,
+        await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
+      );
+    }
     if (sdkReportPath !== undefined) {
-      if (REMOTE_PROFILE !== "typedb-3.12.1/v1") {
-        throw new Error("sdk reports may only be emitted for typedb-3.12.1/v1");
+      if (REMOTE_PROFILE !== SDK_PROFILE) {
+        throw new Error(`sdk reports may only be emitted for ${SDK_PROFILE}`);
       }
       await validateSdkReportPath(sdkReportPath);
       requireSdkServerVersion(
@@ -1923,8 +1964,8 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       assert.equal(sdkJourney.version, sdkCatalog.fixture.version);
     }
     if (sdkV2ReportPath !== undefined) {
-      if (REMOTE_PROFILE !== "typedb-3.12.1/v1") {
-        throw new Error("sdk-v2 reports may only be emitted for typedb-3.12.1/v1");
+      if (REMOTE_PROFILE !== SDK_PROFILE) {
+        throw new Error(`sdk-v2 reports may only be emitted for ${SDK_PROFILE}`);
       }
       await validateSdkReportPath(sdkV2ReportPath);
       requireSdkServerVersion(
@@ -3081,8 +3122,8 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
   if (sdkReportPath !== undefined) {
     assert.equal(
       REMOTE_PROFILE,
-      "typedb-3.12.1/v1",
-      "sdk reports may only be emitted for typedb-3.12.1/v1",
+      SDK_PROFILE,
+      `sdk reports may only be emitted for ${SDK_PROFILE}`,
     );
     if (preparedSdkReport === undefined) {
       throw new Error("sdk report was not prepared after the successful journey");
@@ -3092,8 +3133,8 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
   if (sdkV2ReportPath !== undefined) {
     assert.equal(
       REMOTE_PROFILE,
-      "typedb-3.12.1/v1",
-      "sdk-v2 reports may only be emitted for typedb-3.12.1/v1",
+      SDK_PROFILE,
+      `sdk-v2 reports may only be emitted for ${SDK_PROFILE}`,
     );
     if (preparedSdkV2Report === undefined) {
       throw new Error("sdk-v2 report was not prepared after the successful journey");
@@ -3104,7 +3145,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
 
 test(
   "node.generated_data_model_runtime_v3_live",
-  { skip: IS_TYPEDB_3_11, timeout: 360_000 },
+  { skip: IS_TYPEDB_3_11 || REMOTE_PROFILE !== SDK_PROFILE, timeout: 360_000 },
   async () => {
     const suppliedStage = process.env.TYPE_BRIDGE_GENERATED_NODE_STAGE;
     const stage = suppliedStage === undefined
@@ -3448,7 +3489,7 @@ test(
         await publishSdkReport(supplementPath, {
           format: "typebridge.sdk-v3-live-supplement/v1",
           binding: "node",
-          semantic_profile: "typedb-3.12.1/v1",
+          semantic_profile: SDK_PROFILE,
           producer: "node.generated-data-model-runtime-v3-live",
           semantic_fingerprint: JSON.parse(generated.SEMANTIC_SCHEMA_FINGERPRINT_JSON),
           projection_fingerprint: JSON.parse(generated.PROJECTION_FINGERPRINT_JSON),
@@ -3479,7 +3520,9 @@ test(
 test(
   "node.generated_canonical_serialization_v5_live",
   {
-    skip: IS_TYPEDB_3_11 || process.env.TYPE_BRIDGE_SDK_V5_NODE_EVIDENCE === undefined,
+    skip: IS_TYPEDB_3_11
+      || REMOTE_PROFILE !== SDK_PROFILE
+      || process.env.TYPE_BRIDGE_SDK_V5_NODE_EVIDENCE === undefined,
     timeout: 360_000,
   },
   async () => {

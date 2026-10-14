@@ -275,13 +275,13 @@ start_typedb() {
     detect_compose
     local proj
     local services=(typedb)
-    local typedb_image="${TYPEDB_IMAGE:-typedb/typedb:3.12.3}"
+    local typedb_image="${TYPEDB_IMAGE:-typedb/typedb:3.13.6}"
     proj="$(compose_project)"
     if [[ "$tls" == 1 ]]; then
         services+=(typedb-tls)
-        # Workspace migration execution is pinned to the shipped semantic
-        # profile's exact server, while the ordinary lane retains its prior
-        # image. An explicit caller override remains authoritative.
+        # The TLS workspace fixtures declare typedb-3.12.1/v1, and connected
+        # migration execution requires that profile's exact server. An
+        # explicit caller override remains authoritative.
         typedb_image="${TYPEDB_IMAGE:-typedb/typedb:3.12.3}"
     fi
 
@@ -484,6 +484,13 @@ if [[ "$integration" == 1 ]]; then
             "$TYPEDB_ADDRESS" "$TYPEDB_HTTP_PORT"
     )"
     printf "${CYAN}Detected TypeDB %s${RESET}\n\n" "$typedb_server_version"
+
+    # Generated live fixtures admit exactly the server their semantic profile
+    # names, so pair the fixture profile with the detected server.
+    case "$typedb_server_version" in
+        3.12.3) export TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-typedb-3.12.1/v1}" ;;
+        3.13.6) export TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-typedb-3.13.6/v1}" ;;
+    esac
 
     sdk_rust_env=()
     sdk_python_env=()

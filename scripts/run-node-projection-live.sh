@@ -25,7 +25,18 @@ fi
 compose=("$container_tool" compose -p "$PROJECT" -f "$COMPOSE_FILE")
 "${compose[@]}" version >/dev/null
 
-export TYPEDB_IMAGE="typedb/typedb:3.12.3"
+# The generated fixture profile selects the exact TypeDB server it admits.
+export TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-typedb-3.13.6/v1}"
+case "$TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE" in
+    typedb-3.12.1/v1) typedb_version="3.12.3" ;;
+    typedb-3.13.6/v1) typedb_version="3.13.6" ;;
+    *)
+        echo "Unsupported generated live semantic profile: $TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE" >&2
+        exit 2
+        ;;
+esac
+export TYPEDB_VERSION="$typedb_version"
+export TYPEDB_IMAGE="typedb/typedb:$typedb_version"
 export TYPEDB_PORT=0
 export TYPEDB_HTTP_PORT=0
 
@@ -55,7 +66,7 @@ for _ in {1..60}; do
 done
 if [[ "$ready" != true ]]; then
     "${compose[@]}" logs typedb >&2 || true
-    echo "TypeDB 3.12.3 did not become ready." >&2
+    echo "TypeDB $typedb_version did not become ready." >&2
     exit 1
 fi
 

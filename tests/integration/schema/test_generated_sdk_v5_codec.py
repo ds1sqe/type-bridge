@@ -28,6 +28,9 @@ def run_producer(stage: Path, output: Path, operational: Path) -> None:
 
 def test_generated_python_sdk_v5_canonical_codec(tmp_path: Path) -> None:
     stage = tmp_path / "generated"
+    # The sdk-v5 ordered fixtures exist only for the frozen sdk profile.
+    fixture_environment = os.environ.copy()
+    fixture_environment["TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE"] = "typedb-3.12.1/v1"
     subprocess.run(
         [
             str(ROOT / "scripts/ci/prepare_generated_live_fixture.sh"),
@@ -35,6 +38,7 @@ def test_generated_python_sdk_v5_canonical_codec(tmp_path: Path) -> None:
             str(stage),
         ],
         cwd=ROOT,
+        env=fixture_environment,
         check=True,
     )
     first = Path(

@@ -39,8 +39,8 @@ async fn main() {
         .expect("generated provider schema defines");
 
     let semantic_profile = env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")
-        .unwrap_or_else(|_| "typedb-3.12.1/v1".to_owned());
-    if semantic_profile == "typedb-3.12.1/v1" {
+        .unwrap_or_else(|_| "typedb-3.13.6/v1".to_owned());
+    if semantic_profile != "typedb-3.11.5/v1" {
         let exported_schema = db.schema_text().await.expect("provider schema exports");
         for annotation in [
             r#"@doc("cyclic relation player")"#,
@@ -50,7 +50,7 @@ async fn main() {
         ] {
             assert!(
                 exported_schema.contains(annotation),
-                "exported TypeDB 3.12 schema omitted {annotation}:\n{exported_schema}"
+                "exported TypeDB {semantic_profile} schema omitted {annotation}:\n{exported_schema}"
             );
         }
     }

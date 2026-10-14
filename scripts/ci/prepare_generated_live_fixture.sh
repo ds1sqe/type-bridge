@@ -20,12 +20,16 @@ CORE_DIR="$ROOT_DIR/type-bridge-core"
 NODE_DIR="$CORE_DIR/crates/node"
 ACCEPTANCE_DIR="$CORE_DIR/crates/schema-codegen/tests/acceptance"
 SDK_V3_DIR="$ROOT_DIR/tests/contracts/sdk_conformance/sdk-v3"
-semantic_profile="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-typedb-3.12.1/v1}"
+# The fixture packages admit exactly the TypeDB server their profile names
+# (typedb-3.12.1/v1 -> 3.12.3, typedb-3.13.6/v1 -> 3.13.6). The default
+# follows the default TypeDB image; the frozen sdk-v3 ordered fixtures exist
+# only for typedb-3.12.1/v1.
+semantic_profile="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-typedb-3.13.6/v1}"
 output_dir="$(realpath -m "$requested_output")"
 
 case "$semantic_profile" in
     typedb-3.11.5/v1) schema_source="$ACCEPTANCE_DIR/schema-3.11.5.yaml" ;;
-    typedb-3.12.1/v1) schema_source="$ACCEPTANCE_DIR/schema.yaml" ;;
+    typedb-3.12.1/v1 | typedb-3.13.6/v1) schema_source="$ACCEPTANCE_DIR/schema.yaml" ;;
     *)
         echo "Unsupported generated-fixture semantic profile: $semantic_profile" >&2
         exit 2

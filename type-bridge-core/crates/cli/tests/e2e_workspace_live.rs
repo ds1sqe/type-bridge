@@ -491,7 +491,7 @@ async fn empty_workspace_to_replayed_history_live() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.3 server (the documented examples' profile)"]
+#[ignore = "requires an isolated TypeDB 3.13.6 server (the documented examples' profile)"]
 async fn documented_examples_initial_constraints_apply_and_verify_live() {
     let address = std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into());
     let http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap_or_else(|_| "8000".into());

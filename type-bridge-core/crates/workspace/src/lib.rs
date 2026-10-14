@@ -61,15 +61,19 @@ pub use workspace_yaml::{
 };
 
 /// The preferred server-semantic profile for newly authored V2 workspaces.
-pub const TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID: &str = "typedb-3.12.1/v1";
+///
+/// It pairs with TypeDB 3.13.6, the recommended server. Existing workspaces
+/// keep the profile they declare.
+pub const TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID: &str = "typedb-3.13.6/v1";
 /// Frozen server-semantic profiles accepted for workspace generation.
 ///
-/// Connected migration commands accept only the migration-authority profile
-/// (`typedb-3.12.1/v1`) and refuse the others with a stable diagnostic.
+/// Connected migration commands accept only the migration-authority profiles
+/// (`typedb-3.12.1/v1` and `typedb-3.13.6/v1`) and refuse the others with a
+/// stable diagnostic.
 pub const TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_IDS: &[&str] = &[
     "typedb-3.11.5/v1",
+    "typedb-3.12.1/v1",
     TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID,
-    "typedb-3.13.6/v1",
 ];
 
 const MAX_SYMBOLIC_ID_BYTES: usize = 255;

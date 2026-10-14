@@ -26,7 +26,7 @@ fn main() {
     let report = format!(
         "{version}\n\
          target: {target}\n\
-         semantic-profiles: typedb-3.11.5/v1,typedb-3.12.1/v1\n\
+         semantic-profiles: typedb-3.11.5/v1,typedb-3.12.1/v1,typedb-3.13.6/v1\n\
          source-commit: {source_commit}\n\
          source-tree: {source_tree}"
     );

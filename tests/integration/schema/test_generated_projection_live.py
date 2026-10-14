@@ -261,12 +261,29 @@ def _source_identity(relative_path: str, raw: bytes) -> dict[str, str]:
     return {"path": relative_path, "sha256": hashlib.sha256(raw).hexdigest()}
 
 
-def _require_sdk_server_version(detected: str | None) -> None:
-    if detected != "3.12.3":
+# Mirrors `GeneratedPackageRelease::for_profile` (type-bridge-core `core::version`):
+# a generated package admits exactly the server release its profile names.
+PROFILE_SERVER_VERSIONS = {"typedb-3.12.1/v1": "3.12.3", "typedb-3.13.6/v1": "3.13.6"}
+# Generated live fixtures follow `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`; new
+# workspaces and the default TypeDB image use TypeDB 3.13.6.
+DEFAULT_ACCEPTANCE_PROFILE = "typedb-3.13.6/v1"
+# The sdk-v1..v6 conformance contracts are frozen to this profile.
+SDK_PROFILE = "typedb-3.12.1/v1"
+
+
+def _require_profile_server_version(semantic_profile: str, detected: str | None) -> None:
+    expected = PROFILE_SERVER_VERSIONS.get(semantic_profile)
+    if expected is None:
+        raise AssertionError(f"{semantic_profile} names no exact TypeDB server release")
+    if detected != expected:
         raise AssertionError(
-            "sdk reports require the actual detected TypeDB server version 3.12.3; "
-            f"detected {detected!r}"
+            f"{semantic_profile} packages require the actual detected TypeDB server "
+            f"version {expected}; detected {detected!r}"
         )
+
+
+def _require_sdk_server_version(detected: str | None) -> None:
+    _require_profile_server_version(SDK_PROFILE, detected)
 
 
 def _sdk_results(
@@ -507,7 +524,7 @@ def _publish_sdk_v3_python_supplement(
     supplement = {
         "format": "typebridge.sdk-v3-live-supplement/v1",
         "binding": "python",
-        "semantic_profile": "typedb-3.12.1/v1",
+        "semantic_profile": SDK_PROFILE,
         "producer": "python.generated-data-model-runtime-v3-live",
         "semantic_fingerprint": json.loads(generated.SEMANTIC_SCHEMA_FINGERPRINT_JSON),
         "projection_fingerprint": json.loads(generated.PROJECTION_FINGERPRINT_JSON),
@@ -2073,9 +2090,18 @@ def _wait_for_port(port: int, process: subprocess.Popen[bytes], timeout: float) 
 
 def test_sdk_report_server_version_gate_is_exact() -> None:
     _require_sdk_server_version("3.12.3")
-    for detected in (None, "3.11.5", "3.12.0", "3.12.2", "3.13.0"):
+    for detected in (None, "3.11.5", "3.12.0", "3.12.2", "3.13.0", "3.13.6"):
         with pytest.raises(AssertionError, match="actual detected TypeDB server version 3.12.3"):
             _require_sdk_server_version(detected)
+
+
+def test_generated_profile_server_gate_follows_the_package_profile() -> None:
+    _require_profile_server_version("typedb-3.13.6/v1", "3.13.6")
+    for detected in (None, "3.12.3", "3.13.5", "3.14.0"):
+        with pytest.raises(AssertionError, match="actual detected TypeDB server version 3.13.6"):
+            _require_profile_server_version("typedb-3.13.6/v1", detected)
+    with pytest.raises(AssertionError, match="names no exact TypeDB server release"):
+        _require_profile_server_version("typedb-3.11.5/v1", "3.11.5")
 
 
 def _make_generated_person(
@@ -2106,7 +2132,12 @@ def _acceptance_contract(database: Database) -> tuple[Path, Path, str]:
         major, minor = (int(part) for part in server_version.split(".")[:2])
         if (major, minor) < (3, 12):
             return ACCEPTANCE_SCHEMA_3_11, PROVIDER_SCHEMA_3_11, "typedb-3.11.5/v1"
-    return ACCEPTANCE_SCHEMA, PROVIDER_SCHEMA, "typedb-3.12.1/v1"
+    semantic_profile = os.environ.get(
+        "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE", DEFAULT_ACCEPTANCE_PROFILE
+    )
+    if server_version is not None:
+        _require_profile_server_version(semantic_profile, server_version)
+    return ACCEPTANCE_SCHEMA, PROVIDER_SCHEMA, semantic_profile
 
 
 @pytest.fixture
@@ -2161,8 +2192,8 @@ def generated_v3_package(
 ) -> Iterator[ModuleType]:
     """Import the exact Sdk V3 Python projection generated for this run."""
     _, _, semantic_profile = _acceptance_contract(clean_db)
-    if semantic_profile != "typedb-3.12.1/v1":
-        pytest.skip("Sdk V3 requires the 3.12 semantic profile")
+    if semantic_profile != SDK_PROFILE:
+        pytest.skip(f"Sdk V3 requires the {SDK_PROFILE} semantic profile")
     supplied_stage = os.environ.get("TYPE_BRIDGE_GENERATED_PYTHON_STAGE")
     if supplied_stage is None:
         stage = tmp_path / "generated-v3-projection"
@@ -3321,8 +3352,8 @@ def test_generated_projection_round_trips_live_models(
     ):
         raise AssertionError("sdk-v1 and sdk-v2 reports require distinct paths")
     if sdk_report_path is not None:
-        if semantic_profile != "typedb-3.12.1/v1":
-            raise AssertionError("sdk reports may only be emitted for typedb-3.12.1/v1")
+        if semantic_profile != SDK_PROFILE:
+            raise AssertionError(f"sdk reports may only be emitted for {SDK_PROFILE}")
         _require_sdk_server_version(clean_db.detected_server_version())
         _validate_sdk_report_path(sdk_report_path)
         catalog_raw, sdk_catalog = _load_json_object(SDK_CATALOG)
@@ -3333,8 +3364,8 @@ def test_generated_projection_round_trips_live_models(
         assert sdk_journey["fixture_id"] == sdk_fixture["id"]
         assert sdk_journey["version"] == sdk_fixture["version"]
     if sdk_v2_report_path is not None:
-        if semantic_profile != "typedb-3.12.1/v1":
-            raise AssertionError("sdk-v2 reports require typedb-3.12.1/v1")
+        if semantic_profile != SDK_PROFILE:
+            raise AssertionError(f"sdk-v2 reports require {SDK_PROFILE}")
         _require_sdk_server_version(clean_db.detected_server_version())
         _validate_sdk_report_path(sdk_v2_report_path)
         sdk_v2_catalog_raw, sdk_v2_catalog = _load_json_object(SDK_V2_CATALOG)

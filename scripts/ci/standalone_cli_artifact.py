@@ -33,7 +33,7 @@ SDK = ROOT / "tests/contracts/sdk_conformance/sdk-v4/workspace"
 FORMAT = "typebridge.standalone-cli-artifact/v1"
 TARGET = "x86_64-unknown-linux-gnu"
 PUBLICATION_DISPOSITION = "artifact-only-unpublished-unsupported"
-SEMANTIC_PROFILES = ["typedb-3.11.5/v1", "typedb-3.12.1/v1"]
+SEMANTIC_PROFILES = ["typedb-3.11.5/v1", "typedb-3.12.1/v1", "typedb-3.13.6/v1"]
 SDK_MIGRATIONS = (
     "sdkv4/0001_initial",
     "sdkv4/0002_expand-display-name",

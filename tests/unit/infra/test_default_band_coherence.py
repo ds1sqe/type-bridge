@@ -36,7 +36,7 @@ def test_retired_server_lines_fail_the_native_gate(server: str) -> None:
         type_bridge_core.check_server_supported(server)
 
 
-@pytest.mark.parametrize("server", ["3.11.5", "3.12.3"])
+@pytest.mark.parametrize("server", ["3.11.5", "3.12.3", "3.13.6"])
 def test_retained_server_lines_pass_the_native_gate(server: str) -> None:
     type_bridge_core.check_server_supported(server)
 
@@ -158,16 +158,18 @@ def test_gate_matrix_keeps_retired_lines_negative_only() -> None:
 
 
 def test_compose_and_local_harness_default_to_the_band9_server() -> None:
-    expected = "typedb/typedb:3.12.3"
+    expected = "typedb/typedb:3.13.6"
     for name in ("docker-compose.yml", "docker-compose.proxy.yml"):
         text = (REPO_ROOT / name).read_text(encoding="utf-8")
         match = re.search(r"\$\{TYPEDB_IMAGE:-(typedb/typedb:[\w.\-]+)\}", text)
         assert match is not None
         assert match.group(1) == expected
 
-    assert (REPO_ROOT / "test.sh").read_text(encoding="utf-8").count(
-        "${TYPEDB_IMAGE:-typedb/typedb:3.12.3}"
-    ) == 2
+    harness = (REPO_ROOT / "test.sh").read_text(encoding="utf-8")
+    assert harness.count("${TYPEDB_IMAGE:-typedb/typedb:3.13.6}") == 1
+    # The TLS workspace fixtures declare typedb-3.12.1/v1, whose connected
+    # migrations require exactly TypeDB 3.12.3.
+    assert harness.count("${TYPEDB_IMAGE:-typedb/typedb:3.12.3}") == 1
 
 
 def test_optional_python_driver_groups_exclude_retired_lines() -> None:
@@ -177,11 +179,11 @@ def test_optional_python_driver_groups_exclude_retired_lines() -> None:
     expected = {
         "dev": {
             "typedb-driver~=3.11.5; python_version < '3.14'",
-            "typedb-driver==3.12.3; python_version >= '3.14'",
+            "typedb-driver==3.13.6; python_version >= '3.14'",
         },
         "typedb-driver": {
-            "typedb-driver>=3.11,<3.13; python_version < '3.14'",
-            "typedb-driver==3.12.3; python_version >= '3.14'",
+            "typedb-driver>=3.11,<3.14; python_version < '3.14'",
+            "typedb-driver>=3.12.3,<3.14; python_version >= '3.14'",
         },
     }
     for group, requirements in expected.items():

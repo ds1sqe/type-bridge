@@ -399,6 +399,17 @@ differently direct and through a proxy. Each entry says what to do instead.
   protocol to TypeDB 3.12 servers and includes upstream's fetch-kind decoding
   fix. The supported server window is unchanged. The release pin check now
   also fails when crates.io publishes a stable driver on a newer minor line.
+- TypeDB 3.13.6 is the recommended server and the default image in
+  `docker-compose.yml`, `docker-compose.proxy.yml`, and `test.sh`. New
+  workspaces and the shipped examples use the semantic profile
+  `typedb-3.13.6/v1`; existing workspaces keep the profile they declare. The
+  CLI `--version` output lists `typedb-3.13.6/v1` among its semantic profiles.
+- Generated live fixtures follow `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`
+  (default `typedb-3.13.6/v1`) and require the exact server their profile
+  names: 3.12.3 for `typedb-3.12.1/v1`, 3.13.6 for `typedb-3.13.6/v1`.
+- The Python `typedb-driver` extra accepts `>=3.11,<3.14`, and
+  `>=3.12.3,<3.14` on CPython 3.14. CPython 3.14 remediation messages name
+  the 3.13 driver line.
 - Answer-limit defaults are per transport. A direct session keeps the 2.2
   values: 100,000 items, 64 MiB, 1,000,000 graph nodes, 4,000,000 attribute
   values, 1,000,000 collection members and role players, 30 seconds, and 3

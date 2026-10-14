@@ -451,8 +451,8 @@ class TestCreateDriverOptionsBandNone:
         assert "type-bridge[typedb-driver]" in msg
         assert "typedb-driver~=3.10" not in msg
         if sys.version_info >= (3, 14):
-            assert "driver 3.12.3" in msg
-            assert "TypeDB 3.12" in msg
+            assert "3.13 driver line" in msg
+            assert "TypeDB 3.12 or 3.13" in msg
 
     def test_python314_rejects_band8_before_native_option_constructors(
         self, monkeypatch: pytest.MonkeyPatch

@@ -45,6 +45,9 @@ const SDK_V3_JOURNEY: &[u8] =
     include_bytes!("../../../../tests/contracts/sdk_conformance/sdk-v3/journey-v3.json");
 const SDK_V2_CATALOG_RELATIVE: &str = "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json";
 const SDK_PROFILE: &str = "typedb-3.12.1/v1";
+/// The generated live fixture profile when `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`
+/// is unset; it pairs with TypeDB 3.13.6, the default server image.
+const DEFAULT_ACCEPTANCE_PROFILE: &str = "typedb-3.13.6/v1";
 const CONSUMER_TESTS: [&str; 13] = [
     "generated_sdk_report_journeys",
     "generated_schema_handshake_and_tokens",
@@ -317,10 +320,10 @@ fn typedb_3_11_acceptance_is_the_same_application_without_3_12_docs() {
 #[ignore = "requires an isolated retained TypeDB server"]
 fn generated_rust_projection_round_trips_exact_live_models() {
     let profile_name = env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")
-        .unwrap_or_else(|_| "typedb-3.12.1/v1".to_owned());
+        .unwrap_or_else(|_| DEFAULT_ACCEPTANCE_PROFILE.to_owned());
     let (schema, provider_schema) = match profile_name.as_str() {
         "typedb-3.11.5/v1" => (SCHEMA_3_11, PROVIDER_SCHEMA_3_11),
-        "typedb-3.12.1/v1" => (SCHEMA, PROVIDER_SCHEMA),
+        "typedb-3.12.1/v1" | "typedb-3.13.6/v1" => (SCHEMA, PROVIDER_SCHEMA),
         other => panic!("unsupported generated live semantic profile: {other}"),
     };
     let sdk_report = requested_sdk_report(&profile_name);
