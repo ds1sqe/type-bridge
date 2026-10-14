@@ -89,7 +89,12 @@ db = Database(
 db.connect()
 ```
 
-For gRPC-only deployments, supply an exact supported server version:
+If HTTP discovery is unavailable, the runtime discovers the version through
+band 8 and reconnects on band 9 for TypeDB 3.12 or 3.13. A 3.13 connection
+fails if that upgrade fails; only servers accepting band 8 may retain it.
+
+For gRPC-only deployments, supply an exact supported server version to skip
+discovery:
 
 ```python
 db = Database(

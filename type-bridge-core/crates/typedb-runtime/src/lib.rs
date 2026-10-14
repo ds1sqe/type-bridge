@@ -1948,9 +1948,8 @@ async fn grpc_fallback_driver(
     // Band 9 is deliberately NOT probed blindly: a band-9 connection attempt
     // against a 3.11 server crashes the server outright (measured live on
     // 3.11.5).  The fallback therefore discovers the server through band 8 —
-    // accepted by every 3.11 and 3.12 server; a 3.13 server is not measured
-    // on band 8 and is refused after discovery — and only upgrades to the native
-    // band-9 protocol once the reported version proves the server accepts it.
+    // usable for version discovery on 3.11–3.13 servers — and only upgrades
+    // to band 9 once the reported version proves the server accepts it.
     #[cfg(feature = "band8")]
     {
         match connect_band8_driver(address, username, password, tls, meter).await {
@@ -2022,6 +2021,11 @@ async fn grpc_fallback_driver(
                                         return Err(close_driver_preserving(&driver, error));
                                     }
                                     trace_band9_upgrade_failed(address, server_version, &error);
+                                    if !core_version::server_accepted_bands(&server_version)
+                                        .contains(&8)
+                                    {
+                                        return Err(close_driver_preserving(&driver, error));
+                                    }
                                 }
                             }
                         }
@@ -2083,14 +2087,6 @@ fn classify_band8_grpc_version(
         .parse::<core_version::Version>()
         .map_err(RuntimeError::UnsupportedVersion)?;
     validate_server_band(&server_version)?;
-    if !core_version::server_accepted_bands(&server_version).contains(&8) {
-        return Err(RuntimeError::UnsupportedVersion(
-            core_version::VersionError::Probe(format!(
-                "band-8 gRPC connection reported server version {server_version}, \
-                 which does not accept band 8"
-            )),
-        ));
-    }
 
     Ok(Band8GrpcVersion::Validated(server_version))
 }
@@ -2162,7 +2158,9 @@ impl TypeDBRuntime {
     /// Connect to a TypeDB server.
     ///
     /// Validates the supplied server version, or probes via HTTP before opening
-    /// any gRPC connection when no version is supplied.
+    /// any gRPC connection when no version is supplied. If HTTP discovery fails,
+    /// band 8 discovers the version before upgrading to band 9 when supported.
+    /// A server that requires band 9 fails closed if the upgrade fails.
     /// Returns [`RuntimeError::UnsupportedVersion`] when the server is outside the
     /// supported window or on a different protocol band than the driver.
     pub async fn connect(
@@ -5966,6 +5964,35 @@ mod tests {
                 minor: 12,
                 patch: 0,
             })
+        ));
+    }
+
+    #[cfg(all(feature = "band8", feature = "band9"))]
+    #[test]
+    fn band8_discovery_negotiates_the_accepted_embedded_band() {
+        for (reported, expected_band) in [("3.11.5", 8), ("3.12.3", 9), ("3.13.6", 9)] {
+            let Band8GrpcVersion::Validated(version) =
+                classify_band8_grpc_version("localhost:1729", Ok(reported.to_owned()))
+                    .expect("supported discovery version must validate")
+            else {
+                panic!("authoritative version unexpectedly marked retryable");
+            };
+            assert_eq!(validate_server_band(&version).unwrap(), expected_band);
+        }
+        assert!(matches!(
+            classify_band8_grpc_version("localhost:1729", Ok("3.14.0".to_owned())),
+            Err(RuntimeError::UnsupportedVersion(
+                core_version::VersionError::Unsupported { .. }
+            ))
+        ));
+    }
+
+    #[cfg(all(feature = "band8", not(feature = "band9")))]
+    #[test]
+    fn band8_discovery_refuses_a_server_requiring_an_unembedded_band() {
+        assert!(matches!(
+            classify_band8_grpc_version("localhost:1729", Ok("3.13.6".to_owned())),
+            Err(RuntimeError::UnsupportedVersion(_))
         ));
     }
 
