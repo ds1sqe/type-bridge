@@ -289,7 +289,11 @@ differently direct and through a proxy. Each entry says what to do instead.
   idempotent, and cannot be rolled back (`migration_rollback_profile_bridge`).
   `migration make`, `plan`, `apply`, and `verify` on a history still on the
   older profile refuse with `migration_history_profile_upgrade_required` and
-  print the command to run.
+  print the command to run. A bridged history also replays into a new,
+  empty database on the newer server: `migration apply` applies the older
+  migrations under their own profile, the bridge as a profile flip, then
+  the newer ones, all verified. Older-profile migrations are refused
+  anywhere else.
 - `type_bridge_core.InvalidQueryRequestError`, a subclass of both
   `MatchRequestError` and `ValueError`, for the query refusals 2.2 raised as
   `ValueError` (codes `zero_window_limit`, `window_overflow`,

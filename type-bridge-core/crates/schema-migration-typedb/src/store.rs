@@ -497,6 +497,17 @@ impl<'a> VerifiedMigrationCatalog<'a> {
     /// stay on the profile it moves from and are checked under that profile;
     /// every other manifest, including the bridge itself, binds `context`.
     fn require_execution_context(&self, context: &ManagedDeltaContext) -> Result<(), Diagnostic> {
+        let bridge = self.profile_bridge_with_ancestors()?;
+        for manifest in self.values() {
+            require_catalog_manifest_execution_context(manifest, bridge.as_ref(), context)?;
+        }
+        Ok(())
+    }
+
+    /// Return the catalog's single profile bridge and its ancestors.
+    fn profile_bridge_with_ancestors(
+        &self,
+    ) -> Result<Option<ProfileBridgeLineage<'a>>, Diagnostic> {
         let mut bridges = self
             .values()
             .filter(|manifest| manifest.is_profile_bridge());
@@ -508,16 +519,7 @@ impl<'a> VerifiedMigrationCatalog<'a> {
                 "verified migration catalog crosses more than one profile-upgrade bridge",
             ));
         }
-        let ancestors = bridge.map(|bridge| self.ancestors(bridge));
-        for manifest in self.values() {
-            match (bridge, &ancestors) {
-                (Some(bridge), Some(ancestors)) if ancestors.contains(manifest.id()) => {
-                    require_bridge_ancestor_execution_context(manifest, bridge, context)?;
-                }
-                _ => require_manifest_execution_context(manifest, context)?,
-            }
-        }
-        Ok(())
+        Ok(bridge.map(|bridge| (bridge, self.ancestors(bridge))))
     }
 
     fn ancestors(&self, manifest: &VerifiedSchemaMigrationManifest) -> BTreeSet<MigrationId> {
@@ -531,6 +533,33 @@ impl<'a> VerifiedMigrationCatalog<'a> {
             }
         }
         seen
+    }
+}
+
+/// A catalog's profile bridge and the identities of its ancestors.
+type ProfileBridgeLineage<'a> = (&'a VerifiedSchemaMigrationManifest, BTreeSet<MigrationId>);
+
+/// Check one catalog manifest and return the context it executes under.
+///
+/// A bridge ancestor stays on the profile the bridge moves from and executes
+/// under that profile; every other manifest, including the bridge, executes
+/// under `context`.
+fn require_catalog_manifest_execution_context(
+    manifest: &VerifiedSchemaMigrationManifest,
+    bridge: Option<&ProfileBridgeLineage<'_>>,
+    context: &ManagedDeltaContext,
+) -> Result<Option<ManagedDeltaContext>, Diagnostic> {
+    match bridge {
+        Some((bridge, ancestors)) if ancestors.contains(manifest.id()) => {
+            require_bridge_ancestor_execution_context(manifest, bridge, context)?;
+            Ok(Some(profile_bridge_source_context(
+                bridge
+                    .profile_bridge()
+                    .expect("the catalog lineage holds a profile bridge"),
+                context,
+            )))
+        }
+        _ => require_manifest_execution_context(manifest, context).map(|()| None),
     }
 }
 
@@ -680,17 +709,33 @@ fn require_lowering_execution_context(
     Ok(())
 }
 
+/// Require every plan manifest, step and endpoint state to execute under
+/// `context`, or, for an ancestor of the catalog's profile bridge replayed
+/// into a new database, under the older profile the bridge moves from.
 fn require_apply_plan_execution_context(
     plan: &VerifiedMigrationApplyPlan,
     context: &ManagedDeltaContext,
+    bridge: Option<&ProfileBridgeLineage<'_>>,
 ) -> Result<(), Diagnostic> {
     plan.required_capabilities()
         .ensure_supported_by(context.available_capabilities())?;
-    require_state_if_present(plan.source_state(), context, "apply_plan_source")?;
-    require_state_if_present(plan.target_state(), context, "apply_plan_target")?;
+    let mut contexts = Vec::with_capacity(plan.migrations().len());
     for migration in plan.migrations() {
+        contexts.push(require_catalog_manifest_execution_context(
+            migration.manifest(),
+            bridge,
+            context,
+        )?);
+    }
+    // The plan source is the first manifest's source on its own profile,
+    // except a plan that starts at the bridge, which starts at its target.
+    let source_context = contexts.first().and_then(Option::as_ref).unwrap_or(context);
+    let target_context = contexts.last().and_then(Option::as_ref).unwrap_or(context);
+    require_state_if_present(plan.source_state(), source_context, "apply_plan_source")?;
+    require_state_if_present(plan.target_state(), target_context, "apply_plan_target")?;
+    for (migration, own_context) in plan.migrations().iter().zip(&contexts) {
         let manifest = migration.manifest();
-        require_manifest_execution_context(manifest, context)?;
+        let context = own_context.as_ref().unwrap_or(context);
         for step in migration.steps() {
             step.step()
                 .required_capabilities()
@@ -854,7 +899,8 @@ impl<'a> TypeDbMigrationStore<'a> {
         plan: &'a VerifiedMigrationApplyPlan,
         allow_legacy_bridge: bool,
     ) -> Result<Self, Diagnostic> {
-        require_apply_plan_execution_context(plan, &self.context)?;
+        let bridge = self.catalog.profile_bridge_with_ancestors()?;
+        require_apply_plan_execution_context(plan, &self.context, bridge.as_ref())?;
         if !allow_legacy_bridge
             && self
                 .catalog
@@ -3808,8 +3854,58 @@ pub(crate) mod tests {
             &[],
         )
         .expect("bridge plan");
-        require_apply_plan_execution_context(&plan, &new)
+        let catalog = VerifiedMigrationCatalog::new([&root, &more, &bridge]).expect("catalog");
+        let lineage = catalog.profile_bridge_with_ancestors().expect("one bridge");
+        require_apply_plan_execution_context(&plan, &new, lineage.as_ref())
             .expect("the bridge plan executes on the newer profile");
+    }
+
+    #[test]
+    fn replay_plan_binds_bridge_ancestors_under_their_own_profile() {
+        let scope = ManagedScopeId::new("profile-bridge-scope").expect("scope");
+        // Lowering needs the runtime transition capabilities.
+        let new = ManagedDeltaContext::new(
+            scope.clone(),
+            MigrationProfile::Typedb3_13_6.semantic_profile_id(),
+            type_bridge_schema_migration::migration_runtime_capability_vocabulary()
+                .expect("runtime capabilities"),
+        );
+        let [root, more, bridge, after] = bridged_catalog_fixture(&scope);
+        let graph = type_bridge_schema_migration::MigrationHistoryGraph::from_verified([
+            root.clone(),
+            more.clone(),
+            bridge.clone(),
+            after.clone(),
+        ])
+        .expect("bridged graph");
+        let lowering = type_bridge_schema_migration::SchemaLoweringBinding::for_semantic_profile(
+            new.semantic_profile(),
+            new.available_capabilities().clone(),
+        )
+        .expect("lowering binding");
+        let plan = type_bridge_schema_migration::build_verified_migration_apply_plan(
+            &graph,
+            &BTreeSet::new(),
+            &type_bridge_schema_migration::MigrationApplyTarget::DefaultHead,
+            &new,
+            &lowering,
+            &type_bridge_schema_migration::MigrationSafetyPolicy::default_policy(),
+            &[],
+        )
+        .expect("replay plan from empty");
+        let catalog =
+            VerifiedMigrationCatalog::new([&root, &more, &bridge, &after]).expect("catalog");
+        let lineage = catalog.profile_bridge_with_ancestors().expect("one bridge");
+        require_apply_plan_execution_context(&plan, &new, lineage.as_ref())
+            .expect("the replayed ledger binds on the newer line");
+
+        // Without the catalog's bridge, the older manifests are foreign.
+        let error = require_apply_plan_execution_context(&plan, &new, None)
+            .expect_err("an unbridged replay is refused");
+        assert_eq!(
+            error.code().as_str(),
+            "migration_typedb_manifest_semantic_profile_mismatch"
+        );
     }
 
     #[test]

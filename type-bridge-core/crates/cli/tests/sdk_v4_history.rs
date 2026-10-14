@@ -6,6 +6,8 @@ use std::process::Command;
 
 use sha2::{Digest as _, Sha256};
 
+mod support;
+
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../tests/contracts/sdk_conformance/sdk-v4/workspace")
@@ -202,4 +204,34 @@ fn main() {
         "sdkv4/0004_contract-legacy-name,sdkv4/0003_backfill-display-name,sdkv4/0002_expand-display-name,sdkv4/0001_initial",
     );
     assert_eq!(fields[4], "1");
+}
+
+#[test]
+fn per_run_copy_on_a_newer_profile_bridges_the_committed_history() {
+    let committed = fs::read(fixture().join("typebridge.yaml")).expect("manifest reads");
+    let temporary = tempfile::tempdir().expect("isolated workspace creates");
+    support::prepare_v4_workspace_for(temporary.path(), "typedb-3.13.6/v1");
+    assert_eq!(
+        fs::read(fixture().join("typebridge.yaml")).expect("manifest reads"),
+        committed,
+        "the committed workspace stays byte-identical",
+    );
+    let plan = Command::new(env!("CARGO_BIN_EXE_type-bridge"))
+        .current_dir(temporary.path())
+        .args(["migration", "plan"])
+        .output()
+        .expect("migration plan runs");
+    assert!(
+        plan.status.success(),
+        "migration plan failed: {}",
+        String::from_utf8_lossy(&plan.stderr),
+    );
+    let stdout = String::from_utf8(plan.stdout).expect("plan output is UTF-8");
+    assert!(
+        stdout.ends_with(
+            "sdkv4/0004_contract-legacy-name  safety=Destructive  reversible=true\n\
+             sdkv4/0005_profile_upgrade_typedb_3_13_6  safety=FormalOnly  reversible=false\n"
+        ),
+        "{stdout}"
+    );
 }

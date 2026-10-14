@@ -33,8 +33,8 @@ use type_bridge_schema_migration::{
     BackfillCompletionEvidence, BackfillExecutionCounts, BackfillExecutionDirection,
     BackfillExecutionFuture, BackfillRecoveryObservation, ExecutionBindingToken, ExecutionFuture,
     GroupCommitCertainty, GroupCommitFailure, GroupCommitFuture, MigrationExecutionProvider,
-    MigrationLease, MigrationProfile, PreparedMigrationGroup, StatementUnit,
-    migration_runtime_capability_vocabulary,
+    MigrationHistoryGraph, MigrationLease, MigrationProfile, PreparedMigrationGroup, StatementUnit,
+    VerifiedMigrationApplyPlan, migration_runtime_capability_vocabulary,
 };
 
 use crate::backfill::LoweredBackfill;
@@ -149,6 +149,7 @@ pub struct TypeDbMigrationProvider {
     binding: TypeDbExecutionBinding,
     legacy_binding: Option<(LegacyExecutionBinding, String)>,
     observation_authority: ManagedObservationAuthority,
+    profile_bridge_source: Option<ManagedDeltaContext>,
 }
 
 impl TypeDbMigrationProvider {
@@ -162,7 +163,51 @@ impl TypeDbMigrationProvider {
             binding: binding.clone(),
             legacy_binding: None,
             observation_authority: ManagedObservationAuthority::ExactPortable,
+            profile_bridge_source: None,
         })
+    }
+
+    /// Also admit managed states on the older profile a profile bridge moves
+    /// from, for a plan that replays the bridge's ancestors into a database
+    /// on the newer server.
+    ///
+    /// Callers apply this only after the store bound the plan, which admits
+    /// an older-profile manifest only as an ancestor of the catalog's single
+    /// bridge.
+    /// The server pairing still follows the binding's own profile.
+    pub(crate) fn for_replayed_profile_bridge(
+        mut self,
+        graph: &MigrationHistoryGraph,
+        plan: &VerifiedMigrationApplyPlan,
+    ) -> Self {
+        let context = &self.binding.context;
+        self.profile_bridge_source =
+            replayed_profile_bridge_source(graph, plan, context).map(|from| {
+                ManagedDeltaContext::new(
+                    context.scope_id().clone(),
+                    from,
+                    context.available_capabilities().clone(),
+                )
+            });
+        self
+    }
+
+    /// Require one state on the binding's context, or on the admitted
+    /// profile-bridge source context when it carries that older profile.
+    fn require_execution_state(
+        &self,
+        state: &ManagedSchemaState,
+        state_role: &'static str,
+    ) -> Result<(), Diagnostic> {
+        let state_profile = state
+            .managed_semantic_schema()
+            .as_fingerprint()
+            .semantic_profile();
+        let context = match &self.profile_bridge_source {
+            Some(source) if state_profile == Some(source.semantic_profile()) => source,
+            _ => &self.binding.context,
+        };
+        require_managed_state_execution_context(state, context, state_role)
     }
 
     /// Bind the runner-validated legacy pair state into every managed SCHEMA
@@ -401,16 +446,8 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
     ) -> ExecutionFuture<'a, ManagedSchemaState> {
         Box::pin(async move {
             self.binding.require_lease(lease)?;
-            require_managed_state_execution_context(
-                source_candidate,
-                &self.binding.context,
-                "observation_source",
-            )?;
-            require_managed_state_execution_context(
-                target_candidate,
-                &self.binding.context,
-                "observation_target",
-            )?;
+            self.require_execution_state(source_candidate, "observation_source")?;
+            self.require_execution_state(target_candidate, "observation_target")?;
             let mut transaction = self
                 .binding
                 .managed_database
@@ -433,8 +470,8 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
     ) -> ExecutionFuture<'a, Box<dyn PreparedMigrationGroup + 'a>> {
         Box::pin(async move {
             self.binding.require_lease(lease)?;
-            require_managed_state_execution_context(source, &self.binding.context, "group_source")?;
-            require_managed_state_execution_context(target, &self.binding.context, "group_target")?;
+            self.require_execution_state(source, "group_source")?;
+            self.require_execution_state(target, "group_target")?;
             let mut transaction = self
                 .binding
                 .managed_database
@@ -741,6 +778,28 @@ pub fn require_supported_migration_execution_binding(
     context
         .available_capabilities()
         .ensure_supported_by(&execution_capability_vocabulary()?)
+}
+
+/// Return the older profile a plan replays below the history's profile
+/// bridge, if it plans any manifest off the execution profile.
+///
+/// The store has already bound the plan, which admits such a manifest only
+/// as an ancestor of the catalog's single bridge to the execution profile.
+pub(crate) fn replayed_profile_bridge_source(
+    graph: &MigrationHistoryGraph,
+    plan: &VerifiedMigrationApplyPlan,
+    context: &ManagedDeltaContext,
+) -> Option<SemanticProfileId> {
+    let replays_older = plan.migrations().iter().any(|migration| {
+        migration.manifest().semantic_profile().id() != context.semantic_profile()
+    });
+    if !replays_older {
+        return None;
+    }
+    graph
+        .manifests()
+        .find_map(|(_, manifest)| manifest.profile_bridge())
+        .map(|bridge| bridge.from_semantic_profile().id().clone())
 }
 
 /// Require one managed state to belong to the provider's exact execution context.

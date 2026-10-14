@@ -1,8 +1,11 @@
 //! Profile-upgrade bridge manifests and profile-aware history discovery.
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
@@ -15,17 +18,20 @@ use type_bridge_contract::migration::{
     MigrationAppLabel, MigrationId, MigrationName, MigrationStepId, SchemaDeltaStep,
 };
 use type_bridge_contract::schema::{
-    DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
+    DeclaredSchema, DocumentId, ManagedSchemaState, SchemaFact, SourceSpan, SourcedSchemaFact,
+    TypeFact,
 };
 use type_bridge_schema::{ManagedDeltaContext, SafetyClass, diff_managed, inverse_delta};
 use type_bridge_schema_migration::{
-    MigrationApplyApproval, MigrationApplyPlanError, MigrationApplyTarget, MigrationDirectory,
-    MigrationHistoryGraph, MigrationProfile, MigrationProfileUpgrade, MigrationSafetyPolicy,
-    SchemaLoweringBinding, SchemaMigrationDraft, VerifiedSchemaMigrationManifest,
-    build_verified_manifest, build_verified_migration_apply_plan,
-    build_verified_migration_rollback_plan, decode_verified_manifest,
-    discover_history_for_profile_upgrade_in, discover_verified_migration_chain,
-    encode_verified_manifest, migration_runtime_capability_vocabulary,
+    ExecutionFuture, LeaseHolderId, MigrationApplyApproval, MigrationApplyPlanError,
+    MigrationApplyTarget, MigrationDirectory, MigrationExecutionOutcome,
+    MigrationExecutionProvider, MigrationHistoryGraph, MigrationLease, MigrationProfile,
+    MigrationProfileUpgrade, MigrationSafetyPolicy, PreparedMigrationGroup, SchemaLoweringBinding,
+    SchemaMigrationDraft, VerifiedSchemaMigrationManifest, build_verified_manifest,
+    build_verified_migration_apply_plan, build_verified_migration_rollback_plan,
+    decode_verified_manifest, discover_history_for_profile_upgrade_in,
+    discover_verified_migration_chain, encode_verified_manifest,
+    execute_verified_migration_apply_plan, migration_runtime_capability_vocabulary,
 };
 
 const OLD: MigrationProfile = MigrationProfile::Typedb3_12_1;
@@ -519,8 +525,8 @@ fn apply_plans_cross_the_bridge_only_forward_from_its_parent() {
     .expect("plan past the bridge");
     assert_eq!(past.source_state(), Some(bridge.target_state()));
 
-    // Old-profile manifests never execute on the new line.
-    let error = build_verified_migration_apply_plan(
+    // Below the bridge, old-profile ancestors replay on the new line too.
+    let below = build_verified_migration_apply_plan(
         &graph,
         &ids(&[&root]),
         &MigrationApplyTarget::DefaultHead,
@@ -529,7 +535,125 @@ fn apply_plans_cross_the_bridge_only_forward_from_its_parent() {
         &policy,
         &[],
     )
-    .expect_err("an old-profile pending manifest is refused");
+    .expect("old-profile bridge ancestors replay");
+    assert_eq!(below.source_state(), Some(root.target_state()));
+    assert_eq!(below.migrations().len(), 3);
+}
+
+#[test]
+fn bridged_history_replays_into_an_empty_database_on_the_new_line() {
+    let [root, more, bridge, after] = bridged_history_with_descendant();
+    let graph = MigrationHistoryGraph::from_verified([
+        root.clone(),
+        more.clone(),
+        bridge.clone(),
+        after.clone(),
+    ])
+    .expect("bridged graph");
+    let policy = MigrationSafetyPolicy::default_policy();
+
+    let plan = build_verified_migration_apply_plan(
+        &graph,
+        &BTreeSet::new(),
+        &MigrationApplyTarget::DefaultHead,
+        &context(NEW),
+        &lowering(NEW),
+        &policy,
+        &[],
+    )
+    .expect("a bridged history replays from empty");
+    let planned = plan
+        .migrations()
+        .iter()
+        .map(|migration| migration.manifest().id().clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        planned,
+        vec![
+            root.id().clone(),
+            more.id().clone(),
+            bridge.id().clone(),
+            after.id().clone()
+        ]
+    );
+    // The plan starts at the old-profile genesis state and ends on the new
+    // profile.
+    assert_eq!(plan.source_state(), Some(root.source_state()));
+    assert_eq!(plan.target_state(), Some(after.target_state()));
+    // Each manifest is lowered with its own profile's registry.
+    let old = lowering(OLD);
+    let new = lowering(NEW);
+    for (migration, expected) in plan.migrations().iter().zip([&old, &old, &new, &new]) {
+        for step in migration.steps() {
+            if let Some(lowered) = step.lowering() {
+                assert_eq!(lowered.profile_id(), expected.profile_id());
+                assert_eq!(
+                    lowered.profile_fingerprint(),
+                    expected.profile_fingerprint()
+                );
+            }
+        }
+    }
+    assert!(
+        plan.migrations()[0]
+            .steps()
+            .iter()
+            .any(|step| step.lowering().is_some())
+    );
+    assert!(plan.migrations()[2].steps().is_empty());
+
+    // An explicit target below the bridge is still the bridge's ancestor.
+    let partial = build_verified_migration_apply_plan(
+        &graph,
+        &BTreeSet::new(),
+        &MigrationApplyTarget::Explicit(ids(&[&more])),
+        &context(NEW),
+        &lowering(NEW),
+        &policy,
+        &[],
+    )
+    .expect("old-profile ancestors replay alone");
+    assert_eq!(partial.target_state(), Some(more.target_state()));
+}
+
+#[test]
+fn old_profile_replay_needs_a_bridge_to_the_execution_profile() {
+    let [root, more, bridge, after] = bridged_history_with_descendant();
+    let policy = MigrationSafetyPolicy::default_policy();
+
+    // Without a bridge, old-profile manifests never execute on the new line.
+    let unbridged =
+        MigrationHistoryGraph::from_verified([root.clone(), more.clone()]).expect("old graph");
+    let error = build_verified_migration_apply_plan(
+        &unbridged,
+        &BTreeSet::new(),
+        &MigrationApplyTarget::DefaultHead,
+        &context(NEW),
+        &lowering(NEW),
+        &policy,
+        &[],
+    )
+    .expect_err("an unbridged old-profile manifest is refused");
+    assert_eq!(
+        plan_code(error),
+        "migration_apply_lowering_profile_mismatch"
+    );
+
+    // A bridge to another profile than the execution profile admits nothing
+    // off that profile: on the old line the bridge and its descendant are
+    // refused.
+    let graph =
+        MigrationHistoryGraph::from_verified([root, more, bridge, after]).expect("bridged graph");
+    let error = build_verified_migration_apply_plan(
+        &graph,
+        &BTreeSet::new(),
+        &MigrationApplyTarget::DefaultHead,
+        &context(OLD),
+        &lowering(OLD),
+        &policy,
+        &[],
+    )
+    .expect_err("a bridge to another profile is refused");
     assert_eq!(
         plan_code(error),
         "migration_apply_lowering_profile_mismatch"
@@ -659,4 +783,124 @@ fn upgrade_discovery_reports_the_head_to_bridge_or_the_bridge() {
     let forked = write_history(&[&root, &more, &sibling]);
     let error = upgrade_discovery(&forked, NEW).expect_err("divergent heads");
     assert_eq!(code(&error), "migration_upgrade_profile_divergent_heads");
+}
+
+/// Reads the live schema under the profile the coordinator asks for: once the
+/// old-profile frontier is live, a bridge-target candidate observes as the
+/// same schema under the new profile.
+struct ProfileReadingProvider {
+    inner: common::CoordinatorProvider,
+    old_frontier: ManagedSchemaState,
+    bridge_target: ManagedSchemaState,
+}
+
+impl MigrationExecutionProvider for ProfileReadingProvider {
+    fn available_capabilities(&self) -> &CapabilitySet {
+        self.inner.available_capabilities()
+    }
+
+    fn observe_managed_state<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        source_candidate: &'a ManagedSchemaState,
+        target_candidate: &'a ManagedSchemaState,
+    ) -> ExecutionFuture<'a, ManagedSchemaState> {
+        Box::pin(async move {
+            let observed = self
+                .inner
+                .observe_managed_state(lease, source_candidate, target_candidate)
+                .await?;
+            if observed == self.old_frontier && target_candidate == &self.bridge_target {
+                *self.inner.observed.lock().expect("provider state") = self.bridge_target.clone();
+                return Ok(self.bridge_target.clone());
+            }
+            Ok(observed)
+        })
+    }
+
+    fn prepare_group<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        source: &'a ManagedSchemaState,
+        target: &'a ManagedSchemaState,
+    ) -> ExecutionFuture<'a, Box<dyn PreparedMigrationGroup + 'a>> {
+        self.inner.prepare_group(lease, source, target)
+    }
+}
+
+#[test]
+fn coordinator_replays_a_bridged_history_from_empty() {
+    let [root, more, bridge, after] = bridged_history_with_descendant();
+    let graph = MigrationHistoryGraph::from_verified([
+        root.clone(),
+        more.clone(),
+        bridge.clone(),
+        after.clone(),
+    ])
+    .expect("bridged graph");
+    let plan = build_verified_migration_apply_plan(
+        &graph,
+        &BTreeSet::new(),
+        &MigrationApplyTarget::DefaultHead,
+        &context(NEW),
+        &lowering(NEW),
+        &MigrationSafetyPolicy::default_policy(),
+        &[],
+    )
+    .expect("replay plan");
+    let store = common::CoordinatorStore::default();
+    let provider = ProfileReadingProvider {
+        inner: common::CoordinatorProvider {
+            available: context(NEW).available_capabilities().clone(),
+            calls: Mutex::new(Vec::new()),
+            observed: Mutex::new(root.source_state().clone()),
+        },
+        old_frontier: more.target_state().clone(),
+        bridge_target: bridge.target_state().clone(),
+    };
+    let outcome = common::block_on(execute_verified_migration_apply_plan(
+        &store,
+        &provider,
+        &LeaseHolderId::new("bridge-replay").expect("holder"),
+        &plan,
+    ))
+    .expect("replay executes");
+    assert!(matches!(outcome, MigrationExecutionOutcome::Applied { .. }));
+    let state = store.state.lock().expect("store state");
+    let applied = state
+        .applied
+        .iter()
+        .map(|entry| entry.record().migration_id().clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        applied,
+        vec![
+            root.id().clone(),
+            more.id().clone(),
+            bridge.id().clone(),
+            after.id().clone()
+        ]
+    );
+    assert!(state.open.is_none());
+    // Every manifest checkpoint observes its target; the bridge's is the
+    // fourth observation, read under the new profile.
+    assert_eq!(
+        *provider.inner.calls.lock().expect("provider calls"),
+        [
+            "observe",
+            "prepare",
+            "statement",
+            "commit",
+            "observe",
+            "prepare",
+            "statement",
+            "commit",
+            "observe",
+            "observe",
+            "prepare",
+            "statement",
+            "commit",
+            "observe",
+        ]
+    );
 }

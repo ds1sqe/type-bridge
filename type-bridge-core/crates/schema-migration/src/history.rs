@@ -254,6 +254,20 @@ impl MigrationHistoryGraph {
         self.manifests.iter()
     }
 
+    /// Return the history's single profile-upgrade bridge and its ancestors.
+    ///
+    /// Graph validation admits at most one bridge, and every manifest on the
+    /// profile it moves from is one of these ancestors.
+    pub(crate) fn profile_bridge_with_ancestors(
+        &self,
+    ) -> Option<(&VerifiedSchemaMigrationManifest, BTreeSet<MigrationId>)> {
+        let bridge = self
+            .manifests
+            .values()
+            .find(|manifest| manifest.is_profile_bridge())?;
+        Some((bridge, reachable(bridge.id(), &self.parents)))
+    }
+
     /// Return deterministic topological order with compound-ID ready-node ties.
     pub fn topological_order(&self) -> &[MigrationId] {
         &self.topological

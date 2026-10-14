@@ -11,26 +11,8 @@ mod support;
 
 const CONSUMER: &str = include_str!("sdk_v4_node_live/consumer.mjs");
 
-fn fixture() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../tests/contracts/sdk_conformance/sdk-v4/workspace")
-}
-
 fn repository_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
-}
-
-fn copy_tree(source: &Path, destination: &Path) {
-    fs::create_dir_all(destination).expect("destination creates");
-    for entry in fs::read_dir(source).expect("source reads") {
-        let entry = entry.expect("source entry reads");
-        let target = destination.join(entry.file_name());
-        if entry.file_type().expect("source type reads").is_dir() {
-            copy_tree(&entry.path(), &target);
-        } else {
-            fs::copy(entry.path(), target).expect("source file copies");
-        }
-    }
 }
 
 fn source_identity(root: &Path, relative: &str) -> Value {
@@ -59,7 +41,7 @@ fn run(command: &mut Command, description: &str) {
 fn generated_node_emits_complete_v4_report() {
     let server_version = support::requested_v4_server_version_blocking();
     let temporary = tempfile::tempdir().expect("isolated workspace creates");
-    copy_tree(&fixture(), temporary.path());
+    support::prepare_v4_workspace(temporary.path());
     run(
         Command::new(env!("CARGO_BIN_EXE_type-bridge"))
             .current_dir(temporary.path())

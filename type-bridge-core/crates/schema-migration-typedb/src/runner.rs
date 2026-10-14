@@ -1492,7 +1492,8 @@ impl TypeDbMigrationRunner {
             legacy_binding.clone(),
             self.context.scope_id().as_str().to_owned(),
             observation_authority.clone(),
-        )?;
+        )?
+        .for_replayed_profile_bridge(graph, &plan);
         let guarded_store = LegacyBoundStore::for_apply(
             &store,
             &self.managed_database,
@@ -3248,6 +3249,53 @@ mod tests {
             "migration_typedb_server_version_unsupported",
         )
         .await;
+    }
+
+    #[test]
+    fn replay_below_the_bridge_admits_the_older_profile_in_the_provider() {
+        let scope = ManagedScopeId::new("profile-bridge-scope").expect("scope");
+        let [root, more, bridge, after] = crate::store::tests::bridged_catalog_fixture(&scope);
+        let new = ManagedDeltaContext::new(
+            scope.clone(),
+            MigrationProfile::Typedb3_13_6.semantic_profile_id(),
+            type_bridge_schema_migration::migration_runtime_capability_vocabulary()
+                .expect("runtime capabilities"),
+        );
+        let lowering = SchemaLoweringBinding::for_context(&new).expect("lowering binding");
+        let graph = MigrationHistoryGraph::from_verified([
+            root.clone(),
+            more.clone(),
+            bridge.clone(),
+            after,
+        ])
+        .expect("bridged graph");
+        let plan_from = |applied: BTreeSet<MigrationId>| {
+            build_verified_migration_apply_plan(
+                &graph,
+                &applied,
+                &MigrationApplyTarget::DefaultHead,
+                &new,
+                &lowering,
+                &MigrationSafetyPolicy::default_policy(),
+                &[],
+            )
+            .expect("plan")
+        };
+
+        let replay = plan_from(BTreeSet::new());
+        assert_eq!(
+            crate::provider::replayed_profile_bridge_source(&graph, &replay, &new),
+            Some(MigrationProfile::Typedb3_12_1.semantic_profile_id())
+        );
+        let past = plan_from(BTreeSet::from([
+            root.id().clone(),
+            more.id().clone(),
+            bridge.id().clone(),
+        ]));
+        assert_eq!(
+            crate::provider::replayed_profile_bridge_source(&graph, &past, &new),
+            None
+        );
     }
 
     #[test]

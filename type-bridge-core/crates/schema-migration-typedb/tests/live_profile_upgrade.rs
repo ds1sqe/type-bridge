@@ -237,7 +237,7 @@ fn applied(outcome: &MigrationDirectoryApplyOutcome) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires TYPE_BRIDGE_MIGRATION_UPGRADE_FROM (TypeDB 3.12.3) and \
             TYPE_BRIDGE_MIGRATION_UPGRADE_TO (TypeDB 3.13.6)"]
-async fn runner_upgrades_a_3_12_history_to_3_13_at_a_profile_bridge() {
+async fn runner_upgrades_a_3_12_history_to_3_13_at_a_profile_bridge_and_replays_it() {
     let (Ok(from), Ok(to)) = (env::var(UPGRADE_FROM_ENV), env::var(UPGRADE_TO_ENV)) else {
         eprintln!("{UPGRADE_FROM_ENV} and {UPGRADE_TO_ENV} are unset; skipping");
         return;
@@ -398,7 +398,38 @@ async fn runner_upgrades_a_3_12_history_to_3_13_at_a_profile_bridge() {
     assert!(report.is_clean(), "findings: {:?}", report.findings());
     assert_eq!(report.applied_frontier(), &[after.id().clone()]);
 
-    for database in [to_managed, to_journal, from_managed, from_journal] {
+    // 8. A new environment on 3.13.6 replays the bridged history from empty:
+    // the 3.12.1 ancestors under their own profile, the bridge as a profile
+    // flip, then the 3.13.6 step.
+    let replay_name = format!("{managed_name}_replay");
+    let replay_managed = connect(&to, &replay_name, NEW).await;
+    let replay_journal = connect(&to, &derived_journal_database_name(&replay_name), NEW).await;
+    let replay_runner = runner(&replay_managed, &replay_journal, NEW);
+    let outcome = replay_runner
+        .apply(
+            history.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
+        .await
+        .expect("replay the bridged history into an empty database");
+    assert!(applied(&outcome), "{outcome:?}");
+    let report = replay_runner
+        .verify(history.path(), Some(after.target_schema()))
+        .await
+        .expect("verify the replayed history");
+    assert!(report.is_clean(), "findings: {:?}", report.findings());
+    assert_eq!(report.applied_frontier(), &[after.id().clone()]);
+
+    for database in [
+        to_managed,
+        to_journal,
+        from_managed,
+        from_journal,
+        replay_managed,
+        replay_journal,
+    ] {
         database
             .delete_database()
             .await

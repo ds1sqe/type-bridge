@@ -13,24 +13,6 @@ const CONSUMER: &str = include_str!("sdk_v4_rust_live/consumer.rs");
 #[allow(dead_code)]
 mod locks;
 
-fn fixture() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../tests/contracts/sdk_conformance/sdk-v4/workspace")
-}
-
-fn copy_tree(source: &Path, destination: &Path) {
-    fs::create_dir_all(destination).expect("destination creates");
-    for entry in fs::read_dir(source).expect("source directory reads") {
-        let entry = entry.expect("source entry reads");
-        let target = destination.join(entry.file_name());
-        if entry.file_type().expect("source type reads").is_dir() {
-            copy_tree(&entry.path(), &target);
-        } else {
-            fs::copy(entry.path(), target).expect("source file copies");
-        }
-    }
-}
-
 fn source_identity(root: &Path, relative: &str) -> serde_json::Value {
     let bytes = fs::read(root.join(relative)).expect("report authority source reads");
     serde_json::json!({
@@ -59,7 +41,7 @@ fn result(
 fn generated_rust_observes_v4_administration_controls_and_lifecycle() {
     let server_version = support::requested_v4_server_version_blocking();
     let temporary = tempfile::tempdir().expect("isolated workspace creates");
-    copy_tree(&fixture(), temporary.path());
+    support::prepare_v4_workspace(temporary.path());
     let generation = Command::new(env!("CARGO_BIN_EXE_type-bridge"))
         .current_dir(temporary.path())
         .args(["schema", "generate"])

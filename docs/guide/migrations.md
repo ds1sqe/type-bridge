@@ -173,6 +173,15 @@ refused with `migration_upgrade_profile_live_drift`. A second run reports the
 bridge as already recorded. Once the committed bridge exists, other moved
 environments can also catch up with an ordinary `migration apply`.
 
+New environments on the newer server need no export. `migration apply` into
+an empty database on 3.13.6 replays the whole bridged history: the 3.12.1
+migrations before the bridge are lowered and verified under their own
+profile, the bridge switches the recorded state to `typedb-3.13.6/v1`, and the
+later migrations apply as usual. Every step is checked as in any other apply,
+and the ledger records each migration. Older-profile migrations replay only as
+ancestors of a bridge to the server's profile; without such a bridge they are
+refused.
+
 The bridge is one-way. A history crosses at most one bridge, and rollback
 refuses the bridge and every migration before it
 (`migration_rollback_profile_bridge`); returning to 3.12 needs a database

@@ -35,7 +35,8 @@ pub async fn execute_catalog_apply_plan(
     let store = TypeDbMigrationStore::new(&binding, verified)?;
     store.ensure_control_schema().await?;
     let store = store.bind_plan(plan)?;
-    let provider = TypeDbMigrationProvider::new(&binding)?;
+    let provider =
+        TypeDbMigrationProvider::new(&binding)?.for_replayed_profile_bridge(catalog.graph(), plan);
     execute_verified_migration_apply_plan(&store, &provider, holder, plan).await
 }
 
@@ -57,7 +58,8 @@ pub async fn execute_catalog_apply_plan_controlled(
     control.check()?;
     store.ensure_control_schema().await?;
     let store = store.bind_plan(plan)?;
-    let provider = TypeDbMigrationProvider::new(&binding)?;
+    let provider =
+        TypeDbMigrationProvider::new(&binding)?.for_replayed_profile_bridge(catalog.graph(), plan);
     execute_verified_migration_apply_plan_controlled(&store, &provider, holder, plan, control).await
 }
 

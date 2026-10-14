@@ -430,16 +430,12 @@ fn build_verified_migration_apply_plan_inner(
                 "history planning returned an identity without a verified manifest",
             )
         })?;
-        if manifest.lowering_profile().id() != lowering_binding.profile_id()
-            || manifest.lowering_profile().fingerprint() != lowering_binding.profile_fingerprint()
-        {
-            return Err(contract_failure(
-                DiagnosticCategory::InvalidContract,
-                "migration_apply_lowering_profile_mismatch",
-                "manifest lowering profile differs from the explicit execution binding",
-            )
-            .into());
-        }
+        let own_profile =
+            bridge_ancestor_execution(graph, manifest, delta_context, lowering_binding)?;
+        let (delta_context, lowering_binding) = match &own_profile {
+            Some((context, binding)) => (context, binding),
+            None => (delta_context, lowering_binding),
+        };
         let approved = if !execution_authorized {
             true
         } else {
@@ -612,8 +608,8 @@ fn build_verified_migration_apply_plan_inner(
     // A plan that starts at a profile-upgrade bridge executes under the
     // bridge's newer profile. The live state it observes first is the bridge
     // target (the frontier schema under the new profile), not the older-
-    // profile frontier state the bridge continues. Older-profile manifests
-    // never enter a plan: the lowering-binding check above refuses them.
+    // profile frontier state the bridge continues. A plan that starts below
+    // the bridge starts at an older-profile state instead.
     let source_state = match migrations.first() {
         Some(first) if first.manifest().is_profile_bridge() => {
             Some(first.manifest().target_state().clone())
@@ -639,6 +635,67 @@ fn build_verified_migration_apply_plan_inner(
         target_state: current_state,
         execution_authorized,
     })
+}
+
+/// Select the profile one planned manifest executes under.
+///
+/// A manifest on the execution binding's profile returns `None`. A manifest
+/// on another profile is admitted only when the history's single profile
+/// bridge moves to the execution profile, from exactly this manifest's
+/// profile, and the manifest is one of the bridge's ancestors. Such a
+/// manifest is replayed and lowered under its own profile's context and
+/// registry, so a bridged history can replay into an empty database on the
+/// newer server; the bridge then flips the profile.
+fn bridge_ancestor_execution(
+    graph: &MigrationHistoryGraph,
+    manifest: &VerifiedSchemaMigrationManifest,
+    delta_context: &ManagedDeltaContext,
+    lowering_binding: &SchemaLoweringBinding,
+) -> Result<Option<(ManagedDeltaContext, SchemaLoweringBinding)>, MigrationApplyPlanError> {
+    let on_binding = |binding: &SchemaLoweringBinding| {
+        manifest.lowering_profile().id() == binding.profile_id()
+            && manifest.lowering_profile().fingerprint() == binding.profile_fingerprint()
+    };
+    if on_binding(lowering_binding) {
+        return Ok(None);
+    }
+    let mismatch = || {
+        MigrationApplyPlanError::from(contract_failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_apply_lowering_profile_mismatch",
+            "manifest lowering profile differs from the explicit execution binding",
+        ))
+    };
+    let Some((bridge, ancestors)) = graph.profile_bridge_with_ancestors() else {
+        return Err(mismatch());
+    };
+    let profile_bridge = bridge
+        .profile_bridge()
+        .expect("the graph returns a profile bridge");
+    let bridge_targets_execution = bridge.semantic_profile().id()
+        == delta_context.semantic_profile()
+        && bridge.lowering_profile().id() == lowering_binding.profile_id()
+        && bridge.lowering_profile().fingerprint() == lowering_binding.profile_fingerprint();
+    if !bridge_targets_execution
+        || !ancestors.contains(manifest.id())
+        || manifest.semantic_profile() != profile_bridge.from_semantic_profile()
+        || manifest.lowering_profile() != profile_bridge.from_lowering_profile()
+    {
+        return Err(mismatch());
+    }
+    let context = ManagedDeltaContext::new(
+        delta_context.scope_id().clone(),
+        manifest.semantic_profile().id().clone(),
+        delta_context.available_capabilities().clone(),
+    );
+    let binding = SchemaLoweringBinding::for_semantic_profile(
+        context.semantic_profile(),
+        context.available_capabilities().clone(),
+    )?;
+    if !on_binding(&binding) {
+        return Err(mismatch());
+    }
+    Ok(Some((context, binding)))
 }
 
 pub(crate) fn coherent_frontier_state(
