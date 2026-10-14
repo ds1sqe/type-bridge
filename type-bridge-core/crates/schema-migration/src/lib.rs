@@ -80,8 +80,9 @@ pub use lowering::{
     StatementOperationKind, StatementUnit, TypeQlStatement, TypeQlVerb, lower_schema_delta,
 };
 pub use manifest::{
-    SchemaMigrationDraft, VerifiedSchemaMigrationManifest, build_verified_manifest,
-    decode_verified_manifest, encode_verified_manifest, verified_manifest_digest,
+    MigrationProfileBridge, SchemaMigrationDraft, VerifiedSchemaMigrationManifest,
+    build_verified_manifest, decode_verified_manifest, encode_verified_manifest,
+    verified_manifest_digest,
 };
 pub use policy::{MigrationApplyApproval, MigrationSafetyPolicy, SafetyPolicyDecision};
 pub use rollback_plan::{

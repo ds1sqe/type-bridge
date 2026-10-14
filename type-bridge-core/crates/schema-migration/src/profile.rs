@@ -1005,6 +1005,10 @@ fn safety_rule(scenario: SafetyScenario) -> SafetyScenarioRule {
 }
 
 /// A closed TypeDB line with its own schema-transition registry.
+///
+/// `Ord` is release order, oldest first (`Typedb3_12_1 < Typedb3_13_6`): a
+/// profile-upgrade bridge may only move a history to a greater profile.
+/// Declaration order defines it, so new lines are appended last.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum MigrationProfile {
     /// Semantic profile `typedb-3.12.1/v1`.

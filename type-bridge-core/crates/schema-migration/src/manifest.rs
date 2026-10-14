@@ -7,6 +7,7 @@ use serde_json::Value;
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::{from_canonical_json, to_canonical_json};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::limits::{MAX_CANONICAL_COLLECTION_LEN, StructuralLimits};
 use type_bridge_contract::managed_scope::{ManagedScopeBinding, SemanticProfileBinding};
 use type_bridge_contract::migration::{
@@ -39,7 +40,7 @@ use crate::legacy::{
     LEGACY_APPLIED_SET_ALGORITHM, LEGACY_APPLIED_SET_CANONICALIZATION, LEGACY_CHECKSUM_ALGORITHM,
     LegacyAppliedSetDigest, LegacyMigrationChecksum, LegacyMigrationId, LegacyMigrationReference,
 };
-use crate::profile::lowering_profile_binding;
+use crate::profile::{MigrationProfile, lowering_profile_binding};
 
 const MANIFEST_SCHEMA_CANONICALIZATION: &str = "typebridge.schema-c14n/v2";
 const MANIFEST_CODEC: &str = "typebridge.canonical-json/v1";
@@ -56,6 +57,7 @@ pub struct SchemaMigrationDraft {
     steps: Vec<MigrationStep>,
     legacy_parents: Vec<LegacyMigrationReference>,
     legacy_applied_set: Option<LegacyAppliedSetDigest>,
+    profile_bridge: Option<MigrationProfile>,
 }
 
 impl SchemaMigrationDraft {
@@ -108,6 +110,35 @@ impl SchemaMigrationDraft {
             steps,
             legacy_parents: Vec::new(),
             legacy_applied_set: None,
+            profile_bridge: None,
+        })
+    }
+
+    /// Construct the zero-operation profile-upgrade bridge draft.
+    ///
+    /// The bridge moves a history from the `from` TypeDB line to the line of
+    /// the context it is built under. It carries no steps and exactly one
+    /// parent: its source state is the parent's target under `from`, and its
+    /// target state is the same declared schema under the newer profile.
+    pub fn profile_bridge(
+        id: MigrationId,
+        parent: MigrationId,
+        from: MigrationProfile,
+    ) -> Result<Self, Diagnostic> {
+        if parent == id {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_manifest_self_parent",
+                "migration draft cannot name itself as a parent",
+            ));
+        }
+        Ok(Self {
+            id,
+            parents: vec![parent],
+            steps: Vec::new(),
+            legacy_parents: Vec::new(),
+            legacy_applied_set: None,
+            profile_bridge: Some(from),
         })
     }
 
@@ -152,6 +183,7 @@ impl SchemaMigrationDraft {
             steps: Vec::new(),
             legacy_parents,
             legacy_applied_set: Some(legacy_applied_set),
+            profile_bridge: None,
         })
     }
 
@@ -179,6 +211,44 @@ impl SchemaMigrationDraft {
     pub const fn legacy_applied_set(&self) -> Option<&LegacyAppliedSetDigest> {
         self.legacy_applied_set.as_ref()
     }
+
+    /// Return the profile a profile-upgrade bridge moves from (bridge only).
+    pub const fn profile_bridge_from(&self) -> Option<MigrationProfile> {
+        self.profile_bridge
+    }
+}
+
+/// The older TypeDB line a profile-upgrade bridge moves a history from.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MigrationProfileBridge {
+    from: MigrationProfile,
+    from_lowering_profile: SchemaLoweringProfileBinding,
+    from_semantic_profile: SemanticProfileBinding,
+}
+
+impl MigrationProfileBridge {
+    fn resolve(from: MigrationProfile) -> Result<Self, Diagnostic> {
+        Ok(Self {
+            from,
+            from_lowering_profile: from.binding()?,
+            from_semantic_profile: SemanticProfileBinding::resolve(from.semantic_profile_id())?,
+        })
+    }
+
+    /// Return the closed registry profile the history moves from.
+    pub const fn from(&self) -> MigrationProfile {
+        self.from
+    }
+
+    /// Return the semantic-profile binding every bridge ancestor carries.
+    pub const fn from_semantic_profile(&self) -> &SemanticProfileBinding {
+        &self.from_semantic_profile
+    }
+
+    /// Return the lowering-profile binding every bridge ancestor carries.
+    pub const fn from_lowering_profile(&self) -> &SchemaLoweringProfileBinding {
+        &self.from_lowering_profile
+    }
 }
 
 /// A manifest whose complete schema program has been replayed and recomputed.
@@ -195,6 +265,7 @@ pub struct VerifiedSchemaMigrationManifest {
     managed_scope: ManagedScopeBinding,
     parents: Vec<MigrationId>,
     plan_fingerprint: MigrationPlanFingerprint,
+    profile_bridge: Option<MigrationProfileBridge>,
     required_capabilities: CapabilitySet,
     reversible: bool,
     safety: SafetyClass,
@@ -235,6 +306,16 @@ impl VerifiedSchemaMigrationManifest {
     /// Return whether this manifest is the zero-operation legacy bridge.
     pub fn is_legacy_bridge(&self) -> bool {
         !self.legacy_parents.is_empty()
+    }
+
+    /// Return whether this manifest is the zero-operation profile-upgrade bridge.
+    pub const fn is_profile_bridge(&self) -> bool {
+        self.profile_bridge.is_some()
+    }
+
+    /// Return the older profile a profile-upgrade bridge moves from (bridge only).
+    pub const fn profile_bridge(&self) -> Option<&MigrationProfileBridge> {
+        self.profile_bridge.as_ref()
     }
 
     /// Return the verified migration steps in execution order.
@@ -334,7 +415,13 @@ pub fn build_verified_manifest(
         steps,
         legacy_parents,
         legacy_applied_set,
+        profile_bridge,
     } = draft;
+    let profile_bridge = profile_bridge
+        .map(|from| {
+            validate_profile_bridge_draft(from, &parents, &steps, &legacy_parents, delta_context)
+        })
+        .transpose()?;
     if legacy_parents.is_empty() {
         if legacy_applied_set.is_some() {
             return Err(failure(
@@ -343,11 +430,11 @@ pub fn build_verified_manifest(
                 "an ordinary migration cannot carry a legacy applied-set digest",
             ));
         }
-        if steps.is_empty() {
+        if steps.is_empty() && profile_bridge.is_none() {
             return Err(failure(
                 DiagnosticCategory::InvalidContract,
                 "migration_manifest_empty_program",
-                "a migration without schema steps is valid only as a legacy-frontier bridge",
+                "a migration without schema steps is valid only as a legacy-frontier or profile bridge",
             ));
         }
     } else {
@@ -513,6 +600,21 @@ pub fn build_verified_manifest(
 
     let target_state =
         managed_schema_state(&current_schema, delta_context).map_err(delta_diagnostic)?;
+    // A profile bridge starts where its parent ended, under the older
+    // profile, and ends at the same declared schema under the newer one. It
+    // is the only manifest whose two states differ by profile alone.
+    let source_state = match &profile_bridge {
+        None => source_state,
+        Some(bridge) => {
+            reversible = false;
+            let from_context = ManagedDeltaContext::new(
+                delta_context.scope_id().clone(),
+                bridge.from.semantic_profile_id(),
+                delta_context.available_capabilities().clone(),
+            );
+            managed_schema_state(source_schema, &from_context).map_err(delta_diagnostic)?
+        }
+    };
     let plan_fingerprint = MigrationPlanFingerprint::compute(&steps)?;
     Ok(VerifiedSchemaMigrationManifest {
         format: MigrationFormat::V1,
@@ -523,6 +625,7 @@ pub fn build_verified_manifest(
         managed_scope,
         parents,
         plan_fingerprint,
+        profile_bridge,
         required_capabilities,
         reversible,
         safety,
@@ -533,6 +636,48 @@ pub fn build_verified_manifest(
         target_schema: current_schema,
         target_state,
     })
+}
+
+fn validate_profile_bridge_draft(
+    from: MigrationProfile,
+    parents: &[MigrationId],
+    steps: &[MigrationStep],
+    legacy_parents: &[LegacyMigrationReference],
+    delta_context: &ManagedDeltaContext,
+) -> Result<MigrationProfileBridge, Diagnostic> {
+    if !steps.is_empty() || parents.len() != 1 || !legacy_parents.is_empty() {
+        return Err(profile_bridge_shape_failure());
+    }
+    let to = MigrationProfile::for_semantic_profile(delta_context.semantic_profile()).ok_or_else(
+        || {
+            failure(
+                DiagnosticCategory::UnsupportedCapability,
+                "schema_lowering_semantic_profile_unsupported",
+                "no schema-transition registry exists for the semantic profile",
+            )
+        },
+    )?;
+    if from >= to {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_manifest_profile_bridge_not_upgrade",
+            "a profile bridge must move from a strictly older profile than its own",
+        )
+        .with_detail(
+            "from_profile",
+            from.semantic_profile_id().as_str().to_owned(),
+        )
+        .with_detail("to_profile", to.semantic_profile_id().as_str().to_owned()));
+    }
+    MigrationProfileBridge::resolve(from)
+}
+
+fn profile_bridge_shape_failure() -> Diagnostic {
+    failure(
+        DiagnosticCategory::InvalidContract,
+        "migration_manifest_profile_bridge_shape",
+        "a profile bridge carries no steps, no legacy parents and exactly one parent",
+    )
 }
 
 fn validate_backfill_historical_schema(
@@ -624,6 +769,18 @@ pub(crate) fn peek_manifest_identity(
         .map(MigrationIdCandidate::rebuild)
         .collect::<Result<Vec<_>, _>>()?;
     Ok((id, parents))
+}
+
+/// Read only the untrusted semantic profile needed to pick a replay context.
+///
+/// Like [`peek_manifest_identity`], this carries no verification authority:
+/// replay under the peeked profile must still re-encode the exact bytes.
+pub(crate) fn peek_manifest_semantic_profile(
+    bytes: &[u8],
+) -> Result<SemanticProfileId, Diagnostic> {
+    let candidate = from_canonical_json::<ManifestCandidate>(bytes)?;
+    candidate.validate_header()?;
+    SemanticProfileId::new(candidate.contract.semantic_profile.id.as_str())
 }
 
 /// Inspect only whether an untrusted canonical candidate declares the legacy
@@ -923,6 +1080,8 @@ struct ManifestWire<'a> {
     legacy_parents: Vec<LegacyParentWire<'a>>,
     managed_scope: &'a ManagedScopeBinding,
     parents: &'a [MigrationId],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile_bridge: Option<ProfileBridgeWire<'a>>,
     required_capabilities: &'a CapabilitySet,
     resources: &'static [()],
     safety: ManifestSafetyWire,
@@ -975,6 +1134,13 @@ impl<'a> ManifestWire<'a> {
                 .collect(),
             managed_scope: &manifest.managed_scope,
             parents: &manifest.parents,
+            profile_bridge: manifest
+                .profile_bridge
+                .as_ref()
+                .map(|bridge| ProfileBridgeWire {
+                    from_lowering_profile: &bridge.from_lowering_profile,
+                    from_semantic_profile: &bridge.from_semantic_profile,
+                }),
             required_capabilities: &manifest.required_capabilities,
             resources: &[],
             safety: ManifestSafetyWire {
@@ -993,6 +1159,12 @@ struct ManifestContractWire<'a> {
     delta_ir: &'static str,
     lowering_profile: &'a SchemaLoweringProfileBinding,
     semantic_profile: &'a SemanticProfileBinding,
+}
+
+#[derive(Serialize)]
+struct ProfileBridgeWire<'a> {
+    from_lowering_profile: &'a SchemaLoweringProfileBinding,
+    from_semantic_profile: &'a SemanticProfileBinding,
 }
 
 #[derive(Serialize)]
@@ -1048,6 +1220,8 @@ struct ManifestCandidate {
     legacy_parents: Vec<LegacyParentCandidate>,
     managed_scope: ManagedScopeCandidate,
     parents: Vec<MigrationIdCandidate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    profile_bridge: Option<ProfileBridgeCandidate>,
     required_capabilities: CapabilitySet,
     resources: Vec<Value>,
     safety: ManifestSafetyCandidate,
@@ -1079,6 +1253,30 @@ impl ManifestCandidate {
     }
 
     fn to_draft(&self) -> Result<SchemaMigrationDraft, Diagnostic> {
+        if let Some(bridge) = &self.profile_bridge {
+            if !self.legacy_parents.is_empty()
+                || self.legacy_applied_set.is_some()
+                || !self.steps.is_empty()
+            {
+                return Err(profile_bridge_shape_failure());
+            }
+            let [parent] = self.parents.as_slice() else {
+                return Err(profile_bridge_shape_failure());
+            };
+            let from_id = SemanticProfileId::new(bridge.from_semantic_profile.id.as_str())?;
+            let from = MigrationProfile::for_semantic_profile(&from_id).ok_or_else(|| {
+                failure(
+                    DiagnosticCategory::UnsupportedCapability,
+                    "migration_manifest_profile_bridge_unsupported_profile",
+                    "a profile bridge names a profile without a schema-transition registry",
+                )
+            })?;
+            return SchemaMigrationDraft::profile_bridge(
+                self.id.rebuild()?,
+                parent.rebuild()?,
+                from,
+            );
+        }
         if !self.legacy_parents.is_empty() {
             if !self.parents.is_empty() || !self.steps.is_empty() {
                 return Err(failure(
@@ -1134,6 +1332,13 @@ struct ManifestContractCandidate {
     delta_ir: String,
     lowering_profile: ProfileBindingCandidate,
     semantic_profile: ProfileBindingCandidate,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileBridgeCandidate {
+    from_lowering_profile: ProfileBindingCandidate,
+    from_semantic_profile: ProfileBindingCandidate,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
