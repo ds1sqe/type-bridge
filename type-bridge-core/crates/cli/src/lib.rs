@@ -2,8 +2,8 @@
 //!
 //! `schema check`, `schema generate`, `migration make`, and `migration
 //! plan`, and rollback preview run without any network I/O. `migration apply`,
-//! `migration rollback --execute`, `migration verify`, and `migration adopt`
-//! connect through one named workspace
+//! `migration rollback --execute`, `migration verify`, `migration adopt`, and
+//! `migration upgrade-profile` connect through one named workspace
 //! environment: credentials stay symbolic environment references resolved
 //! only at command time, and application requires the environment's
 //! explicit `migrate: true` opt-in.
@@ -20,15 +20,16 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticDetailValue};
 #[cfg(test)]
 use type_bridge_schema::SystemSchemaSourceService;
 use type_bridge_schema_migration::MigrationGenerationOutcome;
 use type_bridge_schema_migration_typedb::execution_capability_vocabulary;
 use type_bridge_workspace::{
     ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, SecretReference,
-    SecretReferenceService, TypeBridgeConfigSpec, TypeBridgeWorkspace, TypeBridgeWorkspaceServices,
-    WorkspaceDirectoryAuthority, WorkspaceEnvironment, WorkspaceRoot, WorkspaceServiceError,
-    WorkspaceTransportPolicy, c_symbol_prefix_for_app_label,
+    SecretReferenceService, TypeBridgeConfigSpec, TypeBridgeWorkspace, TypeBridgeWorkspaceError,
+    TypeBridgeWorkspaceServices, WorkspaceDirectoryAuthority, WorkspaceEnvironment, WorkspaceRoot,
+    WorkspaceServiceError, WorkspaceTransportPolicy, c_symbol_prefix_for_app_label,
 };
 
 mod build_identity {
@@ -135,6 +136,19 @@ enum MigrationCommand {
         #[arg(long, default_value = "0000_archive_frontier")]
         name: String,
     },
+    /// Move the history to the workspace's newer TypeDB line at a profile bridge.
+    UpgradeProfile {
+        /// The manifest environment whose moved database pair records the bridge.
+        #[arg(long)]
+        environment: String,
+        /// The semantic profile to move to; must equal the workspace profile.
+        #[arg(long)]
+        to: String,
+        /// Descriptive bridge name; the ordinal prefix is allocated
+        /// [default: profile_upgrade_typedb_<version>].
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -234,7 +248,7 @@ fn run(cli: &Cli) -> Result<(), String> {
                 if let Some(intent) = backfill_intent {
                     let generated = workspace
                         .author_backfill_migration_in(&directory, name, intent)
-                        .map_err(display)?;
+                        .map_err(display_workspace)?;
                     let path = directory.display_path().join(generated.file_name());
                     println!(
                         "wrote {}\n  safety: {:?}\n  preview: {}",
@@ -246,7 +260,7 @@ fn run(cli: &Cli) -> Result<(), String> {
                 }
                 match workspace
                     .migration_make_in(&directory, name)
-                    .map_err(display)?
+                    .map_err(display_workspace)?
                 {
                     MigrationGenerationOutcome::UpToDate => {
                         println!("history already reaches the desired schema");
@@ -254,7 +268,7 @@ fn run(cli: &Cli) -> Result<(), String> {
                     MigrationGenerationOutcome::Generated(generated) => {
                         workspace
                             .write_generated_migration_in(&directory, &generated)
-                            .map_err(display)?;
+                            .map_err(display_workspace)?;
                         let path = directory.display_path().join(generated.file_name());
                         println!(
                             "wrote {}\n  safety: {:?}\n  preview: {}",
@@ -305,11 +319,23 @@ fn run(cli: &Cli) -> Result<(), String> {
                     name: name.clone(),
                 },
             ),
+            MigrationCommand::UpgradeProfile {
+                environment,
+                to,
+                name,
+            } => run_connected(
+                &workspace,
+                environment,
+                ConnectedAction::UpgradeProfile {
+                    to: to.clone(),
+                    name: name.clone(),
+                },
+            ),
             MigrationCommand::Plan => {
                 let directory = workspace.open_migration_directory().map_err(display)?;
                 let plan = workspace
                     .migration_plan_in(&directory, &BTreeSet::new())
-                    .map_err(display)?;
+                    .map_err(display_workspace)?;
                 if plan.is_empty() {
                     println!("no committed migrations");
                     return Ok(());
@@ -345,7 +371,7 @@ fn run_migration_rollback(
     let directory = workspace.open_migration_directory().map_err(display)?;
     let graph = workspace
         .discover_migrations_in(&directory)
-        .map_err(display)?;
+        .map_err(display_workspace)?;
     let removals = parse_migration_ids(&graph, removals, "rollback removal")?;
     let _ = bind_rollback_approvals(&graph, approvals)?;
     let applied = graph
@@ -493,6 +519,30 @@ fn load_workspace(manifest: &PathBuf) -> Result<TypeBridgeWorkspace, String> {
 
 fn display(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+/// Render an offline workspace failure with its diagnostic's `hint`.
+///
+/// History refusals such as `migration_history_profile_upgrade_required`
+/// carry the command that resolves them as a `hint` detail, which the plain
+/// `Display` projection omits.
+fn display_workspace(error: TypeBridgeWorkspaceError) -> String {
+    match error.contract() {
+        Some(diagnostic) => with_hint(error.to_string(), diagnostic),
+        None => error.to_string(),
+    }
+}
+
+/// Render an offline contract diagnostic with its `hint` detail.
+fn display_diagnostic(diagnostic: Diagnostic) -> String {
+    with_hint(diagnostic.to_string(), &diagnostic)
+}
+
+fn with_hint(rendered: String, diagnostic: &Diagnostic) -> String {
+    match diagnostic.details().get("hint") {
+        Some(DiagnosticDetailValue::Text(hint)) => format!("{rendered}\n  hint: {hint}"),
+        _ => rendered,
+    }
 }
 
 /// Render one secure lifecycle failure after credentials have been resolved.
@@ -1156,6 +1206,10 @@ enum ConnectedAction {
         archive_directory: PathBuf,
         name: String,
     },
+    UpgradeProfile {
+        to: String,
+        name: Option<String>,
+    },
 }
 
 fn secure_connect_options(
@@ -1232,6 +1286,7 @@ async fn run_connected_async(
         ConnectedAction::Apply { .. }
             | ConnectedAction::Rollback { .. }
             | ConnectedAction::Adopt { .. }
+            | ConnectedAction::UpgradeProfile { .. }
     ) && !environment.migrate()
     {
         return Err(format!(
@@ -1249,6 +1304,9 @@ async fn run_connected_async(
         .requirements()
         .ensure_supported_by(&execution_capability_vocabulary().map_err(display)?)
         .map_err(display)?;
+    if let ConnectedAction::UpgradeProfile { to, .. } = &action {
+        require_profile_upgrade_target(config.semantic_profile(), to)?;
+    }
 
     // Validate the name and capture one immutable archive-history authority
     // before creating the canonical directory or resolving credentials.
@@ -1263,7 +1321,8 @@ async fn run_connected_async(
         )?),
         ConnectedAction::Apply { .. }
         | ConnectedAction::Rollback { .. }
-        | ConnectedAction::Verify => None,
+        | ConnectedAction::Verify
+        | ConnectedAction::UpgradeProfile { .. } => None,
     };
 
     // Retain one descriptor-backed authority for the whole connected action.
@@ -1277,14 +1336,28 @@ async fn run_connected_async(
     // Ordinary connected operations reject an incomplete adoption pair before
     // credentials, network I/O, or database creation. Adoption itself is the
     // sole recovery path permitted to observe and complete an exact orphan.
-    let ordinary_graph = if prepared_adoption.is_none() {
-        Some(
+    // A profile upgrade discovers the older-profile history ordinary
+    // discovery refuses, and publishes its bridge offline before connecting.
+    let ordinary_graph = match &action {
+        ConnectedAction::Apply { .. }
+        | ConnectedAction::Rollback { .. }
+        | ConnectedAction::Verify => Some(
             workspace
                 .discover_migrations_in(&migration_directory)
-                .map_err(display)?,
-        )
-    } else {
-        None
+                .map_err(display_workspace)?,
+        ),
+        ConnectedAction::Adopt { .. } | ConnectedAction::UpgradeProfile { .. } => None,
+    };
+    let profile_bridge = match &action {
+        ConnectedAction::UpgradeProfile { name, .. } => Some(publish_profile_upgrade_bridge(
+            workspace,
+            &migration_directory,
+            name.as_deref(),
+        )?),
+        ConnectedAction::Apply { .. }
+        | ConnectedAction::Rollback { .. }
+        | ConnectedAction::Verify
+        | ConnectedAction::Adopt { .. } => None,
     };
     // Approval syntax, membership, safety, and digest binding are local
     // authority checks. Resolve them before credentials, network I/O, or
@@ -1303,7 +1376,9 @@ async fn run_connected_async(
                 .ok_or_else(|| "internal rollback history was not retained".to_owned())?,
             approvals,
         )?),
-        ConnectedAction::Verify | ConnectedAction::Adopt { .. } => None,
+        ConnectedAction::Verify
+        | ConnectedAction::Adopt { .. }
+        | ConnectedAction::UpgradeProfile { .. } => None,
     };
 
     // Resolve and snapshot the complete transport policy before reading either
@@ -1328,7 +1403,25 @@ async fn run_connected_async(
         ConnectedAction::Adopt { .. } => {
             Some("`migration adopt` cutover requires the migrated v1 database to already exist")
         }
+        ConnectedAction::UpgradeProfile { .. } => Some(
+            "`migration upgrade-profile` requires the database moved to the new TypeDB server \
+             to already exist",
+        ),
         ConnectedAction::Apply { .. } | ConnectedAction::Rollback { .. } => None,
+    };
+    // The upgrade records into the ledger moved with the managed database; an
+    // empty journal could never stand at the bridge parent.
+    let journal_requires_existing = match &action {
+        ConnectedAction::Verify => {
+            Some("`migration verify` is read-only and never creates databases")
+        }
+        ConnectedAction::UpgradeProfile { .. } => Some(
+            "`migration upgrade-profile` requires the migration journal moved with the \
+             managed database",
+        ),
+        ConnectedAction::Apply { .. }
+        | ConnectedAction::Rollback { .. }
+        | ConnectedAction::Adopt { .. } => None,
     };
     // A TypeDB connection is server-scoped: binding a database name does not
     // require that database to exist. Negotiate and gate both pair members
@@ -1414,7 +1507,7 @@ async fn run_connected_async(
         None
     };
 
-    if matches!(&action, ConnectedAction::Verify) {
+    if let Some(reason) = journal_requires_existing {
         let exists = journal.database_exists().await.map_err(|error| {
             sanitize_connected_orm_error(
                 format!("cannot check database {journal_name:?}"),
@@ -1424,7 +1517,7 @@ async fn run_connected_async(
         })?;
         if !exists {
             return Err(format!(
-                "database {journal_name:?} does not exist; `migration verify` is read-only and never creates databases"
+                "database {journal_name:?} does not exist; {reason}"
             ));
         }
     } else {
@@ -1582,7 +1675,193 @@ async fn run_connected_async(
                 Err(error) => Err(display(error)),
             }
         }
+        ConnectedAction::UpgradeProfile { .. } => {
+            let bridge = profile_bridge
+                .ok_or_else(|| "internal profile bridge was not retained".to_owned())?;
+            match runner
+                .upgrade_profile_in(directory, &holder)
+                .await
+                .map_err(display)?
+            {
+                type_bridge_schema_migration_typedb::MigrationDirectoryApplyOutcome::UpToDate => {
+                    println!(
+                        "profile bridge {} is already recorded",
+                        migration_id_text(&bridge.id)
+                    );
+                    Ok(())
+                }
+                type_bridge_schema_migration_typedb::MigrationDirectoryApplyOutcome::Executed(
+                    type_bridge_schema_migration::MigrationExecutionOutcome::Applied { .. },
+                ) => {
+                    println!(
+                        "recorded profile bridge {}\n  semantic profile: {}",
+                        migration_id_text(&bridge.id),
+                        config.semantic_profile().as_str(),
+                    );
+                    Ok(())
+                }
+                type_bridge_schema_migration_typedb::MigrationDirectoryApplyOutcome::Executed(
+                    outcome,
+                ) => Err(sanitize_migration_execution_outcome(
+                    "profile upgrade did not complete",
+                    outcome,
+                )),
+            }
+        }
     }
+}
+
+fn migration_id_text(id: &type_bridge_contract::migration::MigrationId) -> String {
+    format!("{}/{}", id.app_label().as_str(), id.name().as_str())
+}
+
+/// Check `--to` before history discovery, file writes or credentials.
+///
+/// The command never edits `typebridge.yaml`: the user moves
+/// `compatibility.semantic-profile` first, and `--to` repeats it so a stale
+/// workspace cannot record a bridge to the wrong line.
+fn require_profile_upgrade_target(
+    workspace_profile: &type_bridge_contract::fingerprint::SemanticProfileId,
+    to: &str,
+) -> Result<(), String> {
+    let target = type_bridge_contract::fingerprint::SemanticProfileId::new(to).map_err(display)?;
+    type_bridge_schema_migration_typedb::require_supported_migration_profile(&target)
+        .map_err(display)?;
+    if &target != workspace_profile {
+        let diagnostic = Diagnostic::new(
+            type_bridge_contract::diagnostic::DiagnosticCategory::InvalidContract,
+            type_bridge_contract::diagnostic::DiagnosticCode::new(
+                "migration_upgrade_profile_target_not_workspace_profile",
+            )
+            .expect("static diagnostic code"),
+            format!(
+                "--to {} is not the workspace semantic profile {}",
+                target.as_str(),
+                workspace_profile.as_str()
+            ),
+        )
+        .with_detail(
+            "hint",
+            format!(
+                "set `compatibility.semantic-profile: {}` in the workspace manifest first",
+                target.as_str()
+            ),
+        );
+        return Err(display_diagnostic(diagnostic));
+    }
+    Ok(())
+}
+
+/// The profile-upgrade bridge the connected step records.
+struct ProfileUpgradeBridge {
+    id: type_bridge_contract::migration::MigrationId,
+}
+
+/// Author and publish the profile-upgrade bridge, or find the one present.
+///
+/// Discovery, authoring and publication run under the canonical authoring
+/// lock, so the bridge can never continue a stale head. The bridge's
+/// identity follows `migration make`: the next ordinal prefix and `name`.
+/// A file created here is removed again when the published history does
+/// not replay-verify. An already bridged history publishes nothing, so a
+/// retry after a failed connection reuses the committed bridge.
+fn publish_profile_upgrade_bridge(
+    workspace: &TypeBridgeWorkspace,
+    migration_directory: &type_bridge_workspace::MigrationDirectoryAuthority,
+    name: Option<&str>,
+) -> Result<ProfileUpgradeBridge, String> {
+    let directory = migration_directory.directory();
+    let _lock = directory.try_acquire_authoring_lock().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            "profile upgrade conflicts with another canonical history publisher".to_owned()
+        } else {
+            format!("cannot lock canonical migration publication: {error}")
+        }
+    })?;
+    let genesis = workspace
+        .migration_genesis_in(migration_directory)
+        .map_err(display_workspace)?;
+    let (graph, from, parent) =
+        match type_bridge_schema_migration::discover_history_for_profile_upgrade_in(
+            directory,
+            &genesis,
+            workspace.delta_context(),
+        )
+        .map_err(display_diagnostic)?
+        {
+            type_bridge_schema_migration::MigrationProfileUpgrade::Bridged { bridge, .. } => {
+                return Ok(ProfileUpgradeBridge { id: bridge });
+            }
+            type_bridge_schema_migration::MigrationProfileUpgrade::Pending {
+                graph,
+                from,
+                parent,
+            } => (graph, from, parent),
+        };
+    let base_name = match name {
+        Some(name) => name.to_owned(),
+        None => default_profile_bridge_name(workspace.config().semantic_profile())?,
+    };
+    let id = type_bridge_contract::migration::MigrationId::new(
+        workspace.config().app_label().as_str(),
+        type_bridge_schema_migration::allocate_migration_name(&graph, &base_name),
+    )
+    .map_err(display)?;
+    let parent_schema = graph
+        .manifest(&parent)
+        .ok_or_else(|| "internal profile bridge parent is not in the history".to_owned())?
+        .target_schema();
+    let draft = type_bridge_schema_migration::SchemaMigrationDraft::profile_bridge(
+        id.clone(),
+        parent,
+        from,
+    )
+    .map_err(display)?;
+    let bridge = type_bridge_schema_migration::build_verified_manifest(
+        draft,
+        (parent_schema, workspace.delta_context()),
+    )
+    .map_err(display)?;
+    let bytes = type_bridge_schema_migration::encode_verified_manifest(&bridge).map_err(display)?;
+    let file_name = format!("{}.tbmigration.json", id.name().as_str());
+    let created = publish_authority(directory, &file_name, &bytes)?;
+    if let Err(error) = workspace.discover_migrations_in(migration_directory) {
+        let primary = display_workspace(error);
+        if !created {
+            return Err(primary);
+        }
+        return Err(
+            match directory
+                .remove_file(file_name.as_ref())
+                .and_then(|()| directory.sync_all())
+            {
+                Ok(()) => primary,
+                Err(cleanup) => {
+                    format!("{primary}; cannot remove newly published profile bridge: {cleanup}")
+                }
+            },
+        );
+    }
+    println!(
+        "wrote {}",
+        migration_directory
+            .display_path()
+            .join(&file_name)
+            .display()
+    );
+    Ok(ProfileUpgradeBridge { id })
+}
+
+/// `profile_upgrade_typedb_3_13_6` for `typedb-3.13.6/v1`.
+fn default_profile_bridge_name(
+    profile: &type_bridge_contract::fingerprint::SemanticProfileId,
+) -> Result<String, String> {
+    let profile = type_bridge_schema_migration::MigrationProfile::for_semantic_profile(profile)
+        .ok_or_else(|| format!("{} is not a migration profile", profile.as_str()))?;
+    Ok(format!(
+        "profile_upgrade_typedb_{}",
+        profile.provider_version().replace('.', "_")
+    ))
 }
 
 struct PreparedArchiveAdoption {
@@ -2716,6 +2995,290 @@ mod migration_command_tests {
                 assert!(error.contains("migration directory"), "{error}");
             }
         }
+    }
+
+    const OLD_PROFILE: &str = "typedb-3.12.1/v1";
+    const NEW_PROFILE: &str = "typedb-3.13.6/v1";
+
+    /// A workspace whose one-migration history was authored on `history`
+    /// and whose manifest now names `workspace_profile`.
+    fn profiled_history(
+        history: &str,
+        workspace_profile: &str,
+    ) -> (tempfile::TempDir, PathBuf, TypeBridgeWorkspace) {
+        let directory = tempfile::tempdir().expect("workspace directory");
+        let manifest = write_workspace_manifest(directory.path(), history);
+        run(&Cli {
+            manifest: manifest.clone(),
+            command: Command::Migration {
+                command: MigrationCommand::Make {
+                    name: "initial".to_owned(),
+                    backfill_intent: None,
+                },
+            },
+        })
+        .expect("the history authors on its own profile");
+        write_workspace_manifest(directory.path(), workspace_profile);
+        let workspace = load_workspace(&manifest).expect("workspace loads");
+        (directory, manifest, workspace)
+    }
+
+    fn upgrade(to: &str, name: Option<&str>) -> ConnectedAction {
+        ConnectedAction::UpgradeProfile {
+            to: to.to_owned(),
+            name: name.map(str::to_owned),
+        }
+    }
+
+    fn canonical_files(directory: &Path) -> Vec<String> {
+        let mut names = fs::read_dir(directory.join("migrations/v2"))
+            .expect("migration directory lists")
+            .map(|entry| {
+                entry
+                    .expect("migration entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .filter(|name| name.ends_with(".tbmigration.json"))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    fn assert_before_credentials(error: &str) {
+        assert!(
+            !error.contains("credential environment variable") && !error.contains("cannot connect"),
+            "the refusal ran after external setup: {error}"
+        );
+    }
+
+    #[test]
+    fn upgrade_profile_grammar_requires_environment_and_target() {
+        assert!(
+            Cli::try_parse_from([
+                "type-bridge",
+                "migration",
+                "upgrade-profile",
+                "--to",
+                NEW_PROFILE,
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "type-bridge",
+                "migration",
+                "upgrade-profile",
+                "--environment",
+                "live",
+            ])
+            .is_err()
+        );
+        let cli = Cli::try_parse_from([
+            "type-bridge",
+            "migration",
+            "upgrade-profile",
+            "--environment",
+            "live",
+            "--to",
+            NEW_PROFILE,
+            "--name",
+            "line-313",
+        ])
+        .expect("explicit upgrade grammar parses");
+        let Command::Migration {
+            command:
+                MigrationCommand::UpgradeProfile {
+                    environment,
+                    to,
+                    name,
+                },
+        } = cli.command
+        else {
+            panic!("upgrade-profile parsed into another command")
+        };
+        assert_eq!(environment, "live");
+        assert_eq!(to, NEW_PROFILE);
+        assert_eq!(name.as_deref(), Some("line-313"));
+
+        let help = <Cli as clap::CommandFactory>::command()
+            .find_subcommand_mut("migration")
+            .expect("migration command")
+            .render_help()
+            .to_string();
+        assert!(help.contains("upgrade-profile"), "{help}");
+    }
+
+    #[test]
+    fn upgrade_profile_refuses_targets_before_credentials_or_writes() {
+        let (directory, _, workspace) = profiled_history(OLD_PROFILE, NEW_PROFILE);
+        let before = canonical_files(directory.path());
+
+        let unknown = run_connected(&workspace, "dev", upgrade("typedb-9.9.9/v1", None))
+            .expect_err("an unknown target is refused");
+        assert!(
+            unknown.contains("migration_typedb_semantic_profile_unsupported"),
+            "{unknown}"
+        );
+        assert_before_credentials(&unknown);
+
+        let stale = run_connected(&workspace, "dev", upgrade(OLD_PROFILE, None))
+            .expect_err("a target other than the workspace profile is refused");
+        assert!(
+            stale.contains("migration_upgrade_profile_target_not_workspace_profile"),
+            "{stale}"
+        );
+        assert!(
+            stale.contains("hint: set `compatibility.semantic-profile: typedb-3.12.1/v1`"),
+            "{stale}"
+        );
+        assert_before_credentials(&stale);
+
+        let (same_directory, _, same) = profiled_history(OLD_PROFILE, OLD_PROFILE);
+        let error = run_connected(&same, "dev", upgrade(OLD_PROFILE, None))
+            .expect_err("a history on the workspace profile is refused");
+        assert!(
+            error.contains("migration_upgrade_profile_same_profile"),
+            "{error}"
+        );
+        assert_before_credentials(&error);
+        assert_eq!(
+            canonical_files(same_directory.path()),
+            ["0001_initial.tbmigration.json"]
+        );
+
+        let (down_directory, _, down) = profiled_history(NEW_PROFILE, OLD_PROFILE);
+        let error = run_connected(&down, "dev", upgrade(OLD_PROFILE, None))
+            .expect_err("a history on a newer profile is refused");
+        assert!(
+            error.contains("migration_upgrade_profile_downgrade"),
+            "{error}"
+        );
+        assert_before_credentials(&error);
+        assert_eq!(
+            canonical_files(down_directory.path()),
+            ["0001_initial.tbmigration.json"]
+        );
+
+        assert_eq!(canonical_files(directory.path()), before);
+    }
+
+    #[test]
+    fn unbridged_older_history_names_upgrade_profile_in_its_refusal() {
+        let (_directory, manifest, workspace) = profiled_history(OLD_PROFILE, NEW_PROFILE);
+        let hint = "hint: run `migration upgrade-profile --to typedb-3.13.6/v1`";
+
+        let plan = run(&Cli {
+            manifest,
+            command: Command::Migration {
+                command: MigrationCommand::Plan,
+            },
+        })
+        .expect_err("plan refuses an unbridged older history");
+        assert!(
+            plan.contains("migration_history_profile_upgrade_required"),
+            "{plan}"
+        );
+        assert!(plan.contains(hint), "{plan}");
+
+        for action in [
+            ConnectedAction::Apply {
+                approvals: Vec::new(),
+            },
+            ConnectedAction::Verify,
+        ] {
+            let error = run_connected(&workspace, "dev", action)
+                .expect_err("connected commands refuse an unbridged older history");
+            assert!(error.contains(hint), "{error}");
+            assert_before_credentials(&error);
+        }
+    }
+
+    #[test]
+    fn upgrade_profile_publishes_the_bridge_once_before_connecting() {
+        let (directory, manifest, workspace) = profiled_history(OLD_PROFILE, NEW_PROFILE);
+        let bridge = directory
+            .path()
+            .join("migrations/v2/0002_profile_upgrade_typedb_3_13_6.tbmigration.json");
+
+        let error = run_connected(&workspace, "dev", upgrade(NEW_PROFILE, None))
+            .expect_err("the fixture has no credentials");
+        assert!(error.contains("credential environment variable"), "{error}");
+        let published = fs::read(&bridge).expect("the bridge is published before connecting");
+
+        // The bridged history is ordinary again; a retry reuses the bridge.
+        let plan = workspace
+            .migration_plan_in(
+                &workspace
+                    .open_migration_directory()
+                    .expect("migration directory"),
+                &BTreeSet::new(),
+            )
+            .expect("the bridged history plans under the new profile");
+        assert_eq!(plan.len(), 2);
+        assert!(!plan[1].reversible());
+        let error = run_connected(&workspace, "dev", upgrade(NEW_PROFILE, Some("again")))
+            .expect_err("the fixture has no credentials");
+        assert!(error.contains("credential environment variable"), "{error}");
+        assert_eq!(
+            canonical_files(directory.path()),
+            [
+                "0001_initial.tbmigration.json",
+                "0002_profile_upgrade_typedb_3_13_6.tbmigration.json",
+            ]
+        );
+        assert_eq!(fs::read(&bridge).expect("bridge"), published);
+
+        // The next authored migration continues after the bridge.
+        fs::write(
+            directory.path().join("schema/fragments/model.yaml"),
+            "format: typebridge.schema/v2\nentities: {person: {}, company: {}}\n",
+        )
+        .expect("schema evolves");
+        run(&Cli {
+            manifest,
+            command: Command::Migration {
+                command: MigrationCommand::Make {
+                    name: "company".to_owned(),
+                    backfill_intent: None,
+                },
+            },
+        })
+        .expect("make continues after the bridge");
+        assert!(
+            directory
+                .path()
+                .join("migrations/v2/0003_company.tbmigration.json")
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn upgrade_profile_names_the_bridge_like_make() {
+        let (directory, _, workspace) = profiled_history(OLD_PROFILE, NEW_PROFILE);
+        let error = run_connected(&workspace, "dev", upgrade(NEW_PROFILE, Some("line-313")))
+            .expect_err("the fixture has no credentials");
+        assert!(error.contains("credential environment variable"), "{error}");
+        assert_eq!(
+            canonical_files(directory.path()),
+            [
+                "0001_initial.tbmigration.json",
+                "0002_line-313.tbmigration.json",
+            ]
+        );
+
+        let (directory, _, workspace) = profiled_history(OLD_PROFILE, NEW_PROFILE);
+        let error = run_connected(&workspace, "dev", upgrade(NEW_PROFILE, Some("Bad Name")))
+            .expect_err("an invalid name is refused");
+        assert!(
+            !error.contains("credential environment variable"),
+            "{error}"
+        );
+        assert_eq!(
+            canonical_files(directory.path()),
+            ["0001_initial.tbmigration.json"]
+        );
     }
 }
 

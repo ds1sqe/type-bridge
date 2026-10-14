@@ -52,9 +52,9 @@ pub use execution::{
 };
 pub use generate::{
     BackfillMigrationGenerationRequest, GeneratedMigration, MigrationGenerationOutcome,
-    MigrationGenerationRequest, MigrationPreviewError, generate_backfill_migration,
-    generate_next_migration, render_migration_preview, try_acquire_migration_authoring_lock,
-    write_generated_migration_under_lock,
+    MigrationGenerationRequest, MigrationPreviewError, allocate_migration_name,
+    generate_backfill_migration, generate_next_migration, render_migration_preview,
+    try_acquire_migration_authoring_lock, write_generated_migration_under_lock,
 };
 pub use history::{
     CanonicalMigrationHistoryEvidence, MigrationHistoryGraph, MigrationProfileUpgrade,

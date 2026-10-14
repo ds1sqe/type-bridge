@@ -194,7 +194,10 @@ pub fn generate_next_migration(
     }
     let delta = diff_managed(source, request.desired, request.context).map_err(delta_diagnostic)?;
 
-    let id = MigrationId::new(request.app_label, allocate_name(graph, request.base_name))?;
+    let id = MigrationId::new(
+        request.app_label,
+        allocate_migration_name(graph, request.base_name),
+    )?;
     if graph.manifest(&id).is_some() {
         return Err(failure(
             DiagnosticCategory::InvalidContract,
@@ -262,7 +265,10 @@ pub fn generate_backfill_migration(
         ));
     }
 
-    let id = MigrationId::new(request.app_label, allocate_name(graph, request.base_name))?;
+    let id = MigrationId::new(
+        request.app_label,
+        allocate_migration_name(graph, request.base_name),
+    )?;
     if graph.manifest(&id).is_some() {
         return Err(failure(
             DiagnosticCategory::InvalidContract,
@@ -538,7 +544,8 @@ fn write_failed(operation: &'static str, error: &std::io::Error) -> Diagnostic {
 ///
 /// Ordinal prefixes are display/allocation conventions, never execution
 /// order; names without a numeric prefix simply do not participate.
-fn allocate_name(graph: &MigrationHistoryGraph, base_name: &str) -> String {
+#[must_use]
+pub fn allocate_migration_name(graph: &MigrationHistoryGraph, base_name: &str) -> String {
     let next = graph
         .manifests()
         .filter_map(|(id, _)| leading_ordinal(id.name().as_str()))

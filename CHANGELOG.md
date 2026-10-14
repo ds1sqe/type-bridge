@@ -274,11 +274,22 @@ differently direct and through a proxy. Each entry says what to do instead.
   pair is refused with `migration_typedb_server_version_unsupported`, which
   names the server the profile expects, and any other profile with
   `migration_typedb_semantic_profile_unsupported` before credentials or the
-  filesystem are touched. Existing 3.12 histories move to the new profile
-  with `migration upgrade-profile --to typedb-3.13.6/v1`.
+  filesystem are touched. An existing 3.12 history moves to the new profile
+  with `migration upgrade-profile --to typedb-3.13.6/v1` (below).
   `require_supported_migration_server_for_profile`,
   `require_supported_migration_profile`, and `migration_server_for_profile`
   in `type_bridge_schema_migration_typedb` expose the pairing.
+- `type-bridge migration upgrade-profile --environment <env> --to
+  typedb-3.13.6/v1` moves a migration history to a newer TypeDB line. After
+  the databases are moved to the new server and
+  `compatibility.semantic-profile` names the new profile, it writes one
+  zero-operation profile bridge manifest and records it in that
+  environment's ledger. It requires the ledger at the history head and the
+  live schema unchanged (`migration_upgrade_profile_live_drift`), is
+  idempotent, and cannot be rolled back (`migration_rollback_profile_bridge`).
+  `migration make`, `plan`, `apply`, and `verify` on a history still on the
+  older profile refuse with `migration_history_profile_upgrade_required` and
+  print the command to run.
 - `type_bridge_core.InvalidQueryRequestError`, a subclass of both
   `MatchRequestError` and `ValueError`, for the query refusals 2.2 raised as
   `ValueError` (codes `zero_window_limit`, `window_overflow`,
