@@ -7,6 +7,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::common::dynamic_crud::{attr, setup_dynamic_typeql, unique_schema_suffix};
 use crate::internal::*;
@@ -27,6 +28,7 @@ use type_bridge_schema_compat::released_typeql_to_declared_projection;
 /// Past the proxy item default (65,536), well under the direct one (100,000).
 const ENTITIES: u64 = 66_000;
 const INSERT_BATCH: u64 = 1_000;
+const TEST_TIMEOUT_MILLISECONDS: u64 = 120_000;
 
 fn count_request(registry: &DescriptorRegistry, type_name: &str) -> ValidatedMatchRequest {
     let root = BindingId::new(0);
@@ -120,18 +122,30 @@ async fn default_answer_limits_follow_the_transport_live() {
     let define = generate_define_block(&SchemaInfo::from_descriptors(&registry.snapshot()));
     let db = setup_dynamic_typeql(&define).await;
 
-    for start in (0..ENTITIES).step_by(usize::try_from(INSERT_BATCH).unwrap()) {
-        let statements = (start..(start + INSERT_BATCH).min(ENTITIES))
-            .map(|index| format!("$e{index} isa {item_type}, has {value_attr} {index};"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        db.execute_raw(&format!("insert {statements}"), TxType::Write)
-            .await
-            .unwrap_or_else(|error| panic!("insert batch at {start}: {error}"));
-    }
+    // Fixture setup has its own deadline, independent of either query read.
+    tokio::time::timeout(Duration::from_millis(TEST_TIMEOUT_MILLISECONDS), async {
+        for start in (0..ENTITIES).step_by(usize::try_from(INSERT_BATCH).unwrap()) {
+            let statements = (start..(start + INSERT_BATCH).min(ENTITIES))
+                .map(|index| format!("$e{index} isa {item_type}, has {value_attr} {index};"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            db.execute_raw(&format!("insert {statements}"), TxType::Write)
+                .await
+                .unwrap_or_else(|error| panic!("insert batch at {start}: {error}"));
+        }
+    })
+    .await
+    .expect("answer-limit fixture inserts complete before the setup deadline");
 
-    // Direct at default limits: the 2.2 item default covers every entity.
-    let direct = QueryExecutionResourceLimits::default_for(AnswerTransport::Direct);
+    // This large scan tests answer-size defaults, with headroom for host load.
+    let direct_defaults = QueryExecutionResourceLimits::default_for(AnswerTransport::Direct);
+    assert_eq!(direct_defaults.items, 100_000);
+    assert_eq!(direct_defaults.bytes, 64 * 1024 * 1024);
+    assert_eq!(direct_defaults.timeout_milliseconds, 30_000);
+    let direct = QueryExecutionResourceLimits {
+        timeout_milliseconds: TEST_TIMEOUT_MILLISECONDS,
+        ..direct_defaults
+    };
     assert!(ENTITIES > DEFAULT_PROXY_QUERY_ITEMS && ENTITIES < direct.items);
     let (_, counted) = QueryTarget::Database(&db)
         .execute(
@@ -142,19 +156,26 @@ async fn default_answer_limits_follow_the_transport_live() {
             QueryExecutionDeadline::for_limits(direct),
         )
         .await
-        .unwrap_or_else(|error| panic!("direct count at default limits: {error}"));
+        .unwrap_or_else(|error| panic!("direct count at default answer-size limits: {error}"));
     assert!(
         matches!(counted.result(), MatchResult::Count { value, .. } if *value == ENTITIES),
         "direct count returns every entity: {:?}",
         counted.result()
     );
 
-    // Proxy at default limits: the client prepares under the proxy defaults,
+    // Proxy at default answer-size limits: the client prepares under those defaults,
     // a default server executes the request in process, and the reply is
     // refused at the items wire limit.
     let advertisement = advertisement();
     let authority = Arc::new(authority(&define));
-    let proxy = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
+    let proxy_defaults = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
+    assert_eq!(proxy_defaults.items, 65_536);
+    assert_eq!(proxy_defaults.bytes, 32 * 1024 * 1024);
+    assert_eq!(proxy_defaults.timeout_milliseconds, 30_000);
+    let proxy = QueryExecutionResourceLimits {
+        timeout_milliseconds: TEST_TIMEOUT_MILLISECONDS,
+        ..proxy_defaults
+    };
     let connection = ProxyQueryConnection::with_exchange(
         advertisement.encode().expect("advertisement bytes"),
         Arc::clone(&authority),
