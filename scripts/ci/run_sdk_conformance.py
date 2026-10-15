@@ -20,9 +20,9 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import c_artifact_journey as artifact_journey
-import compare_sdk_conformance_v5 as codec_contract
 import compare_sdk_conformance_v6 as conformance
 import sdk_profile_matrix as profile_matrix
+import sdk_serialization_compare as codec_contract
 import standalone_cli_artifact as cli_artifact
 from persist_binding_reports import PublishError, publish_files
 
@@ -32,9 +32,9 @@ NODE = CORE / "crates/node"
 V1_BINDINGS = ("python", "node", "rust")
 BINDINGS = (*V1_BINDINGS, "c")
 SUITES = tuple(profile_matrix.SUITES)
-PYTHON_PROVIDER = ROOT / "tests/integration/schema/test_generated_sdk_v5_codec.py"
+PYTHON_PROVIDER = ROOT / "tests/integration/schema/test_sdk_serialization_codec.py"
 NODE_PROVIDER = CORE / "crates/schema-codegen/tests/typescript_acceptance/codec_check.py"
-C_PROVIDER = ROOT / "tests/integration/schema/test_generated_c_sdk_v5_codec.py"
+C_PROVIDER = ROOT / "tests/integration/schema/test_sdk_serialization_c_codec.py"
 SURFACE_CONSUMER_FORMAT = "typebridge.sdk-v6-surface-consumer/v1"
 
 
@@ -509,7 +509,7 @@ def write_cleanup(path: Path, binding: str) -> None:
         codec_contract.canonical_json_bytes(
             {
                 "binding": binding,
-                "format": "typebridge.sdk-v5-cleanup-evidence/v1",
+                "format": "typebridge.sdk-serialization-cleanup-evidence/v1",
                 "managed_database_absent": True,
                 "partial_output_absent": True,
                 "temporary_evidence_absent": True,
@@ -520,39 +520,45 @@ def write_cleanup(path: Path, binding: str) -> None:
 
 def codec_offline(directory: Path, environment: dict[str, str]) -> None:
     python_env = environment | {
-        "TYPE_BRIDGE_SDK_V5_PYTHON_CORPUS": str(directory / "python-corpus.json"),
-        "TYPE_BRIDGE_SDK_V5_PYTHON_OPERATIONAL_EVIDENCE": str(
+        "TYPE_BRIDGE_SDK_SERIALIZATION_PYTHON_CORPUS": str(directory / "python-corpus.json"),
+        "TYPE_BRIDGE_SDK_SERIALIZATION_PYTHON_OPERATIONAL_EVIDENCE": str(
             directory / "python-operational.json"
         ),
     }
     run(["uv", "run", "pytest", "-q", "-m", "integration", str(PYTHON_PROVIDER)], env=python_env)
     run(["npm", "run", "build"], cwd=NODE, env=environment)
     node_env = environment | {
-        "TYPE_BRIDGE_SDK_V5_NODE_CORPUS": str(directory / "node-corpus.json"),
-        "TYPE_BRIDGE_SDK_V5_NODE_OPERATIONAL_EVIDENCE": str(directory / "node-operational.json"),
+        "TYPE_BRIDGE_SDK_SERIALIZATION_NODE_CORPUS": str(directory / "node-corpus.json"),
+        "TYPE_BRIDGE_SDK_SERIALIZATION_NODE_OPERATIONAL_EVIDENCE": str(
+            directory / "node-operational.json"
+        ),
     }
     run([sys.executable, str(NODE_PROVIDER)], env=node_env)
     rust_env = environment | {
-        "TYPE_BRIDGE_SDK_V5_RUST_CORPUS": str(directory / "rust-corpus.json"),
-        "TYPE_BRIDGE_SDK_V5_RUST_OPERATIONAL_EVIDENCE": str(directory / "rust-operational.json"),
+        "TYPE_BRIDGE_SDK_SERIALIZATION_RUST_CORPUS": str(directory / "rust-corpus.json"),
+        "TYPE_BRIDGE_SDK_SERIALIZATION_RUST_OPERATIONAL_EVIDENCE": str(
+            directory / "rust-operational.json"
+        ),
     }
     run(
         cargo_test(
             "type-bridge-schema-codegen",
-            "generated_rust_sdk_v5_canonical_codec",
+            "sdk_serialization_canonical_codec",
             suite="rust_acceptance",
         ),
         env=rust_env,
     )
     c_env = environment | {
-        "TYPE_BRIDGE_SDK_V5_C_CORPUS": str(directory / "c-corpus.json"),
-        "TYPE_BRIDGE_SDK_V5_C_OPERATIONAL_EVIDENCE": str(directory / "c-operational.json"),
+        "TYPE_BRIDGE_SDK_SERIALIZATION_C_CORPUS": str(directory / "c-corpus.json"),
+        "TYPE_BRIDGE_SDK_SERIALIZATION_C_OPERATIONAL_EVIDENCE": str(
+            directory / "c-operational.json"
+        ),
     }
     run(["uv", "run", "pytest", "-q", "-m", "integration", str(C_PROVIDER)], env=c_env)
     run(
         [
             sys.executable,
-            str(ROOT / "scripts/ci/compare_sdk_v5_corpora.py"),
+            str(ROOT / "scripts/ci/sdk_serialization_corpora.py"),
             *(
                 item
                 for binding in BINDINGS
@@ -564,7 +570,7 @@ def codec_offline(directory: Path, environment: dict[str, str]) -> None:
     run(
         [
             sys.executable,
-            str(ROOT / "scripts/ci/compare_sdk_v5_operational.py"),
+            str(ROOT / "scripts/ci/sdk_serialization_operational.py"),
             *(
                 item
                 for binding in BINDINGS
@@ -578,7 +584,7 @@ def codec_offline(directory: Path, environment: dict[str, str]) -> None:
 def codec_live(directory: Path, environment: dict[str, str]) -> None:
     python_env = environment | {
         "USE_DOCKER": "false",
-        "TYPE_BRIDGE_SDK_V5_PYTHON_EVIDENCE": str(directory / "python-live.json"),
+        "TYPE_BRIDGE_SDK_SERIALIZATION_PYTHON_EVIDENCE": str(directory / "python-live.json"),
     }
     run(
         [
@@ -588,22 +594,22 @@ def codec_live(directory: Path, environment: dict[str, str]) -> None:
             "-q",
             "-m",
             "integration",
-            "tests/integration/schema/test_generated_projection_live.py::test_generated_canonical_serialization_v5_live",
+            "tests/integration/schema/test_generated_projection_live.py::test_sdk_serialization_live",
         ],
         env=python_env,
     )
     write_cleanup(directory / "python-cleanup.json", "python")
     node_env = environment | {
-        "TYPE_BRIDGE_SDK_V5_NODE_EVIDENCE": str(directory / "node-live.json"),
-        "TYPE_BRIDGE_NODE_INTG_DATABASE": f"type_bridge_v5_node_{os.getpid()}",
+        "TYPE_BRIDGE_SDK_SERIALIZATION_NODE_EVIDENCE": str(directory / "node-live.json"),
+        "TYPE_BRIDGE_NODE_INTG_DATABASE": f"type_bridge_serialization_node_{os.getpid()}",
         "TYPEDB_VERSION": typedb_version(environment),
     }
     run(["npm", "run", "typecheck:projection-integration"], cwd=NODE, env=node_env)
-    node_live("node.generated_canonical_serialization_v5_live", node_env)
+    node_live("node.sdk_serialization_live", node_env)
     write_cleanup(directory / "node-cleanup.json", "node")
     rust_env = environment | {
-        "TYPE_BRIDGE_SDK_V5_RUST_EVIDENCE": str(directory / "rust-live.json"),
-        "TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE": f"type_bridge_v5_rust_{os.getpid()}",
+        "TYPE_BRIDGE_SDK_SERIALIZATION_RUST_EVIDENCE": str(directory / "rust-live.json"),
+        "TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE": f"type_bridge_serialization_rust_{os.getpid()}",
     }
     run(
         rust_live(
@@ -613,8 +619,8 @@ def codec_live(directory: Path, environment: dict[str, str]) -> None:
     )
     write_cleanup(directory / "rust-cleanup.json", "rust")
     c_env = environment | {
-        "TYPE_BRIDGE_SDK_V5_C_EVIDENCE": str(directory / "c-live.json"),
-        "TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE": f"type_bridge_v5_c_{os.getpid()}",
+        "TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE": str(directory / "c-live.json"),
+        "TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE": f"type_bridge_serialization_c_{os.getpid()}",
         "TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER": "1",
     }
     run(
@@ -633,7 +639,7 @@ def assemble_codec(directory: Path, output: Path, environment: dict[str, str]) -
         nonce = os.urandom(32).hex()
         run(
             python_command(
-                "assemble_sdk_conformance_v5.py",
+                "sdk_serialization_assemble.py",
                 "--corpus",
                 str(directory / f"{binding}-corpus.json"),
                 "--live-evidence",
@@ -653,7 +659,7 @@ def assemble_codec(directory: Path, output: Path, environment: dict[str, str]) -
         )
     run(
         python_command(
-            "compare_sdk_conformance_v5.py",
+            "sdk_serialization_compare.py",
             *(str(output / f"{binding}.json") for binding in BINDINGS),
         ),
         env=environment,

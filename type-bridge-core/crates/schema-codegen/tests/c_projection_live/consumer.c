@@ -758,8 +758,8 @@ static int open_person_create(
   fixture_valzuduration *duration = NULL;
   const int is_query_ada = strcmp(identifier_text, "query-ada") == 0;
   const int is_query_dana = strcmp(identifier_text, "query-dana") == 0;
-  const int is_v5_live = strcmp(identifier_text, "v5-live-person") == 0;
-  const int is_sdk = is_query_ada || is_query_dana || is_v5_live;
+  const int is_serialization_live = strcmp(identifier_text, "v5-live-person") == 0;
+  const int is_sdk = is_query_ada || is_query_dana || is_serialization_live;
   const char *alias_value =
       is_query_ada ? "analyst" : (is_query_dana ? "engineer" : alias_text);
   const char *date_value = is_query_dana ? "2026-08-13" : "2026-08-12";
@@ -775,7 +775,7 @@ static int open_person_create(
 
   CHECK(snprintf(alias_text, sizeof(alias_text), "%s-alias", identifier_text) >
         0);
-  if (!is_v5_live) {
+  if (!is_serialization_live) {
     CHECK(fixture_aliases_open(package, view_of(alias_value), &alias,
                                out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     aliases[0] = alias;
@@ -784,14 +784,14 @@ static int open_person_create(
   }
   CHECK(fixture_identifier_open(package, view_of(identifier_text), &identifier,
                                 out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-  if (!is_query_dana && !is_v5_live) {
+  if (!is_query_dana && !is_serialization_live) {
     CHECK(fixture_nickname_open(
               package, view_of(is_query_ada ? "Ada" : identifier_text),
               &nickname, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   }
   CHECK(fixture_score_open(package, score_number, &score, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  if (!is_v5_live) {
+  if (!is_serialization_live) {
     CHECK(fixture_scorezuzugte_open(package,
                                     is_sdk ? 40 : score_number - 1,
                                     &score_gte,
@@ -801,7 +801,7 @@ static int open_person_create(
                                &boolean_value, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzuconstrained_open(package,
-                                      is_v5_live
+                                      is_serialization_live
                                           ? 55
                                           : is_sdk
                                           ? (is_query_dana ? 45 : 38)
@@ -811,13 +811,13 @@ static int open_person_create(
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzudate_open(
             package,
-            view_of(is_v5_live ? "2026-08-03"
+            view_of(is_serialization_live ? "2026-08-03"
                                : (is_sdk ? date_value : "2026-08-11")),
             &date,
                                out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzudatetime_open(
             package,
-            view_of(is_v5_live
+            view_of(is_serialization_live
                         ? "2026-08-03T03:55:00"
                         : (is_sdk ? datetime_value
                                         : "2026-08-11T07:30:00.5")),
@@ -825,7 +825,7 @@ static int open_person_create(
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzudatetimezutzz_open(
             package,
-            view_of(is_v5_live
+            view_of(is_serialization_live
                         ? "2026-08-03T03:55:00Z"
                         : (is_sdk ? datetime_tz_value
                                         : "2026-08-11T07:30:00Z")),
@@ -833,31 +833,31 @@ static int open_person_create(
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzudecimal_open(
             package,
-            view_of(is_v5_live ? "128.45"
+            view_of(is_serialization_live ? "128.45"
                                : (is_sdk ? decimal_value_text : "12.5")),
             &decimal,
                                   out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzudouble_open(
             package,
-            is_v5_live ? UINT64_C(0x402047ae147ae148)
+            is_serialization_live ? UINT64_C(0x402047ae147ae148)
                        : (is_sdk ? double_bits
                                        : UINT64_C(0x3ff8000000000000)),
             &double_value,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzuduration_open(
             package,
-            view_of(is_v5_live ? "P6D"
+            view_of(is_serialization_live ? "P6D"
                                : (is_sdk ? duration_value : "P1D")),
             &duration,
                                    out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
 
   aliases_chunk.struct_size = sizeof(aliases_chunk);
   aliases_chunk.version = FIXTURE_CREATE_ARGS_VERSION;
-  aliases_chunk.values = is_v5_live ? NULL : aliases;
-  aliases_chunk.count = is_v5_live ? 0u : 1u;
+  aliases_chunk.values = is_serialization_live ? NULL : aliases;
+  aliases_chunk.count = is_serialization_live ? 0u : 1u;
   args.struct_size = sizeof(args);
   args.version = FIXTURE_CREATE_ARGS_VERSION;
-  args.field_aliases_chunks = is_v5_live ? NULL : &aliases_chunk;
+  args.field_aliases_chunks = is_serialization_live ? NULL : &aliases_chunk;
   args.field_foozuzubar = foo;
   args.field_identifier = identifier;
   args.field_nickname = nickname;
@@ -4990,7 +4990,7 @@ static int run_typed_query_function_and_remote(
   return 0;
 }
 
-#ifdef TYPE_BRIDGE_SDK_V5_C_CODEC
+#ifdef TYPE_BRIDGE_SDK_SERIALIZATION_C_CODEC
 static int write_canonical_view(const char *directory, const char *name,
                                 type_bridge_byte_view_t value) {
   char path[4096];
@@ -5005,11 +5005,11 @@ static int write_canonical_view(const char *directory, const char *name,
   return 1;
 }
 
-static int run_sdk_v5_live_codec(
+static int run_sdk_serialization_live_codec(
     const type_bridge_schema_package_t *package,
     const type_bridge_database_t *database,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
-  const char *directory = getenv("TYPE_BRIDGE_SDK_V5_C_EVIDENCE_DIR");
+  const char *directory = getenv("TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE_DIR");
   const uint16_t remote_port = required_remote_port();
   type_bridge_query_execution_limits_v1_t limits =
       TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
@@ -5319,7 +5319,7 @@ static int run_sdk_v5_live_codec(
   CHECK(fixture_person_ref_close(&inserted_person_ref) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_close(&inserted_person) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_create_close(&person_create) == TYPE_BRIDGE_STATUS_OK);
-  puts("Sdk V5 C live codec direct/remote parity: passed");
+  puts("Serialization C live codec direct/remote parity: passed");
   return 0;
 }
 #endif
@@ -5430,8 +5430,8 @@ int main(void) {
   CHECK(type_bridge_database_server_version(database, &version) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(same_text(version, expected_server_version));
-#ifdef TYPE_BRIDGE_SDK_V5_C_CODEC
-  CHECK(run_sdk_v5_live_codec(package, database, &diagnostics) == 0);
+#ifdef TYPE_BRIDGE_SDK_SERIALIZATION_C_CODEC
+  CHECK(run_sdk_serialization_live_codec(package, database, &diagnostics) == 0);
   CHECK(type_bridge_database_close(&database, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(type_bridge_runtime_close(&runtime, &diagnostics) ==

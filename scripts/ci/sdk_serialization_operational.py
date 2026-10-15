@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and compare four provider-free Sdk V5 operational artifacts."""
+"""Validate and compare four provider-free Serialization operational artifacts."""
 
 from __future__ import annotations
 
@@ -10,16 +10,16 @@ import sys
 from pathlib import Path
 from typing import Any, NoReturn
 
-from compare_sdk_conformance_v5 import canonical_json_bytes
+from sdk_serialization_compare import canonical_json_bytes
 
-FORMAT = "typebridge.sdk-v5-operational-evidence/v1"
-COMPARISON_FORMAT = "typebridge.sdk-v5-operational-comparison/v1"
+FORMAT = "typebridge.sdk-serialization-operational-evidence/v1"
+COMPARISON_FORMAT = "typebridge.sdk-serialization-operational-comparison/v1"
 BINDINGS = ("python", "node", "rust", "c")
 TEST_IDS = {
-    "python": "python.generated_sdk_v5_canonical_codec",
-    "node": "node.generated_sdk_v5_canonical_codec",
-    "rust": "rust_acceptance::generated_rust_sdk_v5_canonical_codec",
-    "c": "c.generated_sdk_v5_canonical_codec",
+    "python": "python.sdk_serialization_canonical_codec",
+    "node": "node.sdk_serialization_canonical_codec",
+    "rust": "rust_acceptance::sdk_serialization_canonical_codec",
+    "c": "c.sdk_serialization_canonical_codec",
 }
 TOP_LEVEL_KEYS = {
     "binding",
@@ -147,7 +147,9 @@ def main() -> int:
     try:
         result = compare({binding: getattr(arguments, binding) for binding in BINDINGS})
     except OperationalError as error:
-        print(f"sdk-v5 operational evidence rejected [{error.code}]: {error}", file=sys.stderr)
+        print(
+            f"serialization operational evidence rejected [{error.code}]: {error}", file=sys.stderr
+        )
         return 1
     sys.stdout.buffer.write(canonical_json_bytes(result) + b"\n")
     return 0

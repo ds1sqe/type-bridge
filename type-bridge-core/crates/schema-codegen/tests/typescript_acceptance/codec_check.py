@@ -1,4 +1,4 @@
-"""Provider-free acceptance for Node's generated Sdk V5 codec."""
+"""Provider-free acceptance for Node's generated Serialization codec."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[5]
 CORE = ROOT / "type-bridge-core"
 NODE_PACKAGE = CORE / "crates/node"
-PRODUCER = CORE / "crates/schema-codegen/tests/typescript_acceptance/sdk_v5_codec.mjs"
+PRODUCER = CORE / "crates/schema-codegen/tests/typescript_acceptance/sdk_serialization_codec.mjs"
 
 
 def native_artifact() -> Path:
@@ -31,7 +31,7 @@ def install_runtime(stage: Path) -> None:
     shutil.copytree(NODE_PACKAGE / "dist", destination / "dist")
     artifact = native_artifact()
     if not artifact.is_file():
-        raise AssertionError("build the Node native addon before Sdk V5 acceptance")
+        raise AssertionError("build the Node native addon before Serialization acceptance")
     shutil.copy2(artifact, destination / "type_bridge_node.node")
 
 
@@ -43,14 +43,14 @@ def run_producer(stage: Path, output: Path, operational: Path) -> None:
     environment["TYPE_BRIDGE_GENERATED_NODE_FOREIGN_PACKAGE"] = str(
         stage / "generated_ordered_foreign/dist/index.js"
     )
-    environment["TYPE_BRIDGE_SDK_V5_CORPUS"] = str(output)
-    environment["TYPE_BRIDGE_SDK_V5_OPERATIONAL_EVIDENCE"] = str(operational)
+    environment["TYPE_BRIDGE_SDK_SERIALIZATION_CORPUS"] = str(output)
+    environment["TYPE_BRIDGE_SDK_SERIALIZATION_OPERATIONAL_EVIDENCE"] = str(operational)
     subprocess.run(["node", str(PRODUCER)], cwd=ROOT, env=environment, check=True)
 
 
 def check(tmp_path: Path) -> None:
     stage = tmp_path / "generated"
-    # The sdk-v5 ordered fixtures exist only for the frozen sdk profile.
+    # The serialization ordered fixtures exist only for the frozen sdk profile.
     fixture_environment = os.environ.copy()
     fixture_environment["TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE"] = "typedb-3.12.1/v1"
     subprocess.run(
@@ -66,29 +66,29 @@ def check(tmp_path: Path) -> None:
     install_runtime(stage)
     first = Path(
         os.environ.get(
-            "TYPE_BRIDGE_SDK_V5_NODE_CORPUS",
-            tmp_path / "node-sdk-v5-corpus.json",
+            "TYPE_BRIDGE_SDK_SERIALIZATION_NODE_CORPUS",
+            tmp_path / "node-serialization-corpus.json",
         )
     )
-    repeated = tmp_path / "node-sdk-v5-corpus-repeat.json"
+    repeated = tmp_path / "node-serialization-corpus-repeat.json"
     operational = Path(
         os.environ.get(
-            "TYPE_BRIDGE_SDK_V5_NODE_OPERATIONAL_EVIDENCE",
-            tmp_path / "node-sdk-v5-operational.json",
+            "TYPE_BRIDGE_SDK_SERIALIZATION_NODE_OPERATIONAL_EVIDENCE",
+            tmp_path / "node-serialization-operational.json",
         )
     )
-    repeated_operational = tmp_path / "node-sdk-v5-operational-repeat.json"
+    repeated_operational = tmp_path / "node-serialization-operational-repeat.json"
     run_producer(stage, first, operational)
     run_producer(stage, repeated, repeated_operational)
     assert first.read_bytes() == repeated.read_bytes()
     assert operational.read_bytes() == repeated_operational.read_bytes()
     corpus = json.loads(first.read_bytes())
-    assert corpus["format"] == "typebridge.sdk-v5-provider-free-corpus/v1"
+    assert corpus["format"] == "typebridge.sdk-serialization-provider-free-corpus/v1"
     assert corpus["binding"] == "node"
     assert len(corpus["record_b64"]) == 9
     assert corpus["archive_b64"]
     evidence = json.loads(operational.read_bytes())
-    assert evidence["format"] == "typebridge.sdk-v5-operational-evidence/v1"
+    assert evidence["format"] == "typebridge.sdk-serialization-operational-evidence/v1"
     assert evidence["binding"] == "node"
     assert evidence["diagnostic"] == {
         "category": "invalid_input",

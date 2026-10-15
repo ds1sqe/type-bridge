@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and compare four real Sdk V5 serialization reports."""
+"""Validate and compare four real serialization reports."""
 
 from __future__ import annotations
 
@@ -17,15 +17,17 @@ import sdk_profile_matrix as profile_matrix  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = "tests/contracts/sdk_conformance/manifest.json"
-CATALOG = "tests/contracts/sdk_conformance/sdk-v5/catalog-v5.json"
-JOURNEY = "tests/contracts/sdk_conformance/sdk-v5/journey-v5.json"
+CATALOG = "tests/contracts/sdk_conformance/serialization/catalog.json"
+JOURNEY = "tests/contracts/sdk_conformance/serialization/journey.json"
 RECORD_CONTRACT = "tests/contracts/projected-record-v1.json"
-REPORT_SCHEMA = "tests/contracts/sdk_conformance/sdk-v5/report-schema-v5.json"
-OBSERVATION_SCHEMA = "tests/contracts/sdk_conformance/sdk-v5/observation-schema-v5.json"
-OPERATIONAL_SCHEMA = "tests/contracts/sdk_conformance/sdk-v5/operational-evidence-schema-v5.json"
-LIVE_SCHEMA = "tests/contracts/sdk_conformance/sdk-v5/live-evidence-schema-v5.json"
-CLEANUP_SCHEMA = "tests/contracts/sdk_conformance/sdk-v5/cleanup-evidence-schema-v5.json"
-PRODUCER_SCHEMA = "tests/contracts/sdk_conformance/sdk-v5/producer-evidence-schema-v5.json"
+REPORT_SCHEMA = "tests/contracts/sdk_conformance/serialization/report-schema.json"
+OBSERVATION_SCHEMA = "tests/contracts/sdk_conformance/serialization/observation-schema.json"
+OPERATIONAL_SCHEMA = (
+    "tests/contracts/sdk_conformance/serialization/operational-evidence-schema.json"
+)
+LIVE_SCHEMA = "tests/contracts/sdk_conformance/serialization/live-evidence-schema.json"
+CLEANUP_SCHEMA = "tests/contracts/sdk_conformance/serialization/cleanup-evidence-schema.json"
+PRODUCER_SCHEMA = "tests/contracts/sdk_conformance/serialization/producer-evidence-schema.json"
 ABI_CONTRACT = "tests/contracts/c-abi.json"
 BINDINGS = ("python", "node", "rust", "c")
 TRANSITIONS = ("sdk.model.serialization",)
@@ -117,7 +119,7 @@ JOURNEY_HOSTILE_MUTATIONS = [
 
 
 class ContractError(ValueError):
-    """One stable fail-closed V5 report rejection."""
+    """One stable fail-closed Serialization report rejection."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -233,54 +235,58 @@ def load_contracts(root: Path = ROOT) -> Contracts:
         "cleanup_evidence_schema_path": CLEANUP_SCHEMA,
         "producer_evidence_schema_path": PRODUCER_SCHEMA,
     }:
-        reject("evidence_schema_inventory_drift", "V5 evidence schema paths are not exact")
+        reject(
+            "evidence_schema_inventory_drift", "Serialization evidence schema paths are not exact"
+        )
     if catalog.get("fixture", {}).get("abi_contract_path") != ABI_CONTRACT:
-        reject("abi_contract_drift", "V5 ABI 1.6 authority path is not exact")
+        reject("abi_contract_drift", "Serialization ABI 1.6 authority path is not exact")
     if catalog.get("report_bindings") != list(BINDINGS):
-        reject("binding_scope_drift", "V5 binding order is not exact")
+        reject("binding_scope_drift", "Serialization binding order is not exact")
     if tuple(catalog.get("manifest_transition_cases", ())) != TRANSITIONS:
-        reject("transition_scope_drift", "V5 transition scope is not exact")
+        reject("transition_scope_drift", "Serialization transition scope is not exact")
     if tuple(catalog.get("evidence_only_gap_cases", ())) != RETAINED_GAPS:
-        reject("retained_gap_scope_drift", "V5 retained-gap scope is not exact")
+        reject("retained_gap_scope_drift", "Serialization retained-gap scope is not exact")
     cases = catalog.get("cases")
     proofs = catalog.get("selected_proofs")
     if not isinstance(cases, list) or not isinstance(proofs, list) or len(cases) != 5:
-        reject("row_scope_drift", "V5 must contain five exact case/proof rows")
+        reject("row_scope_drift", "Serialization must contain five exact case/proof rows")
     selected_values = tuple(case.get("id") for case in cases if isinstance(case, dict))
     if len(selected_values) != len(cases) or not all(
         isinstance(case_id, str) for case_id in selected_values
     ):
-        reject("row_scope_drift", "V5 case identifiers must be exact strings")
+        reject("row_scope_drift", "Serialization case identifiers must be exact strings")
     selected = cast(tuple[str, ...], selected_values)
     proof_cases = tuple(proof.get("case_id") for proof in proofs if isinstance(proof, dict))
     references = tuple(proof.get("observation_ref") for proof in proofs if isinstance(proof, dict))
     if selected != TRANSITIONS + RETAINED_GAPS or proof_cases != selected:
-        reject("row_order_drift", "V5 case/proof order is not exact")
+        reject("row_order_drift", "Serialization case/proof order is not exact")
     if references != OBSERVATIONS:
-        reject("proof_inventory_drift", "V5 observation references are not exact")
+        reject("proof_inventory_drift", "Serialization observation references are not exact")
     if journey.get("required_equalities") != [
         "python-node-rust-c-record-bytes",
         "python-node-rust-c-archive-bytes",
         "direct-remote-entity-snapshot-bytes",
         "direct-remote-relation-snapshot-bytes",
     ]:
-        reject("journey_equality_drift", "V5 required equalities are not exact")
+        reject("journey_equality_drift", "Serialization required equalities are not exact")
     if journey.get("records") != JOURNEY_RECORDS:
-        reject("journey_record_drift", "V5 record corpus is not exact")
+        reject("journey_record_drift", "Serialization record corpus is not exact")
     if journey.get("archive") != {
         "mode": "ordered",
         "record_ids": [record["id"] for record in JOURNEY_RECORDS],
         "whole_archive_rejection": True,
     }:
-        reject("journey_archive_drift", "V5 archive corpus is not exact")
+        reject("journey_archive_drift", "Serialization archive corpus is not exact")
     if journey.get("hostile_mutations") != JOURNEY_HOSTILE_MUTATIONS:
-        reject("journey_hostility_drift", "V5 hostile corpus is not exact")
+        reject("journey_hostility_drift", "Serialization hostile corpus is not exact")
     if report_schema.get("$defs", {}).get("result", {}).get("properties", {}).get(
         "observation"
-    ) != {"$ref": "observation-schema-v5.json"}:
-        reject("observation_schema_drift", "V5 report schema does not bind its algebra")
+    ) != {"$ref": "observation-schema.json"}:
+        reject("observation_schema_drift", "Serialization report schema does not bind its algebra")
     if len(observation_schema.get("oneOf", ())) != 5:
-        reject("observation_schema_drift", "V5 observation algebra must contain five lanes")
+        reject(
+            "observation_schema_drift", "Serialization observation algebra must contain five lanes"
+        )
     capabilities = {
         item.get("id"): item for item in manifest.get("capabilities", ()) if isinstance(item, dict)
     }
@@ -317,7 +323,7 @@ def validate_observation(index: int, value: Any) -> None:
         )
         records = observation["record_sha256"]
         if not isinstance(records, list) or len(records) != 9:
-            reject("invalid_observation_shape", "V5 requires nine record digests")
+            reject("invalid_observation_shape", "Serialization requires nine record digests")
         for ordinal, digest in enumerate(records):
             exact_sha256(digest, f"record digest {ordinal}")
         exact_sha256(observation["archive_sha256"], "archive digest")
@@ -378,7 +384,7 @@ def validate_observation(index: int, value: Any) -> None:
 
 
 def matrix_servers() -> set[str]:
-    """Exact TypeDB servers the sdk-v5 profile matrix admits."""
+    """Exact TypeDB servers the serialization profile matrix admits."""
 
     return {
         entry.live_server_version
@@ -402,8 +408,8 @@ def validate_report(report: dict[str, Any], contracts: Contracts, root: Path) ->
         },
         "report",
     )
-    if report["format"] != "typebridge.sdk-conformance-report/v5":
-        reject("invalid_report_schema", "report format is not V5")
+    if report["format"] != "typebridge.sdk-serialization-report/v1":
+        reject("invalid_report_schema", "report format is not Serialization")
     if report["binding"] not in BINDINGS or report["server_version"] not in matrix_servers():
         reject("invalid_report_schema", "report binding or server version is invalid")
     validate_identity(report["manifest"], MANIFEST, root, "manifest")
@@ -444,9 +450,9 @@ def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
     contracts = load_contracts(root)
     state = contracts.catalog.get("authority_state")
     if state != "finalized":
-        reject("invalid_v5_authority", "V5 authority state is invalid")
+        reject("invalid_serialization_authority", "Serialization authority state is invalid")
     if len(paths) != 4:
-        reject("missing_binding_report", "exactly four V5 reports are required")
+        reject("missing_binding_report", "exactly four Serialization reports are required")
     reports: dict[str, dict[str, Any]] = {}
     shared: tuple[Any, ...] | None = None
     for path in paths:
@@ -459,10 +465,12 @@ def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
         if shared is None:
             shared = observations
         elif observations != shared:
-            reject("cross_binding_observation_drift", "V5 observations differ by binding")
+            reject(
+                "cross_binding_observation_drift", "Serialization observations differ by binding"
+            )
         reports[binding] = report
     if tuple(reports) != BINDINGS:
-        reject("binding_order_drift", "V5 reports are not in canonical binding order")
+        reject("binding_order_drift", "Serialization reports are not in canonical binding order")
     profile_matrix.shared_value(
         (report["server_version"] for report in reports.values()),
         "server version",
@@ -495,12 +503,15 @@ def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
         }:
             reject(
                 "invalid_successor_profile",
-                f"retained V5 gap {case_id!r} successor profile drifted",
+                f"retained Serialization gap {case_id!r} successor profile drifted",
             )
     if state == "finalized" and pending:
-        reject("finalized_authority_has_pending_promotions", "finalized V5 has pending promotion")
+        reject(
+            "finalized_authority_has_pending_promotions",
+            "finalized Serialization has pending promotion",
+        )
     return {
-        "format": "typebridge.sdk-v5-comparison/v1",
+        "format": "typebridge.sdk-serialization-comparison/v1",
         "authority_state": state,
         "bindings": list(BINDINGS),
         "selected_cases": list(contracts.selected_cases),
@@ -517,7 +528,7 @@ def main() -> int:
     try:
         comparison = compare_reports(args.reports)
     except ContractError as error:
-        print(f"sdk-v5 conformance rejected [{error.code}]: {error}", file=sys.stderr)
+        print(f"serialization conformance rejected [{error.code}]: {error}", file=sys.stderr)
         return 1
     print(json.dumps(comparison, sort_keys=True, separators=(",", ":")))
     return 0

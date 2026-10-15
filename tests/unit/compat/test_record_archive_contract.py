@@ -92,8 +92,8 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
     assert contract["ownership"]["partial_archive_result"] is False
 
 
-def test_sdk_v5_history_is_preserved_after_final_broad_transition() -> None:
-    catalog = _load("tests/contracts/sdk_conformance/sdk-v5/catalog-v5.json")
+def test_sdk_serialization_history_is_preserved_after_final_broad_transition() -> None:
+    catalog = _load("tests/contracts/sdk_conformance/serialization/catalog.json")
     manifest = _load("tests/contracts/sdk_conformance/manifest.json")
 
     assert catalog["authority_state"] == "finalized"

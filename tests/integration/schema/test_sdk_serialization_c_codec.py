@@ -1,4 +1,4 @@
-"""Provider-free acceptance for private C's generated Sdk V5 codec."""
+"""Provider-free acceptance for private C's generated Serialization codec."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ pytestmark = pytest.mark.integration
 
 ROOT = Path(__file__).resolve().parents[3]
 CORE = ROOT / "type-bridge-core"
-PRODUCER = CORE / "crates/schema-codegen/tests/c_acceptance/sdk_v5_codec.c"
+PRODUCER = CORE / "crates/schema-codegen/tests/c_acceptance/sdk_serialization_codec.c"
 SCHEMA = ROOT / "tests/contracts/sdk_conformance/models/schema.yaml"
 
 
@@ -33,7 +33,7 @@ def generate_package(stage: Path, schema: Path, *, app_label: str, scope: str) -
     (workspace / "schema/schema.yaml").write_text(
         "format: typebridge.schema-set/v1\nsources: [fragments/*.yaml]\n"
     )
-    # Offline and byte-checked against the frozen sdk-v5 vectors, so the profile
+    # Offline and byte-checked against the frozen serialization vectors, so the profile
     # stays the catalog's own (typedb-3.12.1/v1) on every lane.
     (workspace / "typebridge.yaml").write_text(
         f"""format: typebridge.workspace/v1
@@ -77,7 +77,7 @@ bindings:
 
 def rust_corpus(path: Path) -> dict[str, object]:
     environment = os.environ.copy()
-    environment["TYPE_BRIDGE_SDK_V5_RUST_CORPUS"] = str(path)
+    environment["TYPE_BRIDGE_SDK_SERIALIZATION_RUST_CORPUS"] = str(path)
     subprocess.run(
         [
             "cargo",
@@ -88,7 +88,7 @@ def rust_corpus(path: Path) -> dict[str, object]:
             "type-bridge-schema-codegen",
             "--test",
             "rust_acceptance",
-            "generated_rust_sdk_v5_canonical_codec",
+            "sdk_serialization_canonical_codec",
             "--",
             "--exact",
         ],
@@ -169,7 +169,7 @@ def run_c_producer(executable: Path, seed: dict[str, object], stage: Path) -> tu
     payload = {
         "archive_b64": base64.b64encode((outputs / "archive.bin").read_bytes()).decode(),
         "binding": "c",
-        "format": "typebridge.sdk-v5-provider-free-corpus/v1",
+        "format": "typebridge.sdk-serialization-provider-free-corpus/v1",
         "record_b64": [base64.b64encode(record).decode() for record in produced_records],
     }
     return (
@@ -178,11 +178,11 @@ def run_c_producer(executable: Path, seed: dict[str, object], stage: Path) -> tu
     )
 
 
-def test_generated_c_sdk_v5_canonical_codec(tmp_path: Path) -> None:
+def test_sdk_serialization_canonical_codec(tmp_path: Path) -> None:
     seed_path = tmp_path / "rust-corpus.json"
     seed = rust_corpus(seed_path)
     package = generate_package(
-        tmp_path / "generated", SCHEMA, app_label="generatedcv5", scope="generated-c-v5"
+        tmp_path / "generated", SCHEMA, app_label="serializationc", scope="serialization-c"
     )
     foreign_schema = tmp_path / "schema-foreign.yaml"
     source = SCHEMA.read_text(encoding="utf-8")
@@ -192,10 +192,10 @@ def test_generated_c_sdk_v5_canonical_codec(tmp_path: Path) -> None:
     foreign_package = generate_package(
         tmp_path / "generated-foreign",
         foreign_schema,
-        app_label="generatedcv5foreign",
-        scope="generated-c-v5-foreign",
+        app_label="serializationcforeign",
+        scope="serialization-c-foreign",
     )
-    executable = tmp_path / "sdk-v5-codec"
+    executable = tmp_path / "serialization-codec"
     compile_producer(package, foreign_package, executable)
     first, operational = run_c_producer(executable, seed, tmp_path / "first")
     repeated, repeated_operational = run_c_producer(executable, seed, tmp_path / "repeated")
@@ -205,7 +205,7 @@ def test_generated_c_sdk_v5_canonical_codec(tmp_path: Path) -> None:
     assert corpus["record_b64"] == seed["record_b64"]
     assert corpus["archive_b64"] == seed["archive_b64"]
     evidence = json.loads(operational)
-    assert evidence["format"] == "typebridge.sdk-v5-operational-evidence/v1"
+    assert evidence["format"] == "typebridge.sdk-serialization-operational-evidence/v1"
     assert evidence["binding"] == "c"
     assert evidence["diagnostic"] == {
         "category": "invalid_input",
@@ -221,20 +221,22 @@ def test_generated_c_sdk_v5_canonical_codec(tmp_path: Path) -> None:
         "repeat_close": True,
         "sibling_usable": True,
     }
-    export_value = os.environ.get("TYPE_BRIDGE_SDK_V5_C_CORPUS")
+    export_value = os.environ.get("TYPE_BRIDGE_SDK_SERIALIZATION_C_CORPUS")
     if export_value is not None:
         export = Path(export_value)
         if not export.is_absolute():
-            raise AssertionError("C Sdk V5 corpus path must be absolute")
+            raise AssertionError("C Serialization corpus path must be absolute")
         with export.open("xb") as stream:
             stream.write(first)
             stream.flush()
             os.fsync(stream.fileno())
-    operational_export_value = os.environ.get("TYPE_BRIDGE_SDK_V5_C_OPERATIONAL_EVIDENCE")
+    operational_export_value = os.environ.get(
+        "TYPE_BRIDGE_SDK_SERIALIZATION_C_OPERATIONAL_EVIDENCE"
+    )
     if operational_export_value is not None:
         operational_export = Path(operational_export_value)
         if not operational_export.is_absolute():
-            raise AssertionError("C Sdk V5 operational path must be absolute")
+            raise AssertionError("C Serialization operational path must be absolute")
         with operational_export.open("xb") as stream:
             stream.write(operational)
             stream.flush()

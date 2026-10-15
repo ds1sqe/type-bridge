@@ -22,7 +22,7 @@ const NEGATIVE: &str = include_str!("rust_acceptance/negative.rs");
 const PROJECTED_PARITY: &str = include_str!("rust_acceptance/projected_parity.rs");
 const PROJECTED_FOREIGN_NEGATIVE: &str =
     include_str!("rust_acceptance/projected_foreign_negative.rs");
-const SDK_V5_CODEC: &str = include_str!("rust_acceptance/sdk_v5_codec.rs");
+const SDK_SERIALIZATION_CODEC: &str = include_str!("rust_acceptance/sdk_serialization_codec.rs");
 
 const SDK_MODELS_PROOF_FRAGMENT_ENV: &str = "TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGMENT";
 const SDK_MODELS_PROOF_NONCE_ENV: &str = "TYPE_BRIDGE_SDK_MODELS_PROOF_RUN_NONCE";
@@ -3768,18 +3768,21 @@ fn sdk_models_generated_package_integrity() {
 }
 
 #[test]
-fn generated_rust_sdk_v5_canonical_codec() {
+fn sdk_serialization_canonical_codec() {
     let stage = Stage::new();
     let generated = stage.path().join("generated");
     let generated_foreign = stage.path().join("generated-foreign");
-    let consumer = stage.path().join("sdk-v5-codec");
+    let consumer = stage.path().join("serialization-codec");
     let source = fs::read_to_string(
         repository_root().join("tests/contracts/sdk_conformance/models/schema.yaml"),
     )
     .expect("Models schema reads");
     write_package(&emit_from_source(&source), &generated);
     let foreign_source = source.replacen("max: 80", "max: 79", 1);
-    assert_ne!(foreign_source, source, "foreign V5 authority must differ");
+    assert_ne!(
+        foreign_source, source,
+        "foreign Serialization authority must differ"
+    );
     write_package(&emit_from_source(&foreign_source), &generated_foreign);
     let foreign_manifest = generated_foreign.join("Cargo.toml");
     let manifest = fs::read_to_string(&foreign_manifest).expect("foreign manifest reads");
@@ -3791,8 +3794,8 @@ fn generated_rust_sdk_v5_canonical_codec() {
     fs::write(&foreign_manifest, manifest).expect("foreign manifest is uniquely named");
     write_consumer_with_features_and_dependencies(
         &consumer,
-        "rust-sdk-v5-codec",
-        SDK_V5_CODEC,
+        "sdk-serialization-rust-codec",
+        SDK_SERIALIZATION_CODEC,
         &["test-harness"],
         "generated_foreign = { package = \"type-bridge-generated-schema-foreign\", path = \"../generated-foreign\" }\n",
     );
@@ -3800,14 +3803,18 @@ fn generated_rust_sdk_v5_canonical_codec() {
         consumer.join("Cargo.lock"),
         support::locks::Consumer::Codec.lock(),
     )
-    .expect("Sdk V5 codec lockfile is staged");
+    .expect("Serialization codec lockfile is staged");
 
-    let corpus = env::var_os("TYPE_BRIDGE_SDK_V5_RUST_CORPUS")
+    let corpus = env::var_os("TYPE_BRIDGE_SDK_SERIALIZATION_RUST_CORPUS")
         .map(PathBuf::from)
-        .unwrap_or_else(|| stage.path().join("rust-sdk-v5-corpus.json"));
-    let operational = env::var_os("TYPE_BRIDGE_SDK_V5_RUST_OPERATIONAL_EVIDENCE")
+        .unwrap_or_else(|| stage.path().join("rust-serialization-corpus.json"));
+    let operational = env::var_os("TYPE_BRIDGE_SDK_SERIALIZATION_RUST_OPERATIONAL_EVIDENCE")
         .map(PathBuf::from)
-        .unwrap_or_else(|| stage.path().join("rust-sdk-v5-operational-evidence.json"));
+        .unwrap_or_else(|| {
+            stage
+                .path()
+                .join("rust-serialization-operational-evidence.json")
+        });
     let output = cargo_with_env(
         &[
             "run",
@@ -3818,24 +3825,24 @@ fn generated_rust_sdk_v5_canonical_codec() {
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
         &[
-            ("TYPE_BRIDGE_SDK_V5_CORPUS", corpus.as_os_str()),
+            ("TYPE_BRIDGE_SDK_SERIALIZATION_CORPUS", corpus.as_os_str()),
             (
-                "TYPE_BRIDGE_SDK_V5_OPERATIONAL_EVIDENCE",
+                "TYPE_BRIDGE_SDK_SERIALIZATION_OPERATIONAL_EVIDENCE",
                 operational.as_os_str(),
             ),
         ],
     );
     assert!(
         output.status.success(),
-        "generated Rust Sdk V5 codec consumer failed\nstdout:\n{}\nstderr:\n{}",
+        "generated Rust Serialization codec consumer failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    let corpus_bytes = fs::read(&corpus).expect("Rust Sdk V5 corpus was published");
+    let corpus_bytes = fs::read(&corpus).expect("Rust Serialization corpus was published");
     let corpus: Value = serde_json::from_slice(&corpus_bytes).expect("corpus JSON parses");
     assert_eq!(
         corpus["format"],
-        "typebridge.sdk-v5-provider-free-corpus/v1"
+        "typebridge.sdk-serialization-provider-free-corpus/v1"
     );
     assert_eq!(corpus["binding"], "rust");
     assert_eq!(corpus["record_b64"].as_array().unwrap().len(), 9);
@@ -3845,12 +3852,12 @@ fn generated_rust_sdk_v5_canonical_codec() {
             .is_some_and(|value| !value.is_empty())
     );
     let operational_bytes =
-        fs::read(&operational).expect("Rust Sdk V5 operational evidence was published");
+        fs::read(&operational).expect("Rust Serialization operational evidence was published");
     let operational: Value =
         serde_json::from_slice(&operational_bytes).expect("operational evidence JSON parses");
     assert_eq!(
         operational["format"],
-        "typebridge.sdk-v5-operational-evidence/v1"
+        "typebridge.sdk-serialization-operational-evidence/v1"
     );
     assert_eq!(operational["binding"], "rust");
     assert_eq!(
@@ -3863,10 +3870,10 @@ fn generated_rust_sdk_v5_canonical_codec() {
         })
     );
     assert_eq!(operational["lifecycle"]["sibling_usable"], true);
-    let repeated_corpus = stage.path().join("rust-sdk-v5-corpus-repeat.json");
+    let repeated_corpus = stage.path().join("rust-serialization-corpus-repeat.json");
     let repeated_operational = stage
         .path()
-        .join("rust-sdk-v5-operational-evidence-repeat.json");
+        .join("rust-serialization-operational-evidence-repeat.json");
     let repeated = cargo_with_env(
         &[
             "run",
@@ -3877,29 +3884,32 @@ fn generated_rust_sdk_v5_canonical_codec() {
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
         &[
-            ("TYPE_BRIDGE_SDK_V5_CORPUS", repeated_corpus.as_os_str()),
             (
-                "TYPE_BRIDGE_SDK_V5_OPERATIONAL_EVIDENCE",
+                "TYPE_BRIDGE_SDK_SERIALIZATION_CORPUS",
+                repeated_corpus.as_os_str(),
+            ),
+            (
+                "TYPE_BRIDGE_SDK_SERIALIZATION_OPERATIONAL_EVIDENCE",
                 repeated_operational.as_os_str(),
             ),
         ],
     );
     assert!(
         repeated.status.success(),
-        "repeated Rust Sdk V5 corpus run failed\nstdout:\n{}\nstderr:\n{}",
+        "repeated Rust Serialization corpus run failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&repeated.stdout),
         String::from_utf8_lossy(&repeated.stderr),
     );
     assert_eq!(
         corpus_bytes,
-        fs::read(repeated_corpus).expect("repeated Rust Sdk V5 corpus was published"),
-        "provider-free generated Rust V5 bytes must be deterministic across fresh processes",
+        fs::read(repeated_corpus).expect("repeated Rust Serialization corpus was published"),
+        "provider-free generated Rust Serialization bytes must be deterministic across fresh processes",
     );
     assert_eq!(
         operational_bytes,
         fs::read(repeated_operational)
-            .expect("repeated Rust Sdk V5 operational evidence was published"),
-        "generated Rust V5 operational evidence must be deterministic across fresh processes",
+            .expect("repeated Rust Serialization operational evidence was published"),
+        "generated Rust Serialization operational evidence must be deterministic across fresh processes",
     );
 }
 
@@ -3910,7 +3920,10 @@ fn provider_free_rust_dependency_graphs_are_frozen() {
             support::locks::Consumer::Projected.lock(),
             "rust-projected-projection-parity",
         ),
-        (support::locks::Consumer::Codec.lock(), "rust-sdk-v5-codec"),
+        (
+            support::locks::Consumer::Codec.lock(),
+            "sdk-serialization-rust-codec",
+        ),
     ] {
         assert_eq!(lock.matches(&format!("name = \"{package}\"")).count(), 1);
         assert!(lock.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));

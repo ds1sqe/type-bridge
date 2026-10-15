@@ -1,6 +1,6 @@
 {
-  "format": "typebridge.sdk-journey/v5",
-  "fixture_id": "sdk-v5",
+  "format": "typebridge.sdk-serialization-journey/v1",
+  "fixture_id": "serialization",
   "semantic_profile": "typedb-3.12.1/v1",
   "record_contract": "typebridge.projected-record/v1",
   "archive_contract": "typebridge.projected-archive/v1",

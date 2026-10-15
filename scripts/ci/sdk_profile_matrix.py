@@ -27,7 +27,7 @@ SUITES = {
     "queries": "sdk-v2",
     "models": "models",
     "administration": "sdk-v4",
-    "serialization": "sdk-v5",
+    "serialization": "serialization",
     "artifacts": "sdk-v6",
 }
 SET_VERSIONS = (1, 2, 3, 4, 5, 6)

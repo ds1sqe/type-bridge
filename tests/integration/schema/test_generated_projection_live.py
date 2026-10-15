@@ -2849,13 +2849,13 @@ def test_sdk_models_data_model_runtime_live(
     sdk_models_data_model_runtime_live(clean_db, sdk_models_package)
 
 
-def test_generated_canonical_serialization_v5_live(
+def test_sdk_serialization_live(
     clean_db: Database,
     sdk_models_package: ModuleType,
 ) -> None:
-    raw_evidence = os.environ.get("TYPE_BRIDGE_SDK_V5_PYTHON_EVIDENCE")
+    raw_evidence = os.environ.get("TYPE_BRIDGE_SDK_SERIALIZATION_PYTHON_EVIDENCE")
     if raw_evidence is None:
-        pytest.skip("Sdk V5 Python live evidence was not requested")
+        pytest.skip("Serialization Python live evidence was not requested")
     generated = sdk_models_package
     _requested_sdk_profile(5, _generated_profile(generated), clean_db.detected_server_version())
     clean_db.execute_query(
@@ -2999,7 +2999,7 @@ def test_generated_canonical_serialization_v5_live(
             "detached_mutation_code": detached_rejection.value.code,
             "direct_remote_equal": True,
             "entity_snapshot_b64": base64.b64encode(direct_person_bytes).decode(),
-            "format": "typebridge.sdk-v5-live-codec-evidence/v1",
+            "format": "typebridge.sdk-serialization-live-codec-evidence/v1",
             "rebound_mutation": True,
             "relation_snapshot_b64": base64.b64encode(direct_employment_bytes).decode(),
             "remote_exchange_count": len(requests),

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://type-bridge.dev/contracts/sdk-conformance/sdk-observation-v5.schema.json",
-  "title": "TypeBridge closed Sdk V5 observation algebra",
+  "$id": "https://type-bridge.dev/contracts/sdk-conformance/serialization/observation.schema.json",
+  "title": "TypeBridge closed Serialization observation algebra",
   "oneOf": [
     {"$ref": "#/$defs/canonicalRecordArchive"},
     {"$ref": "#/$defs/cancellation"},

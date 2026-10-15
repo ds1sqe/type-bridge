@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-PROVIDER = ROOT / "tests/integration/schema/test_generated_c_sdk_v5_codec.py"
+PROVIDER = ROOT / "tests/integration/schema/test_sdk_serialization_c_codec.py"
 
 
 @pytest.mark.parametrize("configured", [None, "relative-target", "/absolute-target"])

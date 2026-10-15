@@ -30,14 +30,14 @@ fn base64(bytes: &[u8]) -> String {
 }
 
 fn publish_provider_free_corpus(records: &[Vec<u8>; 9], archive: &[u8]) -> std::io::Result<()> {
-    let Some(path) = std::env::var_os("TYPE_BRIDGE_SDK_V5_CORPUS") else {
+    let Some(path) = std::env::var_os("TYPE_BRIDGE_SDK_SERIALIZATION_CORPUS") else {
         return Ok(());
     };
     let path = std::path::PathBuf::from(path);
     if !path.is_absolute() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "Sdk V5 corpus path must be absolute",
+            "Serialization corpus path must be absolute",
         ));
     }
     let record_b64 = records
@@ -46,7 +46,7 @@ fn publish_provider_free_corpus(records: &[Vec<u8>; 9], archive: &[u8]) -> std::
         .collect::<Vec<_>>()
         .join(",");
     let payload = format!(
-        "{{\"archive_b64\":\"{}\",\"binding\":\"rust\",\"format\":\"typebridge.sdk-v5-provider-free-corpus/v1\",\"record_b64\":[{}]}}",
+        "{{\"archive_b64\":\"{}\",\"binding\":\"rust\",\"format\":\"typebridge.sdk-serialization-provider-free-corpus/v1\",\"record_b64\":[{}]}}",
         base64(archive),
         record_b64,
     );
@@ -60,14 +60,14 @@ fn publish_provider_free_corpus(records: &[Vec<u8>; 9], archive: &[u8]) -> std::
 }
 
 fn publish_operational_evidence(payload: &str) -> std::io::Result<()> {
-    let Some(path) = std::env::var_os("TYPE_BRIDGE_SDK_V5_OPERATIONAL_EVIDENCE") else {
+    let Some(path) = std::env::var_os("TYPE_BRIDGE_SDK_SERIALIZATION_OPERATIONAL_EVIDENCE") else {
         return Ok(());
     };
     let path = std::path::PathBuf::from(path);
     if !path.is_absolute() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "Sdk V5 operational evidence path must be absolute",
+            "Serialization operational evidence path must be absolute",
         ));
     }
     use std::io::Write as _;
@@ -285,10 +285,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "\"cancellation\":{{\"code\":\"{}\",\"partial_output\":false}},",
             "\"deadline\":{{\"code\":\"{}\",\"partial_output\":false}},",
             "\"diagnostic\":{{\"category\":\"{}\",\"code\":\"{}\",\"path\":[\"declared_schema_identity\"],\"payload_absent\":true}},",
-            "\"format\":\"typebridge.sdk-v5-operational-evidence/v1\",",
+            "\"format\":\"typebridge.sdk-serialization-operational-evidence/v1\",",
             "\"lifecycle\":{{\"archive_closed\":true,\"builder_closed\":true,\"bytes_closed\":true,\"decoded_closed\":true,\"repeat_close\":true,\"sibling_usable\":true}},",
             "\"resource_limits\":{{\"depth_code\":\"{}\",\"input_code\":\"{}\",\"member_code\":\"{}\",\"output_code\":\"{}\",\"partial_output\":false}},",
-            "\"test_id\":\"rust_acceptance::generated_rust_sdk_v5_canonical_codec\"}}"
+            "\"test_id\":\"rust_acceptance::sdk_serialization_canonical_codec\"}}"
         ),
         cancellation_error.code().unwrap(),
         deadline_error.code().unwrap(),

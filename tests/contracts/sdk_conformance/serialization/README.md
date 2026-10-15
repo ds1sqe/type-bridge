@@ -1,4 +1,4 @@
-# Sdk conformance v5
+# Serialization SDK conformance
 
 This additive Record/archive contract owns canonical generated-model record and archive
 evidence for Python, Node, generated Rust, and internal C. It does not change
@@ -11,7 +11,7 @@ The finalized catalog has five selected rows with two disjoint dispositions:
   manifest gaps until C distribution.
 
 The canonical input fixture is the preserved Models schema plus
-`journey-v5.json`. The journey fixes semantic inputs and required relationships
+`journey.json`. The journey fixes semantic inputs and required relationships
 but contains no implementation-authored canonical record, archive, fingerprint,
 or report output. Each public generated producer must compute its bytes first.
 

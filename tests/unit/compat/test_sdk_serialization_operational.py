@@ -1,4 +1,4 @@
-"""Fail-closed tests for Sdk V5 operational evidence comparison."""
+"""Fail-closed tests for Serialization operational evidence comparison."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from typing import Any
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-SCRIPT = ROOT / "scripts/ci/compare_sdk_v5_operational.py"
-SPEC = importlib.util.spec_from_file_location("sdk_v5_operational", SCRIPT)
+SCRIPT = ROOT / "scripts/ci/sdk_serialization_operational.py"
+SPEC = importlib.util.spec_from_file_location("sdk_serialization_operational", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 operational = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(operational)

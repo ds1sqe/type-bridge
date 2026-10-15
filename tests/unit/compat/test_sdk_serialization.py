@@ -1,4 +1,4 @@
-"""Fail-closed tests for the Sdk V5 serialization comparator."""
+"""Fail-closed tests for the serialization comparator."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-SCRIPT = ROOT / "scripts/ci/compare_sdk_conformance_v5.py"
-SPEC = importlib.util.spec_from_file_location("sdk_v5_comparator", SCRIPT)
+SCRIPT = ROOT / "scripts/ci/sdk_serialization_compare.py"
+SPEC = importlib.util.spec_from_file_location("sdk_serialization_comparator", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 comparator = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = comparator
@@ -23,19 +23,19 @@ SPEC.loader.exec_module(comparator)
 def _stage_contracts(destination: Path) -> Path:
     sdk_source = ROOT / "tests/contracts/sdk_conformance"
     sdk_target = destination / "tests/contracts/sdk_conformance"
-    (sdk_target / "sdk-v5").mkdir(parents=True)
+    (sdk_target / "serialization").mkdir(parents=True)
     shutil.copy2(sdk_source / "manifest.json", sdk_target / "manifest.json")
     for name in (
-        "catalog-v5.json",
-        "journey-v5.json",
-        "cleanup-evidence-schema-v5.json",
-        "live-evidence-schema-v5.json",
-        "observation-schema-v5.json",
-        "operational-evidence-schema-v5.json",
-        "producer-evidence-schema-v5.json",
-        "report-schema-v5.json",
+        "catalog.json",
+        "journey.json",
+        "cleanup-evidence-schema.json",
+        "live-evidence-schema.json",
+        "observation-schema.json",
+        "operational-evidence-schema.json",
+        "producer-evidence-schema.json",
+        "report-schema.json",
     ):
-        shutil.copy2(sdk_source / "sdk-v5" / name, sdk_target / "sdk-v5" / name)
+        shutil.copy2(sdk_source / "serialization" / name, sdk_target / "serialization" / name)
     abi_target = destination / comparator.ABI_CONTRACT
     abi_target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / comparator.ABI_CONTRACT, abi_target)
@@ -103,7 +103,7 @@ def _valid_report(root: Path, binding: str) -> dict[str, object]:
             }
         )
     return {
-        "format": "typebridge.sdk-conformance-report/v5",
+        "format": "typebridge.sdk-serialization-report/v1",
         "binding": binding,
         "manifest": _identity(root, comparator.MANIFEST),
         "catalog": _identity(root, comparator.CATALOG),

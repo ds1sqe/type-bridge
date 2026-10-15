@@ -1340,7 +1340,7 @@ mod tests {
     }
 
     #[test]
-    fn projected_codec_diagnostics_match_the_closed_v5_algebra() {
+    fn projected_codec_diagnostics_match_the_closed_serialization_algebra() {
         for (diagnostic, category, code) in [
             (
                 SdkExecutionDiagnostic::projected_codec_cancelled(),

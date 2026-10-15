@@ -28,8 +28,8 @@
     "codec-archive": {
       "source_commit": "6b12bbb43b76fa28d21a8c1eea533e9d3aa390af",
       "authorities": [
-        {"path": "tests/contracts/sdk_conformance/sdk-v5/catalog-v5.json", "sha256": "bdcb702396c180903e77f64c8e5b118e8f266c236ce0d4320036cdae3b796ece"},
-        {"path": "tests/contracts/sdk_conformance/sdk-v5/journey-v5.json", "sha256": "fadd9b74981e543bf156a3f1cb7e6e5584f32ff193098cd2fce4748ef0719307"}
+        {"path": "tests/contracts/sdk_conformance/serialization/catalog.json", "sha256": "13c7fac91a24779b9ac2ad7f1166e68874917aa6ecfb65371402ad429e0573bb"},
+        {"path": "tests/contracts/sdk_conformance/serialization/journey.json", "sha256": "d5d10e8cb04a75406fa09dea68ea5f0422d28b4a03798243d15a012b94ad45e3"}
       ]
     },
     "artifact-cleanup": {

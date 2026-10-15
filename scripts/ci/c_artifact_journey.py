@@ -40,7 +40,7 @@ PREDECESSOR_CATALOGS = tuple(
 )
 FULL_MARKER_COUNT = 62
 QUERY_MARKER_COUNT = 8
-CODEC_MARKER = "Sdk V5 C live codec direct/remote parity: passed"
+CODEC_MARKER = "Serialization C live codec direct/remote parity: passed"
 
 
 class JourneyError(RuntimeError):
@@ -92,7 +92,7 @@ def adapted_fixture(path: Path) -> bytes:
         # Models freezes the field to Ada/Dana. Preserve the one
         # optional-field query row and omit the field from all other people;
         # this changes fixture data only, never generated/runtime semantics.
-        old_open = "if (!is_query_dana && !is_v5_live) {"
+        old_open = "if (!is_query_dana && !is_serialization_live) {"
         if source.count(old_open) != 1:
             raise JourneyError("full consumer nickname-open seam drifted")
         source = source.replace(old_open, "if (is_query_ada) {", 1)
@@ -118,7 +118,9 @@ def adapted_fixture(path: Path) -> bytes:
         if source.count('view_of("query route")') != 1:
             raise JourneyError("full consumer relation nickname seam drifted")
         source = source.replace('view_of("query route")', 'view_of("Ada")', 1)
-        old_alias_input = "args.field_aliases_chunks = is_v5_live ? NULL : &aliases_chunk;"
+        old_alias_input = (
+            "args.field_aliases_chunks = is_serialization_live ? NULL : &aliases_chunk;"
+        )
         if source.count(old_alias_input) != 1:
             raise JourneyError("full consumer ordered-alias input seam drifted")
         source = source.replace(old_alias_input, "args.field_aliases_chunks = NULL;", 1)
@@ -239,7 +241,9 @@ def passed_markers(path: Path, *, exclude_codec: bool = False) -> list[str]:
         )
     ]
     if exclude_codec:
-        markers = [marker for marker in markers if not marker.startswith("Sdk V5 C live codec")]
+        markers = [
+            marker for marker in markers if not marker.startswith("Serialization C live codec")
+        ]
     if len(markers) != len(set(markers)):
         raise JourneyError(f"duplicate connected marker authority: {path.name}")
     return markers
@@ -391,7 +395,7 @@ def connected(
             codec_executable,
             runtime,
             generated,
-            extra=("-DTYPE_BRIDGE_SDK_V5_C_CODEC",),
+            extra=("-DTYPE_BRIDGE_SDK_SERIALIZATION_C_CODEC",),
         )
         codec_evidence = root / "codec-evidence"
         codec_evidence.mkdir()
@@ -399,15 +403,15 @@ def connected(
             [str(codec_executable)],
             env={
                 **environment,
-                "TYPE_BRIDGE_SDK_V5_C_EVIDENCE_DIR": str(codec_evidence),
+                "TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE_DIR": str(codec_evidence),
             },
         )
-        require_markers(codec_stdout, [CODEC_MARKER], "Sdk V5 codec consumer")
+        require_markers(codec_stdout, [CODEC_MARKER], "Serialization codec consumer")
         codec_files = {}
         for name in ("entity.bin", "relation.bin"):
             body = packages.read_regular(codec_evidence / name)
             if not body:
-                raise JourneyError(f"Sdk V5 codec evidence is empty: {name}")
+                raise JourneyError(f"Serialization codec evidence is empty: {name}")
             codec_files[name] = {"sha256": packages.sha256(body), "size": len(body)}
 
         package_source = root / "query-package.c"
@@ -817,7 +821,7 @@ def provider_free(
                 "-Wextra",
                 "-Werror",
                 "-pedantic-errors",
-                "-DTYPE_BRIDGE_SDK_V5_C_CODEC",
+                "-DTYPE_BRIDGE_SDK_SERIALIZATION_C_CODEC",
                 f"-I{runtime / 'include'}",
                 f"-I{generated / 'include'}",
                 "-fsyntax-only",

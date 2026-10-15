@@ -7,7 +7,7 @@
     "semantic_profile": "typedb-3.12.1/v1",
     "live_server_version": "3.12.3",
     "distribution_contract_path": "tests/contracts/c-distribution-v1.json",
-    "predecessor_catalog_path": "tests/contracts/sdk_conformance/sdk-v5/catalog-v5.json"
+    "predecessor_catalog_path": "tests/contracts/sdk_conformance/serialization/catalog.json"
   },
   "broad_case_ledger_path": "tests/contracts/c-broad-case-ledger-v1.json",
   "journey_path": "tests/contracts/sdk_conformance/sdk-v6/journey-v6.json",

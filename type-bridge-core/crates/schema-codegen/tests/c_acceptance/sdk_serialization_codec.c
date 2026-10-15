@@ -3,8 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <tb_generatedcv5/models.h>
-#include <tb_generatedcv5foreign/models.h>
+#include <tb_serializationc/models.h>
+#include <tb_serializationcforeign/models.h>
 
 #define RECORD_COUNT 9u
 
@@ -133,9 +133,9 @@ int main(int argc, char **argv) {
   type_bridge_canonical_archive_t *failed_archive = NULL;
 
   if (argc != 4) return 2;
-  if (tb_generatedcv5_schema_package_open(&package, &package_diagnostics) !=
+  if (tb_serializationc_schema_package_open(&package, &package_diagnostics) !=
           TYPE_BRIDGE_STATUS_OK ||
-      tb_generatedcv5foreign_schema_package_open(&foreign_package,
+      tb_serializationcforeign_schema_package_open(&foreign_package,
                                                  &package_diagnostics) !=
           TYPE_BRIDGE_STATUS_OK)
     return 3;
@@ -144,42 +144,42 @@ int main(int argc, char **argv) {
         !read_file(path, &inputs[index], &input_lengths[index])) return 4;
   }
 
-  ROUND_TRIP(0, tb_generatedcv5_robotzuid,
-             tb_generatedcv5_robotzuid_canonical_decode,
-             tb_generatedcv5_robotzuid_canonical_encode,
-             tb_generatedcv5_robotzuid_close);
-  ROUND_TRIP(1, tb_generatedcv5_playerzhstats,
-             tb_generatedcv5_playerzhstats_canonical_decode,
-             tb_generatedcv5_playerzhstats_canonical_encode,
-             tb_generatedcv5_playerzhstats_canonical_close);
-  ROUND_TRIP(2, tb_generatedcv5_person_create,
-             tb_generatedcv5_person_create_canonical_decode,
-             tb_generatedcv5_person_create_canonical_encode,
-             tb_generatedcv5_person_create_close);
-  ROUND_TRIP(3, tb_generatedcv5_person,
-             tb_generatedcv5_person_canonical_decode,
-             tb_generatedcv5_person_canonical_encode,
-             tb_generatedcv5_person_close);
-  ROUND_TRIP(4, tb_generatedcv5_membership_create,
-             tb_generatedcv5_membership_create_canonical_decode,
-             tb_generatedcv5_membership_create_canonical_encode,
-             tb_generatedcv5_membership_create_close);
-  ROUND_TRIP(5, tb_generatedcv5_interaction_create,
-             tb_generatedcv5_interaction_create_canonical_decode,
-             tb_generatedcv5_interaction_create_canonical_encode,
-             tb_generatedcv5_interaction_create_close);
-  ROUND_TRIP(6, tb_generatedcv5_container_create,
-             tb_generatedcv5_container_create_canonical_decode,
-             tb_generatedcv5_container_create_canonical_encode,
-             tb_generatedcv5_container_create_close);
-  ROUND_TRIP(7, tb_generatedcv5_employment,
-             tb_generatedcv5_employment_canonical_decode,
-             tb_generatedcv5_employment_canonical_encode,
-             tb_generatedcv5_employment_close);
-  ROUND_TRIP(8, tb_generatedcv5_event_ref,
-             tb_generatedcv5_event_ref_canonical_decode,
-             tb_generatedcv5_event_ref_canonical_encode,
-             tb_generatedcv5_event_ref_close);
+  ROUND_TRIP(0, tb_serializationc_robotzuid,
+             tb_serializationc_robotzuid_canonical_decode,
+             tb_serializationc_robotzuid_canonical_encode,
+             tb_serializationc_robotzuid_close);
+  ROUND_TRIP(1, tb_serializationc_playerzhstats,
+             tb_serializationc_playerzhstats_canonical_decode,
+             tb_serializationc_playerzhstats_canonical_encode,
+             tb_serializationc_playerzhstats_canonical_close);
+  ROUND_TRIP(2, tb_serializationc_person_create,
+             tb_serializationc_person_create_canonical_decode,
+             tb_serializationc_person_create_canonical_encode,
+             tb_serializationc_person_create_close);
+  ROUND_TRIP(3, tb_serializationc_person,
+             tb_serializationc_person_canonical_decode,
+             tb_serializationc_person_canonical_encode,
+             tb_serializationc_person_close);
+  ROUND_TRIP(4, tb_serializationc_membership_create,
+             tb_serializationc_membership_create_canonical_decode,
+             tb_serializationc_membership_create_canonical_encode,
+             tb_serializationc_membership_create_close);
+  ROUND_TRIP(5, tb_serializationc_interaction_create,
+             tb_serializationc_interaction_create_canonical_decode,
+             tb_serializationc_interaction_create_canonical_encode,
+             tb_serializationc_interaction_create_close);
+  ROUND_TRIP(6, tb_serializationc_container_create,
+             tb_serializationc_container_create_canonical_decode,
+             tb_serializationc_container_create_canonical_encode,
+             tb_serializationc_container_create_close);
+  ROUND_TRIP(7, tb_serializationc_employment,
+             tb_serializationc_employment_canonical_decode,
+             tb_serializationc_employment_canonical_encode,
+             tb_serializationc_employment_close);
+  ROUND_TRIP(8, tb_serializationc_event_ref,
+             tb_serializationc_event_ref_canonical_decode,
+             tb_serializationc_event_ref_canonical_encode,
+             tb_serializationc_event_ref_close);
 
   if (type_bridge_canonical_archive_builder_open_v1(
           package, NULL, &builder, &diagnostics) != TYPE_BRIDGE_STATUS_OK)
@@ -327,7 +327,7 @@ int main(int argc, char **argv) {
 
   if (!write_text_file(
           argv[3],
-          "{\"binding\":\"c\",\"cancellation\":{\"code\":\"projected_codec_cancelled\",\"partial_output\":false},\"deadline\":{\"code\":\"projected_codec_deadline_exceeded\",\"partial_output\":false},\"diagnostic\":{\"category\":\"invalid_input\",\"code\":\"projected_record_schema_mismatch\",\"path\":[\"declared_schema_identity\"],\"payload_absent\":true},\"format\":\"typebridge.sdk-v5-operational-evidence/v1\",\"lifecycle\":{\"archive_closed\":true,\"builder_closed\":true,\"bytes_closed\":true,\"decoded_closed\":true,\"repeat_close\":true,\"sibling_usable\":true},\"resource_limits\":{\"depth_code\":\"projected_codec_depth_limit\",\"input_code\":\"projected_codec_input_limit\",\"member_code\":\"projected_codec_member_limit\",\"output_code\":\"projected_codec_output_limit\",\"partial_output\":false},\"test_id\":\"c.generated_sdk_v5_canonical_codec\"}"))
+          "{\"binding\":\"c\",\"cancellation\":{\"code\":\"projected_codec_cancelled\",\"partial_output\":false},\"deadline\":{\"code\":\"projected_codec_deadline_exceeded\",\"partial_output\":false},\"diagnostic\":{\"category\":\"invalid_input\",\"code\":\"projected_record_schema_mismatch\",\"path\":[\"declared_schema_identity\"],\"payload_absent\":true},\"format\":\"typebridge.sdk-serialization-operational-evidence/v1\",\"lifecycle\":{\"archive_closed\":true,\"builder_closed\":true,\"bytes_closed\":true,\"decoded_closed\":true,\"repeat_close\":true,\"sibling_usable\":true},\"resource_limits\":{\"depth_code\":\"projected_codec_depth_limit\",\"input_code\":\"projected_codec_input_limit\",\"member_code\":\"projected_codec_member_limit\",\"output_code\":\"projected_codec_output_limit\",\"partial_output\":false},\"test_id\":\"c.sdk_serialization_canonical_codec\"}"))
     return 64;
 
   if (type_bridge_canonical_archive_close(&verified) != TYPE_BRIDGE_STATUS_OK ||

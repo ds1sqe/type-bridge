@@ -6273,9 +6273,9 @@ async fn generated_write_transaction_commit_rollback_and_drop() {
 }
 
 #[tokio::test]
-async fn generated_canonical_serialization_v5_live() {
-    let Some(_) = env::var_os("TYPE_BRIDGE_SDK_V5_RUST_EVIDENCE") else {
-        println!("generated Sdk V5 Rust live evidence: not requested");
+async fn sdk_serialization_live() {
+    let Some(_) = env::var_os("TYPE_BRIDGE_SDK_SERIALIZATION_RUST_EVIDENCE") else {
+        println!("generated Serialization Rust live evidence: not requested");
         return;
     };
     require_sdk_server_version(&sdk_matrix_entry(5)).await;
@@ -6284,148 +6284,148 @@ async fn generated_canonical_serialization_v5_live() {
         .entities::<Person>()
         .insert(ownership_edge_person_input("v5-live-person", &[], None))
         .await
-        .expect("V5 live person insert");
+        .expect("Serialization live person insert");
     let employment = db
         .relations::<Employment>()
-        .insert(EmploymentCreate::new(person.reference()).expect("V5 employment input"))
+        .insert(EmploymentCreate::new(person.reference()).expect("Serialization employment input"))
         .await
-        .expect("V5 live employment insert");
+        .expect("Serialization live employment insert");
 
     let (direct_employment, direct_person) = {
-        let mut session = db.query().expect("V5 direct query session");
+        let mut session = db.query().expect("Serialization direct query session");
         let relation = session
             .exact::<Employment>()
-            .expect("V5 employment binding");
-        let person_binding = session.exact::<Person>().expect("V5 person binding");
+            .expect("Serialization employment binding");
+        let person_binding = session.exact::<Person>().expect("Serialization person binding");
         session
             .query((relation, person_binding))
-            .expect("V5 direct selection")
+            .expect("Serialization direct selection")
             .where_(
                 relation
                     .role(EmploymentType::employee)
                     .connects(person_binding)
                     & person_binding
                         .field(PersonType::identifier)
-                        .eq(Identifier::new("v5-live-person").expect("V5 direct key")),
+                        .eq(Identifier::new("v5-live-person").expect("Serialization direct key")),
             )
-            .expect("V5 direct predicate")
+            .expect("Serialization direct predicate")
             .one()
             .await
-            .expect("V5 direct result")
+            .expect("Serialization direct result")
     };
     let direct_person_bytes = SCHEMA
         .encode_snapshot(direct_person)
-        .expect("V5 direct person snapshot encodes");
+        .expect("Serialization direct person snapshot encodes");
     let direct_employment_bytes = SCHEMA
         .encode_snapshot(direct_employment)
-        .expect("V5 direct employment snapshot encodes");
+        .expect("Serialization direct employment snapshot encodes");
 
     let exchange_count = Arc::new(AtomicUsize::new(0));
     let remote: ProxyDatabase<AppSchema> =
         ProxyDatabase::connect(
             ProxyConnectionPolicy::with_exchange(HttpTransport::recording(
-                env::var("TYPE_BRIDGE_REMOTE_URL").expect("V5 remote URL"),
+                env::var("TYPE_BRIDGE_REMOTE_URL").expect("Serialization remote URL"),
                 Arc::clone(&exchange_count),
             ))
             .answer_limits(remote_answer_limits()),
         )
         .await
-        .expect("V5 remote connects")
+        .expect("Serialization remote connects")
         .with_schema(SCHEMA)
-        .expect("V5 remote schema binds");
+        .expect("Serialization remote schema binds");
     let (remote_employment, remote_person) = {
-        let mut session = remote.query().expect("V5 remote query session");
+        let mut session = remote.query().expect("Serialization remote query session");
         let relation = session
             .exact::<Employment>()
-            .expect("V5 remote employment binding");
-        let person_binding = session.exact::<Person>().expect("V5 remote person binding");
+            .expect("Serialization remote employment binding");
+        let person_binding = session.exact::<Person>().expect("Serialization remote person binding");
         session
             .query((relation, person_binding))
-            .expect("V5 remote selection")
+            .expect("Serialization remote selection")
             .where_(
                 relation
                     .role(EmploymentType::employee)
                     .connects(person_binding)
                     & person_binding
                         .field(PersonType::identifier)
-                        .eq(Identifier::new("v5-live-person").expect("V5 remote key")),
+                        .eq(Identifier::new("v5-live-person").expect("Serialization remote key")),
             )
-            .expect("V5 remote predicate")
+            .expect("Serialization remote predicate")
             .one()
             .await
-            .expect("V5 remote result")
+            .expect("Serialization remote result")
     };
     assert_eq!(exchange_count.load(Ordering::SeqCst), 1);
     let remote_person_bytes = SCHEMA
         .encode_snapshot(remote_person)
-        .expect("V5 remote person snapshot encodes");
+        .expect("Serialization remote person snapshot encodes");
     let remote_employment_bytes = SCHEMA
         .encode_snapshot(remote_employment)
-        .expect("V5 remote employment snapshot encodes");
+        .expect("Serialization remote employment snapshot encodes");
     assert_eq!(direct_person_bytes, remote_person_bytes);
     assert_eq!(direct_employment_bytes, remote_employment_bytes);
 
     let detached: Person = SCHEMA
         .decode_snapshot(&direct_person_bytes)
-        .expect("V5 person snapshot decodes detached");
+        .expect("Serialization person snapshot decodes detached");
     let detached_error = db
         .relations::<Employment>()
         .insert(
             EmploymentCreate::new(detached.reference())
-                .expect("V5 detached employment input is structurally valid"),
+                .expect("Serialization detached employment input is structurally valid"),
         )
         .await
-        .expect_err("V5 detached snapshot cannot authorize mutation");
+        .expect_err("Serialization detached snapshot cannot authorize mutation");
     assert_eq!(detached_error.code(), Some("projected_snapshot_detached"));
 
     let rebound = {
-        let mut session = db.query().expect("V5 rebound query session");
+        let mut session = db.query().expect("Serialization rebound query session");
         let binding = session
             .exact::<Person>()
-            .expect("V5 rebound person binding");
+            .expect("Serialization rebound person binding");
         session
             .query(binding)
-            .expect("V5 rebound selection")
+            .expect("Serialization rebound selection")
             .where_(
                 binding
                     .field(PersonType::identifier)
-                    .eq(Identifier::new("v5-live-person").expect("V5 rebound key")),
+                    .eq(Identifier::new("v5-live-person").expect("Serialization rebound key")),
             )
-            .expect("V5 rebound predicate")
+            .expect("Serialization rebound predicate")
             .one()
             .await
-            .expect("V5 fresh key lookup finds the person")
+            .expect("Serialization fresh key lookup finds the person")
     };
     let rebound_employment = db
         .relations::<Employment>()
         .update(
             employment.iid(),
-            EmploymentCreate::new(rebound.reference()).expect("V5 rebound input"),
+            EmploymentCreate::new(rebound.reference()).expect("Serialization rebound input"),
         )
         .await
-        .expect("V5 rebound mutation succeeds");
+        .expect("Serialization rebound mutation succeeds");
 
     let evidence = json!({
         "binding": "rust",
         "detached_mutation_code": detached_error.code(),
         "direct_remote_equal": true,
         "entity_snapshot_b64": sdk_base64(&direct_person_bytes),
-        "format": "typebridge.sdk-v5-live-codec-evidence/v1",
+        "format": "typebridge.sdk-serialization-live-codec-evidence/v1",
         "relation_snapshot_b64": sdk_base64(&direct_employment_bytes),
         "remote_exchange_count": exchange_count.load(Ordering::SeqCst),
         "rebound_mutation": true,
     });
-    publish_sdk_report(&sdk_env_path("TYPE_BRIDGE_SDK_V5_RUST_EVIDENCE"), evidence);
+    publish_sdk_report(&sdk_env_path("TYPE_BRIDGE_SDK_SERIALIZATION_RUST_EVIDENCE"), evidence);
     assert_eq!(rebound_employment.iid(), employment.iid());
     db.relations::<Employment>()
         .delete(employment.iid())
         .await
-        .expect("V5 employment cleanup");
+        .expect("Serialization employment cleanup");
     db.entities::<Person>()
         .delete(person.iid())
         .await
-        .expect("V5 person cleanup");
-    println!("generated Sdk V5 Rust live evidence: passed");
+        .expect("Serialization person cleanup");
+    println!("generated Serialization Rust live evidence: passed");
 }
 
 #[tokio::test]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish Python's generated provider-free Sdk V5 canonical corpus."""
+"""Publish Python's generated provider-free Serialization canonical corpus."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from pathlib import Path
 import generated_ordered as generated
 import generated_ordered_foreign as foreign
 
-FORMAT = "typebridge.sdk-v5-provider-free-corpus/v1"
-OPERATIONAL_FORMAT = "typebridge.sdk-v5-operational-evidence/v1"
+FORMAT = "typebridge.sdk-serialization-provider-free-corpus/v1"
+OPERATIONAL_FORMAT = "typebridge.sdk-serialization-operational-evidence/v1"
 
 
 def person(*, aliases: list[generated.Aliases] | None = None) -> generated.Person:
@@ -62,7 +62,7 @@ def expect_code(operation: object, expected: str) -> Exception:
 
 def publish(path: Path, payload: bytes) -> None:
     if not path.is_absolute():
-        raise RuntimeError("Sdk V5 evidence path must be absolute")
+        raise RuntimeError("Serialization evidence path must be absolute")
     with path.open("xb") as stream:
         stream.write(payload)
         stream.flush()
@@ -70,13 +70,13 @@ def publish(path: Path, payload: bytes) -> None:
 
 
 def main() -> None:
-    output_value = os.environ.get("TYPE_BRIDGE_SDK_V5_CORPUS")
+    output_value = os.environ.get("TYPE_BRIDGE_SDK_SERIALIZATION_CORPUS")
     if output_value is None:
-        raise RuntimeError("TYPE_BRIDGE_SDK_V5_CORPUS must be configured")
+        raise RuntimeError("TYPE_BRIDGE_SDK_SERIALIZATION_CORPUS must be configured")
     output = Path(output_value)
-    operational_value = os.environ.get("TYPE_BRIDGE_SDK_V5_OPERATIONAL_EVIDENCE")
+    operational_value = os.environ.get("TYPE_BRIDGE_SDK_SERIALIZATION_OPERATIONAL_EVIDENCE")
     if operational_value is None:
-        raise RuntimeError("TYPE_BRIDGE_SDK_V5_OPERATIONAL_EVIDENCE must be configured")
+        raise RuntimeError("TYPE_BRIDGE_SDK_SERIALIZATION_OPERATIONAL_EVIDENCE must be configured")
     operational_output = Path(operational_value)
 
     integer_key = generated.RobotId(9_007_199_254_740_993).encode_attribute()
@@ -206,7 +206,7 @@ def main() -> None:
                 "output_code": output_error.code,
                 "partial_output": False,
             },
-            "test_id": "python.generated_sdk_v5_canonical_codec",
+            "test_id": "python.sdk_serialization_canonical_codec",
         }
     )
 

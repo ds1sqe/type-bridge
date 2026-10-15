@@ -20,10 +20,10 @@ import c_distribution_security as security  # noqa: E402
 import compare_sdk_conformance as v1  # noqa: E402
 import compare_sdk_conformance_v2 as v2  # noqa: E402
 import compare_sdk_conformance_v4 as v4  # noqa: E402
-import compare_sdk_conformance_v5 as v5  # noqa: E402
 import compare_sdk_conformance_v6 as v6  # noqa: E402
 import sdk_models_compare as v3  # noqa: E402
 import sdk_profile_matrix as profile_matrix
+import sdk_serialization_compare as v5  # noqa: E402
 import validate_c_broad_case_ledger as broad_ledger  # noqa: E402
 import validate_c_distribution_contract as distribution  # noqa: E402
 

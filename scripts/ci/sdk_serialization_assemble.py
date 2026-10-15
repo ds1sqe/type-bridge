@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compose measured evidence and assemble SDK V5 reports."""
+"""Compose measured evidence and assemble Serialization reports."""
 
 from __future__ import annotations
 
@@ -14,19 +14,19 @@ import sys
 from pathlib import Path
 from typing import Any, NoReturn
 
-import compare_sdk_conformance_v5 as conformance
-import compare_sdk_v5_corpora as corpora
-import compare_sdk_v5_operational as operational
 import sdk_profile_matrix as profile_matrix
+import sdk_serialization_compare as conformance
+import sdk_serialization_corpora as corpora
+import sdk_serialization_operational as operational
 from persist_binding_reports import publish_bytes
 
 ROOT = Path(__file__).resolve().parents[2]
-FORMAT = "typebridge.sdk-v5-producer-evidence/v1"
+FORMAT = "typebridge.sdk-serialization-producer-evidence/v1"
 MAX_EVIDENCE_BYTES = 64 * 1024 * 1024
 MAX_RECORD_BYTES = 1024 * 1024
 MAX_ARCHIVE_BYTES = 32 * 1024 * 1024
-LIVE_FORMAT = "typebridge.sdk-v5-live-codec-evidence/v1"
-CLEANUP_FORMAT = "typebridge.sdk-v5-cleanup-evidence/v1"
+LIVE_FORMAT = "typebridge.sdk-serialization-live-codec-evidence/v1"
+CLEANUP_FORMAT = "typebridge.sdk-serialization-cleanup-evidence/v1"
 MAX_SMALL_EVIDENCE_BYTES = 64 * 1024
 MAX_SNAPSHOT_BYTES = 1024 * 1024
 
@@ -106,7 +106,7 @@ def assemble_report(
     root: Path = ROOT,
     semantic_profile: str | None = None,
 ) -> dict[str, Any]:
-    """Assemble one V5 report on ``semantic_profile`` (default: the catalog's own)."""
+    """Assemble one Serialization report on ``semantic_profile`` (default: the catalog's own)."""
 
     contracts = conformance.load_contracts(root)
     lane = profile_matrix.select(
@@ -139,12 +139,16 @@ def assemble_report(
     if evidence["format"] != FORMAT or evidence["binding"] != binding:
         reject("evidence_identity_mismatch", "evidence format or binding differs")
     if binding not in conformance.BINDINGS:
-        reject("evidence_identity_mismatch", f"unknown V5 binding {binding!r}")
+        reject("evidence_identity_mismatch", f"unknown Serialization binding {binding!r}")
     producer = contracts.catalog.get("report_producers", {}).get(binding)
     if not isinstance(producer, dict) or evidence["producer"] != producer.get("id"):
-        reject("producer_identity_mismatch", "producer ID is not frozen by the V5 catalog")
+        reject(
+            "producer_identity_mismatch", "producer ID is not frozen by the Serialization catalog"
+        )
     if evidence["test_id"] != producer.get("test_id"):
-        reject("producer_test_mismatch", "producer test ID is not frozen by the V5 catalog")
+        reject(
+            "producer_test_mismatch", "producer test ID is not frozen by the Serialization catalog"
+        )
     if validate_nonce(evidence["run_nonce"]) != validate_nonce(run_nonce):
         reject("run_nonce_mismatch", "producer evidence is not from this requested run")
     record_values = evidence["record_b64"]
@@ -189,7 +193,7 @@ def assemble_report(
         for case, proof, observation in zip(cases, proofs, observations, strict=True)
     ]
     report = {
-        "format": "typebridge.sdk-conformance-report/v5",
+        "format": "typebridge.sdk-serialization-report/v1",
         "binding": binding,
         "manifest": {
             "path": conformance.MANIFEST,
@@ -431,7 +435,7 @@ def main() -> int:
         publish(arguments.output, report)
     except (AssemblyError, conformance.ContractError, CompositionError) as error:
         code = getattr(error, "code", "assembly_failure")
-        print(f"sdk-v5 assembly rejected [{code}]: {error}", file=sys.stderr)
+        print(f"serialization assembly rejected [{code}]: {error}", file=sys.stderr)
         return 1
     return 0
 

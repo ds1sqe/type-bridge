@@ -1,4 +1,4 @@
-"""Fail-closed tests for provider-free Sdk V5 corpus comparison."""
+"""Fail-closed tests for provider-free Serialization corpus comparison."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from typing import Any
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-SCRIPT = ROOT / "scripts/ci/compare_sdk_v5_corpora.py"
-SPEC = importlib.util.spec_from_file_location("sdk_v5_corpora", SCRIPT)
+SCRIPT = ROOT / "scripts/ci/sdk_serialization_corpora.py"
+SPEC = importlib.util.spec_from_file_location("sdk_serialization_corpora", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 corpora = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(corpora)
@@ -43,7 +43,7 @@ def paths(tmp_path: Path) -> dict[str, Path]:
 
 def test_comparison_requires_exact_equal_nine_record_corpora(tmp_path: Path) -> None:
     result = corpora.compare(paths(tmp_path))
-    assert result["format"] == "typebridge.sdk-v5-provider-free-comparison/v1"
+    assert result["format"] == "typebridge.sdk-serialization-provider-free-comparison/v1"
     assert len(result["record_sha256"]) == 9
     assert len(result["archive_sha256"]) == 64
 

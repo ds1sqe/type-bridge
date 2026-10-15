@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://type-bridge.dev/contracts/sdk-conformance/sdk-report-v5.schema.json",
+  "$id": "https://type-bridge.dev/contracts/sdk-conformance/serialization/report.schema.json",
   "title": "TypeBridge sdk conformance report v5",
   "type": "object",
   "additionalProperties": false,
   "required": ["format", "binding", "manifest", "catalog", "journey", "record_contract", "server_version", "results", "cleanup"],
   "properties": {
-    "format": {"const": "typebridge.sdk-conformance-report/v5"},
+    "format": {"const": "typebridge.sdk-serialization-report/v1"},
     "binding": {"enum": ["python", "node", "rust", "c"]},
     "manifest": {"$ref": "#/$defs/sourceIdentity"},
     "catalog": {"$ref": "#/$defs/sourceIdentity"},
@@ -45,7 +45,7 @@
         "capability_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]+$"},
         "proof_kind": {"enum": ["generated_package", "direct_runtime", "diagnostic", "lifecycle"]},
         "outcome": {"const": "passed"},
-        "observation": {"$ref": "observation-schema-v5.json"}
+        "observation": {"$ref": "observation-schema.json"}
       }
     }
   }

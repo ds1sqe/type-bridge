@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-/** Publish Node's generated provider-free Sdk V5 canonical corpus. */
+/** Publish Node's generated provider-free Serialization canonical corpus. */
 
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-const FORMAT = "typebridge.sdk-v5-provider-free-corpus/v1";
-const OPERATIONAL_FORMAT = "typebridge.sdk-v5-operational-evidence/v1";
+const FORMAT = "typebridge.sdk-serialization-provider-free-corpus/v1";
+const OPERATIONAL_FORMAT = "typebridge.sdk-serialization-operational-evidence/v1";
 const packageValue = process.env.TYPE_BRIDGE_GENERATED_NODE_PACKAGE;
 if (packageValue === undefined || !path.isAbsolute(packageValue)) {
   throw new Error("TYPE_BRIDGE_GENERATED_NODE_PACKAGE must be an absolute path");
@@ -84,7 +84,7 @@ function expectCode(operation, expected) {
 
 function publish(output, payload) {
   if (!path.isAbsolute(output)) {
-    throw new Error("Sdk V5 evidence path must be absolute");
+    throw new Error("Serialization evidence path must be absolute");
   }
   const descriptor = fs.openSync(output, "wx", 0o600);
   try {
@@ -95,13 +95,13 @@ function publish(output, payload) {
   }
 }
 
-const outputValue = process.env.TYPE_BRIDGE_SDK_V5_CORPUS;
+const outputValue = process.env.TYPE_BRIDGE_SDK_SERIALIZATION_CORPUS;
 if (outputValue === undefined) {
-  throw new Error("TYPE_BRIDGE_SDK_V5_CORPUS must be configured");
+  throw new Error("TYPE_BRIDGE_SDK_SERIALIZATION_CORPUS must be configured");
 }
-const operationalOutput = process.env.TYPE_BRIDGE_SDK_V5_OPERATIONAL_EVIDENCE;
+const operationalOutput = process.env.TYPE_BRIDGE_SDK_SERIALIZATION_OPERATIONAL_EVIDENCE;
 if (operationalOutput === undefined) {
-  throw new Error("TYPE_BRIDGE_SDK_V5_OPERATIONAL_EVIDENCE must be configured");
+  throw new Error("TYPE_BRIDGE_SDK_SERIALIZATION_OPERATIONAL_EVIDENCE must be configured");
 }
 
 const integerKey = generated.RobotId.encodeAttribute(
@@ -263,7 +263,7 @@ const operationalPayload = canonicalJson({
     output_code: outputError.code,
     partial_output: false,
   },
-  test_id: "node.generated_sdk_v5_canonical_codec",
+  test_id: "node.sdk_serialization_canonical_codec",
 });
 
 const encoded = (value) => Buffer.from(value).toString("base64");

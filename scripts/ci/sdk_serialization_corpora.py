@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare independently produced provider-free Sdk V5 canonical corpora."""
+"""Compare independently produced provider-free Serialization canonical corpora."""
 
 from __future__ import annotations
 
@@ -13,9 +13,9 @@ import sys
 from pathlib import Path
 from typing import Any, NoReturn
 
-from compare_sdk_conformance_v5 import canonical_json_bytes
+from sdk_serialization_compare import canonical_json_bytes
 
-FORMAT = "typebridge.sdk-v5-provider-free-corpus/v1"
+FORMAT = "typebridge.sdk-serialization-provider-free-corpus/v1"
 BINDINGS = ("python", "node", "rust", "c")
 MAX_CORPUS_BYTES = 64 * 1024 * 1024
 MAX_RECORD_BYTES = 1024 * 1024
@@ -112,7 +112,7 @@ def compare(paths: dict[str, Path]) -> dict[str, Any]:
             reject("archive_bytes_mismatch", f"{binding} archive bytes differ from Rust")
     return {
         "archive_sha256": hashlib.sha256(reference_archive).hexdigest(),
-        "format": "typebridge.sdk-v5-provider-free-comparison/v1",
+        "format": "typebridge.sdk-serialization-provider-free-comparison/v1",
         "record_sha256": [hashlib.sha256(record).hexdigest() for record in reference_records],
     }
 
@@ -125,7 +125,7 @@ def main() -> int:
     try:
         result = compare({binding: getattr(arguments, binding) for binding in BINDINGS})
     except CorpusError as error:
-        print(f"sdk-v5 corpus rejected [{error.code}]: {error}", file=sys.stderr)
+        print(f"serialization corpus rejected [{error.code}]: {error}", file=sys.stderr)
         return 1
     sys.stdout.buffer.write(canonical_json_bytes(result) + b"\n")
     return 0

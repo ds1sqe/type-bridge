@@ -1,4 +1,4 @@
-"""Fail-closed tests for Sdk V5 producer-evidence assembly."""
+"""Fail-closed tests for Serialization producer-evidence assembly."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[3]
 CI = ROOT / "scripts/ci"
 sys.path.insert(0, str(CI))
 SPEC = importlib.util.spec_from_file_location(
-    "sdk_v5_assembler", CI / "assemble_sdk_conformance_v5.py"
+    "sdk_serialization_assembler", CI / "sdk_serialization_assemble.py"
 )
 assert SPEC is not None and SPEC.loader is not None
 assembler = importlib.util.module_from_spec(SPEC)
@@ -210,7 +210,7 @@ def test_combined_cli_preserves_report_bytes(tmp_path: Path, binding: str) -> No
     )
     command = [
         sys.executable,
-        str(CI / "assemble_sdk_conformance_v5.py"),
+        str(CI / "sdk_serialization_assemble.py"),
         "--binding",
         binding,
         "--run-nonce",

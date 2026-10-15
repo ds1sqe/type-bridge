@@ -1,22 +1,22 @@
 {
-  "format": "typebridge.sdk-catalog/v5",
+  "format": "typebridge.sdk-serialization-catalog/v1",
   "authority_state": "finalized",
   "fixture": {
-    "id": "sdk-v5",
+    "id": "serialization",
     "version": 5,
     "semantic_profile": "typedb-3.12.1/v1",
     "live_server_version": "3.12.3",
     "schema_path": "tests/contracts/sdk_conformance/models/schema.yaml",
-    "journey_path": "tests/contracts/sdk_conformance/sdk-v5/journey-v5.json",
+    "journey_path": "tests/contracts/sdk_conformance/serialization/journey.json",
     "record_contract_path": "tests/contracts/projected-record-v1.json",
     "abi_contract_path": "tests/contracts/c-abi.json"
   },
-  "report_schema_path": "tests/contracts/sdk_conformance/sdk-v5/report-schema-v5.json",
-  "observation_schema_path": "tests/contracts/sdk_conformance/sdk-v5/observation-schema-v5.json",
-  "operational_evidence_schema_path": "tests/contracts/sdk_conformance/sdk-v5/operational-evidence-schema-v5.json",
-  "live_evidence_schema_path": "tests/contracts/sdk_conformance/sdk-v5/live-evidence-schema-v5.json",
-  "cleanup_evidence_schema_path": "tests/contracts/sdk_conformance/sdk-v5/cleanup-evidence-schema-v5.json",
-  "producer_evidence_schema_path": "tests/contracts/sdk_conformance/sdk-v5/producer-evidence-schema-v5.json",
+  "report_schema_path": "tests/contracts/sdk_conformance/serialization/report-schema.json",
+  "observation_schema_path": "tests/contracts/sdk_conformance/serialization/observation-schema.json",
+  "operational_evidence_schema_path": "tests/contracts/sdk_conformance/serialization/operational-evidence-schema.json",
+  "live_evidence_schema_path": "tests/contracts/sdk_conformance/serialization/live-evidence-schema.json",
+  "cleanup_evidence_schema_path": "tests/contracts/sdk_conformance/serialization/cleanup-evidence-schema.json",
+  "producer_evidence_schema_path": "tests/contracts/sdk_conformance/serialization/producer-evidence-schema.json",
   "report_bindings": ["python", "node", "rust", "c"],
   "manifest_transition_cases": ["sdk.model.serialization"],
   "evidence_only_gap_cases": [
@@ -27,20 +27,20 @@
   ],
   "report_producers": {
     "python": {
-      "id": "python.generated-canonical-serialization-v5-live",
-      "test_id": "python.generated_canonical_serialization_v5_live"
+      "id": "python.sdk-serialization-live",
+      "test_id": "python.sdk_serialization_live"
     },
     "node": {
-      "id": "node.generated-canonical-serialization-v5-live",
-      "test_id": "node.generated_canonical_serialization_v5_live"
+      "id": "node.sdk-serialization-live",
+      "test_id": "node.sdk_serialization_live"
     },
     "rust": {
-      "id": "type-bridge-rust.generated-canonical-serialization-v5-live",
-      "test_id": "rust_projection_live::generated_canonical_serialization_v5_live"
+      "id": "type-bridge-rust.sdk-serialization-live",
+      "test_id": "rust_projection_live::sdk_serialization_live"
     },
     "c": {
-      "id": "type-bridge-c.generated-canonical-serialization-v5-live",
-      "test_id": "c_projection_live::generated_canonical_serialization_v5_live"
+      "id": "type-bridge-c.sdk-serialization-live",
+      "test_id": "c_projection_live::sdk_serialization_live"
     }
   },
   "selected_proofs": [

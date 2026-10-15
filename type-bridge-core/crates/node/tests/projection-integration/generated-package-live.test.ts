@@ -85,8 +85,9 @@ interface SdkProfileIdentity {
 }
 
 function sdkContractRelative(version: number, name: string): string {
-  return version === 3
-    ? `tests/contracts/sdk_conformance/models/${name}.json`
+  const suite = version === 3 ? "models" : version === 5 ? "serialization" : null;
+  return suite !== null
+    ? `tests/contracts/sdk_conformance/${suite}/${name}.json`
     : `tests/contracts/sdk_conformance/sdk-v${version}/${name}-v${version}.json`;
 }
 
@@ -3670,19 +3671,19 @@ test(
 );
 
 test(
-  "node.generated_canonical_serialization_v5_live",
+  "node.sdk_serialization_live",
   {
     skip: IS_TYPEDB_3_11
       || !Object.hasOwn(sdkProfileMatrix(5), REMOTE_PROFILE)
-      || process.env.TYPE_BRIDGE_SDK_V5_NODE_EVIDENCE === undefined,
+      || process.env.TYPE_BRIDGE_SDK_SERIALIZATION_NODE_EVIDENCE === undefined,
     timeout: 360_000,
   },
   async () => {
-    const evidencePath = process.env.TYPE_BRIDGE_SDK_V5_NODE_EVIDENCE;
+    const evidencePath = process.env.TYPE_BRIDGE_SDK_SERIALIZATION_NODE_EVIDENCE;
     assert.notEqual(evidencePath, undefined);
     const suppliedStage = process.env.TYPE_BRIDGE_GENERATED_NODE_STAGE;
     const stage = suppliedStage === undefined
-      ? await mkdtemp(join(tmpdir(), "type-bridge-node-v5-live-"))
+      ? await mkdtemp(join(tmpdir(), "type-bridge-node-serialization-live-"))
       : resolve(suppliedStage);
     const ownsStage = suppliedStage === undefined;
     const generatedDirectory = resolve(stage, "generated_ordered");
@@ -3844,7 +3845,7 @@ test(
         detached_mutation_code: detachedCode,
         direct_remote_equal: true,
         entity_snapshot_b64: Buffer.from(entitySnapshot).toString("base64"),
-        format: "typebridge.sdk-v5-live-codec-evidence/v1",
+        format: "typebridge.sdk-serialization-live-codec-evidence/v1",
         rebound_mutation: true,
         relation_snapshot_b64: Buffer.from(relationSnapshot).toString("base64"),
         remote_exchange_count: requests.length,

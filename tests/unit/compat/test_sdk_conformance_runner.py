@@ -96,10 +96,7 @@ def test_assembly_runs_four_compositors_four_assemblers_and_one_fan_in(
     (tmp_path / "fragments").mkdir()
     RUNNER.assemble_models(tmp_path, {}, "0" * 64)
     assert len(commands) == 5
-    assert (
-        sum(any("sdk_models_assemble" in item for item in command) for command in commands)
-        == 4
-    )
+    assert sum(any("sdk_models_assemble" in item for item in command) for command in commands) == 4
     assert any("sdk_models_compare" in item for item in commands[-1])
 
 
@@ -108,7 +105,7 @@ def test_cleanup_evidence_is_exact_and_non_inferential(tmp_path: Path) -> None:
     RUNNER.write_cleanup(path, "node")
     assert json.loads(path.read_bytes()) == {
         "binding": "node",
-        "format": "typebridge.sdk-v5-cleanup-evidence/v1",
+        "format": "typebridge.sdk-serialization-cleanup-evidence/v1",
         "managed_database_absent": True,
         "partial_output_absent": True,
         "temporary_evidence_absent": True,
@@ -131,19 +128,19 @@ def test_assembly_runs_each_real_composer_and_one_fan_in(
     assert len(commands) == 5
     assert (
         sum(
-            any(item.endswith("assemble_sdk_conformance_v5.py") for item in command)
+            any(item.endswith("sdk_serialization_assemble.py") for item in command)
             for command in commands
         )
         == 4
     )
     assert (
         sum(
-            any(item.endswith("assemble_sdk_conformance_v5.py") for item in command)
+            any(item.endswith("sdk_serialization_assemble.py") for item in command)
             for command in commands
         )
         == 4
     )
-    assert any(item.endswith("compare_sdk_conformance_v5.py") for item in commands[-1])
+    assert any(item.endswith("sdk_serialization_compare.py") for item in commands[-1])
 
 
 def test_provider_free_fan_in_names_each_binding(
@@ -156,7 +153,14 @@ def test_provider_free_fan_in_names_each_binding(
         lambda command, **_kwargs: commands.append(command),
     )
     RUNNER.codec_offline(tmp_path, {})
-    fan_in = [command for command in commands if any("compare_sdk_v5_" in item for item in command)]
+    fan_in = [
+        command
+        for command in commands
+        if any(
+            Path(item).name in {"sdk_serialization_corpora.py", "sdk_serialization_operational.py"}
+            for item in command
+        )
+    ]
     assert len(fan_in) == 2
     for command in fan_in:
         for binding in RUNNER.BINDINGS:
@@ -405,8 +409,8 @@ def test_full_c_preserves_versioned_layout_with_named_suites(
         ),
         (
             "codec_live",
-            "test_generated_canonical_serialization_v5_live",
-            "node.generated_canonical_serialization_v5_live",
+            "test_sdk_serialization_live",
+            "node.sdk_serialization_live",
             "live_c17_generated_person_and_membership_crud_round_trips_on_profile_server",
         ),
     ],

@@ -501,7 +501,7 @@ fn query_successor_consumers_compile_as_strict_c17_and_cpp17() {
                 "-Wextra",
                 "-Werror",
                 "-pedantic-errors",
-                "-DTYPE_BRIDGE_SDK_V5_C_CODEC",
+                "-DTYPE_BRIDGE_SDK_SERIALIZATION_C_CODEC",
                 "-fsyntax-only",
             ])
             .arg("-I")
@@ -645,33 +645,35 @@ fn requested_sdk_v2_report() -> Option<PathBuf> {
     Some(path)
 }
 
-fn requested_sdk_v5_evidence() -> Option<PathBuf> {
-    let raw = env::var_os("TYPE_BRIDGE_SDK_V5_C_EVIDENCE")?;
+fn requested_sdk_serialization_evidence() -> Option<PathBuf> {
+    let raw = env::var_os("TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE")?;
     let text = raw
         .to_str()
-        .expect("TYPE_BRIDGE_SDK_V5_C_EVIDENCE must be UTF-8");
+        .expect("TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE must be UTF-8");
     assert!(
         !text.is_empty() && text.len() <= 4096,
-        "TYPE_BRIDGE_SDK_V5_C_EVIDENCE exceeds its path bound"
+        "TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE exceeds its path bound"
     );
     let path = PathBuf::from(text);
     assert!(
         path.is_absolute(),
-        "TYPE_BRIDGE_SDK_V5_C_EVIDENCE must be absolute"
+        "TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE must be absolute"
     );
     let parent = path
         .parent()
-        .expect("TYPE_BRIDGE_SDK_V5_C_EVIDENCE must have a parent");
-    let metadata =
-        fs::symlink_metadata(parent).expect("TYPE_BRIDGE_SDK_V5_C_EVIDENCE parent must exist");
+        .expect("TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE must have a parent");
+    let metadata = fs::symlink_metadata(parent)
+        .expect("TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE parent must exist");
     assert!(
         metadata.is_dir() && !metadata.file_type().is_symlink(),
-        "TYPE_BRIDGE_SDK_V5_C_EVIDENCE parent must be a non-symlink directory"
+        "TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE parent must be a non-symlink directory"
     );
     match fs::symlink_metadata(&path) {
         Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Ok(_) => panic!("TYPE_BRIDGE_SDK_V5_C_EVIDENCE target must not exist"),
-        Err(error) => panic!("TYPE_BRIDGE_SDK_V5_C_EVIDENCE is not inspectable: {error}"),
+        Ok(_) => panic!("TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE target must not exist"),
+        Err(error) => {
+            panic!("TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE is not inspectable: {error}")
+        }
     }
     Some(path)
 }
@@ -1000,13 +1002,13 @@ fn publish_sdk_v2_report(
     );
 }
 
-fn publish_sdk_v5_evidence(path: &Path, report: &Value) {
-    let mut bytes = to_canonical_json(report).expect("C sdk-v5 evidence canonicalizes");
+fn publish_sdk_serialization_evidence(path: &Path, report: &Value) {
+    let mut bytes = to_canonical_json(report).expect("C serialization evidence canonicalizes");
     bytes.push(b'\n');
     let file_name = path
         .file_name()
         .and_then(|value| value.to_str())
-        .expect("C sdk-v5 evidence path has a UTF-8 file name");
+        .expect("C serialization evidence path has a UTF-8 file name");
     let temporary = path.with_file_name(format!(
         ".{file_name}.{}.{}.tmp",
         std::process::id(),
@@ -1023,17 +1025,17 @@ fn publish_sdk_v5_evidence(path: &Path, report: &Value) {
         .write(true)
         .create_new(true)
         .open(&temporary)
-        .expect("C sdk-v5 temporary evidence is create-new");
+        .expect("C serialization temporary evidence is create-new");
     output
         .write_all(&bytes)
-        .expect("C sdk-v5 temporary evidence is written completely");
+        .expect("C serialization temporary evidence is written completely");
     output
         .sync_all()
-        .expect("C sdk-v5 temporary evidence is synchronized");
+        .expect("C serialization temporary evidence is synchronized");
     drop(output);
     fs::hard_link(&temporary, path)
-        .expect("C sdk-v5 evidence is atomically published without replacement");
-    fs::remove_file(&temporary).expect("C sdk-v5 temporary link is removed");
+        .expect("C serialization evidence is atomically published without replacement");
+    fs::remove_file(&temporary).expect("C serialization temporary link is removed");
     drop(guard);
 }
 
@@ -1488,10 +1490,10 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
     let repository_root = repository_root();
     let profile = sdk_profile_matrix::requested(2);
     let sdk_v2_report = requested_sdk_v2_report();
-    let sdk_v5_evidence = requested_sdk_v5_evidence();
+    let sdk_serialization_evidence = requested_sdk_serialization_evidence();
     assert!(
-        sdk_v2_report.is_none() || sdk_v5_evidence.is_none(),
-        "C V2 and V5 publication lanes require separate isolated runs"
+        sdk_v2_report.is_none() || sdk_serialization_evidence.is_none(),
+        "C V2 and Serialization publication lanes require separate isolated runs"
     );
     let sdk_v2_proofs = validated_sdk_v2_proofs(&repository_root, sdk_v2_report.as_deref());
     let compiler = c_compilers()
@@ -1512,7 +1514,7 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
 
     let stage = TempDirectory::new();
     let (package, authority_bytes, semantic_fingerprint, projection_fingerprint) =
-        if sdk_v5_evidence.is_some() {
+        if sdk_serialization_evidence.is_some() {
             let (package, authority) =
                 emitted_query_package_and_authority(&profile.semantic_profile);
             let (semantic, projection) = sdk_models_fingerprints(&profile.semantic_profile);
@@ -1536,8 +1538,8 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
         "-Werror",
         "-pedantic-errors",
     ]);
-    if sdk_v5_evidence.is_some() {
-        compile_command.arg("-DTYPE_BRIDGE_SDK_V5_C_CODEC");
+    if sdk_serialization_evidence.is_some() {
+        compile_command.arg("-DTYPE_BRIDGE_SDK_SERIALIZATION_C_CODEC");
     }
     let compile = compile_command
         .arg("-I")
@@ -1570,7 +1572,7 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
         .expect("Rust-only database setup source is staged");
     fs::write(
         setup_root.join("acceptance/provider-3.12.1.tql"),
-        if sdk_v5_evidence.is_some() {
+        if sdk_serialization_evidence.is_some() {
             QUERY_PROVIDER_SCHEMA
         } else {
             PROVIDER_SCHEMA
@@ -1678,12 +1680,16 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
         .env_remove("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS")
         .env_remove("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE");
     run.env("TYPE_BRIDGE_C_REMOTE_PORT", remote_port.to_string());
-    let v5_evidence_directory = stage.path().join("v5-live-evidence");
-    if sdk_v5_evidence.is_some() {
-        fs::create_dir(&v5_evidence_directory).expect("C V5 evidence directory is created");
-        run.env("TYPE_BRIDGE_SDK_V5_C_EVIDENCE_DIR", &v5_evidence_directory);
+    let serialization_evidence_directory = stage.path().join("serialization-live-evidence");
+    if sdk_serialization_evidence.is_some() {
+        fs::create_dir(&serialization_evidence_directory)
+            .expect("C Serialization evidence directory is created");
+        run.env(
+            "TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE_DIR",
+            &serialization_evidence_directory,
+        );
     } else {
-        run.env_remove("TYPE_BRIDGE_SDK_V5_C_EVIDENCE_DIR");
+        run.env_remove("TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE_DIR");
     }
     let output = run
         .output()
@@ -1705,16 +1711,20 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
                 .filter(|value| value.ends_with(": passed"))
         })
         .filter(|value| {
-            if sdk_v5_evidence.is_some() {
-                *value == "Sdk V5 C live codec direct/remote parity: passed"
+            if sdk_serialization_evidence.is_some() {
+                *value == "Serialization C live codec direct/remote parity: passed"
             } else {
-                *value != "Sdk V5 C live codec direct/remote parity: passed"
+                *value != "Serialization C live codec direct/remote parity: passed"
             }
         })
         .collect::<Vec<_>>();
     assert_eq!(
         markers.len(),
-        if sdk_v5_evidence.is_some() { 1 } else { 62 },
+        if sdk_serialization_evidence.is_some() {
+            1
+        } else {
+            62
+        },
         "live C marker inventory drifted"
     );
     assert_eq!(
@@ -1729,7 +1739,7 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
     for marker in markers {
         assert!(stdout.contains(marker), "consumer output omitted {marker}");
     }
-    let mut sdk_v2_observations = if sdk_v5_evidence.is_some() {
+    let mut sdk_v2_observations = if sdk_serialization_evidence.is_some() {
         BTreeMap::new()
     } else {
         parse_sdk_v2_live_facts(&repository_root, &stdout)
@@ -1776,22 +1786,22 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
             &sdk_v2_observations,
         );
     }
-    if let Some(evidence) = sdk_v5_evidence {
-        let entity = fs::read(v5_evidence_directory.join("entity.bin"))
-            .expect("C V5 entity evidence is present");
-        let relation = fs::read(v5_evidence_directory.join("relation.bin"))
-            .expect("C V5 relation evidence is present");
+    if let Some(evidence) = sdk_serialization_evidence {
+        let entity = fs::read(serialization_evidence_directory.join("entity.bin"))
+            .expect("C Serialization entity evidence is present");
+        let relation = fs::read(serialization_evidence_directory.join("relation.bin"))
+            .expect("C Serialization relation evidence is present");
         let report = json!({
             "binding": "c",
             "detached_mutation_code": "projected_snapshot_detached",
             "direct_remote_equal": true,
             "entity_snapshot_b64": base64(&entity),
-            "format": "typebridge.sdk-v5-live-codec-evidence/v1",
+            "format": "typebridge.sdk-serialization-live-codec-evidence/v1",
             "rebound_mutation": true,
             "relation_snapshot_b64": base64(&relation),
             "remote_exchange_count": 1,
         });
-        publish_sdk_v5_evidence(&evidence, &report);
+        publish_sdk_serialization_evidence(&evidence, &report);
     }
 }
 
