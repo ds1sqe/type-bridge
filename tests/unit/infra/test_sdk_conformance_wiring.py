@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -22,6 +27,45 @@ RUNNER_OWNED = {
     "TYPE_BRIDGE_SDK_V2_VALIDATED_OBSERVATIONS",
     "TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON",
 }
+
+
+@pytest.mark.parametrize("invalid", [None, "python", "node", "rust", "c", "summary", "shape"])
+def test_local_sha_step_validates_every_report_and_summary(tmp_path: Path, invalid: str | None):
+    source = LOCAL.read_text(encoding="utf-8")
+    helpers = source[
+        source.index("validate_canonical_json_files() {") : source.index(
+            "# ── TypeDB container lifecycle"
+        )
+    ]
+    paths = []
+    for name in ("python", "node", "rust", "c", "summary"):
+        value = {"pending_manifest_promotions": []} if name == "summary" else {"binding": name}
+        if invalid == "shape" and name == "summary":
+            value = {}
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(value, separators=(",", ":"), sort_keys=True) + "\n")
+        if invalid == name:
+            path.write_text(path.read_text() + " ")
+        paths.append(path)
+    # run_step invokes helpers in a conditional, where Bash disables errexit.
+    probe = helpers + '\nif log_sdk_evidence_sha256 "$@"; then exit 0; else exit 1; fi\n'
+    result = subprocess.run(
+        ["bash", "-c", probe, "probe", sys.executable, *map(str, paths)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if invalid is not None:
+        assert result.returncode != 0
+        assert "pending_manifest_promotions" not in result.stdout
+        assert all(
+            hashlib.sha256(path.read_bytes()).hexdigest() not in result.stdout for path in paths
+        )
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "sdk-v2 pending_manifest_promotions=[]" in result.stdout
+        for path in paths:
+            assert f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path}" in result.stdout
 
 
 def _jobs() -> dict[str, Any]:
