@@ -167,7 +167,7 @@ enum TerminalTarget<'a> {
 
 /// Canonical cross-binding generated-query execution budgets.
 #[pyclass(name = "QueryExecutionResourceLimits", frozen, from_py_object)]
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct PyQueryExecutionResourceLimits {
     inner: QueryExecutionResourceLimits,
 }

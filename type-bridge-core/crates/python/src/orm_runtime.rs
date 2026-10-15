@@ -306,7 +306,7 @@ impl PyDynamicValue {
 
 /// Python-facing typed dynamic sort direction.
 #[pyclass(name = "DynamicSortDir", from_py_object)]
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct PyDynamicSortDir {
     direction: SortDir,
 }
