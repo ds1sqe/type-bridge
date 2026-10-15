@@ -4,6 +4,12 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- A close failure after a successful commit is logged and no longer reported
+  as an error: the write is durable, and reporting failure invited duplicate
+  retries.
+
 ### Tests
 
 - SDK conformance test contracts are named by concern: queries, models,

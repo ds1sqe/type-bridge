@@ -3890,7 +3890,7 @@ async fn dynamic_canonical_database_commit_error_close_failure_keeps_commit_erro
 }
 
 #[tokio::test]
-async fn dynamic_canonical_database_successful_write_close_failure_is_reported() {
+async fn dynamic_canonical_database_successful_write_close_failure_keeps_committed_iid() {
     let (backend, state) = RecordingBackend::with_failures(
         vec![RecordingResponse::Result(QueryResult::Documents(vec![
             serde_json::json!({
@@ -3902,11 +3902,11 @@ async fn dynamic_canonical_database_successful_write_close_failure_is_reported()
         true,
     );
     let db = Database::with_backend(Box::new(backend), "testdb");
-    let error = DynamicEntityManager::new_canonical(&db, Arc::new(person_descriptor()))
+    let iid = DynamicEntityManager::new_canonical(&db, Arc::new(person_descriptor()))
         .insert(&person_attrs())
         .await
-        .unwrap_err();
-    assert!(matches!(error, OrmError::Transaction(message) if message == "close failed"));
+        .unwrap();
+    assert_eq!(iid, "0x1");
     assert_canonical_mode_and_counts(&state, &[TxType::Write], 1, 0, 1);
 }
 
