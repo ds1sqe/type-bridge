@@ -276,3 +276,9 @@ Generated TypeScript packages require `@type-bridge/node` 2.1 or newer within
 the 2.x line. The npm package publishes native modules for Linux glibc
 (`x64`/`arm64`), macOS (`x64`/`arm64`), and Windows (`x64`/`arm64`); other
 targets build from source and must satisfy the repository toolchain.
+
+Provider query and commit errors expose readonly `error.failure` data on
+`QueryV2Error`: `phase`, `reason`, `lock_kind`, `annotation`, `op_index`,
+`retry_safe` and the TypeDB `code`. Rust classifies these fields; TypeScript
+only forwards them. A safe retry reruns the complete transaction on a new
+snapshot. An unknown commit outcome requires reconciliation before retry.

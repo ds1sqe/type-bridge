@@ -441,6 +441,22 @@ impl Error {
         }
     }
 
+    /// Typed provider outcome carried by the canonical diagnostic source.
+    #[must_use]
+    pub fn failure(&self) -> Option<type_bridge_contract::failure::Failure> {
+        let mut source = StdError::source(self);
+        while let Some(error) = source {
+            if let Some(diagnostic) = error.downcast_ref::<SdkExecutionDiagnostic>() {
+                return diagnostic.failure().cloned();
+            }
+            if let Some(error) = error.downcast_ref::<type_bridge_orm::OrmError>() {
+                return error.failure();
+            }
+            source = error.source();
+        }
+        None
+    }
+
     /// Construct one application-owned remote transport failure.
     ///
     /// Transport implementations should use a stable lowercase snake-case
@@ -918,6 +934,8 @@ impl Error {
 
     #[allow(dead_code)]
     pub(crate) fn from_orm(err: type_bridge_orm::OrmError) -> Self {
+        // Typed provider failures stay in their released variants; the
+        // retained OrmError source still answers `Error::failure()`.
         match err {
             type_bridge_orm::OrmError::Match(error) => {
                 Self::from_match(error, ModelValidationPhase::Input)
@@ -1293,8 +1311,37 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, ErrorCategory};
+    use super::*;
 
+    #[test]
+    fn typed_failure_keeps_the_released_variant_and_structural_outcome() {
+        use type_bridge_contract::failure::{Failure, LockKind, Phase, Reason};
+        let failure = Failure::Rejected {
+            phase: Phase::Commit,
+            reason: Reason::Conflict {
+                lock: LockKind::Exclusive,
+            },
+            op_index: Some(3),
+        };
+        let diagnostic = SdkExecutionDiagnostic::from_failure(&failure, Default::default());
+        let error = Error::from_sdk_execution(diagnostic, ModelValidationPhase::Input);
+        assert_eq!(error.failure(), Some(failure));
+        assert!(matches!(error, Error::Transaction { .. }));
+        assert_eq!(error.category(), ErrorCategory::Transaction);
+        assert!(StdError::source(&error).is_some());
+    }
+
+    #[cfg(feature = "typedb")]
+    #[test]
+    fn orm_typed_failure_keeps_the_released_variant() {
+        let orm = type_bridge_orm::OrmError::QueryExecution(
+            "[CNT9] TypeDB query rejected: unique constraint".to_owned(),
+        );
+        let failure = orm.failure().expect("runtime rendering is typed");
+        let error = Error::from_orm(orm);
+        assert!(matches!(error, Error::QueryExecution { .. }));
+        assert_eq!(error.failure(), Some(failure));
+    }
     #[test]
     fn public_error_categories_and_remote_constructor_are_stable() {
         let categories = [
@@ -1323,5 +1370,28 @@ mod tests {
         assert_eq!(error.code(), Some("remote_transport"));
         assert_eq!(error.path(), Some(&[][..]));
         assert_eq!(error.message(), "connection reset");
+    }
+}
+
+#[cfg(all(test, feature = "typedb"))]
+#[path = "../../../../tests/support/typed_failure_live.rs"]
+mod typed_failure_live;
+#[cfg(all(test, feature = "typedb"))]
+#[tokio::test]
+#[ignore = "requires an owned TypeDB 3.13.6 container and failure-smoke environment"]
+async fn live_provider_failures_reach_rust_error() {
+    for (case, error) in typed_failure_live::observations("tb_w11b_rust").await {
+        let error = Error::from_sdk_execution(
+            typed_failure_live::diagnostic(error),
+            ModelValidationPhase::Input,
+        );
+        let failure = error.failure().expect("typed failure retained by SDK");
+        assert!(matches!(
+            error,
+            Error::Transaction { .. } | Error::QueryExecution { .. }
+        ));
+        assert_eq!(failure.retry_safe(), case != "paused");
+        assert!(!format!("{error} {error:?}").contains("SECRET_SENTINEL"));
+        println!("{case}: {}", failure.host_json());
     }
 }

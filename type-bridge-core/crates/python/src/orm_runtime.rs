@@ -2246,6 +2246,12 @@ fn required_string(obj: &Map<String, Value>, key: &str) -> PyResult<String> {
 }
 
 pub(crate) fn py_orm_error(error: OrmError) -> PyErr {
+    if error.failure().is_some() {
+        return py_provider_diagnostic(type_bridge_orm::lower_execution_error(
+            error,
+            type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
+        ));
+    }
     match error {
         OrmError::UnsupportedVersion(error) => VersionError::new_err(error.to_string()),
         OrmError::DescriptorValidation { .. } | OrmError::DescriptorConflict { .. } => {
@@ -2259,6 +2265,38 @@ pub(crate) fn py_orm_error(error: OrmError) -> PyErr {
         }
         _ => py_runtime_error(error.to_string()),
     }
+}
+
+pub(crate) fn py_provider_diagnostic(
+    diagnostic: type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic,
+) -> PyErr {
+    Python::attach(|py| {
+        let kind = diagnostic.failure().map(|failure| failure.host_json());
+        let class = kind.as_ref().and_then(|failure| {
+            if failure["phase"] != "commit" {
+                return None;
+            }
+            Some(if failure["retry_safe"] == false {
+                "CommitOutcomeUnknown"
+            } else if failure["reason"] == "conflict" {
+                "CommitConflict"
+            } else {
+                "CommitRejected"
+            })
+        });
+        let error = match class {
+            Some(class) => match py
+                .import("type_bridge.failure")
+                .and_then(|module| module.getattr(class))
+                .and_then(|class| class.call1((diagnostic.message().as_str(),)))
+            {
+                Ok(value) => PyErr::from_value(value),
+                Err(error) => return error,
+            },
+            None => py_runtime_error(diagnostic.message().as_str()),
+        };
+        crate::match_runtime::structured_py_error(py, error, &diagnostic)
+    })
 }
 
 fn py_secure_connect_error(error: type_bridge_orm::SecureConnectError) -> PyErr {

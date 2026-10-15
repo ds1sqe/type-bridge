@@ -528,7 +528,10 @@ pub(crate) fn execution_diagnostics_handle(
 }
 
 pub(crate) fn status_for(diagnostic: &SdkExecutionDiagnostic) -> TypeBridgeStatus {
-    if diagnostic.code().as_str() == "commit_outcome_unknown" {
+    if matches!(
+        diagnostic.commit_outcome(),
+        Some(type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome::Unknown)
+    ) {
         return TypeBridgeStatus::CommitOutcomeUnknown;
     }
     match diagnostic.category() {
@@ -1225,5 +1228,65 @@ mod tests {
         assert_eq!(TypeBridgeExecutionDiagnosticDetailKind::Signed as i32, 13);
         assert_eq!(TypeBridgeExecutionDiagnosticDetailKind::TextList as i32, 14);
         assert_eq!(TypeBridgeExecutionDiagnosticDetailKind::Unknown as i32, 255);
+    }
+}
+
+#[cfg(test)]
+mod typed_failure_status_tests {
+    use super::*;
+    use type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome;
+    #[test]
+    fn commit_status_uses_typed_outcome_instead_of_code_spelling() {
+        let unknown = SdkExecutionDiagnostic::commit_failure(SdkCommitFailureOutcome::Unknown);
+        assert_eq!(status_for(&unknown), TypeBridgeStatus::CommitOutcomeUnknown);
+        let spelling_only = SdkExecutionDiagnostic::transaction_failure(
+            type_bridge_contract::sdk_diagnostic::SdkDiagnosticCode::new("commit_outcome_unknown")
+                .unwrap(),
+            type_bridge_contract::sdk_diagnostic::SdkDiagnosticMessage::new(
+                "Transaction state invalid",
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            status_for(&spelling_only),
+            TypeBridgeStatus::ExecutionFailed
+        );
+        let failure = type_bridge_contract::failure::Failure::Rejected {
+            phase: type_bridge_contract::failure::Phase::Commit,
+            reason: type_bridge_contract::failure::Reason::Conflict {
+                lock: type_bridge_contract::failure::LockKind::Exclusive,
+            },
+            op_index: None,
+        };
+        assert_eq!(
+            status_for(&SdkExecutionDiagnostic::from_failure(
+                &failure,
+                Default::default()
+            )),
+            TypeBridgeStatus::ExecutionFailed
+        );
+    }
+}
+
+#[cfg(test)]
+#[path = "../../../../tests/support/typed_failure_live.rs"]
+mod typed_failure_live;
+#[cfg(test)]
+#[tokio::test]
+#[ignore = "requires an owned TypeDB 3.13.6 container and failure-smoke environment"]
+async fn live_provider_failures_reach_c_status() {
+    for (case, error) in typed_failure_live::observations("tb_w11b_c").await {
+        let diagnostic = typed_failure_live::diagnostic(error);
+        let expected = if case == "paused" {
+            TypeBridgeStatus::CommitOutcomeUnknown
+        } else {
+            TypeBridgeStatus::ExecutionFailed
+        };
+        assert_eq!(status_for(&diagnostic), expected);
+        assert!(!format!("{diagnostic} {diagnostic:?}").contains("SECRET_SENTINEL"));
+        println!(
+            "{case}: {expected:?} {}",
+            diagnostic.failure().unwrap().host_json()
+        );
     }
 }

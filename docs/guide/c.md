@@ -156,3 +156,11 @@ direct and caller-transport queries, custom-root TLS, migrations, model
 serialization, cancellation, resource limits, and cleanup. See the
 [release procedure](../development/c-release.md#public-verification-and-support)
 for the public verification record and exact support boundary.
+
+Provider commit status is selected from the typed commit outcome. ABI 1.6
+continues to return `TYPE_BRIDGE_STATUS_EXECUTION_FAILED` for proven rejections
+and `TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN` when a commit may have applied.
+Rejection diagnostics keep the released `commit_definitely_aborted` and
+`provider_operation_failed` codes and add a `rejection` detail naming the
+reason. Additional C failure
+detail kinds belong to ABI 1.7, rather than changing the ABI 1.6 layout.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from type_bridge.failure import CommitConflict, CommitOutcomeUnknown, CommitRejected, Failure
 from type_bridge.proxy import ProxyDatabase, ProxyError
 from type_bridge.query import Query, QueryBuilder
 from type_bridge.session import (
@@ -58,6 +59,10 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "Failure",
+    "CommitConflict",
+    "CommitRejected",
+    "CommitOutcomeUnknown",
     # Database and session
     "Connection",
     "Database",

@@ -16,6 +16,8 @@ mod connection;
 mod entity_codec;
 mod entity_manager;
 pub mod error;
+/// Value-only provider failure vocabulary used by Error::failure.
+pub use type_bridge_contract::failure;
 pub mod hooks;
 pub mod migration;
 pub mod model;

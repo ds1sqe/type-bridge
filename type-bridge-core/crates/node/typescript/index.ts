@@ -16,6 +16,7 @@ import {
 
 export { QueryV2Error } from "./query-v2-internals.js";
 export type {
+  ProviderFailure,
   QueryV2ErrorCategory,
   QueryV2ErrorDetail,
   QueryV2ErrorPathSegment,
@@ -1006,11 +1007,11 @@ export class RustTransactionContext {
   }
 
   query(query: string): unknown[] {
-    return parseJson(this.#native.queryJson(query));
+    return queryV2NativeCall(() => parseJson(this.#native.queryJson(query)));
   }
 
   commit(): void {
-    this.#native.commit();
+    queryV2NativeCall(() => this.#native.commit());
   }
 
   /** Roll back writes and keep this transaction usable. */

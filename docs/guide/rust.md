@@ -353,3 +353,11 @@ Rust compatibility category remains `ErrorCategory::ModelValidation`.
 Implementations of `ProxyExchange` should wrap
 application-owned transport failures with
 `Error::remote("stable_snake_case_code", message, source)`.
+
+Provider rejections expose `error.failure()` with the shared
+`type_bridge::failure::Failure` vocabulary. A rejected commit carries a reason,
+reported lock kind where applicable, and `retry_safe = true`; rerun the entire
+transaction on a fresh snapshot. An indeterminate outcome requires
+reconciliation before retry. Rejection diagnostics keep their released codes
+and add a `rejection` detail naming the reason. Staged errors additionally
+retain operation indexes and schema identities supplied by plan metadata.

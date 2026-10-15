@@ -811,6 +811,12 @@ fn napi_secure_connect_error(error: type_bridge_orm::SecureConnectError) -> napi
 }
 
 pub(crate) fn napi_orm_error(error: OrmError) -> napi::Error {
+    if error.failure().is_some() {
+        return match_runtime::napi_sdk_diagnostic(type_bridge_orm::lower_execution_error(
+            error,
+            type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
+        ));
+    }
     match error {
         OrmError::Match(error) => match_runtime::napi_match_error(error),
         OrmError::DescriptorValidation { .. }
@@ -891,6 +897,26 @@ mod tests {
             *events.lock().unwrap(),
             ["open", "query", "rollback", "query", "commit"]
         );
+    }
+
+    #[test]
+    fn node_double_commit_keeps_the_released_lifecycle_error() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let database = NodeRustDatabase {
+            db: Arc::new(type_bridge_orm::Database::with_backend(
+                Box::new(ReusableBackend(Arc::clone(&events))),
+                "test",
+            )),
+            runtime: Arc::new(ProviderRuntimeOwner::new().unwrap()),
+            managed_scope_id: None,
+        };
+        let transaction = database.transaction(Some("write".into())).unwrap();
+        transaction.commit().unwrap();
+        // Refused before dispatch: no unknown-outcome diagnostic.
+        let error = transaction.commit().unwrap_err();
+        assert!(error.reason.contains("Transaction already consumed"));
+        assert!(!error.reason.contains("commit_outcome_unknown"));
+        assert_eq!(*events.lock().unwrap(), ["open", "commit"]);
     }
 
     #[test]

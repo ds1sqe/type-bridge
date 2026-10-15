@@ -40,6 +40,7 @@ export {
 } from "./index.js";
 
 export type {
+  ProviderFailure,
   AggregateInput,
   AttributeInput,
   AttributeValue,

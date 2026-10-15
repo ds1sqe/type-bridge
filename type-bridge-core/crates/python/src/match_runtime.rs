@@ -1917,6 +1917,14 @@ fn canonical_enum_spelling(kind: &str, value: &str) -> PyResult<&'static str> {
 pub(crate) fn py_match_orm_error(error: OrmError) -> PyErr {
     match error {
         OrmError::Match(error) => py_match_error(error),
+        // Provider failures raised `RuntimeError` before typed failures; keep
+        // that class so `except RuntimeError` still matches.
+        other if other.failure().is_some() => {
+            crate::orm_runtime::py_provider_diagnostic(type_bridge_orm::lower_execution_error(
+                other,
+                type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+            ))
+        }
         other => PyRuntimeError::new_err(other.to_string()),
     }
 }
@@ -1942,13 +1950,21 @@ pub(crate) fn py_sdk_diagnostic(diagnostic: SdkExecutionDiagnostic) -> PyErr {
 /// The JSON form carries `count`, `byte_count`, and `signed` detail values as
 /// decimal strings so JSON numbers never lose precision; Python ints do not,
 /// so the exception's `details` hold them as `int`.
-fn structured_py_error(
+pub(crate) fn structured_py_error(
     py: Python<'_>,
     py_error: PyErr,
     diagnostic: &SdkExecutionDiagnostic,
 ) -> PyErr {
     let attach = || -> PyResult<()> {
         let value = py_error.value(py);
+        if let Some(failure) = diagnostic.failure() {
+            let kwargs = pythonize(py, &failure.host_json())?.cast_into::<PyDict>()?;
+            let frozen = py
+                .import("type_bridge.failure")?
+                .getattr("Failure")?
+                .call((), Some(&kwargs))?;
+            value.setattr("failure", frozen)?;
+        }
         let form = pythonize(py, &diagnostic.host_json())?.cast_into::<PyDict>()?;
         if let Some(details) = form.get_item("details")? {
             let details = details.cast_into::<PyDict>()?;

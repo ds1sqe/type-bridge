@@ -8953,7 +8953,11 @@ fn py_diagnostic(error: type_bridge_contract::diagnostic::Diagnostic) -> PyErr {
 }
 
 fn py_orm_error(error: type_bridge_orm::OrmError) -> PyErr {
-    py_runtime_error(error.to_string())
+    if error.failure().is_some() {
+        crate::orm_runtime::py_orm_error(error)
+    } else {
+        py_runtime_error(error.to_string())
+    }
 }
 
 fn py_value_error(message: impl Into<String>) -> PyErr {
@@ -15411,6 +15415,39 @@ class BoundaryIterator:
             assert_eq!(state.legacy_commits, 0);
             assert_eq!(state.commits, 1);
             assert_eq!(state.rollbacks, 0);
+        });
+    }
+
+    #[test]
+    fn python_double_commit_keeps_the_released_lifecycle_error() {
+        Python::initialize();
+        Python::attach(|py| {
+            let (database, state) = BatchRecordingBackend::fixture(vec![], false);
+            let runtime =
+                Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start"));
+            let transaction = runtime
+                .block_on(database.transaction_context(TxType::Write))
+                .unwrap();
+            let context =
+                PyRustTransactionContext::from_parts_for_test(transaction, Arc::clone(&runtime));
+            let context = Py::new(py, context).unwrap();
+            context.bind(py).call_method0("commit").unwrap();
+            // The second commit is refused before dispatch: it must keep the
+            // released lifecycle error rather than report an unknown outcome.
+            let error = context.bind(py).call_method0("commit").unwrap_err();
+            assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+            assert!(error.value(py).getattr("code").is_err());
+            assert!(
+                error
+                    .value(py)
+                    .str()
+                    .unwrap()
+                    .to_string()
+                    .contains("Transaction already consumed")
+            );
+            let state = state.lock().unwrap();
+            assert_eq!(state.legacy_commits, 1);
+            assert_eq!(state.commits, 0);
         });
     }
 

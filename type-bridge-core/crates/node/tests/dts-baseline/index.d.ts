@@ -1,7 +1,7 @@
 import type { QueryLimits } from "./runtime-projection.js";
 import { type NativeQueryV2Authority, type NativeQueryV2BuilderRuntime } from "./query-v2-internals.js";
 export { QueryV2Error } from "./query-v2-internals.js";
-export type { QueryV2ErrorCategory, QueryV2ErrorDetail, QueryV2ErrorPathSegment, } from "./query-v2-internals.js";
+export type { ProviderFailure, QueryV2ErrorCategory, QueryV2ErrorDetail, QueryV2ErrorPathSegment, } from "./query-v2-internals.js";
 export type ValueType = "string" | "long" | "double" | "boolean" | "date" | "datetime" | "datetime-tz" | "decimal" | "duration";
 export type TransactionType = "read" | "write" | "schema";
 export type AttributeValue = {

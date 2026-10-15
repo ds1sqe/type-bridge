@@ -806,23 +806,21 @@ unique, another annotation constraint, or another validated provider code.
 A `Failure::Indeterminate` means a commit may have applied. Its code is optional.
 No winner identity, query value, database name or provider prose is retained.
 
-Canonical SDK diagnostics add these rejection codes:
+Typed failures keep the released SDK diagnostic codes, categories and
+details:
 
-| Phase | Codes |
-| --- | --- |
-| Commit | `commit_rejected_conflict`, `commit_rejected_cardinality`, `commit_rejected_unique`, `commit_rejected_constraint`, `commit_rejected_other` |
-| Query | `query_rejected_cardinality`, `query_rejected_unique`, `query_rejected_constraint`, `query_rejected_other` |
+| Failure | Code | Released detail |
+| --- | --- | --- |
+| Commit rejection | `commit_definitely_aborted` | `commit_outcome: definitely_aborted` |
+| Indeterminate commit | `commit_outcome_unknown` | `commit_outcome: unknown` |
+| Query rejection | `provider_operation_failed` | `operation` |
 
-The released `commit_definitely_aborted` umbrella remains available. Its typed
-children retain `sdk_category: transaction` and the existing
-`commit_outcome: definitely_aborted` detail. Match that category and outcome to
-handle all proven commit rejections; matching only the umbrella code selects
-only diagnostics constructed without a more specific reason.
-`commit_outcome_unknown` remains the indeterminate code with
-`commit_outcome: unknown`.
+Errors that already lowered to another released code, such as
+`transaction_state_invalid`, keep it and gain the same typed details.
 
-New diagnostics include `retry_safe` as a boolean and `code` as a validated
-TypeDB identity. Conflict diagnostics include `lock_kind`; annotation
+Typed diagnostics add `retry_safe` as a boolean, `code` as a validated TypeDB
+identity and `rejection` (`conflict`, `cardinality`, `unique`, `constraint` or
+`other`) for a rejection. Conflict diagnostics include `lock_kind`; annotation
 constraints include `annotation`. These use bounded identity detail values,
 without extending the C ABI 1.6 detail vocabulary. A staged operation index
 is an `Index` path segment; possible owner and attribute sites are `Type` and
@@ -839,5 +837,8 @@ A rejection is safe to retry only by rerunning the whole transaction against a
 fresh snapshot, including its reads and conditions. It does not promise that
 another attempt will succeed. Indeterminate commits require reconciliation
 before retrying. TypeDB-origin ordinary error messages, debug output and source
-chains contain a code plus fixed description; local validation messages and
-application-owned transport errors retain their existing contracts.
+chains contain a code plus fixed description. Runtime transport messages also
+keep the operation name and a fixed transport kind, with the driver code when
+available. Raw HTTP/TLS causes and endpoint values are discarded. Local
+validation messages and application-owned transport errors retain their
+existing contracts.

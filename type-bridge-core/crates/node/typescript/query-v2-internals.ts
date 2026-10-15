@@ -280,6 +280,17 @@ export type QueryV2ErrorDetail =
       value: readonly string[];
     }>;
 
+/** Value-free outcome classified once by the Rust provider runtime. */
+export interface ProviderFailure {
+  readonly phase: "query" | "commit";
+  readonly reason: "conflict" | "cardinality" | "unique" | "constraint" | "other" | null;
+  readonly lock_kind: "exclusive" | "require_deleted_key" | "deleting_required_key" | "unknown" | null;
+  readonly annotation: string | null;
+  readonly op_index: number | null;
+  readonly retry_safe: boolean;
+  readonly code: string | null;
+}
+
 /** Structured diagnostic preserved from the Rust V2 semantic engine. */
 export class QueryV2Error extends Error {
   readonly name = "QueryV2Error";
@@ -292,8 +303,10 @@ export class QueryV2Error extends Error {
     readonly details: Readonly<Record<string, QueryV2ErrorDetail>>,
     readonly sdkCategory: QueryV2ErrorCategory = category,
     readonly queryCategory: QueryV2ErrorCategory | null = category,
+    readonly failure?: Readonly<ProviderFailure>,
   ) {
     super(`${code}: ${diagnosticMessage}`);
+    if (failure) Object.freeze(failure);
   }
 }
 
@@ -305,6 +318,7 @@ export class QueryV2Error extends Error {
  * decimal-string integer details; TypeScript only selects the fields.
  */
 interface NativeDiagnostic {
+  readonly failure?: ProviderFailure;
   readonly category: QueryV2ErrorCategory;
   readonly sdk_category?: QueryV2ErrorCategory;
   readonly query_category?: QueryV2ErrorCategory | null;
@@ -357,6 +371,7 @@ function structuredQueryV2Error(error: unknown): unknown {
     diagnostic.query_category === undefined
       ? diagnostic.category
       : diagnostic.query_category,
+    diagnostic.failure,
   );
 }
 

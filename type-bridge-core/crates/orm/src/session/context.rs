@@ -47,6 +47,9 @@ pub enum TransactionContextState {
 
 enum CommitOnceError {
     RollbackOnly,
+    /// The commit was refused before dispatch because the context no longer
+    /// owns an open transaction; no provider outcome exists to classify.
+    Consumed,
     Other(ClassifiedCommitError),
 }
 
@@ -56,6 +59,7 @@ impl CommitOnceError {
             Self::RollbackOnly => ClassifiedCommitError::from(OrmError::Transaction(
                 "Transaction is rollback-only".into(),
             )),
+            Self::Consumed => ClassifiedCommitError::from(consumed_error()),
             Self::Other(error) => error,
         }
     }
@@ -438,6 +442,10 @@ impl TransactionContext {
             .await
             .map_err(|error| match error {
                 CommitOnceError::RollbackOnly => transaction_rollback_only_diagnostic(),
+                CommitOnceError::Consumed => crate::execution_diagnostic::lower_execution_error(
+                    consumed_error(),
+                    SdkProviderOperation::Write,
+                ),
                 CommitOnceError::Other(error) => {
                     crate::execution_diagnostic::lower_commit_error(&error)
                 }
@@ -566,9 +574,7 @@ fn begin_commit(
 ) -> std::result::Result<super::eager::EagerTransaction, CommitOnceError> {
     match inner.state {
         TransactionContextState::Active | TransactionContextState::RolledBack => {
-            let transaction = inner.transaction.take().ok_or_else(|| {
-                CommitOnceError::Other(ClassifiedCommitError::from(consumed_error()))
-            })?;
+            let transaction = inner.transaction.take().ok_or(CommitOnceError::Consumed)?;
             // Commit dispatch is irreversible. If this future is dropped,
             // the provider outcome cannot safely be inferred.
             inner.state = TransactionContextState::CommitOutcomeUnknown;
@@ -578,9 +584,7 @@ fn begin_commit(
         TransactionContextState::Committed
         | TransactionContextState::DefinitelyAborted
         | TransactionContextState::CommitOutcomeUnknown
-        | TransactionContextState::Closed => Err(CommitOnceError::Other(
-            ClassifiedCommitError::from(consumed_error()),
-        )),
+        | TransactionContextState::Closed => Err(CommitOnceError::Consumed),
     }
 }
 
@@ -849,6 +853,28 @@ mod tests {
             context.lifecycle_state().await,
             TransactionContextState::RollbackOnly
         );
+    }
+
+    #[tokio::test]
+    async fn second_sdk_commit_is_a_pre_dispatch_lifecycle_error() {
+        let (context, calls) = active_context();
+        context.commit_sdk().await.unwrap();
+
+        // The second commit never reaches the provider, so it must not
+        // claim an unknown durability outcome.
+        let diagnostic = context.commit_sdk().await.unwrap_err();
+        assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Transaction);
+        assert_eq!(diagnostic.code().as_str(), "transaction_state_invalid");
+        assert!(diagnostic.failure().is_none());
+        assert_eq!(calls.classified_commits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::Committed
+        );
+        let OrmError::Transaction(message) = context.commit().await.unwrap_err() else {
+            panic!("legacy double commit keeps the released transaction error");
+        };
+        assert_eq!(message, "Transaction already consumed");
     }
 
     #[tokio::test]

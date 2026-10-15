@@ -60,8 +60,16 @@ pub(crate) fn napi_sdk_diagnostic(diagnostic: SdkExecutionDiagnostic) -> napi::E
         SdkDiagnosticCategory::Cancelled => Status::Cancelled,
         _ => Status::GenericFailure,
     };
-    let reason = serde_json::to_string(&diagnostic.host_json())
-        .expect("the canonical SDK diagnostic form always encodes");
+    let reason = if let Some(failure) = diagnostic.failure() {
+        let mut host =
+            serde_json::to_value(diagnostic.host_json()).expect("canonical diagnostic encodes");
+        host["failure"] = failure.host_json();
+        serde_json::to_string(&host)
+    } else {
+        // Preserve the released host form, including its serialization order.
+        serde_json::to_string(&diagnostic.host_json())
+    }
+    .expect("the canonical SDK diagnostic form always encodes");
     Error::new(status, reason)
 }
 
