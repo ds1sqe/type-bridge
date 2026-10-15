@@ -3663,12 +3663,13 @@ fn sdk_v3_generated_package_integrity() {
         repository_root().join("tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"),
     )
     .expect("Sdk V3 schema reads");
-    let projection = project_from_source(&source);
+    let profile = support::sdk_profile_matrix::requested(3).semantic_profile;
+    let projection = support::rust_projection_on(&source, "rust-acceptance.yaml", &profile);
     assert!(
         !projection.models().is_empty(),
         "V3 projection has generated models"
     );
-    let package = emit_from_source(&source);
+    let package = emit_on(&source, &profile);
     let emitted = package
         .files()
         .values()

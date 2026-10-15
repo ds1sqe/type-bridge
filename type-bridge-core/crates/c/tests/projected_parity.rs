@@ -29,7 +29,13 @@ use type_bridge_schema_codegen::{CEmitter, GeneratedPackage};
 const SOURCE: &str =
     include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml");
 const CONSUMER: &str = include_str!("../../schema-codegen/tests/c_projected_parity/consumer.c");
-const SEMANTIC_PROFILE: &str = "typedb-3.12.1/v1";
+#[path = "../../../../tests/support/sdk_profile_matrix.rs"]
+#[allow(dead_code)]
+mod sdk_profile_matrix;
+
+fn semantic_profile() -> String {
+    sdk_profile_matrix::requested(3).semantic_profile
+}
 const REPORT_FORMAT: &str = "typebridge.projected-parity-report/v1";
 const FACT_PREFIX: &str = "TYPE_BRIDGE_C_PROJECTED_FACT\t";
 const REPORT_ENV: &str = "TYPE_BRIDGE_PROJECTED_PARITY_REPORT_C";
@@ -103,7 +109,7 @@ fn authority_for(
     )])
     .expect("Projected schema parses");
     let declared = normalize_documents(&documents).expect("Projected schema normalizes");
-    let profile = SemanticProfileId::new(SEMANTIC_PROFILE).expect("Projected profile is valid");
+    let profile = SemanticProfileId::new(semantic_profile()).expect("Projected profile is valid");
     let resolved = resolve(&declared, &profile).expect("Projected schema resolves");
     let available: CapabilitySet = BUILTIN_SCHEMA_CAPABILITY_IDS
         .iter()
@@ -760,7 +766,7 @@ fn build_report(root: &Path, observations: BTreeMap<String, Value>) -> Value {
         "binding": "c",
         "format": REPORT_FORMAT,
         "observations": observations,
-        "semantic_profile": SEMANTIC_PROFILE,
+        "semantic_profile": semantic_profile(),
     })
 }
 

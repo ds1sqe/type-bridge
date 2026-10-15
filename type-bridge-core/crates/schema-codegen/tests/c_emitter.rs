@@ -185,7 +185,7 @@ fn publish_sdk_v3_package_fragment(results: Vec<Value>) {
         "producer": {"id": "type-bridge-c.generated-package-v3-proof", "sources": sources.iter().map(|path| sdk_v3_source_identity(&root, path)).collect::<Vec<_>>()},
         "results": results,
         "run_nonce": nonce,
-        "semantic_profile": "typedb-3.12.1/v1",
+        "semantic_profile": support::sdk_profile_matrix::requested(3).semantic_profile,
     });
     let mut bytes = to_canonical_json(&fragment).expect("C V3 package fragment canonicalizes");
     bytes.push(b'\n');
@@ -5723,7 +5723,9 @@ fn sdk_v3_generated_package_integrity() {
     )])
     .expect("V3 schema parses");
     let declared = normalize_documents(&documents).expect("V3 schema normalizes");
-    let profile = SemanticProfileId::new(support::TEST_PROFILE).expect("test profile is valid");
+    let identity = support::sdk_profile_matrix::requested(3);
+    let profile =
+        SemanticProfileId::new(&identity.semantic_profile).expect("test profile is valid");
     let resolved = resolve(&declared, &profile).expect("V3 schema resolves");
     let emitter = CEmitter::new();
     let resources = emitter
@@ -5737,7 +5739,8 @@ fn sdk_v3_generated_package_integrity() {
         &resources,
     )
     .expect("V3 schema projects to C");
-    let authority = support::authority_for_declared(&declared, "sdk-v3-c", support::TEST_PROFILE);
+    let authority =
+        support::authority_for_declared(&declared, "sdk-v3-c", &identity.semantic_profile);
     let package = emitter
         .emit(&projection, &authority)
         .expect("V3 C package emits");
