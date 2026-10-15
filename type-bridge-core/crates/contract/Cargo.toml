@@ -28,3 +28,6 @@ unicode-ident = "1.0"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+ed25519-dalek = "2"

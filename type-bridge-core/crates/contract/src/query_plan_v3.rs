@@ -512,6 +512,11 @@ impl QueryPlanV3 {
     pub fn format(&self) -> &str {
         &self.format
     }
+    /// Receiver-owned limits retained during trusted construction.
+    #[must_use]
+    pub const fn limits(&self) -> QueryLimits {
+        self.limits
+    }
     /// Dense binding declarations.
     #[must_use]
     pub fn bindings(&self) -> &[AssertionBinding] {

@@ -1,6 +1,18 @@
 //! Canonical implementation-independent codec ceilings.
 
+/// Maximum aggregate answer items in one staged V3 reply.
+pub const MAX_STAGED_ITEMS_V3: u64 = 65_536;
+
 use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticDetailValue};
+
+/// Maximum plans in one staged V3 transaction; callers may tighten this ceiling.
+pub const MAX_STAGED_PLANS_V3: u32 = 64;
+/// Default provider-write statement budget for a staged V3 transaction.
+pub const DEFAULT_STAGED_WRITE_STATEMENTS_V3: u32 = 256;
+/// Default read statement budget, allowing three statements per staged plan.
+pub const DEFAULT_STAGED_READ_STATEMENTS_V3: u32 = MAX_STAGED_PLANS_V3 * 3;
+/// Independent hard ceiling for each staged provider statement budget.
+pub const MAX_STAGED_STATEMENTS_V3: u32 = 4_096;
 
 /// Maximum canonical artifact size: 16 MiB.
 pub const MAX_CANONICAL_BYTES: usize = 16 * 1024 * 1024;
@@ -55,6 +67,14 @@ pub const REMOTE_ENVELOPE_CODEC_LIMITS: CodecLimits = CodecLimits {
     max_depth: MAX_CANONICAL_DEPTH,
     max_collection_len: MAX_CANONICAL_COLLECTION_LEN,
     max_string_bytes: MAX_CANONICAL_STRING_BYTES,
+};
+
+/// V3 opaque plan-byte strings may use the envelope budget. Embedded plans
+/// and canonical scalar values still enforce their independent codec ceilings.
+/// Frozen V1/V2 envelopes retain their original per-string ceiling.
+pub const STAGED_REMOTE_CODEC_LIMITS_V3: CodecLimits = CodecLimits {
+    max_string_bytes: MAX_REMOTE_ENVELOPE_BYTES,
+    ..REMOTE_ENVELOPE_CODEC_LIMITS
 };
 
 /// Owning-format limits for V1 remote query request envelopes.

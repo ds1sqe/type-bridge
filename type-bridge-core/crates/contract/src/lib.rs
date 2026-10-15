@@ -45,6 +45,8 @@ pub mod query_plan;
 pub mod query_remote;
 /// Additive V2 remote envelopes and hydrated model-result evidence.
 pub mod query_remote_v2;
+/// Additive staged transaction envelopes and authenticated replies.
+pub mod query_remote_v3;
 pub mod reserved;
 
 mod query_invocation_wire;

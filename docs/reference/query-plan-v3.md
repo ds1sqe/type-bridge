@@ -409,3 +409,148 @@ Two given rows insert accounts using typed ID and score columns, returning match
 ```
 
 Fingerprint: `c3a2e9bc496a9807ae6a32cb73c43f1f1601e066deec384dee1470369a89e5c0`.
+
+## Staged remote envelope V3
+
+A staged transaction uses `typebridge.query-remote-request/v3`, independently
+of the plan version. Requests remain unsigned. Write execution requires an
+authenticated transport identity or explicit server policy; possessing an
+advertisement or reply-signing public key does not authorize a write. This
+section defines the codec. Route execution and SDK proxy staging are separate
+implementation phases.
+
+### Request
+
+| Member | Wire shape |
+| --- | --- |
+| `format` | `typebridge.query-remote-request/v3` |
+| `advertisement` | Lowercase 64-hex digest of the exact executor advertisement |
+| `prepared_at_unix_ms` | Unsigned Unix millisecond timestamp |
+| `expires_at_unix_ms` | Preparation time plus the selected deadline |
+| `nonce` | 16..128 ASCII letters, digits, hyphens or underscores |
+| `idempotency_key` | Optional lowercase hex encoding of 16..64 opaque bytes |
+| `kind` | Optional `read`, `write` or `schema` |
+| `limits` | Complete budget object below |
+| `plans` | Nonempty ordered array of `{"plan_bytes":"...","rows":[...]}` |
+
+Omit absent `kind`/`idempotency_key`; explicit null is not canonical. Each
+`plan_bytes` is the lowercase hexadecimal encoding of exact canonical V3 plan
+bytes. It is opaque bytes, not TypeQL or a host-reserialized plan object. Rows
+are positional canonical scalar/null arrays under that plan's input columns.
+A bound plan's rows must exactly equal the envelope rows. For an unbound
+template, the envelope rows must satisfy its declared columns. A plan without
+columns has `rows:[]`. Execution materializes the same validated values through
+`given`; no value interpolation is permitted.
+
+Kind defaults to write if any plan writes, otherwise read. Explicit read
+refuses writes; explicit write permits reads. Schema refuses query plans. The
+request is a stack, not an open transaction or a collection of separately
+committed requests. Its answers resolve together after the transaction outcome.
+
+Every request requires `query.remote.envelope-v3`, every writing stack adds
+`query.remote.write`, and a keyed request adds `query.remote.idempotency`.
+The union of all plan capabilities is also required. The receiver checks every
+plan under its own schema and the minimum of its query limits and the advertised
+query limits. Sender metadata cannot widen receiver limits.
+
+Deadline omission means 30,000 ms; explicit deadlines range from 1 to 300,000 ms.
+Expiry equals preparation plus that duration, with checked arithmetic. Execution
+must reject an expired request or a preparation timestamp more than 60,000 ms
+in the future. Archival decoding is separate from this wall-clock freshness
+check. Reusing a keyed request means resending its exact original bytes: changing
+nonce, time, rows, budgets, kind or advertisement changes its fingerprint.
+
+### Aggregate budgets
+
+The complete `limits` object always includes these fields, including defaults:
+
+| Member | Default | Supported range |
+| --- | --- | --- |
+| `deadline_ms` | null | null, or 1..300,000 |
+| `max_bytes` | 33,554,432 | 1..33,554,432 signed successful reply bytes |
+| `max_items` | 65,536 | 1..65,536 aggregate answer items |
+| `max_staged_plans` | 64 | 1..64 |
+| `max_read_statements` | 192 | 1..4,096 |
+| `max_write_statements` | 256 | 1..4,096 |
+
+Read and write provider statements are separate dimensions; the frozen V2
+three-statement limit is unchanged. Request validation checks the minimum of
+one statement per plan against the corresponding budget. Execution must charge
+all actual statements, including any necessary split queries, before they fire
+and refuse exceeding a budget inside the same transaction. The codec does not
+execute or estimate an arbitrary provider's split strategy.
+
+The request and signed reply retain the 32 MiB envelope ceiling. Embedded plans
+retain their independent canonical plan ceilings, and each row batch retains
+its 4,096-row/4 MiB input ceiling. Opaque plan-byte hex strings may use the
+envelope budget; decoded plan strings and scalar values still retain their own
+1 MiB ceiling. Hex framing consumes envelope bytes: a plan near its standalone
+limit may not fit in an envelope. One answer row/document counts as an item;
+count, exists and matched answers each count as one. A failed
+reply does not consume the successful-data byte budget, allowing a small caller
+budget to receive a diagnostic. Diagnostics remain capped at 65,536 bytes.
+
+### Replies and failure vocabulary
+
+The unsigned payload has required `format`, `nonce`, `request`, `outcome` and
+`answers`, plus the same optional `idempotency_key`. Its format is
+`typebridge.query-remote-response/v3`; `request` is the exact request fingerprint
+digest, and nonce/key must equal that request. A successful outcome is
+`{"kind":"committed"}`. A failed outcome is
+`{"kind":"failed","diagnostic":SDK_DIAGNOSTIC_JSON}` and has `answers:[]`.
+No partial answers escape a rejected or indeterminate transaction. A successful
+read transaction is closed, with `committed` denoting a final successful stack;
+execution does not try to commit a TypeDB read transaction.
+
+The public authoring outcome is non-exhaustive and uses the existing
+`SdkExecutionDiagnostic`, not a second failure model. Failure details follow the
+SDK diagnostic vocabulary: version, category, sdk_category, query_category,
+code, message, path and typed details. The additive phase-B `commit_rejected_*`
+and `query_rejected_*` codes and details join this same vocabulary when present.
+`commit_outcome_unknown` remains indeterminate; a failed outcome alone never
+implies a safe retry. SDK messages stay implementation-owned static text during
+authoring. Authentication precedes interpretation of their bounded host-JSON
+wire projection, which does not weaken the in-memory SDK diagnostic contract.
+
+Committed answers have exactly one entry per plan, in stack order:
+
+| Answer | Shape |
+| --- | --- |
+| rows | `{"kind":"rows","rows":[[REMOTE_VALUE,...],...]}` |
+| documents | `{"kind":"documents","documents":[{"field":REMOTE_FIELD_VALUE},...]}` |
+| count | `{"kind":"count","value":1}` |
+| exists | `{"kind":"exists","value":true}` |
+| matched | `{"kind":"matched","value":2}` |
+
+Read rows and write/rows select rows or documents according to their output;
+count/exists require their corresponding answer. Write/matched requires matched.
+Widths, document keys, instance identity/type shape, total items and byte budgets
+are checked against the stack. Remote values retain V1's tagged thing
+(`iid`, `type_id`), attribute (`type_id`, `value`), value (`value`) and absent
+forms. Remote field values are tagged scalar (`value`), list (`values`) or
+absent. Successful byte and failed-diagnostic byte ceilings are checked using
+borrowed authenticated payload fragments before allocating owned evidence.
+
+### Fingerprint and signature
+
+The request uses the same framed SHA-256 algorithm as plan fingerprints, with
+domain `typebridge.query.remote-request`, canonicalization
+`typebridge.query-remote-request/v3`, no semantic profile and the complete
+canonical request bytes. This binds all plans, rows, limits, times, kind,
+advertisement, nonce and idempotency key.
+
+Replies use the unchanged `typebridge.query-remote-signed-reply/v1` outer object:
+`advertisement`, `format`, `key`, `key_id`, `payload`, `signature`. Advertisement
+is its digest; key is 32-byte Ed25519 public-key hex; signature is 64-byte hex.
+Key ID is SHA-256 of `UTF8("typebridge.query.remote-reply-key-id/v1")`, a zero
+byte and the raw public key. Let U be the canonical outer object with signature
+omitted, including the complete V3 payload. Sign the 32-byte SHA-256 digest of
+`UTF8("typebridge.query.remote-reply-signature/v1") || 0x00 || U` using Ed25519.
+The receiver supplies the trusted public key, checks its advertisement binding,
+authenticates the outer envelope and only then interprets/correlates the V3
+payload. Unknown fields/tags and noncanonical reconstruction are refused.
+
+Rust's genuine Ed25519 golden fixtures are in
+`type-bridge-core/crates/contract/tests/fixtures/query-remote-v3/`: advertisement,
+request, request fingerprint, committed reply and failed reply. Existing V2
+envelope and V2/V3 plan fixtures remain byte-for-byte unchanged.

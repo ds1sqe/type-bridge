@@ -3154,6 +3154,7 @@ dependencies = [
 name = "type-bridge-contract"
 version = "2.2.6"
 dependencies = [
+ "ed25519-dalek",
  "serde",
  "serde_json",
  "sha2",
