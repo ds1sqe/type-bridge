@@ -3738,22 +3738,36 @@ fn concept_to_json_b8(
 fn given_rows_b9(spec: GivenRowsSpec) -> Result<typedb_driver::given::GivenRows> {
     use typedb_driver::given::GivenRows;
 
-    let mut given = GivenRows::new(spec.variables, spec.rows.len());
+    let mut given = GivenRows::new(spec.variables.clone(), spec.rows.len());
     for row in spec.rows {
-        let entries = row
-            .into_iter()
-            .map(given_entry_b9)
+        if row.len() != spec.variables.len() {
+            return Err(RuntimeError::QueryExecution(
+                "Invalid given row: width does not match the column header".into(),
+            ));
+        }
+        let entries = spec
+            .variables
+            .iter()
+            .zip(row)
+            .map(|(column, value)| given_entry_b9(column, value))
             .collect::<Result<Vec<_>>>()?;
-        given
-            .push_row(entries)
-            .map_err(|e| RuntimeError::QueryExecution(format!("Invalid given row: {e}")))?;
+        given.push_row(entries).map_err(|_| {
+            RuntimeError::QueryExecution(
+                "Invalid given row: the driver rejected the input row shape".into(),
+            )
+        })?;
     }
     Ok(given)
 }
 
+#[cfg(feature = "band9")]
+fn invalid_given_value(column: &str, value_type: &'static str) -> RuntimeError {
+    RuntimeError::QueryExecution(format!("Invalid given {value_type} in column {column:?}"))
+}
+
 /// Convert one portable [`GivenValue`] to a band-9 driver row entry.
 #[cfg(feature = "band9")]
-fn given_entry_b9(value: GivenValue) -> Result<typedb_driver::given::GivenRowEntry> {
+fn given_entry_b9(column: &str, value: GivenValue) -> Result<typedb_driver::given::GivenRowEntry> {
     use chrono::{NaiveDate, NaiveDateTime};
     use typedb_driver::concept::value::TimeZone as B9TimeZone;
     use typedb_driver::concept::value::{Decimal, Duration};
@@ -3766,21 +3780,20 @@ fn given_entry_b9(value: GivenValue) -> Result<typedb_driver::given::GivenRowEnt
         GivenValue::Double(d) => GivenRowEntry::from(d),
         GivenValue::String(s) => GivenRowEntry::from(s),
         GivenValue::Date(s) => {
-            let date = s.parse::<NaiveDate>().map_err(|e| {
-                RuntimeError::QueryExecution(format!("Invalid given date {s:?}: {e}"))
-            })?;
+            let date = s
+                .parse::<NaiveDate>()
+                .map_err(|_| invalid_given_value(column, "date"))?;
             GivenRowEntry::from(date)
         }
         GivenValue::Datetime(s) => {
-            let dt = s.parse::<NaiveDateTime>().map_err(|e| {
-                RuntimeError::QueryExecution(format!("Invalid given datetime {s:?}: {e}"))
-            })?;
+            let dt = s
+                .parse::<NaiveDateTime>()
+                .map_err(|_| invalid_given_value(column, "datetime"))?;
             GivenRowEntry::from(dt)
         }
         GivenValue::DatetimeTz(s) => {
-            let dt = parse_given_datetime_tz(&s).map_err(|e| {
-                RuntimeError::QueryExecution(format!("Invalid given datetime-tz {s:?}: {e}"))
-            })?;
+            let dt = parse_given_datetime_tz(&s)
+                .map_err(|_| invalid_given_value(column, "datetime-tz"))?;
             let offset = *dt.offset();
             GivenRowEntry::from(dt.with_timezone(&B9TimeZone::Fixed(offset)))
         }
@@ -3788,11 +3801,10 @@ fn given_entry_b9(value: GivenValue) -> Result<typedb_driver::given::GivenRowEnt
             local,
             named_zone,
             effective_offset_seconds,
-        } => GivenRowEntry::from(exact_given_datetime_tz_b9(
-            &local,
-            named_zone.as_deref(),
-            effective_offset_seconds,
-        )?),
+        } => GivenRowEntry::from(
+            exact_given_datetime_tz_b9(&local, named_zone.as_deref(), effective_offset_seconds)
+                .map_err(|_| invalid_given_value(column, "datetime-tz"))?,
+        ),
         GivenValue::Decimal(s) => {
             // The upstream parser parses the unsigned magnitude into `i64`,
             // so the otherwise-valid decimal minimum cannot pass through it.
@@ -3801,9 +3813,8 @@ fn given_entry_b9(value: GivenValue) -> Result<typedb_driver::given::GivenRowEnt
             let decimal = if s == "-9223372036854775808" {
                 Decimal::MIN
             } else {
-                s.parse::<Decimal>().map_err(|e| {
-                    RuntimeError::QueryExecution(format!("Invalid given decimal {s:?}: {e}"))
-                })?
+                s.parse::<Decimal>()
+                    .map_err(|_| invalid_given_value(column, "decimal"))?
             };
             GivenRowEntry::from(decimal)
         }
@@ -6111,7 +6122,8 @@ mod tests {
             GivenValue::Boolean(true),
             GivenValue::Double(1.5),
         ] {
-            given_entry_b9(value.clone()).unwrap_or_else(|e| panic!("{value:?} must convert: {e}"));
+            given_entry_b9("test_input", value.clone())
+                .unwrap_or_else(|e| panic!("{value:?} must convert: {e}"));
         }
     }
 
@@ -6122,11 +6134,14 @@ mod tests {
         use typedb_driver::concept::value::TimeZone;
         use typedb_driver::given::GivenRowEntry;
 
-        let named = given_entry_b9(GivenValue::DatetimeTzExact {
-            local: "2024-10-27T01:30:00".into(),
-            named_zone: Some("Europe/London".into()),
-            effective_offset_seconds: 3_600,
-        })
+        let named = given_entry_b9(
+            "test_input",
+            GivenValue::DatetimeTzExact {
+                local: "2024-10-27T01:30:00".into(),
+                named_zone: Some("Europe/London".into()),
+                effective_offset_seconds: 3_600,
+            },
+        )
         .expect("explicit overlap side");
         let GivenRowEntry::Value(Value::DatetimeTZ(named)) = named else {
             panic!("datetime-tz given entry")
@@ -6144,11 +6159,14 @@ mod tests {
             3_600
         );
 
-        let lower_case = given_entry_b9(GivenValue::DatetimeTzExact {
-            local: "2024-07-01T12:00:00".into(),
-            named_zone: Some("europe/amsterdam".into()),
-            effective_offset_seconds: 7_200,
-        })
+        let lower_case = given_entry_b9(
+            "test_input",
+            GivenValue::DatetimeTzExact {
+                local: "2024-07-01T12:00:00".into(),
+                named_zone: Some("europe/amsterdam".into()),
+                effective_offset_seconds: 7_200,
+            },
+        )
         .expect("case-insensitive names admitted by schema also lower");
         let GivenRowEntry::Value(Value::DatetimeTZ(lower_case)) = lower_case else {
             panic!("datetime-tz given entry")
@@ -6162,11 +6180,14 @@ mod tests {
             "the provider canonicalizes accepted authored case"
         );
 
-        let duration = given_entry_b9(GivenValue::Duration {
-            months: u32::MAX,
-            days: u32::MAX,
-            nanos: u64::MAX,
-        })
+        let duration = given_entry_b9(
+            "test_input",
+            GivenValue::Duration {
+                months: u32::MAX,
+                days: u32::MAX,
+                nanos: u64::MAX,
+            },
+        )
         .expect("duration boundary");
         let GivenRowEntry::Value(Value::Duration(duration)) = duration else {
             panic!("duration given entry")
@@ -6196,12 +6217,75 @@ mod tests {
             },
             GivenValue::Decimal("1.00000000000000000000".into()),
         ] {
-            let err = given_entry_b9(value.clone())
+            let err = given_entry_b9("test_input", value.clone())
                 .expect_err("malformed temporal string must be rejected");
             assert!(
                 err.to_string().contains("Invalid given"),
                 "{value:?}: {err}"
             );
+        }
+    }
+
+    #[cfg(feature = "band9")]
+    #[test]
+    fn given_conversion_errors_identify_column_and_type_without_values() {
+        let secret = "private-input-sentinel";
+        for (value, kind) in [
+            (GivenValue::Date(secret.into()), "date"),
+            (GivenValue::Datetime(secret.into()), "datetime"),
+            (GivenValue::DatetimeTz(secret.into()), "datetime-tz"),
+            (GivenValue::Decimal(secret.into()), "decimal"),
+            (
+                GivenValue::DatetimeTzExact {
+                    local: secret.into(),
+                    named_zone: None,
+                    effective_offset_seconds: 0,
+                },
+                "datetime-tz",
+            ),
+            (
+                GivenValue::DatetimeTzExact {
+                    local: "2024-07-01T12:00:00".into(),
+                    named_zone: Some(secret.into()),
+                    effective_offset_seconds: 0,
+                },
+                "datetime-tz",
+            ),
+        ] {
+            let error = given_rows_b9(GivenRowsSpec {
+                variables: vec!["valid_column".into(), "birth_date".into()],
+                rows: vec![vec![GivenValue::Integer(1), value]],
+            })
+            .expect_err("invalid second column");
+            assert_eq!(
+                error.to_string(),
+                format!("Query execution error: Invalid given {kind} in column \"birth_date\"")
+            );
+            assert!(!format!("{error:?}").contains(secret));
+            assert!(std::error::Error::source(&error).is_none());
+        }
+    }
+
+    #[cfg(feature = "band9")]
+    #[test]
+    fn given_row_width_errors_do_not_expose_or_ignore_extra_values() {
+        for row in [
+            vec![],
+            vec![
+                GivenValue::Integer(1),
+                GivenValue::Date("private-input-sentinel".into()),
+            ],
+        ] {
+            let error = given_rows_b9(GivenRowsSpec {
+                variables: vec!["column".into()],
+                rows: vec![row],
+            })
+            .expect_err("row width must match headers");
+            assert_eq!(
+                error.to_string(),
+                "Query execution error: Invalid given row: width does not match the column header"
+            );
+            assert!(!format!("{error:?}").contains("private-input-sentinel"));
         }
     }
 
