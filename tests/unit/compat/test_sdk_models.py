@@ -1,4 +1,4 @@
-"""Fail-closed tests for the four-binding sdk-v3 transition gate."""
+"""Fail-closed tests for the four-binding models transition gate."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 SOURCE_ROOT = Path(__file__).resolve().parents[3]
-COMPARATOR_PATH = SOURCE_ROOT / "scripts/ci/compare_sdk_conformance_v3.py"
+COMPARATOR_PATH = SOURCE_ROOT / "scripts/ci/sdk_models_compare.py"
 
 
 def _load_comparator() -> ModuleType:
@@ -146,7 +146,7 @@ def _valid_report(binding: str, contracts: Any) -> dict[str, Any]:
         "manifest": _source_identity(comparator.ROOT, comparator.MANIFEST_RELATIVE),
         "catalog": _source_identity(comparator.ROOT, comparator.CATALOG_RELATIVE),
         "fixture": {
-            "id": "sdk-v3",
+            "id": "models",
             "version": 3,
             "semantic_profile": "typedb-3.12.1/v1",
             "schema": _source_identity(comparator.ROOT, comparator.SCHEMA_RELATIVE),

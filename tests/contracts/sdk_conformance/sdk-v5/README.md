@@ -10,7 +10,7 @@ The finalized catalog has five selected rows with two disjoint dispositions:
 - G05, G06, G08, and G13 are serialization/archive evidence only and remain
   manifest gaps until C distribution.
 
-The canonical input fixture is the preserved Sdk V3 schema plus
+The canonical input fixture is the preserved Models schema plus
 `journey-v5.json`. The journey fixes semantic inputs and required relationships
 but contains no implementation-authored canonical record, archive, fingerprint,
 or report output. Each public generated producer must compute its bytes first.

@@ -1,10 +1,10 @@
 {
-  "format": "typebridge.sdk-v3-proof-fragment-allowlist/v1",
+  "format": "typebridge.sdk-models-proof-fragment-allowlist/v1",
   "semantic_profile": "typedb-3.12.1/v1",
   "bindings": {
     "python": [
       {
-        "id": "python.generated-data-v3-proof",
+        "id": "python.sdk-models-generated-data-proof",
         "sources": [
           "type-bridge-core/crates/contract/src/sdk_diagnostic.rs",
           "type-bridge-core/crates/orm/src/execution_diagnostic.rs",
@@ -22,27 +22,27 @@
           {
             "observation_ref": "complete_connection_policy",
             "proof_kind": "direct_runtime",
-            "test_id": "runtime_projection::tests::sdk_v3_python_data_plane_fragment"
+            "test_id": "runtime_projection::tests::sdk_models_python_data_plane_fragment"
           },
           {
             "observation_ref": "data_operation_cancellation",
             "proof_kind": "direct_runtime",
-            "test_id": "runtime_projection::tests::sdk_v3_python_data_plane_fragment"
+            "test_id": "runtime_projection::tests::sdk_models_python_data_plane_fragment"
           },
           {
             "observation_ref": "data_operation_resource_limits",
             "proof_kind": "direct_runtime",
-            "test_id": "runtime_projection::tests::sdk_v3_python_data_plane_fragment"
+            "test_id": "runtime_projection::tests::sdk_models_python_data_plane_fragment"
           },
           {
             "observation_ref": "data_operation_structured_diagnostic",
             "proof_kind": "diagnostic",
-            "test_id": "runtime_projection::tests::sdk_v3_python_data_plane_fragment"
+            "test_id": "runtime_projection::tests::sdk_models_python_data_plane_fragment"
           }
         ]
       },
       {
-        "id": "python.generated-package-v3-proof",
+        "id": "python.sdk-models-generated-package-proof",
         "sources": [
           "type-bridge-core/crates/python/src/runtime_projection.rs",
           "type-bridge-core/crates/schema-codegen/src/python/runtime.py",
@@ -52,24 +52,24 @@
           {
             "observation_ref": "projected_constraint_validation",
             "proof_kind": "diagnostic",
-            "test_id": "python.generated_package_v3_integrity"
+            "test_id": "python.sdk_models_generated_package_integrity"
           },
           {
             "observation_ref": "projection_evidence_integrity",
             "proof_kind": "diagnostic",
-            "test_id": "python.generated_package_v3_integrity"
+            "test_id": "python.sdk_models_generated_package_integrity"
           },
           {
             "observation_ref": "token_package_fencing",
             "proof_kind": "diagnostic",
-            "test_id": "python.generated_package_v3_integrity"
+            "test_id": "python.sdk_models_generated_package_integrity"
           }
         ]
       }
     ],
     "node": [
       {
-        "id": "node.generated-data-v3-proof",
+        "id": "node.sdk-models-generated-data-proof",
         "sources": [
           "type-bridge-core/crates/contract/src/sdk_diagnostic.rs",
           "type-bridge-core/crates/node/src/lib.rs",
@@ -87,27 +87,27 @@
           {
             "observation_ref": "complete_connection_policy",
             "proof_kind": "direct_runtime",
-            "test_id": "runtime_projection::tests::sdk_v3_node_data_plane_fragment"
+            "test_id": "runtime_projection::tests::sdk_models_node_data_plane_fragment"
           },
           {
             "observation_ref": "data_operation_cancellation",
             "proof_kind": "direct_runtime",
-            "test_id": "runtime_projection::tests::sdk_v3_node_data_plane_fragment"
+            "test_id": "runtime_projection::tests::sdk_models_node_data_plane_fragment"
           },
           {
             "observation_ref": "data_operation_resource_limits",
             "proof_kind": "direct_runtime",
-            "test_id": "runtime_projection::tests::sdk_v3_node_data_plane_fragment"
+            "test_id": "runtime_projection::tests::sdk_models_node_data_plane_fragment"
           },
           {
             "observation_ref": "data_operation_structured_diagnostic",
             "proof_kind": "diagnostic",
-            "test_id": "runtime_projection::tests::sdk_v3_node_data_plane_fragment"
+            "test_id": "runtime_projection::tests::sdk_models_node_data_plane_fragment"
           }
         ]
       },
       {
-        "id": "node.generated-package-v3-proof",
+        "id": "node.sdk-models-generated-package-proof",
         "sources": [
           "type-bridge-core/crates/node/src/runtime_projection.rs",
           "type-bridge-core/crates/schema-codegen/src/typescript/runtime.ts",
@@ -117,24 +117,24 @@
           {
             "observation_ref": "projected_constraint_validation",
             "proof_kind": "diagnostic",
-            "test_id": "node.generated_package_v3_integrity"
+            "test_id": "node.sdk_models_generated_package_integrity"
           },
           {
             "observation_ref": "projection_evidence_integrity",
             "proof_kind": "diagnostic",
-            "test_id": "node.generated_package_v3_integrity"
+            "test_id": "node.sdk_models_generated_package_integrity"
           },
           {
             "observation_ref": "token_package_fencing",
             "proof_kind": "diagnostic",
-            "test_id": "node.generated_package_v3_integrity"
+            "test_id": "node.sdk_models_generated_package_integrity"
           }
         ]
       }
     ],
     "rust": [
       {
-        "id": "type-bridge-rust.generated-data-v3-proof",
+        "id": "type-bridge-rust.sdk-models-generated-data-proof",
         "sources": [
           "type-bridge-core/crates/contract/src/sdk_diagnostic.rs",
           "type-bridge-core/crates/orm/src/execution_diagnostic.rs",
@@ -155,27 +155,27 @@
           {
             "observation_ref": "complete_connection_policy",
             "proof_kind": "direct_runtime",
-            "test_id": "transaction::tests::sdk_v3_rust_data_plane_fragment"
+            "test_id": "transaction::tests::sdk_models_rust_data_plane_fragment"
           },
           {
             "observation_ref": "data_operation_cancellation",
             "proof_kind": "direct_runtime",
-            "test_id": "transaction::tests::sdk_v3_rust_data_plane_fragment"
+            "test_id": "transaction::tests::sdk_models_rust_data_plane_fragment"
           },
           {
             "observation_ref": "data_operation_resource_limits",
             "proof_kind": "direct_runtime",
-            "test_id": "transaction::tests::sdk_v3_rust_data_plane_fragment"
+            "test_id": "transaction::tests::sdk_models_rust_data_plane_fragment"
           },
           {
             "observation_ref": "data_operation_structured_diagnostic",
             "proof_kind": "diagnostic",
-            "test_id": "transaction::tests::sdk_v3_rust_data_plane_fragment"
+            "test_id": "transaction::tests::sdk_models_rust_data_plane_fragment"
           }
         ]
       },
       {
-        "id": "type-bridge-rust.generated-package-v3-proof",
+        "id": "type-bridge-rust.sdk-models-generated-package-proof",
         "sources": [
           "type-bridge-core/crates/rust/src/entity_codec.rs",
           "type-bridge-core/crates/rust/src/relation_codec.rs",
@@ -186,24 +186,24 @@
           {
             "observation_ref": "projected_constraint_validation",
             "proof_kind": "diagnostic",
-            "test_id": "rust_acceptance::sdk_v3_generated_package_integrity"
+            "test_id": "rust_acceptance::sdk_models_generated_package_integrity"
           },
           {
             "observation_ref": "projection_evidence_integrity",
             "proof_kind": "diagnostic",
-            "test_id": "rust_acceptance::sdk_v3_generated_package_integrity"
+            "test_id": "rust_acceptance::sdk_models_generated_package_integrity"
           },
           {
             "observation_ref": "token_package_fencing",
             "proof_kind": "diagnostic",
-            "test_id": "rust_acceptance::sdk_v3_generated_package_integrity"
+            "test_id": "rust_acceptance::sdk_models_generated_package_integrity"
           }
         ]
       }
     ],
     "c": [
       {
-        "id": "type-bridge-c.generated-data-v3-proof",
+        "id": "type-bridge-c.sdk-models-generated-data-proof",
         "sources": [
           "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
           "type-bridge-core/crates/c/src/entity_crud.rs",
@@ -224,27 +224,27 @@
           {
             "observation_ref": "complete_connection_policy",
             "proof_kind": "direct_runtime",
-            "test_id": "runtime::tests::sdk_v3_c_data_plane_fragment"
+            "test_id": "runtime::tests::sdk_models_c_data_plane_fragment"
           },
           {
             "observation_ref": "data_operation_cancellation",
             "proof_kind": "direct_runtime",
-            "test_id": "runtime::tests::sdk_v3_c_data_plane_fragment"
+            "test_id": "runtime::tests::sdk_models_c_data_plane_fragment"
           },
           {
             "observation_ref": "data_operation_resource_limits",
             "proof_kind": "direct_runtime",
-            "test_id": "runtime::tests::sdk_v3_c_data_plane_fragment"
+            "test_id": "runtime::tests::sdk_models_c_data_plane_fragment"
           },
           {
             "observation_ref": "data_operation_structured_diagnostic",
             "proof_kind": "diagnostic",
-            "test_id": "runtime::tests::sdk_v3_c_data_plane_fragment"
+            "test_id": "runtime::tests::sdk_models_c_data_plane_fragment"
           }
         ]
       },
       {
-        "id": "type-bridge-c.generated-package-v3-proof",
+        "id": "type-bridge-c.sdk-models-generated-package-proof",
         "sources": [
           "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
           "type-bridge-core/crates/c/src/projected_model.rs",
@@ -258,17 +258,17 @@
           {
             "observation_ref": "projected_constraint_validation",
             "proof_kind": "diagnostic",
-            "test_id": "c_emitter::sdk_v3_generated_package_integrity"
+            "test_id": "c_emitter::sdk_models_generated_package_integrity"
           },
           {
             "observation_ref": "projection_evidence_integrity",
             "proof_kind": "diagnostic",
-            "test_id": "c_emitter::sdk_v3_generated_package_integrity"
+            "test_id": "c_emitter::sdk_models_generated_package_integrity"
           },
           {
             "observation_ref": "token_package_fencing",
             "proof_kind": "diagnostic",
-            "test_id": "c_emitter::sdk_v3_generated_package_integrity"
+            "test_id": "c_emitter::sdk_models_generated_package_integrity"
           }
         ]
       }

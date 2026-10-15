@@ -16,7 +16,7 @@ PRODUCER_PATH = (
     / "projected_live_check.mjs"
 )
 COMPARATOR_PATH = ROOT / "scripts/ci/compare_projected_live.py"
-CATALOG_PATH = ROOT / "tests/contracts/sdk_conformance/sdk-v3/catalog-v3.json"
+CATALOG_PATH = ROOT / "tests/contracts/sdk_conformance/models/catalog.json"
 
 
 def _node(source: str, *arguments: str, expected: int = 0) -> subprocess.CompletedProcess[str]:
@@ -150,15 +150,15 @@ try {
 
     real_root = tmp_path / "real-root"
     for relative_text in (
-        "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml",
-        "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json",
-        "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql",
+        "tests/contracts/sdk_conformance/models/schema.yaml",
+        "tests/contracts/sdk_conformance/models/journey.json",
+        "tests/contracts/sdk_conformance/models/provider-3.12.1.tql",
     ):
         relative = Path(relative_text)
         destination = real_root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, destination)
-    journey = real_root / "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"
+    journey = real_root / "tests/contracts/sdk_conformance/models/journey.json"
     journey_copy = tmp_path / "journey-copy.json"
     shutil.copyfile(journey, journey_copy)
     journey.unlink()
@@ -176,7 +176,7 @@ try {
     assert completed.stdout == "invalid_authority"
 
 
-def test_generated_package_requires_exact_sdk_v3_semantic_fingerprint() -> None:
+def test_generated_package_requires_exact_sdk_models_semantic_fingerprint() -> None:
     validate = """
 const producer = await import(process.argv[1]);
 const semantic = { ...producer.SEMANTIC_SCHEMA_FINGERPRINT };

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compose measured evidence and assemble SDK V3 reports."""
+"""Compose measured evidence and assemble Models reports."""
 
 from __future__ import annotations
 
@@ -15,20 +15,20 @@ from typing import Any
 import compare_manager_filter_live as manager_comparator
 import compare_projected_live as projected_live
 import compare_projected_parity as projected_parity
-import compare_sdk_conformance_v3 as conformance
 import proof_fragments as fragments
+import sdk_models_compare as conformance
 import sdk_profile_matrix as profile_matrix
 import validate_generation_artifact as generation
 from persist_binding_reports import publish_bytes
 
 ROOT = Path(__file__).resolve().parents[2]
-LIVE_FORMAT = "typebridge.sdk-v3-live-observations/v1"
-REPORT_FORMAT = "typebridge.sdk-conformance-report/v3"
-# The sdk-v3 catalog profile, used when a run names no other matrix profile.
+LIVE_FORMAT = "typebridge.sdk-models-live-observations/v1"
+REPORT_FORMAT = "typebridge.sdk-models-report/v1"
+# The models catalog profile, used when a run names no other matrix profile.
 SEMANTIC_PROFILE = profile_matrix.catalog_profile(3)
 MAX_LIVE_BYTES = 512 * 1024
 MAX_REPORT_BYTES = 1024 * 1024
-SUPPLEMENT_FORMAT = "typebridge.sdk-v3-live-supplement/v1"
+SUPPLEMENT_FORMAT = "typebridge.sdk-models-live-supplement/v1"
 REUSED_LANES = {
     ("atomic_multibinding_generation", "artifact"),
     ("field_name_identity", "artifact"),
@@ -40,7 +40,7 @@ REUSED_LANES = {
 
 
 class AssemblyError(ValueError):
-    """A stable fail-closed V3 report-assembly rejection."""
+    """A stable fail-closed Models report-assembly rejection."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(f"{code}: {message}")
@@ -119,7 +119,7 @@ def _live_observations(
     fragment_lanes: set[tuple[str, str]],
 ) -> dict[tuple[str, str], dict[str, Any]]:
     if live["format"] != LIVE_FORMAT:
-        raise AssemblyError("invalid_live_format", "live bundle format is not V3")
+        raise AssemblyError("invalid_live_format", "live bundle format is not Models")
     if live["binding"] != binding or live["semantic_profile"] != contracts.semantic_profile:
         raise AssemblyError("live_identity_mismatch", "live binding or semantic profile differs")
     if live["producer"] != contracts.report_producers[binding]["id"]:
@@ -196,7 +196,7 @@ def assemble_report(
         "manifest": _source_identity(conformance.MANIFEST_RELATIVE, contracts.manifest),
         "catalog": _source_identity(conformance.CATALOG_RELATIVE, contracts.catalog),
         "fixture": {
-            "id": "sdk-v3",
+            "id": "models",
             "version": 3,
             "semantic_profile": contracts.semantic_profile,
             "schema": _source_identity(conformance.SCHEMA_RELATIVE, contracts.schema),
@@ -262,7 +262,7 @@ def compose_bundle(
     field_identity_observation: dict[str, Any],
 ) -> dict[str, Any]:
     if supplement["format"] != SUPPLEMENT_FORMAT:
-        raise AssemblyError("invalid_supplement_format", "supplement format is not V3")
+        raise AssemblyError("invalid_supplement_format", "supplement format is not Models")
     normalized = copy.deepcopy(supplement)
     normalized["format"] = LIVE_FORMAT
     observations = _live_observations(
@@ -335,7 +335,7 @@ def compose_bundle(
 
 
 def _contracts(arguments: argparse.Namespace) -> conformance.Contracts:
-    """The sdk-v3 contracts rebound to the profile the run names."""
+    """The models contracts rebound to the profile the run names."""
 
     return conformance.for_profile(conformance.load_contracts(), arguments.semantic_profile, 3)
 
@@ -378,7 +378,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--semantic-profile",
         default=os.environ.get(profile_matrix.SEMANTIC_PROFILE_ENV) or SEMANTIC_PROFILE,
-        help="sdk-v3 matrix profile the evidence ran on (default: "
+        help="models matrix profile the evidence ran on (default: "
         "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE, else the catalog's own profile)",
     )
     parser.add_argument("--output", required=True, type=Path)
@@ -456,7 +456,7 @@ def main(argv: list[str] | None = None) -> int:
         manager_comparator.ContractError,
         generation.ArtifactError,
     ) as error:
-        print(f"sdk-v3 report assembly rejected: {error}", file=sys.stderr)
+        print(f"models report assembly rejected: {error}", file=sys.stderr)
         return 1
     return 0
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and compare the Python, Node, Rust, and C sdk-v3 reports."""
+"""Validate and compare the Python, Node, Rust, and C models reports."""
 
 from __future__ import annotations
 
@@ -42,16 +42,16 @@ from compare_sdk_conformance import (  # noqa: E402, F401
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest.json"
-CATALOG_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/catalog-v3.json"
-JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"
-REPORT_SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/report-schema-v3.json"
-SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"
-PROVIDER_SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql"
+CATALOG_RELATIVE = "tests/contracts/sdk_conformance/models/catalog.json"
+JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/models/journey.json"
+REPORT_SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/models/report-schema.json"
+SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/models/schema.yaml"
+PROVIDER_SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/models/provider-3.12.1.tql"
 
-REPORT_FORMAT = "typebridge.sdk-conformance-report/v3"
-SUMMARY_FORMAT = "typebridge.sdk-conformance-summary/v3"
-CATALOG_FORMAT = "typebridge.sdk-catalog/v3"
-JOURNEY_FORMAT = "typebridge.sdk-journey/v3"
+REPORT_FORMAT = "typebridge.sdk-models-report/v1"
+SUMMARY_FORMAT = "typebridge.sdk-models-comparison/v1"
+CATALOG_FORMAT = "typebridge.sdk-models-catalog/v1"
+JOURNEY_FORMAT = "typebridge.sdk-models-journey/v1"
 REPORT_BINDINGS = ("python", "node", "rust", "c")
 CURRENT_BINDINGS = frozenset(REPORT_BINDINGS)
 PROJECTION_TARGETS = {
@@ -62,20 +62,20 @@ PROJECTION_TARGETS = {
 }
 REPORT_PRODUCERS = {
     "python": {
-        "id": "python.generated-data-model-runtime-v3-live",
-        "test_id": "python.generated_data_model_runtime_v3_live",
+        "id": "python.sdk-models-data-model-runtime-live",
+        "test_id": "python.sdk_models_data_model_runtime_live",
     },
     "node": {
-        "id": "node.generated-data-model-runtime-v3-live",
-        "test_id": "node.generated_data_model_runtime_v3_live",
+        "id": "node.sdk-models-data-model-runtime-live",
+        "test_id": "node.sdk_models_data_model_runtime_live",
     },
     "rust": {
-        "id": "type-bridge-rust.generated-data-model-runtime-v3-live",
-        "test_id": "rust_projection_live::generated_data_model_runtime_v3_live",
+        "id": "type-bridge-rust.sdk-models-data-model-runtime-live",
+        "test_id": "rust_projection_live::sdk_models_data_model_runtime_live",
     },
     "c": {
-        "id": "type-bridge-c.generated-data-model-runtime-v3-live",
-        "test_id": "c_projection_live::generated_data_model_runtime_v3_live",
+        "id": "type-bridge-c.sdk-models-data-model-runtime-live",
+        "test_id": "c_projection_live::sdk_models_data_model_runtime_live",
     },
 }
 PROOF_KINDS = (
@@ -482,9 +482,9 @@ def _validate_journey(value: Any) -> dict[str, dict[str, Any]]:
         "journey",
     )
     if journey["format"] != JOURNEY_FORMAT:
-        raise ContractError("invalid_journey_format", "journey format is not v3")
-    if journey["fixture_id"] != "sdk-v3" or journey["version"] != 3:
-        raise ContractError("invalid_fixture_identity", "journey fixture identity is not v3")
+        raise ContractError("invalid_journey_format", "journey format is not models")
+    if journey["fixture_id"] != "models" or journey["version"] != 3:
+        raise ContractError("invalid_fixture_identity", "journey fixture identity is not models")
     if journey["semantic_profile"] not in profile_matrix.supported_profiles(3):
         raise ContractError("semantic_profile_mismatch", "journey profile is not a matrix profile")
 
@@ -607,7 +607,7 @@ def _validate_catalog(
         "catalog",
     )
     if catalog["format"] != CATALOG_FORMAT:
-        raise ContractError("invalid_catalog_format", "catalog format is not v3")
+        raise ContractError("invalid_catalog_format", "catalog format is not models")
     authority_state = catalog["authority_state"]
     if authority_state != "finalized":
         raise ContractError("invalid_authority_state", "catalog authority state is unknown")
@@ -617,13 +617,13 @@ def _validate_catalog(
         "catalog fixture",
     )
     if fixture != {
-        "id": "sdk-v3",
+        "id": "models",
         "version": 3,
         "semantic_profile": catalog_profile(fixture, 3),
         "schema_path": SCHEMA_RELATIVE,
         "provider_schema_path": PROVIDER_SCHEMA_RELATIVE,
     }:
-        raise ContractError("invalid_fixture_identity", "catalog fixture is not frozen v3")
+        raise ContractError("invalid_fixture_identity", "catalog fixture is not frozen models")
     if catalog["journey_path"] != JOURNEY_RELATIVE:
         raise ContractError("contract_path_mismatch", "catalog journey path is not frozen")
     if catalog["report_schema_path"] != REPORT_SCHEMA_RELATIVE:
@@ -815,7 +815,7 @@ def _validate_catalog(
 
 
 def load_contracts() -> Contracts:
-    """Load and validate the committed V3 authority and shared manifest."""
+    """Load and validate the committed Models authority and shared manifest."""
 
     expected_manifest = ROOT / MANIFEST_RELATIVE
     expected_catalog = ROOT / CATALOG_RELATIVE
@@ -937,8 +937,8 @@ def _validate_report(report: LoadedJson, contracts: Contracts) -> dict[str, Any]
         },
         "report fixture",
     )
-    if fixture["id"] != "sdk-v3" or _integer(fixture["version"], "fixture version") != 3:
-        raise ContractError("invalid_fixture_identity", f"{binding} report fixture is not v3")
+    if fixture["id"] != "models" or _integer(fixture["version"], "fixture version") != 3:
+        raise ContractError("invalid_fixture_identity", f"{binding} report fixture is not models")
     if fixture["semantic_profile"] != contracts.semantic_profile:
         raise ContractError("semantic_profile_mismatch", f"{binding} report profile is invalid")
     for field, relative, loaded, code in (
@@ -1131,7 +1131,7 @@ def _derive_summary(reports: dict[str, dict[str, Any]], contracts: Contracts) ->
         "format": SUMMARY_FORMAT,
         "bindings": list(REPORT_BINDINGS),
         "fixture": {
-            "id": "sdk-v3",
+            "id": "models",
             "version": 3,
             "semantic_profile": contracts.semantic_profile,
             "manifest": {"path": MANIFEST_RELATIVE, "sha256": contracts.manifest.sha256},
@@ -1180,7 +1180,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         summary = compare_reports(arguments.reports)
     except (ContractError, OSError) as error:
-        print(f"sdk-v3 conformance rejected: {error}", file=sys.stderr)
+        print(f"models conformance rejected: {error}", file=sys.stderr)
         return 1
     sys.stdout.buffer.write(canonical_json_bytes(summary))
     return 0

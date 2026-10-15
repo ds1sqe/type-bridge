@@ -134,7 +134,7 @@ def test_acceptance_runs_real_producer_then_committed_comparator() -> None:
     assert "module._load_report" in acceptance
     assert "expected_report" not in producer
     assert "compare_projected_parity" not in producer
-    assert "journey-v3.json" in producer
+    assert "journey.json" in producer
     assert "new package_.ExchangeConnection(" in producer
     assert "remoteSignedReply" in producer
     assert ".sign(null, digest, SIGNING_PRIVATE_KEY)" in producer

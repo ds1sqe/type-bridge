@@ -77,5 +77,5 @@ def test_acceptance_runs_real_producer_then_committed_comparator() -> None:
     assert "module._load_report" in acceptance
     assert "expected_report" not in producer_source
     assert "compare_projected_parity" not in producer_source
-    assert "journey-v3.json" in producer_source
+    assert "journey.json" in producer_source
     assert "json.loads(_bounded_regular_bytes" not in producer_source

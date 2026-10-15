@@ -188,7 +188,7 @@ def test_rejects_wrong_predecessor_binding() -> None:
     hostile = _predecessors()
     hostile[2] = (
         ASSEMBLER.conformance.canonical_json_bytes(
-            {"format": "typebridge.sdk-conformance-report/v3", "binding": "node"}
+            {"format": "typebridge.sdk-models-report/v1", "binding": "node"}
         )
         + b"\n"
     )

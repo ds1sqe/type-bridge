@@ -2629,7 +2629,7 @@ entities:
     const COMMIT_UNKNOWN: u8 = 2;
     const COMMIT_PANIC: u8 = 3;
 
-    fn sdk_v3_repository_root() -> PathBuf {
+    fn sdk_models_repository_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
@@ -2641,14 +2641,14 @@ entities:
             .unwrap()
     }
 
-    fn sdk_v3_source_identity(root: &Path, relative: &str) -> Value {
+    fn sdk_models_source_identity(root: &Path, relative: &str) -> Value {
         let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
         json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
     }
 
-    fn publish_sdk_v3_data_fragment(results: Vec<Value>) {
-        let destination = std::env::var_os("TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT");
-        let nonce = std::env::var_os("TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE");
+    fn publish_sdk_models_data_fragment(results: Vec<Value>) {
+        let destination = std::env::var_os("TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGMENT");
+        let nonce = std::env::var_os("TYPE_BRIDGE_SDK_MODELS_PROOF_RUN_NONCE");
         assert_eq!(destination.is_some(), nonce.is_some());
         let (Some(destination), Some(nonce)) = (destination, nonce) else {
             return;
@@ -2662,7 +2662,7 @@ entities:
                     .bytes()
                     .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
         );
-        let root = sdk_v3_repository_root();
+        let root = sdk_models_repository_root();
         let sources = [
             "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
             "type-bridge-core/crates/c/src/entity_crud.rs",
@@ -2682,12 +2682,12 @@ entities:
         let fragment = json!({
             "binding": "c",
             "contract": {
-                "allowlist": sdk_v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-allowlist-v1.json"),
-                "journey": sdk_v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"),
-                "proof_schema": sdk_v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-schema-v1.json"),
+                "allowlist": sdk_models_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-allowlist.json"),
+                "journey": sdk_models_source_identity(&root, "tests/contracts/sdk_conformance/models/journey.json"),
+                "proof_schema": sdk_models_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-schema.json"),
             },
-            "format": "typebridge.sdk-v3-proof-fragment/v1",
-            "producer": {"id": "type-bridge-c.generated-data-v3-proof", "sources": sources.iter().map(|path| sdk_v3_source_identity(&root, path)).collect::<Vec<_>>()},
+            "format": "typebridge.sdk-models-proof-fragment/v1",
+            "producer": {"id": "type-bridge-c.sdk-models-generated-data-proof", "sources": sources.iter().map(|path| sdk_models_source_identity(&root, path)).collect::<Vec<_>>()},
             "results": results,
             "run_nonce": nonce,
             "semantic_profile": crate::sdk_profile_matrix::requested(3).semantic_profile,
@@ -5327,7 +5327,7 @@ entities:
     }
 
     #[test]
-    fn sdk_v3_c_data_plane_fragment() {
+    fn sdk_models_c_data_plane_fragment() {
         let cancellation = AnswerCancellation::default();
         assert!(!cancellation.is_cancelled());
         cancellation.cancel();
@@ -5354,17 +5354,17 @@ entities:
         );
         assert_eq!(limits, QueryExecutionResourceLimits::default());
 
-        let root = sdk_v3_repository_root();
+        let root = sdk_models_repository_root();
         let journey: Value = serde_json::from_slice(
-            &fs::read(root.join("tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"))
+            &fs::read(root.join("tests/contracts/sdk_conformance/models/journey.json"))
                 .expect("V3 journey reads"),
         )
         .expect("V3 journey parses");
         let expected = journey["expected_observations"]
             .as_object()
             .expect("V3 expected observations are an object");
-        let test_id = "runtime::tests::sdk_v3_c_data_plane_fragment";
-        publish_sdk_v3_data_fragment(vec![
+        let test_id = "runtime::tests::sdk_models_c_data_plane_fragment";
+        publish_sdk_models_data_fragment(vec![
             json!({"observation": expected["complete_connection_policy"], "observation_ref": "complete_connection_policy", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": test_id}),
             json!({"observation": expected["data_operation_cancellation"], "observation_ref": "data_operation_cancellation", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": test_id}),
             json!({"observation": expected["data_operation_resource_limits"], "observation_ref": "data_operation_resource_limits", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": test_id}),

@@ -872,9 +872,9 @@ mod schema_generation_atomicity_tests {
     use type_bridge_contract::codec::to_canonical_json;
     use type_bridge_contract::projection::BindingTarget;
 
-    const ARTIFACT_OUTPUT_ENV: &str = "TYPE_BRIDGE_SDK_V3_ATOMIC_GENERATION_OUTPUT";
+    const ARTIFACT_OUTPUT_ENV: &str = "TYPE_BRIDGE_SDK_MODELS_ATOMIC_GENERATION_OUTPUT";
     const ARTIFACT_SOURCE_PATH: &str = "type-bridge-core/crates/cli/src/lib.rs";
-    const ARTIFACT_FORMAT: &str = "typebridge.sdk-v3-artifact-observation/v1";
+    const ARTIFACT_FORMAT: &str = "typebridge.sdk-models-artifact-observation/v1";
     const MAX_ARTIFACT_BYTES: usize = 64 * 1024;
 
     fn publish_atomic_generation_observation(observation: serde_json::Value) {
@@ -900,7 +900,7 @@ mod schema_generation_atomicity_tests {
             "format": ARTIFACT_FORMAT,
             "semantic_profile": "typedb-3.12.1/v1",
             "producer": {
-                "id": "type-bridge-cli.atomic-multibinding-v3-artifact",
+                "id": "type-bridge-cli.sdk-models-atomic-multibinding-artifact",
                 "source": {
                     "path": ARTIFACT_SOURCE_PATH,
                     "sha256": format!("{:x}", Sha256::digest(source)),

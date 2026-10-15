@@ -28,17 +28,17 @@ const MAX_REPORT_BYTES: usize = 256 * 1024;
 const AUTHORITY_FILES: [(&str, &str, &str); 3] = [
     (
         "schema",
-        "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml",
+        "tests/contracts/sdk_conformance/models/schema.yaml",
         "74b9161e3d8fd70a1f22c3a8b7fc70a823b18cb07973064e2e10ce0940f76f1f",
     ),
     (
         "journey",
-        "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json",
-        "c5679b428c22e2bff7989f6d674cde3780b752a40f6bbce6ccb3aa451797b1c0",
+        "tests/contracts/sdk_conformance/models/journey.json",
+        "d0153b47c42f771cae1668fcfdb0e3d9d7c4e3ee4d793177751e1b657fe37e66",
     ),
     (
         "provider",
-        "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql",
+        "tests/contracts/sdk_conformance/models/provider-3.12.1.tql",
         "af61aaece22d666e19d2c1357f8ebc39b8cbcf4bff7b98a19a56daf171a1faba",
     ),
 ];
@@ -123,7 +123,7 @@ fn required_environment(name: &'static str) -> ProducerResult<String> {
     Ok(value)
 }
 
-/// The sdk-v3 matrix entry the harness selected: the profile this report
+/// The models matrix entry the harness selected: the profile this report
 /// declares, its exact live server, and its expected semantic fingerprint.
 struct Profile {
     semantic_profile: String,
@@ -949,7 +949,7 @@ async fn run() -> ProducerResult<()> {
     if !generated_semantic_fingerprint_matches(&profile) {
         return Err(ProducerError::new(
             "generated_package_mismatch",
-            "generated crate is not the exact Sdk V3 projection",
+            "generated crate is not the exact Models projection",
         ));
     }
     if foreign::SEMANTIC_SCHEMA_FINGERPRINT_JSON == SEMANTIC_SCHEMA_FINGERPRINT_JSON

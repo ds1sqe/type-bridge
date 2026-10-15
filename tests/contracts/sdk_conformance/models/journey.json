@@ -1,6 +1,6 @@
 {
-  "format": "typebridge.sdk-journey/v3",
-  "fixture_id": "sdk-v3",
+  "format": "typebridge.sdk-models-journey/v1",
+  "fixture_id": "models",
   "version": 3,
   "semantic_profile": "typedb-3.12.1/v1",
   "records": {

@@ -1,4 +1,4 @@
-"""Provider-free tests for the Sdk V3 report assembler."""
+"""Provider-free tests for the Models report assembler."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 CI = ROOT / "scripts/ci"
-ASSEMBLER_PATH = CI / "assemble_sdk_conformance_v3.py"
+ASSEMBLER_PATH = CI / "sdk_models_assemble.py"
 FRAGMENT_LANES = {
     ("complete_connection_policy", "direct_runtime"),
     ("data_operation_cancellation", "direct_runtime"),
@@ -24,7 +24,7 @@ FRAGMENT_LANES = {
 
 def _load_assembler():
     sys.path.insert(0, str(CI))
-    spec = importlib.util.spec_from_file_location("sdk_v3_assembler", ASSEMBLER_PATH)
+    spec = importlib.util.spec_from_file_location("sdk_models_assembler", ASSEMBLER_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -72,7 +72,7 @@ def test_assembler_builds_one_comparator_valid_exact_21_row_report() -> None:
     assert report["fixture"]["projection_target"] == "rust"
     assembler.conformance._validate_report(
         assembler.conformance.LoadedJson(
-            path=Path("rust-v3.json"),
+            path=Path("rust-models.json"),
             raw=assembler.conformance.canonical_json_bytes(report),
             value=report,
         ),
@@ -105,7 +105,7 @@ def test_assembler_source_cannot_import_expected_journey_objects() -> None:
 
 
 def test_report_publication_is_create_new_and_leaves_no_temporary_file(tmp_path: Path) -> None:
-    destination = tmp_path / "rust-v3.json"
+    destination = tmp_path / "rust-models.json"
     assembler._publish(destination, {"status": "passed"})
     assert destination.read_bytes() == b'{"status":"passed"}\n'
     assert list(tmp_path.iterdir()) == [destination]

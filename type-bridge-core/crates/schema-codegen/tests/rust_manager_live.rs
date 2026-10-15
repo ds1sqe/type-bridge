@@ -21,8 +21,8 @@ const PROFILE_ENV: &str = "TYPE_BRIDGE_MANAGER_LIVE_PROFILE";
 const MAX_PRODUCER_BYTES: usize = 1024 * 1024;
 
 fn sdk_source() -> String {
-    fs::read_to_string(repository().join("tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"))
-        .expect("Sdk V3 schema reads")
+    fs::read_to_string(repository().join("tests/contracts/sdk_conformance/models/schema.yaml"))
+        .expect("Models schema reads")
 }
 
 fn foreign_sdk_source() -> String {
@@ -109,13 +109,13 @@ fn staged_consumer(stage: &Stage, profile: &SdkProfile) -> PathBuf {
     let foreign = stage.path().join("generated-foreign");
     let consumer = stage.path().join("consumer");
     write_package(
-        &emit_from_source(&sdk_source(), "sdk-v3.yaml", profile),
+        &emit_from_source(&sdk_source(), "models.yaml", profile),
         &generated,
     );
     write_foreign_package(
         &emit_from_source(
             &foreign_sdk_source(),
-            "sdk-v3-foreign-foo-bar.yaml",
+            "models-foreign-foo-bar.yaml",
             profile,
         ),
         &foreign,

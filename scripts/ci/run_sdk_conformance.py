@@ -127,8 +127,10 @@ def fragment_environment(
     version: int, environment: dict[str, str], destination: Path, nonce: str
 ) -> dict[str, str]:
     return environment | {
-        f"TYPE_BRIDGE_SDK_V{version}_PROOF_FRAGMENT": str(destination),
-        f"TYPE_BRIDGE_SDK_V{version}_PROOF_RUN_NONCE": nonce,
+        f"{'TYPE_BRIDGE_SDK_MODELS' if version == 3 else f'TYPE_BRIDGE_SDK_V{version}'}_PROOF_FRAGMENT": str(
+            destination
+        ),
+        f"{'TYPE_BRIDGE_SDK_MODELS' if version == 3 else f'TYPE_BRIDGE_SDK_V{version}'}_PROOF_RUN_NONCE": nonce,
     }
 
 
@@ -342,16 +344,16 @@ def model_artifacts(directory: Path, environment: dict[str, str]) -> None:
             "type-bridge-cli",
             "schema_generation_atomicity_tests::injected_c_emitter_failure_preserves_all_four_ordered_packages",
         ),
-        env=environment | {"TYPE_BRIDGE_SDK_V3_ATOMIC_GENERATION_OUTPUT": str(atomic)},
+        env=environment | {"TYPE_BRIDGE_SDK_MODELS_ATOMIC_GENERATION_OUTPUT": str(atomic)},
     )
     field_identity = directory / "field-identity.json"
     run(
         cargo_test(
             "type-bridge-schema-codegen",
-            "exact_sdk_v3_field_name_identity_is_source_bound",
-            suite="sdk_v3_fingerprints",
+            "exact_sdk_models_field_name_identity_is_source_bound",
+            suite="sdk_models_fingerprints",
         ),
-        env=environment | {"TYPE_BRIDGE_SDK_V3_FIELD_IDENTITY_OUTPUT": str(field_identity)},
+        env=environment | {"TYPE_BRIDGE_SDK_MODELS_FIELD_IDENTITY_OUTPUT": str(field_identity)},
     )
     run(python_command("validate_generation_artifact.py", "atomic", str(atomic)), env=environment)
     run(
@@ -372,21 +374,26 @@ def model_proofs(directory: Path, environment: dict[str, str], nonce: str) -> No
         ],
         "rust": cargo_test(
             "type-bridge-schema-codegen",
-            "sdk_v3_generated_package_integrity",
+            "sdk_models_generated_package_integrity",
             suite="rust_acceptance",
         ),
         "c": cargo_test(
-            "type-bridge-schema-codegen", "sdk_v3_generated_package_integrity", suite="c_emitter"
+            "type-bridge-schema-codegen",
+            "sdk_models_generated_package_integrity",
+            suite="c_emitter",
         ),
     }
     data_tests = {
         "python": (
             "type-bridge-core",
-            "runtime_projection::tests::sdk_v3_python_data_plane_fragment",
+            "runtime_projection::tests::sdk_models_python_data_plane_fragment",
         ),
-        "node": ("type-bridge-node", "runtime_projection::tests::sdk_v3_node_data_plane_fragment"),
-        "rust": ("type-bridge", "transaction::tests::sdk_v3_rust_data_plane_fragment"),
-        "c": ("type-bridge-c", "runtime::tests::sdk_v3_c_data_plane_fragment"),
+        "node": (
+            "type-bridge-node",
+            "runtime_projection::tests::sdk_models_node_data_plane_fragment",
+        ),
+        "rust": ("type-bridge", "transaction::tests::sdk_models_rust_data_plane_fragment"),
+        "c": ("type-bridge-c", "runtime::tests::sdk_models_c_data_plane_fragment"),
     }
     commands = {
         binding: (package_commands[binding], cargo_test(*data_tests[binding]))
@@ -400,7 +407,7 @@ def model_live(directory: Path, environment: dict[str, str]) -> None:
     supplements.mkdir()
     python_env = environment | {
         "USE_DOCKER": "false",
-        "TYPE_BRIDGE_SDK_V3_PYTHON_SUPPLEMENT": str(supplements / "python.json"),
+        "TYPE_BRIDGE_SDK_MODELS_PYTHON_SUPPLEMENT": str(supplements / "python.json"),
     }
     run(
         [
@@ -410,20 +417,20 @@ def model_live(directory: Path, environment: dict[str, str]) -> None:
             "-q",
             "-m",
             "integration",
-            "tests/integration/schema/test_generated_projection_live.py::test_generated_data_model_runtime_v3_live",
+            "tests/integration/schema/test_generated_projection_live.py::test_sdk_models_data_model_runtime_live",
         ],
         env=python_env,
     )
     run(["npm", "run", "build"], cwd=NODE, env=environment)
     run(["npm", "run", "typecheck:projection-integration"], cwd=NODE, env=environment)
     node_env = environment | {
-        "TYPE_BRIDGE_SDK_V3_NODE_SUPPLEMENT": str(supplements / "node.json"),
-        "TYPE_BRIDGE_NODE_INTG_DATABASE": f"type_bridge_v3_node_{os.getpid()}",
+        "TYPE_BRIDGE_SDK_MODELS_NODE_SUPPLEMENT": str(supplements / "node.json"),
+        "TYPE_BRIDGE_NODE_INTG_DATABASE": f"type_bridge_models_node_{os.getpid()}",
     }
-    node_live("node.generated_data_model_runtime_v3_live", node_env)
+    node_live("node.sdk_models_data_model_runtime_live", node_env)
     rust_env = environment | {
-        "TYPE_BRIDGE_SDK_V3_RUST_SUPPLEMENT": str(supplements / "rust.json"),
-        "TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE": f"type_bridge_v3_rust_{os.getpid()}",
+        "TYPE_BRIDGE_SDK_MODELS_RUST_SUPPLEMENT": str(supplements / "rust.json"),
+        "TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE": f"type_bridge_models_rust_{os.getpid()}",
     }
     run(
         rust_live(
@@ -432,11 +439,11 @@ def model_live(directory: Path, environment: dict[str, str]) -> None:
         env=rust_env,
     )
     c_env = environment | {
-        "TYPE_BRIDGE_SDK_V3_C_SUPPLEMENT": str(supplements / "c.json"),
-        "TYPE_BRIDGE_C_QUERY_INTG_DATABASE": f"type_bridge_v3_c_{os.getpid()}",
+        "TYPE_BRIDGE_SDK_MODELS_C_SUPPLEMENT": str(supplements / "c.json"),
+        "TYPE_BRIDGE_C_QUERY_INTG_DATABASE": f"type_bridge_models_c_{os.getpid()}",
         "TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER": "1",
     }
-    run(rust_live("generated_data_model_runtime_v3_live", "c_projection_live"), env=c_env)
+    run(rust_live("sdk_models_data_model_runtime_live", "c_projection_live"), env=c_env)
 
 
 def assemble_models(directory: Path, environment: dict[str, str], nonce: str) -> tuple[Path, ...]:
@@ -445,7 +452,7 @@ def assemble_models(directory: Path, environment: dict[str, str], nonce: str) ->
     for binding in BINDINGS:
         run(
             python_command(
-                "assemble_sdk_conformance_v3.py",
+                "sdk_models_assemble.py",
                 "--projected-parity",
                 str(directory / f"projected-parity/{binding}.json"),
                 "--projected-live",
@@ -471,7 +478,7 @@ def assemble_models(directory: Path, environment: dict[str, str], nonce: str) ->
         )
     paths = tuple(reports / f"{binding}.json" for binding in BINDINGS)
     run(
-        python_command("compare_sdk_conformance_v3.py", *(str(path) for path in paths)),
+        python_command("sdk_models_compare.py", *(str(path) for path in paths)),
         env=environment,
     )
     return paths

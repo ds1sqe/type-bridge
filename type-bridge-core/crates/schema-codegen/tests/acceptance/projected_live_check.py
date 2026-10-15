@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Produce Python's exact-server Projected live subset report on one sdk-v3 matrix profile."""
+"""Produce Python's exact-server Projected live subset report on one models matrix profile."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ from typing import Any
 from type_bridge import Database
 
 REPORT_FORMAT = "typebridge.projected-live-report/v1"
-# `main` reports on the sdk-v3 matrix entry it selects from
-# `scripts/ci/sdk_profile_matrix.py`. These constants are the sdk-v3 catalog's
+# `main` reports on the models matrix entry it selects from
+# `scripts/ci/sdk_profile_matrix.py`. These constants are the models catalog's
 # own entry: the journey's frozen identity and the helpers' default identity.
 PROFILE_MATRIX_RELATIVE = "scripts/ci/sdk_profile_matrix.py"
 SEMANTIC_PROFILE = "typedb-3.12.1/v1"
@@ -43,13 +43,13 @@ MAX_REPORT_BYTES = 256 * 1024
 MAX_AUTHORITY_BYTES = 1024 * 1024
 
 SOURCE_PATHS = {
-    "schema": "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml",
-    "journey": "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json",
-    "provider": ("tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql"),
+    "schema": "tests/contracts/sdk_conformance/models/schema.yaml",
+    "journey": "tests/contracts/sdk_conformance/models/journey.json",
+    "provider": ("tests/contracts/sdk_conformance/models/provider-3.12.1.tql"),
 }
 SOURCE_SHA256 = {
     "schema": "74b9161e3d8fd70a1f22c3a8b7fc70a823b18cb07973064e2e10ce0940f76f1f",
-    "journey": "c5679b428c22e2bff7989f6d674cde3780b752a40f6bbce6ccb3aa451797b1c0",
+    "journey": "d0153b47c42f771cae1668fcfdb0e3d9d7c4e3ee4d793177751e1b657fe37e66",
     "provider": "af61aaece22d666e19d2c1357f8ebc39b8cbcf4bff7b98a19a56daf171a1faba",
 }
 OBSERVATION_REFS = (
@@ -144,7 +144,7 @@ def _source_authority(root: Path) -> tuple[dict[str, dict[str, str]], dict[str, 
         if digest != SOURCE_SHA256[label]:
             raise ProducerError(
                 "authority_hash_mismatch",
-                f"Projected {label} is not the frozen Sdk V3 authority",
+                f"Projected {label} is not the frozen Models authority",
             )
         authority[label] = {"path": relative, "sha256": digest}
         sources[label] = raw
@@ -279,7 +279,7 @@ def _load_package(
     if type(semantic) is not dict or semantic != semantic_fingerprint:
         raise ProducerError(
             "generated_package_identity",
-            "generated package is not the frozen Sdk V3 schema projection",
+            "generated package is not the frozen Models schema projection",
         )
     installed = getattr(package.Person, "__runtime_projection__", None)
     if installed is None or any(
@@ -315,15 +315,15 @@ def _record_index(
     journey: dict[str, Any],
 ) -> tuple[dict[str, dict[str, Any]], list[str], list[str]]:
     if (
-        journey.get("format") != "typebridge.sdk-journey/v3"
-        or journey.get("fixture_id") != "sdk-v3"
+        journey.get("format") != "typebridge.sdk-models-journey/v1"
+        or journey.get("fixture_id") != "models"
         or journey.get("version") != 3
         or journey.get("semantic_profile") != SEMANTIC_PROFILE
     ):
-        raise ProducerError("invalid_journey", "sdk-v3 journey identity drifted")
+        raise ProducerError("invalid_journey", "models journey identity drifted")
     groups = journey.get("records")
     if type(groups) is not dict:
-        raise ProducerError("invalid_journey", "sdk-v3 records are malformed")
+        raise ProducerError("invalid_journey", "models records are malformed")
     index: dict[str, dict[str, Any]] = {}
     for group in (
         "people",
@@ -931,7 +931,7 @@ def main(environment: Mapping[str, str] = os.environ) -> int:
         database_name = _required_environment(DATABASE_ENV, environment)
         http_port = _http_port(environment)
         authority, sources = _source_authority(root)
-        # TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE, else the sdk-v3 catalog's own profile.
+        # TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE, else the models catalog's own profile.
         identity = _profile_matrix(root).requested(
             3, environment=environment, root=root, error=ProducerError
         )

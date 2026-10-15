@@ -22,8 +22,8 @@ use type_bridge_schema_codegen::{CEmitter, PythonEmitter, RustEmitter, TypeScrip
 
 const OUTPUT_ENV: &str = "TYPE_BRIDGE_SDK_PROFILE_MATRIX_OUTPUT";
 const ACCEPTANCE_SOURCE: &str = include_str!("acceptance/schema.yaml");
-const SDK_V3_SOURCE: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml");
+const SDK_MODELS_SOURCE: &str =
+    include_str!("../../../../tests/contracts/sdk_conformance/models/schema.yaml");
 
 /// One conformance set: its catalog, its matrix, and the fixture source whose
 /// projections the catalog pins (`None` when the set pins no fingerprints).
@@ -39,7 +39,7 @@ const SETS: [ConformanceSet; 6] = [
         source: Some(ACCEPTANCE_SOURCE),
     },
     ConformanceSet {
-        source: Some(SDK_V3_SOURCE),
+        source: Some(SDK_MODELS_SOURCE),
     },
     ConformanceSet { source: None },
     ConformanceSet { source: None },

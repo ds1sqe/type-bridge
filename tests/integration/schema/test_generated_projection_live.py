@@ -53,14 +53,14 @@ SDK_CATALOG_RELATIVE = "tests/contracts/sdk_conformance/sdk-v1/catalog-v1.json"
 SDK_JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/sdk-v1/journey-v1.json"
 SDK_V2_CATALOG_RELATIVE = "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json"
 SDK_V2_JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json"
-SDK_V3_JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"
+SDK_MODELS_JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/models/journey.json"
 SDK_MANIFEST = ROOT / SDK_MANIFEST_RELATIVE
 SDK_CATALOG = ROOT / SDK_CATALOG_RELATIVE
 SDK_JOURNEY = ROOT / SDK_JOURNEY_RELATIVE
 SDK_V2_CATALOG = ROOT / SDK_V2_CATALOG_RELATIVE
 SDK_V2_JOURNEY = ROOT / SDK_V2_JOURNEY_RELATIVE
-SDK_V3_JOURNEY = ROOT / SDK_V3_JOURNEY_RELATIVE
-SDK_V3_PROVIDER_SCHEMA = ROOT / "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql"
+SDK_MODELS_JOURNEY = ROOT / SDK_MODELS_JOURNEY_RELATIVE
+SDK_MODELS_PROVIDER_SCHEMA = ROOT / "tests/contracts/sdk_conformance/models/provider-3.12.1.tql"
 SDK_V2_PROOF_LOADER = ROOT / "scripts/ci/proof_fragments.py"
 SDK_PROFILE_MATRIX_LOADER = ROOT / "scripts/ci/sdk_profile_matrix.py"
 
@@ -567,17 +567,17 @@ def _publish_sdk_report(raw_path: str, report: dict[str, object]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _publish_sdk_v3_python_supplement(
+def _publish_sdk_models_python_supplement(
     generated: ModuleType,
     detected: str | None,
     observations: dict[tuple[str, str], dict[str, object]],
 ) -> None:
-    raw_path = os.environ.get("TYPE_BRIDGE_SDK_V3_PYTHON_SUPPLEMENT")
+    raw_path = os.environ.get("TYPE_BRIDGE_SDK_MODELS_PYTHON_SUPPLEMENT")
     if raw_path is None:
         return
     identity = _requested_sdk_profile(3, _generated_profile(generated), detected)
     semantic_fingerprint, projection_fingerprint = _sdk_python_fingerprints(identity, generated)
-    _, journey = _load_json_object(SDK_V3_JOURNEY)
+    _, journey = _load_json_object(SDK_MODELS_JOURNEY)
     expected = journey["expected_observations"]
     assert isinstance(expected, dict)
     for (observation_ref, _), observation in observations.items():
@@ -593,10 +593,10 @@ def _publish_sdk_v3_python_supplement(
     ]
     assert len(results) == 8
     supplement = {
-        "format": "typebridge.sdk-v3-live-supplement/v1",
+        "format": "typebridge.sdk-models-live-supplement/v1",
         "binding": "python",
         "semantic_profile": identity.semantic_profile,
-        "producer": "python.generated-data-model-runtime-v3-live",
+        "producer": "python.sdk-models-data-model-runtime-live",
         "semantic_fingerprint": semantic_fingerprint,
         "projection_fingerprint": projection_fingerprint,
         "results": results,
@@ -2324,18 +2324,18 @@ def generated_package(
 
 
 @pytest.fixture
-def generated_v3_package(
+def sdk_models_package(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     clean_db: Database,
 ) -> Iterator[ModuleType]:
-    """Import the exact Sdk V3 Python projection generated for this run."""
+    """Import the exact Models Python projection generated for this run."""
     _, _, semantic_profile = _acceptance_contract(clean_db)
     if semantic_profile not in _profile_matrix().supported_profiles(3):
-        pytest.skip(f"sdk-v3 has no matrix entry for {semantic_profile}")
+        pytest.skip(f"models has no matrix entry for {semantic_profile}")
     supplied_stage = os.environ.get("TYPE_BRIDGE_GENERATED_PYTHON_STAGE")
     if supplied_stage is None:
-        stage = tmp_path / "generated-v3-projection"
+        stage = tmp_path / "generated-models-projection"
         generation_environment = os.environ.copy()
         generation_environment["TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE"] = semantic_profile
         subprocess.run(
@@ -2353,9 +2353,9 @@ def generated_v3_package(
     package = stage / "generated_ordered" / "__init__.py"
     if supplied_stage is None and not package.exists():
         # The provider schema is profile-independent; only the fixture script
-        # decides which profiles get the ordered sdk-v3 package.
+        # decides which profiles get the ordered models package.
         pytest.skip(
-            f"prepare_generated_live_fixture.sh emits no sdk-v3 package for {semantic_profile}"
+            f"prepare_generated_live_fixture.sh emits no models package for {semantic_profile}"
         )
     if not package.is_file() or package.is_symlink():
         raise AssertionError(f"supplied generated Python V3 fixture is incomplete: {package}")
@@ -2377,15 +2377,15 @@ def generated_v3_package(
                 del sys.modules[module_name]
 
 
-def generated_data_model_runtime_v3_live(
+def sdk_models_data_model_runtime_live(
     clean_db: Database,
-    generated_v3_package: ModuleType,
+    sdk_models_package: ModuleType,
 ) -> None:
-    generated = generated_v3_package
+    generated = sdk_models_package
     detected = clean_db.detected_server_version()
     _require_profile_server_version(_generated_profile(generated), detected, 3)
     clean_db.execute_query(
-        SDK_V3_PROVIDER_SCHEMA.read_text(encoding="utf-8"),
+        SDK_MODELS_PROVIDER_SCHEMA.read_text(encoding="utf-8"),
         transaction_type="schema",
     )
 
@@ -2831,7 +2831,7 @@ def generated_data_model_runtime_v3_live(
             },
         },
     }
-    _publish_sdk_v3_python_supplement(generated, detected, observations)
+    _publish_sdk_models_python_supplement(generated, detected, observations)
 
     for value in put_links:
         network_manager.delete(value)
@@ -2842,24 +2842,24 @@ def generated_data_model_runtime_v3_live(
         person_manager.delete(stored)
 
 
-def test_generated_data_model_runtime_v3_live(
+def test_sdk_models_data_model_runtime_live(
     clean_db: Database,
-    generated_v3_package: ModuleType,
+    sdk_models_package: ModuleType,
 ) -> None:
-    generated_data_model_runtime_v3_live(clean_db, generated_v3_package)
+    sdk_models_data_model_runtime_live(clean_db, sdk_models_package)
 
 
 def test_generated_canonical_serialization_v5_live(
     clean_db: Database,
-    generated_v3_package: ModuleType,
+    sdk_models_package: ModuleType,
 ) -> None:
     raw_evidence = os.environ.get("TYPE_BRIDGE_SDK_V5_PYTHON_EVIDENCE")
     if raw_evidence is None:
         pytest.skip("Sdk V5 Python live evidence was not requested")
-    generated = generated_v3_package
+    generated = sdk_models_package
     _requested_sdk_profile(5, _generated_profile(generated), clean_db.detected_server_version())
     clean_db.execute_query(
-        SDK_V3_PROVIDER_SCHEMA.read_text(encoding="utf-8"),
+        SDK_MODELS_PROVIDER_SCHEMA.read_text(encoding="utf-8"),
         transaction_type="schema",
     )
     person_manager = generated.Person.manager(clean_db)

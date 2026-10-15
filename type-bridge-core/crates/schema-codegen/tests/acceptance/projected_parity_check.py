@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 REPORT_FORMAT = "typebridge.projected-parity-report/v1"
-# The sdk-v3 TypeDB version matrix: the report's profile and the semantic
+# The models TypeDB version matrix: the report's profile and the semantic
 # fingerprint the local package must carry.
 PROFILE_MATRIX_RELATIVE = "scripts/ci/sdk_profile_matrix.py"
 OUTPUT_ENV = "TYPE_BRIDGE_PROJECTED_PARITY_REPORT"
@@ -27,8 +27,8 @@ PACKAGE_ROOT_ENV = "TYPE_BRIDGE_PROJECTED_PYTHON_PACKAGE_ROOT"
 REPOSITORY_ROOT_ENV = "TYPE_BRIDGE_PROJECTED_REPOSITORY_ROOT"
 MAX_REPORT_BYTES = 256 * 1024
 MAX_AUTHORITY_BYTES = 1024 * 1024
-SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"
-JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"
+SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/models/schema.yaml"
+JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/models/journey.json"
 
 
 class ProducerError(RuntimeError):
@@ -1592,9 +1592,9 @@ def _repository_root(environment: Mapping[str, str] = os.environ) -> Path:
 
 
 def _profile_identity(root: Path, package: Any, environment: Mapping[str, str]) -> Any:
-    """Select the sdk-v3 matrix entry; the local package must be its projection.
+    """Select the models matrix entry; the local package must be its projection.
 
-    The profile is TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE, else the sdk-v3
+    The profile is TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE, else the models
     catalog's own profile.
     """
     spec = importlib.util.spec_from_file_location(
@@ -1615,7 +1615,7 @@ def _profile_identity(root: Path, package: Any, environment: Mapping[str, str]) 
     if semantic != identity.expected_fingerprints["semantic"]:
         raise ProducerError(
             "generated_package_identity",
-            f"generated package is not the Sdk V3 projection for {identity.semantic_profile}",
+            f"generated package is not the Models projection for {identity.semantic_profile}",
         )
     return identity
 

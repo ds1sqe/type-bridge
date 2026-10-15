@@ -26,12 +26,13 @@ ROOT = Path(__file__).resolve().parents[2]
 CORE = ROOT / "type-bridge-core"
 CONTRACT_PATH = ROOT / "tests/contracts/c-distribution-v1.json"
 ABI_PATH = ROOT / "tests/contracts/c-abi.json"
-SCHEMA_PATH = ROOT / "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"
+SCHEMA_PATH = ROOT / "tests/contracts/sdk_conformance/models/schema.yaml"
 LICENSE_PATH = ROOT / "LICENSE"
 NOTICE_PATH = CORE / "crates/c/THIRD_PARTY_NOTICES.md"
 TARGET = "x86_64-unknown-linux-gnu"
 RUNTIME_NAME = "type-bridge-c-runtime"
 RUNTIME_LIBRARY = "libtype_bridge_c.so"
+# Published C asset name; rename with the next release record.
 PACKAGE_NAME = "tb_sdkv3"
 PACKAGE_VERSION = "1.0.0"
 ABI_VERSION = "1.6.0"
@@ -454,9 +455,9 @@ def build_generation_workspace(root: Path) -> Path:
     (workspace / "typebridge.yaml").write_text(
         "format: typebridge.workspace/v1\n"
         "schema:\n  root: schema/schema.yaml\n  ownership: exclusive\n"
-        "  managed-scope: sdk-v3-package\n"
+        "  managed-scope: models-package\n"
         "compatibility:\n  semantic-profile: typedb-3.12.1/v1\n"
-        "migrations:\n  directory: migrations/v2\n  app-label: sdkv3\n"
+        "migrations:\n  directory: migrations/v2\n  app-label: models\n"
         "bindings:\n  c:\n    output: generated/c\n",
         encoding="utf-8",
     )
@@ -537,7 +538,7 @@ def build_generated(output: Path, build_root: Path, *, commit: str, tree: str) -
     filename = f"{PACKAGE_NAME}-c-{projection_digest}.tar.gz"
     manifest = {
         "artifact-id": f"sha256:{identity}",
-        "declared-schema-source": "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml",
+        "declared-schema-source": "tests/contracts/sdk_conformance/models/schema.yaml",
         "declared-schema-source-sha256": sha256(read_regular(SCHEMA_PATH)),
         "filename": filename,
         "format": PACKAGE_FORMAT,

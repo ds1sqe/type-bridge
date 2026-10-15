@@ -36,9 +36,9 @@ const SETUP: &str = include_str!("c_projection_live/setup.rs");
 const SETUP_LOCK: &[u8] = include_bytes!("../../../../tests/support/provider/Cargo.lock");
 const CONSUMER: &str = include_str!("c_projection_live/consumer.c");
 const QUERY_SCHEMA: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml");
+    include_str!("../../../../tests/contracts/sdk_conformance/models/schema.yaml");
 const QUERY_PROVIDER_SCHEMA: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql");
+    include_str!("../../../../tests/contracts/sdk_conformance/models/provider-3.12.1.tql");
 const QUERY_PACKAGE: &str = include_str!("c_projection_live/query_package.c");
 const QUERY_CONSUMER: &str = include_str!("c_projection_live/query_consumer.c");
 const DATABASE_CREATED_MARKER: &str = "generated C isolated database created";
@@ -295,13 +295,13 @@ fn emitted_query_package(semantic_profile: &str) -> GeneratedPackage {
 fn emitted_query_package_and_authority(semantic_profile: &str) -> (GeneratedPackage, Vec<u8>) {
     let emitter = CEmitter::new();
     let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("sdk-v3.yaml").expect("Sdk V3 document ID is valid"),
+        DocumentId::new("models.yaml").expect("Models document ID is valid"),
         QUERY_SCHEMA,
     )])
-    .expect("exact Sdk V3 schema parses");
-    let declared = normalize_documents(&documents).expect("exact Sdk V3 schema normalizes");
+    .expect("exact Models schema parses");
+    let declared = normalize_documents(&documents).expect("exact Models schema normalizes");
     let profile = SemanticProfileId::new(semantic_profile).expect("live profile is valid");
-    let resolved = resolve(&declared, &profile).expect("exact Sdk V3 schema resolves");
+    let resolved = resolve(&declared, &profile).expect("exact Models schema resolves");
     let resources = emitter
         .code_resources_for(&resolved)
         .expect("ordered C resources hash");
@@ -312,25 +312,25 @@ fn emitted_query_package_and_authority(semantic_profile: &str) -> (GeneratedPack
         &emitter.generator_handlers_for(&resolved),
         &resources,
     )
-    .expect("exact Sdk V3 schema projects to ordered C");
-    let authority = support::authority_for_declared(&declared, "sdk-v3-c-query", semantic_profile);
+    .expect("exact Models schema projects to ordered C");
+    let authority = support::authority_for_declared(&declared, "models-c-query", semantic_profile);
     let authority_bytes = encode_schema_authority(&authority);
     let package = emitter
         .emit(&projection, &authority)
-        .expect("exact Sdk V3 ordered C package emits");
+        .expect("exact Models ordered C package emits");
     (package, authority_bytes)
 }
 
-fn sdk_v3_fingerprints(semantic_profile: &str) -> (Value, Value) {
+fn sdk_models_fingerprints(semantic_profile: &str) -> (Value, Value) {
     let emitter = CEmitter::new();
     let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("sdk-v3.yaml").expect("Sdk V3 document ID is valid"),
+        DocumentId::new("models.yaml").expect("Models document ID is valid"),
         QUERY_SCHEMA,
     )])
-    .expect("exact Sdk V3 schema parses");
-    let declared = normalize_documents(&documents).expect("exact Sdk V3 schema normalizes");
+    .expect("exact Models schema parses");
+    let declared = normalize_documents(&documents).expect("exact Models schema normalizes");
     let profile = SemanticProfileId::new(semantic_profile).expect("live profile is valid");
-    let resolved = resolve(&declared, &profile).expect("exact Sdk V3 schema resolves");
+    let resolved = resolve(&declared, &profile).expect("exact Models schema resolves");
     let resources = emitter
         .code_resources_for(&resolved)
         .expect("ordered C resources hash");
@@ -341,7 +341,7 @@ fn sdk_v3_fingerprints(semantic_profile: &str) -> (Value, Value) {
         &emitter.generator_handlers_for(&resolved),
         &resources,
     )
-    .expect("exact Sdk V3 schema projects to ordered C");
+    .expect("exact Models schema projects to ordered C");
     (
         serde_json::to_value(projection.semantic_fingerprint())
             .expect("V3 semantic fingerprint serializes"),
@@ -374,15 +374,15 @@ fn matrix_fingerprints(
     )
 }
 
-fn publish_sdk_v3_c_live_supplement(profile: &SdkProfile) {
-    let Some(destination) = env::var_os("TYPE_BRIDGE_SDK_V3_C_SUPPLEMENT") else {
+fn publish_sdk_models_c_live_supplement(profile: &SdkProfile) {
+    let Some(destination) = env::var_os("TYPE_BRIDGE_SDK_MODELS_C_SUPPLEMENT") else {
         return;
     };
     let destination = PathBuf::from(destination);
     assert!(destination.is_absolute() && !destination.exists());
     let root = repository_root();
     let journey: Value = serde_json::from_slice(
-        &fs::read(root.join("tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"))
+        &fs::read(root.join("tests/contracts/sdk_conformance/models/journey.json"))
             .expect("V3 journey reads"),
     )
     .expect("V3 journey parses");
@@ -399,13 +399,13 @@ fn publish_sdk_v3_c_live_supplement(profile: &SdkProfile) {
         ("unkeyed_entity_iid_lifecycle", "direct_runtime"),
         ("unkeyed_relation_iid_lifecycle", "direct_runtime"),
     ];
-    let (semantic, projection) = sdk_v3_fingerprints(&profile.semantic_profile);
+    let (semantic, projection) = sdk_models_fingerprints(&profile.semantic_profile);
     let (semantic_fingerprint, projection_fingerprint) =
         matrix_fingerprints(profile, &semantic, &projection);
     let supplement = json!({
         "binding": "c",
-        "format": "typebridge.sdk-v3-live-supplement/v1",
-        "producer": "type-bridge-c.generated-data-model-runtime-v3-live",
+        "format": "typebridge.sdk-models-live-supplement/v1",
+        "producer": "type-bridge-c.sdk-models-data-model-runtime-live",
         "projection_fingerprint": projection_fingerprint,
         "results": lanes.into_iter().map(|(observation_ref, proof_kind)| json!({
             "observation": expected.get(observation_ref).unwrap_or_else(|| panic!("V3 journey omitted {observation_ref}")),
@@ -1515,7 +1515,7 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
         if sdk_v5_evidence.is_some() {
             let (package, authority) =
                 emitted_query_package_and_authority(&profile.semantic_profile);
-            let (semantic, projection) = sdk_v3_fingerprints(&profile.semantic_profile);
+            let (semantic, projection) = sdk_models_fingerprints(&profile.semantic_profile);
             (package, authority, semantic, projection)
         } else {
             emitted_package_authority_and_fingerprints(&profile.semantic_profile)
@@ -1801,7 +1801,7 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
 /// TypeDB servers of the supported profiles cannot supply list-instance evidence.
 #[test]
 #[ignore = "requires an isolated TypeDB server of the requested SDK profile and C shared library"]
-fn generated_data_model_runtime_v3_live() {
+fn sdk_models_data_model_runtime_live() {
     let profile = sdk_profile_matrix::requested(3);
     let c_compiler = c_compilers()
         .into_iter()
@@ -1922,7 +1922,7 @@ fn generated_data_model_runtime_v3_live() {
         setup_root.join("acceptance/provider-3.12.1.tql"),
         QUERY_PROVIDER_SCHEMA,
     )
-    .expect("exact Sdk V3 provider fixture is staged byte-for-byte");
+    .expect("exact Models provider fixture is staged byte-for-byte");
     let orm = Path::new(env!("CARGO_MANIFEST_DIR")).join("../orm");
     let manifest = setup_root.join("Cargo.toml");
     fs::write(
@@ -2010,5 +2010,5 @@ fn generated_data_model_runtime_v3_live() {
             );
         }
     }
-    publish_sdk_v3_c_live_supplement(&profile);
+    publish_sdk_models_c_live_supplement(&profile);
 }

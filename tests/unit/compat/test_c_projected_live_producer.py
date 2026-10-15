@@ -34,7 +34,7 @@ def test_c_projected_live_producer_is_independent_and_exactly_authority_bound() 
     assert not any(marker in joined for marker in FORBIDDEN_MARKERS)
     for digest in (
         "74b9161e3d8fd70a1f22c3a8b7fc70a823b18cb07973064e2e10ce0940f76f1f",
-        "c5679b428c22e2bff7989f6d674cde3780b752a40f6bbce6ccb3aa451797b1c0",
+        "d0153b47c42f771cae1668fcfdb0e3d9d7c4e3ee4d793177751e1b657fe37e66",
         "af61aaece22d666e19d2c1357f8ebc39b8cbcf4bff7b98a19a56daf171a1faba",
     ):
         assert digest in harness

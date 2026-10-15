@@ -128,10 +128,10 @@ functions:
 "#;
 
 const ORDERED_SUCCESSOR_SOURCE: &str = include_str!("c_crud/schema.yaml");
-const SDK_V3_SOURCE: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml");
+const SDK_MODELS_SOURCE: &str =
+    include_str!("../../../../tests/contracts/sdk_conformance/models/schema.yaml");
 
-fn sdk_v3_repository_root() -> PathBuf {
+fn sdk_models_repository_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -143,14 +143,14 @@ fn sdk_v3_repository_root() -> PathBuf {
         .unwrap()
 }
 
-fn sdk_v3_source_identity(root: &Path, relative: &str) -> Value {
+fn sdk_models_source_identity(root: &Path, relative: &str) -> Value {
     let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
     json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
 }
 
-fn publish_sdk_v3_package_fragment(results: Vec<Value>) {
-    let destination = env::var_os("TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT");
-    let nonce = env::var_os("TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE");
+fn publish_sdk_models_package_fragment(results: Vec<Value>) {
+    let destination = env::var_os("TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGMENT");
+    let nonce = env::var_os("TYPE_BRIDGE_SDK_MODELS_PROOF_RUN_NONCE");
     assert_eq!(destination.is_some(), nonce.is_some());
     let (Some(destination), Some(nonce)) = (destination, nonce) else {
         return;
@@ -164,7 +164,7 @@ fn publish_sdk_v3_package_fragment(results: Vec<Value>) {
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
     );
-    let root = sdk_v3_repository_root();
+    let root = sdk_models_repository_root();
     let sources = [
         "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
         "type-bridge-core/crates/c/src/projected_model.rs",
@@ -177,12 +177,12 @@ fn publish_sdk_v3_package_fragment(results: Vec<Value>) {
     let fragment = json!({
         "binding": "c",
         "contract": {
-            "allowlist": sdk_v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-allowlist-v1.json"),
-            "journey": sdk_v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"),
-            "proof_schema": sdk_v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-schema-v1.json"),
+            "allowlist": sdk_models_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-allowlist.json"),
+            "journey": sdk_models_source_identity(&root, "tests/contracts/sdk_conformance/models/journey.json"),
+            "proof_schema": sdk_models_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-schema.json"),
         },
-        "format": "typebridge.sdk-v3-proof-fragment/v1",
-        "producer": {"id": "type-bridge-c.generated-package-v3-proof", "sources": sources.iter().map(|path| sdk_v3_source_identity(&root, path)).collect::<Vec<_>>()},
+        "format": "typebridge.sdk-models-proof-fragment/v1",
+        "producer": {"id": "type-bridge-c.sdk-models-generated-package-proof", "sources": sources.iter().map(|path| sdk_models_source_identity(&root, path)).collect::<Vec<_>>()},
         "results": results,
         "run_nonce": nonce,
         "semantic_profile": support::sdk_profile_matrix::requested(3).semantic_profile,
@@ -5716,10 +5716,10 @@ int main(void) {
 }
 
 #[test]
-fn sdk_v3_generated_package_integrity() {
+fn sdk_models_generated_package_integrity() {
     let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("sdk-v3.yaml").expect("V3 document ID is valid"),
-        SDK_V3_SOURCE,
+        DocumentId::new("models.yaml").expect("V3 document ID is valid"),
+        SDK_MODELS_SOURCE,
     )])
     .expect("V3 schema parses");
     let declared = normalize_documents(&documents).expect("V3 schema normalizes");
@@ -5740,7 +5740,7 @@ fn sdk_v3_generated_package_integrity() {
     )
     .expect("V3 schema projects to C");
     let authority =
-        support::authority_for_declared(&declared, "sdk-v3-c", &identity.semantic_profile);
+        support::authority_for_declared(&declared, "models-c", &identity.semantic_profile);
     let package = emitter
         .emit(&projection, &authority)
         .expect("V3 C package emits");
@@ -5757,17 +5757,17 @@ fn sdk_v3_generated_package_integrity() {
         "generated C package has the requested namespace"
     );
 
-    let root = sdk_v3_repository_root();
+    let root = sdk_models_repository_root();
     let journey: Value = serde_json::from_slice(
-        &fs::read(root.join("tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"))
+        &fs::read(root.join("tests/contracts/sdk_conformance/models/journey.json"))
             .expect("V3 journey reads"),
     )
     .expect("V3 journey parses");
     let expected = journey["expected_observations"]
         .as_object()
         .expect("V3 expected observations are an object");
-    let test_id = "c_emitter::sdk_v3_generated_package_integrity";
-    publish_sdk_v3_package_fragment(vec![
+    let test_id = "c_emitter::sdk_models_generated_package_integrity";
+    publish_sdk_models_package_fragment(vec![
         json!({"observation": expected["projected_constraint_validation"], "observation_ref": "projected_constraint_validation", "outcome": "passed", "proof_kind": "diagnostic", "test_id": test_id}),
         json!({"observation": expected["projection_evidence_integrity"], "observation_ref": "projection_evidence_integrity", "outcome": "passed", "proof_kind": "diagnostic", "test_id": test_id}),
         json!({"observation": expected["token_package_fencing"], "observation_ref": "token_package_fencing", "outcome": "passed", "proof_kind": "diagnostic", "test_id": test_id}),

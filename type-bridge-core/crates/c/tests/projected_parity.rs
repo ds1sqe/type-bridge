@@ -26,8 +26,7 @@ use type_bridge_schema::{
 };
 use type_bridge_schema_codegen::{CEmitter, GeneratedPackage};
 
-const SOURCE: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml");
+const SOURCE: &str = include_str!("../../../../tests/contracts/sdk_conformance/models/schema.yaml");
 const CONSUMER: &str = include_str!("../../schema-codegen/tests/c_projected_parity/consumer.c");
 #[path = "../../../../tests/support/sdk_profile_matrix.rs"]
 #[allow(dead_code)]
@@ -40,8 +39,8 @@ const REPORT_FORMAT: &str = "typebridge.projected-parity-report/v1";
 const FACT_PREFIX: &str = "TYPE_BRIDGE_C_PROJECTED_FACT\t";
 const REPORT_ENV: &str = "TYPE_BRIDGE_PROJECTED_PARITY_REPORT_C";
 const REQUIRE_SHARED_ENV: &str = "TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER";
-const SCHEMA_RELATIVE: &str = "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml";
-const JOURNEY_RELATIVE: &str = "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json";
+const SCHEMA_RELATIVE: &str = "tests/contracts/sdk_conformance/models/schema.yaml";
+const JOURNEY_RELATIVE: &str = "tests/contracts/sdk_conformance/models/journey.json";
 const MAX_AUTHORITY_BYTES: u64 = 1024 * 1024;
 const MAX_REPORT_BYTES: usize = 256 * 1024;
 const OBSERVATIONS: [&str; 7] = [
@@ -135,11 +134,11 @@ fn emitted_fixture() -> EmittedFixture {
         "foreign Projected schema must differ"
     );
     let (local_resolved, local_authority) =
-        authority_for(SOURCE, "sdk-v3.yaml", "sdk-v3-c-projected");
+        authority_for(SOURCE, "models.yaml", "models-c-projected");
     let (foreign_resolved, foreign_authority) = authority_for(
         &foreign_source,
-        "sdk-v3-foreign.yaml",
-        "sdk-v3-c-projected-foreign",
+        "models-foreign.yaml",
+        "models-c-projected-foreign",
     );
     let emitter = CEmitter::new();
     let emit = |resolved: &type_bridge_schema::ResolvedSchema,
@@ -156,10 +155,10 @@ fn emitted_fixture() -> EmittedFixture {
             &handlers,
             &resources,
         )
-        .expect("Sdk V3 projects to C");
+        .expect("Models projects to C");
         let package = emitter
             .emit(&projection, authority)
-            .expect("Sdk V3 C package emits");
+            .expect("Models C package emits");
         (projection, package)
     };
     let (local_projection, local) = emit(&local_resolved, &local_authority, "projected");

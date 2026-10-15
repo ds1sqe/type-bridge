@@ -17,19 +17,19 @@ import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const REPORT_FORMAT = "typebridge.projected-parity-report/v1";
-// The sdk-v3 catalog's own profile; a run reports the matrix profile it selects.
+// The models catalog's own profile; a run reports the matrix profile it selects.
 export const SEMANTIC_PROFILE = "typedb-3.12.1/v1";
 export const SEMANTIC_PROFILE_ENV = "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE";
 export const PROFILE_MATRIX_RELATIVE =
-  "tests/contracts/sdk_conformance/sdk-v3/profiles-v3.json";
+  "tests/contracts/sdk_conformance/models/profiles.json";
 export const OUTPUT_ENV = "TYPE_BRIDGE_PROJECTED_PARITY_REPORT";
 export const REPOSITORY_ROOT_ENV = "TYPE_BRIDGE_PROJECTED_REPOSITORY_ROOT";
 export const MAX_REPORT_BYTES = 256 * 1024;
 export const MAX_AUTHORITY_BYTES = 1024 * 1024;
 export const SCHEMA_RELATIVE =
-  "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml";
+  "tests/contracts/sdk_conformance/models/schema.yaml";
 export const JOURNEY_RELATIVE =
-  "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json";
+  "tests/contracts/sdk_conformance/models/journey.json";
 
 export class ProducerError extends Error {
   constructor(code, message) {
@@ -44,7 +44,7 @@ function requireCondition(condition, message) {
 }
 
 /**
- * Select the sdk-v3 profile-matrix profile a run reports: the profile named by
+ * Select the models profile-matrix profile a run reports: the profile named by
  * `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`, else the catalog's own profile
  * (mirrors `scripts/ci/sdk_profile_matrix.py` `requested`).
  */
@@ -54,7 +54,7 @@ export function selectedProfile(root, environment = {}) {
   try {
     matrix = JSON.parse(readFileSync(resolve(root, PROFILE_MATRIX_RELATIVE), "utf8"));
   } catch {
-    throw new ProducerError("invalid_profile_matrix", "sdk-v3 profile matrix is unreadable");
+    throw new ProducerError("invalid_profile_matrix", "models profile matrix is unreadable");
   }
   const profiles = matrix?.suite === "models" ? matrix.profiles : undefined;
   if (
@@ -65,7 +65,7 @@ export function selectedProfile(root, environment = {}) {
   ) {
     throw new ProducerError(
       "semantic_profile_mismatch",
-      `sdk-v3 has no profile-matrix entry for ${JSON.stringify(profile)}`,
+      `models has no profile-matrix entry for ${JSON.stringify(profile)}`,
     );
   }
   return profile;

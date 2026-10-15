@@ -545,11 +545,29 @@ class ProofContract:
 CONTRACTS = {
     version: ProofContract(
         set_version=version,
-        proof_schema_relative=f"{Path(profile_matrix.catalog_relative(version)).parent}/proof-fragment-schema-v1.json",
-        allowlist_relative=f"{Path(profile_matrix.catalog_relative(version)).parent}/proof-fragment-allowlist-v1.json",
+        proof_schema_relative=str(
+            Path(profile_matrix.catalog_relative(version)).parent
+            / ("proof-fragment-schema.json" if version == 3 else "proof-fragment-schema-v1.json")
+        ),
+        allowlist_relative=str(
+            Path(profile_matrix.catalog_relative(version)).parent
+            / (
+                "proof-fragment-allowlist.json"
+                if version == 3
+                else "proof-fragment-allowlist-v1.json"
+            )
+        ),
         journey_relative=profile_matrix.contract_relative(version, "journey"),
-        fragment_format=f"typebridge.sdk-v{version}-proof-fragment/v1",
-        allowlist_format=f"typebridge.sdk-v{version}-proof-fragment-allowlist/v1",
+        fragment_format=(
+            "typebridge.sdk-models-proof-fragment/v1"
+            if version == 3
+            else f"typebridge.sdk-v{version}-proof-fragment/v1"
+        ),
+        allowlist_format=(
+            "typebridge.sdk-models-proof-fragment-allowlist/v1"
+            if version == 3
+            else f"typebridge.sdk-v{version}-proof-fragment-allowlist/v1"
+        ),
         proof_kinds=kinds,
         max_results=limit,
     )

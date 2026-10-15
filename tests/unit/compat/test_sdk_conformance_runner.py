@@ -97,10 +97,10 @@ def test_assembly_runs_four_compositors_four_assemblers_and_one_fan_in(
     RUNNER.assemble_models(tmp_path, {}, "0" * 64)
     assert len(commands) == 5
     assert (
-        sum(any("assemble_sdk_conformance_v3" in item for item in command) for command in commands)
+        sum(any("sdk_models_assemble" in item for item in command) for command in commands)
         == 4
     )
-    assert any("compare_sdk_conformance_v3" in item for item in commands[-1])
+    assert any("sdk_models_compare" in item for item in commands[-1])
 
 
 def test_cleanup_evidence_is_exact_and_non_inferential(tmp_path: Path) -> None:
@@ -399,9 +399,9 @@ def test_full_c_preserves_versioned_layout_with_named_suites(
         ),
         (
             "model_live",
-            "test_generated_data_model_runtime_v3_live",
-            "node.generated_data_model_runtime_v3_live",
-            "generated_data_model_runtime_v3_live",
+            "test_sdk_models_data_model_runtime_live",
+            "node.sdk_models_data_model_runtime_live",
+            "sdk_models_data_model_runtime_live",
         ),
         (
             "codec_live",

@@ -16,7 +16,7 @@ pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[3]
 CORE = ROOT / "type-bridge-core"
 PRODUCER = CORE / "crates/schema-codegen/tests/c_acceptance/sdk_v5_codec.c"
-SCHEMA = ROOT / "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"
+SCHEMA = ROOT / "tests/contracts/sdk_conformance/models/schema.yaml"
 
 
 def generate_package(stage: Path, schema: Path, *, app_label: str, scope: str) -> Path:

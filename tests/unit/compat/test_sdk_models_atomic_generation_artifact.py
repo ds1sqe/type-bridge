@@ -1,4 +1,4 @@
-"""Hostile checks for the Sdk V3 atomic-generation artifact."""
+"""Hostile checks for the Models atomic-generation artifact."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ VALIDATOR_PATH = ROOT / "scripts/ci/validate_generation_artifact.py"
 
 def _load_validator():
     spec = importlib.util.spec_from_file_location(
-        "sdk_v3_atomic_generation_validator", VALIDATOR_PATH
+        "sdk_models_atomic_generation_validator", VALIDATOR_PATH
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

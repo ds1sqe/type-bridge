@@ -50,8 +50,8 @@ const SEMANTIC_PROFILE_ENV: &str = "TYPE_BRIDGE_PROJECTED_SEMANTIC_PROFILE";
 const REPORT_ENV: &str = "TYPE_BRIDGE_PROJECTED_RUST_REPORT";
 const ROOT_ENV: &str = "TYPE_BRIDGE_PROJECTED_REPOSITORY_ROOT";
 const MANAGED_SCOPE: &str = "schema-codegen-acceptance";
-const SCHEMA_RELATIVE: &str = "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml";
-const JOURNEY_RELATIVE: &str = "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json";
+const SCHEMA_RELATIVE: &str = "tests/contracts/sdk_conformance/models/schema.yaml";
+const JOURNEY_RELATIVE: &str = "tests/contracts/sdk_conformance/models/journey.json";
 const MAX_REPORT_BYTES: usize = 256 * 1024;
 const MAX_AUTHORITY_BYTES: u64 = 1024 * 1024;
 
@@ -1723,7 +1723,7 @@ fn source_identity(
     }))
 }
 
-/// The sdk-v3 matrix profile the harness projected the generated packages on.
+/// The models matrix profile the harness projected the generated packages on.
 fn semantic_profile() -> Result<String, Box<dyn std::error::Error>> {
     env::var(SEMANTIC_PROFILE_ENV)
         .ok()

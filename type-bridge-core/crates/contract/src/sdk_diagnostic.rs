@@ -1294,7 +1294,7 @@ mod tests {
     }
 
     #[test]
-    fn detached_semantic_fingerprint_classifier_matches_v3_representative() {
+    fn detached_semantic_fingerprint_classifier_matches_models_representative() {
         let missing =
             SdkExecutionDiagnostic::classify_detached_semantic_schema_fingerprint_rejection(
                 SdkProjectionEvidenceSlotPresence::Absent,

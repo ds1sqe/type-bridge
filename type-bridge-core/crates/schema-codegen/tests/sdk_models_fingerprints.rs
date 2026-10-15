@@ -1,4 +1,4 @@
-//! Canonical Sdk V3 fingerprint inventory for catalog finalization.
+//! Canonical Models fingerprint inventory for catalog finalization.
 
 use std::collections::BTreeMap;
 use std::env;
@@ -19,15 +19,14 @@ use type_bridge_schema_codegen::{CEmitter, PythonEmitter, RustEmitter, TypeScrip
 
 mod support;
 
-const SOURCE: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml");
+const SOURCE: &str = include_str!("../../../../tests/contracts/sdk_conformance/models/schema.yaml");
 // This external catalog pins fingerprints that include each emitter's fixed code resources.
 const CATALOG: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/catalog-v3.json");
-const OUTPUT_ENV: &str = "TYPE_BRIDGE_SDK_V3_FINGERPRINTS_OUTPUT";
-const FIELD_IDENTITY_OUTPUT_ENV: &str = "TYPE_BRIDGE_SDK_V3_FIELD_IDENTITY_OUTPUT";
+    include_str!("../../../../tests/contracts/sdk_conformance/models/catalog.json");
+const OUTPUT_ENV: &str = "TYPE_BRIDGE_SDK_MODELS_FINGERPRINTS_OUTPUT";
+const FIELD_IDENTITY_OUTPUT_ENV: &str = "TYPE_BRIDGE_SDK_MODELS_FIELD_IDENTITY_OUTPUT";
 const FIELD_IDENTITY_SOURCE_PATH: &str =
-    "type-bridge-core/crates/schema-codegen/tests/sdk_v3_fingerprints.rs";
+    "type-bridge-core/crates/schema-codegen/tests/sdk_models_fingerprints.rs";
 const LOOKUP_SOURCE_PATH: &str = "type-bridge-core/crates/contract/src/projection.rs";
 
 fn projections() -> BTreeMap<&'static str, RuntimeProjection> {
@@ -36,13 +35,13 @@ fn projections() -> BTreeMap<&'static str, RuntimeProjection> {
 
 fn projections_for(source: &str, prefix: &str) -> BTreeMap<&'static str, RuntimeProjection> {
     let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("sdk-v3.yaml").expect("fixture document ID"),
+        DocumentId::new("models.yaml").expect("fixture document ID"),
         source,
     )])
-    .expect("Sdk V3 schema parses");
-    let declared = normalize_documents(&documents).expect("Sdk V3 schema normalizes");
+    .expect("Models schema parses");
+    let declared = normalize_documents(&documents).expect("Models schema normalizes");
     let profile = SemanticProfileId::new(support::TEST_PROFILE).expect("test profile is valid");
-    let resolved = resolve(&declared, &profile).expect("Sdk V3 schema resolves");
+    let resolved = resolve(&declared, &profile).expect("Models schema resolves");
 
     let python = PythonEmitter::new();
     let typescript = TypeScriptEmitter::new();
@@ -60,7 +59,7 @@ fn projections_for(source: &str, prefix: &str) -> BTreeMap<&'static str, Runtime
                     .code_resources_for(&resolved)
                     .expect("Python resources hash"),
             )
-            .expect("Sdk V3 schema projects to Python"),
+            .expect("Models schema projects to Python"),
         ),
         (
             "node",
@@ -73,7 +72,7 @@ fn projections_for(source: &str, prefix: &str) -> BTreeMap<&'static str, Runtime
                     .code_resources_for(&resolved)
                     .expect("TypeScript resources hash"),
             )
-            .expect("Sdk V3 schema projects to TypeScript"),
+            .expect("Models schema projects to TypeScript"),
         ),
         (
             "rust",
@@ -86,7 +85,7 @@ fn projections_for(source: &str, prefix: &str) -> BTreeMap<&'static str, Runtime
                     .code_resources_for(&resolved)
                     .expect("Rust resources hash"),
             )
-            .expect("Sdk V3 schema projects to Rust"),
+            .expect("Models schema projects to Rust"),
         ),
         (
             "c",
@@ -97,7 +96,7 @@ fn projections_for(source: &str, prefix: &str) -> BTreeMap<&'static str, Runtime
                 &c.generator_handlers_for(&resolved),
                 &c.code_resources_for(&resolved).expect("C resources hash"),
             )
-            .expect("Sdk V3 schema projects to C"),
+            .expect("Models schema projects to C"),
         ),
     ])
 }
@@ -117,7 +116,7 @@ fn field_identity_observation(
             let token = projected_fields
                 .values()
                 .find(|token| token.id().attribute().label().as_str() == expected)
-                .expect("identity-sensitive Sdk V3 field projects");
+                .expect("identity-sensitive Models field projects");
             assert_eq!(token.id().owner(), person.id());
             let target_name = token.target_name().as_str();
             let expected_target = match (*binding, expected) {
@@ -176,21 +175,21 @@ fn publish_field_identity_artifact(observation: serde_json::Value) {
         return;
     };
     let artifact = json!({
-        "format": "typebridge.sdk-v3-artifact-observation/v1",
+        "format": "typebridge.sdk-models-artifact-observation/v1",
         "semantic_profile": support::TEST_PROFILE,
         "producer": {
-            "id": "type-bridge-schema-codegen.field-name-v3-artifact",
+            "id": "type-bridge-schema-codegen.sdk-models-field-name-artifact",
             "sources": [
                 {
                     "path": FIELD_IDENTITY_SOURCE_PATH,
-                    "sha256": format!("{:x}", Sha256::digest(include_bytes!("sdk_v3_fingerprints.rs"))),
+                    "sha256": format!("{:x}", Sha256::digest(include_bytes!("sdk_models_fingerprints.rs"))),
                 },
                 {
                     "path": LOOKUP_SOURCE_PATH,
                     "sha256": format!("{:x}", Sha256::digest(include_bytes!("../../contract/src/projection.rs"))),
                 },
             ],
-            "test_id": "exact_sdk_v3_field_name_identity_is_source_bound",
+            "test_id": "exact_sdk_models_field_name_identity_is_source_bound",
         },
         "result": {
             "observation_ref": "field_name_identity",
@@ -217,12 +216,12 @@ fn publish_field_identity_artifact(observation: serde_json::Value) {
 }
 
 #[test]
-fn exact_sdk_v3_field_name_identity_is_source_bound() {
+fn exact_sdk_models_field_name_identity_is_source_bound() {
     publish_field_identity_artifact(field_identity_observation(&projections()));
 }
 
 #[test]
-fn exact_sdk_v3_fingerprint_inventory_is_reproducible() {
+fn exact_sdk_models_fingerprint_inventory_is_reproducible() {
     let projections = projections();
     let first = projections.values().next().expect("four projections exist");
     assert!(
@@ -244,7 +243,7 @@ fn exact_sdk_v3_fingerprint_inventory_is_reproducible() {
     assert_eq!(projection_digests.len(), projections.len());
 
     let inventory = json!({
-        "format": "typebridge.sdk-v3-fingerprint-inventory/v1",
+        "format": "typebridge.sdk-models-fingerprint-inventory/v1",
         "semantic": first.semantic_fingerprint(),
         "projections": projections
             .iter()
@@ -268,7 +267,7 @@ fn exact_sdk_v3_fingerprint_inventory_is_reproducible() {
             .sync_all()
             .expect("fingerprint inventory flushes");
     }
-    let catalog: serde_json::Value = serde_json::from_str(CATALOG).expect("Sdk V3 catalog parses");
+    let catalog: serde_json::Value = serde_json::from_str(CATALOG).expect("Models catalog parses");
     assert_eq!(catalog["authority_state"], "finalized");
     assert_eq!(
         catalog["expected_fingerprints"]["semantic"],

@@ -1003,13 +1003,14 @@ function canonicalProofValue(value) {
  * (mirrors `scripts/ci/sdk_profile_matrix.py` `requested`).
  */
 function sdkProofProfile(root, version) {
-  const base = `tests/contracts/sdk_conformance/sdk-v${version}`;
+  const base = version === 3 ? "tests/contracts/sdk_conformance/models" : `tests/contracts/sdk_conformance/sdk-v${version}`;
+  const suffix = version === 3 ? "" : `-v${version}`;
   const read = (name) => JSON.parse(proofSourceBytes(root, `${base}/${name}`).toString("utf8"));
   const profile = process.env.TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE
-    || read(`catalog-v${version}.json`).fixture.semantic_profile;
-  const matrix = read(`profiles-v${version}.json`);
+    || read(`catalog${suffix}.json`).fixture.semantic_profile;
+  const matrix = read(`profiles${suffix}.json`);
   if (
-    matrix.catalog_path !== `${base}/catalog-v${version}.json`
+    matrix.catalog_path !== `${base}/catalog${suffix}.json`
     || typeof matrix.profiles !== "object"
     || matrix.profiles === null
     || !Object.hasOwn(matrix.profiles, profile)
@@ -1039,9 +1040,9 @@ function emitSdkV2RemoteProofFragment() {
   }
   const contractPaths = {
     proof_schema:
-      "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-schema-v1.json",
+      "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-schema.json",
     allowlist:
-      "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-allowlist-v1.json",
+      "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-allowlist.json",
     journey: "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json",
   };
   const producerPaths = [
@@ -1102,19 +1103,19 @@ function emitSdkV2RemoteProofFragment() {
 
 emitSdkV2RemoteProofFragment();
 
-function emitSdkV3PackageProofFragment() {
-  const destination = process.env.TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT;
+function emitSdkModelsPackageProofFragment() {
+  const destination = process.env.TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGMENT;
   if (destination === undefined) return;
-  const runNonce = process.env.TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE;
+  const runNonce = process.env.TYPE_BRIDGE_SDK_MODELS_PROOF_RUN_NONCE;
   if (runNonce === undefined || !/^[0-9a-f]{64}$/.test(runNonce)) {
-    throw new Error("sdk-v3 proof run nonce must be 64 lowercase hex characters");
+    throw new Error("models proof run nonce must be 64 lowercase hex characters");
   }
-  if (!isAbsolute(destination)) throw new Error("sdk-v3 proof path must be absolute");
+  if (!isAbsolute(destination)) throw new Error("models proof path must be absolute");
   const root = process.cwd();
   const contractPaths = {
-    proof_schema: "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-schema-v1.json",
-    allowlist: "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-allowlist-v1.json",
-    journey: "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json",
+    proof_schema: "tests/contracts/sdk_conformance/models/proof-fragment-schema.json",
+    allowlist: "tests/contracts/sdk_conformance/models/proof-fragment-allowlist.json",
+    journey: "tests/contracts/sdk_conformance/models/journey.json",
   };
   const producerPaths = [
     "type-bridge-core/crates/node/src/runtime_projection.rs",
@@ -1168,12 +1169,12 @@ function emitSdkV3PackageProofFragment() {
     rejected_token_states: ["foreign", "forged", "reordered", "stale"],
     provider_text_exposed: false,
   };
-  const testId = "node.generated_package_v3_integrity";
+  const testId = "node.sdk_models_generated_package_integrity";
   const fragment = {
-    format: "typebridge.sdk-v3-proof-fragment/v1", binding: "node",
+    format: "typebridge.sdk-models-proof-fragment/v1", binding: "node",
     semantic_profile: sdkProofProfile(root, 3), run_nonce: runNonce,
     contract: Object.fromEntries(Object.entries(contractPaths).map(([name, relative]) => [name, proofSourceIdentity(root, relative)])),
-    producer: { id: "node.generated-package-v3-proof", sources: producerPaths.map((relative) => proofSourceIdentity(root, relative)) },
+    producer: { id: "node.sdk-models-generated-package-proof", sources: producerPaths.map((relative) => proofSourceIdentity(root, relative)) },
     results: [
       { observation_ref: "projected_constraint_validation", proof_kind: "diagnostic", test_id: testId, outcome: "passed", observation: constraint },
       { observation_ref: "projection_evidence_integrity", proof_kind: "diagnostic", test_id: testId, outcome: "passed", observation: evidence },
@@ -1492,4 +1493,4 @@ generatedRemoteSession.close();
 assert.equal(generatedRemoteSession.isClosed, true);
 assert.equal(remoteLifecycleClone.isClosed, true);
 await rejectsClosedRemoteTerminal(() => remoteLifecycleClone.one());
-emitSdkV3PackageProofFragment();
+emitSdkModelsPackageProofFragment();

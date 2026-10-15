@@ -36,14 +36,14 @@ const SDK_JOURNEY: &[u8] =
     include_bytes!("../../../../tests/contracts/sdk_conformance/sdk-v1/journey-v1.json");
 const SDK_V2_JOURNEY: &[u8] =
     include_bytes!("../../../../tests/contracts/sdk_conformance/sdk-v2/journey-v2.json");
-const SDK_V3_SCHEMA: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml");
-const SDK_V3_PROVIDER_SCHEMA: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql");
-const SDK_V3_CATALOG: &[u8] =
-    include_bytes!("../../../../tests/contracts/sdk_conformance/sdk-v3/catalog-v3.json");
-const SDK_V3_JOURNEY: &[u8] =
-    include_bytes!("../../../../tests/contracts/sdk_conformance/sdk-v3/journey-v3.json");
+const SDK_MODELS_SCHEMA: &str =
+    include_str!("../../../../tests/contracts/sdk_conformance/models/schema.yaml");
+const SDK_MODELS_PROVIDER_SCHEMA: &str =
+    include_str!("../../../../tests/contracts/sdk_conformance/models/provider-3.12.1.tql");
+const SDK_MODELS_CATALOG: &[u8] =
+    include_bytes!("../../../../tests/contracts/sdk_conformance/models/catalog.json");
+const SDK_MODELS_JOURNEY: &[u8] =
+    include_bytes!("../../../../tests/contracts/sdk_conformance/models/journey.json");
 const SDK_V2_CATALOG_RELATIVE: &str = "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json";
 /// The generated live fixture profile when `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`
 /// is unset; it pairs with TypeDB 3.13.6, the default server image.
@@ -60,7 +60,7 @@ const CONSUMER_TESTS: [&str; 13] = [
     "generated_unkeyed_entity_iid_lifecycle_and_singular_query",
     "generated_lifecycle_hooks_and_atomic_mutation_batches",
     "generated_write_transaction_commit_rollback_and_drop",
-    "generated_data_model_runtime_v3_live",
+    "sdk_models_data_model_runtime_live",
     "generated_canonical_serialization_v5_live",
 ];
 
@@ -210,17 +210,17 @@ fn requested_sdk_v2_report(profile_name: &str) -> Option<PathBuf> {
     Some(path)
 }
 
-fn requested_sdk_v3_supplement(profile_name: &str) -> Option<PathBuf> {
-    let raw = env::var_os("TYPE_BRIDGE_SDK_V3_RUST_SUPPLEMENT")?;
+fn requested_sdk_models_supplement(profile_name: &str) -> Option<PathBuf> {
+    let raw = env::var_os("TYPE_BRIDGE_SDK_MODELS_RUST_SUPPLEMENT")?;
     sdk_matrix_entry(3, profile_name);
     let path = PathBuf::from(raw);
     assert!(
         path.is_absolute(),
-        "Sdk V3 supplement path must be absolute"
+        "Models supplement path must be absolute"
     );
-    let parent = path.parent().expect("Sdk V3 supplement has a parent");
+    let parent = path.parent().expect("Models supplement has a parent");
     let metadata =
-        fs::symlink_metadata(parent).expect("Sdk V3 supplement parent must already exist");
+        fs::symlink_metadata(parent).expect("Models supplement parent must already exist");
     assert!(metadata.is_dir() && !metadata.file_type().is_symlink());
     assert!(
         matches!(fs::symlink_metadata(&path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
@@ -347,19 +347,20 @@ fn generated_rust_projection_round_trips_exact_live_models() {
     };
     let sdk_report = requested_sdk_report(&profile_name);
     let sdk_v2_report = requested_sdk_v2_report(&profile_name);
-    let sdk_v3_supplement = requested_sdk_v3_supplement(&profile_name);
+    let sdk_models_supplement = requested_sdk_models_supplement(&profile_name);
     let sdk_v5_evidence = requested_sdk_v5_evidence(&profile_name);
     assert!(
-        (sdk_v3_supplement.is_none() && sdk_v5_evidence.is_none())
+        (sdk_models_supplement.is_none() && sdk_v5_evidence.is_none())
             || (sdk_report.is_none() && sdk_v2_report.is_none()),
-        "Sdk V3/V5 use an isolated generated package and consumer run"
+        "Models/V5 use an isolated generated package and consumer run"
     );
     assert!(
-        sdk_v3_supplement.is_none() || sdk_v5_evidence.is_none(),
-        "Sdk V3 and V5 evidence use separate live runs"
+        sdk_models_supplement.is_none() || sdk_v5_evidence.is_none(),
+        "Models and V5 evidence use separate live runs"
     );
-    let (schema, provider_schema) = if sdk_v3_supplement.is_some() || sdk_v5_evidence.is_some() {
-        (SDK_V3_SCHEMA, SDK_V3_PROVIDER_SCHEMA)
+    let (schema, provider_schema) = if sdk_models_supplement.is_some() || sdk_v5_evidence.is_some()
+    {
+        (SDK_MODELS_SCHEMA, SDK_MODELS_PROVIDER_SCHEMA)
     } else {
         (schema, provider_schema)
     };
@@ -485,13 +486,13 @@ fn generated_rust_projection_round_trips_exact_live_models() {
             .expect("sdk-v2 provider schema is staged");
         (manifest, catalog, journey, schema, provider_schema)
     });
-    let sdk_v3_files = sdk_v3_supplement.as_ref().map(|_| {
-        let directory = stage.path().join("sdk-v3");
-        fs::create_dir_all(&directory).expect("sdk-v3 contract stage is created");
-        let catalog = directory.join("catalog-v3.json");
-        let journey = directory.join("journey-v3.json");
-        fs::write(&catalog, SDK_V3_CATALOG).expect("sdk-v3 catalog is staged");
-        fs::write(&journey, SDK_V3_JOURNEY).expect("sdk-v3 journey is staged");
+    let sdk_models_files = sdk_models_supplement.as_ref().map(|_| {
+        let directory = stage.path().join("models");
+        fs::create_dir_all(&directory).expect("models contract stage is created");
+        let catalog = directory.join("catalog.json");
+        let journey = directory.join("journey.json");
+        fs::write(&catalog, SDK_MODELS_CATALOG).expect("models catalog is staged");
+        fs::write(&journey, SDK_MODELS_JOURNEY).expect("models journey is staged");
         (catalog, journey)
     });
     let generated = stage.path().join("generated");
@@ -841,7 +842,7 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
         .env_remove("TYPE_BRIDGE_SDK_V2_VALIDATED_OBSERVATIONS");
     if sdk_report.is_some()
         || sdk_v2_report.is_some()
-        || sdk_v3_supplement.is_some()
+        || sdk_models_supplement.is_some()
         || sdk_v5_evidence.is_some()
     {
         consumer_command.env(
@@ -851,8 +852,8 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
     } else {
         consumer_command.env_remove("TYPE_BRIDGE_SDK_PROFILE_ENTRIES");
     }
-    if sdk_v3_supplement.is_some() {
-        consumer_command.arg("generated_data_model_runtime_v3_live");
+    if sdk_models_supplement.is_some() {
+        consumer_command.arg("sdk_models_data_model_runtime_live");
     } else if sdk_v5_evidence.is_some() {
         consumer_command.arg("generated_canonical_serialization_v5_live");
     }
@@ -867,11 +868,13 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
             .env("TYPE_BRIDGE_SDK_SCHEMA", schema)
             .env("TYPE_BRIDGE_SDK_PROVIDER_SCHEMA", provider_schema);
     }
-    if let (Some(supplement), Some((catalog, journey))) = (&sdk_v3_supplement, &sdk_v3_files) {
+    if let (Some(supplement), Some((catalog, journey))) =
+        (&sdk_models_supplement, &sdk_models_files)
+    {
         consumer_command
-            .env("TYPE_BRIDGE_SDK_V3_RUST_SUPPLEMENT", supplement)
-            .env("TYPE_BRIDGE_SDK_V3_CATALOG", catalog)
-            .env("TYPE_BRIDGE_SDK_V3_JOURNEY", journey);
+            .env("TYPE_BRIDGE_SDK_MODELS_RUST_SUPPLEMENT", supplement)
+            .env("TYPE_BRIDGE_SDK_MODELS_CATALOG", catalog)
+            .env("TYPE_BRIDGE_SDK_MODELS_JOURNEY", journey);
     }
     if let Some(evidence) = &sdk_v5_evidence {
         consumer_command.env("TYPE_BRIDGE_SDK_V5_RUST_EVIDENCE", evidence);
@@ -904,7 +907,7 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
         String::from_utf8_lossy(&consumer_output.stderr),
     );
     let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout);
-    let expected_consumer_tests = if sdk_v3_supplement.is_some() || sdk_v5_evidence.is_some() {
+    let expected_consumer_tests = if sdk_models_supplement.is_some() || sdk_v5_evidence.is_some() {
         1
     } else {
         CONSUMER_TESTS.len()
@@ -912,10 +915,10 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
     assert!(consumer_stdout.contains(&format!(
         "test result: ok. {expected_consumer_tests} passed; 0 failed"
     )));
-    if sdk_v3_supplement.is_some() {
-        assert!(consumer_stdout.contains("generated Sdk V3 Rust live supplement: passed"));
+    if sdk_models_supplement.is_some() {
+        assert!(consumer_stdout.contains("generated Models Rust live supplement: passed"));
         assert!(
-            sdk_v3_supplement
+            sdk_models_supplement
                 .as_ref()
                 .is_some_and(|path| path.is_file())
         );

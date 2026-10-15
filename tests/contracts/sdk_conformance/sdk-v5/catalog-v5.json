@@ -6,7 +6,7 @@
     "version": 5,
     "semantic_profile": "typedb-3.12.1/v1",
     "live_server_version": "3.12.3",
-    "schema_path": "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml",
+    "schema_path": "tests/contracts/sdk_conformance/models/schema.yaml",
     "journey_path": "tests/contracts/sdk_conformance/sdk-v5/journey-v5.json",
     "record_contract_path": "tests/contracts/projected-record-v1.json",
     "abi_contract_path": "tests/contracts/c-abi.json"

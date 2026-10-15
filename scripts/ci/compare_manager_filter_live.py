@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare four Manager-filter reports that share one sdk-v3 matrix profile."""
+"""Compare four Manager-filter reports that share one models matrix profile."""
 
 from __future__ import annotations
 
@@ -25,13 +25,13 @@ from compare_sdk_conformance import (  # noqa: E402, F401
 from compare_sdk_conformance import validate_producer_source as check_producer_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"
-JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"
-PROVIDER_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql"
+SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/models/schema.yaml"
+JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/models/journey.json"
+PROVIDER_RELATIVE = "tests/contracts/sdk_conformance/models/provider-3.12.1.tql"
 
 REPORT_FORMAT = "typebridge.manager-filter-live-report/v1"
 SUMMARY_FORMAT = "typebridge.manager-filter-live-summary/v1"
-# The sdk-v3 catalog profile; reports may carry any sdk-v3 matrix profile.
+# The models catalog profile; reports may carry any models matrix profile.
 SEMANTIC_PROFILE = profile_matrix.catalog_profile(3)
 REPORT_BINDINGS = ("python", "node", "rust", "c")
 REPORT_OUTPUT_ENV = "TYPE_BRIDGE_MANAGER_LIVE_REPORT"
@@ -39,7 +39,7 @@ REPORT_WRITE_SEMANTICS = "create_new"
 
 SOURCE_SHA256 = {
     "schema": "74b9161e3d8fd70a1f22c3a8b7fc70a823b18cb07973064e2e10ce0940f76f1f",
-    "journey": "c5679b428c22e2bff7989f6d674cde3780b752a40f6bbce6ccb3aa451797b1c0",
+    "journey": "d0153b47c42f771cae1668fcfdb0e3d9d7c4e3ee4d793177751e1b657fe37e66",
     "provider": "af61aaece22d666e19d2c1357f8ebc39b8cbcf4bff7b98a19a56daf171a1faba",
 }
 SOURCE_PATHS = {
@@ -252,7 +252,7 @@ def _manager_observation(journey: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_contract() -> ManagerManagerLiveContract:
-    """Derive the focused live observation from the frozen Sdk V3 journey."""
+    """Derive the focused live observation from the frozen Models journey."""
 
     authority: dict[str, dict[str, str]] = {}
     journey_raw = b""
@@ -276,12 +276,12 @@ def load_contract() -> ManagerManagerLiveContract:
         "Manager journey",
     )
     if (
-        journey["format"] != "typebridge.sdk-journey/v3"
-        or journey["fixture_id"] != "sdk-v3"
+        journey["format"] != "typebridge.sdk-models-journey/v1"
+        or journey["fixture_id"] != "models"
         or journey["version"] != 3
         or journey["semantic_profile"] != SEMANTIC_PROFILE
     ):
-        raise ContractError("invalid_journey_authority", "sdk-v3 identity drifted")
+        raise ContractError("invalid_journey_authority", "models identity drifted")
     return ManagerManagerLiveContract(
         authority=authority,
         observation=_manager_observation(journey),

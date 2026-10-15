@@ -6429,9 +6429,9 @@ async fn generated_canonical_serialization_v5_live() {
 }
 
 #[tokio::test]
-async fn generated_data_model_runtime_v3_live() {
-    let Some(_) = env::var_os("TYPE_BRIDGE_SDK_V3_RUST_SUPPLEMENT") else {
-        println!("generated Sdk V3 Rust live supplement: not requested");
+async fn sdk_models_data_model_runtime_live() {
+    let Some(_) = env::var_os("TYPE_BRIDGE_SDK_MODELS_RUST_SUPPLEMENT") else {
+        println!("generated Models Rust live supplement: not requested");
         return;
     };
     let entry = sdk_matrix_entry(3);
@@ -6452,7 +6452,7 @@ async fn generated_data_model_runtime_v3_live() {
             ownership_edge_person_input("data-dana", &[], None),
         ])
         .await
-        .expect("Sdk V3 entity batch insert");
+        .expect("Models entity batch insert");
     let inserted_keys = inserted_people
         .iter()
         .map(|person| person.identifier().value().clone())
@@ -6500,7 +6500,7 @@ async fn generated_data_model_runtime_v3_live() {
             ownership_edge_person_input("data-dana", &[], None),
         ])
         .await
-        .expect("Sdk V3 entity batch put");
+        .expect("Models entity batch put");
     let put_keys = put_people
         .iter()
         .map(|person| person.identifier().value().clone())
@@ -6717,7 +6717,7 @@ async fn generated_data_model_runtime_v3_live() {
         .entities::<Counter>()
         .count()
         .await
-        .expect("Sdk V3 counter baseline");
+        .expect("Models counter baseline");
     let inserted = db
         .entities::<Counter>()
         .insert_many(vec![
@@ -6727,7 +6727,7 @@ async fn generated_data_model_runtime_v3_live() {
                 .expect("right counter input"),
         ])
         .await
-        .expect("Sdk V3 counter batch insert");
+        .expect("Models counter batch insert");
     assert_eq!(inserted.len(), 2);
     assert_ne!(inserted[0].iid(), inserted[1].iid());
     let left_iid = inserted[0].iid().to_owned();
@@ -6835,7 +6835,7 @@ async fn generated_data_model_runtime_v3_live() {
             ownership_edge_person_input("data-dana", &[], None),
         ])
         .await
-        .expect("Sdk V3 membership people");
+        .expect("Models membership people");
     let robot = db
         .entities::<Robot>()
         .insert(
@@ -6847,7 +6847,7 @@ async fn generated_data_model_runtime_v3_live() {
             .expect("robot input"),
         )
         .await
-        .expect("Sdk V3 membership robot");
+        .expect("Models membership robot");
 
     let network_baseline = db
         .relations::<NetworkLink>()
@@ -7008,7 +7008,7 @@ async fn generated_data_model_runtime_v3_live() {
                 .expect("robot membership input"),
         ])
         .await
-        .expect("Sdk V3 membership insert");
+        .expect("Models membership insert");
     let membership_ada_iid = memberships[0].iid().to_owned();
     let membership_robot_iid = memberships[1].iid().to_owned();
     let updated_memberships = db
@@ -7135,7 +7135,7 @@ async fn generated_data_model_runtime_v3_live() {
                 .expect("robot lifecycle membership input"),
         ])
         .await
-        .expect("Sdk V3 lifecycle membership insert");
+        .expect("Models lifecycle membership insert");
     let membership_ada_iid = memberships[0].iid().to_owned();
     let membership_robot_iid = memberships[1].iid().to_owned();
     let membership_count_after_insert = db
@@ -7544,9 +7544,9 @@ async fn generated_data_model_runtime_v3_live() {
         "projected_thing_close_idempotent": true,
     });
     let journey_bytes =
-        fs::read(sdk_env_path("TYPE_BRIDGE_SDK_V3_JOURNEY")).expect("Sdk V3 journey is readable");
+        fs::read(sdk_env_path("TYPE_BRIDGE_SDK_MODELS_JOURNEY")).expect("Models journey is readable");
     let journey: Value =
-        serde_json::from_slice(&journey_bytes).expect("Sdk V3 journey is valid JSON");
+        serde_json::from_slice(&journey_bytes).expect("Models journey is valid JSON");
     assert_eq!(
         entity_batch_insert_put,
         journey["expected_observations"]["entity_batch_insert_put"]
@@ -7644,19 +7644,19 @@ async fn generated_data_model_runtime_v3_live() {
     })
     .collect::<Vec<_>>();
     let supplement = json!({
-        "format": "typebridge.sdk-v3-live-supplement/v1",
+        "format": "typebridge.sdk-models-live-supplement/v1",
         "binding": "rust",
-        "producer": "type-bridge-rust.generated-data-model-runtime-v3-live",
+        "producer": "type-bridge-rust.sdk-models-data-model-runtime-live",
         "semantic_profile": sdk_matrix_profile(&entry),
         "semantic_fingerprint": semantic_fingerprint,
         "projection_fingerprint": projection_fingerprint,
         "results": results,
     });
     publish_sdk_report(
-        &sdk_env_path("TYPE_BRIDGE_SDK_V3_RUST_SUPPLEMENT"),
+        &sdk_env_path("TYPE_BRIDGE_SDK_MODELS_RUST_SUPPLEMENT"),
         supplement,
     );
-    println!("generated Sdk V3 Rust live supplement: passed");
+    println!("generated Models Rust live supplement: passed");
 }
 
 fn relation_person_input(identifier: &str, alias: &str) -> PersonCreate {

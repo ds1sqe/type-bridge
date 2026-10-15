@@ -33,11 +33,10 @@ QUERY_PACKAGE = (
 )
 SETUP_SOURCE = ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection_live/setup.rs"
 SETUP_LOCK = ROOT / "tests/support/provider/Cargo.lock"
-PROVIDER_SCHEMA = ROOT / profile_matrix.suite_directory("models") / "provider-3.12.1-v3.tql"
+PROVIDER_SCHEMA = ROOT / profile_matrix.suite_directory("models") / "provider-3.12.1.tql"
 JOURNEY_CONTRACT = ROOT / "tests/contracts/c-artifact-journey-v1.json"
 PREDECESSOR_CATALOGS = tuple(
-    ROOT / f"tests/contracts/sdk_conformance/sdk-v{version}/catalog-v{version}.json"
-    for version in range(1, 6)
+    ROOT / profile_matrix.catalog_relative(version) for version in range(1, 6)
 )
 FULL_MARKER_COUNT = 62
 QUERY_MARKER_COUNT = 8
@@ -76,7 +75,7 @@ def run(
 
 
 def adapted_fixture(path: Path) -> bytes:
-    """Adapt frozen acceptance source to the independently packaged Sdk V3."""
+    """Adapt frozen acceptance source to the independently packaged Models."""
     source = path.read_text(encoding="utf-8")
     if source.count("#include <fixture/models.h>") != 1:
         raise JourneyError(f"fixture include authority drifted: {path.name}")
@@ -90,7 +89,7 @@ def adapted_fixture(path: Path) -> bytes:
     source = source.replace("FIXTURE_", "TB_SDKV3_")
     if path == FULL_CONSUMER:
         # The predecessor query fixture allowed arbitrary nickname strings.
-        # Sdk V3 freezes the field to Ada/Dana. Preserve the one
+        # Models freezes the field to Ada/Dana. Preserve the one
         # optional-field query row and omit the field from all other people;
         # this changes fixture data only, never generated/runtime semantics.
         old_open = "if (!is_query_dana && !is_v5_live) {"

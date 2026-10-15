@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://type-bridge.dev/contracts/sdk-conformance/sdk-v3-proof-fragment-v1.schema.json",
-  "title": "TypeBridge sdk-v3 deterministic proof fragment v1",
+  "$id": "https://type-bridge.dev/contracts/sdk-conformance/models/proof-fragment.schema.json",
+  "title": "TypeBridge models deterministic proof fragment v1",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -14,7 +14,7 @@
     "results"
   ],
   "properties": {
-    "format": {"const": "typebridge.sdk-v3-proof-fragment/v1"},
+    "format": {"const": "typebridge.sdk-models-proof-fragment/v1"},
     "binding": {"enum": ["python", "node", "rust", "c"]},
     "semantic_profile": {"const": "typedb-3.12.1/v1"},
     "run_nonce": {"type": "string", "pattern": "^[0-9a-f]{64}$"},

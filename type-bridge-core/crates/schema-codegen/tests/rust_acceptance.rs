@@ -24,17 +24,17 @@ const PROJECTED_FOREIGN_NEGATIVE: &str =
     include_str!("rust_acceptance/projected_foreign_negative.rs");
 const SDK_V5_CODEC: &str = include_str!("rust_acceptance/sdk_v5_codec.rs");
 
-const SDK_V3_PROOF_FRAGMENT_ENV: &str = "TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT";
-const SDK_V3_PROOF_NONCE_ENV: &str = "TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE";
+const SDK_MODELS_PROOF_FRAGMENT_ENV: &str = "TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGMENT";
+const SDK_MODELS_PROOF_NONCE_ENV: &str = "TYPE_BRIDGE_SDK_MODELS_PROOF_RUN_NONCE";
 
-fn v3_source_identity(root: &Path, relative: &str) -> Value {
+fn models_source_identity(root: &Path, relative: &str) -> Value {
     let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
     json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
 }
 
-fn publish_v3_package_fragment(results: Vec<Value>) {
-    let destination = env::var_os(SDK_V3_PROOF_FRAGMENT_ENV);
-    let nonce = env::var_os(SDK_V3_PROOF_NONCE_ENV);
+fn publish_models_package_fragment(results: Vec<Value>) {
+    let destination = env::var_os(SDK_MODELS_PROOF_FRAGMENT_ENV);
+    let nonce = env::var_os(SDK_MODELS_PROOF_NONCE_ENV);
     assert_eq!(
         destination.is_some(),
         nonce.is_some(),
@@ -62,14 +62,14 @@ fn publish_v3_package_fragment(results: Vec<Value>) {
     let fragment = json!({
         "binding": "rust",
         "contract": {
-            "allowlist": v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-allowlist-v1.json"),
-            "journey": v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"),
-            "proof_schema": v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-schema-v1.json"),
+            "allowlist": models_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-allowlist.json"),
+            "journey": models_source_identity(&root, "tests/contracts/sdk_conformance/models/journey.json"),
+            "proof_schema": models_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-schema.json"),
         },
-        "format": "typebridge.sdk-v3-proof-fragment/v1",
+        "format": "typebridge.sdk-models-proof-fragment/v1",
         "producer": {
-            "id": "type-bridge-rust.generated-package-v3-proof",
-            "sources": sources.iter().map(|path| v3_source_identity(&root, path)).collect::<Vec<_>>(),
+            "id": "type-bridge-rust.sdk-models-generated-package-proof",
+            "sources": sources.iter().map(|path| models_source_identity(&root, path)).collect::<Vec<_>>(),
         },
         "results": results,
         "run_nonce": nonce,
@@ -3658,11 +3658,11 @@ fn main() {}"#,
 }
 
 #[test]
-fn sdk_v3_generated_package_integrity() {
+fn sdk_models_generated_package_integrity() {
     let source = fs::read_to_string(
-        repository_root().join("tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"),
+        repository_root().join("tests/contracts/sdk_conformance/models/schema.yaml"),
     )
-    .expect("Sdk V3 schema reads");
+    .expect("Models schema reads");
     let profile = support::sdk_profile_matrix::requested(3).semantic_profile;
     let projection = support::rust_projection_on(&source, "rust-acceptance.yaml", &profile);
     assert!(
@@ -3760,10 +3760,10 @@ fn sdk_v3_generated_package_integrity() {
         "rejected_token_states": ["foreign", "forged", "reordered", "stale"],
         "provider_text_exposed": false
     });
-    publish_v3_package_fragment(vec![
-        json!({"observation": constraint, "observation_ref": "projected_constraint_validation", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::sdk_v3_generated_package_integrity"}),
-        json!({"observation": evidence, "observation_ref": "projection_evidence_integrity", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::sdk_v3_generated_package_integrity"}),
-        json!({"observation": fencing, "observation_ref": "token_package_fencing", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::sdk_v3_generated_package_integrity"}),
+    publish_models_package_fragment(vec![
+        json!({"observation": constraint, "observation_ref": "projected_constraint_validation", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::sdk_models_generated_package_integrity"}),
+        json!({"observation": evidence, "observation_ref": "projection_evidence_integrity", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::sdk_models_generated_package_integrity"}),
+        json!({"observation": fencing, "observation_ref": "token_package_fencing", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::sdk_models_generated_package_integrity"}),
     ]);
 }
 
@@ -3774,9 +3774,9 @@ fn generated_rust_sdk_v5_canonical_codec() {
     let generated_foreign = stage.path().join("generated-foreign");
     let consumer = stage.path().join("sdk-v5-codec");
     let source = fs::read_to_string(
-        repository_root().join("tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"),
+        repository_root().join("tests/contracts/sdk_conformance/models/schema.yaml"),
     )
-    .expect("Sdk V3 schema reads");
+    .expect("Models schema reads");
     write_package(&emit_from_source(&source), &generated);
     let foreign_source = source.replacen("max: 80", "max: 79", 1);
     assert_ne!(foreign_source, source, "foreign V5 authority must differ");
@@ -3959,10 +3959,9 @@ fn generated_rust_projected_parity_producer() {
         .unwrap()
         .canonicalize()
         .unwrap();
-    let schema = fs::read_to_string(
-        repository.join("tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"),
-    )
-    .unwrap();
+    let schema =
+        fs::read_to_string(repository.join("tests/contracts/sdk_conformance/models/schema.yaml"))
+            .unwrap();
     let foreign_schema = schema.replacen(
         "member: { card: { min: 0, max: 2 }, doc: membership player }",
         "member: { card: { min: 0, max: 3 }, doc: membership player }",

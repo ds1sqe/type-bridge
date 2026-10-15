@@ -54,13 +54,13 @@ const SDK_V2_CATALOG_RELATIVE =
   "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json";
 const SDK_V2_JOURNEY_RELATIVE =
   "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json";
-const SDK_V3_JOURNEY = resolve(
+const SDK_MODELS_JOURNEY = resolve(
   ROOT,
-  "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json",
+  "tests/contracts/sdk_conformance/models/journey.json",
 );
-const SDK_V3_PROVIDER_SCHEMA = resolve(
+const SDK_MODELS_PROVIDER_SCHEMA = resolve(
   ROOT,
-  "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql",
+  "tests/contracts/sdk_conformance/models/provider-3.12.1.tql",
 );
 const SDK_MANIFEST = resolve(ROOT, SDK_MANIFEST_RELATIVE);
 const SDK_CATALOG = resolve(ROOT, SDK_CATALOG_RELATIVE);
@@ -85,7 +85,9 @@ interface SdkProfileIdentity {
 }
 
 function sdkContractRelative(version: number, name: string): string {
-  return `tests/contracts/sdk_conformance/sdk-v${version}/${name}-v${version}.json`;
+  return version === 3
+    ? `tests/contracts/sdk_conformance/models/${name}.json`
+    : `tests/contracts/sdk_conformance/sdk-v${version}/${name}-v${version}.json`;
 }
 
 function sdkProfileMatrix(version: number): Record<string, any> {
@@ -208,7 +210,7 @@ function sdkResults(
   );
 }
 
-function sdkV3SupplementObservations(): ReadonlyMap<string, Record<string, unknown>> {
+function sdkModelsSupplementObservations(): ReadonlyMap<string, Record<string, unknown>> {
   const duplicateTarget = {
     category: "invalid_input",
     code: "duplicate_batch_target",
@@ -3284,7 +3286,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
 });
 
 test(
-  "node.generated_data_model_runtime_v3_live",
+  "node.sdk_models_data_model_runtime_live",
   { skip: IS_TYPEDB_3_11 || !Object.hasOwn(sdkProfileMatrix(3), REMOTE_PROFILE), timeout: 360_000 },
   async () => {
     const suppliedStage = process.env.TYPE_BRIDGE_GENERATED_NODE_STAGE;
@@ -3344,7 +3346,7 @@ test(
 
       database = connectIntegration();
       database.resetDatabase();
-      defineSchema(database, await readFile(SDK_V3_PROVIDER_SCHEMA, "utf8"));
+      defineSchema(database, await readFile(SDK_MODELS_PROVIDER_SCHEMA, "utf8"));
 
       const personInput = (identifierValue: string, scoreValue: bigint) => Person.create({
         identifier: Identifier.create(identifierValue),
@@ -3608,7 +3610,7 @@ test(
       assert.equal(networkManager.count(), 0n);
       assert.equal(personManager.count(), 0n);
 
-      const supplementPath = process.env.TYPE_BRIDGE_SDK_V3_NODE_SUPPLEMENT;
+      const supplementPath = process.env.TYPE_BRIDGE_SDK_MODELS_NODE_SUPPLEMENT;
       if (supplementPath !== undefined) {
         const identity = sdkReportIdentity(3);
         requireSdkServerVersion(
@@ -3620,8 +3622,8 @@ test(
           JSON.parse(generated.SEMANTIC_SCHEMA_FINGERPRINT_JSON),
           JSON.parse(generated.PROJECTION_FINGERPRINT_JSON),
         );
-        const observations = sdkV3SupplementObservations();
-        const journey = JSON.parse(await readFile(SDK_V3_JOURNEY, "utf8"));
+        const observations = sdkModelsSupplementObservations();
+        const journey = JSON.parse(await readFile(SDK_MODELS_JOURNEY, "utf8"));
         const results = [...observations.entries()].map(([key, observation]) => {
           const [observationRef, proofKind] = key.split("\u0000");
           assert.deepEqual(observation, journey.expected_observations[observationRef]);
@@ -3637,10 +3639,10 @@ test(
         );
         assert.equal(results.length, 8);
         await publishSdkReport(supplementPath, {
-          format: "typebridge.sdk-v3-live-supplement/v1",
+          format: "typebridge.sdk-models-live-supplement/v1",
           binding: "node",
           semantic_profile: identity.semanticProfile,
-          producer: "node.generated-data-model-runtime-v3-live",
+          producer: "node.sdk-models-data-model-runtime-live",
           semantic_fingerprint: identity.expectedFingerprints.semantic,
           projection_fingerprint: identity.expectedFingerprints.projections.node,
           results,
@@ -3725,7 +3727,7 @@ test(
         sdkReportIdentity(5),
         await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
       );
-      defineSchema(database, await readFile(SDK_V3_PROVIDER_SCHEMA, "utf8"));
+      defineSchema(database, await readFile(SDK_MODELS_PROVIDER_SCHEMA, "utf8"));
       const personManager = Person.manager(database);
       const employmentManager = Employment.manager(database);
       const person = personManager.insert(Person.create({

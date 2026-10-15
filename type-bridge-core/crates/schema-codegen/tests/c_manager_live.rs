@@ -25,10 +25,9 @@ use type_bridge_contract::projection::{BindingTarget, CSymbolPrefix, ProjectionC
 use type_bridge_schema::project;
 use type_bridge_schema_codegen::{CEmitter, GeneratedPackage};
 
-const SOURCE: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml");
+const SOURCE: &str = include_str!("../../../../tests/contracts/sdk_conformance/models/schema.yaml");
 const PROVIDER: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql");
+    include_str!("../../../../tests/contracts/sdk_conformance/models/provider-3.12.1.tql");
 const CONSUMER: &str = include_str!("c_manager_live/consumer.c");
 const WRONG_OWNER_COMPILE_FAIL: &str = include_str!("c_manager_live/wrong_owner_compile_fail.c");
 const WRONG_SCALAR_COMPILE_FAIL: &str = include_str!("c_manager_live/wrong_scalar_compile_fail.c");
@@ -45,17 +44,17 @@ const MAX_PRODUCER_BYTES: usize = 1024 * 1024;
 const AUTHORITIES: [(&str, &str, &str); 3] = [
     (
         "journey",
-        "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json",
-        "c5679b428c22e2bff7989f6d674cde3780b752a40f6bbce6ccb3aa451797b1c0",
+        "tests/contracts/sdk_conformance/models/journey.json",
+        "d0153b47c42f771cae1668fcfdb0e3d9d7c4e3ee4d793177751e1b657fe37e66",
     ),
     (
         "provider",
-        "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql",
+        "tests/contracts/sdk_conformance/models/provider-3.12.1.tql",
         "af61aaece22d666e19d2c1357f8ebc39b8cbcf4bff7b98a19a56daf171a1faba",
     ),
     (
         "schema",
-        "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml",
+        "tests/contracts/sdk_conformance/models/schema.yaml",
         "74b9161e3d8fd70a1f22c3a8b7fc70a823b18cb07973064e2e10ce0940f76f1f",
     ),
 ];
@@ -71,14 +70,14 @@ fn emitted_fixture(profile: &SdkProfile) -> EmittedFixture {
     let foreign_source = SOURCE.replacen(needle, "      foo__bar: { card: { min: 0, max: 2 } }", 1);
     let (local_schema, local_authority) = profiled_authority(
         SOURCE,
-        "sdk-v3.yaml",
-        "sdk-v3-c-manager",
+        "models.yaml",
+        "models-c-manager",
         &profile.semantic_profile,
     );
     let (foreign_schema, foreign_authority) = profiled_authority(
         &foreign_source,
-        "sdk-v3-foreign-foo-bar.yaml",
-        "sdk-v3-c-manager-foreign",
+        "models-foreign-foo-bar.yaml",
+        "models-c-manager-foreign",
         &profile.semantic_profile,
     );
     let emitter = CEmitter::new();
@@ -95,12 +94,12 @@ fn emitted_fixture(profile: &SdkProfile) -> EmittedFixture {
             &emitter.generator_handlers_for(schema),
             &resources,
         )
-        .expect("Sdk V3 projects to C");
+        .expect("Models projects to C");
         (
             projection.projection_fingerprint().clone(),
             emitter
                 .emit(&projection, authority)
-                .expect("Sdk V3 C package emits"),
+                .expect("Models C package emits"),
         )
     };
     let (local_fingerprint, local) = emit(&local_schema, &local_authority, "manager");

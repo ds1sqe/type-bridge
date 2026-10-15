@@ -51,9 +51,9 @@ fn v3_data_source_identity(root: &Path, relative: &str) -> Value {
     json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
 }
 
-fn publish_v3_data_fragment(results: Vec<Value>) {
-    let destination = std::env::var_os("TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT");
-    let nonce = std::env::var_os("TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE");
+fn publish_models_data_fragment(results: Vec<Value>) {
+    let destination = std::env::var_os("TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGMENT");
+    let nonce = std::env::var_os("TYPE_BRIDGE_SDK_MODELS_PROOF_RUN_NONCE");
     assert_eq!(
         destination.is_some(),
         nonce.is_some(),
@@ -91,12 +91,12 @@ fn publish_v3_data_fragment(results: Vec<Value>) {
     let fragment = json!({
         "binding": "rust",
         "contract": {
-            "allowlist": v3_data_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-allowlist-v1.json"),
-            "journey": v3_data_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"),
-            "proof_schema": v3_data_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-schema-v1.json"),
+            "allowlist": v3_data_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-allowlist.json"),
+            "journey": v3_data_source_identity(&root, "tests/contracts/sdk_conformance/models/journey.json"),
+            "proof_schema": v3_data_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-schema.json"),
         },
-        "format": "typebridge.sdk-v3-proof-fragment/v1",
-        "producer": {"id": "type-bridge-rust.generated-data-v3-proof", "sources": sources.iter().map(|path| v3_data_source_identity(&root, path)).collect::<Vec<_>>()},
+        "format": "typebridge.sdk-models-proof-fragment/v1",
+        "producer": {"id": "type-bridge-rust.sdk-models-generated-data-proof", "sources": sources.iter().map(|path| v3_data_source_identity(&root, path)).collect::<Vec<_>>()},
         "results": results,
         "run_nonce": nonce,
         "semantic_profile": crate::sdk_profile_matrix::requested(3).semantic_profile,
@@ -712,7 +712,7 @@ async fn write_transaction_preflight_and_reads_share_the_open_context() {
 }
 
 #[tokio::test]
-async fn sdk_v3_rust_data_plane_fragment() {
+async fn sdk_models_rust_data_plane_fragment() {
     use crate::{
         AnswerCancellation, DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES, DEFAULT_DIRECT_QUERY_BYTES,
         DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS, DEFAULT_DIRECT_QUERY_GRAPH_NODES,
@@ -825,10 +825,10 @@ async fn sdk_v3_rust_data_plane_fragment() {
         "deterministic_field_order": true
     });
 
-    publish_v3_data_fragment(vec![
-        json!({"observation": connection, "observation_ref": "complete_connection_policy", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": "transaction::tests::sdk_v3_rust_data_plane_fragment"}),
-        json!({"observation": cancellation_observation, "observation_ref": "data_operation_cancellation", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": "transaction::tests::sdk_v3_rust_data_plane_fragment"}),
-        json!({"observation": limits, "observation_ref": "data_operation_resource_limits", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": "transaction::tests::sdk_v3_rust_data_plane_fragment"}),
-        json!({"observation": diagnostic, "observation_ref": "data_operation_structured_diagnostic", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "transaction::tests::sdk_v3_rust_data_plane_fragment"}),
+    publish_models_data_fragment(vec![
+        json!({"observation": connection, "observation_ref": "complete_connection_policy", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": "transaction::tests::sdk_models_rust_data_plane_fragment"}),
+        json!({"observation": cancellation_observation, "observation_ref": "data_operation_cancellation", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": "transaction::tests::sdk_models_rust_data_plane_fragment"}),
+        json!({"observation": limits, "observation_ref": "data_operation_resource_limits", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": "transaction::tests::sdk_models_rust_data_plane_fragment"}),
+        json!({"observation": diagnostic, "observation_ref": "data_operation_structured_diagnostic", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "transaction::tests::sdk_models_rust_data_plane_fragment"}),
     ]);
 }

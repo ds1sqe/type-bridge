@@ -25,7 +25,7 @@ CONTRACT_ROOT = "tests/contracts/sdk_conformance"
 # The smoke set remains until it is folded into queries.
 SUITES = {
     "queries": "sdk-v2",
-    "models": "sdk-v3",
+    "models": "models",
     "administration": "sdk-v4",
     "serialization": "sdk-v5",
     "artifacts": "sdk-v6",
@@ -39,7 +39,8 @@ def suite_directory(suite: str) -> str:
 
 def contract_relative(version: int, kind: str) -> str:
     directory = "sdk-v1" if version == 1 else SUITES[tuple(SUITES)[version - 2]]
-    return f"{CONTRACT_ROOT}/{directory}/{kind}-v{version}.json"
+    suffix = f"-v{version}" if directory.startswith("sdk-v") else ""
+    return f"{CONTRACT_ROOT}/{directory}/{kind}{suffix}.json"
 
 
 SEMANTIC_PROFILE_ENV = "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE"

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Run generated projected-value and manager acceptance on the sdk-v3 profile server.
+"""Run generated projected-value and manager acceptance on the models profile server.
 
 The semantic profile comes from ``TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE``
-(default: the profile sdk-v3 was frozen on); the guard requires that matrix
+(default: the profile models was frozen on); the guard requires that matrix
 entry's exact live server and every producer runs under that profile.
 """
 
@@ -31,7 +31,7 @@ from persist_binding_reports import PublishError, publish
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE = ROOT / "type-bridge-core"
-SCHEMA = ROOT / "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"
+SCHEMA = ROOT / "tests/contracts/sdk_conformance/models/schema.yaml"
 NODE_PACKAGE = CORE / "crates/node"
 NODE_HELPER = CORE / "crates/schema-codegen/tests/typescript_acceptance/live_support.mjs"
 C_SETUP = ROOT / "tests/support/provider/main.rs"
@@ -224,7 +224,7 @@ class Layout:
         prefix = profile.database_prefix
         return cls(
             profile=profile,
-            foreign_schema=root / "scratch/foreign-sdk-v3.yaml",
+            foreign_schema=root / "scratch/foreign-models.yaml",
             root=root,
             python=root / "python",
             node=root / "node",

@@ -1,4 +1,4 @@
-"""Frozen source-contract tests for the four-binding sdk-v3 journey."""
+"""Frozen source-contract tests for the four-binding models journey."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
-CONTRACT_ROOT = ROOT / "tests/contracts/sdk_conformance/sdk-v3"
+CONTRACT_ROOT = ROOT / "tests/contracts/sdk_conformance/models"
 
 EXPECTED_SELECTED_PROOFS = [
     ("sdk.crud.entity-batch-insert-put", "direct_runtime", "entity_batch_insert_put"),
@@ -124,20 +124,20 @@ DATA_LANES = {
 }
 EXPECTED_REPORT_PRODUCERS = {
     "python": {
-        "id": "python.generated-data-model-runtime-v3-live",
-        "test_id": "python.generated_data_model_runtime_v3_live",
+        "id": "python.sdk-models-data-model-runtime-live",
+        "test_id": "python.sdk_models_data_model_runtime_live",
     },
     "node": {
-        "id": "node.generated-data-model-runtime-v3-live",
-        "test_id": "node.generated_data_model_runtime_v3_live",
+        "id": "node.sdk-models-data-model-runtime-live",
+        "test_id": "node.sdk_models_data_model_runtime_live",
     },
     "rust": {
-        "id": "type-bridge-rust.generated-data-model-runtime-v3-live",
-        "test_id": "rust_projection_live::generated_data_model_runtime_v3_live",
+        "id": "type-bridge-rust.sdk-models-data-model-runtime-live",
+        "test_id": "rust_projection_live::sdk_models_data_model_runtime_live",
     },
     "c": {
-        "id": "type-bridge-c.generated-data-model-runtime-v3-live",
-        "test_id": "c_projection_live::generated_data_model_runtime_v3_live",
+        "id": "type-bridge-c.sdk-models-data-model-runtime-live",
+        "test_id": "c_projection_live::sdk_models_data_model_runtime_live",
     },
 }
 COMMON_DATA_SOURCES: set[str] = {
@@ -153,47 +153,47 @@ COMMON_DATA_SOURCES: set[str] = {
 }
 EXPECTED_FRAGMENT_PRODUCERS: dict[str, dict[str, dict[str, Any]]] = {
     "python": {
-        "python.generated-data-v3-proof": {
+        "python.sdk-models-generated-data-proof": {
             "sources": COMMON_DATA_SOURCES
             | {
                 "type-bridge-core/crates/python/src/orm_runtime.rs",
                 "type-bridge-core/crates/python/src/runtime_projection.rs",
             },
             "lanes": DATA_LANES,
-            "test_id": "runtime_projection::tests::sdk_v3_python_data_plane_fragment",
+            "test_id": "runtime_projection::tests::sdk_models_python_data_plane_fragment",
         },
-        "python.generated-package-v3-proof": {
+        "python.sdk-models-generated-package-proof": {
             "sources": {
                 "type-bridge-core/crates/python/src/runtime_projection.rs",
                 "type-bridge-core/crates/schema-codegen/src/python/runtime.py",
                 "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py",
             },
             "lanes": PACKAGE_LANES,
-            "test_id": "python.generated_package_v3_integrity",
+            "test_id": "python.sdk_models_generated_package_integrity",
         },
     },
     "node": {
-        "node.generated-data-v3-proof": {
+        "node.sdk-models-generated-data-proof": {
             "sources": COMMON_DATA_SOURCES
             | {
                 "type-bridge-core/crates/node/src/lib.rs",
                 "type-bridge-core/crates/node/src/runtime_projection.rs",
             },
             "lanes": DATA_LANES,
-            "test_id": "runtime_projection::tests::sdk_v3_node_data_plane_fragment",
+            "test_id": "runtime_projection::tests::sdk_models_node_data_plane_fragment",
         },
-        "node.generated-package-v3-proof": {
+        "node.sdk-models-generated-package-proof": {
             "sources": {
                 "type-bridge-core/crates/node/src/runtime_projection.rs",
                 "type-bridge-core/crates/schema-codegen/src/typescript/runtime.ts",
                 "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/runtime_check.mjs",
             },
             "lanes": PACKAGE_LANES,
-            "test_id": "node.generated_package_v3_integrity",
+            "test_id": "node.sdk_models_generated_package_integrity",
         },
     },
     "rust": {
-        "type-bridge-rust.generated-data-v3-proof": {
+        "type-bridge-rust.sdk-models-generated-data-proof": {
             "sources": COMMON_DATA_SOURCES
             | {
                 "type-bridge-core/crates/rust/src/entity_manager.rs",
@@ -203,9 +203,9 @@ EXPECTED_FRAGMENT_PRODUCERS: dict[str, dict[str, dict[str, Any]]] = {
                 "type-bridge-core/crates/rust/src/transaction/tests.rs",
             },
             "lanes": DATA_LANES,
-            "test_id": "transaction::tests::sdk_v3_rust_data_plane_fragment",
+            "test_id": "transaction::tests::sdk_models_rust_data_plane_fragment",
         },
-        "type-bridge-rust.generated-package-v3-proof": {
+        "type-bridge-rust.sdk-models-generated-package-proof": {
             "sources": {
                 "type-bridge-core/crates/rust/src/entity_codec.rs",
                 "type-bridge-core/crates/rust/src/relation_codec.rs",
@@ -213,11 +213,11 @@ EXPECTED_FRAGMENT_PRODUCERS: dict[str, dict[str, dict[str, Any]]] = {
                 "type-bridge-core/crates/schema-codegen/tests/rust_acceptance.rs",
             },
             "lanes": PACKAGE_LANES,
-            "test_id": "rust_acceptance::sdk_v3_generated_package_integrity",
+            "test_id": "rust_acceptance::sdk_models_generated_package_integrity",
         },
     },
     "c": {
-        "type-bridge-c.generated-data-v3-proof": {
+        "type-bridge-c.sdk-models-generated-data-proof": {
             "sources": COMMON_DATA_SOURCES
             | {
                 "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
@@ -227,9 +227,9 @@ EXPECTED_FRAGMENT_PRODUCERS: dict[str, dict[str, dict[str, Any]]] = {
                 "type-bridge-core/crates/c/src/runtime.rs",
             },
             "lanes": DATA_LANES,
-            "test_id": "runtime::tests::sdk_v3_c_data_plane_fragment",
+            "test_id": "runtime::tests::sdk_models_c_data_plane_fragment",
         },
-        "type-bridge-c.generated-package-v3-proof": {
+        "type-bridge-c.sdk-models-generated-package-proof": {
             "sources": {
                 "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
                 "type-bridge-core/crates/c/src/projected_model.rs",
@@ -240,7 +240,7 @@ EXPECTED_FRAGMENT_PRODUCERS: dict[str, dict[str, dict[str, Any]]] = {
                 "type-bridge-core/crates/schema-codegen/tests/c_emitter.rs",
             },
             "lanes": PACKAGE_LANES,
-            "test_id": "c_emitter::sdk_v3_generated_package_integrity",
+            "test_id": "c_emitter::sdk_models_generated_package_integrity",
         },
     },
 }
@@ -252,8 +252,8 @@ def _load(name: str) -> dict[str, Any]:
     return value
 
 
-def test_sdk_v3_report_schema_freezes_four_bindings_and_exact_21_rows() -> None:
-    schema = _load("report-schema-v3.json")
+def test_sdk_models_report_schema_freezes_four_bindings_and_exact_21_rows() -> None:
+    schema = _load("report-schema.json")
 
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["additionalProperties"] is False
@@ -265,26 +265,26 @@ def test_sdk_v3_report_schema_freezes_four_bindings_and_exact_21_rows() -> None:
         "fixture",
         "results",
     ]
-    assert schema["properties"]["format"] == {"const": "typebridge.sdk-conformance-report/v3"}
+    assert schema["properties"]["format"] == {"const": "typebridge.sdk-models-report/v1"}
     assert schema["properties"]["binding"] == {"enum": ["python", "node", "rust", "c"]}
     assert schema["properties"]["results"]["minItems"] == 21
     assert schema["properties"]["results"]["maxItems"] == 21
     fixture = schema["$defs"]["fixture"]
     assert fixture["additionalProperties"] is False
-    assert fixture["properties"]["id"] == {"const": "sdk-v3"}
+    assert fixture["properties"]["id"] == {"const": "models"}
     assert fixture["properties"]["version"] == {"const": 3}
     assert fixture["properties"]["projection_target"] == {
         "enum": ["python", "typescript", "rust", "c"]
     }
 
 
-def test_sdk_v3_catalog_freezes_final_fingerprint_authority() -> None:
-    catalog = _load("catalog-v3.json")
+def test_sdk_models_catalog_freezes_final_fingerprint_authority() -> None:
+    catalog = _load("catalog.json")
     manifest = json.loads(
         (ROOT / "tests/contracts/sdk_conformance/manifest.json").read_text(encoding="utf-8")
     )
 
-    assert catalog["format"] == "typebridge.sdk-catalog/v3"
+    assert catalog["format"] == "typebridge.sdk-models-catalog/v1"
     assert catalog["authority_state"] == "finalized"
     assert catalog["expected_fingerprints"] == {
         "semantic": {
@@ -311,11 +311,11 @@ def test_sdk_v3_catalog_freezes_final_fingerprint_authority() -> None:
         },
     }
     assert catalog["fixture"] == {
-        "id": "sdk-v3",
+        "id": "models",
         "version": 3,
         "semantic_profile": "typedb-3.12.1/v1",
-        "schema_path": "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml",
-        "provider_schema_path": ("tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql"),
+        "schema_path": "tests/contracts/sdk_conformance/models/schema.yaml",
+        "provider_schema_path": ("tests/contracts/sdk_conformance/models/provider-3.12.1.tql"),
     }
     assert catalog["report_bindings"] == ["python", "node", "rust", "c"]
     assert catalog["report_producers"] == EXPECTED_REPORT_PRODUCERS
@@ -336,8 +336,8 @@ def test_sdk_v3_catalog_freezes_final_fingerprint_authority() -> None:
     } == selected_cases
 
 
-def test_sdk_v3_fixture_is_ordered_without_mutating_the_preserved_v1_v2_fixture() -> None:
-    fixture = yaml.safe_load((CONTRACT_ROOT / "schema-v3.yaml").read_text(encoding="utf-8"))
+def test_sdk_models_fixture_is_ordered_without_mutating_the_preserved_v1_v2_fixture() -> None:
+    fixture = yaml.safe_load((CONTRACT_ROOT / "schema.yaml").read_text(encoding="utf-8"))
     aliases = fixture["entities"]["person"]["owns"]["aliases"]
     participants = fixture["relations"]["network-link"]["relates"]["participant"]
     assert aliases["ordered"] is True
@@ -368,7 +368,7 @@ def test_sdk_v3_fixture_is_ordered_without_mutating_the_preserved_v1_v2_fixture(
     )
     assert fixture == preserved
 
-    provider = (CONTRACT_ROOT / "provider-3.12.1-v3.tql").read_text(encoding="utf-8")
+    provider = (CONTRACT_ROOT / "provider-3.12.1.tql").read_text(encoding="utf-8")
     preserved_provider = (
         ROOT / "type-bridge-core/crates/schema-codegen/tests/acceptance/provider-3.12.1.tql"
     ).read_text(encoding="utf-8")
@@ -397,11 +397,11 @@ def test_sdk_v3_fixture_is_ordered_without_mutating_the_preserved_v1_v2_fixture(
     assert provider == expected_provider
 
 
-def test_sdk_v3_journey_freezes_21_complete_observation_shapes() -> None:
-    journey = _load("journey-v3.json")
+def test_sdk_models_journey_freezes_21_complete_observation_shapes() -> None:
+    journey = _load("journey.json")
 
-    assert journey["format"] == "typebridge.sdk-journey/v3"
-    assert journey["fixture_id"] == "sdk-v3"
+    assert journey["format"] == "typebridge.sdk-models-journey/v1"
+    assert journey["fixture_id"] == "models"
     assert journey["version"] == 3
     assert set(journey["records"]) == {
         "people",
@@ -841,10 +841,10 @@ def test_sdk_v3_journey_freezes_21_complete_observation_shapes() -> None:
     assert "0x" not in encoded
 
 
-def test_sdk_v3_fragment_contract_freezes_two_producers_and_seven_lanes() -> None:
-    schema = _load("proof-fragment-schema-v1.json")
+def test_sdk_models_fragment_contract_freezes_two_producers_and_seven_lanes() -> None:
+    schema = _load("proof-fragment-schema.json")
     assert schema["additionalProperties"] is False
-    assert schema["properties"]["format"] == {"const": "typebridge.sdk-v3-proof-fragment/v1"}
+    assert schema["properties"]["format"] == {"const": "typebridge.sdk-models-proof-fragment/v1"}
     assert schema["properties"]["run_nonce"]["pattern"] == "^[0-9a-f]{64}$"
     assert schema["properties"]["results"]["minItems"] == 1
     assert schema["properties"]["results"]["maxItems"] == 4
@@ -853,8 +853,8 @@ def test_sdk_v3_fragment_contract_freezes_two_producers_and_seven_lanes() -> Non
         "enum": ["direct_runtime", "diagnostic"]
     }
 
-    allowlist = _load("proof-fragment-allowlist-v1.json")
-    assert allowlist["format"] == "typebridge.sdk-v3-proof-fragment-allowlist/v1"
+    allowlist = _load("proof-fragment-allowlist.json")
+    assert allowlist["format"] == "typebridge.sdk-models-proof-fragment-allowlist/v1"
     assert set(allowlist["bindings"]) == {"python", "node", "rust", "c"}
     for binding, producers in allowlist["bindings"].items():
         assert len(producers) == 2
@@ -885,12 +885,12 @@ def test_sdk_v3_fragment_contract_freezes_two_producers_and_seven_lanes() -> Non
         )
 
 
-def test_sdk_v3_environment_and_nonce_names_are_independent_from_v2() -> None:
+def test_sdk_models_environment_and_nonce_names_are_independent_from_v2() -> None:
     readme = (CONTRACT_ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "TYPE_BRIDGE_SDK_REPORT_V3" in readme
-    assert "TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE" in readme
-    assert "TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT" in readme
-    assert "TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENTS" in readme
+    assert "TYPE_BRIDGE_SDK_MODELS_REPORT" in readme
+    assert "TYPE_BRIDGE_SDK_MODELS_PROOF_RUN_NONCE" in readme
+    assert "TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGMENT" in readme
+    assert "TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGMENTS" in readme
     assert "TYPE_BRIDGE_SDK_REPORT_V2" not in readme
     assert "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE" not in readme

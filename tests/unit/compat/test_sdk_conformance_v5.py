@@ -140,7 +140,7 @@ def test_accepts_exact_four_binding_final_fan_in(tmp_path: Path) -> None:
 
 def test_journey_corpus_uses_types_owned_by_its_frozen_schema() -> None:
     journey = json.loads((ROOT / comparator.JOURNEY).read_text(encoding="utf-8"))
-    schema = (ROOT / "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml").read_text(
+    schema = (ROOT / "tests/contracts/sdk_conformance/models/schema.yaml").read_text(
         encoding="utf-8"
     )
 

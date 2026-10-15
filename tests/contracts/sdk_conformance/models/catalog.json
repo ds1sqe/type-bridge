@@ -1,15 +1,15 @@
 {
-  "format": "typebridge.sdk-catalog/v3",
+  "format": "typebridge.sdk-models-catalog/v1",
   "authority_state": "finalized",
   "fixture": {
-    "id": "sdk-v3",
+    "id": "models",
     "version": 3,
     "semantic_profile": "typedb-3.12.1/v1",
-    "schema_path": "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml",
-    "provider_schema_path": "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql"
+    "schema_path": "tests/contracts/sdk_conformance/models/schema.yaml",
+    "provider_schema_path": "tests/contracts/sdk_conformance/models/provider-3.12.1.tql"
   },
-  "journey_path": "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json",
-  "report_schema_path": "tests/contracts/sdk_conformance/sdk-v3/report-schema-v3.json",
+  "journey_path": "tests/contracts/sdk_conformance/models/journey.json",
+  "report_schema_path": "tests/contracts/sdk_conformance/models/report-schema.json",
   "report_bindings": [
     "python",
     "node",
@@ -24,20 +24,20 @@
   },
   "report_producers": {
     "python": {
-      "id": "python.generated-data-model-runtime-v3-live",
-      "test_id": "python.generated_data_model_runtime_v3_live"
+      "id": "python.sdk-models-data-model-runtime-live",
+      "test_id": "python.sdk_models_data_model_runtime_live"
     },
     "node": {
-      "id": "node.generated-data-model-runtime-v3-live",
-      "test_id": "node.generated_data_model_runtime_v3_live"
+      "id": "node.sdk-models-data-model-runtime-live",
+      "test_id": "node.sdk_models_data_model_runtime_live"
     },
     "rust": {
-      "id": "type-bridge-rust.generated-data-model-runtime-v3-live",
-      "test_id": "rust_projection_live::generated_data_model_runtime_v3_live"
+      "id": "type-bridge-rust.sdk-models-data-model-runtime-live",
+      "test_id": "rust_projection_live::sdk_models_data_model_runtime_live"
     },
     "c": {
-      "id": "type-bridge-c.generated-data-model-runtime-v3-live",
-      "test_id": "c_projection_live::generated_data_model_runtime_v3_live"
+      "id": "type-bridge-c.sdk-models-data-model-runtime-live",
+      "test_id": "c_projection_live::sdk_models_data_model_runtime_live"
     }
   },
   "expected_fingerprints": {

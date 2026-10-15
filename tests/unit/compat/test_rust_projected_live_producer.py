@@ -33,7 +33,7 @@ def test_producer_is_expectation_independent_and_exactly_authority_bound() -> No
     assert len(source) <= comparator.MAX_PRODUCER_SOURCE_BYTES
     assert "typebridge.projected-live-report/v1" in text
     # The profile, live server and semantic fingerprint arrive from the
-    # sdk-v3 profile matrix through the harness, never as producer literals.
+    # models profile matrix through the harness, never as producer literals.
     assert 'const PROFILE_ENV: &str = "TYPE_BRIDGE_PROJECTED_LIVE_PROFILE";' in text
     assert '"semantic_profile": profile.semantic_profile' in text
     assert "typedb-3.12.1/v1" not in text

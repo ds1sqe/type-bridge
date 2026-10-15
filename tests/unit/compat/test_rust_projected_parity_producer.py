@@ -48,7 +48,7 @@ def test_rust_projected_producer_does_not_import_expected_parity_evidence() -> N
     for forbidden in (
         "expected_report",
         "compare_projected_parity",
-        'journey-v3.json")?',
+        'journey.json")?',
         "batch_parity",
         "filter_parity",
     ):

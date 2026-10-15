@@ -80,7 +80,7 @@ async fn main() {
             database
                 .execute_raw(PROVIDER_SCHEMA, TxType::Schema)
                 .await
-                .expect("the exact Sdk V3 provider schema installs");
+                .expect("the exact Models provider schema installs");
             println!("C test provider schema setup: passed");
         }
         "cleanup" => {

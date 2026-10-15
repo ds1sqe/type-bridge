@@ -1569,8 +1569,8 @@ def _emit_sdk_v2_remote_proof_fragment() -> None:
     if not (root / "type-bridge-core").is_dir():
         raise AssertionError("sdk-v2 proof fragment emitter requires the repository root")
     contract_paths = {
-        "proof_schema": ("tests/contracts/sdk_conformance/sdk-v2/proof-fragment-schema-v1.json"),
-        "allowlist": ("tests/contracts/sdk_conformance/sdk-v2/proof-fragment-allowlist-v1.json"),
+        "proof_schema": ("tests/contracts/sdk_conformance/sdk-v2/proof-fragment-schema.json"),
+        "allowlist": ("tests/contracts/sdk_conformance/sdk-v2/proof-fragment-allowlist.json"),
         "journey": "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json",
     }
     producer_paths = sorted(
@@ -1625,25 +1625,25 @@ def _emit_sdk_v2_remote_proof_fragment() -> None:
 _emit_sdk_v2_remote_proof_fragment()
 
 
-def _emit_sdk_v3_package_proof_fragment() -> None:
-    raw_destination = os.environ.get("TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT")
+def _emit_sdk_models_package_proof_fragment() -> None:
+    raw_destination = os.environ.get("TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGMENT")
     if raw_destination is None:
         return
-    run_nonce = os.environ.get("TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE")
+    run_nonce = os.environ.get("TYPE_BRIDGE_SDK_MODELS_PROOF_RUN_NONCE")
     if (
         run_nonce is None
         or len(run_nonce) != 64
         or any(character not in "0123456789abcdef" for character in run_nonce)
     ):
-        raise AssertionError("sdk-v3 proof run nonce must be 64 lowercase hex characters")
+        raise AssertionError("models proof run nonce must be 64 lowercase hex characters")
     destination = Path(raw_destination)
     if not destination.is_absolute() or destination.exists():
-        raise AssertionError("sdk-v3 proof destination must be absent and absolute")
+        raise AssertionError("models proof destination must be absent and absolute")
     root = Path.cwd()
     contract_paths = {
-        "proof_schema": "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-schema-v1.json",
-        "allowlist": "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-allowlist-v1.json",
-        "journey": "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json",
+        "proof_schema": "tests/contracts/sdk_conformance/models/proof-fragment-schema.json",
+        "allowlist": "tests/contracts/sdk_conformance/models/proof-fragment-allowlist.json",
+        "journey": "tests/contracts/sdk_conformance/models/journey.json",
     }
     producer_paths = sorted(
         (
@@ -1765,9 +1765,9 @@ def _emit_sdk_v3_package_proof_fragment() -> None:
         "rejected_token_states": ["foreign", "forged", "reordered", "stale"],
         "provider_text_exposed": False,
     }
-    test_id = "python.generated_package_v3_integrity"
+    test_id = "python.sdk_models_generated_package_integrity"
     fragment = {
-        "format": "typebridge.sdk-v3-proof-fragment/v1",
+        "format": "typebridge.sdk-models-proof-fragment/v1",
         "binding": "python",
         "semantic_profile": _proof_semantic_profile(root, 3),
         "run_nonce": run_nonce,
@@ -1775,7 +1775,7 @@ def _emit_sdk_v3_package_proof_fragment() -> None:
             name: _proof_source_identity(root, path) for name, path in contract_paths.items()
         },
         "producer": {
-            "id": "python.generated-package-v3-proof",
+            "id": "python.sdk-models-generated-package-proof",
             "sources": [_proof_source_identity(root, path) for path in producer_paths],
         },
         "results": [
@@ -2005,4 +2005,4 @@ finally:
     generated_query_module.Query.materialize_page = saved_page_materializer
     generated_query_module.Query.materialize_reduction = saved_reduction_materializer
 
-_emit_sdk_v3_package_proof_fragment()
+_emit_sdk_models_package_proof_fragment()

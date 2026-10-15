@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Produce Python's live Manager-filter report on one sdk-v3 matrix profile."""
+"""Produce Python's live Manager-filter report on one models matrix profile."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from type_bridge_core import MatchRequestError
 from type_bridge import Database
 
 REPORT_FORMAT = "typebridge.manager-filter-live-report/v1"
-# The sdk-v3 TypeDB version matrix: the report's profile, its exact live server
+# The models TypeDB version matrix: the report's profile, its exact live server
 # and the semantic fingerprint the local package must carry.
 PROFILE_MATRIX_RELATIVE = "scripts/ci/sdk_profile_matrix.py"
 
@@ -41,13 +41,13 @@ FOREIGN_PACKAGE = "generated_manager_foreign"
 MAX_REPORT_BYTES = 256 * 1024
 MAX_AUTHORITY_BYTES = 1024 * 1024
 SOURCE_PATHS = {
-    "schema": "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml",
-    "journey": "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json",
-    "provider": "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql",
+    "schema": "tests/contracts/sdk_conformance/models/schema.yaml",
+    "journey": "tests/contracts/sdk_conformance/models/journey.json",
+    "provider": "tests/contracts/sdk_conformance/models/provider-3.12.1.tql",
 }
 SOURCE_SHA256 = {
     "schema": "74b9161e3d8fd70a1f22c3a8b7fc70a823b18cb07973064e2e10ce0940f76f1f",
-    "journey": "c5679b428c22e2bff7989f6d674cde3780b752a40f6bbce6ccb3aa451797b1c0",
+    "journey": "d0153b47c42f771cae1668fcfdb0e3d9d7c4e3ee4d793177751e1b657fe37e66",
     "provider": "af61aaece22d666e19d2c1357f8ebc39b8cbcf4bff7b98a19a56daf171a1faba",
 }
 
@@ -110,7 +110,7 @@ def _source_authority(root: Path) -> tuple[dict[str, dict[str, str]], dict[str, 
         if digest != SOURCE_SHA256[label]:
             raise ProducerError(
                 "authority_hash_mismatch",
-                f"Manager {label} is not the frozen Sdk V3 authority",
+                f"Manager {label} is not the frozen Models authority",
             )
         authority[label] = {"path": relative, "sha256": digest}
         sources[label] = raw
@@ -237,7 +237,7 @@ def _require_packages(
     if local_semantic != semantic_fingerprint:
         raise ProducerError(
             "generated_package_identity",
-            "local package is not the frozen Sdk V3 projection",
+            "local package is not the frozen Models projection",
         )
     if foreign_semantic == local_semantic:
         raise ProducerError(
@@ -280,12 +280,12 @@ def _person_records(
     journey: dict[str, Any], catalog_profile: str
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if (
-        journey.get("format") != "typebridge.sdk-journey/v3"
-        or journey.get("fixture_id") != "sdk-v3"
+        journey.get("format") != "typebridge.sdk-models-journey/v1"
+        or journey.get("fixture_id") != "models"
         or journey.get("version") != 3
         or journey.get("semantic_profile") != catalog_profile
     ):
-        raise ProducerError("invalid_journey", "sdk-v3 identity drifted")
+        raise ProducerError("invalid_journey", "models identity drifted")
     records = journey.get("records")
     people = records.get("people") if type(records) is dict else None
     if type(people) is not list:
@@ -722,7 +722,7 @@ def main(environment: Mapping[str, str] = os.environ) -> int:
             raise ProducerError("invalid_tls_root_ca", f"{TLS_ROOT_CA_ENV} must not be empty")
         authority, sources = _source_authority(root)
         matrix = _profile_matrix(root)
-        # TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE, else the sdk-v3 catalog's own profile.
+        # TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE, else the models catalog's own profile.
         identity = matrix.requested(3, environment=environment, root=root, error=ProducerError)
         local = _load_package(package_root, LOCAL_PACKAGE)
         foreign = _load_package(package_root, FOREIGN_PACKAGE)

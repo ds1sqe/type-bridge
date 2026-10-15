@@ -6671,9 +6671,9 @@ mod tests {
         json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(fs::read(root.join(relative)).unwrap()))})
     }
 
-    fn publish_v3_node_fragment(results: Vec<Value>) {
-        let destination = std::env::var_os("TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT");
-        let nonce = std::env::var_os("TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE");
+    fn publish_models_node_fragment(results: Vec<Value>) {
+        let destination = std::env::var_os("TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGMENT");
+        let nonce = std::env::var_os("TYPE_BRIDGE_SDK_MODELS_PROOF_RUN_NONCE");
         assert_eq!(destination.is_some(), nonce.is_some());
         let (Some(destination), Some(nonce)) = (destination, nonce) else {
             return;
@@ -6704,12 +6704,12 @@ mod tests {
         let fragment = json!({
             "binding": "node",
             "contract": {
-                "allowlist": v3_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-allowlist-v1.json"),
-                "journey": v3_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"),
-                "proof_schema": v3_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-schema-v1.json"),
+                "allowlist": v3_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-allowlist.json"),
+                "journey": v3_identity(&root, "tests/contracts/sdk_conformance/models/journey.json"),
+                "proof_schema": v3_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-schema.json"),
             },
-            "format": "typebridge.sdk-v3-proof-fragment/v1",
-            "producer": {"id": "node.generated-data-v3-proof", "sources": sources.iter().map(|path| v3_identity(&root, path)).collect::<Vec<_>>()},
+            "format": "typebridge.sdk-models-proof-fragment/v1",
+            "producer": {"id": "node.sdk-models-generated-data-proof", "sources": sources.iter().map(|path| v3_identity(&root, path)).collect::<Vec<_>>()},
             "results": results,
             "run_nonce": nonce,
             "semantic_profile": crate::sdk_profile_matrix::requested(3).semantic_profile,
@@ -6726,7 +6726,7 @@ mod tests {
     }
 
     #[test]
-    fn sdk_v3_node_data_plane_fragment() {
+    fn sdk_models_node_data_plane_fragment() {
         use type_bridge_orm::{
             AnswerCancellation, DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES, DEFAULT_DIRECT_QUERY_BYTES,
             DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS, DEFAULT_DIRECT_QUERY_GRAPH_NODES,
@@ -6811,8 +6811,8 @@ mod tests {
                 "close": {"category": "provider", "code": "provider_operation_failed", "path": [{"kind": "argument", "value": "resource"}], "details": {"operation": {"kind": "provider_operation", "value": "close"}}, "handle_retained_for_retry": true}
             }, "provider_text_exposed": false, "secrets_exposed": false, "deterministic_field_order": true
         });
-        let id = "runtime_projection::tests::sdk_v3_node_data_plane_fragment";
-        publish_v3_node_fragment(vec![
+        let id = "runtime_projection::tests::sdk_models_node_data_plane_fragment";
+        publish_models_node_fragment(vec![
             json!({"observation": connection, "observation_ref": "complete_connection_policy", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": id}),
             json!({"observation": cancelled, "observation_ref": "data_operation_cancellation", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": id}),
             json!({"observation": limits, "observation_ref": "data_operation_resource_limits", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": id}),

@@ -23,12 +23,12 @@ from compare_sdk_conformance import (  # noqa: E402, F401
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"
-JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"
+SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/models/schema.yaml"
+JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/models/journey.json"
 
 REPORT_FORMAT = "typebridge.projected-parity-report/v1"
 SUMMARY_FORMAT = "typebridge.projected-parity-summary/v1"
-# The sdk-v3 catalog profile; reports may carry any sdk-v3 matrix profile.
+# The models catalog profile; reports may carry any models matrix profile.
 SEMANTIC_PROFILE = profile_matrix.catalog_profile(3)
 REPORT_BINDINGS = ("python", "node", "rust", "c")
 OBSERVATION_REFS = (
@@ -219,12 +219,12 @@ def load_contract() -> ProjectedParityContract:
         "Projected journey",
     )
     if (
-        journey["format"] != "typebridge.sdk-journey/v3"
-        or journey["fixture_id"] != "sdk-v3"
+        journey["format"] != "typebridge.sdk-models-journey/v1"
+        or journey["fixture_id"] != "models"
         or journey["version"] != 3
         or journey["semantic_profile"] != SEMANTIC_PROFILE
     ):
-        raise ContractError("invalid_journey_authority", "sdk-v3 journey identity drifted")
+        raise ContractError("invalid_journey_authority", "models journey identity drifted")
     expected = journey["expected_observations"]
     if type(expected) is not dict:
         raise ContractError("invalid_journey_observation", "expected observations are malformed")

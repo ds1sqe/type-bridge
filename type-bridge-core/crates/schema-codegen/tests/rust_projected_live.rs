@@ -83,8 +83,8 @@ type-bridge-orm = {{ path = "{orm_path}" }}
 }
 
 fn sdk_source() -> String {
-    fs::read_to_string(repository().join("tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"))
-        .expect("Sdk V3 schema reads")
+    fs::read_to_string(repository().join("tests/contracts/sdk_conformance/models/schema.yaml"))
+        .expect("Models schema reads")
 }
 
 fn foreign_sdk_source() -> String {
@@ -182,7 +182,7 @@ fn generated_rust_projected_live_producer_compiles_and_rejects_foreign_shape_bef
     let stderr = String::from_utf8_lossy(&rejected.stderr);
     assert!(
         stderr.contains("generated_package_mismatch")
-            && stderr.contains("exact Sdk V3 semantic projection"),
+            && stderr.contains("exact Models semantic projection"),
         "foreign rejection was not the semantic package fence:\n{stderr}"
     );
 }

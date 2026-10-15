@@ -19,7 +19,7 @@ from run_generated_live import _cargo_run_example  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE = ROOT / "type-bridge-core"
-SCHEMA = ROOT / "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"
+SCHEMA = ROOT / "tests/contracts/sdk_conformance/models/schema.yaml"
 PYTHON_PRODUCER = CORE / "crates/schema-codegen/tests/acceptance/projected_parity_check.py"
 NODE_PRODUCER = (
     CORE / "crates/schema-codegen/tests/typescript_acceptance/projected_parity_check.mjs"
@@ -64,7 +64,7 @@ class Layout:
             python=root / "python",
             node=root / "node",
             reports=reports,
-            foreign_schema=root / "sdk-v3-foreign.yaml",
+            foreign_schema=root / "models-foreign.yaml",
             python_report=reports / "python.json",
             node_report=reports / "node.json",
             rust_report=reports / "rust.json",
@@ -261,7 +261,7 @@ def _prepare(layout: Layout) -> None:
         1,
     )
     if foreign_source == schema_source or foreign_source.count(FOREIGN_PLAYING_REPLACEMENT) != 1:
-        raise RunnerError("the exact Sdk V3 foreign-package mutation did not apply once")
+        raise RunnerError("the exact Models foreign-package mutation did not apply once")
     layout.foreign_schema.write_text(foreign_source, encoding="utf-8")
     shutil.copy2(PYTHON_PRODUCER, layout.python / PYTHON_PRODUCER.name)
     shutil.copy2(NODE_PRODUCER, layout.node / NODE_PRODUCER.name)
