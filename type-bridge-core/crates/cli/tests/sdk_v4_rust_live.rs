@@ -98,10 +98,7 @@ fn generated_rust_observes_v4_administration_controls_and_lifecycle() {
     let database = format!("sdk_v4_rust_{}", std::process::id());
     let output = Command::new("cargo")
         .current_dir(&consumer)
-        .env(
-            "CARGO_TARGET_DIR",
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"),
-        )
+        .env("CARGO_TARGET_DIR", support::cargo_target())
         .env("TYPE_BRIDGE_SDK_V4_DATABASE", database)
         .envs(std::env::vars().filter(|(name, _)| name.starts_with("TYPEDB_")))
         .args(["run", "--locked", "--quiet"])

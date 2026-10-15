@@ -110,11 +110,11 @@ async fn generated_c_emits_complete_v4_report() {
             .arg(&consumer)
             .arg(generated.join("src/models.c"))
             .arg("-L")
-            .arg(core.join("target/debug"))
+            .arg(support::cargo_target().join("debug"))
             .arg("-ltype_bridge_c")
             .arg(format!(
                 "-Wl,-rpath,{}",
-                core.join("target/debug").display()
+                support::cargo_target().join("debug").display()
             ))
             .arg("-o")
             .arg(&executable),

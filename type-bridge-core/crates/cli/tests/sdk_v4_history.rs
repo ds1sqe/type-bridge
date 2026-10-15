@@ -171,7 +171,7 @@ fn main() {
 "#,
     )
     .expect("source-bound producer writes");
-    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+    let target = support::cargo_target();
     let observation = Command::new("cargo")
         .current_dir(&package)
         .env("CARGO_TARGET_DIR", target)

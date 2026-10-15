@@ -152,3 +152,10 @@ pub fn requested_v4_server_version_blocking() -> String {
         .expect("sdk-v4 server-version probe runtime builds")
         .block_on(requested_v4_server_version())
 }
+
+/// Cargo output directory shared by the parent and generated consumers.
+pub fn cargo_target() -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"))
+}
