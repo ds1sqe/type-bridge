@@ -826,6 +826,19 @@ run_live_lane() {
             -p type-bridge-typedb-runtime -p type-bridge-orm \
             --test transaction_options_live --test staged_transaction_live
 
+    if [[ "$typedb_server_version" == "3.13.6" ]]; then
+        run_step "concurrency guide TypeQL snippets (TypeDB 3.13.6)" \
+            run_with_timeout 5m \
+            env TYPE_BRIDGE_CONCURRENCY_LIVE_ADDRESS="$TYPEDB_ADDRESS" \
+                TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+                TYPEDB_USERNAME="${TYPEDB_USERNAME-admin}" \
+                TYPEDB_PASSWORD="${TYPEDB_PASSWORD-password}" \
+            bash scripts/ci/run_exact_ignored_rust_test.sh \
+                concurrency_guide_snippets_run_on_3_13_6 \
+                --manifest-path type-bridge-core/Cargo.toml --locked \
+                -p type-bridge-typedb-runtime --test concurrency_documentation_live
+    fi
+
     run_step "cargo test -p type-bridge-orm --features integration-tests --test integration" \
         run_with_timeout 15m \
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \

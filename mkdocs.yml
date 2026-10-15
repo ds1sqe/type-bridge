@@ -111,6 +111,7 @@ nav:
     - Read and Write Data:
       - Overview: guide/data.md
       - CRUD & Transactions: guide/crud.md
+      - Concurrency & Conditional Writes: guide/concurrency.md
       - Queries & Expressions: guide/queries.md
       - Immutable Typed Queries: guide/typed-queries.md
       - Functions: guide/functions.md
