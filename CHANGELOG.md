@@ -4,6 +4,17 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Commit failures report a definite abort only for TypeDB codes that prove the
+  commit was rejected; other server failures now report unknown certainty, as
+  transport failures already did, so callers no longer retry an unproven abort
+  (#251).
+- Invalid given-row values report the column and type without exposing
+  the value or parser details.
+- The local test harness validates every SDK report and comparison summary
+  before logging SHA-256 evidence, and fails when validation fails.
+
 ## [2.2.5] - 2026-10-14
 
 ### Added
