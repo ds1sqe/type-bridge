@@ -1,18 +1,16 @@
 # C SDK
 
-**Security update:** Upgrade to TypeBridge 2.2.4. Its prebuilt distributions
-use rustls 0.23.45, which fixes
+**Security update:** Upgrade to TypeBridge 2.2.5. Its prebuilt distributions
+use rustls 0.23.46, which fixes RUSTSEC-2026-0346 through RUSTSEC-2026-0349
+and the earlier
 [RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc).
-TypeBridge 2.2.4 also stops bounded queries from wedging TypeDB 3.11–3.13
-when a transaction closes a paused stream, which could leave the database
-"in use" until the server restarted.
 The [2.2.1 post-release notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1)
 records the affected earlier release.
 
-TypeBridge 2.2.4 provides a generated C SDK with native ABI 1.6.0 for
+TypeBridge 2.2.5 provides a generated C SDK with native ABI 1.6.0 for
 **Ubuntu 24.04, x86_64 GNU/Linux, shared runtime**. C17 and C++17 applications
 consume generated schema packages through CMake or pkg-config. The public
-release was independently verified on 2026-10-11.
+release was independently verified on 2026-10-15.
 
 The SDK uses the same Rust-owned schema, CRUD, query, migration, serialization,
 cancellation, diagnostics, and resource-limit contracts as the other SDKs.
@@ -23,12 +21,12 @@ macOS, Windows, or other architectures.
 ## Install the runtime
 
 Download the runtime archive and its Sigstore bundle from the
-[2.2.4 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.4):
+[2.2.5 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.5):
 
-- `type-bridge-c-runtime-2.2.4-abi-1.6-x86_64-unknown-linux-gnu.tar.gz`
-- `type-bridge-cli-2.2.4-x86_64-unknown-linux-gnu.tar.gz` for standalone generation
+- `type-bridge-c-runtime-2.2.5-abi-1.6-x86_64-unknown-linux-gnu.tar.gz`
+- `type-bridge-cli-2.2.5-x86_64-unknown-linux-gnu.tar.gz` for standalone generation
   and migration commands
-- `type-bridge-c-sdk-example-2.2.4.tar.gz` for the verified `tb_sdkv3` example
+- `type-bridge-c-sdk-example-2.2.5.tar.gz` for the verified `tb_sdkv3` example
 
 Verify the signed release files using the
 [documented signing identity and provenance](../development/c-release.md#protected-promotion).
