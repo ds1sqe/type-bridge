@@ -31,7 +31,8 @@ FOREIGN_PLAYING_REPLACEMENT = "member: { card: { min: 0, max: 3 }, doc: membersh
 
 
 def _c_shared_library() -> Path:
-    target = CORE / "target" / "debug"
+    configured = Path(os.environ.get("CARGO_TARGET_DIR", CORE / "target"))
+    target = ROOT / configured / "debug"
     if sys.platform == "win32":
         return target / "type_bridge_c.dll"
     if sys.platform == "darwin":

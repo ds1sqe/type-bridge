@@ -124,3 +124,26 @@ def test_check_and_ci_persist_the_same_job_fan_in() -> None:
     assert "runs-on: ubuntu-latest" in ci.split("  projected-parity:", maxsplit=1)[1]
     for source in (check, ci):
         assert "scripts/ci/run_projected_parity.py" in source
+
+
+@pytest.mark.parametrize(
+    "platform,filename",
+    [
+        ("linux", "libtype_bridge_c.so"),
+        ("darwin", "libtype_bridge_c.dylib"),
+        ("win32", "type_bridge_c.dll"),
+    ],
+)
+@pytest.mark.parametrize("configured", [None, "relative-target", "/absolute-target"])
+def test_c_library_follows_the_build_target(
+    monkeypatch: pytest.MonkeyPatch, platform: str, filename: str, configured: str | None
+) -> None:
+    runner = load_runner()
+    monkeypatch.setattr(runner.sys, "platform", platform)
+    if configured is None:
+        monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+        target = runner.CORE / "target"
+    else:
+        monkeypatch.setenv("CARGO_TARGET_DIR", configured)
+        target = ROOT / configured
+    assert runner._c_shared_library() == target / "debug" / filename
