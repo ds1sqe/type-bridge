@@ -33,6 +33,7 @@ use type_bridge_contract::query_remote_v2::{
 use type_bridge_contract::schema::{DeclaredSchema, DocumentId, decode_declared_schema};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::CanonicalValue;
+use type_bridge_core_lib::__internal as tql;
 use type_bridge_core_lib::version::semantic_profile_id;
 use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan};
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema};
@@ -40,7 +41,7 @@ use type_bridge_schema_compat::{LiveQueryControlPresence, rebuild_live_query_aut
 
 use crate::OwnedTransaction as Transaction;
 use crate::query_execution_limits::QueryExecutionDeadline;
-use crate::query_v2::{QueryV2ExecutionError, failure};
+use crate::query_v2::{QueryV2ExecutionError, ast, failure};
 use crate::query_v2_builder::QueryAuthorityIdentity;
 use crate::query_v2_remote::{
     check_advertised_capabilities_v2, decode_remote_outcome_v2, encode_remote_request_v2_at,
@@ -855,18 +856,9 @@ pub async fn verify_managed_query_control_scope(
     deadline: Option<std::time::Instant>,
     cancellation: &crate::session::backend::AnswerCancellation,
 ) -> Result<(), Diagnostic> {
-    let documents = managed_control_documents(
-        transaction,
-        "match $control isa typebridge-internal-v2-migration-control, \
-             has typebridge-internal-v2-control-scope $scope, \
-             has typebridge-internal-v2-lease-fence $fence, \
-             has typebridge-internal-v2-lease-state $state; \
-             limit 2; \
-             fetch { \"scope\": $scope, \"fence\": $fence, \"state\": $state };",
-        deadline,
-        cancellation,
-    )
-    .await?;
+    let control_query = managed_control_query()?;
+    let documents =
+        managed_control_documents(transaction, &control_query, deadline, cancellation).await?;
     if documents.len() != 1 {
         return Err(failure(
             DiagnosticCategory::Integrity,
@@ -2710,4 +2702,37 @@ mod tests {
         assert_eq!(metrics.opens.load(Ordering::SeqCst), 0);
         assert_eq!(metrics.queries.load(Ordering::SeqCst), 0);
     }
+}
+
+fn managed_control_query() -> Result<String, Diagnostic> {
+    let mut constraints = vec![ast(tql::isa(
+        "typebridge-internal-v2-migration-control",
+        false,
+    ))?];
+    for (attribute, variable) in [
+        ("typebridge-internal-v2-control-scope", "scope"),
+        ("typebridge-internal-v2-lease-fence", "fence"),
+        ("typebridge-internal-v2-lease-state", "state"),
+    ] {
+        constraints.push(ast(tql::has(attribute, ast(tql::var(variable))?))?);
+    }
+    let fields = ["scope", "fence", "state"]
+        .into_iter()
+        .map(|name| Ok((name, tql::fetch_expr(ast(tql::var(name))?))))
+        .collect::<Result<Vec<_>, Diagnostic>>()?;
+    ast(tql::render(&tql::pipeline(vec![
+        tql::match_stage(vec![ast(tql::thing("control", constraints))?]),
+        tql::limit(2),
+        ast(tql::fetch(fields))?,
+    ])))
+}
+
+#[test]
+fn managed_control_query_preserves_the_released_read() {
+    let old = "match $control isa typebridge-internal-v2-migration-control, has typebridge-internal-v2-control-scope $scope, has typebridge-internal-v2-lease-fence $fence, has typebridge-internal-v2-lease-state $state; limit 2; fetch { \"scope\": $scope, \"fence\": $fence, \"state\": $state };";
+    let canonical = |source: &str| typeql::parse_query(source).unwrap().to_string();
+    assert_eq!(
+        typeql::parse_query(&canonical(old)).unwrap(),
+        typeql::parse_query(&canonical(&managed_control_query().unwrap())).unwrap()
+    );
 }

@@ -168,6 +168,12 @@ Released String compiler wrappers retain their historical non-`Has` relation
 attribute discard behavior and otherwise return empty output when lowering is
 impossible. They do not expose the checked contract.
 
+V2 read lowering builds opaque adapter nodes for patterns, local functions,
+modifiers, document fetches and execution bounds. The adapter renders the
+complete pipeline. Canonical plan bytes and driver given-row values retain
+their existing contract. Pre-change query snapshots compare official ASTs
+for each captured plan and invocation.
+
 ## Change checklist
 
 When changing a shared operation:

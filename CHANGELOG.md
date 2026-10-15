@@ -19,6 +19,9 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Query rendering
 
+- V2 read plans, local functions, bounded fetch lists and prepared control
+  reads now render through the same AST adapter. Canonical stage and block
+  whitespace changes; plan bytes and ordered given rows stay unchanged.
 - Core query compilation and parsing now use the official TypeQL AST. Plain
   rendering changes stage separators and indentation, whitespace inside
   optional/negated blocks, fetch objects and lists, and numeric spelling.

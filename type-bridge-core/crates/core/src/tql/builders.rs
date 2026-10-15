@@ -500,18 +500,10 @@ pub fn given(columns: &[(&str, ValueTypeTag)]) -> Result<Stage, TqlError> {
     let arguments = columns
         .iter()
         .map(|(name, domain)| {
-            let spelling = match domain {
-                ValueTypeTag::Long => "integer",
-                ValueTypeTag::DateTimeTz => "datetime-tz",
-                other => other.as_str(),
-            };
             Ok(Argument::new(
                 None,
                 variable(name)?,
-                NamedTypeAny::Simple(NamedType::BuiltinValueType(type_::BuiltinValueType::new(
-                    None,
-                    token::ValueType::from(spelling),
-                ))),
+                builtin_value_type(*domain),
             ))
         })
         .collect::<Result<_, TqlError>>()?;
@@ -520,15 +512,7 @@ pub fn given(columns: &[(&str, ValueTypeTag)]) -> Result<Stage, TqlError> {
     })
 }
 pub fn pipeline(stages: Vec<Stage>) -> Query {
-    Query::from_ast(typeql::Query {
-        span: None,
-        structure: QueryStructure::Pipeline(query::Pipeline::new(
-            None,
-            Vec::new(),
-            stages.into_iter().map(|v| v.inner).collect(),
-        )),
-        has_explicit_end: false,
-    })
+    pipeline_with_functions(Vec::new(), stages)
 }
 
 pub fn conjunction(patterns: Vec<Pattern>) -> Pattern {
@@ -683,4 +667,119 @@ pub fn render_pattern(value: &Pattern) -> Result<String, TqlError> {
         return Err(TqlError::Unsupported { construct });
     }
     Ok(value.inner.to_string())
+}
+
+node!(
+    FunctionDefinition,
+    typeql::schema::definable::function::Function
+);
+
+pub fn require(names: &[&str]) -> Result<Stage, TqlError> {
+    Ok(Stage {
+        inner: stage::Stage::Operator(modifier::Operator::Require(modifier::Require::new(
+            None,
+            names
+                .iter()
+                .map(|name| variable(name))
+                .collect::<Result<_, _>>()?,
+        ))),
+    })
+}
+
+pub fn function_definition(
+    name: &str,
+    arguments: &[(&str, &str)],
+    output: ValueTypeTag,
+    stages: Vec<Stage>,
+    result: Reducer,
+) -> Result<FunctionDefinition, TqlError> {
+    use typeql::schema::definable::function as f;
+    let ident = Identifier::from(name);
+    if !typeql::common::identifier::is_valid_label(name) || ident.as_str_unreserved().is_err() {
+        return Err(TqlError::InvalidIdentifier);
+    }
+    let arguments = arguments
+        .iter()
+        .map(|(name, label)| {
+            Ok(Argument::new(
+                None,
+                variable(name)?,
+                NamedTypeAny::Simple(NamedType::Label(
+                    typeql::parse_label(label).map_err(|_| TqlError::InvalidIdentifier)?,
+                )),
+            ))
+        })
+        .collect::<Result<_, TqlError>>()?;
+    let output = builtin_value_type(output);
+    Ok(FunctionDefinition {
+        inner: f::Function::new(
+            None,
+            f::Signature {
+                span: None,
+                ident,
+                args: arguments,
+                output: f::Output::Single(f::Single::new(None, vec![output])),
+            },
+            vec![],
+            f::FunctionBlock::new(
+                None,
+                stages.into_iter().map(|stage| stage.inner).collect(),
+                f::ReturnStatement::Reduce(f::ReturnReduction::Value(vec![result.inner], None)),
+            ),
+            String::new(),
+        ),
+    })
+}
+
+pub fn pipeline_with_functions(functions: Vec<FunctionDefinition>, stages: Vec<Stage>) -> Query {
+    Query::from_ast(typeql::Query {
+        span: None,
+        structure: QueryStructure::Pipeline(query::Pipeline::new(
+            None,
+            functions
+                .into_iter()
+                .map(|function| query::pipeline::Preamble {
+                    span: None,
+                    function: function.inner,
+                })
+                .collect(),
+            stages.into_iter().map(|stage| stage.inner).collect(),
+        )),
+        has_explicit_end: false,
+    })
+}
+
+pub fn fetch_stream(stages: Vec<Stage>, names: &[&str]) -> Result<FetchValue, TqlError> {
+    use typeql::schema::definable::function as f;
+    if names.is_empty() {
+        return Err(TqlError::InvalidLegacyShape);
+    }
+    Ok(FetchValue {
+        inner: fetch::FetchSome::List(fetch::FetchList::new(
+            None,
+            fetch::FetchStream::SubQueryFunctionBlock(f::FunctionBlock::new(
+                None,
+                stages.into_iter().map(|stage| stage.inner).collect(),
+                f::ReturnStatement::Stream(f::ReturnStream {
+                    span: None,
+                    vars: names
+                        .iter()
+                        .map(|name| variable(name))
+                        .collect::<Result<_, _>>()?,
+                }),
+            )),
+        )),
+    })
+}
+
+fn builtin_value_type(domain: ValueTypeTag) -> NamedTypeAny {
+    let spelling = match domain {
+        ValueTypeTag::Long => "integer",
+        ValueTypeTag::DateTimeTz => "datetime-tz",
+        other => other.as_str(),
+    };
+    NamedTypeAny::Simple(NamedType::BuiltinValueType(type_::BuiltinValueType::new(
+        None,
+        token::ValueType::from(spelling),
+    )))
 }
