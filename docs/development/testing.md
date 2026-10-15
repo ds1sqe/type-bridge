@@ -37,13 +37,20 @@ Key evidence:
   and strict installed-compiler checks
 - `tests/contracts/sdk_conformance/manifest.json` — capability,
   proof-profile, binding-state, and transition authority
-- `tests/contracts/sdk_conformance/sdk-v*/` — executable catalogs,
+- `tests/contracts/sdk_conformance/<suite>/` — executable catalogs,
   journeys, report schemas, and evidence contracts
 - `tests/fixtures/generated-only-operation-parity-inventory.json` — retained
   generated-only cutover evidence and manifest seed
 - `tests/fixtures/handwritten-operation-removal-map.json` — frozen mapping from
   removed test families to generated successors or separately retained query
   contracts
+
+The five suite directories are `queries`, `models`, `administration`,
+`serialization`, and `artifacts`. Queries includes the former smoke rows.
+Each suite selects a TypeDB profile; administration regenerates a native
+four-migration copy for non-default profiles. Suite producers, report formats
+and predecessor rules are documented in
+`tests/contracts/sdk_conformance/README.md`.
 
 ### Node package checks
 

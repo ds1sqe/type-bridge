@@ -6,8 +6,8 @@ TypeDB profile. It includes the former three-binding smoke rows in the
 four-binding query journey.
 
 Its exact17 transition cases are accepted live across all four bindings.
-The G05, G06, G08, and G13 rows remain evidence-only and leave their broader
-capabilities as manifest gaps.
+The G05, G06, G08, and G13 rows are evidence-only within this suite; their
+broader cross-slice acceptance belongs to the artifacts suite.
 
 The contract consists of:
 

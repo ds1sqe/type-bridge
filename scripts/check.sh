@@ -140,14 +140,14 @@ run_c() {
     run_step "C distribution cross-slice broad-case ledger" \
         uv run pytest tests/unit/compat/test_c_broad_case_ledger.py -q
 
-    run_step "artifact-bound Sdk V6 fan-in contract" \
+    run_step "artifact-bound SDK artifacts fan-in contract" \
         uv run pytest \
-        tests/unit/compat/test_sdk_conformance_v6.py \
-        tests/unit/compat/test_sdk_conformance_v6_assembler.py \
+        tests/unit/compat/test_sdk_artifacts.py \
+        tests/unit/compat/test_sdk_artifacts_assembler.py \
         tests/unit/compat/test_persist_binding_reports.py \
         tests/unit/compat/test_sdk_conformance_runner.py \
-        tests/unit/compat/test_sdk_v6_surfaces.py \
-        tests/unit/compat/test_sdk_v6_surface_consumer.py -q
+        tests/unit/compat/test_sdk_artifacts_surfaces.py \
+        tests/unit/compat/test_sdk_artifacts_surface_consumer.py -q
 
     run_step "independent FULL-C artifact auditor" \
         uv run pytest tests/unit/compat/test_full_c_artifact_auditor.py -q

@@ -4,6 +4,12 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Tests
+
+- SDK conformance test contracts are named by concern: queries, models,
+  administration, serialization and artifacts. The sdk-v1 smoke report is
+  folded into queries, and administration runs natively on each TypeDB profile.
+
 ### Breaking changes
 
 2.3.0 removes the duplicate query paths that let one query behave

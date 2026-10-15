@@ -7,11 +7,14 @@ inventory.
 
 ## Parity Authority and Retained Inventory
 
-`tests/contracts/sdk_conformance/manifest.json` and the versioned
-`tests/contracts/sdk_conformance/sdk-v*/` contracts are the executable
+`tests/contracts/sdk_conformance/manifest.json` and the concern-based
+`tests/contracts/sdk_conformance/<suite>/` contracts are the executable
 acceptance authority. The manifest owns canonical capabilities, proof profiles,
 binding states, and transitions; sdk catalogs, journeys, report schemas,
-and comparators own the executable conformance checkpoints.
+and comparators own the executable conformance checkpoints. The five concerns
+are queries, models, administration, serialization and artifacts. Queries owns
+the former smoke observations; artifacts binds all four predecessor suite
+reports for every binding.
 
 `tests/fixtures/generated-only-operation-parity-inventory.json` is the old
 operation inventory retained from the generated-only cutover and used as a

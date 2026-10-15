@@ -1,8 +1,8 @@
 # SDK administration
 
 This additive contract owns Plan06 administration and migration evidence for
-Python, Node, generated Rust, and internal C. It does not change the preserved
-Sdk V1–V3 wires and does not make C supported or publishable.
+Python, Node, generated Rust, and internal C. It preserves the other suites'
+observations and does not make C supported or publishable.
 
 The catalog is `finalized` by the acceptance checks. Four real
 source-bound producers independently passed the artifact fan-in against one
@@ -17,11 +17,14 @@ oracle objects are never copied into producer output.
 The eight selected rows have two disjoint dispositions:
 
 - G04, G09, G10, and G11 are the exact accepted manifest transitions.
-- G05, G06, G08, and G13 are administration/migration evidence only and must
-  remain manifest gaps until C distribution evaluates their complete cross-slice proof.
+- G05, G06, G08, and G13 are administration/migration evidence within this
+  suite; their complete cross-slice acceptance requires the artifacts suite.
 
-Persisted migration authority retains semantic profile `typedb-3.12.1/v1`;
-the isolated live acceptance server is exactly TypeDB 3.12.3.
+The committed migration authority retains semantic profile `typedb-3.12.1/v1`
+and its exact TypeDB 3.12.3 server. On `typedb-3.13.6/v1`, each per-run copy
+regenerates the same four reversible migrations with the existing engine and
+runs on TypeDB 3.13.6. `profiles.json` pins each native history fingerprint;
+base history files stay unchanged, and profile-bridge replay has its own test.
 
 `workspace/` is the canonical administration source workspace and immutable migration
 fixture. Its four manifests were produced in order through the source-tree CLI:
