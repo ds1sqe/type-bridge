@@ -1495,7 +1495,7 @@ mod tests {
         let fragment = serde_json::json!({
             "format": "typebridge.sdk-queries-proof-fragment/v1",
             "binding": "rust",
-            "semantic_profile": crate::sdk_profile_matrix::requested(2).semantic_profile,
+            "semantic_profile": crate::sdk_profile_matrix::requested("queries").semantic_profile,
             "run_nonce": run_nonce,
             "contract": {
                 "allowlist": sdk_queries_proof_source(repository, "tests/contracts/sdk_conformance/queries/proof-fragment-allowlist.json"),

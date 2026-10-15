@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 FORMAT = "typebridge.sdk-models-artifact-observation/v1"
 
 # Offline generation artifacts are produced on the models catalog profile.
-SEMANTIC_PROFILE = profile_matrix.catalog_profile(3)
+SEMANTIC_PROFILE = profile_matrix.catalog_profile("models")
 
 MAX_ARTIFACT_BYTES = 64 * 1024
 

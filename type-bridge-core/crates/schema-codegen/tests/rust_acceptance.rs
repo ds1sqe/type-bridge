@@ -73,7 +73,7 @@ fn publish_models_package_fragment(results: Vec<Value>) {
         },
         "results": results,
         "run_nonce": nonce,
-        "semantic_profile": support::sdk_profile_matrix::requested(3).semantic_profile,
+        "semantic_profile": support::sdk_profile_matrix::requested("models").semantic_profile,
     });
     let mut bytes = to_canonical_json(&fragment).expect("V3 package fragment canonicalizes");
     bytes.push(b'\n');
@@ -3663,7 +3663,7 @@ fn sdk_models_generated_package_integrity() {
         repository_root().join("tests/contracts/sdk_conformance/models/schema.yaml"),
     )
     .expect("Models schema reads");
-    let profile = support::sdk_profile_matrix::requested(3).semantic_profile;
+    let profile = support::sdk_profile_matrix::requested("models").semantic_profile;
     let projection = support::rust_projection_on(&source, "rust-acceptance.yaml", &profile);
     assert!(
         !projection.models().is_empty(),
@@ -3984,7 +3984,7 @@ fn generated_rust_projected_parity_producer() {
         schema, foreign_schema,
         "foreign projection mutation is applied"
     );
-    let profile = support::sdk_profile_matrix::requested(3).semantic_profile;
+    let profile = support::sdk_profile_matrix::requested("models").semantic_profile;
     write_package(&emit_on(&schema, &profile), &generated);
     write_package(&emit_on(&foreign_schema, &profile), &foreign);
     rename_generated_package(&foreign, "type-bridge-generated-schema-foreign");

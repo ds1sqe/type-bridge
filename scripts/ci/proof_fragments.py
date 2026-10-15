@@ -21,7 +21,7 @@ import sdk_profile_matrix as profile_matrix  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 # The proof-fragment sets' catalog profile; fragments default to it.
-SEMANTIC_PROFILE = profile_matrix.catalog_profile(2)
+SEMANTIC_PROFILE = profile_matrix.catalog_profile("queries")
 REPORT_BINDINGS = frozenset({"python", "node", "rust", "c"})
 MAX_FRAGMENT_BYTES = 64 * 1024
 MAX_SOURCES = 16
@@ -215,7 +215,7 @@ def _load_fragment(path: Path) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class ProofContract:
-    set_version: int
+    suite: str
     proof_schema_relative: str
     allowlist_relative: str
     journey_relative: str
@@ -260,7 +260,7 @@ class ProofContract:
         allowlist = _exact_keys(value, {"format", "semantic_profile", "bindings"}, "allowlist")
         if allowlist["format"] != self.allowlist_format or allowlist[
             "semantic_profile"
-        ] not in profile_matrix.supported_profiles(self.set_version):
+        ] not in profile_matrix.supported_profiles(self.suite):
             raise ProofFragmentError("invalid_allowlist", "committed allowlist authority is not v1")
         bindings = _exact_keys(allowlist["bindings"], set(REPORT_BINDINGS), "allowlist bindings")
         producers = bindings[binding]
@@ -360,8 +360,8 @@ class ProofContract:
         """
 
         if semantic_profile is None:
-            semantic_profile = profile_matrix.catalog_profile(self.set_version)
-        profile_matrix.select(self.set_version, semantic_profile, error=ProofFragmentError)
+            semantic_profile = profile_matrix.catalog_profile(self.suite)
+        profile_matrix.select(self.suite, semantic_profile, error=ProofFragmentError)
 
         if expected_binding not in REPORT_BINDINGS:
             raise ProofFragmentError("invalid_binding", f"unknown binding {expected_binding!r}")
@@ -542,31 +542,27 @@ class ProofContract:
 
 
 # Only these two accepted contracts emit same-run proof fragments.
-CONTRACTS = {}
-for version, kinds, limit in (
-    (2, frozenset({"direct_runtime", "remote_runtime", "diagnostic", "lifecycle"}), 16),
-    (3, frozenset({"direct_runtime", "diagnostic"}), 4),
-):
-    suite = tuple(profile_matrix.SUITES)[version - 2]
-    directory = profile_matrix.suite_directory(suite)
-    legacy = profile_matrix.SUITES[suite].startswith("sdk-v")
-    suffix = "-v1" if legacy else ""
-    wire = f"v{version}" if legacy else suite
-    CONTRACTS[version] = ProofContract(
-        set_version=version,
-        proof_schema_relative=f"{directory}/proof-fragment-schema{suffix}.json",
-        allowlist_relative=f"{directory}/proof-fragment-allowlist{suffix}.json",
-        journey_relative=profile_matrix.contract_relative(version, "journey"),
-        fragment_format=f"typebridge.sdk-{wire}-proof-fragment/v1",
-        allowlist_format=f"typebridge.sdk-{wire}-proof-fragment-allowlist/v1",
+CONTRACTS = {
+    suite: ProofContract(
+        suite=suite,
+        proof_schema_relative=f"{profile_matrix.suite_directory(suite)}/proof-fragment-schema.json",
+        allowlist_relative=f"{profile_matrix.suite_directory(suite)}/proof-fragment-allowlist.json",
+        journey_relative=profile_matrix.contract_relative(suite, "journey"),
+        fragment_format=f"typebridge.sdk-{suite}-proof-fragment/v1",
+        allowlist_format=f"typebridge.sdk-{suite}-proof-fragment-allowlist/v1",
         proof_kinds=kinds,
         max_results=limit,
     )
+    for suite, kinds, limit in (
+        ("queries", frozenset({"direct_runtime", "remote_runtime", "diagnostic", "lifecycle"}), 16),
+        ("models", frozenset({"direct_runtime", "diagnostic"}), 4),
+    )
+}
 
 
 def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sdk", required=True, type=int, choices=sorted(CONTRACTS))
+    parser.add_argument("--suite", required=True, choices=sorted(CONTRACTS))
     parser.add_argument("--binding", required=True, choices=sorted(REPORT_BINDINGS))
     parser.add_argument("--run-nonce", required=True)
     parser.add_argument(
@@ -582,8 +578,8 @@ def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
     )
     parser.add_argument("fragments", nargs="+", type=Path)
     args = parser.parse_args(argv)
-    contract = CONTRACTS[args.sdk]
-    suite = tuple(profile_matrix.SUITES)[args.sdk - 2]
+    contract = CONTRACTS[args.suite]
+    suite = args.suite
     try:
         observations = contract.load_proof_fragments(
             args.fragments,

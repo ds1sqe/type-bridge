@@ -285,16 +285,16 @@ def _matrix_error(code: str, message: str) -> AssertionError:
 
 
 def _require_profile_server_version(
-    semantic_profile: str, detected: str | None, version: int = 2
+    semantic_profile: str, detected: str | None, suite: str = "queries"
 ) -> Any:
-    """Return sdk-v{version}'s matrix entry for ``semantic_profile``.
+    """Return {suite}'s matrix entry for ``semantic_profile``.
 
     The detected server must be exactly the entry's live server. A generated
     package admits exactly the server release its profile names
     (`GeneratedPackageRelease::for_profile` in type-bridge-core `core::version`);
     the queries matrix is that table for the acceptance profiles.
     """
-    identity = _profile_matrix().select(version, semantic_profile, error=_matrix_error)
+    identity = _profile_matrix().select(suite, semantic_profile, error=_matrix_error)
     if detected != identity.live_server_version:
         raise AssertionError(
             f"{semantic_profile} packages require the actual detected TypeDB server "
@@ -304,23 +304,23 @@ def _require_profile_server_version(
 
 
 def _requested_sdk_profile(
-    version: int,
+    suite: str,
     generated_profile: str,
     detected: str | None,
     environment: Mapping[str, str] | None = None,
 ) -> Any:
-    """Return the sdk-v{version} matrix entry a report of this run declares.
+    """Return the {suite} matrix entry a report of this run declares.
 
     The profile is `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`, else the catalog's
     own; the generated package and the detected server must both be on it.
     """
-    identity = _profile_matrix().requested(version, environment=environment, error=_matrix_error)
+    identity = _profile_matrix().requested(suite, environment=environment, error=_matrix_error)
     if generated_profile != identity.semantic_profile:
         raise AssertionError(
-            f"sdk-v{version} reports target {identity.semantic_profile}; "
+            f"{suite} reports target {identity.semantic_profile}; "
             f"the generated package uses {generated_profile}"
         )
-    return _require_profile_server_version(identity.semantic_profile, detected, version)
+    return _require_profile_server_version(identity.semantic_profile, detected, suite)
 
 
 def _generated_profile(generated: ModuleType) -> str:
@@ -400,7 +400,7 @@ def _load_sdk_queries_proof_observations(
     if not path_values or any(not value for value in path_values):
         raise AssertionError("queries proof fragment paths must be a nonempty path list")
     loader = _load_ci_module("_typebridge_proof_fragments", SDK_QUERIES_PROOF_LOADER)
-    load_proof_fragments = loader.CONTRACTS[2].load_proof_fragments
+    load_proof_fragments = loader.CONTRACTS["queries"].load_proof_fragments
     loaded = load_proof_fragments(
         [Path(value) for value in path_values],
         expected_binding="python",
@@ -529,7 +529,7 @@ def _publish_sdk_models_python_supplement(
     raw_path = os.environ.get("TYPE_BRIDGE_SDK_MODELS_PYTHON_SUPPLEMENT")
     if raw_path is None:
         return
-    identity = _requested_sdk_profile(3, _generated_profile(generated), detected)
+    identity = _requested_sdk_profile("models", _generated_profile(generated), detected)
     semantic_fingerprint, projection_fingerprint = _sdk_python_fingerprints(identity, generated)
     _, journey = _load_json_object(SDK_MODELS_JOURNEY)
     expected = journey["expected_observations"]
@@ -1956,32 +1956,32 @@ def test_generated_profile_server_gate_reads_the_matrix() -> None:
         _require_profile_server_version("typedb-3.11.5/v1", "3.11.5")
 
 
-@pytest.mark.parametrize("version", [2, 3, 5])
-def test_sdk_reports_declare_the_requested_matrix_profile(version: int) -> None:
-    catalog_profile = _profile_matrix().catalog_profile(version)
-    entries = _profile_matrix().load_matrix(version)
+@pytest.mark.parametrize("suite", ["queries", "models", "serialization"])
+def test_sdk_reports_declare_the_requested_matrix_profile(suite: str) -> None:
+    catalog_profile = _profile_matrix().catalog_profile(suite)
+    entries = _profile_matrix().load_matrix(suite)
     default = entries[catalog_profile]
     assert (
         _requested_sdk_profile(
-            version, catalog_profile, default.live_server_version, environment={}
+            suite, catalog_profile, default.live_server_version, environment={}
         ).semantic_profile
         == catalog_profile
     )
     requested = {"TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE": "typedb-3.13.6/v1"}
-    identity = _requested_sdk_profile(version, "typedb-3.13.6/v1", "3.13.6", requested)
+    identity = _requested_sdk_profile(suite, "typedb-3.13.6/v1", "3.13.6", requested)
     assert (identity.semantic_profile, identity.live_server_version) == (
         "typedb-3.13.6/v1",
         "3.13.6",
     )
     with pytest.raises(AssertionError, match="actual detected TypeDB server version 3.13.6"):
-        _requested_sdk_profile(version, "typedb-3.13.6/v1", "3.12.3", requested)
+        _requested_sdk_profile(suite, "typedb-3.13.6/v1", "3.12.3", requested)
     with pytest.raises(AssertionError, match="the generated package uses"):
-        _requested_sdk_profile(version, "typedb-3.12.1/v1", "3.13.6", requested)
+        _requested_sdk_profile(suite, "typedb-3.12.1/v1", "3.13.6", requested)
     with pytest.raises(AssertionError, match="the generated package uses"):
-        _requested_sdk_profile(version, "typedb-3.13.6/v1", "3.13.6", environment={})
+        _requested_sdk_profile(suite, "typedb-3.13.6/v1", "3.13.6", environment={})
     with pytest.raises(AssertionError, match="semantic_profile_mismatch"):
         _requested_sdk_profile(
-            version,
+            suite,
             "typedb-3.11.5/v1",
             "3.11.5",
             {"TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE": "typedb-3.11.5/v1"},
@@ -1999,13 +1999,13 @@ def _fingerprinted_package(identity: Any) -> ModuleType:
 
 
 @pytest.mark.parametrize(
-    ("version", "build", "catalog_path"),
-    [(2, "_sdk_queries_report", SDK_QUERIES_CATALOG)],
+    ("suite", "build", "catalog_path"),
+    [("queries", "_sdk_queries_report", SDK_QUERIES_CATALOG)],
 )
 def test_sdk_reports_emit_the_matrix_fingerprints_of_their_profile(
-    version: int, build: str, catalog_path: Path
+    suite: str, build: str, catalog_path: Path
 ) -> None:
-    entries = _profile_matrix().load_matrix(version)
+    entries = _profile_matrix().load_matrix(suite)
     identity = entries["typedb-3.13.6/v1"]
     catalog_raw, catalog = _load_json_object(catalog_path)
     journey_relative = catalog["journey_path"]
@@ -2021,10 +2021,10 @@ def test_sdk_reports_emit_the_matrix_fingerprints_of_their_profile(
     assert (
         fixture["projection_fingerprint"] == identity.expected_fingerprints["projections"]["python"]
     )
-    catalog_entry = entries[_profile_matrix().catalog_profile(version)]
+    catalog_entry = entries[_profile_matrix().catalog_profile(suite)]
     assert fixture["semantic_fingerprint"] != catalog_entry.expected_fingerprints["semantic"]
     stale = _fingerprinted_package(catalog_entry)
-    with pytest.raises(AssertionError, match="is not the sdk-v.* projection for typedb-3.13.6/v1"):
+    with pytest.raises(AssertionError, match="is not the queries projection for typedb-3.13.6/v1"):
         builder(stale, identity, catalog_raw, catalog, journey_raw, [])
 
 
@@ -2642,7 +2642,9 @@ def test_sdk_serialization_live(
     if raw_evidence is None:
         pytest.skip("Serialization Python live evidence was not requested")
     generated = sdk_models_package
-    _requested_sdk_profile(5, _generated_profile(generated), clean_db.detected_server_version())
+    _requested_sdk_profile(
+        "serialization", _generated_profile(generated), clean_db.detected_server_version()
+    )
     clean_db.execute_query(
         SDK_MODELS_PROVIDER_SCHEMA.read_text(encoding="utf-8"),
         transaction_type="schema",
@@ -3273,7 +3275,7 @@ def test_generated_projection_round_trips_live_models(
     sdk_queries_identity: Any = None
     if sdk_queries_report_path is not None:
         sdk_queries_identity = _requested_sdk_profile(
-            2, semantic_profile, clean_db.detected_server_version()
+            "queries", semantic_profile, clean_db.detected_server_version()
         )
         _validate_sdk_report_path(sdk_queries_report_path)
         sdk_queries_catalog_raw, sdk_queries_catalog = _load_json_object(SDK_QUERIES_CATALOG)

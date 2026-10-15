@@ -36,7 +36,7 @@ SETUP_LOCK = ROOT / "tests/support/provider/Cargo.lock"
 PROVIDER_SCHEMA = ROOT / profile_matrix.suite_directory("models") / "provider-3.12.1.tql"
 JOURNEY_CONTRACT = ROOT / "tests/contracts/c-artifact-journey-v1.json"
 PREDECESSOR_CATALOGS = tuple(
-    ROOT / profile_matrix.catalog_relative(version) for version in range(2, 6)
+    ROOT / profile_matrix.catalog_relative(version) for version in tuple(profile_matrix.SUITES)[:-1]
 )
 FULL_MARKER_COUNT = 62
 QUERY_MARKER_COUNT = 8
@@ -524,7 +524,7 @@ def setup_workspace(root: Path) -> Path:
 def expected_server_version() -> str:
     """The exact live server of the requested queries profile."""
 
-    return profile_matrix.requested(2).live_server_version
+    return profile_matrix.requested("queries").live_server_version
 
 
 def fixture_environment(

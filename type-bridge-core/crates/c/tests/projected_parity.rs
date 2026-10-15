@@ -33,7 +33,7 @@ const CONSUMER: &str = include_str!("../../schema-codegen/tests/c_projected_pari
 mod sdk_profile_matrix;
 
 fn semantic_profile() -> String {
-    sdk_profile_matrix::requested(3).semantic_profile
+    sdk_profile_matrix::requested("models").semantic_profile
 }
 const REPORT_FORMAT: &str = "typebridge.projected-parity-report/v1";
 const FACT_PREFIX: &str = "TYPE_BRIDGE_C_PROJECTED_FACT\t";

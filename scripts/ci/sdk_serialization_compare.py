@@ -388,7 +388,7 @@ def matrix_servers() -> set[str]:
 
     return {
         entry.live_server_version
-        for entry in profile_matrix.load_matrix(5, error=ContractError).values()
+        for entry in profile_matrix.load_matrix("serialization", error=ContractError).values()
     }
 
 

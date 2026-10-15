@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://typebridge.dev/contracts/sdk-conformance/sdk-v6/report-schema-v6.json",
+  "$id": "https://typebridge.dev/contracts/sdk-conformance/artifacts/report-schema.json",
   "title": "TypeBridge Sdk V6 artifact report",
   "type": "object",
   "additionalProperties": false,
   "required": ["format", "binding", "producer", "source_commit", "manifest", "catalog", "journey", "broad_case_ledger", "acceptance_report_sha256", "artifacts", "generated_surface", "predecessor_reports", "non_selected_proofs", "results", "cleanup", "publication_authority"],
   "properties": {
-    "format": {"const": "typebridge.sdk-conformance-report/v6"},
+    "format": {"const": "typebridge.sdk-artifacts-report/v1"},
     "binding": {"enum": ["python", "node", "rust", "c"]},
     "producer": {"type": "string", "minLength": 1},
     "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
@@ -17,7 +17,7 @@
     "acceptance_report_sha256": {"$ref": "#/$defs/sha256"},
     "artifacts": {"type": "object"},
     "generated_surface": {"type": "object"},
-    "predecessor_reports": {"type": "array", "minItems": 4, "maxItems": 5},
+    "predecessor_reports": {"type": "array", "minItems": 4, "maxItems": 4},
     "non_selected_proofs": {"type": "array", "minItems": 25, "maxItems": 25},
     "results": {"type": "array", "minItems": 5, "maxItems": 5},
     "cleanup": {"type": "object"},

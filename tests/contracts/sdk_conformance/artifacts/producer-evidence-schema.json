@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://typebridge.dev/contracts/sdk-conformance/sdk-v6/producer-evidence-schema-v6.json",
+  "$id": "https://typebridge.dev/contracts/sdk-conformance/artifacts/producer-evidence-schema.json",
   "title": "TypeBridge Sdk V6 measured producer evidence",
   "type": "object",
   "additionalProperties": false,
   "required": ["format", "binding", "producer", "run_nonce", "source_commit", "observations", "non_selected_proofs", "cleanup"],
   "properties": {
-    "format": {"const": "typebridge.sdk-v6-producer-evidence/v1"},
+    "format": {"const": "typebridge.sdk-artifacts-producer-evidence/v1"},
     "binding": {"enum": ["python", "node", "rust", "c"]},
     "producer": {"type": "string", "minLength": 1},
     "run_nonce": {"type": "string", "pattern": "^[0-9a-f]{64}$"},

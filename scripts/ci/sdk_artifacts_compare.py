@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and compare four artifact-bound Sdk V6 artifact reports."""
+"""Validate and compare four artifact-bound SDK reports."""
 
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ from typing import Any, NoReturn
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = "tests/contracts/sdk_conformance/manifest.json"
-CATALOG = "tests/contracts/sdk_conformance/sdk-v6/catalog-v6.json"
-JOURNEY = "tests/contracts/sdk_conformance/sdk-v6/journey-v6.json"
-LEDGER = "tests/contracts/c-broad-case-ledger-v1.json"
-REPORT_SCHEMA = "tests/contracts/sdk_conformance/sdk-v6/report-schema-v6.json"
-PRODUCER_SCHEMA = "tests/contracts/sdk_conformance/sdk-v6/producer-evidence-schema-v6.json"
+CATALOG = "tests/contracts/sdk_conformance/artifacts/catalog.json"
+JOURNEY = "tests/contracts/sdk_conformance/artifacts/journey.json"
+LEDGER = "tests/contracts/c-broad-case-ledger.json"
+REPORT_SCHEMA = "tests/contracts/sdk_conformance/artifacts/report-schema.json"
+PRODUCER_SCHEMA = "tests/contracts/sdk_conformance/artifacts/producer-evidence-schema.json"
 BINDINGS = ("python", "node", "rust", "c")
 CASES = (
     "sdk.runtime.cancellation",
@@ -44,15 +44,15 @@ SURFACE_FORMATS = {
 }
 
 
-def predecessor_versions(binding: str) -> tuple[int, ...]:
+def predecessor_suites(binding: str) -> tuple[str, ...]:
     """Return the real historical report inventory for one binding."""
     if binding not in BINDINGS:
         reject("predecessor_report_identity_drift", f"unknown predecessor binding {binding!r}")
-    return (2, 3, 4, 5)
+    return ("queries", "models", "administration", "serialization")
 
 
 class ContractError(ValueError):
-    """Stable fail-closed V6 rejection."""
+    """Stable fail-closed Artifacts rejection."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -78,13 +78,13 @@ def canonical_json_bytes(value: Any) -> bytes:
     ).encode()
 
 
-def historical_report_is_exact(raw: bytes, value: Any, version: int) -> bool:
+def historical_report_is_exact(raw: bytes, value: Any, suite: str) -> bool:
     """Apply only the byte-canonicality requirement owned by each predecessor."""
-    if version == 4:
-        # V4 deliberately validates structure but does not define a canonical JSON spelling.
+    if suite == "administration":
+        # Administration deliberately validates structure but does not define a canonical JSON spelling.
         return True
     body = canonical_json_bytes(value)
-    expected = body + b"\n" if version in (1, 2, 3) else body
+    expected = body + b"\n" if suite in ("queries", "models") else body
     return raw == expected
 
 
@@ -208,13 +208,13 @@ def validate_report(report: dict[str, Any], root: Path = ROOT) -> None:
         "report",
     )
     if (
-        report["format"] != "typebridge.sdk-conformance-report/v6"
+        report["format"] != "typebridge.sdk-artifacts-report/v1"
         or report["binding"] not in BINDINGS
     ):
         reject("invalid_report_identity", "report format or binding is invalid")
     catalog = load_json(root / CATALOG)
     if report["producer"] != catalog["artifact_report_producers"][report["binding"]]:
-        reject("producer_identity_mismatch", "producer is not frozen by V6")
+        reject("producer_identity_mismatch", "producer is not frozen by Artifacts")
     commit = report["source_commit"]
     if (
         not isinstance(commit, str)
@@ -250,10 +250,10 @@ def validate_report(report: dict[str, Any], root: Path = ROOT) -> None:
             "C generated surface differs from Artifact acceptance artifact",
         )
     predecessors = report["predecessor_reports"]
-    expected_predecessors = predecessor_versions(report["binding"])
+    expected_predecessors = predecessor_suites(report["binding"])
     if (
         not isinstance(predecessors, list)
-        or tuple(item.get("version") for item in predecessors if isinstance(item, dict))
+        or tuple(item.get("suite") for item in predecessors if isinstance(item, dict))
         != expected_predecessors
     ):
         reject(
@@ -261,7 +261,7 @@ def validate_report(report: dict[str, Any], root: Path = ROOT) -> None:
             f"predecessor inventory is not exact for {report['binding']}",
         )
     for item in predecessors:
-        exact_keys(item, {"version", "sha256"}, "predecessor report")
+        exact_keys(item, {"suite", "sha256"}, "predecessor report")
         exact_sha(item["sha256"], "predecessor report")
     manifest = load_json(root / MANIFEST)
     capability_by_id = {item["id"]: item for item in manifest["capabilities"]}
@@ -276,7 +276,7 @@ def validate_report(report: dict[str, Any], root: Path = ROOT) -> None:
         )
     proofs = report["non_selected_proofs"]
     if not isinstance(proofs, list) or len(proofs) != 25:
-        reject("non_selected_proof_scope_drift", "V6 must contain 25 non-selected proofs")
+        reject("non_selected_proof_scope_drift", "Artifacts must contain 25 non-selected proofs")
     actual_non_selected = []
     for item in proofs:
         exact_keys(item, {"capability_id", "proof_kind", "evidence_sha256"}, "proof ledger row")
@@ -286,7 +286,7 @@ def validate_report(report: dict[str, Any], root: Path = ROOT) -> None:
         reject("non_selected_proof_inventory_drift", "non-selected proof inventory drifted")
     results = report["results"]
     if not isinstance(results, list) or len(results) != 5:
-        reject("report_row_scope_drift", "V6 must contain five results")
+        reject("report_row_scope_drift", "Artifacts must contain five results")
     for index, result in enumerate(results):
         exact_keys(
             result, {"case_id", "capability_id", "proof_kind", "outcome", "observation"}, "result"
@@ -297,7 +297,7 @@ def validate_report(report: dict[str, Any], root: Path = ROOT) -> None:
             result["proof_kind"],
             result["outcome"],
         ) != (CASES[index], CAPABILITIES[index], PROOFS[index], "passed"):
-            reject("report_row_binding_drift", f"V6 result {index} is rebound")
+            reject("report_row_binding_drift", f"Artifacts result {index} is rebound")
         validate_observation(index, result["observation"])
     if (
         results[3]["observation"]["artifact-id"] != artifacts["cli"]["artifact-id"]
@@ -310,9 +310,9 @@ def validate_report(report: dict[str, Any], root: Path = ROOT) -> None:
         "native_library_unmapped": True,
         "temporary_evidence_absent": True,
     }:
-        reject("cleanup_failure", "V6 cleanup invariants did not pass")
+        reject("cleanup_failure", "Artifacts cleanup invariants did not pass")
     if report["publication_authority"] is not False:
-        reject("authority_widening", "V6 report grants publication authority")
+        reject("authority_widening", "Artifacts report grants publication authority")
 
 
 def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
@@ -323,11 +323,11 @@ def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
         catalog.get("report_schema_path") != REPORT_SCHEMA
         or catalog.get("producer_evidence_schema_path") != PRODUCER_SCHEMA
     ):
-        reject("evidence_schema_inventory_drift", "V6 evidence schema paths drifted")
+        reject("evidence_schema_inventory_drift", "Artifacts evidence schema paths drifted")
     if catalog.get("manifest_transition_cases") != list(CASES):
-        reject("transition_scope_drift", "V6 transition cases drifted")
+        reject("transition_scope_drift", "Artifacts transition cases drifted")
     if len(paths) != 4:
-        reject("missing_binding_report", "exactly four V6 reports are required")
+        reject("missing_binding_report", "exactly four Artifacts reports are required")
     reports: dict[str, dict[str, Any]] = {}
     shared: tuple[Any, ...] | None = None
     source_commit: str | None = None
@@ -347,10 +347,10 @@ def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
             shared = common
             source_commit = report["source_commit"]
         elif common != shared:
-            reject("cross_binding_evidence_drift", "V6 shared evidence differs by binding")
+            reject("cross_binding_evidence_drift", "Artifacts shared evidence differs by binding")
         reports[binding] = report
     if tuple(reports) != BINDINGS:
-        reject("binding_order_drift", "V6 report order is not canonical")
+        reject("binding_order_drift", "Artifacts report order is not canonical")
 
     manifest = load_json(root / MANIFEST)
     capabilities = {item["case_ids"][0]: item for item in manifest["capabilities"]}
@@ -366,9 +366,12 @@ def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
         BROAD_PROFILE,
     )
     if profiles not in ((GAP_PROFILE,) * 5, final_profiles):
-        reject("partial_manifest_transition", "V6 transition is partial or uses the wrong profiles")
+        reject(
+            "partial_manifest_transition",
+            "Artifacts transition is partial or uses the wrong profiles",
+        )
     return {
-        "format": "typebridge.sdk-v6-comparison/v1",
+        "format": "typebridge.sdk-artifacts-comparison/v1",
         "authority_state": "artifact" if pending else "finalized",
         "bindings": list(BINDINGS),
         "source_commit": source_commit,
@@ -385,7 +388,7 @@ def main() -> int:
     try:
         comparison = compare_reports(arguments.reports)
     except ContractError as error:
-        print(f"sdk-v6 conformance rejected [{error.code}]: {error}", file=sys.stderr)
+        print(f"sdk-artifacts conformance rejected [{error.code}]: {error}", file=sys.stderr)
         return 1
     print(canonical_json_bytes(comparison).decode())
     return 0

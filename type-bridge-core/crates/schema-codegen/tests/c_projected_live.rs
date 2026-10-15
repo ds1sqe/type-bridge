@@ -282,7 +282,7 @@ fn report_publisher_is_bounded_create_new_and_non_overwriting() {
     publish_report(
         &destination,
         &repository_root(),
-        &sdk_profile_matrix::requested(3),
+        &sdk_profile_matrix::requested("models"),
         observations,
     );
     let bytes = fs::read(&destination).expect("published report reads");
@@ -297,7 +297,7 @@ fn report_publisher_is_bounded_create_new_and_non_overwriting() {
             publish_report(
                 &destination,
                 &repository_root(),
-                &sdk_profile_matrix::requested(3),
+                &sdk_profile_matrix::requested("models"),
                 observations,
             );
         })
@@ -375,7 +375,7 @@ fn failed_setup_only_cleans_after_the_creation_marker() {
 
 #[test]
 fn strict_c17_projected_live_consumer_compiles_with_both_available_compilers() {
-    let fixture = emitted_fixture(&sdk_profile_matrix::requested(3));
+    let fixture = emitted_fixture(&sdk_profile_matrix::requested("models"));
     let stage = Stage::new();
     let local = stage.path().join("local");
     let foreign = stage.path().join("foreign");
@@ -402,7 +402,7 @@ fn strict_c17_projected_live_consumer_compiles_with_both_available_compilers() {
 #[ignore = "requires an isolated TypeDB server of the requested SDK profile and C shared library"]
 fn generated_c17_projected_live_subset_round_trips_exact_3_12_1() {
     let root = repository_root();
-    let profile = sdk_profile_matrix::requested(3);
+    let profile = sdk_profile_matrix::requested("models");
     let report = report_destination();
     let address = required_environment(ADDRESS_ENV);
     let http_port = required_environment(HTTP_PORT_ENV);

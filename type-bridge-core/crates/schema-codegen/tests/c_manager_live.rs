@@ -301,7 +301,7 @@ fn c_manager_live_producer_is_bounded_and_expectation_independent() {
 
 #[test]
 fn strict_c17_manager_live_consumer_compiles() {
-    let fixture = emitted_fixture(&sdk_profile_matrix::requested(3));
+    let fixture = emitted_fixture(&sdk_profile_matrix::requested("models"));
     let stage = Stage::new();
     let local = stage.path().join("local");
     let foreign = stage.path().join("foreign");
@@ -348,7 +348,7 @@ fn c_manager_live_runs_when_explicitly_configured() {
         );
     }
     let report = report_destination();
-    let profile = sdk_profile_matrix::requested(3);
+    let profile = sdk_profile_matrix::requested("models");
     let fixture = emitted_fixture(&profile);
     let stage = Stage::new();
     let local = stage.path().join("local");

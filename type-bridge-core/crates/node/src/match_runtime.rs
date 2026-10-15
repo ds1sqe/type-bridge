@@ -2961,7 +2961,7 @@ plays:
                 "test_id": "node.native_direct_cancellation",
             }],
             "run_nonce": nonce,
-            "semantic_profile": crate::sdk_profile_matrix::requested(2).semantic_profile,
+            "semantic_profile": crate::sdk_profile_matrix::requested("queries").semantic_profile,
         });
         let mut payload = serde_json::to_vec(&fragment).unwrap();
         payload.push(b'\n');

@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[3]
 CI = ROOT / "scripts/ci"
 sys.path.insert(0, str(CI))
 SPEC = importlib.util.spec_from_file_location(
-    "sdk_v6_assembler", CI / "assemble_sdk_conformance_v6.py"
+    "sdk_artifacts_assembler", CI / "sdk_artifacts_assemble.py"
 )
 assert SPEC is not None and SPEC.loader is not None
 ASSEMBLER = importlib.util.module_from_spec(SPEC)
@@ -116,12 +116,12 @@ def _acceptance() -> dict[str, Any]:
 
 def _predecessors(binding: str = "rust") -> list[bytes]:
     values = []
-    for version in range(2, 6):
-        report = {"format": ASSEMBLER.profile_matrix.report_format(version), "binding": binding}
+    for suite in ASSEMBLER.conformance.predecessor_suites(binding):
+        report = {"format": ASSEMBLER.profile_matrix.report_format(suite), "binding": binding}
         body = ASSEMBLER.conformance.canonical_json_bytes(report)
-        if version in (1, 2, 3):
+        if suite in ("queries", "models"):
             body += b"\n"
-        elif version == 4:
+        elif suite == "administration":
             body = json.dumps(report, indent=2).encode() + b"\n"
         values.append(body)
     return values
@@ -222,7 +222,12 @@ def test_c_predecessor_history_starts_at_v2() -> None:
         predecessor_reports=predecessors,
         root=ROOT,
     )
-    assert [item["version"] for item in report["predecessor_reports"]] == [2, 3, 4, 5]
+    assert [item["suite"] for item in report["predecessor_reports"]] == [
+        "queries",
+        "models",
+        "administration",
+        "serialization",
+    ]
 
 
 def test_publication_is_canonical_and_create_new(tmp_path: Path) -> None:
@@ -264,12 +269,12 @@ def composition_surface(binding: str = "rust") -> dict[str, Any]:
 
 def composition_predecessors(binding: str = "rust") -> list[tuple[dict[str, Any], bytes]]:
     values = []
-    for version in ASSEMBLER.conformance.predecessor_versions(binding):
-        report = {"format": ASSEMBLER.profile_matrix.report_format(version), "binding": binding}
+    for suite in ASSEMBLER.conformance.predecessor_suites(binding):
+        report = {"format": ASSEMBLER.profile_matrix.report_format(suite), "binding": binding}
         body = ASSEMBLER.conformance.canonical_json_bytes(report)
-        if version in (1, 2, 3):
+        if suite in ("queries", "models"):
             body += b"\n"
-        elif version == 4:
+        elif suite == "administration":
             body = json.dumps(report, indent=2).encode() + b"\n"
         values.append((report, body))
     return values
@@ -299,8 +304,12 @@ def test_composition_composes_exact_25_fresh_digest_bound_fragments() -> None:
     fragment = json.loads(base64.b64decode(value["non_selected_proofs"][0]["evidence_b64"]))
     assert fragment["source_commit"] == "a" * 40
     assert fragment["predecessor_reports"] == [
-        {"version": version, "sha256": ASSEMBLER.hashlib.sha256(body).hexdigest()}
-        for version, (_report, body) in enumerate(composition_predecessors(), 2)
+        {"suite": suite, "sha256": ASSEMBLER.hashlib.sha256(body).hexdigest()}
+        for suite, (_report, body) in zip(
+            ASSEMBLER.conformance.predecessor_suites("python"),
+            composition_predecessors(),
+            strict=True,
+        )
     ]
     assert fragment["publication_authority"] is False
 
@@ -354,7 +363,12 @@ def test_composition_c_predecessor_history_starts_at_v2() -> None:
         root=ROOT,
     )
     fragment = json.loads(base64.b64decode(value["non_selected_proofs"][0]["evidence_b64"]))
-    assert [item["version"] for item in fragment["predecessor_reports"]] == [2, 3, 4, 5]
+    assert [item["suite"] for item in fragment["predecessor_reports"]] == [
+        "queries",
+        "models",
+        "administration",
+        "serialization",
+    ]
 
 
 def test_composition_loader_preserves_acceptance_and_historical_canonical_spelling(
@@ -378,3 +392,16 @@ def test_composition_loader_preserves_acceptance_and_historical_canonical_spelli
     v4_path = tmp_path / "v4.json"
     v4_path.write_bytes(v4[1])
     assert ASSEMBLER.load_canonical(v4_path, "V4", require_canonical=False)[0] == v4[0]
+
+
+@pytest.mark.parametrize("value", ["2=report.json", "artifacts=report.json", "queries=", "queries"])
+def test_predecessor_cli_rejects_non_suite_or_empty_paths(value: str) -> None:
+    with pytest.raises(ASSEMBLER.argparse.ArgumentTypeError):
+        ASSEMBLER._predecessor_argument(value)
+
+
+def test_predecessor_cli_accepts_a_suite_and_preserves_equals_in_path() -> None:
+    assert ASSEMBLER._predecessor_argument("queries=report=one.json") == (
+        "queries",
+        Path("report=one.json"),
+    )

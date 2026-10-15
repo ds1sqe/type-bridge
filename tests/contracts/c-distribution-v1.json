@@ -129,7 +129,7 @@
       "publication-disposition"
     ]
   },
-  "full_c_audit_contract": "tests/contracts/c-full-sdk-audit-v1.json",
+  "full_c_audit_contract": "tests/contracts/c-full-sdk-audit.json",
   "artifact_policy": {
     "regular_files_only": true,
     "absolute_paths": false,

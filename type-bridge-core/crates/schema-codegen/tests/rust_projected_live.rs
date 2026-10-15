@@ -133,7 +133,7 @@ fn generated_rust_projected_live_producer_compiles_and_rejects_foreign_shape_bef
     let stage = Stage::new();
     let generated = stage.path().join("generated");
     let consumer = stage.path().join("consumer");
-    let profile = sdk_profile_matrix::requested(3);
+    let profile = sdk_profile_matrix::requested("models");
     let profile_json = support::sdk_profile_entry_json(&profile);
     write_package(&emit_from_source(&sdk_source(), &profile), &generated);
     write_consumer(&consumer);
@@ -220,7 +220,7 @@ fn generated_rust_projected_live_producer_runs_when_explicitly_configured() {
     let stage = Stage::new();
     let generated = stage.path().join("generated");
     let consumer = stage.path().join("consumer");
-    let profile = sdk_profile_matrix::requested(3);
+    let profile = sdk_profile_matrix::requested("models");
     let profile_json = support::sdk_profile_entry_json(&profile);
     write_package(&emit_from_source(&sdk_source(), &profile), &generated);
     write_consumer(&consumer);

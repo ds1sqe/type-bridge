@@ -270,7 +270,7 @@ fn native_profile_copies_keep_four_reversible_migrations() {
             history["fingerprint"]["digest"],
             support::sdk_profile_matrix::select_from(
                 &support::sdk_profile_matrix::repository_root(),
-                4,
+                "administration",
                 profile
             )
             .expected_history_fingerprint

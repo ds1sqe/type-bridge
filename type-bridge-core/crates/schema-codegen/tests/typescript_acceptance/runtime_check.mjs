@@ -1003,10 +1003,10 @@ function canonicalProofValue(value) {
  * `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`, else the catalog's own profile
  * (mirrors `scripts/ci/sdk_profile_matrix.py` `requested`).
  */
-function sdkProofProfile(root, version) {
+function sdkProofProfile(root, suite) {
   const paths = JSON.parse(execFileSync(
     "python3", [resolve(root, "scripts/ci/sdk_profile_matrix.py")], { encoding: "utf8" },
-  ))[version];
+  ))[suite];
   const read = (relative) => JSON.parse(proofSourceBytes(root, relative).toString("utf8"));
   const profile = process.env.TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE
     || read(paths.catalog).fixture.semantic_profile;
@@ -1017,7 +1017,7 @@ function sdkProofProfile(root, version) {
     || matrix.profiles === null
     || !Object.hasOwn(matrix.profiles, profile)
   ) {
-    throw new Error(`sdk-v${version} has no profile-matrix entry for ${JSON.stringify(profile)}`);
+    throw new Error(`${suite} has no profile-matrix entry for ${JSON.stringify(profile)}`);
   }
   return profile;
 }
@@ -1058,7 +1058,7 @@ function emitSdkQueriesRemoteProofFragment() {
   const fragment = {
     format: "typebridge.sdk-queries-proof-fragment/v1",
     binding: "node",
-    semantic_profile: sdkProofProfile(root, 2),
+    semantic_profile: sdkProofProfile(root, "queries"),
     run_nonce: runNonce,
     contract: Object.fromEntries(
       Object.entries(contractPaths).map(([name, relative]) => [
@@ -1174,7 +1174,7 @@ function emitSdkModelsPackageProofFragment() {
   const testId = "node.sdk_models_generated_package_integrity";
   const fragment = {
     format: "typebridge.sdk-models-proof-fragment/v1", binding: "node",
-    semantic_profile: sdkProofProfile(root, 3), run_nonce: runNonce,
+    semantic_profile: sdkProofProfile(root, "models"), run_nonce: runNonce,
     contract: Object.fromEntries(Object.entries(contractPaths).map(([name, relative]) => [name, proofSourceIdentity(root, relative)])),
     producer: { id: "node.sdk-models-generated-package-proof", sources: producerPaths.map((relative) => proofSourceIdentity(root, relative)) },
     results: [

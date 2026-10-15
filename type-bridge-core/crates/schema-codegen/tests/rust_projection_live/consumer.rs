@@ -350,16 +350,16 @@ const SDK_QUERIES_JOURNEY_PATH: &str = "tests/contracts/sdk_conformance/queries/
 /// queries and models `expected_fingerprints`.
 const SDK_PROFILE_ENTRIES_ENV: &str = "TYPE_BRIDGE_SDK_PROFILE_ENTRIES";
 
-fn sdk_matrix_entry(set: u8) -> Value {
+fn sdk_matrix_entry(suite: &str) -> Value {
     let entries: Value = serde_json::from_str(
         &env::var(SDK_PROFILE_ENTRIES_ENV)
             .unwrap_or_else(|_| panic!("{SDK_PROFILE_ENTRIES_ENV} is required")),
     )
     .unwrap_or_else(|error| panic!("{SDK_PROFILE_ENTRIES_ENV} is JSON: {error}"));
-    let entry = entries[set.to_string()].clone();
+    let entry = entries[suite].clone();
     assert!(
         entry.is_object(),
-        "{SDK_PROFILE_ENTRIES_ENV} carries the sdk-v{set} entry"
+        "{SDK_PROFILE_ENTRIES_ENV} carries the {suite} entry"
     );
     entry
 }
@@ -2317,7 +2317,7 @@ async fn sdk_queries_lifecycle_lane(
 async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
     let report_path = sdk_env_path("TYPE_BRIDGE_SDK_QUERIES_REPORT");
     validate_sdk_report_path(&report_path);
-    let entry = sdk_matrix_entry(2);
+    let entry = sdk_matrix_entry("queries");
     let sdk_profile = sdk_matrix_profile(&entry);
     require_sdk_server_version(&entry).await;
     let manifest_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_QUERIES_MANIFEST"))
@@ -5917,7 +5917,7 @@ async fn sdk_serialization_live() {
         println!("generated Serialization Rust live evidence: not requested");
         return;
     };
-    require_sdk_server_version(&sdk_matrix_entry(5)).await;
+    require_sdk_server_version(&sdk_matrix_entry("serialization")).await;
     let db = database().await;
     let person = db
         .entities::<Person>()
@@ -6073,7 +6073,7 @@ async fn sdk_models_data_model_runtime_live() {
         println!("generated Models Rust live supplement: not requested");
         return;
     };
-    let entry = sdk_matrix_entry(3);
+    let entry = sdk_matrix_entry("models");
     require_sdk_server_version(&entry).await;
     let db = database().await;
 

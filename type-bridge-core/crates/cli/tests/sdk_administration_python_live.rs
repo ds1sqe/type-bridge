@@ -162,7 +162,7 @@ fn generated_python_emits_complete_administration_report() {
     assert_eq!(report["results"][2]["observation"]["forward_changed"], 2);
     assert_eq!(
         report["results"][3]["observation"]["catalog_fingerprint"],
-        support::sdk_profile_matrix::requested(4)
+        support::sdk_profile_matrix::requested("administration")
             .expected_history_fingerprint
             .expect("matrix history fingerprint")
     );

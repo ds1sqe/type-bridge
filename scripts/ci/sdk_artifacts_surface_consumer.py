@@ -13,14 +13,14 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 
-import sdk_v6_surfaces as surfaces
+import sdk_artifacts_surfaces as surfaces
 
 ROOT = Path(__file__).resolve().parents[2]
 NODE = ROOT / "type-bridge-core/crates/node"
 RUST = ROOT / "type-bridge-core/crates/rust"
 PYTHON_CORE = ROOT / "type-bridge-core/python"
-RUST_CONSUMER_LOCK = ROOT / "tests/contracts/sdk-v6-rust-surface-Cargo.lock"
-FORMAT = "typebridge.sdk-v6-surface-consumer/v1"
+RUST_CONSUMER_LOCK = ROOT / "tests/contracts/sdk-artifacts-rust-surface-Cargo.lock"
+FORMAT = "typebridge.sdk-artifacts-surface-consumer/v1"
 
 
 class ConsumerError(ValueError):

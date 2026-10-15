@@ -26,7 +26,7 @@ def _manifest() -> dict[str, object]:
 
 
 def _contract() -> dict[str, object]:
-    return json.loads((ROOT / "tests/contracts/c-full-sdk-audit-v1.json").read_text())
+    return json.loads((ROOT / "tests/contracts/c-full-sdk-audit.json").read_text())
 
 
 def test_all_44_current_and_c_cells_are_accepted() -> None:

@@ -184,18 +184,18 @@ def _expand_binding_profile(manifest: dict[str, Any], profile_name: str) -> dict
     return expanded
 
 
-def catalog_profile(fixture: dict[str, Any], version: int) -> str:
+def catalog_profile(fixture: dict[str, Any], suite: str) -> str:
     """Return the catalog's frozen profile once it is a matrix entry."""
 
     profile = fixture["semantic_profile"]
-    if profile not in profile_matrix.supported_profiles(version):
+    if profile not in profile_matrix.supported_profiles(suite):
         raise ContractError(
-            "semantic_profile_mismatch", f"sdk-v{version} catalog profile is not a matrix profile"
+            "semantic_profile_mismatch", f"{suite} catalog profile is not a matrix profile"
         )
     return profile
 
 
-def for_report_profile(contracts: Any, reports: list[LoadedJson], version: int) -> Any:
+def for_report_profile(contracts: Any, reports: list[LoadedJson], suite: str) -> Any:
     """Rebind ``contracts`` to the matrix entry of the profile the reports share.
 
     The catalog's top-level identity is the entry for its own profile, so a
@@ -212,11 +212,11 @@ def for_report_profile(contracts: Any, reports: list[LoadedJson], version: int) 
         "semantic profile",
         error=ContractError,
     )
-    return contracts if profile is None else for_profile(contracts, profile, version)
+    return contracts if profile is None else for_profile(contracts, profile, suite)
 
 
-def for_profile(contracts: Any, profile: str, version: int) -> Any:
-    """Rebind ``contracts`` to the ``sdk-v{version}`` matrix entry for ``profile``.
+def for_profile(contracts: Any, profile: str, suite: str) -> Any:
+    """Rebind ``contracts`` to the ``{suite}`` matrix entry for ``profile``.
 
     The catalog's own profile keeps ``contracts`` unchanged; any other profile
     must be a matrix entry and replaces the expected fingerprints.
@@ -224,10 +224,10 @@ def for_profile(contracts: Any, profile: str, version: int) -> Any:
 
     if profile == contracts.semantic_profile:
         return contracts
-    identity = profile_matrix.select(version, profile, error=ContractError)
+    identity = profile_matrix.select(suite, profile, error=ContractError)
     fingerprints = identity.expected_fingerprints
     if fingerprints is None:
-        raise ContractError("invalid_profile_matrix", f"sdk-v{version} pins no fingerprints")
+        raise ContractError("invalid_profile_matrix", f"{suite} pins no fingerprints")
     semantic = _validate_fingerprint(
         fingerprints["semantic"],
         label="matrix semantic fingerprint",

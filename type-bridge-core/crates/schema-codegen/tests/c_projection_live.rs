@@ -700,7 +700,7 @@ fn validated_sdk_queries_proofs(
             support::validate_sdk_queries_proof_fragments_on(
                 root,
                 "c",
-                &support::sdk_profile_matrix::requested(2).semantic_profile,
+                &support::sdk_profile_matrix::requested("queries").semantic_profile,
                 &nonce,
                 &paths,
             )
@@ -1152,7 +1152,7 @@ fn emitted_sdk_queries_c_proof_fragment_validates() {
     let observations = support::validate_sdk_queries_proof_fragments_on(
         &root,
         "c",
-        &support::sdk_profile_matrix::requested(2).semantic_profile,
+        &support::sdk_profile_matrix::requested("queries").semantic_profile,
         &nonce,
         &paths,
     )
@@ -1186,7 +1186,7 @@ fn sdk_queries_c_catalog_report_builder_preflight_is_exact_and_nonpublishing() {
     let fragment_observations = support::validate_sdk_queries_proof_fragments_on(
         &root,
         "c",
-        &support::sdk_profile_matrix::requested(2).semantic_profile,
+        &support::sdk_profile_matrix::requested("queries").semantic_profile,
         &nonce,
         &paths,
     )
@@ -1226,7 +1226,7 @@ fn sdk_queries_c_catalog_report_builder_preflight_is_exact_and_nonpublishing() {
     assert_eq!(observations.len(), 34);
     assert_sdk_queries_observations_match_journey(&root, &observations);
 
-    let profile = sdk_profile_matrix::requested(2);
+    let profile = sdk_profile_matrix::requested("queries");
     let (_, _, semantic_fingerprint, projection_fingerprint) =
         emitted_package_authority_and_fingerprints(&profile.semantic_profile);
     let report = build_sdk_queries_report(
@@ -1494,7 +1494,7 @@ fn failed_live_setup_still_runs_idempotent_database_cleanup() {
 #[ignore = "requires an isolated TypeDB server of the requested SDK profile and C shared library"]
 fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server() {
     let repository_root = repository_root();
-    let profile = sdk_profile_matrix::requested(2);
+    let profile = sdk_profile_matrix::requested("queries");
     let sdk_queries_report = requested_sdk_queries_report();
     let sdk_serialization_evidence = requested_sdk_serialization_evidence();
     assert!(
@@ -1819,7 +1819,7 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
 #[test]
 #[ignore = "requires an isolated TypeDB server of the requested SDK profile and C shared library"]
 fn sdk_models_data_model_runtime_live() {
-    let profile = sdk_profile_matrix::requested(3);
+    let profile = sdk_profile_matrix::requested("models");
     let c_compiler = c_compilers()
         .into_iter()
         .next()

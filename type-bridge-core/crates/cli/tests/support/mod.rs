@@ -51,7 +51,7 @@ fn copy_tree(source: &Path, destination: &Path) {
 pub fn prepare_administration_workspace(destination: &Path) {
     prepare_administration_native_workspace_for(
         destination,
-        &sdk_profile_matrix::requested(4).semantic_profile,
+        &sdk_profile_matrix::requested("administration").semantic_profile,
     );
 }
 
@@ -127,7 +127,7 @@ fn author_administration_profile_bridge(directory: &Path, requested: &str) {
 /// Connects to the configured TypeDB and fails unless the detected server is
 /// exactly the administration matrix entry's live server.
 pub async fn requested_administration_server_version() -> String {
-    let profile = sdk_profile_matrix::requested(4);
+    let profile = sdk_profile_matrix::requested("administration");
     let runtime = TypeDBRuntime::connect(
         &std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "127.0.0.1:1729".to_owned()),
         &std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned()),

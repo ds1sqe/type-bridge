@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-SCRIPT = ROOT / "scripts/ci/compare_sdk_conformance_v6.py"
-SPEC = importlib.util.spec_from_file_location("sdk_v6_comparator", SCRIPT)
+SCRIPT = ROOT / "scripts/ci/sdk_artifacts_compare.py"
+SPEC = importlib.util.spec_from_file_location("sdk_artifacts_comparator", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 COMPARATOR = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = COMPARATOR
@@ -77,7 +77,7 @@ def _report(root: Path, binding: str) -> dict[str, object]:
         },
     ]
     return {
-        "format": "typebridge.sdk-conformance-report/v6",
+        "format": "typebridge.sdk-artifacts-report/v1",
         "binding": binding,
         "producer": catalog["artifact_report_producers"][binding],
         "source_commit": "7" * 40,
@@ -101,8 +101,8 @@ def _report(root: Path, binding: str) -> dict[str, object]:
             ),
         },
         "predecessor_reports": [
-            {"version": version, "sha256": f"{version:x}" * 64}
-            for version in COMPARATOR.predecessor_versions(binding)
+            {"suite": suite, "sha256": COMPARATOR.hashlib.sha256(suite.encode()).hexdigest()}
+            for suite in COMPARATOR.predecessor_suites(binding)
         ],
         "non_selected_proofs": [
             {

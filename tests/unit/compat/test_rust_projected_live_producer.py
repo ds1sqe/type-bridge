@@ -127,7 +127,7 @@ def test_harness_generates_local_and_foreign_packages_then_validates_report() ->
     assert 'include_str!("rust_acceptance/projected_live.rs")' in harness
     assert "emit_from_source(&sdk_source(), &profile)" in harness
     assert "emit_from_source(&foreign_sdk_source(), &profile)" in harness
-    assert "sdk_profile_matrix::requested(3)" in harness
+    assert 'sdk_profile_matrix::requested("models")' in harness
     assert "generated_package_mismatch" in harness
     assert "validate_producer_source" in harness
     assert "module._load_report" not in harness

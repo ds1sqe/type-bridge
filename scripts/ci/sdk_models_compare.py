@@ -485,7 +485,7 @@ def _validate_journey(value: Any) -> dict[str, dict[str, Any]]:
         raise ContractError("invalid_journey_format", "journey format is not models")
     if journey["fixture_id"] != "models" or journey["version"] != 3:
         raise ContractError("invalid_fixture_identity", "journey fixture identity is not models")
-    if journey["semantic_profile"] not in profile_matrix.supported_profiles(3):
+    if journey["semantic_profile"] not in profile_matrix.supported_profiles("models"):
         raise ContractError("semantic_profile_mismatch", "journey profile is not a matrix profile")
 
     records = _exact_object(
@@ -619,7 +619,7 @@ def _validate_catalog(
     if fixture != {
         "id": "models",
         "version": 3,
-        "semantic_profile": catalog_profile(fixture, 3),
+        "semantic_profile": catalog_profile(fixture, "models"),
         "schema_path": SCHEMA_RELATIVE,
         "provider_schema_path": PROVIDER_SCHEMA_RELATIVE,
     }:
@@ -1162,7 +1162,7 @@ def compare_reports(report_paths: list[Path]) -> dict[str, Any]:
     loaded = {
         path: _load_json(path, f"report {path}", require_canonical=True) for path in report_paths
     }
-    contracts = for_report_profile(load_contracts(), list(loaded.values()), 3)
+    contracts = for_report_profile(load_contracts(), list(loaded.values()), "models")
     return compare_report_set(
         report_paths,
         REPORT_BINDINGS,

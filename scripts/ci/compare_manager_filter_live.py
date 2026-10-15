@@ -32,7 +32,7 @@ PROVIDER_RELATIVE = "tests/contracts/sdk_conformance/models/provider-3.12.1.tql"
 REPORT_FORMAT = "typebridge.manager-filter-live-report/v1"
 SUMMARY_FORMAT = "typebridge.manager-filter-live-summary/v1"
 # The models catalog profile; reports may carry any models matrix profile.
-SEMANTIC_PROFILE = profile_matrix.catalog_profile(3)
+SEMANTIC_PROFILE = profile_matrix.catalog_profile("models")
 REPORT_BINDINGS = ("python", "node", "rust", "c")
 REPORT_OUTPUT_ENV = "TYPE_BRIDGE_MANAGER_LIVE_REPORT"
 REPORT_WRITE_SEMANTICS = "create_new"
@@ -325,7 +325,7 @@ def _load_report(
     if type(binding) is not str or binding not in REPORT_BINDINGS:
         raise ContractError("unknown_binding", f"report {path} has an unknown binding")
     if report != expected_report(
-        binding, contract, profile_matrix.declared_profile(3, report, SEMANTIC_PROFILE)
+        binding, contract, profile_matrix.declared_profile("models", report, SEMANTIC_PROFILE)
     ):
         raise ContractError(
             "manager_live_observation_mismatch",

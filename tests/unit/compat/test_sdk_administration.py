@@ -231,7 +231,7 @@ def test_rejects_manifest_case_rebinding(tmp_path: Path) -> None:
 def test_report_history_fingerprint_is_bound_to_its_server(tmp_path: Path, profile: str) -> None:
     root = _stage_contracts(tmp_path)
     contracts = comparator.load_contracts(root)
-    identity = comparator.profile_matrix.select(4, profile)
+    identity = comparator.profile_matrix.select("administration", profile)
     report = _valid_report(root, "python")
     report["server_version"] = identity.live_server_version
     report["results"][3]["observation"]["catalog_fingerprint"] = (

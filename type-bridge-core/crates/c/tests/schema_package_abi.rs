@@ -6259,7 +6259,7 @@ impl Drop for IsolatedLiveDatabase<'_> {
 #[test]
 #[ignore = "requires an isolated TypeDB server of the requested SDK profile and the C shared library"]
 fn live_c17_consumer_exercises_profile_server_transaction_lifecycle() {
-    let profile = sdk_profile_matrix::requested(2);
+    let profile = sdk_profile_matrix::requested("queries");
     let native_library = native_library().unwrap_or_else(|| {
         panic!("build the TypeBridge C shared library before running the exact C runtime live test")
     });

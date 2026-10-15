@@ -36,10 +36,10 @@ runner = _load("run_sdk_conformance")
 fragments = _load("proof_fragments")
 
 
-@pytest.mark.parametrize("version", matrix.SET_VERSIONS)
-def test_every_set_lists_both_profiles_and_its_catalog_entry_is_unchanged(version: int) -> None:
-    catalog = json.loads((ROOT / matrix.catalog_relative(version)).read_text(encoding="utf-8"))
-    entries = matrix.load_matrix(version)
+@pytest.mark.parametrize("suite", matrix.SUITES)
+def test_every_set_lists_both_profiles_and_its_catalog_entry_is_unchanged(suite: str) -> None:
+    catalog = json.loads((ROOT / matrix.catalog_relative(suite)).read_text(encoding="utf-8"))
+    entries = matrix.load_matrix(suite)
 
     assert set(entries) == {BASE, NEXT}
     for profile, entry in entries.items():
@@ -57,7 +57,9 @@ def test_every_set_lists_both_profiles_and_its_catalog_entry_is_unchanged(versio
 
 def _reports(module: ModuleType, contracts: Any, profile: str) -> dict[str, dict[str, Any]]:
     version = int(contracts.catalog.value["fixture"]["version"])
-    fingerprints = matrix.select(version, profile).expected_fingerprints
+    fingerprints = matrix.select(
+        contracts.catalog.value["fixture"]["id"], profile
+    ).expected_fingerprints
     reports = {}
     for binding in module.REPORT_BINDINGS:
         results = [
@@ -113,7 +115,7 @@ def test_queries_report_set_compares_against_its_profile_entry(
     summary = v2.compare_reports(_write(v2, tmp_path, reports))
 
     assert summary["fixture"]["semantic_profile"] == profile
-    expected = matrix.select(2, profile).expected_fingerprints
+    expected = matrix.select("queries", profile).expected_fingerprints
     assert summary["fixture"]["semantic_fingerprint"] == expected["semantic"]
 
 
@@ -160,7 +162,7 @@ def test_server_versions_must_be_matrix_servers_and_shared() -> None:
     with pytest.raises(v4.ContractError) as rejected:
         matrix.shared_value(["3.12.3", "3.13.6"], "server version", error=v4.ContractError)
     assert rejected.value.code == "mixed_server_version"
-    assert matrix.select_server(4, "3.13.6").semantic_profile == NEXT
+    assert matrix.select_server("administration", "3.13.6").semantic_profile == NEXT
 
 
 def test_runner_selects_the_profile_and_exact_server() -> None:
@@ -176,7 +178,7 @@ def test_runner_selects_the_profile_and_exact_server() -> None:
 
 def test_proof_fragments_refuse_a_profile_outside_the_matrix() -> None:
     with pytest.raises(fragments.ProofFragmentError) as rejected:
-        fragments.CONTRACTS[2].load_proof_fragments(
+        fragments.CONTRACTS["queries"].load_proof_fragments(
             [],
             expected_binding="python",
             run_nonce="0" * 64,
@@ -186,7 +188,7 @@ def test_proof_fragments_refuse_a_profile_outside_the_matrix() -> None:
 
 
 def test_administration_pins_distinct_native_history_per_profile() -> None:
-    entries = matrix.load_matrix(4)
+    entries = matrix.load_matrix("administration")
     digests = [entry.expected_history_fingerprint for entry in entries.values()]
     assert len(set(digests)) == 2
     assert all(isinstance(value, str) and len(value) == 64 for value in digests)
@@ -196,11 +198,11 @@ def test_administration_pins_distinct_native_history_per_profile() -> None:
 def test_administration_rejects_missing_or_malformed_history_digest(
     tmp_path: Path, digest: Any
 ) -> None:
-    relative = matrix.matrix_relative(4)
+    relative = matrix.matrix_relative("administration")
     value = json.loads((ROOT / relative).read_text())
     value["profiles"][BASE]["expected_history_fingerprint"] = digest
     path = tmp_path / relative
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(value))
     with pytest.raises(matrix.ProfileMatrixError, match="history digest is malformed"):
-        matrix.load_matrix(4, root=tmp_path)
+        matrix.load_matrix("administration", root=tmp_path)

@@ -43,7 +43,7 @@ EXPECTED_MIGRATION_ORDER = (
     "administration/0004_contract-legacy-name",
 )
 EXPECTED_CATALOG_FINGERPRINT = profile_matrix.select(
-    4, "typedb-3.12.1/v1"
+    "administration", "typedb-3.12.1/v1"
 ).expected_history_fingerprint
 
 
@@ -184,7 +184,7 @@ def _matrix_servers() -> set[str]:
 
     return {
         entry.live_server_version
-        for entry in profile_matrix.load_matrix(4, error=ContractError).values()
+        for entry in profile_matrix.load_matrix("administration", error=ContractError).values()
     }
 
 
@@ -231,7 +231,9 @@ def _validate_report(report: dict[str, Any], observation_refs: tuple[str, ...]) 
         _validate_observation(
             observation_refs[index],
             result["observation"],
-            profile_matrix.select_server(4, report["server_version"]).expected_history_fingerprint,
+            profile_matrix.select_server(
+                "administration", report["server_version"]
+            ).expected_history_fingerprint,
         )
 
 

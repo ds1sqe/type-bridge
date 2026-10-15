@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compose measured evidence and assemble SDK V6 reports."""
+"""Compose measured evidence and assemble SDK Artifacts reports."""
 
 from __future__ import annotations
 
@@ -14,22 +14,22 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 import c_artifact_journey as artifact_journey
-import compare_sdk_conformance_v6 as conformance
+import sdk_artifacts_compare as conformance
+import sdk_artifacts_surfaces as surfaces
 import sdk_profile_matrix as profile_matrix
-import sdk_v6_surfaces as surfaces
 from persist_binding_reports import publish_bytes
 
 ROOT = Path(__file__).resolve().parents[2]
-FORMAT = "typebridge.sdk-v6-producer-evidence/v1"
+FORMAT = "typebridge.sdk-artifacts-producer-evidence/v1"
 MAX_EVIDENCE_BYTES = 32 * 1024 * 1024
 MAX_FRAGMENT_BYTES = 1024 * 1024
 MAX_SURFACE_BYTES = 128 * 1024 * 1024
-SURFACE_CONSUMER_FORMAT = "typebridge.sdk-v6-surface-consumer/v1"
+SURFACE_CONSUMER_FORMAT = "typebridge.sdk-artifacts-surface-consumer/v1"
 MAX_INPUT_BYTES = 64 * 1024 * 1024
 
 
 class AssemblyError(ValueError):
-    """Stable fail-closed V6 assembly rejection."""
+    """Stable fail-closed Artifacts assembly rejection."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -91,41 +91,41 @@ def _identity(relative: str, root: Path) -> dict[str, str]:
 
 
 def _predecessors(values: list[bytes], binding: str) -> list[dict[str, Any]]:
-    versions = conformance.predecessor_versions(binding)
-    if len(values) != len(versions):
+    suites = conformance.predecessor_suites(binding)
+    if len(values) != len(suites):
         reject("predecessor_report_scope_drift", "historical report inventory is not exact")
     output = []
     profiles: list[Any] = []
-    for version, raw in zip(versions, values, strict=True):
+    for suite, raw in zip(suites, values, strict=True):
         try:
             report = json.loads(raw, object_pairs_hook=conformance.unique_object)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            reject("invalid_predecessor_report", f"cannot parse V{version} report: {error}")
+            reject("invalid_predecessor_report", f"cannot parse {suite} report: {error}")
         if not isinstance(report, dict) or not conformance.historical_report_is_exact(
-            raw, report, version
+            raw, report, suite
         ):
-            reject("noncanonical_predecessor_report", f"V{version} report is not canonical")
-        if report.get("format") != profile_matrix.report_format(version):
-            reject("predecessor_report_identity_drift", f"V{version} format drifted")
+            reject("noncanonical_predecessor_report", f"{suite} report is not canonical")
+        if report.get("format") != profile_matrix.report_format(suite):
+            reject("predecessor_report_identity_drift", f"{suite} format drifted")
         if report.get("binding") != binding:
-            reject("predecessor_report_identity_drift", f"V{version} binding drifted")
-        profiles.append(_predecessor_profile(version, report))
-        output.append({"version": version, "sha256": hashlib.sha256(raw).hexdigest()})
-    # A V6 report binds one TypeDB line; its predecessors must not mix profiles.
+            reject("predecessor_report_identity_drift", f"{suite} binding drifted")
+        profiles.append(_predecessor_profile(suite, report))
+        output.append({"suite": suite, "sha256": hashlib.sha256(raw).hexdigest()})
+    # A Artifacts report binds one TypeDB line; its predecessors must not mix profiles.
     profile_matrix.shared_value(profiles, "semantic profile", error=AssemblyError)
     return output
 
 
-def _predecessor_profile(version: int, report: dict[str, Any]) -> Any:
+def _predecessor_profile(suite: str, report: dict[str, Any]) -> Any:
     """The semantic profile a predecessor report declares or implies."""
 
-    if version <= 3:
+    if suite in ("queries", "models"):
         return profile_matrix.report_field(report, "fixture", "semantic_profile")
     server = report.get("server_version")
     if type(server) is not str:
         # Shape belongs to the predecessor's own comparer, not to this binding.
         return None
-    return profile_matrix.select_server(version, server, error=AssemblyError).semantic_profile
+    return profile_matrix.select_server(suite, server, error=AssemblyError).semantic_profile
 
 
 def assemble_report(
@@ -157,9 +157,9 @@ def assemble_report(
     if evidence["format"] != FORMAT or evidence["binding"] != binding:
         reject("evidence_identity_mismatch", "evidence format or binding differs")
     if binding not in conformance.BINDINGS:
-        reject("evidence_identity_mismatch", f"unknown V6 binding {binding!r}")
+        reject("evidence_identity_mismatch", f"unknown Artifacts binding {binding!r}")
     if evidence["producer"] != catalog["artifact_report_producers"][binding]:
-        reject("producer_identity_mismatch", "producer is not frozen by V6")
+        reject("producer_identity_mismatch", "producer is not frozen by Artifacts")
     if (
         evidence["run_nonce"] != run_nonce
         or not isinstance(run_nonce, str)
@@ -238,7 +238,7 @@ def assemble_report(
         )
     ]
     report = {
-        "format": "typebridge.sdk-conformance-report/v6",
+        "format": "typebridge.sdk-artifacts-report/v1",
         "binding": binding,
         "producer": evidence["producer"],
         "source_commit": commit,
@@ -263,19 +263,20 @@ def publish(path: Path, report: dict[str, Any]) -> None:
     publish_bytes(path, conformance.canonical_json_bytes(report), AssemblyError)
 
 
-def _predecessor_argument(value: str) -> tuple[int, Path]:
+def _predecessor_argument(value: str) -> tuple[str, Path]:
     try:
-        version_text, path_text = value.split("=", 1)
-        version = int(version_text)
+        suite, path_text = value.split("=", 1)
     except (ValueError, TypeError):
-        raise argparse.ArgumentTypeError("predecessor must be VERSION=PATH") from None
-    if version not in range(2, 6) or not path_text:
-        raise argparse.ArgumentTypeError("predecessor version must be 2 through 5")
-    return (version, Path(path_text))
+        raise argparse.ArgumentTypeError("predecessor must be SUITE=PATH") from None
+    if suite not in conformance.predecessor_suites("c") or not path_text:
+        raise argparse.ArgumentTypeError(
+            "predecessor suite must be queries, models, administration, or serialization"
+        )
+    return (suite, Path(path_text))
 
 
 class CompositionError(ValueError):
-    """Stable fail-closed V6 evidence-composition rejection."""
+    """Stable fail-closed Artifacts evidence-composition rejection."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -352,7 +353,9 @@ def compose(
     root: Path = ROOT,
 ) -> dict[str, Any]:
     if binding not in conformance.BINDINGS:
-        composition_reject("composition_identity_mismatch", f"unknown V6 binding {binding!r}")
+        composition_reject(
+            "composition_identity_mismatch", f"unknown Artifacts binding {binding!r}"
+        )
     if len(run_nonce) != 64 or any(c not in "0123456789abcdef" for c in run_nonce):
         composition_reject("invalid_run_nonce", "run nonce must be 64 lowercase hexadecimal digits")
     if len(source_commit) != 40 or any(c not in "0123456789abcdef" for c in source_commit):
@@ -360,21 +363,21 @@ def compose(
             "invalid_source_commit", "source commit must be 40 lowercase hexadecimal digits"
         )
     catalog = conformance.load_json(root / conformance.CATALOG)
-    versions = conformance.predecessor_versions(binding)
-    if len(predecessors) != len(versions):
+    suites = conformance.predecessor_suites(binding)
+    if len(predecessors) != len(suites):
         composition_reject(
             "predecessor_report_scope_drift", "historical report inventory is not exact"
         )
     predecessor_digests = []
-    for version, (report, body) in zip(versions, predecessors, strict=True):
+    for suite, (report, body) in zip(suites, predecessors, strict=True):
         if (
-            report.get("format") != profile_matrix.report_format(version)
+            report.get("format") != profile_matrix.report_format(suite)
             or report.get("binding") != binding
         ):
             composition_reject(
-                "predecessor_report_identity_drift", f"V{version} report identity drifted"
+                "predecessor_report_identity_drift", f"{suite} report identity drifted"
             )
-        predecessor_digests.append({"version": version, "sha256": hashlib.sha256(body).hexdigest()})
+        predecessor_digests.append({"suite": suite, "sha256": hashlib.sha256(body).hexdigest()})
     steps = acceptance.get("steps")
     if (
         acceptance.get("format") != "typebridge.c-artifact-acceptance-report/v1"
@@ -445,7 +448,7 @@ def compose(
     proofs = []
     for capability_id, proof_kind in _proof_inventory(root):
         fragment = {
-            "format": "typebridge.sdk-v6-proof-fragment/v1",
+            "format": "typebridge.sdk-artifacts-proof-fragment/v1",
             "binding": binding,
             "source_commit": source_commit,
             "capability_id": capability_id,
@@ -518,8 +521,11 @@ def compose_inputs(arguments: argparse.Namespace) -> dict[str, Any]:
     acceptance, acceptance_bytes = load_canonical(
         arguments.acceptance, "Artifact acceptance report", trailing_newline=True
     )
-    predecessor_arguments = sorted(arguments.predecessor)
-    if tuple((version for version, _ in predecessor_arguments)) != conformance.predecessor_versions(
+    predecessor_arguments = sorted(
+        arguments.predecessor,
+        key=lambda item: conformance.predecessor_suites(arguments.binding).index(item[0]),
+    )
+    if tuple((suite for suite, _ in predecessor_arguments)) != conformance.predecessor_suites(
         arguments.binding
     ):
         composition_reject(
@@ -529,11 +535,11 @@ def compose_inputs(arguments: argparse.Namespace) -> dict[str, Any]:
     predecessors = [
         load_canonical(
             path,
-            f"V{version} report",
-            trailing_newline=version in (1, 2, 3),
-            require_canonical=version != 4,
+            f"{suite} report",
+            trailing_newline=suite in ("queries", "models"),
+            require_canonical=suite != "administration",
         )
-        for version, path in predecessor_arguments
+        for suite, path in predecessor_arguments
     ]
     value = compose(
         binding=arguments.binding,
@@ -621,8 +627,11 @@ def main() -> int:
                     "generated_surface_source_drift",
                     "generated surface does not bind the exact CLI and source commit",
                 )
-        predecessors = sorted(arguments.predecessor)
-        if tuple((version for version, _ in predecessors)) != conformance.predecessor_versions(
+        predecessors = sorted(
+            arguments.predecessor,
+            key=lambda item: conformance.predecessor_suites(arguments.binding).index(item[0]),
+        )
+        if tuple((suite for suite, _ in predecessors)) != conformance.predecessor_suites(
             arguments.binding
         ):
             reject(
@@ -639,8 +648,8 @@ def main() -> int:
                 arguments.generated_surface, MAX_SURFACE_BYTES, "generated surface"
             ),
             predecessor_reports=[
-                read_regular(path, MAX_EVIDENCE_BYTES, f"V{version} report")
-                for version, path in predecessors
+                read_regular(path, MAX_EVIDENCE_BYTES, f"{suite} report")
+                for suite, path in predecessors
             ],
         )
         publish(arguments.output, report)
@@ -653,7 +662,7 @@ def main() -> int:
         CompositionError,
     ) as error:
         code = getattr(error, "code", "assembly_failure")
-        print(f"sdk-v6 assembly rejected [{code}]: {error}", file=sys.stderr)
+        print(f"artifacts assembly rejected [{code}]: {error}", file=sys.stderr)
         return 1
     return 0
 

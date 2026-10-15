@@ -65,18 +65,24 @@ def test_distribution_contract_rejects_stale_source_digest(tmp_path: Path) -> No
         VALIDATOR.validate(_write(tmp_path, contract))
 
 
-def test_v6_freezes_only_the_five_terminal_transition_cases() -> None:
+def test_artifacts_freezes_only_the_five_terminal_transition_cases() -> None:
     catalog = json.loads(
-        (ROOT / "tests/contracts/sdk_conformance/sdk-v6/catalog-v6.json").read_text()
+        (ROOT / "tests/contracts/sdk_conformance/artifacts/catalog.json").read_text()
     )
     assert catalog["authority_state"] == "frozen"
-    assert catalog["broad_case_ledger_path"] == "tests/contracts/c-broad-case-ledger-v1.json"
-    assert catalog["producer_evidence_schema_path"].endswith("producer-evidence-schema-v6.json")
+    assert catalog["broad_case_ledger_path"] == "tests/contracts/c-broad-case-ledger.json"
+    assert catalog["producer_evidence_schema_path"].endswith("producer-evidence-schema.json")
     assert catalog["manifest_transition_cases"] == VALIDATOR.TRANSITION_CASES
     assert catalog["required_non_selected_proof_count_per_binding"] == 25
     assert catalog["full_c"] == {
         "capability_count": 44,
-        "required_predecessor_reports": [2, 3, 4, 5, 6],
+        "required_predecessor_reports": [
+            "queries",
+            "models",
+            "administration",
+            "serialization",
+            "artifacts",
+        ],
         "manual_badge": False,
         "fails_on_gap_or_planned_c_cell": True,
         "publication_authority": False,
@@ -84,10 +90,16 @@ def test_v6_freezes_only_the_five_terminal_transition_cases() -> None:
 
 
 def test_full_c_audit_inventory_is_exactly_the_manifest() -> None:
-    audit = json.loads((ROOT / "tests/contracts/c-full-sdk-audit-v1.json").read_text())
+    audit = json.loads((ROOT / "tests/contracts/c-full-sdk-audit.json").read_text())
     manifest = json.loads((ROOT / "tests/contracts/sdk_conformance/manifest.json").read_text())
     assert audit["capability_codes"] == [item["code"] for item in manifest["capabilities"]]
     assert len(audit["capability_codes"]) == 44
-    assert audit["report_versions"] == [2, 3, 4, 5, 6]
+    assert audit["report_suites"] == [
+        "queries",
+        "models",
+        "administration",
+        "serialization",
+        "artifacts",
+    ]
     assert audit["output"]["manual_override"] is False
     assert audit["output"]["publication_authority"] is False

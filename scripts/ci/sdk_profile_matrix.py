@@ -1,13 +1,8 @@
-"""TypeDB version matrix of the SDK conformance sets.
+"""Per-profile identity of the SDK conformance suites.
 
-Each set ``sdk-vN`` keeps one catalog whose top-level identity is the profile
-it was frozen on. ``sdk-vN/profiles-vN.json`` lists the identity a conforming
-report carries on every supported semantic profile: the exact live server and,
-for sets that pin them, the semantic and binding projection fingerprints. The
-catalog's own profile is one entry and repeats the catalog's values.
-
-Comparers read the profile a report set declares, require one shared profile,
-and validate against that entry instead of a hard-coded profile.
+Each suite keeps a catalog and profiles.json. Producers select a semantic
+profile and its exact live TypeDB server; comparers require a shared profile
+and validate its committed fingerprints or native migration-history digest.
 """
 
 from __future__ import annotations
@@ -27,21 +22,18 @@ SUITES = {
     "models": "models",
     "administration": "administration",
     "serialization": "serialization",
-    "artifacts": "sdk-v6",
+    "artifacts": "artifacts",
 }
-SET_VERSIONS = (2, 3, 4, 5, 6)
 
 
 def suite_directory(suite: str) -> str:
     return f"{CONTRACT_ROOT}/{SUITES[suite]}"
 
 
-def contract_relative(version: int, kind: str) -> str:
-    if version not in SET_VERSIONS:
-        raise KeyError(version)
-    directory = SUITES[tuple(SUITES)[version - 2]]
-    suffix = f"-v{version}" if directory.startswith("sdk-v") else ""
-    return f"{CONTRACT_ROOT}/{directory}/{kind}{suffix}.json"
+def contract_relative(suite: str, kind: str) -> str:
+    if suite not in SUITES:
+        raise KeyError(suite)
+    return f"{suite_directory(suite)}/{kind}.json"
 
 
 SEMANTIC_PROFILE_ENV = "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE"
@@ -68,32 +60,32 @@ class ProfileIdentity:
     expected_history_fingerprint: str | None = None
 
 
-def matrix_relative(version: int) -> str:
-    return contract_relative(version, "profiles")
+def matrix_relative(suite: str) -> str:
+    return contract_relative(suite, "profiles")
 
 
-def catalog_relative(version: int) -> str:
-    return contract_relative(version, "catalog")
+def catalog_relative(suite: str) -> str:
+    return contract_relative(suite, "catalog")
 
 
 def load_matrix(
-    version: int, *, root: Path = ROOT, error: ErrorFactory = ProfileMatrixError
+    suite: str, *, root: Path = ROOT, error: ErrorFactory = ProfileMatrixError
 ) -> dict[str, ProfileIdentity]:
-    """Load and shape-check ``profiles-vN.json``; keys are semantic profiles."""
+    """Load and shape-check ``profiles.json``; keys are semantic profiles."""
 
-    if version not in SET_VERSIONS:
-        raise error("unknown_conformance_set", f"sdk-v{version} has no profile matrix")
+    if suite not in SUITES:
+        raise error("unknown_conformance_set", f"{suite} has no profile matrix")
     try:
-        value = json.loads((root / matrix_relative(version)).read_text(encoding="utf-8"))
+        value = json.loads((root / matrix_relative(suite)).read_text(encoding="utf-8"))
     except (OSError, ValueError) as failure:
-        raise error("invalid_profile_matrix", f"sdk-v{version} matrix is unreadable") from failure
-    set_id = tuple(SUITES)[version - 2]
+        raise error("invalid_profile_matrix", f"{suite} matrix is unreadable") from failure
+    set_id = suite
     if (
         type(value) is not dict
         or set(value) != {"format", "suite", "catalog_path", "profiles"}
         or value["format"] != MATRIX_FORMAT
         or value["suite"] != set_id
-        or value["catalog_path"] != catalog_relative(version)
+        or value["catalog_path"] != catalog_relative(suite)
         or type(value["profiles"]) is not dict
         or not value["profiles"]
     ):
@@ -119,8 +111,8 @@ def load_matrix(
                 f"{set_id} entry {profile!r} fingerprints name another profile",
             )
         history = entry.get("expected_history_fingerprint")
-        if (version == 4 or history is not None) and (
-            version != 4
+        if (suite == "administration" or history is not None) and (
+            suite != "administration"
             or type(history) is not str
             or len(history) != 64
             or any(character not in "0123456789abcdef" for character in history)
@@ -141,12 +133,12 @@ def _fingerprint_profiles(fingerprints: Any) -> set[Any]:
     return {item.get("semantic_profile") if type(item) is dict else None for item in values}
 
 
-def supported_profiles(version: int, *, root: Path = ROOT) -> tuple[str, ...]:
-    return tuple(load_matrix(version, root=root))
+def supported_profiles(suite: str, *, root: Path = ROOT) -> tuple[str, ...]:
+    return tuple(load_matrix(suite, root=root))
 
 
 def select(
-    version: int,
+    suite: str,
     profile: Any,
     *,
     root: Path = ROOT,
@@ -154,17 +146,17 @@ def select(
 ) -> ProfileIdentity:
     """Return the matrix entry for ``profile`` or fail closed."""
 
-    entries = load_matrix(version, root=root, error=error)
+    entries = load_matrix(suite, root=root, error=error)
     if type(profile) is not str or profile not in entries:
         raise error(
             "semantic_profile_mismatch",
-            f"sdk-v{version} has no matrix entry for profile {profile!r}",
+            f"{suite} has no matrix entry for profile {profile!r}",
         )
     return entries[profile]
 
 
 def select_server(
-    version: int,
+    suite: str,
     server_version: Any,
     *,
     root: Path = ROOT,
@@ -174,13 +166,13 @@ def select_server(
 
     matches = [
         entry
-        for entry in load_matrix(version, root=root, error=error).values()
+        for entry in load_matrix(suite, root=root, error=error).values()
         if entry.live_server_version == server_version
     ]
     if len(matches) != 1:
         raise error(
             "server_version_mismatch",
-            f"sdk-v{version} has no matrix entry for TypeDB {server_version!r}",
+            f"{suite} has no matrix entry for TypeDB {server_version!r}",
         )
     return matches[0]
 
@@ -214,15 +206,15 @@ def report_field(report: Any, *path: str) -> Any:
     return value
 
 
-def catalog_profile(version: int, *, root: Path = ROOT) -> str:
+def catalog_profile(suite: str, *, root: Path = ROOT) -> str:
     """The profile a set's catalog was frozen on (its top-level identity)."""
 
-    catalog = json.loads((root / catalog_relative(version)).read_text(encoding="utf-8"))
+    catalog = json.loads((root / catalog_relative(suite)).read_text(encoding="utf-8"))
     return catalog["fixture"]["semantic_profile"]
 
 
 def requested(
-    version: int,
+    suite: str,
     profile: str | None = None,
     environment: Mapping[str, str] | None = None,
     *,
@@ -238,8 +230,8 @@ def requested(
 
     if profile is None:
         environment = os.environ if environment is None else environment
-        profile = environment.get(SEMANTIC_PROFILE_ENV) or catalog_profile(version, root=root)
-    return select(version, profile, root=root, error=error)
+        profile = environment.get(SEMANTIC_PROFILE_ENV) or catalog_profile(suite, root=root)
+    return select(suite, profile, root=root, error=error)
 
 
 def select_lane(
@@ -247,7 +239,7 @@ def select_lane(
 ) -> ProfileIdentity:
     """Select ``profile`` in every set; all sets must agree on its live server."""
 
-    entries = [select(version, profile, root=root, error=error) for version in SET_VERSIONS]
+    entries = [select(suite, profile, root=root, error=error) for suite in SUITES]
     if len({entry.live_server_version for entry in entries}) != 1:
         raise error(
             "server_version_mismatch",
@@ -256,44 +248,39 @@ def select_lane(
     return entries[-1]
 
 
-def declared_profile(version: int, report: Any, fallback: str) -> str:
-    """The report's own profile when it is a matrix entry of ``sdk-v{version}``.
+def declared_profile(suite: str, report: Any, fallback: str) -> str:
+    """The report's own profile when it is a matrix entry of ``{suite}``.
 
     An undeclared or unsupported profile yields ``fallback`` so the caller's
     exact comparison rejects the report with its usual code.
     """
 
     value = report_field(report, "semantic_profile")
-    return value if value in supported_profiles(version) else fallback
+    return value if value in supported_profiles(suite) else fallback
 
 
-def report_format(version: int) -> str:
+def report_format(suite: str) -> str:
     """Wire format of the suite's current report contract."""
-    if version not in SET_VERSIONS:
-        raise KeyError(version)
-    suite = tuple(SUITES)[version - 2]
-    return (
-        f"typebridge.sdk-conformance-report/v{version}"
-        if SUITES[suite].startswith("sdk-v")
-        else f"typebridge.sdk-{suite}-report/v1"
-    )
+    if suite not in SUITES:
+        raise KeyError(suite)
+    return f"typebridge.sdk-{suite}-report/v1"
 
 
-def report_directory(version: int) -> str:
-    """Report location while the numbered producers are migrated."""
-    return f"v{version}"
+def report_directory(suite: str) -> str:
+    """Report directory below the run's reports root."""
+    return SUITES[suite]
 
 
 if __name__ == "__main__":
     print(
         json.dumps(
             {
-                str(version): {
-                    "suite": tuple(SUITES)[version - 2],
-                    "catalog": catalog_relative(version),
-                    "matrix": matrix_relative(version),
+                str(suite): {
+                    "suite": suite,
+                    "catalog": catalog_relative(suite),
+                    "matrix": matrix_relative(suite),
                 }
-                for version in SET_VERSIONS
+                for suite in SUITES
             }
         )
     )

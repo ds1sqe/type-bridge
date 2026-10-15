@@ -47,7 +47,7 @@ def test_fragment_ledger_covers_each_binding_and_exact_validator(
     assert all(env["TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE"] == "0" * 64 for env in emitters)
     validators = [command for command in commands if "scripts/ci/proof_fragments.py" in command]
     assert len(validators) == 4
-    assert all(command[command.index("--sdk") + 1] == "2" for command in validators)
+    assert all(command[command.index("--suite") + 1] == "queries" for command in validators)
     assert [
         "uv",
         "run",
@@ -177,23 +177,33 @@ def test_provider_free_fan_in_names_each_binding(
 
 def _reports(root: Path) -> None:
     for binding in RUNNER.BINDINGS:
-        for version in RUNNER.conformance.predecessor_versions(binding):
-            path = root / f"v{version}" / f"{binding}.json"
+        for version in RUNNER.conformance.predecessor_suites(binding):
+            path = root / version / f"{binding}.json"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("{}", encoding="utf-8")
 
 
 def test_historical_inventory_does_not_invent_c_v1(tmp_path: Path) -> None:
     _reports(tmp_path)
-    assert [version for version, _ in RUNNER.predecessor_paths(tmp_path, "rust")] == [2, 3, 4, 5]
-    assert [version for version, _ in RUNNER.predecessor_paths(tmp_path, "c")] == [2, 3, 4, 5]
+    assert [version for version, _ in RUNNER.predecessor_paths(tmp_path, "rust")] == [
+        "queries",
+        "models",
+        "administration",
+        "serialization",
+    ]
+    assert [version for version, _ in RUNNER.predecessor_paths(tmp_path, "c")] == [
+        "queries",
+        "models",
+        "administration",
+        "serialization",
+    ]
     assert not (tmp_path / "v1/c.json").exists()
 
 
 def test_missing_real_predecessor_fails_closed(tmp_path: Path) -> None:
     _reports(tmp_path)
-    (tmp_path / "v4/c.json").unlink()
-    with pytest.raises(RUNNER.RunnerError, match="V4 c report"):
+    (tmp_path / "administration/c.json").unlink()
+    with pytest.raises(RUNNER.RunnerError, match="administration c report"):
         RUNNER.predecessor_paths(tmp_path, "c")
 
 
@@ -236,11 +246,7 @@ def test_suite_runs_in_order_and_publishes_only_validated_reports(
 ) -> None:
     calls: list[str] = []
     scratch: list[Path] = []
-    names = (
-        [f"v{version}/{binding}.json" for version in (2,) for binding in RUNNER.BINDINGS]
-        if suite == "queries"
-        else [f"{binding}.json" for binding in RUNNER.BINDINGS]
-    )
+    names = [f"{binding}.json" for binding in RUNNER.BINDINGS]
 
     def stage(name: str) -> Any:
         def produce(directory: Path, *_args: Any) -> tuple[Path, ...]:
@@ -252,7 +258,7 @@ def test_suite_runs_in_order_and_publishes_only_validated_reports(
             for filename in names:
                 path = (
                     directory / "reports" / filename
-                    if suite == "serialization"
+                    if suite in ("queries", "serialization")
                     else directory / filename
                 )
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -362,7 +368,7 @@ def test_subprocess_error_is_not_accepted(monkeypatch: pytest.MonkeyPatch) -> No
         RUNNER.run(["producer"], env={})
 
 
-def test_full_c_preserves_versioned_layout_with_named_suites(
+def test_full_c_uses_suite_directories_for_every_binding(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     full_c = importlib.import_module("run_full_c_artifact")
@@ -372,9 +378,6 @@ def test_full_c_preserves_versioned_layout_with_named_suites(
 
     def run(*arguments: str) -> None:
         calls.append(arguments)
-        if arguments[1] == "queries":
-            for version in (2,):
-                (output / f"v12/v{version}").mkdir(parents=True)
 
     monkeypatch.setattr(full_c, "run", run)
     monkeypatch.setattr(
@@ -384,15 +387,7 @@ def test_full_c_preserves_versioned_layout_with_named_suites(
     assert [call[:2] for call in calls] == [
         ("run_sdk_conformance.py", suite) for suite in RUNNER.SUITES
     ]
-    assert [Path(call[call.index("--output") + 1]).name for call in calls] == [
-        "v12",
-        "v3",
-        "v4",
-        "v5",
-        "v6",
-    ]
-    assert not (output / "v1").exists() and (output / "v2").is_dir()
-    assert not (output / "v12").exists()
+    assert [Path(call[call.index("--output") + 1]).name for call in calls] == list(RUNNER.SUITES)
     assert calls[-1][calls[-1].index("--predecessors") + 1] == str(output)
 
 
@@ -489,9 +484,9 @@ def test_artifacts_build_once_and_compare_all_bindings(
         environment={},
     )
     assert len(commands) == 9
-    assert commands[0][1:3] == ["scripts/ci/sdk_v6_surfaces.py", "build"]
+    assert commands[0][1:3] == ["scripts/ci/sdk_artifacts_surfaces.py", "build"]
     assert commands[1][:3] == ["uv", "run", "python"]
-    for script in ("assemble_sdk_conformance_v6.py", "assemble_sdk_conformance_v6.py"):
+    for script in ("sdk_artifacts_assemble.py", "sdk_artifacts_assemble.py"):
         assert sum(f"scripts/ci/{script}" in command for command in commands) == 4
-    assert commands[-1][1] == "scripts/ci/compare_sdk_conformance_v6.py"
+    assert commands[-1][1] == "scripts/ci/sdk_artifacts_compare.py"
     assert len(commands[-1][2:]) == 4

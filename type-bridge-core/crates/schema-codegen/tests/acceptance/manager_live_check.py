@@ -723,12 +723,14 @@ def main(environment: Mapping[str, str] = os.environ) -> int:
         authority, sources = _source_authority(root)
         matrix = _profile_matrix(root)
         # TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE, else the models catalog's own profile.
-        identity = matrix.requested(3, environment=environment, root=root, error=ProducerError)
+        identity = matrix.requested(
+            "models", environment=environment, root=root, error=ProducerError
+        )
         local = _load_package(package_root, LOCAL_PACKAGE)
         foreign = _load_package(package_root, FOREIGN_PACKAGE)
         _require_packages(local, foreign, identity.expected_fingerprints["semantic"])
         journey = _json_object(sources["journey"], "Manager journey")
-        ada, dana = _person_records(journey, matrix.catalog_profile(3, root=root))
+        ada, dana = _person_records(journey, matrix.catalog_profile("models", root=root))
         try:
             provider_schema = sources["provider"].decode("utf-8")
         except UnicodeDecodeError as error:

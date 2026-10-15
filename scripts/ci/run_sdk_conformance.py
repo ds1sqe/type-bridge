@@ -20,7 +20,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import c_artifact_journey as artifact_journey
-import compare_sdk_conformance_v6 as conformance
+import sdk_artifacts_compare as conformance
 import sdk_profile_matrix as profile_matrix
 import sdk_serialization_compare as codec_contract
 import standalone_cli_artifact as cli_artifact
@@ -34,7 +34,7 @@ SUITES = tuple(profile_matrix.SUITES)
 PYTHON_PROVIDER = ROOT / "tests/integration/schema/test_sdk_serialization_codec.py"
 NODE_PROVIDER = CORE / "crates/schema-codegen/tests/typescript_acceptance/codec_check.py"
 C_PROVIDER = ROOT / "tests/integration/schema/test_sdk_serialization_c_codec.py"
-SURFACE_CONSUMER_FORMAT = "typebridge.sdk-v6-surface-consumer/v1"
+SURFACE_CONSUMER_FORMAT = "typebridge.sdk-artifacts-surface-consumer/v1"
 
 
 class RunnerError(RuntimeError):
@@ -55,7 +55,7 @@ def lane(profile: str | None, environment: Mapping[str, str]) -> profile_matrix.
 
     if profile is None:
         profile = environment.get(profile_matrix.SEMANTIC_PROFILE_ENV) or (
-            profile_matrix.catalog_profile(6)
+            profile_matrix.catalog_profile("artifacts")
         )
     return profile_matrix.select_lane(profile, error=_runner_error)
 
@@ -123,13 +123,11 @@ def rust_live(test: str, suite: str) -> list[str]:
 
 
 def fragment_environment(
-    version: int, environment: dict[str, str], destination: Path, nonce: str
+    suite: str, environment: dict[str, str], destination: Path, nonce: str
 ) -> dict[str, str]:
-    directory = profile_matrix.SUITES[tuple(profile_matrix.SUITES)[version - 2]]
-    suffix = f"V{version}" if directory.startswith("sdk-v") else directory.upper()
     return environment | {
-        f"TYPE_BRIDGE_SDK_{suffix}_PROOF_FRAGMENT": str(destination),
-        f"TYPE_BRIDGE_SDK_{suffix}_PROOF_RUN_NONCE": nonce,
+        f"TYPE_BRIDGE_SDK_{suite.upper()}_PROOF_FRAGMENT": str(destination),
+        f"TYPE_BRIDGE_SDK_{suite.upper()}_PROOF_RUN_NONCE": nonce,
     }
 
 
@@ -151,7 +149,7 @@ def node_live(pattern: str, environment: dict[str, str]) -> None:
 
 
 def produce_proofs(
-    version: int,
+    suite: str,
     directory: Path,
     environment: dict[str, str],
     nonce: str,
@@ -165,13 +163,13 @@ def produce_proofs(
         for index, command in enumerate(commands[binding]):
             suffix = suffixes[index] if suffixes else str(index)
             destination = fragments / f"{binding}-{suffix}.json"
-            run(command, env=fragment_environment(version, environment, destination, nonce))
+            run(command, env=fragment_environment(suite, environment, destination, nonce))
             paths.append(destination)
         run(
             python_command(
                 "proof_fragments.py",
-                "--sdk",
-                str(version),
+                "--suite",
+                str(suite),
                 "--binding",
                 binding,
                 "--run-nonce",
@@ -215,7 +213,7 @@ def query_proofs(directory: Path, environment: dict[str, str], nonce: str) -> No
             cargo_test("type-bridge-c", "query::tests::sdk_queries_c_deterministic_proof_fragment"),
         ),
     }
-    produce_proofs(2, directory, environment, nonce, commands)
+    produce_proofs("queries", directory, environment, nonce, commands)
 
 
 def query_environment(
@@ -223,9 +221,9 @@ def query_environment(
 ) -> dict[str, str]:
     fragments = sorted((directory / "fragments").glob(f"{binding}-*.json"))
     if not fragments:
-        raise RunnerError(f"{binding} V2 proof fragments are missing")
+        raise RunnerError(f"{binding} queries proof fragments are missing")
     result = environment | {
-        "TYPE_BRIDGE_SDK_QUERIES_REPORT": str(directory / f"v2/{binding}.json"),
+        "TYPE_BRIDGE_SDK_QUERIES_REPORT": str(directory / f"reports/{binding}.json"),
         "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS": os.pathsep.join(str(path) for path in fragments),
         "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE": nonce,
     }
@@ -233,7 +231,7 @@ def query_environment(
 
 
 def query_live(directory: Path, environment: dict[str, str], nonce: str) -> None:
-    (directory / "v2").mkdir()
+    (directory / "reports").mkdir()
     python_env = query_environment(environment, directory, "python", nonce) | {
         "USE_DOCKER": "false"
     }
@@ -253,11 +251,11 @@ def query_live(directory: Path, environment: dict[str, str], nonce: str) -> None
     run(["npm", "run", "typecheck:projection-integration"], cwd=NODE, env=environment)
     node_env = query_environment(environment, directory, "node", nonce) | {
         "TYPE_BRIDGE_SDK_QUERIES_VALIDATOR_PYTHON": str(Path(sys.executable).resolve()),
-        "TYPE_BRIDGE_NODE_INTG_DATABASE": f"type_bridge_v2_node_{os.getpid()}",
+        "TYPE_BRIDGE_NODE_INTG_DATABASE": f"type_bridge_queries_node_{os.getpid()}",
     }
     node_live("generated package round-trips exact models on TypeDB", node_env)
     rust_env = query_environment(environment, directory, "rust", nonce) | {
-        "TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE": f"type_bridge_v2_rust_{os.getpid()}"
+        "TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE": f"type_bridge_queries_rust_{os.getpid()}"
     }
     run(
         rust_live(
@@ -267,7 +265,7 @@ def query_live(directory: Path, environment: dict[str, str], nonce: str) -> None
     )
     c_target = Path(environment.get("CARGO_TARGET_DIR", directory / "c-target"))
     c_env = query_environment(environment, directory, "c", nonce) | {
-        "TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE": f"type_bridge_v2_c_{os.getpid()}",
+        "TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE": f"type_bridge_queries_c_{os.getpid()}",
         "TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER": "1",
         "ACCEPTANCE_TARGET_DIR": str(c_target),
         "CARGO_TARGET_DIR": str(c_target),
@@ -299,7 +297,7 @@ def compare_queries(directory: Path, environment: dict[str, str]) -> None:
     run(
         python_command(
             "sdk_queries_compare.py",
-            *(str(directory / f"v2/{binding}.json") for binding in BINDINGS),
+            *(str(directory / f"reports/{binding}.json") for binding in BINDINGS),
         ),
         env=environment,
     )
@@ -392,7 +390,7 @@ def model_proofs(directory: Path, environment: dict[str, str], nonce: str) -> No
         binding: (package_commands[binding], cargo_test(*data_tests[binding]))
         for binding in BINDINGS
     }
-    produce_proofs(3, directory, environment, nonce, commands, ("package", "data"))
+    produce_proofs("models", directory, environment, nonce, commands, ("package", "data"))
 
 
 def model_live(directory: Path, environment: dict[str, str]) -> None:
@@ -669,15 +667,15 @@ def regular(path: Path, label: str) -> Path:
     return path.resolve()
 
 
-def predecessor_paths(root: Path, binding: str) -> tuple[tuple[int, Path], ...]:
+def predecessor_paths(root: Path, binding: str) -> tuple[tuple[str, Path], ...]:
     return tuple(
-        (version, regular(root / f"v{version}" / f"{binding}.json", f"V{version} {binding} report"))
-        for version in conformance.predecessor_versions(binding)
+        (suite, regular(root / suite / f"{binding}.json", f"{suite} {binding} report"))
+        for suite in conformance.predecessor_suites(binding)
     )
 
 
-def predecessor_arguments(paths: tuple[tuple[int, Path], ...]) -> list[str]:
-    return [item for version, path in paths for item in ("--predecessor", f"{version}={path}")]
+def predecessor_arguments(paths: tuple[tuple[str, Path], ...]) -> list[str]:
+    return [item for suite, path in paths for item in ("--predecessor", f"{suite}={path}")]
 
 
 def c_surface_consumer(acceptance: dict[str, Any], *, source_commit: str) -> dict[str, Any]:
@@ -716,16 +714,16 @@ def assemble_artifacts(
     for path in (surfaces, consumers, reports):
         path.mkdir()
     run(
-        python_command("sdk_v6_surfaces.py", "build", str(cli), "--output", str(surfaces)),
+        python_command("sdk_artifacts_surfaces.py", "build", str(cli), "--output", str(surfaces)),
         env=environment,
     )
     for binding in BINDINGS[:-1]:
-        surface = surfaces / f"type-bridge-{binding}-generated-sdk-v6.tar.gz"
+        surface = surfaces / f"type-bridge-{binding}-generated-sdk-artifacts.tar.gz"
         interpreter = ["uv", "run", "python"] if binding == "python" else [sys.executable]
         run(
             [
                 *interpreter,
-                "scripts/ci/validate_sdk_v6_surface_consumer.py",
+                "scripts/ci/sdk_artifacts_surface_consumer.py",
                 str(surface),
                 "--binding",
                 binding,
@@ -747,11 +745,11 @@ def assemble_artifacts(
         surface = (
             generated
             if binding == "c"
-            else surfaces / f"type-bridge-{binding}-generated-sdk-v6.tar.gz"
+            else surfaces / f"type-bridge-{binding}-generated-sdk-artifacts.tar.gz"
         )
         run(
             python_command(
-                "assemble_sdk_conformance_v6.py",
+                "sdk_artifacts_assemble.py",
                 "--source-commit",
                 source_commit,
                 "--surface-consumer",
@@ -782,7 +780,7 @@ def assemble_artifacts(
         )
         output.append(report)
     run(
-        python_command("compare_sdk_conformance_v6.py", *(str(path) for path in output)),
+        python_command("sdk_artifacts_compare.py", *(str(path) for path in output)),
         env=environment,
     )
     return tuple(output)
@@ -913,11 +911,7 @@ def execute(
         query_proofs(directory, environment, nonce)
         query_live(directory, environment, nonce)
         compare_queries(directory, environment)
-        return {
-            f"v{version}/{binding}.json": directory / f"v{version}/{binding}.json"
-            for version in (2,)
-            for binding in BINDINGS
-        }
+        return {f"{binding}.json": directory / f"reports/{binding}.json" for binding in BINDINGS}
     if suite == "models":
         nonce = secrets.token_hex(32)
         model_projections(directory, environment)

@@ -10,11 +10,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sdk_profile_matrix as profile_matrix  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONTRACT = ROOT / "tests/contracts/c-distribution-v1.json"
-V6_CATALOG = ROOT / "tests/contracts/sdk_conformance/sdk-v6/catalog-v6.json"
+ARTIFACTS_CATALOG = ROOT / "tests/contracts/sdk_conformance/artifacts/catalog.json"
 MANIFEST = ROOT / "tests/contracts/sdk_conformance/manifest.json"
-FULL_C_AUDIT = ROOT / "tests/contracts/c-full-sdk-audit-v1.json"
+FULL_C_AUDIT = ROOT / "tests/contracts/c-full-sdk-audit.json"
 TRANSITION_CASES = [
     "sdk.runtime.cancellation",
     "sdk.runtime.timeout-resource-limits",
@@ -189,23 +192,24 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
         "generated pkg-config range drifted",
     )
 
-    catalog = _load(V6_CATALOG)
-    _require(catalog.get("authority_state") == "frozen", "V6 authority is not frozen")
+    catalog = _load(ARTIFACTS_CATALOG)
+    _require(catalog.get("authority_state") == "frozen", "Artifacts authority is not frozen")
     _require(
-        catalog.get("broad_case_ledger_path") == "tests/contracts/c-broad-case-ledger-v1.json",
-        "V6 broad-case ledger path drifted",
+        catalog.get("broad_case_ledger_path") == "tests/contracts/c-broad-case-ledger.json",
+        "Artifacts broad-case ledger path drifted",
     )
     _require(
-        catalog.get("manifest_transition_cases") == TRANSITION_CASES, "V6 transition set drifted"
+        catalog.get("manifest_transition_cases") == TRANSITION_CASES,
+        "Artifacts transition set drifted",
     )
     _require(
         catalog.get("required_non_selected_proof_count_per_binding") == 25,
-        "V6 non-selected proof count drifted",
+        "Artifacts non-selected proof count drifted",
     )
     _require(catalog.get("full_c", {}).get("capability_count") == 44, "FULL-C count drifted")
     _require(
         catalog.get("full_c", {}).get("publication_authority") is False,
-        "V6 grants publication authority",
+        "Artifacts grants publication authority",
     )
 
     manifest = _load(MANIFEST)
@@ -216,7 +220,9 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
         full_c.get("capability_codes") == list(capabilities),
         "FULL-C capability inventory disagrees with the manifest",
     )
-    _require(full_c.get("report_versions") == [2, 3, 4, 5, 6], "FULL-C report fan-in drifted")
+    _require(
+        full_c.get("report_suites") == list(profile_matrix.SUITES), "FULL-C report fan-in drifted"
+    )
     _require(
         full_c.get("output", {}).get("manual_override") is False, "FULL-C permits manual override"
     )
@@ -229,7 +235,7 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
         for code in ("G05", "G06", "G08", "G12", "G13")
         for case in capabilities[code]["case_ids"]
     ]
-    _require(selected == TRANSITION_CASES, "V6 cases disagree with the manifest")
+    _require(selected == TRANSITION_CASES, "Artifacts cases disagree with the manifest")
     for code in ("G05", "G06", "G08", "G13"):
         _require(
             capabilities[code]["binding_profile"] == "terminal_broad_live_future_planned",

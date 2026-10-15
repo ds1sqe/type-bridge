@@ -115,15 +115,15 @@ fn manifest_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "\\\\")
 }
 
-/// The sdk-v{set} matrix entry for the generated fixture's profile; panics when
+/// The {set} matrix entry for the generated fixture's profile; panics when
 /// the set has no entry for it.
-fn sdk_matrix_entry(set: u8, profile_name: &str) -> SdkProfile {
-    sdk_profile_matrix::select_from(&sdk_profile_matrix::repository_root(), set, profile_name)
+fn sdk_matrix_entry(suite: &str, profile_name: &str) -> SdkProfile {
+    sdk_profile_matrix::select_from(&sdk_profile_matrix::repository_root(), suite, profile_name)
 }
 
-/// The matrix entries the consumer's SDK lanes emit, keyed by its numeric matrix id.
+/// The matrix entries the consumer's SDK lanes emit, keyed by its suite name.
 fn sdk_profile_entries(profile_name: &str) -> String {
-    let entries = [2, 3, 5]
+    let entries = ["queries", "models", "serialization"]
         .into_iter()
         .map(|set| {
             let entry = sdk_matrix_entry(set, profile_name);
@@ -149,7 +149,7 @@ fn requested_sdk_queries_report(profile_name: &str) -> Option<PathBuf> {
         raw.len() <= 4096,
         "TYPE_BRIDGE_SDK_QUERIES_REPORT exceeds 4096 UTF-8 bytes"
     );
-    sdk_matrix_entry(2, profile_name);
+    sdk_matrix_entry("queries", profile_name);
     let path = PathBuf::from(raw);
     assert!(
         path.is_absolute(),
@@ -176,7 +176,7 @@ fn requested_sdk_queries_report(profile_name: &str) -> Option<PathBuf> {
 
 fn requested_sdk_models_supplement(profile_name: &str) -> Option<PathBuf> {
     let raw = env::var_os("TYPE_BRIDGE_SDK_MODELS_RUST_SUPPLEMENT")?;
-    sdk_matrix_entry(3, profile_name);
+    sdk_matrix_entry("models", profile_name);
     let path = PathBuf::from(raw);
     assert!(
         path.is_absolute(),
@@ -194,7 +194,7 @@ fn requested_sdk_models_supplement(profile_name: &str) -> Option<PathBuf> {
 
 fn requested_sdk_serialization_evidence(profile_name: &str) -> Option<PathBuf> {
     let raw = env::var_os("TYPE_BRIDGE_SDK_SERIALIZATION_RUST_EVIDENCE")?;
-    sdk_matrix_entry(5, profile_name);
+    sdk_matrix_entry("serialization", profile_name);
     let path = PathBuf::from(raw);
     assert!(
         path.is_absolute(),

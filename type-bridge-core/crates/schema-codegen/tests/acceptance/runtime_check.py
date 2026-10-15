@@ -1521,8 +1521,8 @@ def _proof_source_identity(root: Path, relative: str) -> dict[str, str]:
     return {"path": relative, "sha256": digest}
 
 
-def _proof_semantic_profile(root: Path, version: int) -> str:
-    """Return the sdk-v{version} matrix profile a proof fragment declares.
+def _proof_semantic_profile(root: Path, suite: str) -> str:
+    """Return the {suite} matrix profile a proof fragment declares.
 
     The profile is TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE, else the catalog's
     own; the generated packages under proof must be on it.
@@ -1536,14 +1536,14 @@ def _proof_semantic_profile(root: Path, version: int) -> str:
     sys.modules[spec.name] = matrix
     spec.loader.exec_module(matrix)
     profile = matrix.requested(
-        version,
+        suite,
         root=root,
         error=lambda code, message: AssertionError(f"{code}: {message}"),
     ).semantic_profile
     generated_profile = json.loads(SEMANTIC_SCHEMA_FINGERPRINT_JSON)["semantic_profile"]
     if generated_profile != profile:
         raise AssertionError(
-            f"sdk-v{version} proof fragments target {profile}; "
+            f"{suite} proof fragments target {profile}; "
             f"the generated package uses {generated_profile}"
         )
     return profile
@@ -1584,7 +1584,7 @@ def _emit_sdk_queries_remote_proof_fragment() -> None:
     fragment = {
         "format": "typebridge.sdk-queries-proof-fragment/v1",
         "binding": "python",
-        "semantic_profile": _proof_semantic_profile(root, 2),
+        "semantic_profile": _proof_semantic_profile(root, "queries"),
         "run_nonce": run_nonce,
         "contract": {
             name: _proof_source_identity(root, relative)
@@ -1769,7 +1769,7 @@ def _emit_sdk_models_package_proof_fragment() -> None:
     fragment = {
         "format": "typebridge.sdk-models-proof-fragment/v1",
         "binding": "python",
-        "semantic_profile": _proof_semantic_profile(root, 3),
+        "semantic_profile": _proof_semantic_profile(root, "models"),
         "run_nonce": run_nonce,
         "contract": {
             name: _proof_source_identity(root, path) for name, path in contract_paths.items()

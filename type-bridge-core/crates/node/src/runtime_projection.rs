@@ -6712,7 +6712,7 @@ mod tests {
             "producer": {"id": "node.sdk-models-generated-data-proof", "sources": sources.iter().map(|path| v3_identity(&root, path)).collect::<Vec<_>>()},
             "results": results,
             "run_nonce": nonce,
-            "semantic_profile": crate::sdk_profile_matrix::requested(3).semantic_profile,
+            "semantic_profile": crate::sdk_profile_matrix::requested("models").semantic_profile,
         });
         let mut bytes = to_canonical_json(&fragment).unwrap();
         bytes.push(b'\n');

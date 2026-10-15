@@ -384,7 +384,9 @@ def _live_environment(
         profile.REPORT_ENV: str(report),
         profile.DATABASE_ENV: database,
         profile.REPOSITORY_ENV: str(ROOT),
-        sdk_profile_matrix.SEMANTIC_PROFILE_ENV: sdk_profile_matrix.requested(3).semantic_profile,
+        sdk_profile_matrix.SEMANTIC_PROFILE_ENV: sdk_profile_matrix.requested(
+            "models"
+        ).semantic_profile,
         "TMPDIR": str(layout.scratch),
     }
 
@@ -404,7 +406,7 @@ def _database_guard(
             action,
             fixture.address,
             fixture.http_port,
-            sdk_profile_matrix.requested(3).live_server_version,
+            sdk_profile_matrix.requested("models").live_server_version,
             *databases,
         ),
         cwd=ROOT,

@@ -933,7 +933,7 @@ def main(environment: Mapping[str, str] = os.environ) -> int:
         authority, sources = _source_authority(root)
         # TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE, else the models catalog's own profile.
         identity = _profile_matrix(root).requested(
-            3, environment=environment, root=root, error=ProducerError
+            "models", environment=environment, root=root, error=ProducerError
         )
         package = _load_package(package_root, identity.expected_fingerprints["semantic"])
         journey = _json_object(sources["journey"], "Projected journey")

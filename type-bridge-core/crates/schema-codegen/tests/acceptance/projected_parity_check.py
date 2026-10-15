@@ -1605,7 +1605,7 @@ def _profile_identity(root: Path, package: Any, environment: Mapping[str, str]) 
     matrix = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = matrix
     spec.loader.exec_module(matrix)
-    identity = matrix.requested(3, environment=environment, root=root, error=ProducerError)
+    identity = matrix.requested("models", environment=environment, root=root, error=ProducerError)
     try:
         semantic = json.loads(package.SEMANTIC_SCHEMA_FINGERPRINT_JSON)
     except (AttributeError, json.JSONDecodeError, TypeError) as error:

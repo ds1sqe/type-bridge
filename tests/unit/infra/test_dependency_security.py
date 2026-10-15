@@ -15,7 +15,7 @@ GATE = ROOT / "scripts/ci/check_dependency_security.sh"
 LOCKFILES = (
     "type-bridge-core/Cargo.lock",
     "type-bridge-core/crates/core/tests/fixtures/rule-wire-standalone/Cargo.lock",
-    "tests/contracts/sdk-v6-rust-surface-Cargo.lock",
+    "tests/contracts/sdk-artifacts-rust-surface-Cargo.lock",
     "tests/support/provider/Cargo.lock",
     "tests/support/rust-live/Cargo.lock",
     "tests/support/rust-offline/Cargo.lock",

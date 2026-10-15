@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[3]
 CI = ROOT / "scripts/ci"
 sys.path.insert(0, str(CI))
 SPEC = importlib.util.spec_from_file_location(
-    "sdk_v6_surface_consumer", CI / "validate_sdk_v6_surface_consumer.py"
+    "sdk_artifacts_surface_consumer", CI / "sdk_artifacts_surface_consumer.py"
 )
 assert SPEC is not None and SPEC.loader is not None
 CONSUMER = importlib.util.module_from_spec(SPEC)

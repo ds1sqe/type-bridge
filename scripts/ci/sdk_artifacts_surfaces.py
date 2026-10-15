@@ -22,7 +22,7 @@ import standalone_cli_artifact as cli
 
 ROOT = Path(__file__).resolve().parents[2]
 SDK = ROOT / "tests/contracts/sdk_conformance/administration/workspace"
-FORMAT = "typebridge.sdk-v6-generated-surface/v1"
+FORMAT = "typebridge.sdk-artifacts-generated-surface/v1"
 BINDING_DIRECTORIES = {"python": "python", "node": "typescript", "rust": "rust"}
 MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
 MAX_EXPANDED_BYTES = 256 * 1024 * 1024
@@ -282,7 +282,7 @@ def build(cli_archive: Path, output: Path) -> dict[str, Any]:
             files = _members(workspace / "generated" / directory)
             manifest = manifest_for(files, binding=binding, cli_manifest=cli_manifest)
             archive = encode_surface(files, manifest)
-            destination = output / f"type-bridge-{binding}-generated-sdk-v6.tar.gz"
+            destination = output / f"type-bridge-{binding}-generated-sdk-artifacts.tar.gz"
             if destination.exists() or destination.is_symlink():
                 reject(
                     "surface_publication_failed", f"surface output already exists: {destination}"
@@ -302,7 +302,7 @@ def build(cli_archive: Path, output: Path) -> dict[str, Any]:
                 "artifact-id": f"sha256:{digest}",
             }
         return {
-            "format": "typebridge.sdk-v6-generated-surface-set/v1",
+            "format": "typebridge.sdk-artifacts-generated-surface-set/v1",
             "source-commit": cli_manifest["source-commit"],
             "cli-artifact-id": cli_manifest["artifact-id"],
             "surfaces": summary,

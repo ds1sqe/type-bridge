@@ -7164,7 +7164,7 @@ mod tests {
         let fragment = serde_json::json!({
             "format": "typebridge.sdk-queries-proof-fragment/v1",
             "binding": "c",
-            "semantic_profile": crate::sdk_profile_matrix::requested(2).semantic_profile,
+            "semantic_profile": crate::sdk_profile_matrix::requested("queries").semantic_profile,
             "run_nonce": run_nonce,
             "contract": {
                 "proof_schema": proof_source(repository, proof_schema),

@@ -11,7 +11,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[3]
 CI = ROOT / "scripts/ci"
 sys.path.insert(0, str(CI))
-SPEC = importlib.util.spec_from_file_location("sdk_v6_surfaces", CI / "sdk_v6_surfaces.py")
+SPEC = importlib.util.spec_from_file_location(
+    "sdk_artifacts_surfaces", CI / "sdk_artifacts_surfaces.py"
+)
 assert SPEC is not None and SPEC.loader is not None
 SURFACES = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = SURFACES

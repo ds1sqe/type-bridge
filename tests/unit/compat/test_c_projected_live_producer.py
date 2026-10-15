@@ -39,7 +39,7 @@ def test_c_projected_live_producer_is_independent_and_exactly_authority_bound() 
     ):
         assert digest in harness
     assert 'const REPORT_FORMAT: &str = "typebridge.projected-live-report/v1"' in harness
-    assert "sdk_profile_matrix::requested(3)" in harness
+    assert 'sdk_profile_matrix::requested("models")' in harness
     assert '"semantic_profile": profile.semantic_profile' in harness
     assert '"binding": "c"' in harness
     assert "foreign_fingerprint" in harness

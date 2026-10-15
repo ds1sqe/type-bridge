@@ -67,11 +67,10 @@ const SDK_QUERIES_PROOF_VALIDATOR = resolve(
 );
 
 const SEMANTIC_PROFILE_ENV = "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE";
-const SDK_SET_VERSIONS = [2, 3, 4, 5, 6] as const;
 
 /** One `sdk-vN/profiles-vN.json` entry: the identity a report carries on a profile. */
 interface SdkProfileIdentity {
-  readonly set: string;
+  readonly suite: string;
   readonly semanticProfile: string;
   readonly liveServerVersion: string;
   /** Semantic and per-binding projection fingerprints; queries and models only. */
@@ -80,23 +79,24 @@ interface SdkProfileIdentity {
 
 const sdkPathsResult = spawnSync("python3", [resolve(ROOT, "scripts/ci/sdk_profile_matrix.py")], { encoding: "utf8" });
 assert.equal(sdkPathsResult.status, 0, sdkPathsResult.stderr);
-const SDK_CONTRACT_PATHS = JSON.parse(sdkPathsResult.stdout) as Record<number, Record<string, string>>;
+const SDK_CONTRACT_PATHS = JSON.parse(sdkPathsResult.stdout) as Record<string, Record<string, string>>;
+const SDK_SUITES = Object.keys(SDK_CONTRACT_PATHS);
 
-function sdkContractRelative(version: number, name: string): string {
-  return SDK_CONTRACT_PATHS[version][name === "profiles" ? "matrix" : name];
+function sdkContractRelative(suite: string, name: string): string {
+  return SDK_CONTRACT_PATHS[suite][name === "profiles" ? "matrix" : name];
 }
 
-function sdkProfileMatrix(version: number): Record<string, any> {
+function sdkProfileMatrix(suite: string): Record<string, any> {
   const matrix = JSON.parse(
-    readFileSync(resolve(ROOT, sdkContractRelative(version, "profiles")), "utf8"),
+    readFileSync(resolve(ROOT, sdkContractRelative(suite, "profiles")), "utf8"),
   );
   if (
     matrix?.format !== "typebridge.sdk-profile-matrix/v1"
-    || matrix.catalog_path !== sdkContractRelative(version, "catalog")
+    || matrix.catalog_path !== sdkContractRelative(suite, "catalog")
     || matrix.profiles === null
     || typeof matrix.profiles !== "object"
   ) {
-    throw new Error(`sdk-v${version} profile matrix is not the committed shape`);
+    throw new Error(`${suite} profile matrix is not the committed shape`);
   }
   return matrix.profiles;
 }
@@ -107,18 +107,18 @@ function sdkProfileMatrix(version: number): Record<string, any> {
  * catalog's own profile (mirrors `scripts/ci/sdk_profile_matrix.py` `requested`).
  */
 function sdkProfileIdentity(
-  version: number,
+  suite: string,
   profile?: string,
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): SdkProfileIdentity {
   const selected = profile
     ?? (environment[SEMANTIC_PROFILE_ENV] || JSON.parse(
-      readFileSync(resolve(ROOT, sdkContractRelative(version, "catalog")), "utf8"),
+      readFileSync(resolve(ROOT, sdkContractRelative(suite, "catalog")), "utf8"),
     ).fixture.semantic_profile);
-  const profiles = sdkProfileMatrix(version);
+  const profiles = sdkProfileMatrix(suite);
   const entry = Object.hasOwn(profiles, selected) ? profiles[selected] : undefined;
   if (typeof entry?.live_server_version !== "string") {
-    throw new Error(`sdk-v${version} has no profile-matrix entry for ${JSON.stringify(selected)}`);
+    throw new Error(`${suite} has no profile-matrix entry for ${JSON.stringify(selected)}`);
   }
   const fingerprints = entry.expected_fingerprints;
   if (
@@ -126,10 +126,10 @@ function sdkProfileIdentity(
     && [fingerprints.semantic, ...Object.values(fingerprints.projections ?? {})]
       .some((value: any) => value?.semantic_profile !== selected)
   ) {
-    throw new Error(`sdk-v${version} entry ${selected} fingerprints name another profile`);
+    throw new Error(`${suite} entry ${selected} fingerprints name another profile`);
   }
   return {
-    set: SDK_CONTRACT_PATHS[version].suite,
+    suite: SDK_CONTRACT_PATHS[suite].suite,
     semanticProfile: selected,
     liveServerVersion: entry.live_server_version,
     expectedFingerprints: fingerprints,
@@ -137,11 +137,11 @@ function sdkProfileIdentity(
 }
 
 /** The sdk-vN identity reports carry; the generated package must target it. */
-function sdkReportIdentity(version: number): SdkProfileIdentity {
-  const identity = sdkProfileIdentity(version);
+function sdkReportIdentity(suite: string): SdkProfileIdentity {
+  const identity = sdkProfileIdentity(suite);
   if (identity.semanticProfile !== REMOTE_PROFILE) {
     throw new Error(
-      `${identity.set} reports target ${identity.semanticProfile} `
+      `${identity.suite} reports target ${identity.semanticProfile} `
       + `but the generated package targets ${REMOTE_PROFILE}`,
     );
   }
@@ -157,12 +157,12 @@ function requireSdkFingerprints(
   assert.deepEqual(
     semanticFingerprint,
     identity.expectedFingerprints.semantic,
-    `${identity.set} semantic fingerprint differs from its ${identity.semanticProfile} entry`,
+    `${identity.suite} semantic fingerprint differs from its ${identity.semanticProfile} entry`,
   );
   assert.deepEqual(
     projectionFingerprint,
     identity.expectedFingerprints.projections.node,
-    `${identity.set} node projection fingerprint differs from its ${identity.semanticProfile} entry`,
+    `${identity.suite} node projection fingerprint differs from its ${identity.semanticProfile} entry`,
   );
 }
 
@@ -302,8 +302,8 @@ function loadSdkQueriesProofObservations(): ReadonlyMap<string, Record<string, u
     python,
     [
       SDK_QUERIES_PROOF_VALIDATOR,
-      "--sdk",
-      "2",
+      "--suite",
+      "queries",
       "--binding",
       "node",
       "--run-nonce",
@@ -460,7 +460,7 @@ function requireProfileServerVersion(profile: string, detected: string | null): 
 function requireSdkServerVersion(identity: SdkProfileIdentity, detected: string | null): void {
   if (detected !== identity.liveServerVersion) {
     throw new Error(
-      `${identity.set} reports on ${identity.semanticProfile} require the actual detected `
+      `${identity.suite} reports on ${identity.semanticProfile} require the actual detected `
       + `TypeDB server version ${identity.liveServerVersion}; detected ${JSON.stringify(detected)}`,
     );
   }
@@ -1614,22 +1614,22 @@ async function waitForPort(port: number, child: ChildProcess, timeoutMs: number)
 }
 
 test("sdk report identity follows the profile matrix", () => {
-  for (const version of SDK_SET_VERSIONS) {
-    const profiles = Object.keys(sdkProfileMatrix(version));
+  for (const suite of SDK_SUITES) {
+    const profiles = Object.keys(sdkProfileMatrix(suite));
     const catalogProfile = JSON.parse(
-      readFileSync(resolve(ROOT, sdkContractRelative(version, "catalog")), "utf8"),
+      readFileSync(resolve(ROOT, sdkContractRelative(suite, "catalog")), "utf8"),
     ).fixture.semantic_profile;
     assert.ok(profiles.includes(catalogProfile));
-    assert.equal(sdkProfileIdentity(version, undefined, {}).semanticProfile, catalogProfile);
+    assert.equal(sdkProfileIdentity(suite, undefined, {}).semanticProfile, catalogProfile);
     assert.equal(
-      sdkProfileIdentity(version, undefined, { [SEMANTIC_PROFILE_ENV]: "" }).semanticProfile,
+      sdkProfileIdentity(suite, undefined, { [SEMANTIC_PROFILE_ENV]: "" }).semanticProfile,
       catalogProfile,
     );
-    const servers = profiles.map((profile) => sdkProfileIdentity(version, profile).liveServerVersion);
+    const servers = profiles.map((profile) => sdkProfileIdentity(suite, profile).liveServerVersion);
     for (const profile of profiles) {
-      const identity = sdkProfileIdentity(version, undefined, { [SEMANTIC_PROFILE_ENV]: profile });
+      const identity = sdkProfileIdentity(suite, undefined, { [SEMANTIC_PROFILE_ENV]: profile });
       assert.equal(identity.semanticProfile, profile);
-      assert.equal(identity.expectedFingerprints === undefined, version > 3);
+      assert.equal(identity.expectedFingerprints === undefined, !["queries", "models"].includes(suite));
       assert.doesNotThrow(() => requireSdkServerVersion(identity, identity.liveServerVersion));
       for (const detected of [null, ...servers.filter((server) => server !== identity.liveServerVersion)]) {
         assert.throws(
@@ -1639,7 +1639,7 @@ test("sdk report identity follows the profile matrix", () => {
       }
     }
     assert.throws(
-      () => sdkProfileIdentity(version, "typedb-0.0.0/v1"),
+      () => sdkProfileIdentity(suite, "typedb-0.0.0/v1"),
       /has no profile-matrix entry/,
     );
   }
@@ -1773,7 +1773,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       );
     }
     if (sdkQueriesReportPath !== undefined) {
-      sdkQueriesIdentity = sdkReportIdentity(2);
+      sdkQueriesIdentity = sdkReportIdentity("queries");
       await validateSdkReportPath(sdkQueriesReportPath);
       requireSdkServerVersion(
         sdkQueriesIdentity,
@@ -2932,7 +2932,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
 
 test(
   "node.sdk_models_data_model_runtime_live",
-  { skip: IS_TYPEDB_3_11 || !Object.hasOwn(sdkProfileMatrix(3), REMOTE_PROFILE), timeout: 360_000 },
+  { skip: IS_TYPEDB_3_11 || !Object.hasOwn(sdkProfileMatrix("models"), REMOTE_PROFILE), timeout: 360_000 },
   async () => {
     const suppliedStage = process.env.TYPE_BRIDGE_GENERATED_NODE_STAGE;
     const stage = suppliedStage === undefined
@@ -3257,7 +3257,7 @@ test(
 
       const supplementPath = process.env.TYPE_BRIDGE_SDK_MODELS_NODE_SUPPLEMENT;
       if (supplementPath !== undefined) {
-        const identity = sdkReportIdentity(3);
+        const identity = sdkReportIdentity("models");
         requireSdkServerVersion(
           identity,
           await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
@@ -3318,7 +3318,7 @@ test(
   "node.sdk_serialization_live",
   {
     skip: IS_TYPEDB_3_11
-      || !Object.hasOwn(sdkProfileMatrix(5), REMOTE_PROFILE)
+      || !Object.hasOwn(sdkProfileMatrix("serialization"), REMOTE_PROFILE)
       || process.env.TYPE_BRIDGE_SDK_SERIALIZATION_NODE_EVIDENCE === undefined,
     timeout: 360_000,
   },
@@ -3369,7 +3369,7 @@ test(
       // The v5 assembler stamps the lane's `server_version`; this gate keeps the
       // evidence on that exact server.
       requireSdkServerVersion(
-        sdkReportIdentity(5),
+        sdkReportIdentity("serialization"),
         await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
       );
       defineSchema(database, await readFile(SDK_MODELS_PROVIDER_SCHEMA, "utf8"));

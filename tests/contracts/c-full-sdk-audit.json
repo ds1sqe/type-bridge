@@ -8,10 +8,10 @@
     "C31", "G01", "G02", "G03", "G04", "G05", "G06", "G07", "G08", "G09",
     "G10", "G11", "G12", "G13"
   ],
-  "report_versions": [2, 3, 4, 5, 6],
+  "report_suites": ["queries", "models", "administration", "serialization", "artifacts"],
   "required_inputs": [
     "final-capability-manifest",
-    "final-sdk-v1-v6-reports",
+    "final-sdk-suite-reports",
     "non-selected-proof-ledgers",
     "artifact-manifest",
     "native-platform-matrix",

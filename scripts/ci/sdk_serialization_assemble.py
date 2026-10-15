@@ -110,8 +110,8 @@ def assemble_report(
 
     contracts = conformance.load_contracts(root)
     lane = profile_matrix.select(
-        5,
-        semantic_profile or profile_matrix.catalog_profile(5),
+        "serialization",
+        semantic_profile or profile_matrix.catalog_profile("serialization"),
         error=AssemblyError,
     )
     exact_keys(

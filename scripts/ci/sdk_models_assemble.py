@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 LIVE_FORMAT = "typebridge.sdk-models-live-observations/v1"
 REPORT_FORMAT = "typebridge.sdk-models-report/v1"
 # The models catalog profile, used when a run names no other matrix profile.
-SEMANTIC_PROFILE = profile_matrix.catalog_profile(3)
+SEMANTIC_PROFILE = profile_matrix.catalog_profile("models")
 MAX_LIVE_BYTES = 512 * 1024
 MAX_REPORT_BYTES = 1024 * 1024
 SUPPLEMENT_FORMAT = "typebridge.sdk-models-live-supplement/v1"
@@ -337,7 +337,9 @@ def compose_bundle(
 def _contracts(arguments: argparse.Namespace) -> conformance.Contracts:
     """The models contracts rebound to the profile the run names."""
 
-    return conformance.for_profile(conformance.load_contracts(), arguments.semantic_profile, 3)
+    return conformance.for_profile(
+        conformance.load_contracts(), arguments.semantic_profile, "models"
+    )
 
 
 def compose_inputs(arguments: argparse.Namespace) -> dict[str, Any]:
@@ -422,7 +424,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("choose existing evidence or composition inputs, not both")
     try:
         contracts = _contracts(arguments)
-        proof_observations = fragments.CONTRACTS[3].load_proof_fragments(
+        proof_observations = fragments.CONTRACTS["models"].load_proof_fragments(
             arguments.fragments,
             expected_binding=arguments.binding,
             run_nonce=arguments.run_nonce,

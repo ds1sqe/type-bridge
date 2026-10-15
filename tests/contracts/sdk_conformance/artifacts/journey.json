@@ -1,6 +1,6 @@
 {
-  "format": "typebridge.sdk-journey/v6",
-  "fixture_id": "sdk-v6",
+  "format": "typebridge.sdk-artifacts-journey/v1",
+  "fixture_id": "artifacts",
   "semantic_profile": "typedb-3.12.1/v1",
   "server_version": "3.12.3",
   "shared_artifacts": ["standalone-cli", "native-c-runtime", "generated-c-schema-package"],

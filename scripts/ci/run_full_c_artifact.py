@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Run every real V1–V6 producer against one captured C artifact set."""
+"""Run every real SDK suite producer against one captured C artifact set."""
 
 from __future__ import annotations
 
 import argparse
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -34,17 +33,13 @@ def main() -> None:
     output.mkdir(parents=True)
     inputs = arguments.inputs.resolve()
     provider = ("--address", arguments.address, "--http-port", arguments.http_port)
-    run("run_sdk_conformance.py", "queries", "--output", str(output / "v12"), *provider)
-    for version in (2,):
-        shutil.move(str(output / "v12" / f"v{version}"), output / f"v{version}")
-    (output / "v12").rmdir()
-    for version, suite in enumerate(tuple(profile_matrix.SUITES)[1:-1], start=3):
+    for suite in tuple(profile_matrix.SUITES)[:-1]:
         run(
             "run_sdk_conformance.py",
             suite,
             "--output",
-            str(output / f"v{version}"),
-            *(() if version == 4 else provider),
+            str(output / suite),
+            *(() if suite == "administration" else provider),
         )
     files = {
         filename: inputs / artifact / filename
@@ -69,7 +64,7 @@ def main() -> None:
         "--generated",
         str(files[policy.GENERATED]),
         "--output",
-        str(output / "v6"),
+        str(output / "artifacts"),
     )
 
 

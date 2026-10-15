@@ -29,7 +29,7 @@ JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/models/journey.json"
 REPORT_FORMAT = "typebridge.projected-parity-report/v1"
 SUMMARY_FORMAT = "typebridge.projected-parity-summary/v1"
 # The models catalog profile; reports may carry any models matrix profile.
-SEMANTIC_PROFILE = profile_matrix.catalog_profile(3)
+SEMANTIC_PROFILE = profile_matrix.catalog_profile("models")
 REPORT_BINDINGS = ("python", "node", "rust", "c")
 OBSERVATION_REFS = (
     "canonical_scalar_values",
@@ -287,7 +287,7 @@ def _load_report(path: Path, contract: ProjectedParityContract) -> tuple[str, di
     if type(binding) is not str or binding not in REPORT_BINDINGS:
         raise ContractError("unknown_binding", f"report {path} has an unknown binding")
     expected = expected_report(
-        binding, contract, profile_matrix.declared_profile(3, report, SEMANTIC_PROFILE)
+        binding, contract, profile_matrix.declared_profile("models", report, SEMANTIC_PROFILE)
     )
     if report != expected:
         raise ContractError(

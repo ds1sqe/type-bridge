@@ -1,6 +1,6 @@
 //! Reproduces the per-profile fingerprints in each SDK conformance profile matrix.
 //!
-//! Every `sdk-vN/profiles-vN.json` lists the identity a conforming report
+//! Every `<suite>/profiles.json` lists the identity a conforming report
 //! carries on each supported TypeDB profile. The catalog's own top-level values
 //! are the entry for the catalog's profile; the other entries are derived here
 //! from the same fixture source projected under that profile.
@@ -28,19 +28,31 @@ const SDK_MODELS_SOURCE: &str =
 /// One conformance set: its catalog, its matrix, and the fixture source whose
 /// projections the catalog pins (`None` when the set pins no fingerprints).
 struct ConformanceSet {
+    suite: &'static str,
     source: Option<&'static str>,
 }
 
 const SETS: [ConformanceSet; 5] = [
     ConformanceSet {
+        suite: "queries",
         source: Some(ACCEPTANCE_SOURCE),
     },
     ConformanceSet {
+        suite: "models",
         source: Some(SDK_MODELS_SOURCE),
     },
-    ConformanceSet { source: None },
-    ConformanceSet { source: None },
-    ConformanceSet { source: None },
+    ConformanceSet {
+        suite: "administration",
+        source: None,
+    },
+    ConformanceSet {
+        suite: "serialization",
+        source: None,
+    },
+    ConformanceSet {
+        suite: "artifacts",
+        source: None,
+    },
 ];
 
 fn projections(source: &str, profile: &str) -> BTreeMap<&'static str, RuntimeProjection> {
@@ -133,9 +145,9 @@ fn expected_fingerprints(source: &str, profile: &str, bindings: &[Value]) -> Val
 #[test]
 fn every_profile_matrix_entry_reproduces_from_its_fixture_source() {
     let mut inventory = BTreeMap::new();
-    for (index, set) in SETS.iter().enumerate() {
+    for set in &SETS {
         let root = producer_selection::repository_root();
-        let paths = producer_selection::contract_paths(&root, (index + 2) as u8);
+        let paths = producer_selection::contract_paths(&root, set.suite);
         let read = |kind: &str| {
             std::fs::read_to_string(root.join(paths[kind].as_str().expect("contract path")))
                 .expect("contract readable")
@@ -195,14 +207,14 @@ mod producer_selection;
 #[test]
 fn producers_select_each_profiles_exact_live_server() {
     let root = producer_selection::repository_root();
-    for set in 2..=6 {
+    for set in SETS.iter().map(|set| set.suite) {
         for (profile, server) in [
             ("typedb-3.12.1/v1", "3.12.3"),
             ("typedb-3.13.6/v1", "3.13.6"),
         ] {
             let entry = producer_selection::select_from(&root, set, profile);
-            assert_eq!(entry.semantic_profile, profile, "sdk-v{set}");
-            assert_eq!(entry.live_server_version, server, "sdk-v{set} {profile}");
+            assert_eq!(entry.semantic_profile, profile, "{set}");
+            assert_eq!(entry.live_server_version, server, "{set} {profile}");
             entry.require_server_version(Some(server));
         }
     }
@@ -212,7 +224,7 @@ fn producers_select_each_profiles_exact_live_server() {
 fn producers_default_to_the_catalog_profile() {
     let root = producer_selection::repository_root();
     for requested in [None, Some("")] {
-        let entry = producer_selection::requested_from(&root, 2, requested);
+        let entry = producer_selection::requested_from(&root, "queries", requested);
         assert_eq!(entry.semantic_profile, "typedb-3.12.1/v1");
         assert_eq!(entry.live_server_version, "3.12.3");
     }
@@ -222,21 +234,21 @@ fn producers_default_to_the_catalog_profile() {
 #[should_panic(expected = "queries has no matrix entry")]
 fn producers_reject_an_unknown_profile() {
     let root = producer_selection::repository_root();
-    producer_selection::requested_from(&root, 2, Some("typedb-9.9.9/v1"));
+    producer_selection::requested_from(&root, "queries", Some("typedb-9.9.9/v1"));
 }
 
 #[test]
 #[should_panic(expected = "actual detected TypeDB server version")]
 fn producers_reject_another_live_server() {
     let root = producer_selection::repository_root();
-    producer_selection::select_from(&root, 4, "typedb-3.13.6/v1")
+    producer_selection::select_from(&root, "administration", "typedb-3.13.6/v1")
         .require_server_version(Some("3.12.3"));
 }
 
 #[test]
 fn sdk_queries_fingerprints_name_the_selected_profile() {
     let root = producer_selection::repository_root();
-    let entry = producer_selection::requested_from(&root, 2, Some("typedb-3.13.6/v1"));
+    let entry = producer_selection::requested_from(&root, "queries", Some("typedb-3.13.6/v1"));
     let fingerprints = &entry.expected_fingerprints;
     assert_eq!(
         fingerprints["semantic"]["semantic_profile"],

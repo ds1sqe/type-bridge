@@ -185,7 +185,7 @@ fn publish_sdk_models_package_fragment(results: Vec<Value>) {
         "producer": {"id": "type-bridge-c.sdk-models-generated-package-proof", "sources": sources.iter().map(|path| sdk_models_source_identity(&root, path)).collect::<Vec<_>>()},
         "results": results,
         "run_nonce": nonce,
-        "semantic_profile": support::sdk_profile_matrix::requested(3).semantic_profile,
+        "semantic_profile": support::sdk_profile_matrix::requested("models").semantic_profile,
     });
     let mut bytes = to_canonical_json(&fragment).expect("C V3 package fragment canonicalizes");
     bytes.push(b'\n');
@@ -5723,7 +5723,7 @@ fn sdk_models_generated_package_integrity() {
     )])
     .expect("V3 schema parses");
     let declared = normalize_documents(&documents).expect("V3 schema normalizes");
-    let identity = support::sdk_profile_matrix::requested(3);
+    let identity = support::sdk_profile_matrix::requested("models");
     let profile =
         SemanticProfileId::new(&identity.semantic_profile).expect("test profile is valid");
     let resolved = resolve(&declared, &profile).expect("V3 schema resolves");

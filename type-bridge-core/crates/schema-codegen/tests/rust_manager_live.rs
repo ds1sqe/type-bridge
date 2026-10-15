@@ -152,7 +152,7 @@ fn rust_manager_live_producer_is_bounded_and_expectation_independent() {
 #[test]
 fn generated_rust_manager_live_producer_compiles() {
     let stage = Stage::new();
-    let manifest = staged_consumer(&stage, &sdk_profile_matrix::requested(3));
+    let manifest = staged_consumer(&stage, &sdk_profile_matrix::requested("models"));
     let checked = cargo(
         &[
             "clippy",
@@ -191,7 +191,7 @@ fn generated_rust_manager_live_runs_when_explicitly_configured() {
     assert!(!report.exists(), "report destination must be absent");
 
     let stage = Stage::new();
-    let profile = sdk_profile_matrix::requested(3);
+    let profile = sdk_profile_matrix::requested("models");
     let profile_json = support::sdk_profile_entry_json(&profile);
     let manifest = staged_consumer(&stage, &profile);
     let repository = repository();

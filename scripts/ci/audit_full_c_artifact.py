@@ -17,33 +17,26 @@ from typing import Any, NoReturn
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import c_artifact_journey as artifact_journey  # noqa: E402
 import c_distribution_security as security  # noqa: E402
-import compare_sdk_conformance_v6 as v6  # noqa: E402
-import sdk_administration_compare as v4  # noqa: E402
-import sdk_models_compare as v3  # noqa: E402
+import sdk_administration_compare as administration  # noqa: E402
+import sdk_artifacts_compare as artifacts  # noqa: E402
+import sdk_models_compare as models  # noqa: E402
 import sdk_profile_matrix as profile_matrix
-import sdk_queries_compare as v2  # noqa: E402
-import sdk_serialization_compare as v5  # noqa: E402
+import sdk_queries_compare as queries  # noqa: E402
+import sdk_serialization_compare as serialization  # noqa: E402
 import validate_c_broad_case_ledger as broad_ledger  # noqa: E402
 import validate_c_distribution_contract as distribution  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-AUDIT_CONTRACT = ROOT / "tests/contracts/c-full-sdk-audit-v1.json"
+AUDIT_CONTRACT = ROOT / "tests/contracts/c-full-sdk-audit.json"
 MANIFEST = ROOT / "tests/contracts/sdk_conformance/manifest.json"
 BINDINGS = ("python", "node", "rust", "c")
-REPORT_BINDINGS = {
-    1: ("python", "node", "rust"),
-    2: BINDINGS,
-    3: BINDINGS,
-    4: BINDINGS,
-    5: BINDINGS,
-    6: BINDINGS,
-}
-COMPARATORS: dict[int, Callable[[list[Path]], dict[str, Any]]] = {
-    2: v2.compare_reports,
-    3: v3.compare_reports,
-    4: v4.compare_reports,
-    5: v5.compare_reports,
-    6: v6.compare_reports,
+REPORT_BINDINGS = {suite: BINDINGS for suite in profile_matrix.SUITES}
+COMPARATORS: dict[str, Callable[[list[Path]], dict[str, Any]]] = {
+    "queries": queries.compare_reports,
+    "models": models.compare_reports,
+    "administration": administration.compare_reports,
+    "serialization": serialization.compare_reports,
+    "artifacts": artifacts.compare_reports,
 }
 DOCUMENTATION_FENCES = {
     "tests/contracts/c-distribution-v1.json": (
@@ -99,21 +92,21 @@ def sha256(path: Path) -> str:
 def load_unique(path: Path, label: str) -> dict[str, Any]:
     body = regular(path, label).read_bytes()
     try:
-        value = json.loads(body, object_pairs_hook=v6.unique_object)
-    except (UnicodeDecodeError, json.JSONDecodeError, v6.ContractError) as error:
+        value = json.loads(body, object_pairs_hook=artifacts.unique_object)
+    except (UnicodeDecodeError, json.JSONDecodeError, artifacts.ContractError) as error:
         reject("invalid_audit_json", f"cannot parse {label}: {error}")
     if not isinstance(value, dict):
         reject("invalid_audit_json", f"{label} must contain one object")
     return value
 
 
-def report_paths(root: Path, version: int) -> list[Path]:
+def report_paths(root: Path, suite: str) -> list[Path]:
     return [
         regular(
-            root / profile_matrix.report_directory(version) / f"{binding}.json",
-            f"V{version} {binding} report",
+            root / profile_matrix.report_directory(suite) / f"{binding}.json",
+            f"{suite} {binding} report",
         )
-        for binding in REPORT_BINDINGS[version]
+        for binding in REPORT_BINDINGS[suite]
     ]
 
 
@@ -171,7 +164,7 @@ def audit(
 ) -> tuple[dict[str, Any], str]:
     contract = load_unique(root / AUDIT_CONTRACT.relative_to(ROOT), "FULL-C audit contract")
     manifest = load_unique(root / MANIFEST.relative_to(ROOT), "final capability manifest")
-    if contract.get("authority_state") != "frozen" or contract.get("report_versions") != list(
+    if contract.get("authority_state") != "frozen" or contract.get("report_suites") != list(
         COMPARATORS
     ):
         reject("audit_contract_drift", "FULL-C audit authority is not exact")
@@ -198,30 +191,33 @@ def audit(
 
     summaries = []
     report_inputs = []
-    for version, comparator in COMPARATORS.items():
-        paths = report_paths(reports_root, version)
+    for suite, comparator in COMPARATORS.items():
+        paths = report_paths(reports_root, suite)
         try:
             summary = comparator(paths)
         except Exception as error:
-            reject("report_fan_in_failed", f"V{version} comparator rejected: {error}")
-        if version == 6 and (
+            reject("report_fan_in_failed", f"{suite} comparator rejected: {error}")
+        if suite == "artifacts" and (
             summary.get("authority_state") != "finalized" or summary.get("pending_promotions")
         ):
-            reject("pending_final_transition", "V6 is not finalized with zero pending promotions")
+            reject(
+                "pending_final_transition",
+                "Artifacts is not finalized with zero pending promotions",
+            )
         summaries.append(
             {
-                "version": version,
+                "suite": suite,
                 "format": summary.get("format"),
                 "sha256": hashlib.sha256(canonical_json(summary)).hexdigest(),
             }
         )
         report_inputs.extend(
             {
-                "version": version,
+                "suite": suite,
                 "binding": binding,
                 "sha256": sha256(path),
             }
-            for binding, path in zip(REPORT_BINDINGS[version], paths, strict=True)
+            for binding, path in zip(REPORT_BINDINGS[suite], paths, strict=True)
         )
 
     capabilities = validate_capabilities(manifest, contract)
@@ -234,9 +230,11 @@ def audit(
         reject("artifact_source_drift", "artifact source commit is invalid")
     if any(
         report.get("source_commit") != source_commit
-        for report in [load_unique(path, "V6 report") for path in report_paths(reports_root, 6)]
+        for report in [
+            load_unique(path, "Artifacts report") for path in report_paths(reports_root, 6)
+        ]
     ):
-        reject("artifact_source_drift", "V6 reports and artifacts bind different sources")
+        reject("artifact_source_drift", "Artifacts reports and artifacts bind different sources")
 
     required_inputs = contract["required_inputs"]
     checks = [{"id": item, "status": "passed"} for item in required_inputs]
@@ -277,7 +275,7 @@ def audit(
         f"- Source commit: `{source_commit}`\n"
         f"- Artifact set: `{artifact_manifest['artifact-set-id']}`\n"
         f"- Capabilities: {len(capabilities)}/44 accepted for C\n"
-        f"- Sdk reports: V1–V6 independently validated\n"
+        f"- Sdk reports: V1–Artifacts independently validated\n"
         f"- Publication authority: no\n"
         f"- Remaining gate: #189 (`{distribution_contract['release_gate']['state']}`)\n"
     )
