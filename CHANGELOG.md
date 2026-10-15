@@ -22,6 +22,10 @@ All notable changes to TypeBridge will be documented in this file.
 - Updated `quinn-proto` to 0.11.19 for RUSTSEC-2026-0338 through
   RUSTSEC-2026-0342, addressing memory-exhaustion and connection-ID
   retirement issues in QUIC handling.
+- Updated `rustls` to 0.23.46 for RUSTSEC-2026-0346 through
+  RUSTSEC-2026-0349, addressing TLS secrets in `Debug` output, a key
+  exchange downgrade, certificate decompression memory use and data sent
+  after ECH rejection.
 
 ## [2.2.4] - 2026-10-08
 
