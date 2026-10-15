@@ -64,6 +64,7 @@ class ProfileIdentity:
     semantic_profile: str
     live_server_version: str
     expected_fingerprints: dict[str, Any] | None
+    expected_history_fingerprint: str | None = None
 
 
 def matrix_relative(version: int) -> str:
@@ -105,6 +106,7 @@ def load_matrix(
             <= {
                 "live_server_version",
                 "expected_fingerprints",
+                "expected_history_fingerprint",
             }
             or type(entry["live_server_version"]) is not str
         ):
@@ -115,8 +117,18 @@ def load_matrix(
                 "invalid_profile_matrix",
                 f"{set_id} entry {profile!r} fingerprints name another profile",
             )
+        history = entry.get("expected_history_fingerprint")
+        if (version == 4 or history is not None) and (
+            version != 4
+            or type(history) is not str
+            or len(history) != 64
+            or any(character not in "0123456789abcdef" for character in history)
+        ):
+            raise error(
+                "invalid_profile_matrix", f"{set_id} entry {profile!r} history digest is malformed"
+            )
         entries[profile] = ProfileIdentity(
-            set_id, profile, entry["live_server_version"], fingerprints
+            set_id, profile, entry["live_server_version"], fingerprints, history
         )
     return entries
 

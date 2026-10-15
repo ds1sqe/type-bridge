@@ -20,7 +20,9 @@ MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest.json"
 CATALOG_RELATIVE = "tests/contracts/sdk_conformance/administration/catalog.json"
 JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/administration/journey.json"
 REPORT_SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/administration/report-schema.json"
-OBSERVATION_SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/administration/observation-schema.json"
+OBSERVATION_SCHEMA_RELATIVE = (
+    "tests/contracts/sdk_conformance/administration/observation-schema.json"
+)
 EXPECTED_BINDINGS = ("python", "node", "rust", "c")
 EXPECTED_TRANSITIONS = (
     "sdk.runtime.database-administration",
@@ -40,7 +42,9 @@ EXPECTED_MIGRATION_ORDER = (
     "administration/0003_backfill-display-name",
     "administration/0004_contract-legacy-name",
 )
-EXPECTED_CATALOG_FINGERPRINT = "a34672f796977f0b3e01e16540c1b33957c405ad76034f9e05849d4d35be3a59"
+EXPECTED_CATALOG_FINGERPRINT = profile_matrix.select(
+    4, "typedb-3.12.1/v1"
+).expected_history_fingerprint
 
 
 class ContractError(ValueError):
@@ -108,9 +112,15 @@ def load_contracts(root: Path = ROOT) -> Contracts:
     if report_schema.get("$defs", {}).get("result", {}).get("properties", {}).get(
         "observation"
     ) != {"$ref": "observation-schema.json"}:
-        _reject("observation_schema_drift", "administration report schema does not bind the closed algebra")
+        _reject(
+            "observation_schema_drift",
+            "administration report schema does not bind the closed algebra",
+        )
     if len(observation_schema.get("oneOf", ())) != 8:
-        _reject("observation_schema_drift", "administration observation algebra must contain eight lanes")
+        _reject(
+            "observation_schema_drift",
+            "administration observation algebra must contain eight lanes",
+        )
 
     transitions = tuple(catalog.get("manifest_transition_cases", ()))
     retained = tuple(catalog.get("evidence_only_gap_cases", ()))
@@ -218,7 +228,11 @@ def _validate_report(report: dict[str, Any], observation_refs: tuple[str, ...]) 
         )
         if result["outcome"] != "passed" or not isinstance(result["observation"], dict):
             _reject("invalid_report_schema", "report result outcome is invalid")
-        _validate_observation(observation_refs[index], result["observation"])
+        _validate_observation(
+            observation_refs[index],
+            result["observation"],
+            profile_matrix.select_server(4, report["server_version"]).expected_history_fingerprint,
+        )
 
 
 def _bool(value: Any, label: str) -> None:
@@ -236,7 +250,11 @@ def _enum(value: Any, allowed: set[str], label: str) -> None:
         _reject("invalid_observation_shape", f"{label} is outside its closed vocabulary")
 
 
-def _validate_observation(reference: str, observation: dict[str, Any]) -> None:
+def _validate_observation(
+    reference: str,
+    observation: dict[str, Any],
+    expected_history_fingerprint: str | None = EXPECTED_CATALOG_FINGERPRINT,
+) -> None:
     """Validate one independently observed lane against the closed administration algebra."""
     if reference == "bound_database_administration":
         _exact_keys(
@@ -356,7 +374,8 @@ def _validate_observation(reference: str, observation: dict[str, Any]) -> None:
                 not isinstance(values, list)
                 or not values
                 or not all(
-                    isinstance(value, str) and value.startswith("administration/") for value in values
+                    isinstance(value, str) and value.startswith("administration/")
+                    for value in values
                 )
             ):
                 _reject(
@@ -366,7 +385,7 @@ def _validate_observation(reference: str, observation: dict[str, Any]) -> None:
         if (
             observation["catalog_entries"] != 4
             or observation["backfill_steps"] != 1
-            or observation["catalog_fingerprint"] != EXPECTED_CATALOG_FINGERPRINT
+            or observation["catalog_fingerprint"] != expected_history_fingerprint
             or tuple(observation["apply_order"]) != EXPECTED_MIGRATION_ORDER
             or tuple(observation["rollback_order"]) != tuple(reversed(EXPECTED_MIGRATION_ORDER))
         ):
@@ -395,7 +414,9 @@ def _validate_observation(reference: str, observation: dict[str, Any]) -> None:
         _bool(observation["repeat_close"], f"{reference}.repeat_close")
         _bool(observation["temporary_evidence_absent"], f"{reference}.temporary_evidence_absent")
     else:
-        _reject("unknown_observation_reference", f"unknown administration observation {reference!r}")
+        _reject(
+            "unknown_observation_reference", f"unknown administration observation {reference!r}"
+        )
 
 
 def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
@@ -437,7 +458,9 @@ def compare_reports(paths: list[Path], root: Path = ROOT) -> dict[str, Any]:
         if expected_observations is None:
             expected_observations = observations
         elif observations != expected_observations:
-            _reject("cross_binding_observation_drift", "administration observations differ by binding")
+            _reject(
+                "cross_binding_observation_drift", "administration observations differ by binding"
+            )
         reports[binding] = report
 
     if tuple(reports) != EXPECTED_BINDINGS:

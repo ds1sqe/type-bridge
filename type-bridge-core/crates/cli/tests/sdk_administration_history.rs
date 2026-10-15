@@ -235,3 +235,64 @@ fn per_run_copy_on_a_newer_profile_bridges_the_committed_history() {
         "{stdout}"
     );
 }
+
+#[test]
+fn native_profile_copies_keep_four_reversible_migrations() {
+    let committed = fs::read(fixture().join("typebridge.yaml")).expect("committed manifest");
+    for profile in ["typedb-3.12.1/v1", "typedb-3.13.6/v1"] {
+        let temporary = tempfile::tempdir().expect("native workspace");
+        support::prepare_administration_native_workspace_for(temporary.path(), profile);
+        let output = Command::new(env!("CARGO_BIN_EXE_type-bridge"))
+            .current_dir(temporary.path())
+            .args(["schema", "generate"])
+            .output()
+            .expect("native generation");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let raw = fs::read(
+            temporary
+                .path()
+                .join("generated/rust/typebridge/migration-history.json"),
+        )
+        .expect("native history");
+        let history: serde_json::Value = serde_json::from_slice(&raw).expect("history JSON");
+        let entries = history["content"]["entries"].as_array().expect("entries");
+        assert_eq!(entries.len(), 4);
+        for entry in entries {
+            let manifest = &entry["manifest"];
+            assert_eq!(manifest["safety"]["reversible"], true);
+            assert_eq!(manifest["contract"]["semantic_profile"]["id"], profile);
+        }
+        assert_eq!(
+            history["fingerprint"]["digest"],
+            support::sdk_profile_matrix::select_from(
+                &support::sdk_profile_matrix::repository_root(),
+                4,
+                profile
+            )
+            .expected_history_fingerprint
+            .expect("profile history digest")
+        );
+        if profile == "typedb-3.12.1/v1" {
+            for name in [
+                "0001_initial",
+                "0002_expand-display-name",
+                "0003_backfill-display-name",
+                "0004_contract-legacy-name",
+            ] {
+                let relative = format!("migrations/v2/{name}.tbmigration.json");
+                assert_eq!(
+                    fs::read(temporary.path().join(&relative)).unwrap(),
+                    fs::read(fixture().join(relative)).unwrap()
+                );
+            }
+        }
+    }
+    assert_eq!(
+        fs::read(fixture().join("typebridge.yaml")).unwrap(),
+        committed
+    );
+}

@@ -49,13 +49,13 @@ fn copy_tree(source: &Path, destination: &Path) {
 /// into the run's fresh database on the newer server. The committed
 /// workspace is never written.
 pub fn prepare_administration_workspace(destination: &Path) {
-    prepare_administration_workspace_for(
+    prepare_administration_native_workspace_for(
         destination,
         &sdk_profile_matrix::requested(4).semantic_profile,
     );
 }
 
-/// [`prepare_administration_workspace`] for an explicit semantic profile.
+/// Historical bridge-based copy retained for profile-upgrade replay checks.
 pub fn prepare_administration_workspace_for(destination: &Path, requested: &str) {
     copy_tree(&administration_fixture(), destination);
     let manifest = destination.join("typebridge.yaml");
@@ -159,4 +159,104 @@ pub fn cargo_target() -> PathBuf {
     std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"))
+}
+
+/// Rebuild the same four migration operations natively on the requested profile.
+pub fn prepare_administration_native_workspace_for(destination: &Path, requested: &str) {
+    use type_bridge_contract::migration_backfill::AttributeBackfillPlan;
+    use type_bridge_schema::managed_schema_state;
+    use type_bridge_schema_migration::{
+        BackfillMigrationGenerationRequest, MigrationGenerationOutcome, MigrationGenerationRequest,
+        MigrationHistoryGraph, decode_verified_manifest, generate_backfill_migration,
+        generate_next_migration,
+    };
+
+    copy_tree(&administration_fixture(), destination);
+    if requested == "typedb-3.12.1/v1" {
+        return;
+    }
+    let config_path = destination.join("typebridge.yaml");
+    let config = fs::read_to_string(&config_path).expect("workspace config reads");
+    fs::write(&config_path, config.replace("typedb-3.12.1/v1", requested))
+        .expect("workspace profile rewrites");
+    let context = |profile: &str| {
+        ManagedDeltaContext::new(
+            ManagedScopeId::new("administration").expect("scope"),
+            SemanticProfileId::new(profile).expect("profile"),
+            execution_capability_vocabulary().expect("execution capabilities"),
+        )
+    };
+    let committed_context = context("typedb-3.12.1/v1");
+    let requested_context = context(requested);
+    let genesis =
+        DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), []).expect("genesis");
+    let mut source = genesis.clone();
+    let mut rebuilt = Vec::new();
+    let directory = destination.join("migrations/v2");
+    let mut paths = fs::read_dir(&directory)
+        .expect("history directory reads")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| path.to_string_lossy().ends_with(".tbmigration.json"))
+        .collect::<Vec<_>>();
+    paths.sort();
+    for path in paths {
+        let committed = decode_verified_manifest(
+            &fs::read(&path).expect("manifest reads"),
+            (&source, &committed_context),
+        )
+        .expect("committed manifest verifies");
+        let graph = MigrationHistoryGraph::from_verified(rebuilt.clone()).expect("history graph");
+        let base = committed
+            .id()
+            .name()
+            .as_str()
+            .split_once('_')
+            .expect("ordinal name")
+            .1;
+        let generated = if let Some((_, plan)) =
+            committed.steps().iter().find_map(|step| step.as_backfill())
+        {
+            let state = managed_schema_state(&source, &requested_context).expect("native state");
+            let plan = AttributeBackfillPlan::new(
+                plan.owner().clone(),
+                plan.source().clone(),
+                plan.destination().clone(),
+                plan.partition().clone(),
+                state.managed_semantic_schema().clone(),
+                plan.reverse(),
+            )
+            .expect("native backfill plan");
+            generate_backfill_migration(
+                &graph,
+                &BackfillMigrationGenerationRequest {
+                    app_label: "administration",
+                    base_name: base,
+                    genesis_source: &genesis,
+                    desired: committed.target_schema(),
+                    plan: &plan,
+                    context: &requested_context,
+                },
+            )
+            .expect("native backfill migration")
+        } else {
+            let MigrationGenerationOutcome::Generated(generated) = generate_next_migration(
+                &graph,
+                &MigrationGenerationRequest {
+                    app_label: "administration",
+                    base_name: base,
+                    genesis_source: &genesis,
+                    desired: committed.target_schema(),
+                    context: &requested_context,
+                },
+            )
+            .expect("native schema migration") else {
+                panic!("expected a migration")
+            };
+            *generated
+        };
+        assert_eq!(generated.manifest().id(), committed.id());
+        fs::write(path, generated.canonical_bytes()).expect("native manifest writes");
+        rebuilt.push(generated.manifest().clone());
+        source = committed.target_schema().clone();
+    }
 }

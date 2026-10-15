@@ -182,3 +182,24 @@ def test_proof_fragments_refuse_a_profile_outside_the_matrix() -> None:
             semantic_profile="typedb-3.11.5/v1",
         )
     assert rejected.value.code == "semantic_profile_mismatch"
+
+
+def test_administration_pins_distinct_native_history_per_profile() -> None:
+    entries = matrix.load_matrix(4)
+    digests = [entry.expected_history_fingerprint for entry in entries.values()]
+    assert len(set(digests)) == 2
+    assert all(isinstance(value, str) and len(value) == 64 for value in digests)
+
+
+@pytest.mark.parametrize("digest", [None, 12, "abc", "G" * 64])
+def test_administration_rejects_missing_or_malformed_history_digest(
+    tmp_path: Path, digest: Any
+) -> None:
+    relative = matrix.matrix_relative(4)
+    value = json.loads((ROOT / relative).read_text())
+    value["profiles"][BASE]["expected_history_fingerprint"] = digest
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(value))
+    with pytest.raises(matrix.ProfileMatrixError, match="history digest is malformed"):
+        matrix.load_matrix(4, root=tmp_path)

@@ -217,7 +217,9 @@ async fn generated_c_emits_complete_administration_report() {
     assert_eq!(report["results"][2]["observation"]["forward_changed"], 2);
     assert_eq!(
         report["results"][3]["observation"]["catalog_fingerprint"],
-        "a34672f796977f0b3e01e16540c1b33957c405ad76034f9e05849d4d35be3a59"
+        support::sdk_profile_matrix::requested(4)
+            .expected_history_fingerprint
+            .expect("matrix history fingerprint")
     );
     if let Some(directory) = std::env::var_os("TYPE_BRIDGE_SDK_ADMINISTRATION_REPORT_DIR") {
         fs::copy(

@@ -19,6 +19,8 @@ pub struct SdkProfile {
     pub live_server_version: String,
     /// `{"semantic": .., "projections": {..}}`; `Value::Null` for administration..v6.
     pub expected_fingerprints: Value,
+    /// Native administration history digest, when the suite pins one.
+    pub expected_history_fingerprint: Option<String>,
 }
 
 impl SdkProfile {
@@ -79,6 +81,9 @@ pub fn select_from(root: &Path, set: u8, profile: &str) -> SdkProfile {
             .get("expected_fingerprints")
             .cloned()
             .unwrap_or(Value::Null),
+        expected_history_fingerprint: entry["expected_history_fingerprint"]
+            .as_str()
+            .map(str::to_owned),
     }
 }
 

@@ -3,9 +3,11 @@
   "format": "typebridge.sdk-profile-matrix/v1",
   "profiles": {
     "typedb-3.12.1/v1": {
+      "expected_history_fingerprint": "a34672f796977f0b3e01e16540c1b33957c405ad76034f9e05849d4d35be3a59",
       "live_server_version": "3.12.3"
     },
     "typedb-3.13.6/v1": {
+      "expected_history_fingerprint": "29deeffad8c737eae07d858060407967e63bfbb15703a892d5ed03f9a9d38590",
       "live_server_version": "3.13.6"
     }
   },

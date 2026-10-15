@@ -225,3 +225,20 @@ def test_rejects_manifest_case_rebinding(tmp_path: Path) -> None:
     with pytest.raises(comparator.ContractError) as raised:
         comparator.load_contracts(root)
     assert raised.value.code == "manifest_case_drift"
+
+
+@pytest.mark.parametrize("profile", ["typedb-3.12.1/v1", "typedb-3.13.6/v1"])
+def test_report_history_fingerprint_is_bound_to_its_server(tmp_path: Path, profile: str) -> None:
+    root = _stage_contracts(tmp_path)
+    contracts = comparator.load_contracts(root)
+    identity = comparator.profile_matrix.select(4, profile)
+    report = _valid_report(root, "python")
+    report["server_version"] = identity.live_server_version
+    report["results"][3]["observation"]["catalog_fingerprint"] = (
+        identity.expected_history_fingerprint
+    )
+    comparator._validate_report(report, contracts.observation_refs)
+    report["results"][3]["observation"]["catalog_fingerprint"] = "0" * 64
+    with pytest.raises(comparator.ContractError) as rejected:
+        comparator._validate_report(report, contracts.observation_refs)
+    assert rejected.value.code == "migration_catalog_observation_drift"
