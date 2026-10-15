@@ -896,8 +896,8 @@ class Database:
         return schema
 
 
-class Transaction:
-    """Wrapper around TypeDB transaction."""
+class _DriverTransaction:
+    """Deprecated direct-driver wrapper; use Database.transaction()."""
 
     def __init__(self, tx: TypeDBTransaction):
         """Initialize transaction wrapper.
@@ -905,6 +905,11 @@ class Transaction:
         Args:
             tx: TypeDB transaction
         """
+        warnings.warn(
+            "Transaction is deprecated; use Database.transaction()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._tx = tx
 
     def execute(self, query: str) -> list[dict[str, Any]]:
@@ -970,6 +975,10 @@ class Transaction:
         if self._tx.is_open():
             logger.debug("Closing transaction")
             self._tx.close()
+
+
+# Released module-level compatibility alias, retained until 3.0.
+Transaction = _DriverTransaction
 
 
 class _RustTransactionView:
@@ -1149,10 +1158,10 @@ class TransactionContext:
         self.transaction.commit()
 
     def rollback(self) -> None:
-        """Rollback the active transaction."""
+        """Roll back writes and keep the active transaction usable."""
         if self._rust_tx is not None:
             self._rust_tx.rollback()
-            self._rust_finalized = True
+            self._rust_finalized = False
             return
         self.transaction.rollback()
 

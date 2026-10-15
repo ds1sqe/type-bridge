@@ -672,6 +672,9 @@ def test_sdk_models_journey_freezes_21_complete_observation_shapes() -> None:
     assert transaction["poison"]["first_cause"] == transaction["poison"]["retained_cause"]
     assert transaction["poison"]["commit_rejection"]["provider_commit_calls"] == 0
     assert transaction["post_rollback"]["state"] == "rolled_back"
+    assert transaction["post_rollback"]["commit_rejected"] is False
+    assert transaction["post_rollback"]["mutation_rejected"] is False
+    assert transaction["post_rollback"]["close_state"] == "committed"
 
     manager = observations["manager_field_token_filter"]
     assert {item["operator"]: item["normalized_keys"] for item in manager["operator_outcomes"]} == {

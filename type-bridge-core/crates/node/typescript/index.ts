@@ -1013,6 +1013,7 @@ export class RustTransactionContext {
     this.#native.commit();
   }
 
+  /** Roll back writes and keep this transaction usable. */
   rollback(): void {
     this.#native.rollback();
   }

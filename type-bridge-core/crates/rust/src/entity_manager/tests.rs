@@ -801,7 +801,9 @@ async fn public_insert_provider_error_survives_rollback_failure() {
     assert!(source.is::<type_bridge_orm::OrmError>());
     assert_eq!(source.to_string(), "Query execution error: provider failed");
     assert!(!error.to_string().contains("recording rollback failed"));
-    assert_insert_failure_events(&state.lock().unwrap().events);
+    let guard = state.lock().unwrap();
+    assert!(matches!(guard.events.last(), Some(Event::Close)));
+    assert_insert_failure_events(&guard.events[..guard.events.len() - 1]);
 }
 
 fn assert_provider_evidence_error(error: &crate::Error, expected: &str) {

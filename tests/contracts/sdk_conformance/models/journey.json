@@ -511,9 +511,9 @@
       "post_rollback": {
         "state": "rolled_back",
         "rollback_idempotent": true,
-        "commit_rejected": true,
-        "mutation_rejected": true,
-        "close_state": "closed",
+        "commit_rejected": false,
+        "mutation_rejected": false,
+        "close_state": "committed",
         "close_idempotent": true
       }
     },

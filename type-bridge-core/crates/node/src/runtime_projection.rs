@@ -3596,7 +3596,10 @@ impl NodeProjectedModelManager {
                     .successor_batch_marker
                     .as_ref()
                     .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
-                let mark_successor = prior == TransactionContextState::Active;
+                let mark_successor = matches!(
+                    prior,
+                    TransactionContextState::Active | TransactionContextState::RolledBack
+                );
                 let result = self
                     .runtime
                     .block_on(executor.execute_in_transaction_mapped(
@@ -7407,7 +7410,7 @@ entities:
         ];
 
         for (type_id, wire, provider_label, iid, malformed_hydration) in cases {
-            for borrowed in [false, true] {
+            for (borrowed, rollback_first) in [(false, false), (true, false), (true, true)] {
                 for hydration_failure in [false, true] {
                     let relation = type_id.kind() == TypeKind::Relation;
                     let mut responses = Vec::new();
@@ -7446,6 +7449,11 @@ entities:
                             .block_on(database.transaction_context(TxType::Write))
                             .unwrap()
                     });
+                    if rollback_first {
+                        provider_runtime
+                            .block_on(transaction.as_ref().unwrap().rollback())
+                            .unwrap();
+                    }
                     let marker = borrowed.then(|| Arc::new(AtomicBool::new(false)));
                     let manager = NodeProjectedModelManager {
                         package: Arc::clone(&runtime_projection.package),
@@ -7485,7 +7493,7 @@ entities:
                     assert_eq!(state.given_rows.len(), state.queries.len());
                     assert_eq!(state.commits, 0);
                     if borrowed {
-                        assert_eq!(state.rollbacks, 0);
+                        assert_eq!(state.rollbacks, usize::from(rollback_first));
                         assert_eq!(state.closes, 0);
                     } else {
                         assert_eq!(state.rollbacks, 1);

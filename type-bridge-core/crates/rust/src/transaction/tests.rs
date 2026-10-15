@@ -829,3 +829,33 @@ async fn sdk_models_rust_data_plane_fragment() {
         json!({"observation": diagnostic, "observation_ref": "data_operation_structured_diagnostic", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "transaction::tests::sdk_models_rust_data_plane_fragment"}),
     ]);
 }
+
+#[tokio::test]
+async fn rollback_keep_accepts_more_work_and_commit() {
+    let (db, state) = test_db(vec![iid_doc("0x1"), worker_fetch("0x1", "alice")]);
+    let mut tx = db.write().await.unwrap();
+    tx.rollback_keep().await.unwrap();
+    tx.entities::<Worker>()
+        .insert(WorkerCreate {
+            name: "alice".into(),
+        })
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let events = &state.lock().unwrap().events;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::Open(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::Rollback))
+            .count(),
+        1
+    );
+    assert!(matches!(events.last(), Some(Event::Commit)));
+}

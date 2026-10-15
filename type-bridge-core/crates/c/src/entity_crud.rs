@@ -862,6 +862,17 @@ functions:
             unsafe { type_bridge_write_transaction_rollback(&mut transaction, &mut diagnostics) },
             TypeBridgeStatus::Ok
         );
+        assert!(!transaction.is_null());
+        assert!(!unsafe { &*transaction }.is_poisoned());
+        assert_eq!(
+            unsafe {
+                crate::runtime::type_bridge_write_transaction_close(
+                    &mut transaction,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
         assert!(transaction.is_null());
         assert_eq!(fixture.state.query_count(), 2);
         assert_eq!(fixture.state.commits.load(Ordering::Acquire), 0);
@@ -1178,6 +1189,17 @@ functions:
         assert_eq!(
             // SAFETY: rollback is explicitly permitted on a poisoned handle.
             unsafe { type_bridge_write_transaction_rollback(&mut transaction, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert!(!transaction.is_null());
+        assert!(!unsafe { &*transaction }.is_poisoned());
+        assert_eq!(
+            unsafe {
+                crate::runtime::type_bridge_write_transaction_close(
+                    &mut transaction,
+                    &mut diagnostics,
+                )
+            },
             TypeBridgeStatus::Ok
         );
         assert!(transaction.is_null());

@@ -48,7 +48,7 @@ const AUTHORITIES: [(&str, &str, &str); 3] = [
     (
         "journey",
         "tests/contracts/sdk_conformance/models/journey.json",
-        "d0153b47c42f771cae1668fcfdb0e3d9d7c4e3ee4d793177751e1b657fe37e66",
+        "f05bce76c200f7425a39ed844e8ac520424185650bb95285d7e86d00b95a4e5f",
     ),
     (
         "provider",

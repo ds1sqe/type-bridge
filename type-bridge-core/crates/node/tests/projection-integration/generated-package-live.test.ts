@@ -274,7 +274,7 @@ function sdkModelsSupplementObservations(): ReadonlyMap<string, Record<string, u
       commit_visibility: { before_commit: { same_transaction_visible: true, outside_transaction_visible: false }, after_commit: { outside_transaction_visible: true, state: "committed" } },
       rollback_visibility: { before_rollback: { same_transaction_visible: true, outside_transaction_visible: false }, after_rollback: { outside_transaction_visible: false, state: "rolled_back" } },
       poison: { state: "rollback_only", first_cause: { category: "provider", code: "provider_operation_failed" }, later_cause: { category: "resource_limit", code: "batch_item_limit" }, retained_cause: { category: "provider", code: "provider_operation_failed" }, commit_rejection: { category: "transaction", code: "transaction_rollback_only", provider_commit_calls: 0 } },
-      post_rollback: { state: "rolled_back", rollback_idempotent: true, commit_rejected: true, mutation_rejected: true, close_state: "closed", close_idempotent: true },
+      post_rollback: { state: "rolled_back", rollback_idempotent: true, commit_rejected: false, mutation_rejected: false, close_state: "committed", close_idempotent: true },
     }],
   ]);
 }
@@ -2025,6 +2025,12 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       personManager.filter({ identifier: Identifier.create("person-rollback") }).exists(),
       false,
     );
+
+    const reusedAfterRollback = rollbackManager.insert(generatedPerson("person-rollback-reuse", 12n));
+    rollbackTransaction.commit();
+    assert.notEqual(personManager.getByIid(reusedAfterRollback.iid), null);
+    personManager.delete(reusedAfterRollback.iid);
+    rollbackTransaction.close();
 
     const readTransaction = database.transaction("read");
     try {

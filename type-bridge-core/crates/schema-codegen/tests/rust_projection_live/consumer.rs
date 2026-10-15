@@ -6975,7 +6975,7 @@ async fn sdk_models_data_model_runtime_live() {
         .expect("outside postcommit read")
         .is_some();
 
-    let rollback_transaction = db.write().await.expect("rollback transaction opens");
+    let mut rollback_transaction = db.write().await.expect("rollback transaction opens");
     let rolled = rollback_transaction
         .entities::<Person>()
         .insert(ownership_edge_person_input(
@@ -6999,7 +6999,7 @@ async fn sdk_models_data_model_runtime_live() {
         .expect("outside prerollback read")
         .is_some();
     rollback_transaction
-        .rollback()
+        .rollback_keep()
         .await
         .expect("borrowed transaction rollback");
     let rollback_outside_after = db
@@ -7008,6 +7008,32 @@ async fn sdk_models_data_model_runtime_live() {
         .await
         .expect("outside postrollback read")
         .is_some();
+
+    let reused = rollback_transaction
+        .entities::<Person>()
+        .insert(ownership_edge_person_input(
+            "data-rollback-reuse",
+            &[],
+            None,
+        ))
+        .await
+        .expect("insert after rollback");
+    let reused_iid = reused.iid().to_owned();
+    rollback_transaction
+        .commit()
+        .await
+        .expect("commit after rollback");
+    assert!(
+        db.entities::<Person>()
+            .get_by_iid(&reused_iid)
+            .await
+            .expect("read reused commit")
+            .is_some()
+    );
+    db.entities::<Person>()
+        .delete(&reused_iid)
+        .await
+        .expect("clean reused commit");
 
     let poison_conflict = db
         .entities::<Person>()
@@ -7110,9 +7136,9 @@ async fn sdk_models_data_model_runtime_live() {
         "post_rollback": {
             "state": "rolled_back",
             "rollback_idempotent": true,
-            "commit_rejected": true,
-            "mutation_rejected": true,
-            "close_state": "closed",
+            "commit_rejected": false,
+            "mutation_rejected": false,
+            "close_state": "committed",
             "close_idempotent": true,
         },
     });
@@ -7182,8 +7208,8 @@ async fn sdk_models_data_model_runtime_live() {
         "projected_value_close_idempotent": true,
         "projected_thing_close_idempotent": true,
     });
-    let journey_bytes =
-        fs::read(sdk_env_path("TYPE_BRIDGE_SDK_MODELS_JOURNEY")).expect("Models journey is readable");
+    let journey_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_MODELS_JOURNEY"))
+        .expect("Models journey is readable");
     let journey: Value =
         serde_json::from_slice(&journey_bytes).expect("Models journey is valid JSON");
     assert_eq!(

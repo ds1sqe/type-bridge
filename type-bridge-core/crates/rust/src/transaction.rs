@@ -218,6 +218,11 @@ impl<'db, S: Schema> WriteTransaction<'db, S> {
         self.tx.rollback().await.map_err(Error::from_orm)
     }
 
+    /// Roll back writes while retaining this transaction for more work.
+    pub async fn rollback_keep(&mut self) -> Result<()> {
+        self.tx.rollback().await.map_err(Error::from_orm)
+    }
+
     fn installed(&self) -> Result<&InstalledRuntimeProjection> {
         self.db
             .installed_schema()

@@ -1118,7 +1118,7 @@ impl PyRustTransactionContext {
         }
     }
 
-    /// Roll back this Rust transaction.
+    /// Roll back writes and retain this context for more work.
     fn rollback(&self, py: Python<'_>) -> PyResult<()> {
         provider_block_on(py, self.runtime.as_ref(), self.context.rollback()).map_err(py_orm_error)
     }

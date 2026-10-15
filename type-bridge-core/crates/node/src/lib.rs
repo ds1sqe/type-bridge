@@ -538,6 +538,7 @@ impl NodeRustTransactionContext {
         }
     }
 
+    /// Roll back writes and retain this context for more work.
     #[napi(js_name = "rollback")]
     pub fn rollback(&self) -> Result<()> {
         self.runtime
@@ -833,6 +834,62 @@ mod tests {
     use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, TransactionOps, TxType};
 
     use super::*;
+
+    struct ReusableBackend(Arc<Mutex<Vec<&'static str>>>);
+    impl DriverBackend for ReusableBackend {
+        fn open_transaction(
+            &self,
+            _: &str,
+            _: TxType,
+        ) -> BoxFuture<'_, std::result::Result<Box<dyn TransactionOps>, OrmError>> {
+            self.0.lock().unwrap().push("open");
+            let transaction = ReusableProvider(Arc::clone(&self.0));
+            Box::pin(async { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
+        }
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+    struct ReusableProvider(Arc<Mutex<Vec<&'static str>>>);
+    impl TransactionOps for ReusableProvider {
+        fn query(&mut self, _: &str) -> BoxFuture<'_, std::result::Result<QueryResult, OrmError>> {
+            self.0.lock().unwrap().push("query");
+            Box::pin(async { Ok(QueryResult::Rows(Vec::new())) })
+        }
+        fn commit(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
+            self.0.lock().unwrap().push("commit");
+            Box::pin(async { Ok(()) })
+        }
+        fn rollback(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
+            self.0.lock().unwrap().push("rollback");
+            Box::pin(async { Ok(()) })
+        }
+        fn close(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
+            self.0.lock().unwrap().push("close");
+            Box::pin(async { Ok(()) })
+        }
+    }
+    #[test]
+    fn node_transaction_queries_and_commits_after_rollback_on_the_same_provider() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let database = NodeRustDatabase {
+            db: Arc::new(type_bridge_orm::Database::with_backend(
+                Box::new(ReusableBackend(Arc::clone(&events))),
+                "test",
+            )),
+            runtime: Arc::new(ProviderRuntimeOwner::new().unwrap()),
+            managed_scope_id: None,
+        };
+        let transaction = database.transaction(Some("write".into())).unwrap();
+        transaction.query_json("before".into()).unwrap();
+        transaction.rollback().unwrap();
+        transaction.query_json("after".into()).unwrap();
+        transaction.commit().unwrap();
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["open", "query", "rollback", "query", "commit"]
+        );
+    }
 
     #[test]
     fn attribute_values_accept_the_2_2_datetime_tz_spelling() {

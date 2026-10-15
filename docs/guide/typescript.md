@@ -211,6 +211,10 @@ try {
 }
 ```
 
+A successful `rollback()` keeps the transaction usable. You can execute more
+work and commit it; call `close()` to end it without committing.
+
+
 Generated managers never commit a caller-owned transaction. Close read
 transactions after their final query terminal.
 

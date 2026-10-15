@@ -3583,15 +3583,21 @@ impl PyProjectedModelManager {
                                 mapper,
                             )
                             .await;
-                        let mark =
-                            if !nonempty || prior_state != Some(TransactionContextState::Active) {
-                                false
-                            } else if result.is_ok() {
-                                true
-                            } else {
-                                transaction.lifecycle_state().await
-                                    == TransactionContextState::RollbackOnly
-                            };
+                        let mark = if !nonempty
+                            || !matches!(
+                                prior_state,
+                                Some(
+                                    TransactionContextState::Active
+                                        | TransactionContextState::RolledBack
+                                )
+                            ) {
+                            false
+                        } else if result.is_ok() {
+                            true
+                        } else {
+                            transaction.lifecycle_state().await
+                                == TransactionContextState::RollbackOnly
+                        };
                         if mark && let Some(marker) = &successor_batch_marker {
                             marker.store(true, Ordering::Release);
                         }
@@ -3671,10 +3677,12 @@ impl PyProjectedModelManager {
                             },
                         )
                         .await;
-                    let mark = prior_state == TransactionContextState::Active
-                        && (result.is_ok()
-                            || transaction.lifecycle_state().await
-                                == TransactionContextState::RollbackOnly);
+                    let mark = matches!(
+                        prior_state,
+                        TransactionContextState::Active | TransactionContextState::RolledBack
+                    ) && (result.is_ok()
+                        || transaction.lifecycle_state().await
+                            == TransactionContextState::RollbackOnly);
                     if mark && let Some(marker) = marker {
                         marker.store(true, Ordering::Release);
                     }
@@ -3724,15 +3732,18 @@ impl PyProjectedModelManager {
                         mapper,
                     ),
                 );
-                let mark =
-                    if batch.is_empty() || prior_state != Some(TransactionContextState::Active) {
-                        false
-                    } else if result.is_ok() {
-                        true
-                    } else {
-                        provider_block_on(py, self.runtime.as_ref(), transaction.lifecycle_state())
-                            == TransactionContextState::RollbackOnly
-                    };
+                let mark = if batch.is_empty()
+                    || !matches!(
+                        prior_state,
+                        Some(TransactionContextState::Active | TransactionContextState::RolledBack)
+                    ) {
+                    false
+                } else if result.is_ok() {
+                    true
+                } else {
+                    provider_block_on(py, self.runtime.as_ref(), transaction.lifecycle_state())
+                        == TransactionContextState::RollbackOnly
+                };
                 if mark && let Some(marker) = &self.successor_batch_marker {
                     marker.store(true, Ordering::Release);
                 }
@@ -14681,6 +14692,11 @@ def failing_initialize(target, original):
 
     #[test]
     fn borrowed_successor_write_and_delete_publish_marker_before_concurrent_commit() {
+        assert_successor_marker_before_commit(false);
+        assert_successor_marker_before_commit(true);
+    }
+
+    fn assert_successor_marker_before_commit(rollback_first: bool) {
         Python::initialize();
         Python::attach(|py| {
             for operation in [
@@ -14695,6 +14711,9 @@ def failing_initialize(target, original):
                 let transaction = runtime
                     .block_on(database.transaction_context(TxType::Write))
                     .unwrap();
+                if rollback_first {
+                    runtime.block_on(transaction.rollback()).unwrap();
+                }
                 let context = PyRustTransactionContext::from_parts_for_test(
                     transaction.clone(),
                     Arc::clone(&runtime),
@@ -14778,7 +14797,7 @@ def failing_initialize(target, original):
                 assert_eq!(state.opens, [TxType::Write]);
                 assert_eq!(state.legacy_commits, 0);
                 assert_eq!(state.commits, 1);
-                assert_eq!(state.rollbacks, 0);
+                assert_eq!(state.rollbacks, usize::from(rollback_first));
                 assert_eq!(
                     state.calls.len(),
                     if operation == ProjectedBatchOperation::Insert {

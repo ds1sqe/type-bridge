@@ -150,7 +150,8 @@ write.commit().await?;
 ```
 
 Dropping an open write transaction never commits it; `commit` and `rollback`
-consume the transaction.
+consume the transaction. Use `rollback_keep(&mut self)` to discard writes and
+continue using the same transaction before an explicit commit.
 
 ## Exact manager filters
 

@@ -2511,11 +2511,20 @@ const _: unsafe extern "C" fn(
     *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus = type_bridge_write_transaction_commit_v2_impl;
 
-/// Roll back one write transaction exactly once and clear its owner slot.
+/// Roll back one write transaction and clear its owner slot.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_write_transaction_rollback(
     transaction: *mut *mut TypeBridgeWriteTransaction,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: the shared implementation validates both caller-owned slots.
+    unsafe { rollback_write_transaction(transaction, out_diagnostics, false) }
+}
+
+unsafe fn rollback_write_transaction(
+    transaction: *mut *mut TypeBridgeWriteTransaction,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+    keep_open: bool,
 ) -> TypeBridgeStatus {
     if transaction.is_null() || out_diagnostics.is_null() {
         return TypeBridgeStatus::InvalidArgument;
@@ -2543,19 +2552,27 @@ pub unsafe extern "C" fn type_bridge_write_transaction_rollback(
         }
         // Consume before provider dispatch so unwinding cannot leave a hollow
         // non-null C handle or retain the database child count.
-        let mut handle = unsafe { Box::from_raw(value) };
+        let handle = unsafe { Box::from_raw(value) };
         unsafe { transaction.write(ptr::null_mut()) };
-        let context = handle.state.context.take();
+        let context = handle.state.context.as_ref();
         let result = context.map(|context| {
-            handle
-                .state
-                .database
-                .runtime
-                .runtime
-                .block_on(context.rollback())
+            handle.state.database.runtime.runtime.block_on(async {
+                let rollback = context.rollback().await;
+                if keep_open {
+                    rollback
+                } else {
+                    let close = context.close().await;
+                    rollback.and(close)
+                }
+            })
         });
-        drop(handle);
         match result {
+            Some(Ok(())) if keep_open => {
+                handle.state.poisoned.store(false, Ordering::Release);
+                // Restore the same owner only after the provider rollback succeeded.
+                unsafe { transaction.write(Box::into_raw(handle)) };
+                TypeBridgeStatus::Ok
+            }
             None | Some(Ok(())) => TypeBridgeStatus::Ok,
             Some(Err(error)) => return_execution_error(
                 lower_execution_error(error, SdkProviderOperation::Rollback),
@@ -2565,15 +2582,14 @@ pub unsafe extern "C" fn type_bridge_write_transaction_rollback(
     })
 }
 
-/// Close an active write transaction by rolling it back and clear its owner slot.
+/// Roll back and close a write transaction, clearing its owner slot.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_write_transaction_close(
     transaction: *mut *mut TypeBridgeWriteTransaction,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
-    // Active close has the same fail-closed provider semantics as explicit rollback.
-    // SAFETY: forwarded pointer-to-pointer ownership contract is documented publicly.
-    unsafe { type_bridge_write_transaction_rollback(transaction, out_diagnostics) }
+    // SAFETY: the shared implementation validates both caller-owned slots.
+    unsafe { rollback_write_transaction(transaction, out_diagnostics, false) }
 }
 
 #[cfg(test)]
@@ -2902,7 +2918,7 @@ entities:
             let state = Arc::clone(&self.state);
             let tx_type = self.tx_type;
             Box::pin(async move {
-                assert_eq!(tx_type, TxType::Read);
+                assert!(matches!(tx_type, TxType::Read | TxType::Write));
                 state.transaction_closes.fetch_add(1, Ordering::AcqRel);
                 assert!(
                     !state.panic_transaction_close.load(Ordering::Acquire),
@@ -5117,6 +5133,53 @@ entities:
             unsafe { type_bridge_cancellation_close(&mut cancellation) },
             TypeBridgeStatus::Ok
         );
+        assert_eq!(
+            unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_runtime_close(&mut runtime, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_schema_package_close(&mut package) },
+            TypeBridgeStatus::Ok
+        );
+    }
+
+    #[test]
+    fn successful_rollback_consumes_the_write_handle() {
+        let state = Arc::new(FakeState::default());
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
+        let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "reuse")));
+        let (mut database, mut diagnostics, status) =
+            unsafe { open_database(runtime, package, ptr::null()) };
+        assert_eq!(status, TypeBridgeStatus::Ok);
+        let mut transaction = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_write_transaction_open(
+                    database,
+                    ptr::null(),
+                    &mut transaction,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_write_transaction_rollback(&mut transaction, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert!(transaction.is_null());
+        assert_eq!(state.rollbacks.load(Ordering::Acquire), 1);
+        assert_eq!(state.transaction_closes.load(Ordering::Acquire), 1);
+        assert_eq!(
+            unsafe { type_bridge_write_transaction_rollback(&mut transaction, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert!(transaction.is_null());
+        assert_eq!(state.commits.load(Ordering::Acquire), 0);
         assert_eq!(
             unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },
             TypeBridgeStatus::Ok

@@ -136,6 +136,9 @@ runs under its own limits constrained by it, and limit values are kept or
 refused, never clamped. Manager terminals run only on a database or a read
 transaction.
 
+ABI 1.6 rollback consumes the write transaction and clears its owner slot,
+just like commit and close. Keep-open rollback requires the later ABI 1.7 API.
+
 ### Caller-owned exchange
 
 A host that owns the route to the server (its own HTTP stack, a message bus,

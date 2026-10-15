@@ -2335,6 +2335,15 @@ def sdk_models_data_model_runtime_live(
             raise RuntimeError("V3 rollback sentinel")
     assert not person_manager.filter(identifier=generated.Identifier("data-rollback")).exists()
 
+    reused = person("data-rollback-reuse", 32)
+    with clean_db.transaction("write") as transaction:
+        transaction_manager = generated.Person.manager(transaction)
+        transaction.rollback()
+        transaction_manager.insert(reused)
+        transaction.commit()
+    assert person_manager.get_by_iid(reused.iid) is not None
+    person_manager.delete(reused)
+
     resource_session = blocking(generated.Person.query(clean_db))
     resource_person = resource_session.exact(generated.Person)
     filter_resource = resource_session.query(resource_person).where(
@@ -2609,9 +2618,9 @@ def sdk_models_data_model_runtime_live(
             "post_rollback": {
                 "state": "rolled_back",
                 "rollback_idempotent": True,
-                "commit_rejected": True,
-                "mutation_rejected": True,
-                "close_state": "closed",
+                "commit_rejected": False,
+                "mutation_rejected": False,
+                "close_state": "committed",
                 "close_idempotent": True,
             },
         },

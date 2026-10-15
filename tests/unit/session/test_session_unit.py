@@ -672,3 +672,17 @@ class TestDriverInjection:
         db = Database(database="test_db", driver=mock_driver)
 
         assert db.delete_database_outcome() == "deleted"
+
+
+def test_rust_context_rollback_remains_open_for_work_and_commit() -> None:
+    context = TransactionContext(Database(), TransactionType.WRITE)
+    native = MagicMock()
+    context._rust_tx = native
+    context.rollback()
+    assert context.transaction.is_open
+    context.execute("insert $x isa marker;")
+    context.commit()
+    native.rollback.assert_called_once()
+    native.execute.assert_called_once_with("insert $x isa marker;")
+    native.commit.assert_called_once()
+    assert not context.transaction.is_open

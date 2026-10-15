@@ -1382,7 +1382,7 @@ mod tests {
     };
     use crate::runtime::{
         type_bridge_cancellation_close, type_bridge_cancellation_open,
-        type_bridge_cancellation_request, type_bridge_write_transaction_rollback,
+        type_bridge_cancellation_request, type_bridge_write_transaction_close,
     };
 
     const BATCH_SCHEMA: &str = r#"format: typebridge.schema/v2
@@ -2374,7 +2374,7 @@ plays:
                 assert_eq!(
                     // SAFETY: the transaction owner and diagnostics slots are live.
                     unsafe {
-                        type_bridge_write_transaction_rollback(&mut transaction, &mut diagnostics)
+                        type_bridge_write_transaction_close(&mut transaction, &mut diagnostics)
                     },
                     TypeBridgeStatus::Ok
                 );
@@ -2492,8 +2492,8 @@ plays:
         close_result(&mut result);
         assert!(state.lock().unwrap().calls.is_empty());
         assert_eq!(
-            // SAFETY: rollback consumes the live borrowed transaction.
-            unsafe { type_bridge_write_transaction_rollback(&mut transaction, &mut diagnostics) },
+            // SAFETY: close rolls back and consumes the live borrowed transaction.
+            unsafe { type_bridge_write_transaction_close(&mut transaction, &mut diagnostics) },
             TypeBridgeStatus::Ok
         );
         assert!(diagnostics.is_null());
@@ -2693,8 +2693,8 @@ plays:
         close_diagnostics(&mut diagnostics);
         assert!(state.lock().unwrap().calls.is_empty());
         assert_eq!(
-            // SAFETY: rollback consumes the still-live poisoned transaction.
-            unsafe { type_bridge_write_transaction_rollback(&mut transaction, &mut diagnostics) },
+            // SAFETY: close rolls back and consumes the still-live poisoned transaction.
+            unsafe { type_bridge_write_transaction_close(&mut transaction, &mut diagnostics) },
             TypeBridgeStatus::Ok
         );
         assert!(diagnostics.is_null());
@@ -2795,8 +2795,8 @@ plays:
             assert_eq!(state.rollbacks, 0);
         }
         assert_eq!(
-            // SAFETY: rollback consumes rollback-only transaction ownership.
-            unsafe { type_bridge_write_transaction_rollback(&mut transaction, &mut diagnostics) },
+            // SAFETY: close rolls back and consumes rollback-only transaction ownership.
+            unsafe { type_bridge_write_transaction_close(&mut transaction, &mut diagnostics) },
             TypeBridgeStatus::Ok
         );
         assert!(diagnostics.is_null());

@@ -427,6 +427,7 @@ export declare class RustTransactionContext {
     private constructor();
     query(query: string): unknown[];
     commit(): void;
+    /** Roll back writes and keep this transaction usable. */
     rollback(): void;
     close(): void;
     transactionType(): TransactionType;
