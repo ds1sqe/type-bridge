@@ -184,6 +184,11 @@ pass=0
 fail=0
 failures=()
 
+# Keep test binaries and compiler descendants inside the same deadline.
+run_with_timeout() {
+    timeout --kill-after=5s "$@"
+}
+
 run_step() {
     local name="$1"
     shift
@@ -609,7 +614,7 @@ run_live_migration_steps() {
             continue
         fi
         run_step "cargo test -p type-bridge-cli --test e2e_workspace_live $cli_live_test" \
-            timeout --foreground 10m \
+            run_with_timeout 10m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
                 TYPE_BRIDGE_TEST_PYTHON="$ROOT/.venv/bin/python" \
                 "${migration_profile_env[@]}" \
@@ -620,7 +625,7 @@ run_live_migration_steps() {
 
     printf "${BOLD}━━━ Connected migration recovery (integration) ━━━${RESET}\n\n"
     run_step "connected rollback and reapply lifecycle" \
-        timeout --foreground 10m \
+        run_with_timeout 10m \
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE="type_bridge_local_rollback_${$}" \
             "${migration_profile_env[@]}" \
@@ -629,7 +634,7 @@ run_live_migration_steps() {
             --manifest-path type-bridge-core/Cargo.toml --locked \
             -p type-bridge-schema-migration-typedb --test live_runner
     run_step "interrupted-plan fenced recovery lifecycle" \
-        timeout --foreground 10m \
+        run_with_timeout 10m \
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE="type_bridge_local_recovery_${$}" \
             "${migration_profile_env[@]}" \
@@ -811,7 +816,7 @@ run_live_lane() {
 
     printf "${BOLD}━━━ Rust (integration) ━━━${RESET}\n\n"
     run_step "cargo test -p type-bridge-orm --features integration-tests --test integration" \
-        timeout --foreground 15m \
+        run_with_timeout 15m \
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
         cargo test --manifest-path type-bridge-core/Cargo.toml \
         -p type-bridge-orm --features integration-tests --test integration -- \
@@ -819,7 +824,7 @@ run_live_lane() {
 
     printf "${BOLD}━━━ Production V2 server (integration) ━━━${RESET}\n\n"
     run_step "type-bridge-server V1 + V2 live smoke" \
-        timeout --foreground 10m \
+        run_with_timeout 10m \
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
         bash scripts/ci/run_exact_ignored_rust_test.sh \
             production_binary_serves_v1_health_and_v2_query \
@@ -828,7 +833,7 @@ run_live_lane() {
             --test v2_query_integration_tests
 
     run_step "type-bridge-server fetch write commit failure regression" \
-        timeout --foreground 10m \
+        run_with_timeout 10m \
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
         bash scripts/ci/run_exact_ignored_rust_test.sh \
             fetch_write_commit_failure_reaches_driver_and_v1_query \
@@ -837,7 +842,7 @@ run_live_lane() {
             --test v2_query_integration_tests
 
     run_step "type-bridge-server classified commit certainty regression" \
-        timeout --foreground 10m \
+        run_with_timeout 10m \
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
         bash scripts/ci/run_exact_ignored_rust_test.sh \
             typedb::client::tests::integration_classified_commit_isolation_conflict \
@@ -848,7 +853,7 @@ run_live_lane() {
     # Connects without an HTTP port, so discovery takes the band-8 gRPC
     # fallback and must reach the lane server's own band.
     run_step "runtime gRPC-only fallback discovery" \
-        timeout --foreground 10m \
+        run_with_timeout 10m \
         env TYPEDB_GRPC_FALLBACK_ADDRESS="$TYPEDB_ADDRESS" \
             TYPEDB_GRPC_FALLBACK_VERSION="$typedb_server_version" \
         cargo test --manifest-path type-bridge-core/Cargo.toml \
@@ -865,7 +870,7 @@ run_live_lane() {
                 -- --exact
     fi
     run_step "generated Rust application parity" \
-        timeout --foreground 10m \
+        run_with_timeout 10m \
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE="type_bridge_rust_projection_live_${$}" \
             ACCEPTANCE_TARGET_DIR="$ROOT/type-bridge-core/target/tmp_projection_live_target" \
@@ -878,7 +883,7 @@ run_live_lane() {
     if [[ "$lane_in_sdk_matrix" == 1 ]]; then
         printf "${BOLD}━━━ C runtime transactions (integration) ━━━${RESET}\n\n"
         run_step "compiled C17 runtime and transaction lifecycle" \
-            timeout --foreground 10m \
+            run_with_timeout 10m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
                 TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
                 TYPE_BRIDGE_C_INTG_DATABASE="type_bridge_c_runtime_live_${$}" \
@@ -898,7 +903,7 @@ run_live_lane() {
                     -- --exact
         fi
         run_step "compiled generated C17 Person and Membership CRUD lifecycle" \
-            timeout --foreground 10m \
+            run_with_timeout 10m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
                 TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE="type_bridge_c_projection_live_${$}" \
                 ACCEPTANCE_TARGET_DIR="$ROOT/type-bridge-core/target/tmp_c_projection_live_target" \
@@ -919,7 +924,7 @@ run_live_lane() {
             "$typedb_server_version"
         printf "${BOLD}━━━ Unsupported-server migration refusal (integration) ━━━${RESET}\n\n"
         run_step "unsupported migration apply creates no databases" \
-            timeout --foreground 10m \
+            run_with_timeout 10m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             bash scripts/ci/run_exact_ignored_rust_test.sh \
                 unsupported_server_apply_creates_neither_database_live \
@@ -943,7 +948,7 @@ run_live_lane() {
                 type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
     fi
     run_step "pytest -m integration" \
-        timeout --foreground 20m \
+        run_with_timeout 20m \
         env USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             "${sdk_python_env[@]}" \
         uv run pytest -m integration --tb=short "${pytest_args[@]}"
@@ -955,7 +960,7 @@ run_live_lane() {
         native="$ROOT/$native"
     fi
     run_step "npm run test:integration" \
-        timeout --foreground 15m \
+        run_with_timeout 15m \
         bash -c "cd '$NODE_DIR' && TYPE_BRIDGE_NODE_NATIVE_PATH='$native' \
             USE_DOCKER=false TYPEDB_ADDRESS='$TYPEDB_ADDRESS' TYPEDB_HTTP_PORT='$TYPEDB_HTTP_PORT' \
             TYPEDB_VERSION='$typedb_server_version' \
@@ -974,7 +979,7 @@ run_live_lane() {
             node type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/check.mjs
     fi
     run_step "npm run test:projection-integration" \
-        timeout --foreground 15m \
+        run_with_timeout 15m \
         env TYPE_BRIDGE_NODE_NATIVE_PATH="$native" \
             USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" \
             TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
@@ -1082,7 +1087,7 @@ run_tls_transport_steps() {
 
     if [[ "$required_topology" == 1 ]]; then
         run_step "TLS runtime HTTP + gRPC lifecycle" \
-            timeout --foreground 10m \
+            run_with_timeout 10m \
             env TYPEDB_TLS_ADDRESS="$tls_address" \
                 TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
                 TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
@@ -1097,7 +1102,7 @@ run_tls_transport_steps() {
                 -- --nocapture --test-threads=1
 
         run_step "TLS generated Rust application parity" \
-            timeout --foreground 10m \
+            run_with_timeout 10m \
             env TYPEDB_ADDRESS="$tls_address" \
                 TYPEDB_HTTP_PORT="$tls_http_port" \
                 TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
@@ -1111,7 +1116,7 @@ run_tls_transport_steps() {
                 -p type-bridge-schema-codegen --test rust_projection_live
 
         run_step "TLS ordered generated Python + Node manager parity" \
-            timeout --foreground 20m \
+            run_with_timeout 20m \
             env TYPEDB_TLS_ADDRESS="$tls_address" \
                 TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
                 TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
@@ -1120,7 +1125,7 @@ run_tls_transport_steps() {
     else
         printf "${CYAN}External TLS runtime proof is custom-root only; native-root and exact-topology assertions require the isolated lane.${RESET}\n\n"
         run_step "TLS runtime HTTP + gRPC lifecycle (external custom-root)" \
-            timeout --foreground 10m \
+            run_with_timeout 10m \
             env TYPEDB_TLS_ADDRESS="$tls_address" \
                 TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
                 TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
@@ -1130,7 +1135,7 @@ run_tls_transport_steps() {
     fi
 
     run_step "TLS CLI workspace migration apply + verify" \
-        timeout --foreground 10m \
+        run_with_timeout 10m \
         env TYPEDB_TLS_ADDRESS="$tls_address" \
             TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
             TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
@@ -1141,7 +1146,7 @@ run_tls_transport_steps() {
             -p type-bridge-cli --test e2e_workspace_live
 
     run_step "TLS Python local query + HTTPS remote envelope" \
-        timeout --foreground 10m \
+        run_with_timeout 10m \
         env TYPEDB_TLS_ADDRESS="$tls_address" \
             TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
             TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
@@ -1153,7 +1158,7 @@ run_tls_transport_steps() {
             -m integration --tb=short -q
 
     run_step "TLS generated Python application parity" \
-        timeout --foreground 10m \
+        run_with_timeout 10m \
         env USE_DOCKER=false \
             TYPEDB_ADDRESS="$tls_address" \
             TYPEDB_HTTP_PORT="$tls_http_port" \
@@ -1166,7 +1171,7 @@ run_tls_transport_steps() {
             -m integration --tb=short -q
 
     run_step "TLS Node local query + HTTPS remote envelope" \
-        timeout --foreground 10m \
+        run_with_timeout 10m \
         env TYPE_BRIDGE_NODE_NATIVE_PATH="$node_native" \
             TYPEDB_TLS_ADDRESS="$tls_address" \
             TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
@@ -1178,7 +1183,7 @@ run_tls_transport_steps() {
             tests/integration/queries/query-v2-smoke.test.js
 
     run_step "TLS generated Node application parity" \
-        timeout --foreground 10m \
+        run_with_timeout 10m \
         env TYPE_BRIDGE_NODE_NATIVE_PATH="$node_native" \
             TYPEDB_ADDRESS="$tls_address" \
             TYPEDB_VERSION="$lane_server" \
@@ -1246,14 +1251,14 @@ run_upgrade_lane() {
         "TYPE_BRIDGE_MIGRATION_UPGRADE_TO_HTTP_PORT=$to_http_port"
     )
     run_step "connected history crosses a profile bridge and replays on 3.13.6" \
-        timeout --foreground 10m \
+        run_with_timeout 10m \
         env "${upgrade_env[@]}" \
         bash scripts/ci/run_exact_ignored_rust_test.sh \
             runner_upgrades_a_3_12_history_to_3_13_at_a_profile_bridge_and_replays_it \
             --manifest-path type-bridge-core/Cargo.toml --locked \
             -p type-bridge-schema-migration-typedb --test live_profile_upgrade
     run_step "CLI upgrade-profile moves a 3.12 history to 3.13" \
-        timeout --foreground 10m \
+        run_with_timeout 10m \
         env "${upgrade_env[@]}" \
         bash scripts/ci/run_exact_ignored_rust_test.sh \
             upgrade_profile_moves_a_3_12_history_to_3_13_live \

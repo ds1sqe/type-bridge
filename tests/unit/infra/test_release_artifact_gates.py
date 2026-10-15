@@ -1033,7 +1033,7 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
     assert "timeout-minutes: 30" in rust_integration
     assert "uv sync --no-dev" in rust_integration
     assert "TYPE_BRIDGE_TEST_PYTHON: ${{ github.workspace }}/.venv/bin/python" in rust_integration
-    assert test_script.count("timeout --foreground") >= 6
+    assert test_script.count("run_with_timeout ") >= 6
 
 
 def test_generated_and_low_level_queries_are_required_in_the_tls_lane() -> None:

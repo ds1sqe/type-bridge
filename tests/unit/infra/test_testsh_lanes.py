@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import os
+import shutil
+import signal
 import subprocess
+import time
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -157,3 +161,53 @@ def test_migration_steps_forward_profile_and_gate_documented_examples(profile: s
     else:
         assert not any(line.startswith("cargo test") and examples in line for line in lines)
         assert "examples require typedb-3.13.6/v1" in result.stdout
+
+
+@pytest.mark.skipif(os.name != "posix" or shutil.which("timeout") is None, reason="GNU timeout")
+def test_step_timeout_terminates_and_reaps_a_descendant(tmp_path: Path) -> None:
+    source = TEST_SH.read_text()
+    start = source.index("run_with_timeout() {")
+    helper = source[start : source.index("\n}\n", start) + 3]
+    ready = tmp_path / "ready"
+    worker = tmp_path / "worker.sh"
+    worker.write_text(
+        "sleep 3600 &\n"
+        "child=$!\n"
+        "trap 'wait \"$child\"; exit 0' TERM\n"
+        'printf \'%s %s\' "$PPID" "$child" > "$1"\n'
+        'wait "$child"\n'
+    )
+    process = subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            helper + '\nrun_with_timeout 1h bash "$1" "$2"',
+            "_",
+            str(worker),
+            str(ready),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    timeout_pid = None
+    try:
+        deadline = time.monotonic() + 60
+        while not ready.exists() or not ready.read_text():
+            assert process.poll() is None
+            assert time.monotonic() < deadline, "timeout worker did not become ready"
+            time.sleep(0.01)
+        timeout_pid, descendant = map(int, ready.read_text().split())
+        # Trigger the real timeout path after the descendant is known to exist.
+        os.kill(timeout_pid, signal.SIGALRM)
+        _, stderr = process.communicate(timeout=60)
+        assert process.returncode == 124, stderr
+        with pytest.raises(ProcessLookupError):
+            os.kill(descendant, 0)
+    finally:
+        for group in (process.pid, timeout_pid):
+            if group is not None:
+                with suppress(ProcessLookupError):
+                    os.killpg(group, signal.SIGKILL)
+        process.wait(timeout=60)
