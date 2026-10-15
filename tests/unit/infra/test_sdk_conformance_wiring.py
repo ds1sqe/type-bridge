@@ -63,7 +63,7 @@ def test_local_sha_step_validates_every_report_and_summary(tmp_path: Path, inval
         )
     else:
         assert result.returncode == 0, result.stderr
-        assert "sdk-v2 pending_manifest_promotions=[]" in result.stdout
+        assert "queries pending_manifest_promotions=[]" in result.stdout
         for path in paths:
             assert f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path}" in result.stdout
 
