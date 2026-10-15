@@ -22,6 +22,7 @@ band8 = ["dep:type-bridge-typedb-driver-b8", "dep:chrono"]
 band9 = ["dep:typedb-driver", "dep:chrono", "dep:chrono-tz"]
 
 [dependencies]
+type-bridge-contract = { path = "../contract", version = "2.2.6" }
 type-bridge-core-lib = { path = "../core", version = "2.2.6" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }

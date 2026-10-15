@@ -1439,43 +1439,118 @@ pub(crate) fn parse_version_response(json: &str) -> Result<Version, VersionError
 // HTTP probe (network)
 // ---------------------------------------------------------------------------
 
-fn server_version_request(request: ureq::Request, url: &str) -> Result<Version, VersionError> {
-    server_version_request_with_timeout(request, url, VERSION_PROBE_TIMEOUT)
+use type_bridge_contract::failure::TransportKind;
+
+const UNREACHABLE_PREFIX: &str = "could not reach TypeDB HTTP version endpoint: ";
+const UNREACHABLE_GUIDANCE: &str =
+    "; ensure the TypeDB HTTP endpoint is reachable and that the port is correct";
+
+/// Request failure with TypeBridge-owned guidance; the URL and provider prose stay out.
+fn probe_unreachable(kind: TransportKind) -> VersionError {
+    VersionError::Probe(format!(
+        "{UNREACHABLE_PREFIX}{}{UNREACHABLE_GUIDANCE}",
+        kind.description()
+    ))
+}
+
+fn probe_transport_failure(kind: TransportKind) -> VersionError {
+    VersionError::Probe(format!(
+        "HTTP version request failed: {}",
+        kind.description()
+    ))
+}
+
+fn transport_source_kind(
+    error: &(dyn std::error::Error + 'static),
+    remaining: u8,
+) -> Option<TransportKind> {
+    if remaining == 0 {
+        return None;
+    }
+    if error.is::<rustls::Error>() {
+        return Some(TransportKind::Tls);
+    }
+    if let Some(error) = error.downcast_ref::<std::io::Error>() {
+        if let Some(kind) = error
+            .get_ref()
+            .and_then(|source| transport_source_kind(source, remaining - 1))
+        {
+            return Some(kind);
+        }
+        let kind = match error.kind() {
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => TransportKind::Timeout,
+            std::io::ErrorKind::ConnectionRefused => TransportKind::Unavailable,
+            std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::NotConnected => TransportKind::Closed,
+            _ => TransportKind::Other,
+        };
+        if kind != TransportKind::Other {
+            return Some(kind);
+        }
+    }
+    error
+        .source()
+        .and_then(|source| transport_source_kind(source, remaining - 1))
+}
+
+fn io_transport_kind(error: &std::io::Error) -> Option<TransportKind> {
+    transport_source_kind(error, 8)
+}
+
+fn http_transport_kind(error: &ureq::Error) -> TransportKind {
+    if let Some(kind) = transport_source_kind(error, 8) {
+        return kind;
+    }
+    match error {
+        ureq::Error::Status(401 | 403, _) => TransportKind::Authentication,
+        ureq::Error::Status(408 | 504, _) => TransportKind::Timeout,
+        ureq::Error::Status(502 | 503, _) => TransportKind::Unavailable,
+        ureq::Error::Transport(error) => match error.kind() {
+            ureq::ErrorKind::Dns
+            | ureq::ErrorKind::ConnectionFailed
+            | ureq::ErrorKind::ProxyConnect => TransportKind::Unavailable,
+            ureq::ErrorKind::ProxyUnauthorized => TransportKind::Authentication,
+            ureq::ErrorKind::InsecureRequestHttpsOnly => TransportKind::Tls,
+            _ => TransportKind::Other,
+        },
+        _ => TransportKind::Other,
+    }
+}
+
+fn server_version_request(request: ureq::Request) -> Result<Version, VersionError> {
+    server_version_request_with_timeout(request, VERSION_PROBE_TIMEOUT)
 }
 
 fn server_version_request_with_timeout(
     request: ureq::Request,
-    url: &str,
     timeout: Duration,
 ) -> Result<Version, VersionError> {
-    let response = request.timeout(timeout).call().map_err(|e| {
-        VersionError::Probe(format!(
-            "could not reach TypeDB HTTP version endpoint at {url}; \
-                 ensure the TypeDB HTTP endpoint is reachable and that the port is correct: {e}"
-        ))
-    })?;
+    let response = request
+        .timeout(timeout)
+        .call()
+        .map_err(|error| probe_unreachable(http_transport_kind(&error)))?;
     let mut response_body = Vec::with_capacity(MAX_VERSION_RESPONSE_BYTES + 1);
     response
         .into_reader()
         .take((MAX_VERSION_RESPONSE_BYTES + 1) as u64)
         .read_to_end(&mut response_body)
-        .map_err(|e| {
-            VersionError::Probe(format!("failed to read response body from {url}: {e}"))
+        .map_err(|error| {
+            probe_transport_failure(io_transport_kind(&error).unwrap_or(TransportKind::Other))
         })?;
     if response_body.len() > MAX_VERSION_RESPONSE_BYTES {
         return Err(VersionError::Probe(format!(
-            "version response exceeds the {MAX_VERSION_RESPONSE_BYTES}-byte limit \
-             (endpoint: {url})"
+            "HTTP version response exceeds the {MAX_VERSION_RESPONSE_BYTES}-byte limit"
         )));
     }
-    let response_body = std::str::from_utf8(&response_body).map_err(|_| {
-        VersionError::Probe(format!(
-            "version response is not valid UTF-8 (endpoint: {url})"
-        ))
-    })?;
+    let response_body = std::str::from_utf8(&response_body)
+        .map_err(|_| VersionError::Probe("HTTP version response is not valid UTF-8".to_owned()))?;
 
     parse_version_response(response_body).map_err(|e| match e {
-        VersionError::Probe(msg) => VersionError::Probe(format!("{msg} (endpoint: {url})")),
+        VersionError::Probe(_) => {
+            VersionError::Probe("HTTP version response is invalid".to_owned())
+        }
         other => other,
     })
 }
@@ -1495,7 +1570,7 @@ pub fn server_version_plaintext(
     http_port: u16,
 ) -> Result<Version, VersionProbeError> {
     let url = version_endpoint(address, http_port, false);
-    server_version_request(plaintext_agent().get(&url), &url).map_err(VersionProbeError::Probe)
+    server_version_request(plaintext_agent().get(&url)).map_err(VersionProbeError::Probe)
 }
 
 /// Query the TypeDB HTTP API over HTTPS using native system trust roots.
@@ -1514,7 +1589,7 @@ pub fn server_version_native_roots(
 ) -> Result<Version, VersionProbeError> {
     let agent = tls_agent(native_root_store()?)?;
     let url = version_endpoint(address, http_port, true);
-    server_version_request(agent.get(&url), &url).map_err(VersionProbeError::Probe)
+    server_version_request(agent.get(&url)).map_err(VersionProbeError::Probe)
 }
 
 /// Query the TypeDB HTTP API over HTTPS using only a custom root CA bundle.
@@ -1549,7 +1624,7 @@ pub fn server_version_retained_custom_root_ca(
 ) -> Result<Version, VersionProbeError> {
     let agent = tls_agent(material.root_store())?;
     let url = version_endpoint(address, http_port, true);
-    server_version_request(agent.get(&url), &url).map_err(VersionProbeError::Probe)
+    server_version_request(agent.get(&url)).map_err(VersionProbeError::Probe)
 }
 
 /// Query the TypeDB HTTP API for the server version.
@@ -1630,6 +1705,47 @@ pub enum VersionError {
 /// Human-readable window string used consistently in error messages.
 const WINDOW_HUMAN: &str = "3.11.0–3.13.x";
 
+impl VersionError {
+    /// Retain fixed HTTP probe diagnoses and locally authored version evidence.
+    /// Unrecognized legacy probe strings may contain provider values.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn redacted_probe_description(&self) -> String {
+        match self {
+            Self::Probe(message) => {
+                let fixed_transport = message
+                    .strip_prefix("HTTP version request failed: ")
+                    .or_else(|| {
+                        message
+                            .strip_prefix(UNREACHABLE_PREFIX)
+                            .and_then(|rest| rest.strip_suffix(UNREACHABLE_GUIDANCE))
+                    })
+                    .and_then(TransportKind::from_description)
+                    .is_some();
+                if fixed_transport
+                    || message
+                        == &format!(
+                            "HTTP version response exceeds the {MAX_VERSION_RESPONSE_BYTES}-byte limit"
+                        )
+                    || matches!(
+                        message.as_str(),
+                        "HTTP version response is not valid UTF-8"
+                            | "HTTP version response is invalid"
+                    )
+                {
+                    message.clone()
+                } else {
+                    format!(
+                        "HTTP version request failed: {}",
+                        TransportKind::Other.description()
+                    )
+                }
+            }
+            _ => self.to_string(),
+        }
+    }
+}
+
 impl fmt::Display for VersionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1686,6 +1802,94 @@ impl std::error::Error for VersionError {}
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod transport_diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn http_transport_sources_keep_only_fixed_kinds() {
+        let cases = [
+            (
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "SECRET_SENTINEL"),
+                TransportKind::Timeout,
+            ),
+            (
+                std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "SECRET_SENTINEL"),
+                TransportKind::Unavailable,
+            ),
+            (
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    rustls::Error::General("SECRET_SENTINEL".to_owned()),
+                ),
+                TransportKind::Tls,
+            ),
+            (
+                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "SECRET_SENTINEL"),
+                TransportKind::Closed,
+            ),
+            (
+                std::io::Error::other("SECRET_SENTINEL timeout TLS"),
+                TransportKind::Other,
+            ),
+        ];
+        for (error, expected) in cases {
+            let error = ureq::Error::from(error);
+            let kind = http_transport_kind(&error);
+            assert_eq!(kind, expected);
+            let retained = probe_transport_failure(kind);
+            assert_eq!(
+                retained.redacted_probe_description(),
+                format!("HTTP version request failed: {}", kind.description())
+            );
+            assert!(!format!("{retained:?}").contains("SECRET_SENTINEL"));
+            let unreachable = probe_unreachable(kind);
+            assert_eq!(
+                unreachable.redacted_probe_description(),
+                format!(
+                    "could not reach TypeDB HTTP version endpoint: {}; ensure the TypeDB HTTP \
+                     endpoint is reachable and that the port is correct",
+                    kind.description()
+                )
+            );
+        }
+        let unauthorized = ureq::Error::Status(
+            401,
+            ureq::Response::new(401, "SECRET_SENTINEL", "SECRET_SENTINEL").unwrap(),
+        );
+        assert_eq!(
+            http_transport_kind(&unauthorized),
+            TransportKind::Authentication
+        );
+        assert!(
+            !probe_unreachable(http_transport_kind(&unauthorized))
+                .to_string()
+                .contains("SECRET_SENTINEL")
+        );
+    }
+
+    #[test]
+    fn local_version_evidence_survives_and_unrecognized_probe_values_do_not() {
+        let local = VersionError::Unsupported {
+            component: "server",
+            found: Version::new(3, 99, 0),
+        };
+        assert_eq!(local.redacted_probe_description(), local.to_string());
+        let remote = VersionError::Probe("SECRET_SENTINEL timeout TLS".to_owned());
+        assert_eq!(
+            remote.redacted_probe_description(),
+            "HTTP version request failed: other transport"
+        );
+        let forged = VersionError::Probe(format!(
+            "{UNREACHABLE_PREFIX}timeout SECRET_SENTINEL{UNREACHABLE_GUIDANCE}"
+        ));
+        assert_eq!(
+            forged.redacted_probe_description(),
+            "HTTP version request failed: other transport"
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -2389,9 +2593,8 @@ mod tests {
         let url = format!("http://127.0.0.1:{port}/v1/version");
         let started = std::time::Instant::now();
 
-        let error =
-            server_version_request_with_timeout(ureq::get(&url), &url, Duration::from_millis(25))
-                .expect_err("the response read must honor the overall request timeout");
+        let error = server_version_request_with_timeout(ureq::get(&url), Duration::from_millis(25))
+            .expect_err("the response read must honor the overall request timeout");
         let elapsed = started.elapsed();
         server
             .join()

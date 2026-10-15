@@ -1,0 +1,1 @@
+[CXN06] Connection Error: The connection has been closed unexpectedly and no further operation is allowed.

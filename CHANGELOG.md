@@ -9,6 +9,14 @@ All notable changes to TypeBridge will be documented in this file.
 - A close failure after a successful commit is logged and no longer reported
   as an error: the write is durable, and reporting failure invited duplicate
   retries.
+- TypeDB-origin errors now expose a bracketed code and fixed description instead
+  of provider prose, including ordinary SDK errors, debug output, HTTP messages,
+  migration diagnostics and Rust source chains. Exception classes, error
+  variants, HTTP statuses and C ABI 1.6 statuses are unchanged. Query values,
+  credentials and endpoint text are excluded. Locally authored validation and
+  application transport errors retain their existing messages.
+- TypeDB transport failures keep a fixed failure kind and the operation name.
+
 
 ### Tests
 

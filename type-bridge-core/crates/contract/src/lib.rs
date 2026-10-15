@@ -16,6 +16,8 @@ pub mod decimal;
 pub mod diagnostic;
 /// One parser per closed enum and the `unknown_enum_value` diagnostic.
 pub mod enum_spelling;
+/// Value-only typed provider failures.
+pub mod failure;
 /// Domain-separated fingerprint algorithms and values.
 pub mod fingerprint;
 /// Validated typed identifier primitives.

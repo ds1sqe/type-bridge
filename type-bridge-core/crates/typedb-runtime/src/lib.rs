@@ -46,6 +46,10 @@ use typedb_driver::{
     TransactionType as B9TransactionType, TypeDBDriver as B9Driver,
 };
 
+/// Typed provider failure classification and redaction.
+pub mod failure;
+use failure::{Failure, redact_provider_error, redacted_failure};
+
 /// Boxed future returned by async runtime methods.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -108,15 +112,40 @@ pub enum RuntimeCommitError {
     Driver {
         /// Whether the failed response proves that the commit was aborted.
         certainty: CommitFailureCertainty,
-        /// The original driver error text.
+        /// Value-free code and fixed provider failure description.
         message: String,
     },
 }
 
+impl RuntimeError {
+    /// Recover a typed failure from runtime-owned redacted provider descriptions.
+    #[must_use]
+    pub fn failure(&self) -> Option<Failure> {
+        match self {
+            Self::QueryExecution(message) | Self::Transaction(message) => {
+                failure::failure_from_message(message)
+            }
+            _ => None,
+        }
+    }
+}
+
 impl RuntimeCommitError {
+    /// Value-free outcome. Released string carriers have no staged operation index.
+    #[must_use]
+    pub fn failure(&self) -> Failure {
+        match self {
+            Self::Runtime(error) => error
+                .failure()
+                .unwrap_or(Failure::Indeterminate { code: None }),
+            Self::Driver { message, .. } => failure::failure_from_message(message)
+                .unwrap_or(Failure::Indeterminate { code: None }),
+        }
+    }
+
     /// Convert to the released transaction-error surface.
     ///
-    /// This discards certainty, not the original driver text. A transaction
+    /// This discards certainty while retaining the value-free description. A transaction
     /// error alone never proves that retrying the write is safe.
     #[must_use]
     pub fn into_runtime_error(self) -> RuntimeError {
@@ -165,24 +194,78 @@ fn server_commit_certainty(code: &str) -> CommitFailureCertainty {
 
 #[cfg(feature = "band8")]
 fn band8_commit_failure(error: driver_b8::Error) -> RuntimeCommitError {
-    let message = error.to_string();
-    let certainty = if matches!(&error, driver_b8::Error::Server(_)) {
-        server_commit_certainty(&error.code())
+    let failure = failure::classify_commit(
+        &error.code(),
+        &error.to_string(),
+        matches!(&error, driver_b8::Error::Server(_)),
+    );
+    let certainty = if failure.retry_safe() {
+        CommitFailureCertainty::DefinitelyAborted
     } else {
         CommitFailureCertainty::Unknown
     };
-    commit_failure(certainty, message)
+    commit_failure(
+        certainty,
+        failure::redacted_commit_failure(&failure, &error),
+    )
+}
+
+#[cfg(feature = "band8")]
+fn band8_query_error(error: driver_b8::Error) -> RuntimeError {
+    band8_query_error_with_operation(error, "Query failed")
+}
+
+#[cfg(feature = "band8")]
+fn band8_query_error_with_operation(
+    error: driver_b8::Error,
+    operation: &'static str,
+) -> RuntimeError {
+    let message = failure::classify_query(
+        &error.code(),
+        &error.to_string(),
+        matches!(&error, driver_b8::Error::Server(_)),
+    )
+    .map(|failure| format!("{operation}: {}", redacted_failure(&failure)))
+    .unwrap_or_else(|| redact_provider_error(&error, operation));
+    RuntimeError::QueryExecution(message)
 }
 
 #[cfg(feature = "band9")]
 fn band9_commit_failure(error: driver_b9::Error) -> RuntimeCommitError {
-    let message = error.to_string();
-    let certainty = if matches!(&error, driver_b9::Error::Server(_)) {
-        server_commit_certainty(&error.code())
+    let failure = failure::classify_commit(
+        &error.code(),
+        &error.to_string(),
+        matches!(&error, driver_b9::Error::Server(_)),
+    );
+    let certainty = if failure.retry_safe() {
+        CommitFailureCertainty::DefinitelyAborted
     } else {
         CommitFailureCertainty::Unknown
     };
-    commit_failure(certainty, message)
+    commit_failure(
+        certainty,
+        failure::redacted_commit_failure(&failure, &error),
+    )
+}
+
+#[cfg(feature = "band9")]
+fn band9_query_error(error: driver_b9::Error) -> RuntimeError {
+    band9_query_error_with_operation(error, "Query failed")
+}
+
+#[cfg(feature = "band9")]
+fn band9_query_error_with_operation(
+    error: driver_b9::Error,
+    operation: &'static str,
+) -> RuntimeError {
+    let message = failure::classify_query(
+        &error.code(),
+        &error.to_string(),
+        matches!(&error, driver_b9::Error::Server(_)),
+    )
+    .map(|failure| format!("{operation}: {}", redacted_failure(&failure)))
+    .unwrap_or_else(|| redact_provider_error(&error, operation));
+    RuntimeError::QueryExecution(message)
 }
 
 #[cfg(test)]
@@ -205,7 +288,7 @@ mod commit_failure_tests {
     }
 
     #[test]
-    fn live_error_fixtures_use_structural_root_codes_and_preserve_display() {
+    fn live_error_fixtures_use_structural_root_codes_and_redact_display() {
         for fixture in [
             include_str!("../tests/fixtures/commit-errors-3.12.3.json"),
             include_str!("../tests/fixtures/commit-errors-3.13.6.json"),
@@ -226,10 +309,11 @@ mod commit_failure_tests {
                                 ..
                             }
                         ));
-                        assert_eq!(
-                            failure.into_runtime_error().to_string(),
-                            format!("Transaction error: Commit failed: {}", messages[case])
-                        );
+                        assert!(failure.failure().retry_safe());
+                        let rendered = format!("{failure} {failure:?}");
+                        assert!(!rendered.contains("tb_w226"));
+                        assert!(!rendered.contains("Instance ["));
+                        assert!(failure.into_runtime_error().to_string().contains(code));
                     }};
                 }
                 #[cfg(feature = "band8")]
@@ -971,12 +1055,20 @@ impl SecureConnectError {
     ///
     /// TLS diagnostics are reconstructed from typed codes without retaining
     /// configured paths. Version diagnostics are retained only for variants
-    /// whose fields are closed version/band data. Probe, parse, connection,
-    /// query, and transaction failures may contain provider-controlled text
-    /// and therefore return `None`.
+    /// whose fields are closed version/band data. Exact runtime-owned
+    /// redacted transport/discovery messages are also retained. Other legacy
+    /// strings may contain provider values and therefore return `None`.
     #[must_use]
     pub fn credential_safe_diagnostic(&self) -> Option<String> {
         match self {
+            Self::Runtime(RuntimeError::Connection(message))
+                if failure::is_redacted_provider_message(message) =>
+            {
+                Some(self.to_string())
+            }
+            Self::Runtime(RuntimeError::UnsupportedVersion(core_version::VersionError::Probe(
+                message,
+            ))) if is_redacted_discovery_failure(message) => Some(self.to_string()),
             Self::TlsConfiguration(error) => Some(format!(
                 "TLS policy preparation failed [{}]; inspect the configured trust material",
                 error.code()
@@ -1357,8 +1449,34 @@ async fn await_connection_work<T>(
     }
 }
 
+fn is_redacted_discovery_failure(message: &str) -> bool {
+    let Some(rest) = message.strip_prefix(
+        "HTTP version probe and gRPC fallback both failed: HTTP version probe failed: ",
+    ) else {
+        return false;
+    };
+    let Some((http, grpc)) = rest.split_once("; ") else {
+        return false;
+    };
+    if core_version::VersionError::Probe(http.to_owned()).redacted_probe_description() != http {
+        return false;
+    }
+    grpc.strip_prefix("band-8 gRPC attempt failed: Connection error: ")
+        .or_else(|| grpc.strip_prefix("band-8 gRPC version validation failed: "))
+        .is_some_and(failure::is_redacted_provider_message)
+        || grpc == "band-8 gRPC attempt skipped: band8 feature is not compiled in"
+}
+
 fn controlled_connection_error(error: SecureConnectError) -> SecureConnectError {
     match error {
+        SecureConnectError::Runtime(RuntimeError::Connection(ref message))
+            if failure::is_redacted_provider_message(message) =>
+        {
+            error
+        }
+        SecureConnectError::Runtime(RuntimeError::UnsupportedVersion(
+            core_version::VersionError::Probe(ref message),
+        )) if is_redacted_discovery_failure(message) => error,
         SecureConnectError::TlsConfiguration(
             core_version::TlsConfigurationError::CustomRootCaNotFile { .. }
             | core_version::TlsConfigurationError::CustomRootCaUnreadable { .. }
@@ -1648,13 +1766,13 @@ impl DriverHandle {
         }
         run_driver_shutdown_locked(&self.state, || match &self.inner {
             #[cfg(feature = "band8")]
-            DriverHandleInner::B8(driver) => driver
-                .force_close()
-                .map_err(|error| RuntimeError::Connection(format!("Driver close failed: {error}"))),
+            DriverHandleInner::B8(driver) => driver.force_close().map_err(|error| {
+                RuntimeError::Connection(redact_provider_error(&error, "force close failed"))
+            }),
             #[cfg(feature = "band9")]
-            DriverHandleInner::B9(driver) => driver
-                .force_close()
-                .map_err(|error| RuntimeError::Connection(format!("Driver close failed: {error}"))),
+            DriverHandleInner::B9(driver) => driver.force_close().map_err(|error| {
+                RuntimeError::Connection(redact_provider_error(&error, "force close failed"))
+            }),
         })
     }
 }
@@ -1820,12 +1938,8 @@ where
                 tokio::task::spawn_blocking(move || probe(&address_owned, http_port, &probe_mode));
             let probe_result = await_connection_work(probe_task, meter.control())
                 .await?
-                .map_err(|error| {
-                    RuntimeError::Connection(if controlled {
-                        "Version probe task failed".to_owned()
-                    } else {
-                        format!("Version probe task panicked: {error}")
-                    })
+                .map_err(|_error| {
+                    RuntimeError::Connection("Version probe task failed".to_owned())
                 })?;
 
             match probe_result {
@@ -1957,7 +2071,7 @@ async fn connect_band8_driver(
     meter: &mut ConnectionMeter,
 ) -> SecureResult<B8Driver> {
     let addresses = Addresses::try_from_address_str(address)
-        .map_err(|e| RuntimeError::Connection(format!("Invalid TypeDB address {address}: {e}")))?;
+        .map_err(|e| RuntimeError::Connection(failure::redact_address_error(&e)))?;
     meter.charge_statement()?;
     let result = await_connection_work(
         B8Driver::new(
@@ -1969,7 +2083,7 @@ async fn connect_band8_driver(
     )
     .await?;
     result.map_err(|e| {
-        RuntimeError::Connection(format!("Failed to connect to {address}: {e}")).into()
+        RuntimeError::Connection(redact_provider_error(&e, "Failed to connect")).into()
     })
 }
 
@@ -1982,7 +2096,7 @@ async fn connect_band9_driver(
     meter: &mut ConnectionMeter,
 ) -> SecureResult<B9Driver> {
     let addresses = B9Addresses::try_from_address_str(address)
-        .map_err(|e| RuntimeError::Connection(format!("Invalid TypeDB address {address}: {e}")))?;
+        .map_err(|e| RuntimeError::Connection(failure::redact_address_error(&e)))?;
     meter.charge_statement()?;
     let result = await_connection_work(
         B9Driver::new(
@@ -1994,7 +2108,7 @@ async fn connect_band9_driver(
     )
     .await?;
     result.map_err(|e| {
-        RuntimeError::Connection(format!("Failed to connect to {address}: {e}")).into()
+        RuntimeError::Connection(redact_provider_error(&e, "Failed to connect")).into()
     })
 }
 
@@ -2009,7 +2123,10 @@ async fn grpc_fallback_driver(
 ) -> SecureResult<(DriverHandle, Option<core_version::Version>)> {
     #[cfg(not(feature = "band8"))]
     let _ = (address, username, password, tls, meter);
-    let mut failures = vec![format!("HTTP version probe failed: {http_error}")];
+    let mut failures = vec![format!(
+        "HTTP version probe failed: {}",
+        http_error.redacted_probe_description()
+    )];
 
     // Band 9 is deliberately NOT probed blindly: a band-9 connection attempt
     // against a 3.11 server crashes the server outright (measured live on
@@ -2030,7 +2147,9 @@ async fn grpc_fallback_driver(
                         await_connection_work(driver.server_version(), meter.control())
                             .await?
                             .map(|reported| reported.version().to_owned())
-                            .map_err(|error| error.to_string())
+                            .map_err(|error| {
+                                redact_provider_error(&error, "gRPC server version failed")
+                            })
                     }
                     #[cfg(feature = "band9")]
                     _ => {
@@ -2130,7 +2249,7 @@ enum Band8GrpcVersion {
 
 #[cfg(feature = "band8")]
 fn classify_band8_grpc_version(
-    address: &str,
+    _address: &str,
     reported: std::result::Result<String, String>,
 ) -> Result<Band8GrpcVersion> {
     let reported = match reported {
@@ -2141,7 +2260,7 @@ fn classify_band8_grpc_version(
             // that failure as fallback evidence without accepting an
             // unvalidated connection.
             return Ok(Band8GrpcVersion::RetryableFailure(format!(
-                "band-8 gRPC version validation failed after connect to {address}: {error}"
+                "band-8 gRPC version validation failed: {error}"
             )));
         }
     };
@@ -2551,7 +2670,10 @@ impl TypeDBRuntime {
                         .transaction_with_options(&db, typedb_tx_type, options)
                         .await
                         .map_err(|e| {
-                            RuntimeError::Transaction(format!("Failed to open transaction: {e}"))
+                            RuntimeError::Transaction(redact_provider_error(
+                                &e,
+                                "Failed to open transaction",
+                            ))
                         })?;
                     retain_driver_transaction(
                         &driver_lease.state,
@@ -2575,7 +2697,10 @@ impl TypeDBRuntime {
                         .transaction_with_options(&db, typedb_tx_type, options)
                         .await
                         .map_err(|e| {
-                            RuntimeError::Transaction(format!("Failed to open transaction: {e}"))
+                            RuntimeError::Transaction(redact_provider_error(
+                                &e,
+                                "Failed to open transaction",
+                            ))
                         })?;
                     retain_driver_transaction(
                         &driver_lease.state,
@@ -2611,17 +2736,13 @@ impl TypeDBRuntime {
             self.driver.ensure_open()?;
             match self.driver.inner() {
                 #[cfg(feature = "band8")]
-                DriverHandleInner::B8(d) => {
-                    d.databases().contains(database).await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database lookup failed: {e}"))
-                    })
-                }
+                DriverHandleInner::B8(d) => d.databases().contains(database).await.map_err(|e| {
+                    RuntimeError::Connection(redact_provider_error(&e, "Database lookup failed"))
+                }),
                 #[cfg(feature = "band9")]
-                DriverHandleInner::B9(d) => {
-                    d.databases().contains(database).await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database lookup failed: {e}"))
-                    })
-                }
+                DriverHandleInner::B9(d) => d.databases().contains(database).await.map_err(|e| {
+                    RuntimeError::Connection(redact_provider_error(&e, "Database lookup failed"))
+                }),
             }
         })
     }
@@ -2633,17 +2754,13 @@ impl TypeDBRuntime {
             self.driver.ensure_open()?;
             match self.driver.inner() {
                 #[cfg(feature = "band8")]
-                DriverHandleInner::B8(d) => {
-                    d.databases().create(database).await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database create failed: {e}"))
-                    })
-                }
+                DriverHandleInner::B8(d) => d.databases().create(database).await.map_err(|e| {
+                    RuntimeError::Connection(redact_provider_error(&e, "Database create failed"))
+                }),
                 #[cfg(feature = "band9")]
-                DriverHandleInner::B9(d) => {
-                    d.databases().create(database).await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database create failed: {e}"))
-                    })
-                }
+                DriverHandleInner::B9(d) => d.databases().create(database).await.map_err(|e| {
+                    RuntimeError::Connection(redact_provider_error(&e, "Database create failed"))
+                }),
             }
         })
     }
@@ -2657,19 +2774,31 @@ impl TypeDBRuntime {
                 #[cfg(feature = "band8")]
                 DriverHandleInner::B8(d) => {
                     let db = d.databases().get(database).await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database lookup failed: {e}"))
+                        RuntimeError::Connection(redact_provider_error(
+                            &e,
+                            "Database lookup failed",
+                        ))
                     })?;
                     db.delete().await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database delete failed: {e}"))
+                        RuntimeError::Connection(redact_provider_error(
+                            &e,
+                            "Database delete failed",
+                        ))
                     })
                 }
                 #[cfg(feature = "band9")]
                 DriverHandleInner::B9(d) => {
                     let db = d.databases().get(database).await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database lookup failed: {e}"))
+                        RuntimeError::Connection(redact_provider_error(
+                            &e,
+                            "Database lookup failed",
+                        ))
                     })?;
                     db.delete().await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database delete failed: {e}"))
+                        RuntimeError::Connection(redact_provider_error(
+                            &e,
+                            "Database delete failed",
+                        ))
                     })
                 }
             }
@@ -2685,20 +2814,26 @@ impl TypeDBRuntime {
                 #[cfg(feature = "band8")]
                 DriverHandleInner::B8(d) => {
                     let db = d.databases().get(&database).await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database lookup failed: {e}"))
+                        RuntimeError::Connection(redact_provider_error(
+                            &e,
+                            "Database lookup failed",
+                        ))
                     })?;
-                    db.schema()
-                        .await
-                        .map_err(|e| RuntimeError::Connection(format!("Schema export failed: {e}")))
+                    db.schema().await.map_err(|e| {
+                        RuntimeError::Connection(redact_provider_error(&e, "Schema export failed"))
+                    })
                 }
                 #[cfg(feature = "band9")]
                 DriverHandleInner::B9(d) => {
                     let db = d.databases().get(&database).await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database lookup failed: {e}"))
+                        RuntimeError::Connection(redact_provider_error(
+                            &e,
+                            "Database lookup failed",
+                        ))
                     })?;
-                    db.schema()
-                        .await
-                        .map_err(|e| RuntimeError::Connection(format!("Schema export failed: {e}")))
+                    db.schema().await.map_err(|e| {
+                        RuntimeError::Connection(redact_provider_error(&e, "Schema export failed"))
+                    })
                 }
             }
         })
@@ -3062,7 +3197,7 @@ impl RuntimeTransaction {
                             };
                             tx.query_with_options(&tql, options)
                                 .await
-                                .map_err(|e| RuntimeError::QueryExecution(format!("{e}")))
+                                .map_err(band8_query_error)
                         },
                         &limits,
                     )
@@ -3074,7 +3209,7 @@ impl RuntimeTransaction {
                             while let Some(row) = runtime_await(
                                 async {
                                     stream.try_next().await.map_err(|error| {
-                                        RuntimeError::QueryExecution(format!("Row stream: {error}"))
+                                        band8_query_error_with_operation(error, "Row stream failed")
                                     })
                                 },
                                 &limits,
@@ -3110,9 +3245,10 @@ impl RuntimeTransaction {
                             while let Some(document) = runtime_await(
                                 async {
                                     stream.try_next().await.map_err(|error| {
-                                        RuntimeError::QueryExecution(format!(
-                                            "Document stream: {error}"
-                                        ))
+                                        band8_query_error_with_operation(
+                                            error,
+                                            "Document stream failed",
+                                        )
                                     })
                                 },
                                 &limits,
@@ -3154,7 +3290,7 @@ impl RuntimeTransaction {
                             };
                             tx.query_with_options(&tql, options)
                                 .await
-                                .map_err(|e| RuntimeError::QueryExecution(format!("{e}")))
+                                .map_err(band9_query_error)
                         },
                         &limits,
                     )
@@ -3288,7 +3424,7 @@ impl RuntimeTransaction {
                             };
                             tx.query_with_options_and_rows(&tql, options, Some(given_rows))
                                 .await
-                                .map_err(|e| RuntimeError::QueryExecution(format!("{e}")))
+                                .map_err(band9_query_error)
                         },
                         &limits,
                     )
@@ -3370,9 +3506,9 @@ impl RuntimeTransaction {
                     if !t.is_open() {
                         return Ok(());
                     }
-                    t.rollback()
-                        .await
-                        .map_err(|e| RuntimeError::Transaction(format!("Rollback failed: {e}")))
+                    t.rollback().await.map_err(|e| {
+                        RuntimeError::Transaction(redact_provider_error(&e, "Rollback failed"))
+                    })
                 })
             }
             #[cfg(feature = "band9")]
@@ -3388,9 +3524,9 @@ impl RuntimeTransaction {
                     if !t.is_open() {
                         return Ok(());
                     }
-                    t.rollback()
-                        .await
-                        .map_err(|e| RuntimeError::Transaction(format!("Rollback failed: {e}")))
+                    t.rollback().await.map_err(|e| {
+                        RuntimeError::Transaction(redact_provider_error(&e, "Rollback failed"))
+                    })
                 })
             }
         }
@@ -3411,9 +3547,9 @@ impl RuntimeTransaction {
                         drop(t);
                         return Ok(());
                     }
-                    t.close()
-                        .await
-                        .map_err(|e| RuntimeError::Transaction(format!("Close failed: {e}")))
+                    t.close().await.map_err(|e| {
+                        RuntimeError::Transaction(redact_provider_error(&e, "Close failed"))
+                    })
                 })
             }
             #[cfg(feature = "band9")]
@@ -3427,9 +3563,9 @@ impl RuntimeTransaction {
                         drop(t);
                         return Ok(());
                     }
-                    t.close()
-                        .await
-                        .map_err(|e| RuntimeError::Transaction(format!("Close failed: {e}")))
+                    t.close().await.map_err(|e| {
+                        RuntimeError::Transaction(redact_provider_error(&e, "Close failed"))
+                    })
                 })
             }
         }
@@ -3951,8 +4087,8 @@ fn exact_given_datetime_tz_b9(
     use chrono::{FixedOffset, LocalResult, NaiveDateTime, TimeZone as _};
     use typedb_driver::concept::value::TimeZone as B9TimeZone;
 
-    let local = local.parse::<NaiveDateTime>().map_err(|error| {
-        RuntimeError::QueryExecution(format!("Invalid given exact datetime-tz local: {error}"))
+    let local = local.parse::<NaiveDateTime>().map_err(|_| {
+        RuntimeError::QueryExecution("Invalid given exact datetime-tz local".to_owned())
     })?;
     let matches_offset = |value: &chrono::DateTime<B9TimeZone>| {
         value
@@ -4084,7 +4220,7 @@ async fn consume_answer_b9(
         B9QueryAnswer::Ok(_) => Ok(RuntimeAnswerStats::new(RuntimeAnswerKind::Ok)),
         B9QueryAnswer::ConceptRowStream(_, stream) => {
             let stream = stream
-                .map_err(|error| RuntimeError::QueryExecution(format!("Row stream: {error}")))
+                .map_err(|error| band9_query_error_with_operation(error, "Row stream failed"))
                 .and_then(move |row| {
                     let result = (|| -> Result<RuntimeAnswerItem> {
                         let mut obj = serde_json::Map::new();
@@ -4107,7 +4243,7 @@ async fn consume_answer_b9(
         B9QueryAnswer::ConceptDocumentStream(_, stream) => {
             let mut collection_members = 0_u64;
             let stream = stream
-                .map_err(|error| RuntimeError::QueryExecution(format!("Document stream: {error}")))
+                .map_err(|error| band9_query_error_with_operation(error, "Document stream failed"))
                 .and_then(move |document| {
                     let result = document_to_json_b9(
                         &document,
@@ -6016,7 +6152,7 @@ mod tests {
             },
             move |_addr, _port, _tls| {
                 Err(core_version::VersionError::Probe(
-                    "HTTP endpoint unavailable".to_string(),
+                    "HTTP version request failed: connection refused or unavailable".to_string(),
                 ))
             },
         )
@@ -6025,8 +6161,17 @@ mod tests {
         match result {
             Err(RuntimeError::UnsupportedVersion(err)) => {
                 let msg = err.to_string();
-                assert!(msg.contains("HTTP endpoint unavailable"), "{msg}");
+                assert!(
+                    msg.contains("HTTP version probe failed: HTTP version request failed: connection refused or unavailable"),
+                    "{msg}"
+                );
+                assert!(!msg.contains("HTTP endpoint unavailable"), "{msg}");
+                assert!(!msg.contains("127.0.0.1"), "{msg}");
                 assert!(msg.contains("band-8 gRPC attempt failed"), "{msg}");
+                assert!(
+                    msg.contains("TypeDB transport failed: connection refused or unavailable"),
+                    "{msg}"
+                );
                 // Band 9 must never be probed blindly: a band-9 connect
                 // attempt crashes a 3.11 server (see grpc_fallback_driver).
                 assert!(!msg.contains("band-9 gRPC attempt"), "{msg}");
@@ -6041,14 +6186,19 @@ mod tests {
     fn band8_lazy_validation_failure_is_retryable() {
         let result = classify_band8_grpc_version(
             "localhost:1729",
-            Err("protocol handshake failed".to_string()),
+            Err(redact_provider_error(
+                &driver_b8::Error::Other("protocol handshake failed SECRET_SENTINEL".to_owned()),
+                "gRPC server version failed",
+            )),
         )
         .expect("transport validation failure should remain retryable");
 
         match result {
             Band8GrpcVersion::RetryableFailure(failure) => {
-                assert!(failure.contains("localhost:1729"), "{failure}");
-                assert!(failure.contains("protocol handshake failed"), "{failure}");
+                assert_eq!(
+                    failure,
+                    "band-8 gRPC version validation failed: gRPC server version failed: [UNKNOWN] TypeDB transport failed: other transport"
+                );
             }
             Band8GrpcVersion::Validated(version) => {
                 panic!("failed lazy connection unexpectedly validated as {version}")
@@ -6576,5 +6726,34 @@ mod tests {
             super::canonical_decimal_text("not-a-decimal".into()),
             Err(RuntimeError::QueryExecution(message)) if message == "provider returned an unparseable decimal"
         ));
+    }
+}
+
+#[cfg(test)]
+mod fixed_transport_control_tests {
+    use super::*;
+
+    #[test]
+    fn controlled_connections_keep_only_complete_owned_diagnoses() {
+        let message =
+            "Failed to connect: [CXN20] TypeDB transport failed: connection refused or unavailable";
+        let error = controlled_connection_error(SecureConnectError::Runtime(
+            RuntimeError::Connection(message.to_owned()),
+        ));
+        assert_eq!(error.to_string(), format!("Connection error: {message}"));
+        assert_eq!(error.credential_safe_diagnostic(), Some(error.to_string()));
+        let aggregate = format!(
+            "HTTP version probe and gRPC fallback both failed: HTTP version probe failed: HTTP version request failed: TLS/certificate failure; band-8 gRPC attempt failed: Connection error: {message}"
+        );
+        let error = controlled_connection_error(SecureConnectError::Runtime(
+            RuntimeError::UnsupportedVersion(core_version::VersionError::Probe(aggregate.clone())),
+        ));
+        assert!(error.to_string().contains(&aggregate));
+        assert_eq!(error.credential_safe_diagnostic(), Some(error.to_string()));
+        let forged = format!("{message} SECRET_SENTINEL");
+        let error = controlled_connection_error(SecureConnectError::Runtime(
+            RuntimeError::Connection(forged),
+        ));
+        assert!(!error.to_string().contains("SECRET_SENTINEL"));
     }
 }

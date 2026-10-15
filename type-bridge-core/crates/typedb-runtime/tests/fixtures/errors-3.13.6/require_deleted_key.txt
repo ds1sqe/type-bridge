@@ -1,0 +1,6 @@
+
+[STC2] Commit in database '<redacted>' failed with isolation conflict: Transaction uses data a concurrent commit deletes.
+Caused: [SST1] Snapshot commit failed due to storage commit error.
+Caused: [DCT4] Snapshot error.
+Caused: [SRV19] Data commit failed.
+Caused: [TSV5] Data transaction commit failed.

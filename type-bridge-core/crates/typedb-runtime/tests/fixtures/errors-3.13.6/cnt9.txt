@@ -1,0 +1,7 @@
+
+[CNT9] Constraint '<redacted>' has been violated: there is a conflict for value '<redacted>'.
+Caused: [DVL9] Instance [<instance>] of type '<redacted>' has a key constraint violation for attribute ownership of '<redacted>', since it is not the unique owner of attribute '<redacted>'.
+Caused: [COW5] Concept write failed due to a data validation error.
+Caused: [WEX1] Write execution failed due to a concept write error.
+Caused: [PEX6] Error executing write operation.
+Caused: [QEX14] Error while execution write pipeline.
