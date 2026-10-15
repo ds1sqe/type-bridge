@@ -2,8 +2,9 @@
 //! `unknown_enum_value` diagnostic every binding raises for anything else.
 //!
 //! Bindings never match enum strings themselves. They call `str::parse` on
-//! the core enum and lower an [`UnknownEnumValue`] into the structured SDK
-//! diagnostic, so an unknown spelling has the same category, code, and
+//! the core enum and lower an
+//! [`UnknownEnumValue`](crate::enum_spelling::UnknownEnumValue) into the
+//! structured SDK diagnostic, so an unknown spelling has the same category, code, and
 //! details in every language.
 
 use std::fmt;

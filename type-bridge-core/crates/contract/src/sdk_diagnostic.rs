@@ -3,8 +3,9 @@
 //! This module is deliberately separate from [`crate::diagnostic`]. The
 //! existing diagnostic is part of canonical contract wires; an SDK execution
 //! diagnostic is an in-memory engine value. It has no wire decoder. Hosts
-//! receive it in one JSON form, [`SdkDiagnosticJson`], which every binding
-//! that reports a diagnostic as data uses unchanged; the C ABI copies the
+//! receive it in one JSON form,
+//! [`SdkDiagnosticJson`](crate::sdk_diagnostic::SdkDiagnosticJson), which every
+//! binding that reports a diagnostic as data uses unchanged; the C ABI copies the
 //! same values into typed accessors.
 //!
 //! Dynamic provider messages, credentials, endpoint or custom-root paths,
