@@ -6752,21 +6752,18 @@ mod tests {
             .connection_limits(effective)
             .answer_limits(effective);
         assert_eq!(format!("{policy:?}"), "DirectConnectionPolicy([REDACTED])");
+        // The frozen journey records the proxy wire policy on every binding.
+        let wire_limits =
+            QueryExecutionResourceLimits::default_for(type_bridge_orm::AnswerTransport::Proxy);
         let dimensions = [
-            (
-                "timeout_milliseconds",
-                DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS,
-            ),
-            ("items", DEFAULT_DIRECT_QUERY_ITEMS),
-            ("bytes", DEFAULT_DIRECT_QUERY_BYTES),
-            ("graph_nodes", DEFAULT_DIRECT_QUERY_GRAPH_NODES),
-            ("attribute_values", DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES),
-            (
-                "collection_members",
-                DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS,
-            ),
-            ("role_players", DEFAULT_DIRECT_QUERY_ROLE_PLAYERS),
-            ("statements", u64::from(DEFAULT_DIRECT_QUERY_STATEMENTS)),
+            ("timeout_milliseconds", wire_limits.timeout_milliseconds),
+            ("items", wire_limits.items),
+            ("bytes", wire_limits.bytes),
+            ("graph_nodes", wire_limits.graph_nodes),
+            ("attribute_values", wire_limits.attribute_values),
+            ("collection_members", wire_limits.collection_members),
+            ("role_players", wire_limits.role_players),
+            ("statements", u64::from(wire_limits.statements)),
         ]
         .into_iter()
         .map(|(dimension, hard_max)| {
