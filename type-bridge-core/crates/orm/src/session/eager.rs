@@ -40,6 +40,24 @@ impl EagerTransaction {
         self.never_commit = never_commit;
     }
 
+    /// Open with the backend's certified schema-exclusion guarantee.
+    #[allow(deprecated)]
+    pub(crate) async fn open_fenced(
+        backend: &dyn super::backend::DriverBackend,
+        database: &str,
+        timeout: std::time::Duration,
+        server_version: Option<Version>,
+    ) -> Result<(Self, String)> {
+        // In 3.0 an options flag replaces the released backend fence hook.
+        let fenced = backend
+            .open_schema_fenced_read_transaction(database, timeout)
+            .await?;
+        let (provider, schema) = fenced.into_parts();
+        let mut transaction = Self::new(provider, TxType::Write, server_version);
+        transaction.set_never_commit(true);
+        Ok((transaction, schema))
+    }
+
     /// Open immediately for schema migrations and legacy prerequisite reads.
     pub async fn open(
         database: &super::database::Database,

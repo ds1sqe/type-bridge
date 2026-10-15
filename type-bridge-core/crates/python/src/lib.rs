@@ -11,6 +11,8 @@
 //! All complex types cross the Python ↔ Rust boundary via
 //! `pythonize` / `depythonize` using serde-tagged-enum dicts.
 
+// Database one-shot calls await the deeper staged::Transaction::commit future.
+#![recursion_limit = "256"]
 #![warn(missing_docs)]
 
 pub mod ast;

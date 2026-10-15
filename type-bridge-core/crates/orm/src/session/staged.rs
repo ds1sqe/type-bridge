@@ -338,7 +338,9 @@ impl Transaction {
                 match result {
                     Ok(answer) => answers.push(answer),
                     Err(error) => {
-                        let _ = provider.rollback().await;
+                        if kind != TransactionKind::Read {
+                            let _ = provider.rollback().await;
+                        }
                         let _ = provider.close().await;
                         return Err(CommitError {
                             op_index: Some(index),

@@ -64,6 +64,32 @@ async fn staged_atomicity_and_rollback_reuse() {
         .unwrap();
     tx.commit().await.unwrap();
     assert!(matches!(&*answer.get().unwrap(), QueryResult::Rows(rows) if rows.len() == 3));
+    db.execute_raw("insert $m isa marker;", TxType::Write)
+        .await
+        .unwrap();
+    let rows = db
+        .execute_raw("match $m isa marker; select $m;", TxType::Read)
+        .await
+        .unwrap();
+    assert!(matches!(rows, QueryResult::Rows(rows) if rows.len() == 4));
+    let (mut fence, schema) = db
+        .schema_fenced_read_transaction(std::time::Duration::from_secs(10))
+        .await
+        .unwrap();
+    assert!(schema.contains("marker"));
+    let admission = db.schema_transaction();
+    tokio::pin!(admission);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut admission)
+            .await
+            .is_err()
+    );
+    fence.close().await.unwrap();
+    let mut schema = tokio::time::timeout(std::time::Duration::from_secs(5), &mut admission)
+        .await
+        .unwrap()
+        .unwrap();
+    schema.close().await.unwrap();
     db.delete_database().await.unwrap();
     db.close().unwrap();
 }

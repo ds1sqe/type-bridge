@@ -25,7 +25,8 @@ use type_bridge_orm::migration_assertion::{
 };
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
-    ClassifiedCommitError, CommitFailureCertainty, Database, OrmError, Transaction,
+    ClassifiedCommitError, CommitFailureCertainty, Database, OrmError,
+    OwnedTransaction as Transaction,
 };
 use type_bridge_query::ValidatedMigrationAssertionPlan;
 use type_bridge_schema::ManagedDeltaContext;

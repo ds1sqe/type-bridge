@@ -244,32 +244,22 @@ impl DriverBackend for RealBackend {
         database: &str,
         timeout: std::time::Duration,
     ) -> BoxFuture<'_, Result<SchemaFencedReadTransaction, OrmError>> {
-        let database = database.to_string();
-        let runtime = Arc::clone(&self.inner);
+        let database = database.to_owned();
         Box::pin(async move {
-            // TypeDB admits WRITE and SCHEMA transactions under mutually
-            // exclusive database guards. V2 emits read-only TypeQL and closes
-            // without commit, so WRITE supplies schema exclusion without
-            // turning the query API into a mutation surface.
-            let mut inner = runtime
-                .open_transaction_with_timeout(&database, runtime::TxType::Write, timeout)
-                .await
-                .map_err(OrmError::from)?;
-            let schema_text = match runtime.schema_text(&database).await {
-                Ok(schema_text) => schema_text,
+            let options = super::staged::TransactionOptions::default()
+                .with_deadline(timeout)
+                .with_never_commit(true);
+            let mut transaction = self
+                .open_with_options(&database, TxType::Write, &options)
+                .await?;
+            let schema_text = match self.schema_text(&database).await {
+                Ok(schema) => schema,
                 Err(error) => {
-                    let _ = inner.close().await;
-                    return Err(OrmError::from(error));
+                    let _ = transaction.close().await;
+                    return Err(error);
                 }
             };
-            Ok(SchemaFencedReadTransaction::new(
-                Box::new(RealTransaction {
-                    inner,
-                    runtime,
-                    database,
-                }),
-                schema_text,
-            ))
+            Ok(SchemaFencedReadTransaction::new(transaction, schema_text))
         })
     }
 

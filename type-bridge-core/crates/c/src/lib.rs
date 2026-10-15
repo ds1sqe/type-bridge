@@ -1,5 +1,7 @@
 //! Versioned native C boundary for generated TypeBridge schema packages.
 
+// Database one-shot calls await the deeper staged::Transaction::commit future.
+#![recursion_limit = "256"]
 #![deny(missing_docs)]
 
 mod abi;

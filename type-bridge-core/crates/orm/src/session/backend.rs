@@ -932,6 +932,10 @@ pub trait DriverBackend: Send + Sync {
     /// enforce `timeout` both while acquiring the schema lock and over the
     /// transaction lifetime, so a lost client cannot retain or later acquire
     /// schema exclusion indefinitely.
+    #[deprecated(
+        since = "2.3.0",
+        note = "Use the core transaction options; retained until 3.0"
+    )]
     fn open_schema_fenced_read_transaction(
         &self,
         database: &str,

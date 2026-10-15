@@ -482,15 +482,14 @@ impl Database {
         &self,
         timeout: Duration,
     ) -> Result<(Transaction, String)> {
-        let fenced = self
-            .backend
-            .open_schema_fenced_read_transaction(&self.database_name, timeout)
-            .await?;
-        let (transaction, schema_text) = fenced.into_parts();
-        Ok((
-            Transaction::new(transaction, TxType::Write, self.server_version()),
-            schema_text,
-        ))
+        let (eager, schema) = super::eager::EagerTransaction::open_fenced(
+            self.backend.as_ref(),
+            &self.database_name,
+            timeout,
+            self.server_version(),
+        )
+        .await?;
+        Ok((Transaction::from_eager(eager), schema))
     }
 
     /// Open an owned schema transaction.
@@ -756,15 +755,39 @@ impl Database {
         if tx_type == TxType::Schema {
             self.check_schema_annotation_support(typeql)?;
         }
-        let mut tx = self
-            .backend
-            .open_transaction(&self.database_name, tx_type)
-            .await?;
-        let result = tx.query(typeql).await?;
-        if matches!(tx_type, TxType::Write | TxType::Schema) {
-            tx.commit().await?;
-        }
-        Ok(result)
+        self.execute_staged(
+            super::staged::StagedQuery::new(typeql, tx_type != TxType::Read),
+            tx_type,
+        )
+        .await
+    }
+
+    async fn execute_staged(
+        &self,
+        query: super::staged::StagedQuery,
+        kind: TxType,
+    ) -> Result<QueryResult> {
+        let limits = super::backend::BoundedAnswerLimits {
+            max_items: u64::MAX,
+            max_bytes: u64::MAX,
+            ..Default::default()
+        };
+        let options = super::staged::TransactionOptions::default()
+            .with_kind(kind.into())
+            .with_never_commit(kind == TxType::Read)
+            .with_answer_limits(limits);
+        let mut transaction = self.transaction(options);
+        let answer = transaction
+            .stage(query)
+            .map_err(|error| crate::error::OrmError::Transaction(error.to_string()))?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| error.error.into_orm_error())?;
+        answer
+            .get()
+            .map(|answer| (*answer).clone())
+            .map_err(|error| crate::error::OrmError::Transaction(error.to_string()))
     }
 
     pub(crate) async fn execute_canonical(
@@ -775,32 +798,11 @@ impl Database {
         if tx_type == TxType::Schema {
             self.check_schema_annotation_support(typeql)?;
         }
-        let mut tx = self
-            .backend
-            .open_transaction(&self.database_name, tx_type)
-            .await?;
-        let result = tx.query_canonical(typeql).await;
-        match result {
-            Ok(value) => {
-                if matches!(tx_type, TxType::Write | TxType::Schema)
-                    && let Err(error) = tx.commit().await
-                {
-                    let _ = tx.close().await;
-                    return Err(error);
-                }
-                tx.close().await?;
-                Ok(value)
-            }
-            Err(primary) => {
-                if matches!(tx_type, TxType::Write | TxType::Schema) {
-                    let _ = tx.rollback().await;
-                    let _ = tx.close().await;
-                } else {
-                    let _ = tx.close().await;
-                }
-                Err(primary)
-            }
-        }
+        self.execute_staged(
+            super::staged::StagedQuery::new(typeql, tx_type != TxType::Read).canonical(),
+            tx_type,
+        )
+        .await
     }
 
     /// Execute a `given`-stage TypeQL query over input rows, auto-managing
@@ -820,28 +822,11 @@ impl Database {
             self.check_schema_annotation_support(typeql)?;
         }
         self.check_given_stage_support()?;
-        let mut tx = self
-            .backend
-            .open_transaction(&self.database_name, tx_type)
-            .await?;
-        let result = match tx.query_with_rows(typeql, rows).await {
-            Ok(result) => result,
-            Err(error) => {
-                if matches!(tx_type, TxType::Write | TxType::Schema) {
-                    let _ = tx.rollback().await;
-                }
-                let _ = tx.close().await;
-                return Err(error);
-            }
-        };
-        if matches!(tx_type, TxType::Write | TxType::Schema)
-            && let Err(error) = tx.commit().await
-        {
-            let _ = tx.close().await;
-            return Err(error);
-        }
-        tx.close().await?;
-        Ok(result)
+        self.execute_staged(
+            super::staged::StagedQuery::new(typeql, tx_type != TxType::Read).with_rows(rows),
+            tx_type,
+        )
+        .await
     }
 }
 
