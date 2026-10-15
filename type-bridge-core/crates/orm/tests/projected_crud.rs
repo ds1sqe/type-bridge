@@ -701,7 +701,7 @@ async fn stale_entity_update_rolls_back_and_never_reports_success() {
     assert_eq!(state.queries.len(), 2);
     assert_eq!(state.commits, 0);
     assert_eq!(state.rollbacks, 1);
-    assert_eq!(state.closes, 0);
+    assert_eq!(state.closes, 1);
 }
 
 #[tokio::test]

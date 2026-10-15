@@ -458,7 +458,9 @@ impl TransactionContext {
             | TransactionContextState::Closed => return Err(consumed_error()),
         };
 
-        let result = transaction.rollback().await;
+        let rollback = transaction.rollback().await;
+        let close = transaction.close().await;
+        let result = rollback.and(close);
         match &result {
             Ok(()) => inner.state = TransactionContextState::RolledBack,
             Err(_) => {

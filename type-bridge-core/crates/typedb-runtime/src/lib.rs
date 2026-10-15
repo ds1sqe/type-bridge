@@ -591,6 +591,42 @@ pub enum TxType {
     Schema,
 }
 
+/// Server-side transaction lifetime and schema-lock acquisition bounds.
+#[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
+pub struct TransactionOptions {
+    /// Maximum transaction lifetime enforced by TypeDB.
+    pub transaction_timeout: Option<Duration>,
+    /// Maximum wait to acquire the schema lock while opening.
+    pub schema_lock_acquire_timeout: Option<Duration>,
+}
+
+impl TransactionOptions {
+    #[cfg(feature = "band8")]
+    fn band8(self) -> B8TransactionOptions {
+        let mut options = B8TransactionOptions::new();
+        if let Some(timeout) = self.transaction_timeout {
+            options = options.transaction_timeout(timeout);
+        }
+        if let Some(timeout) = self.schema_lock_acquire_timeout {
+            options = options.schema_lock_acquire_timeout(timeout);
+        }
+        options
+    }
+
+    #[cfg(feature = "band9")]
+    fn band9(self) -> B9TransactionOptions {
+        let mut options = B9TransactionOptions::new();
+        if let Some(timeout) = self.transaction_timeout {
+            options = options.transaction_timeout(timeout);
+        }
+        if let Some(timeout) = self.schema_lock_acquire_timeout {
+            options = options.schema_lock_acquire_timeout(timeout);
+        }
+        options
+    }
+}
+
 /// A single value bound to a `given` variable, band-agnostic and serializable.
 ///
 /// Released temporal variants retain their ISO-8601 text representation.
@@ -2436,7 +2472,7 @@ impl TypeDBRuntime {
         database: &str,
         tx_type: TxType,
     ) -> BoxFuture<'_, Result<RuntimeTransaction>> {
-        self.open_transaction_with_optional_timeout(database, tx_type, None)
+        self.open_transaction_with_options(database, tx_type, &TransactionOptions::default())
     }
 
     /// Open a TypeDB transaction with an explicit server-side lifetime bound.
@@ -2450,16 +2486,25 @@ impl TypeDBRuntime {
         tx_type: TxType,
         timeout: Duration,
     ) -> BoxFuture<'_, Result<RuntimeTransaction>> {
-        self.open_transaction_with_optional_timeout(database, tx_type, Some(timeout))
+        self.open_transaction_with_options(
+            database,
+            tx_type,
+            &TransactionOptions {
+                transaction_timeout: Some(timeout),
+                schema_lock_acquire_timeout: Some(timeout),
+            },
+        )
     }
 
-    fn open_transaction_with_optional_timeout(
+    /// Open a transaction with independently configured server-side bounds.
+    pub fn open_transaction_with_options(
         &self,
         database: &str,
         tx_type: TxType,
-        timeout: Option<Duration>,
+        options: &TransactionOptions,
     ) -> BoxFuture<'_, Result<RuntimeTransaction>> {
         let db = database.to_string();
+        let options = *options;
         let driver_lease = Arc::clone(&self.driver);
         Box::pin(async move {
             driver_lease.ensure_open()?;
@@ -2471,12 +2516,7 @@ impl TypeDBRuntime {
                         TxType::Write => B8TransactionType::Write,
                         TxType::Schema => B8TransactionType::Schema,
                     };
-                    let mut options = B8TransactionOptions::new();
-                    if let Some(timeout) = timeout {
-                        options = options
-                            .transaction_timeout(timeout)
-                            .schema_lock_acquire_timeout(timeout);
-                    }
+                    let options = options.band8();
                     let transaction = d
                         .transaction_with_options(&db, typedb_tx_type, options)
                         .await
@@ -2500,12 +2540,7 @@ impl TypeDBRuntime {
                         TxType::Write => B9TransactionType::Write,
                         TxType::Schema => B9TransactionType::Schema,
                     };
-                    let mut options = B9TransactionOptions::new();
-                    if let Some(timeout) = timeout {
-                        options = options
-                            .transaction_timeout(timeout)
-                            .schema_lock_acquire_timeout(timeout);
-                    }
+                    let options = options.band9();
                     let transaction = d
                         .transaction_with_options(&db, typedb_tx_type, options)
                         .await
@@ -2642,7 +2677,7 @@ impl TypeDBRuntime {
 
 /// Band-tagged transaction inner state.
 ///
-/// The `Option` wrapper lets commit/close/rollback take ownership by value
+/// The `Option` wrapper lets commit/close take ownership by value
 /// (`.take()`) while the outer `&mut RuntimeTransaction` satisfies the trait's
 /// `&mut self`.  A `None` after `.take()` marks the transaction as consumed.
 enum RuntimeTransactionInner {
@@ -3241,16 +3276,13 @@ impl RuntimeTransaction {
         }
     }
 
-    /// Roll back this transaction.
+    /// Roll back pending changes, keeping this transaction open for further work.
     pub fn rollback(&mut self) -> BoxFuture<'_, Result<()>> {
-        // Both bands expose rollback(&self), so we can move the value out of
-        // the Option and call rollback on the owned T (the compiler
-        // auto-borrows through the owned value for &self methods).
         let driver_lease = self.driver_lease.clone();
         match &mut self.inner {
             #[cfg(feature = "band8")]
             RuntimeTransactionInner::B8(opt) => {
-                let tx = opt.take();
+                let tx = opt.as_ref();
                 Box::pin(async move {
                     if let Some(driver) = &driver_lease {
                         driver.ensure_open()?;
@@ -3268,7 +3300,7 @@ impl RuntimeTransaction {
             }
             #[cfg(feature = "band9")]
             RuntimeTransactionInner::B9(opt) => {
-                let tx = opt.take();
+                let tx = opt.as_ref();
                 Box::pin(async move {
                     if let Some(driver) = &driver_lease {
                         driver.ensure_open()?;
@@ -4052,6 +4084,44 @@ mod tests {
     use std::io;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn transaction_options_forward_independent_driver_deadlines() {
+        for options in [
+            TransactionOptions::default(),
+            TransactionOptions {
+                transaction_timeout: Some(Duration::from_secs(1)),
+                ..Default::default()
+            },
+            TransactionOptions {
+                schema_lock_acquire_timeout: Some(Duration::from_secs(2)),
+                ..Default::default()
+            },
+            TransactionOptions {
+                transaction_timeout: Some(Duration::from_secs(3)),
+                schema_lock_acquire_timeout: Some(Duration::from_secs(4)),
+            },
+        ] {
+            #[cfg(feature = "band8")]
+            {
+                let driver = options.band8();
+                assert_eq!(driver.transaction_timeout, options.transaction_timeout);
+                assert_eq!(
+                    driver.schema_lock_acquire_timeout,
+                    options.schema_lock_acquire_timeout
+                );
+            }
+            #[cfg(feature = "band9")]
+            {
+                let driver = options.band9();
+                assert_eq!(driver.transaction_timeout, options.transaction_timeout);
+                assert_eq!(
+                    driver.schema_lock_acquire_timeout,
+                    options.schema_lock_acquire_timeout
+                );
+            }
+        }
+    }
 
     static NEXT_TLS_MATERIAL_TEST_ID: AtomicUsize = AtomicUsize::new(0);
     static TRACE_CAPTURE_LOCK: Mutex<()> = Mutex::new(());

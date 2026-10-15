@@ -178,7 +178,9 @@ impl Transaction {
             .inner
             .take()
             .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
-        tx.rollback().await
+        let rollback = tx.rollback().await;
+        let close = tx.close().await;
+        rollback.and(close)
     }
 
     /// Close this transaction without committing.

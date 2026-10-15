@@ -833,7 +833,7 @@ async fn dynamic_relation_update_exact_identity_boundary_distinct_keys_reach_bot
     assert_eq!(s.query_modes, vec!["legacy", "legacy", "legacy"]);
     assert_eq!(s.commits, 0);
     assert_eq!(s.rollbacks, 1);
-    assert_eq!(s.closes, 0);
+    assert_eq!(s.closes, 1);
     assert!(s.queries[0].contains("has name") && s.queries[0].contains("Alice"));
     assert!(s.queries[1].contains("has name") && s.queries[1].contains("Bob"));
     for q in &s.queries[..2] {
@@ -913,7 +913,7 @@ async fn dynamic_relation_update_exact_identity_boundary_convergence_is_post_res
         assert_eq!(s.query_modes, vec!["legacy", "legacy"]);
         assert_eq!(s.commits, 0);
         assert_eq!(s.rollbacks, 1);
-        assert_eq!(s.closes, 0);
+        assert_eq!(s.closes, 1);
         assert!(s.queries[0].contains(&format!("isa! {first}")));
         assert!(s.queries[1].contains(&format!("isa! {second}")));
         for q in &s.queries {
@@ -1022,7 +1022,7 @@ async fn dynamic_relation_update_exact_player_answer_matrix_is_relation_rooted_a
         }
         assert_eq!(s.commits, 0);
         assert_eq!(s.rollbacks, 1);
-        assert_eq!(s.closes, 0);
+        assert_eq!(s.closes, 1);
     }
 }
 
@@ -1065,7 +1065,7 @@ async fn dynamic_relation_update_exact_player_answer_finishes_lookups_before_mut
         assert_eq!(s.query_modes, vec!["legacy", "legacy"]);
         assert_eq!(s.commits, 0);
         assert_eq!(s.rollbacks, 1);
-        assert_eq!(s.closes, 0);
+        assert_eq!(s.closes, 1);
         assert!(
             s.queries[0].contains("isa! person")
                 && s.queries[0].contains("iid 0x2")
@@ -1562,7 +1562,7 @@ async fn dynamic_relation_put_exact_single_preflight_zero_io_table() {
     assert_eq!(s.query_modes, vec!["legacy"]);
     assert_eq!(s.commits, 0);
     assert_eq!(s.rollbacks, 1);
-    assert_eq!(s.closes, 0);
+    assert_eq!(s.closes, 1);
     let expected =
         query_builder::build_dynamic_relation_player_lookup("person", Some("0x2"), None, "$p")
             .unwrap();
@@ -1888,7 +1888,7 @@ async fn dynamic_relation_put_exact_single_key_answer_matrix_is_strict() {
         assert_eq!(s.query_modes, vec!["legacy"]);
         assert_eq!(s.commits, 0);
         assert_eq!(s.rollbacks, 1);
-        assert_eq!(s.closes, 0);
+        assert_eq!(s.closes, 1);
     }
 }
 
@@ -2265,7 +2265,7 @@ async fn dynamic_relation_put_many_exact_later_row_failures_are_atomic_and_prese
         assert_eq!(s.query_modes, vec!["legacy"; s.queries.len()]);
         assert_eq!(s.commits, 0);
         assert_eq!(s.rollbacks, 1);
-        assert_eq!(s.closes, 0);
+        assert_eq!(s.closes, 1);
     }
 }
 
@@ -2490,7 +2490,7 @@ async fn dynamic_relation_put_many_exact_caller_owned_contexts_preserve_ownershi
         assert_eq!(s.opens, vec![TxType::Write]);
         assert_eq!(s.commits, 0);
         assert_eq!(s.rollbacks, 1);
-        assert_eq!(s.closes, 0);
+        assert_eq!(s.closes, 1);
     }
     let (backend, state) = RecordingBackend::new(vec![]);
     let db = Database::with_backend(Box::new(backend), "testdb");
@@ -2567,7 +2567,7 @@ async fn dynamic_relation_update_exact_owned_failure_table_rolls_back_once() {
         assert_eq!(s.query_modes, vec!["legacy"; fail_index + 3]);
         assert_eq!(s.commits, 0);
         assert_eq!(s.rollbacks, 1);
-        assert_eq!(s.closes, 0);
+        assert_eq!(s.closes, 1);
         assert!(s.queries[0].contains("person") && s.queries[1].contains("company"));
         assert!(s.queries[fail_index + 2].contains(match *stage {
             "attribute" => "position",
@@ -2621,7 +2621,7 @@ async fn dynamic_relation_update_exact_owned_rollback_failure_preserves_primary(
     assert_eq!(s.query_modes, vec!["legacy"; 6]);
     assert_eq!(s.commits, 0);
     assert_eq!(s.rollbacks, 1);
-    assert_eq!(s.closes, 0);
+    assert_eq!(s.closes, 1);
 }
 
 #[tokio::test]
