@@ -554,3 +554,44 @@ Rust's genuine Ed25519 golden fixtures are in
 `type-bridge-core/crates/contract/tests/fixtures/query-remote-v3/`: advertisement,
 request, request fingerprint, committed reply and failed reply. Existing V2
 envelope and V2/V3 plan fixtures remain byte-for-byte unchanged.
+
+### Bounded idempotency retention
+
+The server's standalone `IdempotencyStore` is an in-memory map keyed by the
+**authenticated client identity and opaque key**. Client identity comes from
+transport/policy, never from this unsigned request body. Each entry keeps the
+exact request fingerprint, fixed expiry and either an in-flight reservation or
+the complete signed reply bytes, including failed or indeterminate replies.
+
+| Live client/key state | Same fingerprint | Different fingerprint |
+| --- | --- | --- |
+| In flight | `retry_later` | `idempotency_key_reused` |
+| Completed | Replay identical signed bytes | `idempotency_key_reused` |
+
+A retry does not extend expiry. Only expired entries are removed, lazily at the
+next admission/completion. Neither an in-flight entry nor a completed unexpired
+reply is evicted under pressure: a new keyed request receives
+`idempotency_capacity` before execution instead.
+
+`IdempotencyConfig` defaults to 100,000 live entries, 256 MiB of retained plus
+reserved reply bytes, and a maximum remaining TTL of five minutes. Capacity and
+byte quota must be positive; TTL may be tightened but never exceed five minutes.
+The route reserves its largest possible signed success/failure byte allowance
+before executing. Completion releases unused allowance and stores the exact
+opaque signed bytes. This prevents a transaction that committed from losing
+its reply because another request filled the byte quota during execution.
+Completion must fit the allowance; expiry, duplicate completion or a ticket
+from another store cannot overwrite a newer reservation. Dropping a ticket
+leaves it in flight until expiry because the execution might have committed.
+
+This store installs no route and opens no transaction. Staged-route integration
+must authenticate, validate freshness/advertisement, reserve, execute once, sign
+and complete; a keyed retry must consult the store before ordinary nonce replay
+rejection. The live dropped-reply/apply-once smoke belongs to that integration.
+
+Retention is **not durable**. A server restart loses the store, and its executor
+epoch/advertisement must change. A retry may return an indeterminate outcome;
+a restart is not proof that a previous request did not commit. Expired keys and
+lost entries cannot establish exactly-once execution beyond the original
+request lifetime. Do not silently reprepare and execute a lost-reply write under
+a new advertisement as if it were the same idempotent request.
