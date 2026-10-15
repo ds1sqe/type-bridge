@@ -28,7 +28,7 @@ use type_bridge_contract::query_remote_v2::{
 };
 use type_bridge_contract::schema::{DeclaredSchema, DocumentId};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
-use type_bridge_orm::Transaction;
+use type_bridge_orm::OwnedTransaction as Transaction;
 use type_bridge_orm::query_v2_prepared::{
     acquire_live_authority_rebuild_permit, verify_managed_query_control_scope,
 };

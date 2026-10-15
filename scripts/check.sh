@@ -37,6 +37,8 @@ run_step() {
 run_rust() {
     printf "${BOLD}━━━ Rust ━━━${RESET}\n\n"
 
+    run_step "internal eager dependency boundary" python3 scripts/ci/check_internal_eager.py
+
     run_step "cargo audit (all maintained lockfiles)" \
         bash scripts/ci/check_dependency_security.sh
 

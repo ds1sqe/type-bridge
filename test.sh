@@ -815,6 +815,15 @@ run_live_lane() {
     fi
 
     printf "${BOLD}━━━ Rust (integration) ━━━${RESET}\n\n"
+    run_step "runtime and staged transaction options/reuse live checks" \
+        env TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS="$TYPEDB_ADDRESS" \
+            TYPE_BRIDGE_TRANSACTION_LIVE_VERSION="$typedb_server_version" \
+            TYPEDB_USERNAME="${TYPEDB_USERNAME-admin}" \
+            TYPEDB_PASSWORD="${TYPEDB_PASSWORD-password}" \
+        cargo test --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-typedb-runtime -p type-bridge-orm \
+            --test transaction_options_live --test staged_transaction_live
+
     run_step "cargo test -p type-bridge-orm --features integration-tests --test integration" \
         run_with_timeout 15m \
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \

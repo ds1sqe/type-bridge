@@ -674,6 +674,43 @@ pub trait TransactionOps: Send {
         })
     }
 
+    /// Materialize a bounded answer while preserving empty answer kinds.
+    /// Real providers enforce these limits while polling their streams.
+    fn query_materialized_bounded<'a>(
+        &'a mut self,
+        typeql: &'a str,
+        rows: Option<GivenRowsSpec>,
+        limits: BoundedAnswerLimits,
+        canonical: bool,
+    ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
+        Box::pin(async move {
+            let mut reader = BoundedAnswerReader::new(limits);
+            reader.check_before_read()?;
+            let result = match rows {
+                Some(rows) => self.query_with_rows(typeql, rows).await?,
+                None if canonical => self.query_canonical(typeql).await?,
+                None => self.query(typeql).await?,
+            };
+            let mut consumer = |_: AnswerItem| Ok(AnswerControl::Continue);
+            match &result {
+                QueryResult::Ok => {
+                    reader.check_before_read()?;
+                }
+                QueryResult::Rows(rows) => {
+                    for row in rows {
+                        reader.accept(AnswerItem::Row(row.clone()), &mut consumer)?;
+                    }
+                }
+                QueryResult::Documents(rows) => {
+                    for row in rows {
+                        reader.accept(AnswerItem::Document(row.clone()), &mut consumer)?;
+                    }
+                }
+            }
+            Ok(result)
+        })
+    }
+
     /// Execute a legacy TypeQL string through the bounded answer seam.
     ///
     /// The default preserves compatibility for test/legacy transactions that
@@ -866,6 +903,23 @@ pub trait DriverBackend: Send + Sync {
         database: &str,
         tx_type: TxType,
     ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>>;
+
+    /// Open with transaction-level options. Legacy providers reject unsupported deadlines.
+    fn open_with_options(
+        &self,
+        database: &str,
+        tx_type: TxType,
+        options: &super::staged::TransactionOptions,
+    ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+        if options.deadline.is_some() {
+            return Box::pin(async {
+                Err(OrmError::Transaction(
+                    "Transaction deadlines are not supported by this backend".into(),
+                ))
+            });
+        }
+        self.open_transaction(database, tx_type)
+    }
 
     /// Open a read-capable V2 transaction that excludes schema commits until
     /// the transaction reaches a terminal state.

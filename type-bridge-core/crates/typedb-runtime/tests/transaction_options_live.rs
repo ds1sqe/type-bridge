@@ -18,7 +18,12 @@ async fn fixture() -> Option<(TypeDBRuntime, String)> {
                 .parse()
                 .expect("valid TypeDB HTTP port"),
             tls: false,
-            server_version: Some("3.13.6".parse().unwrap()),
+            server_version: Some(
+                std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION")
+                    .unwrap_or_else(|_| "3.13.6".into())
+                    .parse()
+                    .unwrap(),
+            ),
         },
     )
     .await

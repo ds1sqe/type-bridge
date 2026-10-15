@@ -14,13 +14,13 @@ use type_bridge_core_lib::version::Version;
 ///
 /// Write and schema transactions must be explicitly committed via
 /// [`commit`](Self::commit). Read transactions do not need commit.
-pub struct Transaction {
+pub struct OwnedTransaction {
     inner: Option<Box<dyn TransactionOps>>,
     tx_type: TxType,
     server_version: Option<Version>,
 }
 
-impl Transaction {
+impl OwnedTransaction {
     pub(crate) fn new(
         inner: Box<dyn TransactionOps>,
         tx_type: TxType,
@@ -206,3 +206,10 @@ impl Transaction {
         Ok(())
     }
 }
+
+/// Released eager transaction name, retained until 3.0.
+#[deprecated(
+    since = "2.3.0",
+    note = "Use OwnedTransaction; staged Transaction takes the session-level name in 3.0"
+)]
+pub type Transaction = OwnedTransaction;

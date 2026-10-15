@@ -592,6 +592,16 @@ pub enum TxType {
 }
 
 /// Server-side transaction lifetime and schema-lock acquisition bounds.
+///
+/// ```
+/// use std::time::Duration;
+/// use type_bridge_typedb_runtime::TransactionOptions;
+/// let options = TransactionOptions::new()
+///     .with_transaction_timeout(Duration::from_secs(30))
+///     .with_schema_lock_acquire_timeout(Duration::from_secs(2));
+/// assert_eq!(options.transaction_timeout, Some(Duration::from_secs(30)));
+/// assert_eq!(options.schema_lock_acquire_timeout, Some(Duration::from_secs(2)));
+/// ```
 #[derive(Debug, Clone, Copy, Default)]
 #[non_exhaustive]
 pub struct TransactionOptions {
@@ -602,6 +612,26 @@ pub struct TransactionOptions {
 }
 
 impl TransactionOptions {
+    /// Use the driver's default transaction and lock timeouts.
+    pub const fn new() -> Self {
+        Self {
+            transaction_timeout: None,
+            schema_lock_acquire_timeout: None,
+        }
+    }
+
+    /// Bound the transaction's server-side lifetime.
+    pub const fn with_transaction_timeout(mut self, timeout: Duration) -> Self {
+        self.transaction_timeout = Some(timeout);
+        self
+    }
+
+    /// Bound the wait for a schema lock when opening.
+    pub const fn with_schema_lock_acquire_timeout(mut self, timeout: Duration) -> Self {
+        self.schema_lock_acquire_timeout = Some(timeout);
+        self
+    }
+
     #[cfg(feature = "band8")]
     fn band8(self) -> B8TransactionOptions {
         let mut options = B8TransactionOptions::new();
@@ -2951,6 +2981,53 @@ impl RuntimeTransaction {
             Ok(RuntimeAnswerControl::Continue)
         };
         let stats = self.query_v2_bounded(typeql, limits, &mut consumer).await?;
+        Ok(materialize_runtime_answer(stats, items))
+    }
+
+    /// Materialize a bounded legacy or canonical answer, preserving empty kinds.
+    #[doc(hidden)]
+    pub async fn query_materialized_bounded(
+        &mut self,
+        typeql: &str,
+        rows: Option<GivenRowsSpec>,
+        limits: RuntimeAnswerLimits,
+        canonical: bool,
+    ) -> Result<QueryResult> {
+        let mut items = Vec::new();
+        let mut consumer = |item| {
+            items.push(item);
+            Ok(RuntimeAnswerControl::Continue)
+        };
+        let stats = match (rows, canonical) {
+            (None, false) => self.query_bounded(typeql, limits, &mut consumer).await?,
+            (Some(rows), false) => {
+                self.query_with_rows_bounded(typeql, rows, limits, &mut consumer)
+                    .await?
+            }
+            (None, true) => {
+                self.query_v2_bounded(
+                    typeql,
+                    QueryV2RuntimeAnswerLimits {
+                        answer: limits,
+                        max_collection_members: u64::MAX,
+                    },
+                    &mut consumer,
+                )
+                .await?
+            }
+            (Some(rows), true) => {
+                self.query_v2_with_rows_bounded(
+                    typeql,
+                    rows,
+                    QueryV2RuntimeAnswerLimits {
+                        answer: limits,
+                        max_collection_members: u64::MAX,
+                    },
+                    &mut consumer,
+                )
+                .await?
+            }
+        };
         Ok(materialize_runtime_answer(stats, items))
     }
 

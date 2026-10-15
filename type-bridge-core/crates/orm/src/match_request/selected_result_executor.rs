@@ -33,7 +33,7 @@ use crate::query_v2_adapter::{
 use crate::session::backend::{
     AnswerCancellation, BoundedAnswerLimits, QueryV2AnswerLimits, TxType,
 };
-use crate::session::{Database, Transaction, TransactionContext};
+use crate::session::{Database, OwnedTransaction as Transaction, TransactionContext};
 
 const OWNED_TRANSACTION_CLOSE_GRACE: Duration = Duration::from_secs(1);
 

@@ -746,7 +746,7 @@ impl RemoteReplyExpectation {
 /// Execute one admitted additive V2 request over exactly one live transaction.
 pub async fn execute_admitted_remote_request_v2(
     admitted: AdmittedRemoteRequestV2,
-    transaction: &mut crate::session::transaction::Transaction,
+    transaction: &mut crate::session::transaction::OwnedTransaction,
     signer: &RemoteReplySigningKey,
 ) -> Vec<u8> {
     let nonce = admitted.nonce.clone();
@@ -766,7 +766,7 @@ pub async fn execute_admitted_remote_request_v2(
 
 async fn run_admitted_request_v2(
     admitted: AdmittedRemoteRequestV2,
-    transaction: &mut crate::session::transaction::Transaction,
+    transaction: &mut crate::session::transaction::OwnedTransaction,
     signer: &RemoteReplySigningKey,
 ) -> Result<Vec<u8>, Diagnostic> {
     let AdmittedRemoteRequestV2 {

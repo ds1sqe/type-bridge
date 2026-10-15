@@ -9,8 +9,14 @@ pub mod context;
 pub mod database;
 #[cfg(feature = "typedb")]
 mod direct_connection;
+#[cfg(feature = "internal-eager")]
+#[doc(hidden)]
+pub mod eager;
+#[cfg(not(feature = "internal-eager"))]
+pub(crate) mod eager;
 pub mod legacy_writer;
 mod proxy_connection;
+pub mod staged;
 mod tls_policy;
 pub mod transaction;
 
@@ -31,6 +37,8 @@ pub use proxy_connection::{ProxyEndpoint, ProxyHttpTransport};
 #[allow(deprecated)]
 pub use tls_policy::DirectTls;
 pub use tls_policy::TlsPolicy;
+pub use transaction::OwnedTransaction;
+#[allow(deprecated)]
 pub use transaction::Transaction;
 
 #[cfg(feature = "typedb")]

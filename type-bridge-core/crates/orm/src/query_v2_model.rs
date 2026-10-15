@@ -62,7 +62,7 @@ use crate::session::backend::{
     MAX_ERROR_DRAIN_BYTES, MAX_ERROR_DRAIN_ITEMS, QueryV2AnswerLimits,
 };
 use crate::session::context::TransactionContext;
-use crate::session::transaction::Transaction;
+use crate::session::transaction::OwnedTransaction as Transaction;
 use crate::value::AttributeValue;
 
 type ExecResult<T> = Result<T, QueryV2ExecutionError>;

@@ -13,7 +13,7 @@ use type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX;
 use type_bridge_contract::schema::{DocumentId, ManagedSchemaState};
 use type_bridge_orm::session::DatabaseCreateOutcome;
 use type_bridge_orm::session::backend::QueryResult;
-use type_bridge_orm::{Database, OrmError, Transaction};
+use type_bridge_orm::{Database, OrmError, OwnedTransaction as Transaction};
 use type_bridge_schema::ManagedDeltaContext;
 use type_bridge_schema_compat::typeql_to_declared;
 use type_bridge_schema_migration::{

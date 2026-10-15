@@ -35,3 +35,21 @@ cd ..
 Python `Database` and `TransactionContext` objects wrap Rust-owned handles. Raw
 Python-driver transactions are separate and cannot be shared with generated
 manager operations.
+
+The ORM also provides deferred raw execution through
+`Database::transaction(session::staged::TransactionOptions)`. Stage TypeQL
+with `session::staged::StagedQuery`, then call `commit()` to execute the
+ordered statements in one provider transaction. Pending answers become
+readable only after the entire execution succeeds. Rollback discards queued
+work; successful commits leave an empty queue ready for reuse. Close ends
+the logical transaction. Dropping it never commits.
+
+The released eager `session::Transaction` and `session::transaction::Transaction`
+names remain deprecated aliases of `OwnedTransaction` until 3.0, when the
+staged type takes the session-level name. Internal eager execution supports
+migration assertions and legacy prerequisite reads. Its `internal-eager`
+feature is restricted to the ORM and schema migration provider by
+`scripts/ci/check_internal_eager.py`. The export is doc-hidden, not isolated
+from Cargo feature unification: linking the migration provider can expose
+`session::eager` elsewhere in the graph. The probe also rejects references
+to that module outside the allowlist.

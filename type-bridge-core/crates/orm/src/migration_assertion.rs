@@ -26,7 +26,7 @@ use crate::session::backend::{
     AnswerCancellation, AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits,
     BoundedAnswerStats, BoxFuture, QueryV2AnswerLimits, TransactionOps,
 };
-use crate::session::transaction::Transaction;
+use crate::session::transaction::OwnedTransaction as Transaction;
 
 /// Ephemeral provider statement and its exact selected-row contract.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -38,7 +38,7 @@ use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery, val
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema};
 use type_bridge_schema_compat::{LiveQueryControlPresence, rebuild_live_query_authority};
 
-use crate::Transaction;
+use crate::OwnedTransaction as Transaction;
 use crate::query_execution_limits::QueryExecutionDeadline;
 use crate::query_v2::{QueryV2ExecutionError, failure};
 use crate::query_v2_builder::QueryAuthorityIdentity;

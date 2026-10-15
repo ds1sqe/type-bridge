@@ -1250,7 +1250,7 @@ pub(crate) trait QueryV2ValidatedItemObserver: Send {
 /// projection; count and exists reuse the same validated stream and are
 /// decided in Rust, mirroring the released V1 executor discipline.
 pub async fn execute_validated_query(
-    transaction: &mut crate::session::transaction::Transaction,
+    transaction: &mut crate::session::transaction::OwnedTransaction,
     validated: &ValidatedQuery,
     invocation: &QueryInvocation,
     limits: crate::session::backend::QueryV2AnswerLimits,

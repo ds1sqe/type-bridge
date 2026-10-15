@@ -21,6 +21,7 @@ default = ["band8", "band9"]
 typedb = ["dep:type-bridge-typedb-runtime"]
 band8 = ["typedb", "type-bridge-typedb-runtime/band8"]
 band9 = ["typedb", "type-bridge-typedb-runtime/band9"]
+internal-eager = []
 integration-tests = ["band8", "band9"]
 
 [dependencies]

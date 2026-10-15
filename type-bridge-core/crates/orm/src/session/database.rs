@@ -33,7 +33,7 @@ use super::backend::AnswerCancellation;
 use super::backend::BoxFuture;
 use super::backend::{DriverBackend, GivenRowsSpec, QueryResult, TxType};
 use super::context::TransactionContext;
-use super::transaction::Transaction;
+use super::transaction::OwnedTransaction as Transaction;
 use crate::_registry::DescriptorRegistry;
 use crate::error::Result;
 use crate::match_request::selected_result_executor::SelectedResultExecutor;
@@ -424,6 +424,33 @@ impl Database {
             answer_limits: Some(answer_limits.effective()),
             ..database
         })
+    }
+
+    /// Create a deferred transaction. No provider transaction opens until commit.
+    pub fn transaction(
+        &self,
+        options: super::staged::TransactionOptions,
+    ) -> super::staged::Transaction {
+        super::staged::Transaction::new(
+            Arc::clone(&self.backend),
+            self.database_name.clone(),
+            options,
+        )
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn open_eager(
+        &self,
+        kind: super::staged::TransactionKind,
+        options: super::staged::TransactionOptions,
+    ) -> Result<super::eager::EagerTransaction> {
+        let tx = self
+            .backend
+            .open_with_options(&self.database_name, kind.into(), &options)
+            .await?;
+        let mut eager = super::eager::EagerTransaction::new(tx, kind.into(), self.server_version());
+        eager.set_never_commit(options.never_commit);
+        Ok(eager)
     }
 
     /// Open a read transaction.

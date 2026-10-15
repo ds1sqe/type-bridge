@@ -197,7 +197,7 @@ impl LegacyExecutionBinding {
 
     pub(crate) async fn validate_contents(
         &self,
-        transaction: &mut type_bridge_orm::Transaction,
+        transaction: &mut type_bridge_orm::OwnedTransaction,
         managed_scope: &str,
     ) -> Result<(), Diagnostic> {
         match self {
@@ -225,7 +225,7 @@ impl LegacyExecutionBinding {
 
     async fn inspect_read_only(
         &self,
-        transaction: &mut type_bridge_orm::Transaction,
+        transaction: &mut type_bridge_orm::OwnedTransaction,
         managed_scope: &str,
     ) -> Result<LegacyBindingReadInspection, Diagnostic> {
         match self {
@@ -315,7 +315,7 @@ impl LegacyBridgeBinding {
 
     async fn validate_legacy_ledger(
         &self,
-        transaction: &mut type_bridge_orm::Transaction,
+        transaction: &mut type_bridge_orm::OwnedTransaction,
     ) -> Result<(), Diagnostic> {
         let current = load_verified_legacy_partition(
             transaction,
@@ -335,7 +335,7 @@ impl LegacyBridgeBinding {
 
     async fn validate_exact_anchor(
         &self,
-        transaction: &mut type_bridge_orm::Transaction,
+        transaction: &mut type_bridge_orm::OwnedTransaction,
     ) -> Result<(), Diagnostic> {
         match load_legacy_cutover_anchor(transaction, &self.managed_scope).await? {
             Some(observed) if observed == self.anchor_fingerprint => Ok(()),
@@ -352,7 +352,7 @@ impl LegacyBridgeBinding {
 
     async fn validate_exact_contents(
         &self,
-        transaction: &mut type_bridge_orm::Transaction,
+        transaction: &mut type_bridge_orm::OwnedTransaction,
     ) -> Result<(), Diagnostic> {
         self.validate_legacy_ledger(transaction).await?;
         self.validate_exact_anchor(transaction).await
@@ -360,7 +360,7 @@ impl LegacyBridgeBinding {
 
     async fn validate_pending_import_contents(
         &self,
-        transaction: &mut type_bridge_orm::Transaction,
+        transaction: &mut type_bridge_orm::OwnedTransaction,
     ) -> Result<VerifiedLegacyAppliedPartition, Diagnostic> {
         let current = load_verified_legacy_partition(
             transaction,
@@ -397,7 +397,7 @@ impl LegacyBridgeBinding {
 
     async fn inspect_read_only(
         &self,
-        transaction: &mut type_bridge_orm::Transaction,
+        transaction: &mut type_bridge_orm::OwnedTransaction,
     ) -> Result<LegacyBindingReadInspection, Diagnostic> {
         let current = match load_verified_legacy_partition(
             transaction,
@@ -599,7 +599,7 @@ impl<'a> LegacyCheckpointStore<'a> {
 
     async fn validate_guarded_authority(
         &self,
-        guard: &mut type_bridge_orm::Transaction,
+        guard: &mut type_bridge_orm::OwnedTransaction,
         lease: &MigrationLease,
         sentinel_expectation: LegacyCutoverSentinelExpectation<'_>,
     ) -> Result<(), Diagnostic> {
@@ -1098,7 +1098,7 @@ impl<'a> LegacyBoundStore<'a> {
 
     async fn validate_guard(
         &self,
-        guard: &mut type_bridge_orm::Transaction,
+        guard: &mut type_bridge_orm::OwnedTransaction,
         lease: &MigrationLease,
         expected: &ManagedSchemaState,
     ) -> Result<(), Diagnostic> {
@@ -2444,7 +2444,7 @@ fn same_adopted_authority(
 }
 
 async fn finish_schema_guard<T>(
-    guard: &mut type_bridge_orm::Transaction,
+    guard: &mut type_bridge_orm::OwnedTransaction,
     primary: Result<T, Diagnostic>,
     operation: &'static str,
 ) -> Result<T, Diagnostic> {
@@ -2580,7 +2580,7 @@ fn read_guard_cleanup_failure(cleanup: OrmError, primary: Option<&Diagnostic>) -
 }
 
 async fn load_verified_legacy_partition(
-    transaction: &mut type_bridge_orm::Transaction,
+    transaction: &mut type_bridge_orm::OwnedTransaction,
     expectation: LegacyCutoverSentinelExpectation<'_>,
     unreadable_message: &'static str,
 ) -> Result<VerifiedLegacyAppliedPartition, Diagnostic> {
@@ -2728,7 +2728,7 @@ fn legacy_cutover_fingerprint(
 }
 
 async fn load_legacy_cutover_anchor(
-    transaction: &mut type_bridge_orm::Transaction,
+    transaction: &mut type_bridge_orm::OwnedTransaction,
     managed_scope: &str,
 ) -> Result<Option<String>, Diagnostic> {
     observe_legacy_cutover_anchor(transaction, managed_scope)
@@ -2750,7 +2750,7 @@ impl LegacyAnchorObservationError {
 }
 
 async fn observe_legacy_cutover_anchor(
-    transaction: &mut type_bridge_orm::Transaction,
+    transaction: &mut type_bridge_orm::OwnedTransaction,
     managed_scope: &str,
 ) -> Result<Option<String>, LegacyAnchorObservationError> {
     let schema_query = "match entity $t; fetch { \"label\": label($t) };";
@@ -2849,7 +2849,7 @@ fn parse_legacy_cutover_anchor(
 }
 
 async fn legacy_anchor_query_values(
-    transaction: &mut type_bridge_orm::Transaction,
+    transaction: &mut type_bridge_orm::OwnedTransaction,
     query: &str,
 ) -> Result<Vec<serde_json::Value>, Diagnostic> {
     match transaction.query(query).await.map_err(|error| {
@@ -2868,7 +2868,7 @@ async fn legacy_anchor_query_values(
 }
 
 async fn insert_legacy_cutover_anchor(
-    transaction: &mut type_bridge_orm::Transaction,
+    transaction: &mut type_bridge_orm::OwnedTransaction,
     managed_scope: &str,
     fingerprint: &str,
 ) -> Result<(), Diagnostic> {
