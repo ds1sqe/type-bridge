@@ -71,15 +71,22 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
         _require(gate.get(field) is False, f"{field} must remain false")
 
     abi = contract.get("abi")
-    _require(isinstance(abi, dict) and abi.get("decision") == "no-change", "ABI decision drifted")
-    _require(abi.get("version") == "1.6.0", "distribution must retain ABI 1.6")
+    _require(
+        isinstance(abi, dict) and abi.get("decision") == "additive-1.7", "ABI decision drifted"
+    )
+    _require(abi.get("version") == "1.7.0", "distribution must retain ABI 1.7")
+    _require(abi.get("accepted_descriptor_minors") == [6, 7], "descriptor ABI range drifted")
+    _require(
+        abi.get("added_exports") == ["type_bridge_write_transaction_rollback_keep"],
+        "additive ABI exports drifted",
+    )
     _require(abi.get("static_linkage") == "unsupported", "static linkage was not selected")
     _require(abi.get("shared_linkage") == "artifact", "shared artifact linkage is missing")
 
     compatibility = contract.get("compatibility")
     _require(isinstance(compatibility, dict), "compatibility contract is missing")
     _require(
-        compatibility.get("runtime_abi") == {"exact": "1.6.0"},
+        compatibility.get("runtime_abi") == {"exact": "1.7.0"},
         "runtime ABI range drifted",
     )
     _require(

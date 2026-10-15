@@ -10,12 +10,19 @@
     "public_support_authorized": false
   },
   "abi": {
-    "decision": "no-change",
-    "version": "1.6.0",
+    "decision": "additive-1.7",
+    "version": "1.7.0",
     "contract_path": "tests/contracts/c-abi.json",
-    "contract_sha256": "eee16ab7d3455d7aec28fd6255e2047d988d9f4f50f3089ccac7607b855983b8",
+    "contract_sha256": "9127d77266cf2938191faa923f2c922b4cd36883d0ef51b745f7cf7627cee2c7",
     "static_linkage": "unsupported",
-    "shared_linkage": "artifact"
+    "shared_linkage": "artifact",
+    "accepted_descriptor_minors": [
+      6,
+      7
+    ],
+    "added_exports": [
+      "type_bridge_write_transaction_rollback_keep"
+    ]
   },
   "identities": {
     "cli": {
@@ -43,7 +50,7 @@
   },
   "compatibility": {
     "runtime_abi": {
-      "exact": "1.6.0"
+      "exact": "1.7.0"
     },
     "required_pre_io_checks": [
       "product-version",
@@ -194,7 +201,7 @@
     },
     {
       "path": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-      "sha256": "4cdc5195b1da40333406ae162d05bd932ed90e3e8d4d30bcebda21c2bea38f2d"
+      "sha256": "f9e3f3bbeac05d623d412a895c794ea843455159e488ecb2336b56f9ce6fde29"
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/CMakeLists.txt.in",

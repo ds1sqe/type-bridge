@@ -16,12 +16,20 @@
 #define TYPE_BRIDGE_CALL
 #endif
 
+#if defined(_MSC_VER)
+#define TYPE_BRIDGE_DEPRECATED(msg) __declspec(deprecated(msg))
+#elif defined(__GNUC__) || defined(__clang__)
+#define TYPE_BRIDGE_DEPRECATED(msg) __attribute__((deprecated(msg)))
+#else
+#define TYPE_BRIDGE_DEPRECATED(msg)
+#endif
+
 /*
  * Native layout/behavior compatibility, independent from the TypeBridge
  * product version returned by type_bridge_runtime_version().
  */
 #define TYPE_BRIDGE_C_ABI_MAJOR 1u
-#define TYPE_BRIDGE_C_ABI_MINOR 6u
+#define TYPE_BRIDGE_C_ABI_MINOR 7u
 #define TYPE_BRIDGE_CHUNKED_BYTE_VIEW_VERSION 1u
 #define TYPE_BRIDGE_PROJECTED_TOKEN_VERSION 1u
 
@@ -1085,7 +1093,8 @@ type_bridge_database_close(
  * Transaction opens borrow the exact package authority retained by the
  * database; the original package handle may already be closed. Read and write
  * handles are distinct C types. Model operations will borrow these handles;
- * only the terminal functions below consume them. A commit cancelled before
+ * commit, rollback and close consume them; rollback_keep preserves them on
+ * success. A commit cancelled before
  * dispatch leaves the write handle live. Once commit dispatch begins, success
  * or the classified provider outcome consumes the handle. Active write close
  * rolls back; read close closes without commit. Every operation on one mutable
@@ -1118,6 +1127,15 @@ type_bridge_write_transaction_commit(
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_write_transaction_rollback(
+    type_bridge_write_transaction_t **transaction,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+/* ABI 1.7: successful rollback preserves the same handle for more work.
+ * Provider rollback failure consumes the handle; preflight failure retains it.
+ * A null owner slot is an idempotent success.
+ * A successful rollback also clears a prior borrowed-operation poison state.
+ */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_rollback_keep(
     type_bridge_write_transaction_t **transaction,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL

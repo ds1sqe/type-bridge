@@ -33,9 +33,7 @@ pub(crate) fn open(
             "C schema descriptor size or reserved fields are invalid",
         )));
     }
-    if descriptor.abi_major != crate::abi::ABI_MAJOR
-        || descriptor.abi_minor != crate::abi::ABI_MINOR
-    {
+    if !crate::abi::descriptor_abi_is_supported(descriptor.abi_major, descriptor.abi_minor) {
         return Err(rejected(stable(
             DiagnosticCategory::UnsupportedCapability,
             "c_schema_descriptor_abi_unsupported",
@@ -103,9 +101,7 @@ pub(crate) unsafe fn open_chunked(
             "C chunked schema descriptor size or reserved fields are invalid",
         )));
     }
-    if descriptor.abi_major != crate::abi::ABI_MAJOR
-        || descriptor.abi_minor != crate::abi::ABI_MINOR
-    {
+    if !crate::abi::descriptor_abi_is_supported(descriptor.abi_major, descriptor.abi_minor) {
         return Err(rejected(stable(
             DiagnosticCategory::UnsupportedCapability,
             "c_schema_descriptor_abi_unsupported",

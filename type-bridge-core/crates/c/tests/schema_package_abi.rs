@@ -750,7 +750,7 @@ fn native_import_library(native_library: &Path) -> PathBuf {
 fn rust_abi_layout() -> Vec<usize> {
     let mut layout = vec![
         1,
-        6,
+        7,
         TypeBridgeStatus::Ok as usize,
         TypeBridgeStatus::InvalidArgument as usize,
         TypeBridgeStatus::SchemaPackageRejected as usize,
@@ -3376,6 +3376,146 @@ fn generated_descriptor_opens_and_borrows_exact_emitted_bytes() {
     );
 }
 
+#[test]
+fn abi_1_6_and_1_7_descriptors_open_in_flat_and_chunked_forms() {
+    let bytes = emitted_fixture().bytes;
+    for minor in [6, 7] {
+        let mut descriptor = bytes.descriptor();
+        descriptor.abi_minor = minor;
+        let mut package = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        // SAFETY: descriptor backing bytes and distinct owner slots stay live.
+        assert_eq!(
+            unsafe {
+                type_bridge_schema_package_open_v1(&descriptor, &mut package, &mut diagnostics)
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert!(!package.is_null());
+        assert!(diagnostics.is_null());
+        // SAFETY: return the unique live owner.
+        assert_eq!(
+            unsafe { type_bridge_schema_package_close(&mut package) },
+            TypeBridgeStatus::Ok
+        );
+        let chunks = bytes.chunked_parts(17);
+        let mut descriptor = chunks.descriptor();
+        descriptor.abi_minor = minor;
+        // SAFETY: chunk tables, backing bytes and owner slots stay live.
+        assert_eq!(
+            unsafe {
+                type_bridge_schema_package_open_chunked_v1(
+                    &descriptor,
+                    &mut package,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert!(!package.is_null());
+        assert!(diagnostics.is_null());
+        // SAFETY: return the unique live owner.
+        assert_eq!(
+            unsafe { type_bridge_schema_package_close(&mut package) },
+            TypeBridgeStatus::Ok
+        );
+    }
+    for minor in [0, 5, 8, u32::MAX] {
+        let mut descriptor = bytes.descriptor();
+        descriptor.abi_minor = minor;
+        assert_rejected(
+            &descriptor,
+            TypeBridgeStatus::Unsupported,
+            "c_schema_descriptor_abi_unsupported",
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn abi_1_6_header_consumer_links_and_opens_its_package_on_1_7() {
+    let Some(native_library) =
+        native_library_or_skip("abi_1_6_header_consumer_links_and_opens_its_package_on_1_7")
+    else {
+        return;
+    };
+    let fixture = emitted_fixture();
+    let stage = TempDirectory::new("abi_1_6_consumer");
+    write_package(&fixture.package, stage.path());
+    let source = stage.path().join("src/models.c");
+    let text = fs::read_to_string(&source).expect("generated source exists");
+    let previous = text.replace("  1u,\n  7u,\n  0u,", "  1u,\n  6u,\n  0u,");
+    assert_ne!(
+        text, previous,
+        "fixture must carry a literal ABI descriptor"
+    );
+    fs::write(&source, previous).expect("1.6 descriptor source is staged");
+    let consumer = stage.path().join("old-consumer.c");
+    fs::write(&consumer, r#"#include <typebridge/type_bridge.h>
+#include <fixture/models.h>
+_Static_assert(TYPE_BRIDGE_C_ABI_MINOR == 6u, "must use the frozen old header");
+int main(void) {
+  type_bridge_schema_package_t *package = NULL;
+  type_bridge_diagnostics_t *diagnostics = NULL;
+  type_bridge_write_transaction_t *transaction = NULL;
+  type_bridge_execution_diagnostics_t *execution = NULL;
+  if (type_bridge_c_abi_minor() != 7u) return 1;
+  if (fixture_schema_package_open(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK) return 2;
+  if (package == NULL || diagnostics != NULL) return 3;
+  if (type_bridge_write_transaction_rollback(&transaction, &execution) != TYPE_BRIDGE_STATUS_OK) return 4;
+  if (transaction != NULL || execution != NULL) return 5;
+  return type_bridge_schema_package_close(&package) == TYPE_BRIDGE_STATUS_OK ? 0 : 6;
+}
+"#).expect("old consumer is written");
+    let old_include = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/abi-1.6");
+    let native_directory = native_library.parent().expect("native directory exists");
+    let mut invocations = 0;
+    for compiler in ["gcc", "clang"] {
+        if !command_exists(compiler) {
+            continue;
+        }
+        invocations += 1;
+        let executable = stage.path().join(format!("old-consumer-{compiler}"));
+        let compile = Command::new(compiler)
+            .args([
+                "-std=c17",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-pedantic-errors",
+            ])
+            .arg("-I")
+            .arg(&old_include)
+            .arg("-I")
+            .arg(stage.path().join("include"))
+            .arg(&source)
+            .arg(&consumer)
+            .arg("-L")
+            .arg(native_directory)
+            .arg("-ltype_bridge_c")
+            .arg(format!("-Wl,-rpath,{}", native_directory.display()))
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .expect("old consumer compiler runs");
+        assert!(
+            compile.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = Command::new(executable)
+            .output()
+            .expect("old consumer runs");
+        assert!(
+            run.status.success(),
+            "old consumer: {:?}, {}",
+            run.status,
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+    assert!(invocations > 0);
+}
+
 #[cfg(unix)]
 #[test]
 fn standalone_c17_consumer_links_and_runs_the_generated_schema_package() {
@@ -5341,10 +5481,10 @@ fn schema_package_open_v2_retains_the_exact_missing_semantic_evidence_representa
 }
 
 #[test]
-fn schema_package_admission_requires_the_current_abi() {
+fn schema_package_admission_rejects_unsupported_abis() {
     let fixture = emitted_fixture();
     let parts = fixture.bytes.chunked_parts(23);
-    for minor in (0..6).chain([7, u32::MAX]) {
+    for minor in (0..6).chain([8, u32::MAX]) {
         let mut flat = fixture.bytes.descriptor();
         flat.abi_minor = minor;
         assert_v2_flat_rejected(
@@ -6142,7 +6282,7 @@ fn abi_metadata_and_null_handle_paths_are_stable_and_initialize_views() {
     // SAFETY: these ABI metadata functions take no caller-owned inputs.
     assert_eq!(unsafe { type_bridge_c_abi_major() }, 1);
     // SAFETY: these ABI metadata functions take no caller-owned inputs.
-    assert_eq!(unsafe { type_bridge_c_abi_minor() }, 6);
+    assert_eq!(unsafe { type_bridge_c_abi_minor() }, 7);
 
     let mut version = TypeBridgeByteView {
         data: ptr::null(),
@@ -6423,6 +6563,23 @@ int main(void) {
   CHECK(write_transaction == NULL && diagnostics == NULL);
 
   CHECK(type_bridge_write_transaction_open(
+            database, NULL, &write_transaction, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  {
+    type_bridge_write_transaction_t *const original = write_transaction;
+    uint64_t count = 99u;
+    CHECK(type_bridge_write_transaction_rollback_keep(
+              &write_transaction, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(write_transaction == original && diagnostics == NULL);
+    CHECK(type_bridge_write_transaction_entity_count(
+              write_transaction, &fixture_projected_model_token_0, NULL,
+              &count, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(count == 0u && diagnostics == NULL);
+    CHECK(type_bridge_write_transaction_commit(
+              &write_transaction, NULL, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(write_transaction == NULL && diagnostics == NULL);
+  }
+
+  CHECK(type_bridge_write_transaction_open(
             database, NULL, &write_transaction, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(type_bridge_write_transaction_close(
@@ -6525,6 +6682,14 @@ int main(void) {
         isolated_database.create(),
         "the isolated live database is created"
     );
+
+    administration_runtime
+        .block_on(
+            isolated_database
+                .database
+                .execute_raw("define entity person;", type_bridge_orm::TxType::Schema),
+        )
+        .expect("the post-rollback count fixture schema is installed");
 
     let run = Command::new(&executable)
         .env("TYPEDB_ADDRESS", &address)

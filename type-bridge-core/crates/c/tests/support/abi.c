@@ -21,7 +21,7 @@ ABI_ASSERT(offsetof(type_bridge_projected_codec_options_v1_t, cancellation) == 6
 #endif
 
 ABI_ASSERT(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "ABI major drifted");
-ABI_ASSERT(TYPE_BRIDGE_C_ABI_MINOR == 6u, "C ABI is no longer supported");
+ABI_ASSERT(TYPE_BRIDGE_C_ABI_MINOR == 7u, "C ABI is no longer supported");
 ABI_ASSERT(TYPE_BRIDGE_DATABASE_CONFIG_V2_VERSION == 2u,
                     "database config version drifted");
 ABI_ASSERT(TYPE_BRIDGE_DATABASE_CUSTOM_ROOT_CA_BYTES_MAX == 1048576u,

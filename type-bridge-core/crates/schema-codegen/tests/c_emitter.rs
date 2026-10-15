@@ -441,8 +441,8 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     assert!(header.contains("acme_v3_migration_catalog_open("));
     assert!(
         source
-            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  6u,"),
-        "ordered descriptor must require literal ABI 1.6",
+            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  7u,"),
+        "ordered descriptor must require literal ABI 1.7",
     );
     assert!(!source.contains("TYPE_BRIDGE_C_ABI_MINOR"));
     assert!(source.contains("type_bridge_schema_package_open_chunked_v1("));
@@ -949,7 +949,7 @@ fn emits_one_deterministic_package_with_exact_canonical_evidence_and_nominal_nam
         .expect("generated C source is UTF-8");
     assert!(
         source
-            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  6u,")
+            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  7u,")
     );
     assert!(!source.contains("TYPE_BRIDGE_C_ABI_MAJOR"));
     assert!(!source.contains("TYPE_BRIDGE_C_ABI_MINOR"));
@@ -2527,7 +2527,7 @@ fn supported_c_preprocessors_fit_the_frozen_implementation_macro_reserve() {
     let runtime_macros = runtime_header_macro_names();
     assert_eq!(
         runtime_macros.len(),
-        283,
+        284,
         "runtime-header macro reserve drifted"
     );
     let mut invocations = 0;
@@ -2642,7 +2642,7 @@ fn generated_header_and_source_are_strict_c11_and_c17_for_installed_compilers() 
         r#"#include <acme/models.h>
 
 _Static_assert(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "C ABI major changed");
-_Static_assert(TYPE_BRIDGE_C_ABI_MINOR == 6u, "C ABI minor changed");
+_Static_assert(TYPE_BRIDGE_C_ABI_MINOR == 7u, "C ABI minor changed");
 _Static_assert(sizeof(acme_membership_member_player_kind_t) == sizeof(uint32_t),
                "role-player kind ABI is not fixed-width");
 
@@ -4879,7 +4879,7 @@ fn generated_header_is_strict_cpp17_for_installed_compilers() {
         r#"#include <acme/models.h>
 
 static_assert(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "C ABI major changed");
-static_assert(TYPE_BRIDGE_C_ABI_MINOR == 6u, "C ABI minor changed");
+static_assert(TYPE_BRIDGE_C_ABI_MINOR == 7u, "C ABI minor changed");
 static_assert(sizeof(acme_membership_member_player_kind_t) == sizeof(uint32_t),
               "role-player kind ABI is not fixed-width");
 

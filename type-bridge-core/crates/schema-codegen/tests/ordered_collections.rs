@@ -343,7 +343,7 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     assert!(contains_hex_bytes(c_source, b"distinct"));
     assert!(
         c_source
-            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  6u,")
+            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  7u,")
     );
     assert!(c_source.contains("type_bridge_schema_package_open_chunked_v2("));
     assert!(c_cmake.contains("find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)"));

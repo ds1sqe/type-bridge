@@ -1,8 +1,8 @@
 {
   "format": "typebridge.c-abi/v1",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "header": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-  "header_sha256": "4cdc5195b1da40333406ae162d05bd932ed90e3e8d4d30bcebda21c2bea38f2d",
+  "header_sha256": "f9e3f3bbeac05d623d412a895c794ea843455159e488ecb2336b56f9ce6fde29",
   "handles": [
     "type_bridge_canonical_bytes_t",
     "type_bridge_canonical_archive_builder_t",
@@ -373,7 +373,8 @@
     "type_bridge_write_transaction_relation_put_v2",
     "type_bridge_write_transaction_relation_update",
     "type_bridge_write_transaction_relation_update_v2",
-    "type_bridge_write_transaction_rollback"
+    "type_bridge_write_transaction_rollback",
+    "type_bridge_write_transaction_rollback_keep"
   ],
   "ownership": {
     "all_results_owned": true,
@@ -382,6 +383,8 @@
     "failed_finish_retains_builder": true,
     "close_idempotent": true,
     "failure_initializes_outputs": true,
-    "partial_archive_result": false
+    "partial_archive_result": false,
+    "rollback_consumes_handle": true,
+    "rollback_keep_preserves_handle_on_success": true
   }
 }

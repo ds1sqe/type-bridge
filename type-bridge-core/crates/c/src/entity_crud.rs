@@ -859,7 +859,12 @@ functions:
         close_thing(&mut thing);
         assert_eq!(
             // SAFETY: rollback proves the borrowed transaction owner remains live.
-            unsafe { type_bridge_write_transaction_rollback(&mut transaction, &mut diagnostics) },
+            unsafe {
+                crate::runtime::type_bridge_write_transaction_rollback_keep(
+                    &mut transaction,
+                    &mut diagnostics,
+                )
+            },
             TypeBridgeStatus::Ok
         );
         assert!(!transaction.is_null());
@@ -1188,7 +1193,12 @@ functions:
         close_diagnostics(&mut diagnostics);
         assert_eq!(
             // SAFETY: rollback is explicitly permitted on a poisoned handle.
-            unsafe { type_bridge_write_transaction_rollback(&mut transaction, &mut diagnostics) },
+            unsafe {
+                crate::runtime::type_bridge_write_transaction_rollback_keep(
+                    &mut transaction,
+                    &mut diagnostics,
+                )
+            },
             TypeBridgeStatus::Ok
         );
         assert!(!transaction.is_null());
