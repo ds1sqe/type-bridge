@@ -851,6 +851,67 @@ fn v2_inputs_lift_to_a_reusable_v3_template_then_bind_without_mutating_v2() {
 }
 
 #[test]
+fn shared_plan_v3_fixtures() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/contracts/plan_v3");
+    let write = std::env::var_os("TYPE_BRIDGE_UPDATE_PLAN_V3_FIXTURES").is_some();
+    if write {
+        std::fs::create_dir_all(&root).unwrap();
+    }
+    let mut files = BTreeMap::new();
+    files.insert(
+        "schema.json".to_owned(),
+        to_canonical_json(&schema()).unwrap(),
+    );
+    let mut plans = stage_plans();
+    plans.extend(examples::plans());
+    let mut manifest = BTreeMap::new();
+    for (name, plan) in plans {
+        let bytes = plan.canonical_bytes().unwrap();
+        let decoded = decode_query_plan_v3(&bytes, &schema()).unwrap();
+        assert_eq!(decoded.canonical_bytes().unwrap(), bytes);
+        let fingerprint = plan
+            .fingerprint()
+            .unwrap()
+            .as_fingerprint()
+            .digest()
+            .to_hex();
+        assert_eq!(
+            decoded
+                .fingerprint()
+                .unwrap()
+                .as_fingerprint()
+                .digest()
+                .to_hex(),
+            fingerprint
+        );
+        manifest.insert(format!("{name}.json"), fingerprint);
+        files.insert(format!("{name}.json"), bytes);
+    }
+    files.insert(
+        "manifest.json".to_owned(),
+        to_canonical_json(&manifest).unwrap(),
+    );
+    for (name, expected) in &files {
+        let path = root.join(name);
+        if write {
+            std::fs::write(&path, expected).unwrap();
+        }
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            *expected,
+            "{}",
+            path.display()
+        );
+    }
+    let actual: std::collections::BTreeSet<_> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(actual, files.keys().cloned().collect());
+}
+
+#[test]
 fn delete_thing_rejects_let_and_function_scalar_bindings() {
     use type_bridge_contract::id::FunctionId;
     use type_bridge_contract::query_plan::v3::{Expr, Pattern};

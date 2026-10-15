@@ -13,6 +13,7 @@ pub mod limits;
 mod match_runtime;
 mod migration_catalog_runtime;
 mod proxy_connection_runtime;
+mod query_plan_v3_codec;
 mod query_v2_builder_runtime;
 mod query_v2_model_remote_runtime;
 pub mod query_v2_runtime;
@@ -43,6 +44,7 @@ pub use migration_catalog_runtime::{
     NodeMigrationVerificationFinding, NodeMigrationVerificationReport, open_migration_catalog,
 };
 pub use proxy_connection_runtime::NodeProxyConnection;
+pub use query_plan_v3_codec::{_query_plan_v3_round_trip, QueryPlanV3Encoding};
 pub use query_v2_model_remote_runtime::{
     NodePendingRemoteModelQuery, NodeRemoteModelQueryContext, query_v2_prepare_remote_model_count,
     query_v2_prepare_remote_model_exists, query_v2_prepare_remote_model_page,
