@@ -175,13 +175,13 @@ impl QueryPlanWireV2 {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct QueryBindingWire {
+pub(crate) struct QueryBindingWire {
     id: u16,
     variable: String,
 }
 
 impl QueryBindingWire {
-    fn rebuild(self) -> Result<AssertionBinding, Diagnostic> {
+    pub(crate) fn rebuild(self) -> Result<AssertionBinding, Diagnostic> {
         Ok(AssertionBinding::new(
             BindingId::new(self.id)?,
             QueryVariable::new(self.variable)?,
@@ -191,7 +191,7 @@ impl QueryBindingWire {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct InputColumnWire {
+pub(crate) struct InputColumnWire {
     id: u16,
     optional: bool,
     public_name: String,
@@ -199,7 +199,7 @@ struct InputColumnWire {
 }
 
 impl InputColumnWire {
-    fn rebuild(self) -> Result<InputColumn, Diagnostic> {
+    pub(crate) fn rebuild(self) -> Result<InputColumn, Diagnostic> {
         Ok(InputColumn::new(
             InputColumnId::new(self.id),
             QueryVariable::new(self.public_name)?,
@@ -237,7 +237,7 @@ impl QueryOutputWire {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct LocalFunctionWire {
+pub(crate) struct LocalFunctionWire {
     bindings: Vec<QueryBindingWire>,
     body: Vec<QueryPatternWire>,
     name: String,
@@ -254,7 +254,7 @@ struct LocalReturnWire {
 }
 
 impl LocalFunctionWire {
-    fn rebuild(self) -> Result<LocalFunction, Diagnostic> {
+    pub(crate) fn rebuild(self) -> Result<LocalFunction, Diagnostic> {
         Ok(LocalFunction::new(
             FunctionId::new(self.name)?,
             self.bindings
@@ -791,14 +791,14 @@ impl QueryPatternWireV2 {
 
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum QueryOperandWire {
+pub(crate) enum QueryOperandWire {
     Binding { binding: u16 },
     Literal { value: CanonicalValue },
     Input { column: u16 },
 }
 
 impl QueryOperandWire {
-    fn rebuild(self) -> Result<QueryOperand, Diagnostic> {
+    pub(crate) fn rebuild(self) -> Result<QueryOperand, Diagnostic> {
         Ok(match self {
             Self::Binding { binding } => QueryOperand::Binding {
                 binding: BindingId::new(binding)?,
@@ -813,4 +813,28 @@ impl QueryOperandWire {
 
 fn rebuild_bindings(values: Vec<u16>) -> Result<Vec<BindingId>, Diagnostic> {
     values.into_iter().map(BindingId::new).collect()
+}
+
+// V3 shares the released closed read vocabulary without exposing its DTOs.
+pub(crate) fn rebuild_read_stage_v2(value: Value) -> Result<ReadStage, Diagnostic> {
+    serde_json::from_value::<ReadStageWireV2>(value)
+        .map_err(|_| {
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "invalid_canonical_value",
+                "invalid read stage",
+            )
+        })?
+        .rebuild()
+}
+pub(crate) fn rebuild_output(value: Value) -> Result<QueryOutput, Diagnostic> {
+    serde_json::from_value::<QueryOutputWire>(value)
+        .map_err(|_| {
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "invalid_canonical_value",
+                "invalid output projection",
+            )
+        })?
+        .rebuild()
 }
