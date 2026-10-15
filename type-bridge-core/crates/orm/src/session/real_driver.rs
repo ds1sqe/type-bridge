@@ -30,6 +30,7 @@ use crate::match_request::{
 };
 
 /// Real TypeDB backend wrapping the shared runtime.
+#[derive(Clone)]
 pub struct RealBackend {
     inner: Arc<runtime::TypeDBRuntime>,
 }

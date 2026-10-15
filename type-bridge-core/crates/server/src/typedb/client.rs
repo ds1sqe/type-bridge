@@ -131,36 +131,26 @@ impl TypeDBClient {
     ) -> Result<serde_json::Value, ExecuteError> {
         let transaction_type = parse_transaction_type(tx_type)?;
 
-        let mut tx = self
-            .backend
-            .open_transaction(database, transaction_type)
-            .await?;
-
-        let answer = tx.query(typeql).await?;
-
-        let needs_commit = matches!(
-            transaction_type,
-            TransactionType::Write | TransactionType::Schema
-        );
-
+        use type_bridge_orm::session::backend::BoundedAnswerLimits;
+        use type_bridge_orm::session::staged::{TransactionKind, TransactionOptions};
+        let kind = match transaction_type {
+            TransactionType::Read => TransactionKind::Read,
+            TransactionType::Write => TransactionKind::Write,
+            TransactionType::Schema => TransactionKind::Schema,
+        };
+        let options = TransactionOptions::default()
+            .with_kind(kind)
+            .with_never_commit(kind == TransactionKind::Read)
+            .with_answer_limits(BoundedAnswerLimits {
+                max_items: u64::MAX,
+                max_bytes: u64::MAX,
+                ..Default::default()
+            });
+        let answer = self.backend.execute(database, typeql, options).await?;
         let results = match answer {
-            QueryResultKind::Ok => {
-                if needs_commit {
-                    tx.commit().await?;
-                }
-                serde_json::json!({ "ok": true })
-            }
-            QueryResultKind::Rows(rows) => {
-                if needs_commit {
-                    tx.commit().await?;
-                }
+            QueryResultKind::Ok => serde_json::json!({ "ok": true }),
+            QueryResultKind::Rows(rows) | QueryResultKind::Documents(rows) => {
                 serde_json::Value::Array(rows)
-            }
-            QueryResultKind::Documents(docs) => {
-                if needs_commit {
-                    tx.commit().await?;
-                }
-                serde_json::Value::Array(docs)
             }
         };
 
@@ -238,7 +228,6 @@ mod tests {
 
     use super::*;
     use crate::error::PipelineError;
-    use crate::typedb::backend::TransactionOps;
 
     // =============================================
     // Mock infrastructure
@@ -285,7 +274,7 @@ mod tests {
         }
     }
 
-    impl TransactionOps for MockTransaction {
+    impl MockTransaction {
         fn query(
             &mut self,
             _typeql: &str,
@@ -328,7 +317,7 @@ mod tests {
     }
 
     struct MockBackend {
-        transaction: std::sync::Mutex<Option<Box<dyn TransactionOps>>>,
+        transaction: std::sync::Mutex<Option<MockTransaction>>,
         open_error: Option<String>,
         is_open: bool,
         open_called: Arc<AtomicUsize>,
@@ -338,7 +327,7 @@ mod tests {
     impl MockBackend {
         fn new(tx: MockTransaction) -> Self {
             Self {
-                transaction: std::sync::Mutex::new(Some(Box::new(tx))),
+                transaction: std::sync::Mutex::new(Some(tx)),
                 open_error: None,
                 is_open: true,
                 open_called: Arc::new(AtomicUsize::new(0)),
@@ -379,20 +368,27 @@ mod tests {
     }
 
     impl DriverBackend for MockBackend {
-        fn open_transaction(
+        fn execute(
             &self,
             _database: &str,
-            _tx_type: TransactionType,
-        ) -> Pin<Box<dyn Future<Output = Result<Box<dyn TransactionOps>, PipelineError>> + Send + '_>>
+            typeql: &str,
+            options: type_bridge_orm::session::staged::TransactionOptions,
+        ) -> Pin<Box<dyn Future<Output = Result<QueryResultKind, ExecuteError>> + Send + '_>>
         {
             self.open_called.fetch_add(1, Ordering::SeqCst);
             let tx = self.transaction.lock().unwrap().take();
             let error = self.open_error.clone();
+            let typeql = typeql.to_owned();
             Box::pin(async move {
-                if let Some(msg) = error {
-                    return Err(PipelineError::QueryExecution(msg));
+                if let Some(message) = error {
+                    return Err(PipelineError::QueryExecution(message).into());
                 }
-                Ok(tx.expect("MockBackend: no transaction configured"))
+                let mut tx = tx.expect("MockBackend: no transaction configured");
+                let result = tx.query(&typeql).await?;
+                if !options.never_commit {
+                    tx.commit().await?;
+                }
+                Ok(result)
             })
         }
 
@@ -1153,26 +1149,21 @@ mod tests {
             )
             .await
             .unwrap();
-        // The public client owns transaction lifetime. Supply the second real
-        // transaction through the test backend to coordinate overlapping writes.
-        let mut a = client
-            .backend
-            .open_transaction(&database, TransactionType::Write)
-            .await
-            .unwrap();
-        let mut b = client
-            .backend
-            .open_transaction(&database, TransactionType::Write)
-            .await
-            .unwrap();
+        // Overlap two eager ORM facades to obtain an actual provider conflict.
+        let real = RealTypeDBBackend::connect(&config).await.unwrap();
+        let orm = real.database_handle(&database);
+        let mut a = orm.write_transaction().await.unwrap();
+        let mut b = orm.write_transaction().await.unwrap();
         let update = "match $x isa item, has id \"ITEM-1\"; update $x has score 2;";
         a.query("match $x isa item, has id \"ITEM-1\"; update $x has score 1;")
             .await
             .unwrap();
         b.query(update).await.unwrap();
         a.commit().await.unwrap();
-        let backend = MockBackend::new(MockTransaction::new(QueryResultKind::Ok));
-        *backend.transaction.lock().unwrap() = Some(b);
+        let failure = ExecuteError::from(b.commit_classified().await.unwrap_err());
+        let mut transaction = MockTransaction::new(QueryResultKind::Ok);
+        transaction.commit_error = Some(failure);
+        let backend = MockBackend::new(transaction);
         let conflict_client = make_client(backend);
         let error = conflict_client
             .execute_classified(&database, update, "write")
