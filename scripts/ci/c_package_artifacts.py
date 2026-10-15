@@ -35,6 +35,7 @@ RUNTIME_LIBRARY = "libtype_bridge_c.so"
 # Published C asset name; rename with the next release record.
 PACKAGE_NAME = "tb_sdkv3"
 PACKAGE_VERSION = "1.0.0"
+# Milestone 11.36 keeps installed package metadata at 1.6 while runtime ABI is 1.7.
 ABI_VERSION = "1.6.0"
 PUBLICATION_DISPOSITION = "artifact-only-unpublished-unsupported"
 RUNTIME_FORMAT = "typebridge.c-runtime-artifact/v1"
@@ -568,6 +569,8 @@ def build(output: Path) -> dict[str, str]:
     if platform.system() != "Linux" or platform.machine() not in {"x86_64", "AMD64"}:
         raise ArtifactError(f"C artifacts require native {TARGET}")
     contract = load_json(CONTRACT_PATH)
+    if contract.get("abi", {}).get("package_metadata_version") != ABI_VERSION:
+        raise ArtifactError("frozen package metadata version drifted")
     if contract.get("publication_disposition") != PUBLICATION_DISPOSITION:
         raise ArtifactError("frozen publication disposition drifted")
     commit, tree = git_identity()

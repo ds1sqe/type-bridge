@@ -57,7 +57,8 @@ def test_frozen_archive_layouts_match_artifact_implementation() -> None:
 
     assert runtime_layout == [path.as_posix() for path in ARTIFACT.RUNTIME_MEMBERS]
     assert package_layout == [path.as_posix() for path in ARTIFACT.PACKAGE_MEMBERS]
-    assert contract["abi"]["version"] == ARTIFACT.ABI_VERSION
+    assert contract["abi"]["version"] == "1.7.0"
+    assert contract["abi"]["package_metadata_version"] == ARTIFACT.ABI_VERSION == "1.6.0"
     assert contract["publication_disposition"] == ARTIFACT.PUBLICATION_DISPOSITION
 
 

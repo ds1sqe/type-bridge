@@ -32,6 +32,7 @@ def test_distribution_contract_matches_every_live_source_authority() -> None:
     contract = VALIDATOR.validate()
     assert contract["abi"]["decision"] == "additive-1.7"
     assert contract["abi"]["version"] == "1.7.0"
+    assert contract["abi"]["package_metadata_version"] == "1.6.0"
     assert contract["matrix"]["public_supported"] == []
     assert contract["publication_disposition"] == "artifact-only-unpublished-unsupported"
 
@@ -41,6 +42,9 @@ def test_distribution_contract_matches_every_live_source_authority() -> None:
     [
         (("release_gate", "publication_authorized"), True),
         (("abi", "decision"), "no-change"),
+        (("abi", "version"), "1.6.0"),
+        (("abi", "package_metadata_version"), "1.7.0"),
+        (("abi", "package_metadata_description"), ""),
         (("abi", "static_linkage"), "artifact"),
         (("abi", "accepted_descriptor_minors"), [5, 6, 7]),
         (("abi", "added_exports"), []),

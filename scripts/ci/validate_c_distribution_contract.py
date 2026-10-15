@@ -75,6 +75,15 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
         isinstance(abi, dict) and abi.get("decision") == "additive-1.7", "ABI decision drifted"
     )
     _require(abi.get("version") == "1.7.0", "distribution must retain ABI 1.7")
+    _require(
+        abi.get("package_metadata_version") == "1.6.0",
+        "installed package metadata must retain version 1.6",
+    )
+    description = abi.get("package_metadata_description")
+    _require(
+        isinstance(description, str) and bool(description.strip()) and "\n" not in description,
+        "package metadata version needs a one-line description",
+    )
     _require(abi.get("accepted_descriptor_minors") == [6, 7], "descriptor ABI range drifted")
     _require(
         abi.get("added_exports") == ["type_bridge_write_transaction_rollback_keep"],

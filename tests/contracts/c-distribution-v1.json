@@ -12,6 +12,8 @@
   "abi": {
     "decision": "additive-1.7",
     "version": "1.7.0",
+    "package_metadata_version": "1.6.0",
+    "package_metadata_description": "Installed CMake and pkg-config versions retain 1.6.0 for exact-version consumers.",
     "contract_path": "tests/contracts/c-abi.json",
     "contract_sha256": "9127d77266cf2938191faa923f2c922b4cd36883d0ef51b745f7cf7627cee2c7",
     "static_linkage": "unsupported",
