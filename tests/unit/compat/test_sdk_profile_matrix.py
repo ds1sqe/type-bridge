@@ -238,7 +238,9 @@ def test_models_live_profile_gate_admits_the_named_suite_before_schema_io(
     from tests.integration.schema import test_generated_projection_live as live
 
     generated = ModuleType("generated_models")
-    generated.SEMANTIC_SCHEMA_FINGERPRINT_JSON = json.dumps({"semantic_profile": profile})
+    setattr(
+        generated, "SEMANTIC_SCHEMA_FINGERPRINT_JSON", json.dumps({"semantic_profile": profile})
+    )
     database = Mock()
     database.detected_server_version.return_value = server
     database.execute_query.side_effect = RuntimeError("schema I/O reached")

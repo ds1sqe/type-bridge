@@ -3555,7 +3555,9 @@ def test_generated_projection_round_trips_live_models(
     with pytest.raises(UnknownEnumValueError) as unknown_lookup:
         person_manager.filter(score__iexact=generated.Score(3))
     assert unknown_lookup.value.code == "unknown_enum_value"
-    assert unknown_lookup.value.details["kind"]["value"] == "manager_lookup"
+    kind_detail = unknown_lookup.value.details["kind"]
+    assert isinstance(kind_detail, dict)
+    assert kind_detail["value"] == "manager_lookup"
 
     stored_person = person_manager.get_by_iid(person.iid)
     assert type(stored_person) is generated.Person
@@ -3996,7 +3998,9 @@ def test_generated_projection_round_trips_live_models(
     )
     with pytest.raises(UnknownEnumValueError) as unknown_owner_lookup:
         generated.Party.has(clean_db, generated.Identifier, lookup="like")  # pyright: ignore[reportArgumentType]
-    assert unknown_owner_lookup.value.details["kind"]["value"] == "owner_lookup"
+    kind_detail = unknown_owner_lookup.value.details["kind"]
+    assert isinstance(kind_detail, dict)
+    assert kind_detail["value"] == "owner_lookup"
     assert [type(candidate) for candidate in party_attribute_owners] == [
         generated.Employee,
         generated.Manager,
@@ -4467,7 +4471,9 @@ def test_generated_projection_round_trips_live_models(
             )
         ]
         assert program_results[0]["one"] == person.iid
-        assert program_results[0]["limit_refusal"][0] == "resource_limit"
+        limit_refusal = program_results[0]["limit_refusal"]
+        assert isinstance(limit_refusal, tuple)
+        assert limit_refusal[0] == "resource_limit"
         assert program_results[1] == program_results[0]
         assert program_results[2] == program_results[0]
         assert len(remote_requests) - requests_before_program == 10

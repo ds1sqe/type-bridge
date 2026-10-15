@@ -266,4 +266,6 @@ def test_count_details_are_python_ints() -> None:
         query.execute_reduce_by_proxy(_closed_proxy(), person, None, ["count"] * 17, [None] * 17)
     assert raised.value.details["actual"] == {"kind": "count", "value": 17}
     assert raised.value.details["maximum"] == {"kind": "count", "value": 16}
-    assert type(raised.value.details["maximum"]["value"]) is int
+    maximum = raised.value.details["maximum"]
+    assert isinstance(maximum, dict)
+    assert type(maximum["value"]) is int

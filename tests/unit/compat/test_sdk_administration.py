@@ -234,11 +234,15 @@ def test_report_history_fingerprint_is_bound_to_its_server(tmp_path: Path, profi
     identity = comparator.profile_matrix.select("administration", profile)
     report = _valid_report(root, "python")
     report["server_version"] = identity.live_server_version
-    report["results"][3]["observation"]["catalog_fingerprint"] = (
-        identity.expected_history_fingerprint
-    )
+    results = report["results"]
+    assert isinstance(results, list)
+    result = results[3]
+    assert isinstance(result, dict)
+    observation = result["observation"]
+    assert isinstance(observation, dict)
+    observation["catalog_fingerprint"] = identity.expected_history_fingerprint
     comparator._validate_report(report, contracts.observation_refs)
-    report["results"][3]["observation"]["catalog_fingerprint"] = "0" * 64
+    observation["catalog_fingerprint"] = "0" * 64
     with pytest.raises(comparator.ContractError) as rejected:
         comparator._validate_report(report, contracts.observation_refs)
     assert rejected.value.code == "migration_catalog_observation_drift"
