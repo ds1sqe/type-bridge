@@ -1,0 +1,13 @@
+{
+  "catalog_path": "tests/contracts/sdk_conformance/administration/catalog.json",
+  "format": "typebridge.sdk-profile-matrix/v1",
+  "profiles": {
+    "typedb-3.12.1/v1": {
+      "live_server_version": "3.12.3"
+    },
+    "typedb-3.13.6/v1": {
+      "live_server_version": "3.13.6"
+    }
+  },
+  "suite": "administration"
+}

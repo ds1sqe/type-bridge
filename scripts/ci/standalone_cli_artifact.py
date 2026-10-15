@@ -29,16 +29,16 @@ LICENSE_PATH = ROOT / "LICENSE"
 NOTICE_PATH = CORE / "crates/cli/THIRD_PARTY_NOTICES.md"
 CLI_MANIFEST = CORE / "crates/cli/Cargo.toml"
 TOOLCHAIN_INVENTORY = ROOT / "scripts/ci/cargo_release_inventory.toml"
-SDK = ROOT / "tests/contracts/sdk_conformance/sdk-v4/workspace"
+SDK = ROOT / "tests/contracts/sdk_conformance/administration/workspace"
 FORMAT = "typebridge.standalone-cli-artifact/v1"
 TARGET = "x86_64-unknown-linux-gnu"
 PUBLICATION_DISPOSITION = "artifact-only-unpublished-unsupported"
 SEMANTIC_PROFILES = ["typedb-3.11.5/v1", "typedb-3.12.1/v1", "typedb-3.13.6/v1"]
 SDK_MIGRATIONS = (
-    "sdkv4/0001_initial",
-    "sdkv4/0002_expand-display-name",
-    "sdkv4/0003_backfill-display-name",
-    "sdkv4/0004_contract-legacy-name",
+    "administration/0001_initial",
+    "administration/0002_expand-display-name",
+    "administration/0003_backfill-display-name",
+    "administration/0004_contract-legacy-name",
 )
 ARCHIVE_MEMBERS = (
     PurePosixPath("bin/type-bridge"),
@@ -645,7 +645,7 @@ def connected_smoke(
         workspace_manifest = workspace / "typebridge.yaml"
         source = workspace_manifest.read_text(encoding="utf-8")
         expected_environment = (
-            '    database: sdk_v4\n    uri: 127.0.0.1:1729\n    migrate: "true"\n'
+            '    database: sdk_administration\n    uri: 127.0.0.1:1729\n    migrate: "true"\n'
         )
         if source.count(expected_environment) != 1:
             raise ArtifactError("sdk connected environment authority drifted")
@@ -669,8 +669,8 @@ def connected_smoke(
         environment = clean_environment(home, shims)
         environment.update(
             {
-                "TYPEBRIDGE_SDK_V4_USERNAME": username,
-                "TYPEBRIDGE_SDK_V4_PASSWORD": password,
+                "TYPEBRIDGE_SDK_ADMINISTRATION_USERNAME": username,
+                "TYPEBRIDGE_SDK_ADMINISTRATION_PASSWORD": password,
             }
         )
         binary = installed / "bin/type-bridge"

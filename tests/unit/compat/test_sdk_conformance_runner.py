@@ -323,7 +323,7 @@ def test_administration_owns_provider_and_always_cleans_up(
                 assert callable(handler)
                 handler(signal.SIGTERM, None)
             binding = command[command.index("--test") + 1].split("_")[2]
-            (tmp_path / f"{binding}-sdk-v4-report.json").write_text("{}")
+            (tmp_path / f"{binding}-administration-report.json").write_text("{}")
         return "{}"
 
     monkeypatch.setattr(RUNNER, "run", run)
@@ -341,8 +341,8 @@ def test_administration_owns_provider_and_always_cleans_up(
         assert len(reports) == 4 and all(path.is_file() for path in reports)
         assert [
             command[command.index("--test") + 1] for command in commands if command[0] == "cargo"
-        ] == [f"sdk_v4_{binding}_live" for binding in RUNNER.BINDINGS]
-        assert any(item.endswith("compare_sdk_conformance_v4.py") for item in commands[-2])
+        ] == [f"sdk_administration_{binding}_live" for binding in RUNNER.BINDINGS]
+        assert any(item.endswith("sdk_administration_compare.py") for item in commands[-2])
     assert commands[-1][-3:] == ["down", "-v", "--remove-orphans"]
     assert commands[0][:6] == commands[-1][:6]
     assert signal.getsignal(signal.SIGTERM) == previous

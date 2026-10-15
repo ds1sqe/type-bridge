@@ -21,8 +21,8 @@
     "admin-migration": {
       "source_commit": "bf07384911bf893dae965e8805a58ce0d67aa5e4",
       "authorities": [
-        {"path": "tests/contracts/sdk_conformance/sdk-v4/catalog-v4.json", "sha256": "835eee9f4e532dfd218def0e58cd89ffed14dc9bac07f2c79f3e4f87c8fc7058"},
-        {"path": "tests/contracts/sdk_conformance/sdk-v4/journey-v4.json", "sha256": "a33361ba6d48d3e9a6c483d267f20c97ed9228300026876e3fcd8b0001ec3abb"}
+        {"path": "tests/contracts/sdk_conformance/administration/catalog.json", "sha256": "a69e6d1a7392164cb9c2cf654ca9a9910cae568cf4931b1d632bee420cae56bf"},
+        {"path": "tests/contracts/sdk_conformance/administration/journey.json", "sha256": "465fb6c6606252dee34e63c8a39f1b34a877b76d23142f197e9f2c24ae20c079"}
       ]
     },
     "codec-archive": {

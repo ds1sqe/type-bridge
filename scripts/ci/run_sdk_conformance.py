@@ -796,7 +796,7 @@ def assemble_artifacts(
 
 
 def administration(directory: Path, environment: dict[str, str]) -> tuple[Path, ...]:
-    project = f"tb-sdk-v4-live-{os.getpid()}"
+    project = f"tb-administration-live-{os.getpid()}"
     temporary = directory
     compose = ["docker", "compose", "-p", project, "-f", str(ROOT / "docker-compose.yml")]
     interrupted = False
@@ -824,9 +824,9 @@ def administration(directory: Path, environment: dict[str, str]) -> tuple[Path, 
             "TYPEDB_HTTP_PORT": http_port,
             "TYPEDB_USERNAME": "admin",
             "TYPEDB_PASSWORD": "password",
-            "TYPE_BRIDGE_SDK_V4_REPORT_DIR": str(temporary),
+            "TYPE_BRIDGE_SDK_ADMINISTRATION_REPORT_DIR": str(temporary),
         }
-        for test in (f"sdk_v4_{binding}_live" for binding in BINDINGS):
+        for test in (f"sdk_administration_{binding}_live" for binding in BINDINGS):
             run(
                 [
                     "cargo",
@@ -843,7 +843,7 @@ def administration(directory: Path, environment: dict[str, str]) -> tuple[Path, 
                 ],
                 env=producer_env,
             )
-        paths = [temporary / f"{binding}-sdk-v4-report.json" for binding in BINDINGS]
+        paths = [temporary / f"{binding}-administration-report.json" for binding in BINDINGS]
         missing = [path.name for path in paths if not path.is_file()]
         if missing:
             raise RunnerError(f"validated report publication is incomplete: {missing}")
@@ -851,7 +851,7 @@ def administration(directory: Path, environment: dict[str, str]) -> tuple[Path, 
             run(
                 [
                     sys.executable,
-                    str(ROOT / "scripts/ci/compare_sdk_conformance_v4.py"),
+                    str(ROOT / "scripts/ci/sdk_administration_compare.py"),
                     *(str(path) for path in paths),
                 ],
                 capture=True,
@@ -865,9 +865,9 @@ def administration(directory: Path, environment: dict[str, str]) -> tuple[Path, 
         return tuple(paths)
     except (KeyboardInterrupt, RunnerError) as error:
         if interrupted:
-            print("Sdk V4 live fan-in interrupted", file=sys.stderr)
+            print("SDK administration live fan-in interrupted", file=sys.stderr)
         else:
-            print(f"Sdk V4 live fan-in failed: {error}", file=sys.stderr)
+            print(f"SDK administration live fan-in failed: {error}", file=sys.stderr)
         raise RunnerError("administration acceptance failed") from error
     finally:
         signal.signal(signal.SIGTERM, previous)

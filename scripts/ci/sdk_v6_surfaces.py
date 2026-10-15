@@ -21,7 +21,7 @@ from typing import Any, NoReturn
 import standalone_cli_artifact as cli
 
 ROOT = Path(__file__).resolve().parents[2]
-SDK = ROOT / "tests/contracts/sdk_conformance/sdk-v4/workspace"
+SDK = ROOT / "tests/contracts/sdk_conformance/administration/workspace"
 FORMAT = "typebridge.sdk-v6-generated-surface/v1"
 BINDING_DIRECTORIES = {"python": "python", "node": "typescript", "rust": "rust"}
 MAX_ARCHIVE_BYTES = 128 * 1024 * 1024

@@ -17,7 +17,7 @@ pub const SEMANTIC_PROFILE_ENV: &str = "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE"
 pub struct SdkProfile {
     pub semantic_profile: String,
     pub live_server_version: String,
-    /// `{"semantic": .., "projections": {..}}`; `Value::Null` for sdk-v4..v6.
+    /// `{"semantic": .., "projections": {..}}`; `Value::Null` for administration..v6.
     pub expected_fingerprints: Value,
 }
 

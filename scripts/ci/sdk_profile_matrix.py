@@ -26,7 +26,7 @@ CONTRACT_ROOT = "tests/contracts/sdk_conformance"
 SUITES = {
     "queries": "sdk-v2",
     "models": "models",
-    "administration": "sdk-v4",
+    "administration": "administration",
     "serialization": "serialization",
     "artifacts": "sdk-v6",
 }

@@ -1,4 +1,4 @@
-name = "sdk-v4-rust-live"
+name = "sdk-administration-rust-live"
 version = "0.0.0"
 dependencies = [
  "serde_json",

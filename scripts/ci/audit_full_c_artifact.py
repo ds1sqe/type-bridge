@@ -19,7 +19,8 @@ import c_artifact_journey as artifact_journey  # noqa: E402
 import c_distribution_security as security  # noqa: E402
 import compare_sdk_conformance as v1  # noqa: E402
 import compare_sdk_conformance_v2 as v2  # noqa: E402
-import compare_sdk_conformance_v4 as v4  # noqa: E402
+import sdk_administration_compare as v4  # noqa: E402
+import sdk_serialization_compare as v5  # noqa: E402
 import compare_sdk_conformance_v6 as v6  # noqa: E402
 import sdk_models_compare as v3  # noqa: E402
 import sdk_profile_matrix as profile_matrix

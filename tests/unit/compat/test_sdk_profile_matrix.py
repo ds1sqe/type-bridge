@@ -153,7 +153,7 @@ def test_unsupported_profile_and_cross_profile_fingerprints_are_refused(tmp_path
 
 
 def test_server_versions_must_be_matrix_servers_and_shared() -> None:
-    v4 = _load("compare_sdk_conformance_v4")
+    v4 = _load("sdk_administration_compare")
     v5 = _load("sdk_serialization_compare")
     assert v4._matrix_servers() == v5.matrix_servers() == set(SERVERS.values())
     with pytest.raises(v4.ContractError) as rejected:
