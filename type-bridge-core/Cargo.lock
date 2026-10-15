@@ -3462,6 +3462,8 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+ "tonic",
+ "tonic-types",
  "tracing",
  "tracing-subscriber",
  "type-bridge-core-lib",

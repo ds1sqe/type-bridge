@@ -157,6 +157,8 @@ impl Transaction {
 
     /// Commit while retaining provider durability certainty when available.
     ///
+    /// Only known pre-commit rejection codes prove that no write committed;
+    /// other server failures can still have an unknown durability outcome.
     /// Recovery-aware callers can inspect
     /// [`ClassifiedCommitError::commit_failure_certainty`]. Ordinary callers
     /// should continue to use [`Self::commit`], whose error surface is

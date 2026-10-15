@@ -120,7 +120,8 @@ impl TypeDBClient {
 
     /// Execute a query while retaining driver commit certainty and text.
     ///
-    /// A rejected commit stored no changes. An indeterminate commit may have
+    /// Only known pre-commit rejection codes prove that no changes were stored.
+    /// A server error alone does not prove rejection. An indeterminate commit may have
     /// succeeded, so callers must establish its outcome before retrying.
     pub async fn execute_classified(
         &self,

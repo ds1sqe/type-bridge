@@ -39,6 +39,8 @@ chrono-tz = { version = "=0.9.0", features = ["case-insensitive"], optional = tr
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 tracing-subscriber = "0.3"
+tonic = "0.12"
+tonic-types = "0.12"
 
 [lints]
 workspace = true
