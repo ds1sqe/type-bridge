@@ -885,6 +885,7 @@ async fn production_binary_serves_v1_health_and_v2_query() {
 #[tokio::test]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn fetch_write_commit_failure_reaches_driver_and_v1_query() {
+    use type_bridge_contract::failure::{Failure, Phase, Reason};
     use type_bridge_core_lib::ast::{Clause, FetchItem, Statement};
     use type_bridge_server::config::TypeDBSection;
     use type_bridge_server::error::PipelineError;
@@ -943,7 +944,14 @@ async fn fetch_write_commit_failure_reaches_driver_and_v1_query() {
         "{error}"
     );
     assert!(
-        error.to_string().contains("key constraint violation"),
+        matches!(
+            error.failure(),
+            Some(Failure::Rejected {
+                phase: Phase::Query,
+                reason: Reason::Unique,
+                ..
+            })
+        ),
         "{error}"
     );
     assert_eq!(
@@ -960,7 +968,17 @@ async fn fetch_write_commit_failure_reaches_driver_and_v1_query() {
         .await
         .unwrap_err();
     eprintln!("missing-key commit failure: {error}");
-    assert!(error.to_string().contains("Commit failed:"), "{error}");
+    assert!(
+        matches!(
+            error.failure(),
+            Some(Failure::Rejected {
+                phase: Phase::Commit,
+                reason: Reason::Cardinality,
+                ..
+            })
+        ),
+        "{error}"
+    );
     assert_eq!(
         client
             .execute(&config.database, read, "read")
@@ -975,12 +993,13 @@ async fn fetch_write_commit_failure_reaches_driver_and_v1_query() {
             .build()
             .unwrap(),
     ));
-    for (statement, expected_error) in [
+    for (statement, expected_phase, expected_reason) in [
         (
             "$p isa person, has name \"Alice\", has age 99",
-            "key constraint violation",
+            "query",
+            "unique",
         ),
-        ("$p isa person, has age 99", "Commit failed:"),
+        ("$p isa person, has age 99", "commit", "cardinality"),
     ] {
         let clauses = vec![
             Clause::Insert(vec![Statement::Raw(statement.into())]),
@@ -1013,13 +1032,10 @@ async fn fetch_write_commit_failure_reaches_driver_and_v1_query() {
                 .unwrap();
         assert_eq!(body["status"], "error");
         assert_eq!(body["error"]["code"], "QUERY_EXECUTION_ERROR");
-        assert!(
-            body["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains(expected_error),
-            "{body}"
-        );
+        assert_eq!(body["error"]["details"]["phase"], expected_phase);
+        assert_eq!(body["error"]["details"]["reason"], expected_reason);
+        assert_eq!(body["error"]["details"]["retry_safe"], true);
+        assert!(!body["error"]["message"].as_str().unwrap().contains("Alice"));
         assert_eq!(
             client
                 .execute(&config.database, read, "read")

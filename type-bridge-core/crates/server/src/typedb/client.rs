@@ -118,7 +118,7 @@ impl TypeDBClient {
             .map_err(PipelineError::from)
     }
 
-    /// Execute a query while retaining driver commit certainty and text.
+    /// Execute a query while retaining driver commit certainty and a value-free description.
     ///
     /// Only known pre-commit rejection codes prove that no changes were stored.
     /// A server error alone does not prove rejection. An indeterminate commit may have
@@ -265,6 +265,7 @@ mod tests {
         fn with_commit_error(mut self, msg: &str) -> Self {
             self.commit_error = Some(
                 super::super::CommitFailure {
+                    failure: None,
                     certainty: super::super::CommitCertainty::Indeterminate,
                     message: msg.to_string(),
                 }
@@ -725,6 +726,7 @@ mod tests {
                     let mut tx = MockTransaction::new(result.clone());
                     tx.commit_error = Some(
                         CommitFailure {
+                            failure: None,
                             certainty,
                             message: STC2.into(),
                         }
@@ -1173,11 +1175,17 @@ mod tests {
             ExecuteError::Commit(failure) => {
                 assert_eq!(failure.certainty, CommitCertainty::Rejected);
                 assert!(failure.message.contains("[STC2]"), "{}", failure.message);
-                assert!(
-                    failure.message.contains("isolation conflict"),
-                    "{}",
-                    failure.message
-                );
+                assert!(matches!(
+                    failure.failure,
+                    Some(type_bridge_contract::failure::Failure::Rejected {
+                        phase: type_bridge_contract::failure::Phase::Commit,
+                        reason: type_bridge_contract::failure::Reason::Conflict {
+                            lock: type_bridge_contract::failure::LockKind::Exclusive,
+                        },
+                        ..
+                    })
+                ));
+                assert!(!failure.message.contains("ITEM-1"));
                 println!("Rejected: {}", failure.message);
             }
             other => panic!("expected classified STC2 commit failure: {other:?}"),

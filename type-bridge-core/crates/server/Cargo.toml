@@ -41,7 +41,6 @@ axum-transport = [
 ]
 v2-query = [
     "axum-transport",
-    "dep:type-bridge-contract",
     "dep:type-bridge-query",
     "dep:type-bridge-orm",
     "dep:type-bridge-schema",
@@ -51,7 +50,7 @@ v2-query = [
 [dependencies]
 type-bridge-core-lib = { path = "../core", version = "2.2.6" }
 type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "2.2.6", default-features = false, optional = true }
-type-bridge-contract = { path = "../contract", version = "2.2.6", optional = true }
+type-bridge-contract = { path = "../contract", version = "2.2.6" }
 type-bridge-query = { path = "../query", version = "2.2.6", optional = true }
 type-bridge-orm = { path = "../orm", version = "2.2.6", default-features = false, optional = true }
 type-bridge-schema = { path = "../schema", version = "2.2.6", optional = true }

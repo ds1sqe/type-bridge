@@ -781,7 +781,7 @@ impl Database {
         transaction
             .commit()
             .await
-            .map_err(|error| error.error.into_orm_error())?;
+            .map_err(|error| (*error.error).into_orm_error())?;
         answer
             .get()
             .map(|answer| (*answer).clone())

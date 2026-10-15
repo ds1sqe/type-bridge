@@ -28,12 +28,30 @@ pub enum ClassifiedCommitError {
     Driver {
         /// Whether the failed response proves that the commit was aborted.
         certainty: CommitFailureCertainty,
-        /// The original provider error text.
+        /// The value-free provider code and fixed description.
         message: String,
     },
 }
 
 impl ClassifiedCommitError {
+    /// Typed provider failure from controlled redacted runtime descriptions.
+    /// Released carriers have no staged operation index or schema context.
+    #[must_use]
+    pub fn failure(&self) -> Option<type_bridge_contract::failure::Failure> {
+        #[cfg(feature = "typedb")]
+        match self {
+            Self::Orm(error) => error.failure(),
+            Self::Driver { message, .. } => {
+                type_bridge_typedb_runtime::failure::failure_from_message(message)
+            }
+        }
+
+        #[cfg(not(feature = "typedb"))]
+        {
+            None
+        }
+    }
+
     /// Returns the durability certainty carried by a provider commit failure.
     #[must_use]
     pub const fn commit_failure_certainty(&self) -> Option<CommitFailureCertainty> {
@@ -45,7 +63,7 @@ impl ClassifiedCommitError {
 
     /// Convert to the released ORM error surface.
     ///
-    /// This preserves original provider text but discards certainty. The
+    /// This preserves the value-free description but discards certainty. The
     /// resulting transaction error alone cannot justify retrying a write.
     #[must_use]
     pub fn into_orm_error(self) -> OrmError {
@@ -144,3 +162,22 @@ pub enum OrmError {
 
 /// Convenience Result alias for ORM operations.
 pub type Result<T> = std::result::Result<T, OrmError>;
+
+impl OrmError {
+    /// Typed failure when this error came from the shared provider runtime.
+    #[must_use]
+    pub fn failure(&self) -> Option<type_bridge_contract::failure::Failure> {
+        #[cfg(feature = "typedb")]
+        match self {
+            Self::QueryExecution(message) | Self::Transaction(message) => {
+                type_bridge_typedb_runtime::failure::failure_from_message(message)
+            }
+            _ => None,
+        }
+
+        #[cfg(not(feature = "typedb"))]
+        {
+            None
+        }
+    }
+}

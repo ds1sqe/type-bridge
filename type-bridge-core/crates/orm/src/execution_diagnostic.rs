@@ -23,6 +23,17 @@ pub(crate) fn lower_orm_error(
     error: &OrmError,
     provider_operation: SdkProviderOperation,
 ) -> SdkExecutionDiagnostic {
+    let released = lower_released_orm_error(error, provider_operation);
+    match error.failure() {
+        Some(failure) => released.with_failure(&failure, Default::default()),
+        None => released,
+    }
+}
+
+fn lower_released_orm_error(
+    error: &OrmError,
+    provider_operation: SdkProviderOperation,
+) -> SdkExecutionDiagnostic {
     match error {
         OrmError::Match(error) => lower_match_error(error),
         OrmError::UnsupportedVersion(error) => match error {
@@ -100,6 +111,9 @@ pub fn query_resource_closed_diagnostic() -> SdkExecutionDiagnostic {
 }
 
 pub(crate) fn lower_commit_error(error: &ClassifiedCommitError) -> SdkExecutionDiagnostic {
+    if let Some(failure) = error.failure() {
+        return SdkExecutionDiagnostic::from_failure(&failure, Default::default());
+    }
     let outcome = match error {
         ClassifiedCommitError::Driver {
             certainty: CommitFailureCertainty::DefinitelyAborted,

@@ -5,6 +5,10 @@ use std::time::{Duration, Instant};
 
 use super::backend::{BoundedAnswerLimits, DriverBackend, GivenRowsSpec, QueryResult, TxType};
 use crate::error::{ClassifiedCommitError, OrmError};
+use type_bridge_contract::failure::Failure;
+use type_bridge_contract::sdk_diagnostic::{
+    FailureContext, SdkExecutionDiagnostic, SdkProviderOperation,
+};
 
 /// Provider transaction kind. An omitted kind is inferred from staged writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +103,8 @@ pub struct StagedQuery {
     /// Whether the statement may write.
     pub writes: bool,
     pub(crate) canonical: bool,
+    /// Value-free schema context supplied by the plan lowering layer.
+    pub failure_context: FailureContext,
 }
 impl StagedQuery {
     /// Stage raw TypeQL with an explicit write declaration.
@@ -108,7 +114,13 @@ impl StagedQuery {
             rows: None,
             writes,
             canonical: false,
+            failure_context: FailureContext::default(),
         }
+    }
+    /// Attach schema identities from the lowered plan, never provider prose.
+    pub fn with_failure_context(mut self, context: FailureContext) -> Self {
+        self.failure_context = context;
+        self
     }
     /// Attach given-stage inputs.
     pub fn with_rows(mut self, rows: GivenRowsSpec) -> Self {
@@ -143,8 +155,12 @@ pub enum PendingError {
     Failed {
         /// Failing statement index, or none for opening/commit.
         op_index: Option<usize>,
-        /// Original error text.
+        /// Value-free error description.
         message: String,
+        /// Structural provider failure with the staged operation index.
+        failure: Option<Box<Failure>>,
+        /// Schema identities from the staged item.
+        context: Box<FailureContext>,
     },
 }
 
@@ -157,18 +173,63 @@ fn format_op_index(index: Option<usize>) -> String {
 /// Commit failure retaining the released ORM/provider error without reclassification.
 #[derive(Debug, thiserror::Error)]
 #[error("{error}")]
+#[non_exhaustive]
 pub struct CommitError {
     /// Failing query index, or none for opening/commit.
     pub op_index: Option<usize>,
     /// Original failure, including existing commit certainty.
     #[source]
-    pub error: ClassifiedCommitError,
+    pub error: Box<ClassifiedCommitError>,
+    /// Structural classification with the staged operation index.
+    pub failure: Option<Box<Failure>>,
+    /// Schema identities from the executing staged item.
+    pub context: Box<FailureContext>,
 }
 impl CommitError {
-    fn lifecycle(error: PendingError) -> Self {
+    fn new(error: ClassifiedCommitError, op_index: Option<usize>, context: FailureContext) -> Self {
+        let failure = error.failure().map(|failure| {
+            match op_index.and_then(|index| u32::try_from(index).ok()) {
+                Some(index) => failure.with_op_index(index),
+                None => failure,
+            }
+        });
         Self {
-            op_index: None,
-            error: OrmError::Transaction(error.to_string()).into(),
+            op_index,
+            error: Box::new(error),
+            failure: failure.map(Box::new),
+            context: Box::new(context),
+        }
+    }
+    fn lifecycle(error: PendingError) -> Self {
+        Self::new(
+            OrmError::Transaction(error.to_string()).into(),
+            None,
+            Default::default(),
+        )
+    }
+    /// Canonical diagnostic retaining structural staged index and schema context.
+    #[must_use]
+    pub fn diagnostic(&self) -> SdkExecutionDiagnostic {
+        match &self.failure {
+            Some(failure) => {
+                SdkExecutionDiagnostic::from_failure(failure, self.context.as_ref().clone())
+            }
+            None => match self.error.as_ref() {
+                ClassifiedCommitError::Orm(error) => {
+                    crate::execution_diagnostic::lower_orm_error(error, SdkProviderOperation::Write)
+                }
+                error => crate::execution_diagnostic::lower_commit_error(error),
+            },
+        }
+    }
+}
+impl PendingError {
+    /// Structural failure observed by all pending answers in the failed stack.
+    #[must_use]
+    pub fn failure(&self) -> Option<&Failure> {
+        match self {
+            Self::Failed { failure, .. } => failure.as_deref(),
+            _ => None,
         }
     }
 }
@@ -313,6 +374,8 @@ impl Transaction {
                         CommitError::lifecycle(PendingError::Failed {
                             op_index: None,
                             message: "Transaction deadline exceeds the supported range".into(),
+                            failure: None,
+                            context: Default::default(),
                         })
                     })
                 })
@@ -321,10 +384,7 @@ impl Transaction {
                 .backend
                 .open_with_options(&self.database, kind.into(), &self.options)
                 .await
-                .map_err(|error| CommitError {
-                    op_index: None,
-                    error: error.into(),
-                })?;
+                .map_err(|error| CommitError::new(error.into(), None, Default::default()))?;
             let mut answers = Vec::with_capacity(execution.0.len());
             for (index, item) in execution.0.iter().enumerate() {
                 let result = provider
@@ -342,25 +402,23 @@ impl Transaction {
                             let _ = provider.rollback().await;
                         }
                         let _ = provider.close().await;
-                        return Err(CommitError {
-                            op_index: Some(index),
-                            error: error.into(),
-                        });
+                        return Err(CommitError::new(
+                            error.into(),
+                            Some(index),
+                            item.query.failure_context.clone(),
+                        ));
                     }
                 }
             }
             if self.options.never_commit || kind == TransactionKind::Read {
-                provider.close().await.map_err(|error| CommitError {
-                    op_index: None,
-                    error: error.into(),
-                })?;
+                provider
+                    .close()
+                    .await
+                    .map_err(|error| CommitError::new(error.into(), None, Default::default()))?;
             } else {
                 let commit = provider.commit_classified().await;
                 let close = provider.close().await;
-                commit.map_err(|error| CommitError {
-                    op_index: None,
-                    error,
-                })?;
+                commit.map_err(|error| CommitError::new(error, None, Default::default()))?;
                 if close.is_err() {
                     tracing::warn!(code = "transaction_close_failed");
                 }
@@ -379,6 +437,8 @@ impl Transaction {
                 execution.fail(PendingError::Failed {
                     op_index: error.op_index,
                     message: error.to_string(),
+                    failure: error.failure.clone(),
+                    context: error.context.clone(),
                 });
                 Err(error)
             }
@@ -434,8 +494,13 @@ mod tests {
         fn query(&mut self, query: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
             self.0.lock().unwrap().events.push(query.to_owned());
             let fail = query == "fail";
+            let typed = query == "typed-fail";
             Box::pin(async move {
-                if fail {
+                if typed {
+                    Err(OrmError::QueryExecution(
+                        "[CNT9] TypeDB query rejected: unique constraint".into(),
+                    ))
+                } else if fail {
                     Err(OrmError::QueryExecution("failure".into()))
                 } else {
                     Ok(QueryResult::Rows(Vec::new()))
@@ -515,6 +580,33 @@ mod tests {
             ["a", "fail", "rollback", "close"]
         );
     }
+    #[cfg(feature = "typedb")]
+    #[tokio::test]
+    async fn structural_failure_keeps_index_context_and_pending_answer_agreement() {
+        use type_bridge_contract::id::{TypeId, TypeKind};
+        let (mut tx, _) = fixture(TransactionOptions::default());
+        tx.stage(StagedQuery::new("first", true)).unwrap();
+        let context =
+            FailureContext::new(Some(TypeId::new(TypeKind::Entity, "item").unwrap()), None);
+        let pending = tx
+            .stage(StagedQuery::new("typed-fail", true).with_failure_context(context.clone()))
+            .unwrap();
+        let error = tx.commit().await.unwrap_err();
+        assert_eq!(error.failure.as_ref().unwrap().host_json()["op_index"], 1);
+        assert_eq!(*error.context, context);
+        assert_eq!(
+            error.diagnostic().code().as_str(),
+            "provider_operation_failed"
+        );
+        assert_eq!(
+            pending.get().unwrap_err().failure(),
+            error.failure.as_deref()
+        );
+        assert_eq!(
+            error.error.failure().unwrap().host_json()["op_index"],
+            serde_json::Value::Null
+        );
+    }
     #[tokio::test]
     async fn never_commit_and_explicit_kinds() {
         let (mut tx, state) = fixture(
@@ -551,7 +643,9 @@ mod tests {
         assert_eq!(
             PendingError::Failed {
                 op_index: Some(1),
-                message: "failure".into()
+                message: "failure".into(),
+                failure: None,
+                context: Default::default(),
             }
             .to_string(),
             "Transaction execution failed at operation 1: failure"

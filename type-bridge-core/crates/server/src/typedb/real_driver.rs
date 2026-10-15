@@ -82,7 +82,7 @@ impl DriverBackend for RealTypeDBBackend {
             transaction
                 .commit()
                 .await
-                .map_err(|error| ExecuteError::from(error.error))?;
+                .map_err(|error| ExecuteError::from(*error.error))?;
             let answer = answer
                 .get()
                 .map_err(|error| PipelineError::QueryExecution(error.to_string()))?;
@@ -247,6 +247,7 @@ impl From<runtime::RuntimeError> for PipelineError {
 
 impl From<runtime::RuntimeCommitError> for ExecuteError {
     fn from(error: runtime::RuntimeCommitError) -> Self {
+        let failure = Some(error.failure());
         match error {
             runtime::RuntimeCommitError::Runtime(error) => Self::Pipeline(error.into()),
             runtime::RuntimeCommitError::Driver { certainty, message } => CommitFailure {
@@ -255,6 +256,7 @@ impl From<runtime::RuntimeCommitError> for ExecuteError {
                     runtime::CommitFailureCertainty::Unknown => CommitCertainty::Indeterminate,
                 },
                 message,
+                failure,
             }
             .into(),
         }
@@ -289,6 +291,7 @@ impl From<type_bridge_orm::OrmError> for PipelineError {
 }
 impl From<type_bridge_orm::ClassifiedCommitError> for ExecuteError {
     fn from(error: type_bridge_orm::ClassifiedCommitError) -> Self {
+        let failure = error.failure();
         match error {
             type_bridge_orm::ClassifiedCommitError::Orm(error) => Self::Pipeline(error.into()),
             type_bridge_orm::ClassifiedCommitError::Driver { certainty, message } => {
@@ -302,6 +305,7 @@ impl From<type_bridge_orm::ClassifiedCommitError> for ExecuteError {
                         }
                     },
                     message,
+                    failure,
                 }
                 .into()
             }

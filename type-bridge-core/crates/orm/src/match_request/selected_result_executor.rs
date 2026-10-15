@@ -672,6 +672,9 @@ fn provider_transaction_open_error(_error: OrmError) -> OrmError {
 }
 
 fn provider_statement_error(error: OrmError) -> OrmError {
+    if error.failure().is_some() {
+        return error;
+    }
     if let OrmError::Match(error) = error
         && let Some(error) = sanitized_provider_statement_error(error)
     {
@@ -1346,6 +1349,22 @@ mod tests {
         assert_eq!(widened.policy, default);
     }
 
+    #[cfg(feature = "typedb")]
+    #[test]
+    fn provider_statement_preserves_runtime_classification_for_sdk_lowering() {
+        let error = provider_statement_error(OrmError::QueryExecution(
+            "[CNT9] TypeDB query rejected: unique constraint".into(),
+        ));
+        assert_eq!(error.failure().unwrap().code(), Some("CNT9"));
+        let diagnostic = crate::lower_execution_error(
+            error,
+            type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+        );
+        assert_eq!(diagnostic.code().as_str(), "provider_operation_failed");
+        let json = serde_json::to_value(diagnostic.host_json()).unwrap();
+        assert_eq!(json["details"]["operation"]["value"], "read");
+        assert_eq!(json["details"]["rejection"]["value"], "unique");
+    }
     #[tokio::test]
     async fn compatible_execution_preserves_released_nullable_order_error_before_provider_io() {
         let registry = DescriptorRegistry::new();

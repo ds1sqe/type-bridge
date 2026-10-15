@@ -2,6 +2,7 @@
 
 use crate::common::dynamic_crud::unique_schema_suffix;
 use crate::common::rust_binding::setup_db;
+use type_bridge_contract::failure::{Failure, Phase, Reason};
 use type_bridge_orm::TxType;
 use type_bridge_orm::session::backend::QueryResult;
 
@@ -870,9 +871,16 @@ async fn low7_user_defined_struct_transitions_are_unavailable() {
             "LOW7 {case} returned an empty diagnostic"
         );
         assert!(
-            message.contains(&record),
-            "LOW7 {case} diagnostic omitted stable marker {record:?}: {message}"
+            matches!(
+                error.failure(),
+                Some(Failure::Rejected {
+                    phase: Phase::Query,
+                    ..
+                })
+            ),
+            "LOW7 {case} omitted its typed query rejection: {message}"
         );
+        assert!(!message.contains(&record));
     }
 
     let after = db
@@ -1065,9 +1073,10 @@ async fn low8_populated_data_guards_reject_unsafe_schema_transitions() {
             "LOW8 {case} returned an empty diagnostic"
         );
         assert!(
-            message.contains(marker),
-            "LOW8 {case} diagnostic omitted stable marker {marker:?}: {message}"
+            matches!(error.failure(), Some(Failure::Rejected { .. })),
+            "LOW8 {case} omitted its typed rejection: {message}"
         );
+        assert!(!message.contains(marker));
     }
 
     let after = db
@@ -1145,9 +1154,17 @@ async fn low9_cardinality_removal_rejects_implicit_default_narrowing() {
             "LOW9 {case} returned an empty diagnostic"
         );
         assert!(
-            message.contains(marker) && message.contains("@card(0..1)"),
-            "LOW9 {case} rejection omitted marker/default evidence: {message}"
+            matches!(
+                error.failure(),
+                Some(Failure::Rejected {
+                    reason: Reason::Cardinality,
+                    ..
+                })
+            ),
+            "LOW9 {case} omitted its cardinality rejection: {message}"
         );
+        assert!(!message.contains(marker));
+        assert!(!message.contains("@card(0..1)"));
     }
 
     let after = db
