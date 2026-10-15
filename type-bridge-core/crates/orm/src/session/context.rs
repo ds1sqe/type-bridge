@@ -62,7 +62,7 @@ impl CommitOnceError {
 }
 
 struct TransactionContextInner {
-    transaction: Option<Box<dyn TransactionOps>>,
+    transaction: Option<super::eager::EagerTransaction>,
     state: TransactionContextState,
     rollback_only_cause: Option<SdkExecutionDiagnostic>,
 }
@@ -102,7 +102,7 @@ pub(crate) struct TransactionContextMutationLease {
 }
 
 impl TransactionContextMutationLease {
-    fn transaction(&mut self) -> Result<&mut Box<dyn TransactionOps>> {
+    fn transaction(&mut self) -> Result<&mut (dyn TransactionOps + 'static)> {
         active_transaction(&mut self.inner)
     }
 
@@ -181,7 +181,7 @@ impl Drop for TransactionContextMutationLease {
 
 impl TransactionContext {
     pub(crate) fn new(
-        inner: Box<dyn TransactionOps>,
+        inner: super::eager::EagerTransaction,
         tx_type: TxType,
         match_capabilities: CapabilitySet,
         server_version: Option<Version>,
@@ -220,7 +220,10 @@ impl TransactionContext {
                 "Projected batch mutations require a write transaction".into(),
             ));
         }
-        let inner = Arc::clone(&self.inner).lock_owned().await;
+        let mut inner = Arc::clone(&self.inner).lock_owned().await;
+        if inner.state == TransactionContextState::RolledBack {
+            inner.state = TransactionContextState::Active;
+        }
         if inner.state != TransactionContextState::Active || inner.transaction.is_none() {
             return Err(consumed_error());
         }
@@ -441,7 +444,7 @@ impl TransactionContext {
             })
     }
 
-    /// Roll back the shared transaction.
+    /// Roll back writes and retain this shared context for more work.
     pub async fn rollback(&self) -> Result<()> {
         let mut inner = self.inner.lock().await;
         let mut transaction = match inner.state {
@@ -458,12 +461,15 @@ impl TransactionContext {
             | TransactionContextState::Closed => return Err(consumed_error()),
         };
 
-        let rollback = transaction.rollback().await;
-        let close = transaction.close().await;
-        let result = rollback.and(close);
+        let result = transaction.rollback().await;
         match &result {
-            Ok(()) => inner.state = TransactionContextState::RolledBack,
+            Ok(()) => {
+                inner.transaction = Some(transaction);
+                inner.rollback_only_cause = None;
+                inner.state = TransactionContextState::RolledBack;
+            }
             Err(_) => {
+                let _ = transaction.close().await;
                 if inner.rollback_only_cause.is_none() {
                     inner.rollback_only_cause = Some(SdkExecutionDiagnostic::provider_failure(
                         SdkProviderOperation::Rollback,
@@ -479,14 +485,15 @@ impl TransactionContext {
         let transaction = {
             let mut inner = self.inner.lock().await;
             match inner.state {
-                TransactionContextState::Active | TransactionContextState::RollbackOnly => {
+                TransactionContextState::Active
+                | TransactionContextState::RollbackOnly
+                | TransactionContextState::RolledBack => {
                     inner.state = TransactionContextState::Closed;
                     inner.transaction.take()
                 }
                 TransactionContextState::Committed
                 | TransactionContextState::DefinitelyAborted
                 | TransactionContextState::CommitOutcomeUnknown
-                | TransactionContextState::RolledBack
                 | TransactionContextState::Closed => None,
             }
         };
@@ -556,9 +563,9 @@ impl TransactionContext {
 
 fn begin_commit(
     inner: &mut TransactionContextInner,
-) -> std::result::Result<Box<dyn TransactionOps>, CommitOnceError> {
+) -> std::result::Result<super::eager::EagerTransaction, CommitOnceError> {
     match inner.state {
-        TransactionContextState::Active => {
+        TransactionContextState::Active | TransactionContextState::RolledBack => {
             let transaction = inner.transaction.take().ok_or_else(|| {
                 CommitOnceError::Other(ClassifiedCommitError::from(consumed_error()))
             })?;
@@ -571,25 +578,40 @@ fn begin_commit(
         TransactionContextState::Committed
         | TransactionContextState::DefinitelyAborted
         | TransactionContextState::CommitOutcomeUnknown
-        | TransactionContextState::RolledBack
         | TransactionContextState::Closed => Err(CommitOnceError::Other(
             ClassifiedCommitError::from(consumed_error()),
         )),
     }
 }
 
-fn active_transaction(inner: &mut TransactionContextInner) -> Result<&mut Box<dyn TransactionOps>> {
+fn active_transaction(
+    inner: &mut TransactionContextInner,
+) -> Result<&mut (dyn TransactionOps + 'static)> {
+    if inner.state == TransactionContextState::RolledBack {
+        inner.state = TransactionContextState::Active;
+    }
     if inner.state != TransactionContextState::Active {
         return Err(consumed_error());
     }
-    inner.transaction.as_mut().ok_or_else(consumed_error)
+    inner
+        .transaction
+        .as_mut()
+        .ok_or_else(consumed_error)?
+        .provider_mut()
 }
 
 fn active_transaction_ref(inner: &TransactionContextInner) -> Result<&dyn TransactionOps> {
-    if inner.state != TransactionContextState::Active {
+    if !matches!(
+        inner.state,
+        TransactionContextState::Active | TransactionContextState::RolledBack
+    ) {
         return Err(consumed_error());
     }
-    inner.transaction.as_deref().ok_or_else(consumed_error)
+    inner
+        .transaction
+        .as_ref()
+        .ok_or_else(consumed_error)?
+        .provider_ref()
 }
 
 fn consumed_error() -> OrmError {
@@ -759,15 +781,19 @@ mod tests {
     ) -> (TransactionContext, Arc<Calls>) {
         let calls = Arc::new(Calls::default());
         let context = TransactionContext::new(
-            Box::new(LifecycleTransaction {
-                calls: Arc::clone(&calls),
-                commit_result,
-                rollback_fails,
-                close_fails,
-                commit_gate,
-                rollback_gate,
-                close_gate,
-            }),
+            super::super::eager::EagerTransaction::new(
+                Box::new(LifecycleTransaction {
+                    calls: Arc::clone(&calls),
+                    commit_result,
+                    rollback_fails,
+                    close_fails,
+                    commit_gate,
+                    rollback_gate,
+                    close_gate,
+                }),
+                TxType::Write,
+                None,
+            ),
             TxType::Write,
             CapabilitySet::new(),
             None,
@@ -905,6 +931,26 @@ mod tests {
             );
             assert_eq!(calls.rollbacks.load(Ordering::SeqCst), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn rollback_then_query_then_commit_reuses_the_same_provider() {
+        let (context, calls) = active_context();
+        context
+            .latch_rollback_only(&SdkExecutionDiagnostic::internal_failure())
+            .await;
+        context.rollback().await.unwrap();
+        assert!(context.rollback_only_cause().await.is_none());
+        context.query("match $x isa marker;").await.unwrap();
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::Active
+        );
+        context.commit().await.unwrap();
+        assert_eq!(calls.rollbacks.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.queries.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.commits.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.closes.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

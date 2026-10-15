@@ -53,3 +53,8 @@ feature is restricted to the ORM and schema migration provider by
 from Cargo feature unification: linking the migration provider can expose
 `session::eager` elsewhere in the graph. The probe also rejects references
 to that module outside the allowlist.
+
+Owned ORM transactions and shared contexts retain their provider after a
+successful rollback. A context reports `RolledBack` until new work resumes;
+new work is permitted and can commit. Call close to release it explicitly.
+Rollback failures and cancelled rollback futures still make it terminal.

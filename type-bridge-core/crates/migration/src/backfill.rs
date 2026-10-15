@@ -136,14 +136,12 @@ pub(crate) async fn prepare_backfill(
                 ),
             }
         })?;
-        let result =
-            ctx.query(&guarded_count_query)
-                .await
-                .map_err(|e| MigrationError::BackfillQuery {
-                    message: format!("backfill step {step_index}: guarded count query failed: {e}"),
-                })?;
-        // Rollback / close (read txs don't need commit; best-effort close).
+        let result = ctx.query(&guarded_count_query).await;
         let _ = ctx.rollback().await;
+        let _ = ctx.close().await;
+        let result = result.map_err(|e| MigrationError::BackfillQuery {
+            message: format!("backfill step {step_index}: guarded count query failed: {e}"),
+        })?;
         extract_count(result, step_index, "guarded")?
     };
 
@@ -156,13 +154,12 @@ pub(crate) async fn prepare_backfill(
                 ),
             }
         })?;
-        let result =
-            ctx.query(&total_count_query)
-                .await
-                .map_err(|e| MigrationError::BackfillQuery {
-                    message: format!("backfill step {step_index}: total count query failed: {e}"),
-                })?;
+        let result = ctx.query(&total_count_query).await;
         let _ = ctx.rollback().await;
+        let _ = ctx.close().await;
+        let result = result.map_err(|e| MigrationError::BackfillQuery {
+            message: format!("backfill step {step_index}: total count query failed: {e}"),
+        })?;
         extract_count(result, step_index, "total")?
     };
 
@@ -175,6 +172,7 @@ pub(crate) async fn prepare_backfill(
             })?;
     if let Err(error) = require_legacy_writer_open_in_transaction(&transaction).await {
         let _ = transaction.rollback().await;
+        let _ = transaction.close().await;
         return Err(MigrationError::BackfillQuery {
             message: format!(
                 "backfill step {step_index}: legacy cutover guard rejected the write: {error}"
@@ -183,6 +181,7 @@ pub(crate) async fn prepare_backfill(
     }
     if let Err(error) = transaction.query(&step.forward).await {
         let _ = transaction.rollback().await;
+        let _ = transaction.close().await;
         return Err(MigrationError::BackfillQuery {
             message: format!("backfill step {step_index}: backfill write query failed: {error}"),
         });
@@ -324,23 +323,25 @@ mod tests {
 
         // Verify the write ran under TxType::Write and counts under TxType::Read.
         let events = log.lock().unwrap();
-        // Expect: OpenTx(Read), Query(Read, ...), Rollback,
-        //         OpenTx(Read), Query(Read, ...), Rollback,
+        // Expect: OpenTx(Read), Query(Read, ...), Rollback, Close,
+        //         OpenTx(Read), Query(Read, ...), Rollback, Close,
         //         OpenTx(Write), Query(Write, ...), Commit
         assert!(
             matches!(events[0], MockEvent::OpenTx(TxType::Read)),
             "first tx must be Read (guarded count)"
         );
         assert!(
-            matches!(events[3], MockEvent::OpenTx(TxType::Read)),
+            matches!(events[4], MockEvent::OpenTx(TxType::Read)),
             "second tx must be Read (total count)"
         );
         assert!(
-            matches!(events[6], MockEvent::OpenTx(TxType::Write)),
+            matches!(events[8], MockEvent::OpenTx(TxType::Write)),
             "third tx must be Write (backfill insert)"
         );
+        assert!(matches!(events[3], MockEvent::Close));
+        assert!(matches!(events[7], MockEvent::Close));
         // Commit closes the write tx.
-        assert!(matches!(events[8], MockEvent::Commit));
+        assert!(matches!(events[10], MockEvent::Commit));
     }
 
     // ── test: count queries are composed from the step's carried match (invariant 2) ──

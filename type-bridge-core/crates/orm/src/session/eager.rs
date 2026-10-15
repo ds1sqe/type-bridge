@@ -1,5 +1,4 @@
 //! Internal eager execution for schema migrations and legacy helpers until 11.30.
-#![allow(dead_code)]
 
 use super::backend::{
     AnswerConsumer, BoundedAnswerLimits, BoundedAnswerStats, GivenRowsSpec, QueryResult,
@@ -64,7 +63,13 @@ impl EagerTransaction {
         kind: super::staged::TransactionKind,
         options: super::staged::TransactionOptions,
     ) -> Result<Self> {
-        database.open_eager(kind, options).await
+        let provider = database
+            .backend
+            .open_with_options(database.database_name(), kind.into(), &options)
+            .await?;
+        let mut transaction = Self::new(provider, kind.into(), database.server_version());
+        transaction.set_never_commit(options.never_commit);
+        Ok(transaction)
     }
 
     /// Execute a TypeQL query within this transaction.
@@ -82,6 +87,12 @@ impl EagerTransaction {
         self.inner
             .as_mut()
             .map(Box::as_mut)
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))
+    }
+
+    pub(crate) fn provider_ref(&self) -> Result<&dyn TransactionOps> {
+        self.inner
+            .as_deref()
             .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))
     }
 
@@ -212,11 +223,20 @@ impl EagerTransaction {
 
     /// Roll back this transaction.
     pub async fn rollback(&mut self) -> Result<()> {
-        let tx = self
+        let mut tx = self
             .inner
-            .as_mut()
+            .take()
             .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
-        tx.rollback().await
+        match tx.rollback().await {
+            Ok(()) => {
+                self.inner = Some(tx);
+                Ok(())
+            }
+            Err(error) => {
+                let _ = tx.close().await;
+                Err(error)
+            }
+        }
     }
 
     /// Close this transaction without committing.

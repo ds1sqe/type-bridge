@@ -20,15 +20,20 @@ async fn staged_atomicity_and_rollback_reuse() {
     let db = Database::connect_with_options(
         &address,
         &name,
-        "admin",
-        "password",
+        &std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into()),
+        &std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into()),
         ConnectOptions {
             http_port: std::env::var("TYPEDB_HTTP_PORT")
                 .unwrap_or_else(|_| "8000".into())
                 .parse()
                 .expect("valid TypeDB HTTP port"),
             tls: false,
-            server_version: Some("3.13.6".parse().unwrap()),
+            server_version: Some(
+                std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION")
+                    .unwrap_or_else(|_| "3.13.6".into())
+                    .parse()
+                    .unwrap(),
+            ),
         },
     )
     .await
@@ -64,6 +69,16 @@ async fn staged_atomicity_and_rollback_reuse() {
         .unwrap();
     tx.commit().await.unwrap();
     assert!(matches!(&*answer.get().unwrap(), QueryResult::Rows(rows) if rows.len() == 3));
+    let context = db.transaction_context(TxType::Write).await.unwrap();
+    context.query("insert $m isa marker;").await.unwrap();
+    context.rollback().await.unwrap();
+    context.query("insert $m isa marker;").await.unwrap();
+    context.commit().await.unwrap();
+    let mut owned = db.write_transaction().await.unwrap();
+    owned.query("insert $m isa marker;").await.unwrap();
+    owned.rollback().await.unwrap();
+    owned.query("insert $m isa marker;").await.unwrap();
+    owned.commit().await.unwrap();
     db.execute_raw("insert $m isa marker;", TxType::Write)
         .await
         .unwrap();
@@ -71,7 +86,7 @@ async fn staged_atomicity_and_rollback_reuse() {
         .execute_raw("match $m isa marker; select $m;", TxType::Read)
         .await
         .unwrap();
-    assert!(matches!(rows, QueryResult::Rows(rows) if rows.len() == 4));
+    assert!(matches!(rows, QueryResult::Rows(rows) if rows.len() == 6));
     let (mut fence, schema) = db
         .schema_fenced_read_transaction(std::time::Duration::from_secs(10))
         .await
@@ -90,6 +105,12 @@ async fn staged_atomicity_and_rollback_reuse() {
         .unwrap()
         .unwrap();
     schema.close().await.unwrap();
+    let mut read = db.transaction(TransactionOptions::default());
+    let answer = read
+        .stage(StagedQuery::new("match $m isa marker; select $m;", false))
+        .unwrap();
+    read.commit().await.unwrap();
+    assert!(matches!(&*answer.get().unwrap(), QueryResult::Rows(rows) if !rows.is_empty()));
     db.delete_database().await.unwrap();
     db.close().unwrap();
 }

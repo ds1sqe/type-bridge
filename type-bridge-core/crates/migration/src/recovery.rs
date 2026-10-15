@@ -562,12 +562,14 @@ async fn execute_pending_step<C: StepRecoveryController + ?Sized>(
     };
     if let Err(error) = require_legacy_writer_open_in_transaction(&transaction).await {
         let _ = transaction.rollback().await;
+        let _ = transaction.close().await;
         return StepExecutionOutcome::FailedBeforeCommit {
             error: error.to_string(),
         };
     }
     if let Err(error) = transaction.query(typeql).await {
         let _ = transaction.rollback().await;
+        let _ = transaction.close().await;
         return failed_before_commit(controller, step, format!("query failed: {error}"), None)
             .await;
     }
@@ -577,6 +579,7 @@ async fn execute_pending_step<C: StepRecoveryController + ?Sized>(
         .await
     {
         let _ = transaction.rollback().await;
+        let _ = transaction.close().await;
         return failed_before_commit(
             controller,
             step,
@@ -615,6 +618,7 @@ async fn execute_pending_backfill<C: StepRecoveryController + ?Sized>(
         .await
     {
         let _ = prepared.transaction.rollback().await;
+        let _ = prepared.transaction.close().await;
         return failed_before_commit(
             controller,
             step,
@@ -750,6 +754,7 @@ mod tests {
         decisions: Mutex<VecDeque<StepRecoveryDecision>>,
         events: Mutex<Vec<StepRecoveryEvent>>,
         fail_event: Option<StepRecoveryEventKind>,
+        require_closed_before_failure: Option<crate::testing::EventLog>,
     }
 
     impl TestController {
@@ -758,6 +763,7 @@ mod tests {
                 decisions: Mutex::new(decisions.into()),
                 events: Mutex::new(Vec::new()),
                 fail_event: None,
+                require_closed_before_failure: None,
             }
         }
 
@@ -769,6 +775,7 @@ mod tests {
                 decisions: Mutex::new(decisions.into()),
                 events: Mutex::new(Vec::new()),
                 fail_event: Some(kind),
+                require_closed_before_failure: None,
             }
         }
 
@@ -800,6 +807,11 @@ mod tests {
             &'a self,
             event: StepRecoveryEvent,
         ) -> RecoveryFuture<'a, crate::Result<()>> {
+            if event.kind == StepRecoveryEventKind::FailedBeforeCommit
+                && let Some(log) = &self.require_closed_before_failure
+            {
+                assert!(matches!(log.lock().unwrap().last(), Some(MockEvent::Close)));
+            }
             let should_fail = self.fail_event == Some(event.kind);
             self.events.lock().unwrap().push(event);
             Box::pin(async move {
@@ -1053,8 +1065,9 @@ mod tests {
             schema_step("define attribute a, value string;"),
             schema_step("define attribute b, value string;"),
         ]);
-        let controller = TestController::new(vec![pending(), pending()]);
-        let (backend, _log) = MockMigrationBackend::new(Some(1));
+        let mut controller = TestController::new(vec![pending(), pending()]);
+        let (backend, log) = MockMigrationBackend::new(Some(1));
+        controller.require_closed_before_failure = Some(log);
         let db = Database::with_backend(Box::new(backend), "test");
 
         let result = execute_recovery_plan(&db, &plan, &controller).await;

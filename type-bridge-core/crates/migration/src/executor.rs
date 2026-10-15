@@ -233,6 +233,7 @@ pub async fn execute_migration(db: &Database, migration: &MigrationExecution) ->
 
         if let Err(error) = require_legacy_writer_open_in_transaction(&ctx).await {
             let _ = ctx.rollback().await;
+            let _ = ctx.close().await;
             return MigrationResult {
                 app_label: migration.app_label.clone(),
                 name: migration.name.clone(),
@@ -247,6 +248,7 @@ pub async fn execute_migration(db: &Database, migration: &MigrationExecution) ->
         if let Err(e) = ctx.query(typeql).await {
             // Best-effort rollback; ignore its error.
             let _ = ctx.rollback().await;
+            let _ = ctx.close().await;
             return MigrationResult {
                 app_label: migration.app_label.clone(),
                 name: migration.name.clone(),
@@ -562,15 +564,17 @@ mod tests {
         );
         assert!(matches!(events[4], MockEvent::Commit));
 
-        // Step 2: OpenTx → Query (fails) → Rollback
+        // Step 2: OpenTx → Query (fails) → Rollback → Close
         assert!(matches!(events[5], MockEvent::OpenTx(TxType::Schema)));
         assert!(
             matches!(&events[6], MockEvent::Query(TxType::Schema, q) if q == "define attribute b, value string;")
         );
         assert!(matches!(events[7], MockEvent::Rollback));
 
+        assert!(matches!(events[8], MockEvent::Close));
+
         // Step 3 must NOT appear — run halted after step 2 failure.
-        assert_eq!(events.len(), 8, "step 3 must not be opened");
+        assert_eq!(events.len(), 9, "step 3 must not be opened");
     }
 
     // ── test: non-reversible rollback ─────────────────────────────────────────

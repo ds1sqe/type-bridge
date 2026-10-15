@@ -51,7 +51,7 @@ use crate::query_execution_limits::QueryExecutionResourceLimits;
 /// [`Arc`]. The TypeDB driver handles connection pooling internally.
 #[derive(Clone)]
 pub struct Database {
-    backend: Arc<dyn DriverBackend>,
+    pub(super) backend: Arc<dyn DriverBackend>,
     connection_authority: DatabaseConnectionAuthority,
     database_name: String,
     answer_limits: Option<QueryExecutionResourceLimits>,
@@ -438,37 +438,34 @@ impl Database {
         )
     }
 
-    #[allow(dead_code)]
     pub(crate) async fn open_eager(
         &self,
         kind: super::staged::TransactionKind,
         options: super::staged::TransactionOptions,
     ) -> Result<super::eager::EagerTransaction> {
-        let tx = self
-            .backend
-            .open_with_options(&self.database_name, kind.into(), &options)
-            .await?;
-        let mut eager = super::eager::EagerTransaction::new(tx, kind.into(), self.server_version());
-        eager.set_never_commit(options.never_commit);
-        Ok(eager)
+        super::eager::EagerTransaction::open(self, kind, options).await
     }
 
     /// Open a read transaction.
     pub async fn read_transaction(&self) -> Result<Transaction> {
-        let tx = self
-            .backend
-            .open_transaction(&self.database_name, TxType::Read)
+        let eager = self
+            .open_eager(
+                super::staged::TransactionKind::Read,
+                super::staged::TransactionOptions::default(),
+            )
             .await?;
-        Ok(Transaction::new(tx, TxType::Read, self.server_version()))
+        Ok(Transaction::from_eager(eager))
     }
 
     /// Open a write transaction.
     pub async fn write_transaction(&self) -> Result<Transaction> {
-        let tx = self
-            .backend
-            .open_transaction(&self.database_name, TxType::Write)
+        let eager = self
+            .open_eager(
+                super::staged::TransactionKind::Write,
+                super::staged::TransactionOptions::default(),
+            )
             .await?;
-        Ok(Transaction::new(tx, TxType::Write, self.server_version()))
+        Ok(Transaction::from_eager(eager))
     }
 
     /// Open a bounded read-capable transaction whose schema cannot change
@@ -497,11 +494,13 @@ impl Database {
     /// Migration coordinators use this form to execute bounded assertions and
     /// an ordered schema statement group before one explicit commit.
     pub async fn schema_transaction(&self) -> Result<Transaction> {
-        let tx = self
-            .backend
-            .open_transaction(&self.database_name, TxType::Schema)
+        let eager = self
+            .open_eager(
+                super::staged::TransactionKind::Schema,
+                super::staged::TransactionOptions::default(),
+            )
             .await?;
-        Ok(Transaction::new(tx, TxType::Schema, self.server_version()))
+        Ok(Transaction::from_eager(eager))
     }
 
     /// Create a shared [`TransactionContext`] for grouping operations.
@@ -537,8 +536,7 @@ impl Database {
     ) -> Result<TransactionContext> {
         let capabilities = self.backend.match_capabilities();
         let tx = self
-            .backend
-            .open_transaction(&self.database_name, tx_type)
+            .open_eager(tx_type.into(), super::staged::TransactionOptions::default())
             .await?;
         Ok(TransactionContext::new(
             tx,

@@ -190,20 +190,11 @@ impl DriverBackend for RealBackend {
         database: &str,
         tx_type: TxType,
     ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
-        let runtime_tx_type = runtime_tx_type(tx_type);
-        let database = database.to_string();
-        let runtime = Arc::clone(&self.inner);
-        Box::pin(async move {
-            let inner = runtime
-                .open_transaction(&database, runtime_tx_type)
-                .await
-                .map_err(OrmError::from)?;
-            Ok(Box::new(RealTransaction {
-                inner,
-                runtime,
-                database,
-            }) as Box<dyn TransactionOps>)
-        })
+        self.open_with_options(
+            database,
+            tx_type,
+            &super::staged::TransactionOptions::default(),
+        )
     }
 
     fn open_with_options(

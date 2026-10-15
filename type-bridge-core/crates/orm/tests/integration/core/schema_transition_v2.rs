@@ -506,6 +506,10 @@ async fn low4_sub_annotations_require_atomic_replace_and_rollback_restores_them(
         .rollback()
         .await
         .expect("LOW4 schema transaction must accept a forced rollback");
+    rolled_back
+        .close()
+        .await
+        .expect("release LOW4 schema guard");
 
     let after_rollback = db
         .schema_text()
@@ -783,6 +787,10 @@ async fn low6_function_metadata_requires_transactional_replacement() {
         .rollback()
         .await
         .expect("LOW6 caller-owned schema transaction must roll back");
+    rolled_back
+        .close()
+        .await
+        .expect("release LOW6 schema guard");
 
     let after_rollback = db
         .schema_text()

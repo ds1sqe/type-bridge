@@ -8,7 +8,6 @@ use crate::error::{ClassifiedCommitError, Result};
 use type_bridge_core_lib::ast::{
     TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
 };
-use type_bridge_core_lib::version::Version;
 
 /// A single TypeDB transaction.
 ///
@@ -19,16 +18,6 @@ pub struct OwnedTransaction {
 }
 
 impl OwnedTransaction {
-    pub(crate) fn new(
-        inner: Box<dyn TransactionOps>,
-        tx_type: TxType,
-        server_version: Option<Version>,
-    ) -> Self {
-        Self {
-            inner: super::eager::EagerTransaction::new(inner, tx_type, server_version),
-        }
-    }
-
     pub(crate) fn from_eager(inner: super::eager::EagerTransaction) -> Self {
         Self { inner }
     }
@@ -136,11 +125,9 @@ impl OwnedTransaction {
         self.inner.commit_classified().await
     }
 
-    /// Roll back this transaction.
+    /// Roll back writes and keep this transaction usable.
     pub async fn rollback(&mut self) -> Result<()> {
-        let rollback = self.inner.rollback().await;
-        let close = self.inner.close().await;
-        rollback.and(close)
+        self.inner.rollback().await
     }
 
     /// Close this transaction without committing.
