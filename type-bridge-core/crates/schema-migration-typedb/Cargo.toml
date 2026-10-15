@@ -19,7 +19,7 @@ sha2 = "0.10"
 type-bridge-contract = { path = "../contract", version = "2.2.6" }
 type-bridge-core-lib = { path = "../core", version = "2.2.6" }
 type-bridge-migration = { path = "../migration", version = "2.2.6" }
-type-bridge-orm = { path = "../orm", version = "2.2.6" }
+type-bridge-orm = { path = "../orm", version = "2.2.6", features = ["internal-eager"] }
 type-bridge-query = { path = "../query", version = "2.2.6" }
 type-bridge-schema = { path = "../schema", version = "2.2.6" }
 type-bridge-schema-compat = { path = "../schema-compat", version = "2.2.6" }

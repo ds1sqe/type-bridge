@@ -1146,7 +1146,11 @@ fun compatibility-writer-probe($candidate: person) -> { person }:
     writer
         .rollback()
         .await
-        .expect("close rejected released writer transaction");
+        .expect("roll back rejected released writer transaction");
+    writer
+        .close()
+        .await
+        .expect("release rejected writer before deleting its database");
 
     managed
         .delete_database()

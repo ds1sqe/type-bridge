@@ -603,7 +603,9 @@ impl PreparedMigrationGroup for TypeDbPreparedGroup<'_> {
     {
         Box::pin(async move {
             let mut this = *self;
-            this.transaction.rollback().await.map_err(map_orm_error)
+            rollback_and_close(&mut this.transaction)
+                .await
+                .map_err(map_orm_error)
         })
     }
 }
@@ -924,7 +926,7 @@ async fn finish_provider_schema_guard<T>(
     primary: Result<T, Diagnostic>,
     operation: &'static str,
 ) -> Result<T, Diagnostic> {
-    match (primary, transaction.rollback().await) {
+    match (primary, rollback_and_close(transaction).await) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), Ok(())) => Err(error),
         (Ok(_), Err(cleanup)) => Err(provider_schema_cleanup_failure(cleanup, None, operation)),
@@ -966,6 +968,12 @@ fn failure(
         DiagnosticCode::new(code).expect("static diagnostic code is valid"),
         message,
     )
+}
+
+pub(crate) async fn rollback_and_close(transaction: &mut Transaction) -> Result<(), OrmError> {
+    let rollback = transaction.rollback().await;
+    let close = transaction.close().await;
+    rollback.and(close)
 }
 
 #[cfg(test)]

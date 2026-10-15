@@ -573,7 +573,11 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_3() {
     managed_schema_transaction
         .rollback()
         .await
-        .expect("close prepared transaction after conformance probe");
+        .expect("roll back prepared transaction after conformance probe");
+    managed_schema_transaction
+        .close()
+        .await
+        .expect("release prepared schema guard before recovery takeover");
 
     let lease_two = journal
         .acquire(&journal_scope, &executor_b)

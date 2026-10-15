@@ -27,7 +27,7 @@ use type_bridge_orm::_schema::{SchemaError, SchemaInfo};
 use type_bridge_orm::OrmError;
 use type_bridge_orm::session::backend::{BoxFuture, QueryResult, TxType};
 use type_bridge_orm::{
-    Database, Transaction, TransactionContext,
+    Database, OwnedTransaction as Transaction, TransactionContext,
     require_legacy_writer_open as require_orm_legacy_writer_open,
     require_legacy_writer_open_in_transaction as require_orm_legacy_writer_open_in_transaction,
 };
@@ -172,7 +172,7 @@ impl TypeDbStateStore {
             .await
             .map_err(map_orm_error)?;
         if let Err(error) = require_legacy_writer_open_in_transaction(&ctx).await {
-            let _ = ctx.rollback().await;
+            let _ = rollback_and_close_context(&ctx).await;
             return Err(error);
         }
         match ctx.query(define_typeql).await {
@@ -181,7 +181,7 @@ impl TypeDbStateStore {
                 Ok(())
             }
             Err(error) => {
-                if let Err(cleanup) = ctx.rollback().await {
+                if let Err(cleanup) = rollback_and_close_context(&ctx).await {
                     return Err(schema_rollback_cleanup_failure(&error, &cleanup));
                 }
                 if self.type_exists(type_name).await? {
@@ -1008,7 +1008,7 @@ impl MigrationStateStore for TypeDbStateStore {
                 .await
                 .map_err(map_orm_error)?;
             if let Err(error) = require_legacy_writer_open_in_transaction(&ctx).await {
-                let _ = ctx.rollback().await;
+                let _ = rollback_and_close_context(&ctx).await;
                 return Err(error);
             }
             ctx.query(&delete_existing).await.map_err(map_orm_error)?;
@@ -1041,7 +1041,7 @@ impl MigrationStateStore for TypeDbStateStore {
                 .await
                 .map_err(map_orm_error)?;
             if let Err(error) = require_legacy_writer_open_in_transaction(&ctx).await {
-                let _ = ctx.rollback().await;
+                let _ = rollback_and_close_context(&ctx).await;
                 return Err(error);
             }
             ctx.query(&query).await.map_err(map_orm_error)?;
@@ -1065,7 +1065,7 @@ impl MigrationStateStore for TypeDbStateStore {
                 .await
                 .map_err(map_orm_error)?;
             if let Err(error) = require_legacy_writer_open_in_transaction(&ctx).await {
-                let _ = ctx.rollback().await;
+                let _ = rollback_and_close_context(&ctx).await;
                 return Err(error);
             }
             ctx.query(&delete_existing).await.map_err(map_orm_error)?;
@@ -1074,6 +1074,14 @@ impl MigrationStateStore for TypeDbStateStore {
             Ok(())
         })
     }
+}
+
+async fn rollback_and_close_context(
+    context: &TransactionContext,
+) -> std::result::Result<(), OrmError> {
+    let rollback = context.rollback().await;
+    let close = context.close().await;
+    rollback.and(close)
 }
 
 #[cfg(test)]

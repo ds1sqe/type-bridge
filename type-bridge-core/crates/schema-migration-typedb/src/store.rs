@@ -13,7 +13,9 @@ use type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX;
 use type_bridge_contract::schema::{DocumentId, ManagedSchemaState};
 use type_bridge_orm::session::DatabaseCreateOutcome;
 use type_bridge_orm::session::backend::QueryResult;
-use type_bridge_orm::{Database, OrmError, OwnedTransaction as Transaction};
+use type_bridge_orm::session::eager::EagerTransaction as Transaction;
+use type_bridge_orm::session::staged::{TransactionKind, TransactionOptions};
+use type_bridge_orm::{Database, OrmError};
 use type_bridge_schema::ManagedDeltaContext;
 use type_bridge_schema_compat::typeql_to_declared;
 use type_bridge_schema_migration::{
@@ -282,12 +284,13 @@ impl ManagedDatabasePairAdministrator {
                 "existing journal database has no exact owned migration control schema",
             ));
         }
-        let mut transaction = self
-            .inner
-            .journal_database
-            .read_transaction()
-            .await
-            .map_err(map_orm_error)?;
+        let mut transaction = Transaction::open(
+            &self.inner.journal_database,
+            TransactionKind::Read,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
         let result = require_journal_owner(
             &mut transaction,
             self.inner.managed_database.database_name(),
@@ -1053,11 +1056,13 @@ impl<'a> TypeDbMigrationStore<'a> {
         // transactions. Inspecting the committed export while this handle is
         // retained therefore serializes concurrent bootstrap attempts without
         // a racy preflight-to-install window.
-        let mut transaction = self
-            .journal_database
-            .schema_transaction()
-            .await
-            .map_err(map_orm_error)?;
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Schema,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
         let export = match self.journal_database.schema_text().await {
             Ok(export) => export,
             Err(error) => {
@@ -1092,9 +1097,11 @@ impl<'a> TypeDbMigrationStore<'a> {
                     )
                     .await);
                 }
-                transaction.rollback().await.map_err(|error| {
-                    schema_cleanup_failure(error, None, "exact journal schema inspection")
-                })?;
+                rollback_and_close(&mut transaction)
+                    .await
+                    .map_err(|error| {
+                        schema_cleanup_failure(error, None, "exact journal schema inspection")
+                    })?;
             }
             JournalSchemaState::Empty => {
                 if let Err(error) = transaction.query(JOURNAL_CONTROL_SCHEMA_TYPEQL).await {
@@ -1174,12 +1181,20 @@ impl<'a> TypeDbMigrationStore<'a> {
             return Ok(());
         }
 
-        let mut transaction = database.schema_transaction().await.map_err(map_orm_error)?;
+        let mut transaction = Transaction::open(
+            database,
+            TransactionKind::Schema,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
         if let Err(error) = transaction.query(schema).await {
             let primary = map_orm_error(error);
-            transaction.rollback().await.map_err(|cleanup| {
-                schema_cleanup_failure(cleanup, Some(&primary), "raced control-schema install")
-            })?;
+            rollback_and_close(&mut transaction)
+                .await
+                .map_err(|cleanup| {
+                    schema_cleanup_failure(cleanup, Some(&primary), "raced control-schema install")
+                })?;
             let raced_export = database.schema_text().await.map_err(map_orm_error)?;
             if !control_schema_matches(&raced_export, schema, contract)? {
                 return Err(primary);
@@ -1237,11 +1252,13 @@ impl<'a> TypeDbMigrationStore<'a> {
         scope: &ExecutionScope,
         holder: &LeaseHolderId,
     ) -> Result<MigrationLease, Diagnostic> {
-        let mut transaction = self
-            .journal_database
-            .write_transaction()
-            .await
-            .map_err(map_orm_error)?;
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Write,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
         let current = load_control(&mut transaction, scope).await?;
         let (fence, next_sequence, query) = match current {
             Some(current) => {
@@ -1275,7 +1292,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         );
         let observed = load_active_control(&mut transaction, &lease).await?;
         if observed.next_sequence != next_sequence {
-            let _ = transaction.rollback().await;
+            let _ = rollback_and_close(&mut transaction).await;
             return Err(stale_fence());
         }
         transaction.commit().await.map_err(map_orm_error)?;
@@ -1283,11 +1300,13 @@ impl<'a> TypeDbMigrationStore<'a> {
     }
 
     async fn publish_managed_fence(&self, lease: &MigrationLease) -> Result<(), Diagnostic> {
-        let mut transaction = self
-            .managed_database
-            .write_transaction()
-            .await
-            .map_err(map_orm_error)?;
+        let mut transaction = Transaction::open(
+            &self.managed_database,
+            TransactionKind::Write,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
         let current = load_managed_fence(&mut transaction, lease.scope()).await?;
         let query = match current {
             None => insert_managed_fence_query(lease),
@@ -1295,7 +1314,7 @@ impl<'a> TypeDbMigrationStore<'a> {
                 replace_managed_fence_query(lease, current)
             }
             Some(_) => {
-                let _ = transaction.rollback().await;
+                let _ = rollback_and_close(&mut transaction).await;
                 return Err(failure(
                     DiagnosticCategory::Integrity,
                     "migration_typedb_managed_fence_not_monotonic",
@@ -1304,7 +1323,7 @@ impl<'a> TypeDbMigrationStore<'a> {
             }
         };
         transaction.query(&query).await.map_err(map_orm_error)?;
-        require_active_managed_fence(&mut transaction, lease).await?;
+        require_active_managed_fence_impl(&mut transaction, lease).await?;
         transaction.commit().await.map_err(map_orm_error)
     }
 
@@ -1315,34 +1334,38 @@ impl<'a> TypeDbMigrationStore<'a> {
     }
 
     async fn release_authoritative(&self, lease: &MigrationLease) -> Result<(), Diagnostic> {
-        let mut transaction = self
-            .journal_database
-            .write_transaction()
-            .await
-            .map_err(map_orm_error)?;
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Write,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
         let current = load_active_control(&mut transaction, lease).await?;
         let query = release_control_query(lease, current.next_sequence);
         transaction.query(&query).await.map_err(map_orm_error)?;
         if !load_free_control(&mut transaction, lease, current.next_sequence).await? {
-            let _ = transaction.rollback().await;
+            let _ = rollback_and_close(&mut transaction).await;
             return Err(stale_fence());
         }
         transaction.commit().await.map_err(map_orm_error)
     }
 
     async fn release_managed_fence(&self, lease: &MigrationLease) -> Result<(), Diagnostic> {
-        let mut transaction = self
-            .managed_database
-            .write_transaction()
-            .await
-            .map_err(map_orm_error)?;
-        require_active_managed_fence(&mut transaction, lease).await?;
+        let mut transaction = Transaction::open(
+            &self.managed_database,
+            TransactionKind::Write,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
+        require_active_managed_fence_impl(&mut transaction, lease).await?;
         transaction
             .query(&release_managed_fence_query(lease))
             .await
             .map_err(map_orm_error)?;
         if !load_free_managed_fence(&mut transaction, lease).await? {
-            let _ = transaction.rollback().await;
+            let _ = rollback_and_close(&mut transaction).await;
             return Err(stale_fence());
         }
         transaction.commit().await.map_err(map_orm_error)
@@ -1360,14 +1383,16 @@ impl<'a> TypeDbMigrationStore<'a> {
             return Err(record_identity_mismatch());
         }
         self.ensure_schema_for_scope(lease.scope()).await?;
-        let mut transaction = self
-            .journal_database
-            .write_transaction()
-            .await
-            .map_err(map_orm_error)?;
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Write,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
         let current = load_active_control(&mut transaction, lease).await?;
         if open_plan_exists(&mut transaction, lease.scope()).await? {
-            let _ = transaction.rollback().await;
+            let _ = rollback_and_close(&mut transaction).await;
             return Err(failure(
                 DiagnosticCategory::InvalidContract,
                 "migration_typedb_open_plan_exists",
@@ -1389,11 +1414,13 @@ impl<'a> TypeDbMigrationStore<'a> {
         ensure_record_lease(lease, record.scope(), record.fence())?;
         let plan = self.require_plan()?;
         self.ensure_schema_for_scope(lease.scope()).await?;
-        let mut transaction = self
-            .journal_database
-            .write_transaction()
-            .await
-            .map_err(map_orm_error)?;
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Write,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
         let current = load_active_control(&mut transaction, lease).await?;
         let open = self
             .load_open_plan_in_transaction(&mut transaction, lease, plan)
@@ -1420,11 +1447,13 @@ impl<'a> TypeDbMigrationStore<'a> {
     ) -> Result<JournalEntry<BackfillEventRecord>, Diagnostic> {
         ensure_record_lease(lease, record.scope(), record.fence())?;
         self.ensure_schema_for_scope(lease.scope()).await?;
-        let mut transaction = self
-            .journal_database
-            .write_transaction()
-            .await
-            .map_err(map_orm_error)?;
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Write,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
         let current = load_active_control(&mut transaction, lease).await?;
         let member = match record.direction() {
             BackfillExecutionDirection::Forward => {
@@ -1451,7 +1480,7 @@ impl<'a> TypeDbMigrationStore<'a> {
             }
         };
         if !member {
-            let _ = transaction.rollback().await;
+            let _ = rollback_and_close(&mut transaction).await;
             return Err(record_identity_mismatch());
         }
         let payload = encode_backfill_event(&record)?;
@@ -1486,11 +1515,13 @@ impl<'a> TypeDbMigrationStore<'a> {
         }
         let plan = self.require_plan()?;
         self.ensure_schema_for_scope(lease.scope()).await?;
-        let mut transaction = self
-            .journal_database
-            .write_transaction()
-            .await
-            .map_err(map_orm_error)?;
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Write,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
         let current = load_active_control(&mut transaction, lease).await?;
         let existing = self
             .load_applied_in_transaction(&mut transaction, lease.scope(), lease.holder())
@@ -1512,7 +1543,7 @@ impl<'a> TypeDbMigrationStore<'a> {
                     "applied migration identity already exists with different evidence",
                 ))
             };
-            let _ = transaction.rollback().await;
+            let _ = rollback_and_close(&mut transaction).await;
             return result;
         }
 
@@ -1590,11 +1621,13 @@ impl<'a> TypeDbMigrationStore<'a> {
         // inspection-local identity keeps this path honest about never
         // having acquired anything.
         let holder = LeaseHolderId::new("typebridge-read-only-inspection")?;
-        let mut transaction = self
-            .journal_database
-            .read_transaction()
-            .await
-            .map_err(map_orm_error)?;
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Read,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
         let result = async {
             self.require_journal_owner(&mut transaction).await?;
             self.load_applied_in_transaction(&mut transaction, scope, &holder)
@@ -1614,11 +1647,13 @@ impl<'a> TypeDbMigrationStore<'a> {
         lease: &MigrationLease,
     ) -> Result<Vec<JournalEntry<AppliedRecord>>, Diagnostic> {
         self.ensure_schema_for_scope(lease.scope()).await?;
-        let mut transaction = self
-            .journal_database
-            .read_transaction()
-            .await
-            .map_err(map_orm_error)?;
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Read,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
         load_active_control(&mut transaction, lease).await?;
         let result = self
             .load_applied_in_transaction(&mut transaction, lease.scope(), lease.holder())
@@ -1637,11 +1672,13 @@ impl<'a> TypeDbMigrationStore<'a> {
     ) -> Result<Option<OpenPlanRecord>, Diagnostic> {
         let plan = self.require_plan()?;
         self.ensure_schema_for_scope(lease.scope()).await?;
-        let mut transaction = self
-            .journal_database
-            .read_transaction()
-            .await
-            .map_err(map_orm_error)?;
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Read,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
         load_active_control(&mut transaction, lease).await?;
         let result = self
             .load_open_plan_in_transaction(&mut transaction, lease, plan)
@@ -1775,14 +1812,16 @@ impl<'a> TypeDbMigrationStore<'a> {
             return Err(record_identity_mismatch());
         }
         self.ensure_schema_for_scope(lease.scope()).await?;
-        let mut transaction = self
-            .journal_database
-            .write_transaction()
-            .await
-            .map_err(map_orm_error)?;
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Write,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
         let current = load_active_control(&mut transaction, lease).await?;
         if open_plan_exists(&mut transaction, lease.scope()).await? {
-            let _ = transaction.rollback().await;
+            let _ = rollback_and_close(&mut transaction).await;
             return Err(failure(
                 DiagnosticCategory::InvalidContract,
                 "migration_typedb_open_plan_exists",
@@ -1810,11 +1849,13 @@ impl<'a> TypeDbMigrationStore<'a> {
         ensure_record_lease(lease, record.scope(), record.fence())?;
         let plan = self.require_rollback_plan()?;
         self.ensure_schema_for_scope(lease.scope()).await?;
-        let mut transaction = self
-            .journal_database
-            .write_transaction()
-            .await
-            .map_err(map_orm_error)?;
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Write,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
         let current = load_active_control(&mut transaction, lease).await?;
         let open = self
             .load_open_rollback_plan_in_transaction(&mut transaction, lease, plan)
@@ -1828,7 +1869,7 @@ impl<'a> TypeDbMigrationStore<'a> {
             .zip(open.plan().record().manifest_digests())
             .any(|(id, digest)| id == record.migration_id() && *digest == record.manifest_digest());
         if !member {
-            let _ = transaction.rollback().await;
+            let _ = rollback_and_close(&mut transaction).await;
             return Err(record_identity_mismatch());
         }
         let payload = encode_rollback_event(&record)?;
@@ -1863,11 +1904,13 @@ impl<'a> TypeDbMigrationStore<'a> {
         }
         let plan = self.require_rollback_plan()?;
         self.ensure_schema_for_scope(lease.scope()).await?;
-        let mut transaction = self
-            .journal_database
-            .write_transaction()
-            .await
-            .map_err(map_orm_error)?;
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Write,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
         let current = load_active_control(&mut transaction, lease).await?;
         let raw = self
             .load_applied_rows_in_transaction(&mut transaction, lease.scope(), lease.holder())
@@ -1893,7 +1936,7 @@ impl<'a> TypeDbMigrationStore<'a> {
                     "retirement target is not active in the applied ledger",
                 ))
             };
-            let _ = transaction.rollback().await;
+            let _ = rollback_and_close(&mut transaction).await;
             return result;
         }
 
@@ -1910,7 +1953,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         if manifest_index.is_none_or(|index| {
             open.plan().record().manifest_digests().get(index) != Some(&record.manifest_digest())
         }) {
-            let _ = transaction.rollback().await;
+            let _ = rollback_and_close(&mut transaction).await;
             return Err(failure(
                 DiagnosticCategory::Integrity,
                 "migration_typedb_foreign_retirement",
@@ -1953,11 +1996,13 @@ impl<'a> TypeDbMigrationStore<'a> {
         lease: &MigrationLease,
     ) -> Result<Vec<JournalEntry<RolledBackRecord>>, Diagnostic> {
         self.ensure_schema_for_scope(lease.scope()).await?;
-        let mut transaction = self
-            .journal_database
-            .read_transaction()
-            .await
-            .map_err(map_orm_error)?;
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Read,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
         load_active_control(&mut transaction, lease).await?;
         let result = self
             .load_rolled_back_in_transaction(&mut transaction, lease.scope(), lease.holder())
@@ -1976,11 +2021,13 @@ impl<'a> TypeDbMigrationStore<'a> {
     ) -> Result<Option<OpenRollbackPlanRecord>, Diagnostic> {
         let plan = self.require_rollback_plan()?;
         self.ensure_schema_for_scope(lease.scope()).await?;
-        let mut transaction = self
-            .journal_database
-            .read_transaction()
-            .await
-            .map_err(map_orm_error)?;
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Read,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
         load_active_control(&mut transaction, lease).await?;
         let result = self
             .load_open_rollback_plan_in_transaction(&mut transaction, lease, plan)
@@ -2198,7 +2245,14 @@ struct StoredRow {
 /// transaction that executes statements and commits. An out-of-transaction
 /// check is advisory and does not satisfy the fencing contract.
 pub async fn require_active_managed_fence(
-    transaction: &mut Transaction,
+    transaction: &mut type_bridge_orm::OwnedTransaction,
+    lease: &MigrationLease,
+) -> Result<(), Diagnostic> {
+    require_active_managed_fence_impl(transaction, lease).await
+}
+
+async fn require_active_managed_fence_impl<T: MigrationQuery + ?Sized>(
+    transaction: &mut T,
     lease: &MigrationLease,
 ) -> Result<(), Diagnostic> {
     let snapshot = load_global_managed_control(transaction, lease.scope())
@@ -2249,8 +2303,8 @@ async fn load_free_managed_fence(
     Ok(query_documents(transaction, &query).await?.len() == 1)
 }
 
-async fn load_global_managed_control(
-    transaction: &mut Transaction,
+async fn load_global_managed_control<T: MigrationQuery + ?Sized>(
+    transaction: &mut T,
     scope: &ExecutionScope,
 ) -> Result<Option<ManagedControlSnapshot>, Diagnostic> {
     let query = format!(
@@ -2502,8 +2556,8 @@ fn parse_stored_row(document: Value) -> Result<StoredRow, Diagnostic> {
     })
 }
 
-async fn query_documents(
-    transaction: &mut Transaction,
+async fn query_documents<T: MigrationQuery + ?Sized>(
+    transaction: &mut T,
     query: &str,
 ) -> Result<Vec<Value>, Diagnostic> {
     match transaction.query(query).await.map_err(map_orm_error)? {
@@ -3071,7 +3125,7 @@ async fn rollback_schema_error(
     primary: Diagnostic,
     operation: &'static str,
 ) -> Diagnostic {
-    match transaction.rollback().await {
+    match rollback_and_close(transaction).await {
         Ok(()) => primary,
         Err(cleanup) => schema_cleanup_failure(cleanup, Some(&primary), operation),
     }
@@ -3136,6 +3190,36 @@ fn failure(category: DiagnosticCategory, code: &'static str, message: &'static s
         DiagnosticCode::new(code).expect("static diagnostic code is valid"),
         message,
     )
+}
+
+async fn rollback_and_close(transaction: &mut Transaction) -> Result<(), OrmError> {
+    let rollback = transaction.rollback().await;
+    let close = transaction.close().await;
+    rollback.and(close)
+}
+
+// Both concrete owners share the released fence validation without changing its API.
+trait MigrationQuery: Send {
+    fn query<'a>(
+        &'a mut self,
+        typeql: &'a str,
+    ) -> type_bridge_orm::session::backend::BoxFuture<'a, Result<QueryResult, OrmError>>;
+}
+impl MigrationQuery for Transaction {
+    fn query<'a>(
+        &'a mut self,
+        typeql: &'a str,
+    ) -> type_bridge_orm::session::backend::BoxFuture<'a, Result<QueryResult, OrmError>> {
+        Box::pin(Transaction::query(self, typeql))
+    }
+}
+impl MigrationQuery for type_bridge_orm::OwnedTransaction {
+    fn query<'a>(
+        &'a mut self,
+        typeql: &'a str,
+    ) -> type_bridge_orm::session::backend::BoxFuture<'a, Result<QueryResult, OrmError>> {
+        Box::pin(type_bridge_orm::OwnedTransaction::query(self, typeql))
+    }
 }
 
 #[cfg(test)]

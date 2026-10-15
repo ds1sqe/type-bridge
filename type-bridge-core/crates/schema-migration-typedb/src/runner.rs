@@ -2448,7 +2448,7 @@ async fn finish_schema_guard<T>(
     primary: Result<T, Diagnostic>,
     operation: &'static str,
 ) -> Result<T, Diagnostic> {
-    match (primary, guard.rollback().await) {
+    match (primary, crate::provider::rollback_and_close(guard).await) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), Ok(())) => Err(error),
         (Ok(_), Err(cleanup)) => Err(schema_guard_cleanup_failure(cleanup, None, operation)),
