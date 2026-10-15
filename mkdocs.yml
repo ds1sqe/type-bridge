@@ -128,6 +128,7 @@ nav:
       - Upgrading to 2.0: guide/upgrade-v2.md
       - V2 Deprecations: guide/v2-deprecations.md
       - 2.0.2 Expanded Notice: guide/v2.0.2-notice.md
+  - Query-plan V3: reference/query-plan-v3.md
   - Python API: reference/
   - Development:
     - development/index.md

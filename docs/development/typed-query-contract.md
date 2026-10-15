@@ -1,5 +1,9 @@
 # Generated Typed Query Contract
 
+The additive read/write [query-plan V3 wire specification](../reference/query-plan-v3.md)
+defines canonical bytes, expressions, write stages, operations and shared examples.
+V1/V2 encodings and fingerprints described here remain frozen.
+
 Status: implemented normative semantics for
 [#170](https://github.com/ds1sqe/type-bridge/issues/170) through
 [#177](https://github.com/ds1sqe/type-bridge/issues/177), consumed through
