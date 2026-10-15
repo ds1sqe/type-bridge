@@ -127,7 +127,7 @@ fn generated_python_emits_complete_v4_report() {
     let report = json!({
         "format": "typebridge.sdk-conformance-report/v4",
         "binding": "python",
-        "manifest": source_identity(&root, "tests/contracts/sdk_conformance/manifest-v1.json"),
+        "manifest": source_identity(&root, "tests/contracts/sdk_conformance/manifest.json"),
         "catalog": source_identity(&root, "tests/contracts/sdk_conformance/sdk-v4/catalog-v4.json"),
         "journey": source_identity(&root, "tests/contracts/sdk_conformance/sdk-v4/journey-v4.json"),
         "server_version": server_version,

@@ -85,7 +85,7 @@ def test_v6_freezes_only_the_five_terminal_transition_cases() -> None:
 
 def test_full_c_audit_inventory_is_exactly_the_manifest() -> None:
     audit = json.loads((ROOT / "tests/contracts/c-full-sdk-audit-v1.json").read_text())
-    manifest = json.loads((ROOT / "tests/contracts/sdk_conformance/manifest-v1.json").read_text())
+    manifest = json.loads((ROOT / "tests/contracts/sdk_conformance/manifest.json").read_text())
     assert audit["capability_codes"] == [item["code"] for item in manifest["capabilities"]]
     assert len(audit["capability_codes"]) == 44
     assert audit["report_versions"] == [1, 2, 3, 4, 5, 6]

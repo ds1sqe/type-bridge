@@ -281,7 +281,7 @@ def test_sdk_v3_report_schema_freezes_four_bindings_and_exact_21_rows() -> None:
 def test_sdk_v3_catalog_freezes_final_fingerprint_authority() -> None:
     catalog = _load("catalog-v3.json")
     manifest = json.loads(
-        (ROOT / "tests/contracts/sdk_conformance/manifest-v1.json").read_text(encoding="utf-8")
+        (ROOT / "tests/contracts/sdk_conformance/manifest.json").read_text(encoding="utf-8")
     )
 
     assert catalog["format"] == "typebridge.sdk-catalog/v3"

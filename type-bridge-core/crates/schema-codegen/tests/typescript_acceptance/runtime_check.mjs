@@ -1009,7 +1009,7 @@ function sdkProofProfile(root, version) {
     || read(`catalog-v${version}.json`).fixture.semantic_profile;
   const matrix = read(`profiles-v${version}.json`);
   if (
-    matrix.set !== `sdk-v${version}`
+    matrix.catalog_path !== `${base}/catalog-v${version}.json`
     || typeof matrix.profiles !== "object"
     || matrix.profiles === null
     || !Object.hasOwn(matrix.profiles, profile)

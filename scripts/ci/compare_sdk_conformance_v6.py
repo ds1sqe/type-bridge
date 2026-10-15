@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 ROOT = Path(__file__).resolve().parents[2]
-MANIFEST = "tests/contracts/sdk_conformance/manifest-v1.json"
+MANIFEST = "tests/contracts/sdk_conformance/manifest.json"
 CATALOG = "tests/contracts/sdk_conformance/sdk-v6/catalog-v6.json"
 JOURNEY = "tests/contracts/sdk_conformance/sdk-v6/journey-v6.json"
 LEDGER = "tests/contracts/c-broad-case-ledger-v1.json"

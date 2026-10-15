@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import c_release_policy as policy
+import sdk_profile_matrix as profile_matrix
 
 
 def run(script: str, *arguments: str) -> None:
@@ -37,7 +38,7 @@ def main() -> None:
     for version in (1, 2):
         shutil.move(str(output / "v12" / f"v{version}"), output / f"v{version}")
     (output / "v12").rmdir()
-    for version, suite in ((3, "models"), (4, "administration"), (5, "serialization")):
+    for version, suite in enumerate(tuple(profile_matrix.SUITES)[1:-1], start=3):
         run(
             "run_sdk_conformance.py",
             suite,

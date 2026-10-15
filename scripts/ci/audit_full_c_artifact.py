@@ -23,12 +23,13 @@ import compare_sdk_conformance_v3 as v3  # noqa: E402
 import compare_sdk_conformance_v4 as v4  # noqa: E402
 import compare_sdk_conformance_v5 as v5  # noqa: E402
 import compare_sdk_conformance_v6 as v6  # noqa: E402
+import sdk_profile_matrix as profile_matrix
 import validate_c_broad_case_ledger as broad_ledger  # noqa: E402
 import validate_c_distribution_contract as distribution  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 AUDIT_CONTRACT = ROOT / "tests/contracts/c-full-sdk-audit-v1.json"
-MANIFEST = ROOT / "tests/contracts/sdk_conformance/manifest-v1.json"
+MANIFEST = ROOT / "tests/contracts/sdk_conformance/manifest.json"
 BINDINGS = ("python", "node", "rust", "c")
 REPORT_BINDINGS = {
     1: ("python", "node", "rust"),
@@ -110,7 +111,10 @@ def load_unique(path: Path, label: str) -> dict[str, Any]:
 
 def report_paths(root: Path, version: int) -> list[Path]:
     return [
-        regular(root / f"v{version}" / f"{binding}.json", f"V{version} {binding} report")
+        regular(
+            root / profile_matrix.report_directory(version) / f"{binding}.json",
+            f"V{version} {binding} report",
+        )
         for binding in REPORT_BINDINGS[version]
     ]
 

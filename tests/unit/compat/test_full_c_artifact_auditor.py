@@ -22,7 +22,7 @@ SPEC.loader.exec_module(AUDITOR)
 
 
 def _manifest() -> dict[str, object]:
-    return json.loads((ROOT / "tests/contracts/sdk_conformance/manifest-v1.json").read_text())
+    return json.loads((ROOT / "tests/contracts/sdk_conformance/manifest.json").read_text())
 
 
 def _contract() -> dict[str, object]:

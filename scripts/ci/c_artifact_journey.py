@@ -33,7 +33,7 @@ QUERY_PACKAGE = (
 )
 SETUP_SOURCE = ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection_live/setup.rs"
 SETUP_LOCK = ROOT / "tests/support/provider/Cargo.lock"
-PROVIDER_SCHEMA = ROOT / "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql"
+PROVIDER_SCHEMA = ROOT / profile_matrix.suite_directory("models") / "provider-3.12.1-v3.tql"
 JOURNEY_CONTRACT = ROOT / "tests/contracts/c-artifact-journey-v1.json"
 PREDECESSOR_CATALOGS = tuple(
     ROOT / f"tests/contracts/sdk_conformance/sdk-v{version}/catalog-v{version}.json"

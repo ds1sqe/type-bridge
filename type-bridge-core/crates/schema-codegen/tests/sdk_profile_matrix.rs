@@ -28,49 +28,22 @@ const SDK_V3_SOURCE: &str =
 /// One conformance set: its catalog, its matrix, and the fixture source whose
 /// projections the catalog pins (`None` when the set pins no fingerprints).
 struct ConformanceSet {
-    id: &'static str,
-    catalog: &'static str,
-    matrix: &'static str,
     source: Option<&'static str>,
 }
 
 const SETS: [ConformanceSet; 6] = [
     ConformanceSet {
-        id: "sdk-v1",
-        catalog: include_str!("../../../../tests/contracts/sdk_conformance/sdk-v1/catalog-v1.json"),
-        matrix: include_str!("../../../../tests/contracts/sdk_conformance/sdk-v1/profiles-v1.json"),
         source: Some(ACCEPTANCE_SOURCE),
     },
     ConformanceSet {
-        id: "sdk-v2",
-        catalog: include_str!("../../../../tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json"),
-        matrix: include_str!("../../../../tests/contracts/sdk_conformance/sdk-v2/profiles-v2.json"),
         source: Some(ACCEPTANCE_SOURCE),
     },
     ConformanceSet {
-        id: "sdk-v3",
-        catalog: include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/catalog-v3.json"),
-        matrix: include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/profiles-v3.json"),
         source: Some(SDK_V3_SOURCE),
     },
-    ConformanceSet {
-        id: "sdk-v4",
-        catalog: include_str!("../../../../tests/contracts/sdk_conformance/sdk-v4/catalog-v4.json"),
-        matrix: include_str!("../../../../tests/contracts/sdk_conformance/sdk-v4/profiles-v4.json"),
-        source: None,
-    },
-    ConformanceSet {
-        id: "sdk-v5",
-        catalog: include_str!("../../../../tests/contracts/sdk_conformance/sdk-v5/catalog-v5.json"),
-        matrix: include_str!("../../../../tests/contracts/sdk_conformance/sdk-v5/profiles-v5.json"),
-        source: None,
-    },
-    ConformanceSet {
-        id: "sdk-v6",
-        catalog: include_str!("../../../../tests/contracts/sdk_conformance/sdk-v6/catalog-v6.json"),
-        matrix: include_str!("../../../../tests/contracts/sdk_conformance/sdk-v6/profiles-v6.json"),
-        source: None,
-    },
+    ConformanceSet { source: None },
+    ConformanceSet { source: None },
+    ConformanceSet { source: None },
 ];
 
 fn projections(source: &str, profile: &str) -> BTreeMap<&'static str, RuntimeProjection> {
@@ -163,11 +136,18 @@ fn expected_fingerprints(source: &str, profile: &str, bindings: &[Value]) -> Val
 #[test]
 fn every_profile_matrix_entry_reproduces_from_its_fixture_source() {
     let mut inventory = BTreeMap::new();
-    for set in &SETS {
-        let catalog: Value = serde_json::from_str(set.catalog).expect("catalog parses");
-        let matrix: Value = serde_json::from_str(set.matrix).expect("matrix parses");
+    for (index, set) in SETS.iter().enumerate() {
+        let root = producer_selection::repository_root();
+        let paths = producer_selection::contract_paths(&root, (index + 1) as u8);
+        let read = |kind: &str| {
+            std::fs::read_to_string(root.join(paths[kind].as_str().expect("contract path")))
+                .expect("contract readable")
+        };
+        let catalog: Value = serde_json::from_str(&read("catalog")).expect("catalog parses");
+        let matrix: Value = serde_json::from_str(&read("matrix")).expect("matrix parses");
         assert_eq!(matrix["format"], "typebridge.sdk-profile-matrix/v1");
-        assert_eq!(matrix["set"], set.id);
+        let suite = paths["suite"].as_str().expect("suite name");
+        assert_eq!(matrix["suite"], suite);
         let profiles = matrix["profiles"].as_object().expect("matrix profiles");
         let catalog_profile = catalog["fixture"]["semantic_profile"]
             .as_str()
@@ -175,7 +155,7 @@ fn every_profile_matrix_entry_reproduces_from_its_fixture_source() {
         assert!(
             profiles.contains_key(catalog_profile),
             "{}: the catalog's own profile must be a matrix entry",
-            set.id
+            suite
         );
         let mut computed = BTreeMap::new();
         for (profile, entry) in profiles {
@@ -193,11 +173,11 @@ fn every_profile_matrix_entry_reproduces_from_its_fixture_source() {
                 assert_eq!(
                     entry["expected_fingerprints"], expected,
                     "{} {profile} fingerprints are stale",
-                    set.id
+                    suite
                 );
             }
         }
-        inventory.insert(set.id, computed);
+        inventory.insert(suite.to_owned(), computed);
     }
     if let Some(output) = env::var_os(OUTPUT_ENV) {
         let mut destination = OpenOptions::new()

@@ -45,7 +45,7 @@ const PROVIDER_SCHEMA = resolve(
 const REMOTE_PROFILE = IS_TYPEDB_3_11
   ? "typedb-3.11.5/v1"
   : process.env.TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE ?? DEFAULT_ACCEPTANCE_PROFILE;
-const SDK_MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest-v1.json";
+const SDK_MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest.json";
 const SDK_CATALOG_RELATIVE =
   "tests/contracts/sdk_conformance/sdk-v1/catalog-v1.json";
 const SDK_JOURNEY_RELATIVE =
@@ -94,7 +94,6 @@ function sdkProfileMatrix(version: number): Record<string, any> {
   );
   if (
     matrix?.format !== "typebridge.sdk-profile-matrix/v1"
-    || matrix.set !== `sdk-v${version}`
     || matrix.catalog_path !== sdkContractRelative(version, "catalog")
     || matrix.profiles === null
     || typeof matrix.profiles !== "object"

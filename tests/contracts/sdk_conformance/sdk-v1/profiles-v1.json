@@ -73,5 +73,5 @@
       "live_server_version": "3.13.6"
     }
   },
-  "set": "sdk-v1"
+  "suite": "sdk-v1"
 }

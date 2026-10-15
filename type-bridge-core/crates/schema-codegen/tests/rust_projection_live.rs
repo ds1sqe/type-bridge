@@ -29,7 +29,7 @@ const CONSUMER: &str = include_str!("rust_projection_live/consumer.rs");
 const CONSUMER_LOCK: &[u8] = include_bytes!("rust_projection_live/consumer-Cargo.lock");
 const FIXTURE_LOCK: &[u8] = include_bytes!("../../../../tests/support/provider/Cargo.lock");
 const SDK_MANIFEST: &[u8] =
-    include_bytes!("../../../../tests/contracts/sdk_conformance/manifest-v1.json");
+    include_bytes!("../../../../tests/contracts/sdk_conformance/manifest.json");
 const SDK_CATALOG: &[u8] =
     include_bytes!("../../../../tests/contracts/sdk_conformance/sdk-v1/catalog-v1.json");
 const SDK_JOURNEY: &[u8] =
@@ -449,7 +449,7 @@ fn generated_rust_projection_round_trips_exact_live_models() {
     let sdk_files = sdk_report.as_ref().map(|_| {
         let directory = stage.path().join("sdk-v1");
         fs::create_dir_all(&directory).expect("sdk contract stage is created");
-        let manifest = directory.join("manifest-v1.json");
+        let manifest = directory.join("manifest.json");
         let catalog = directory.join("catalog-v1.json");
         let journey = directory.join("journey-v1.json");
         let schema = directory.join("schema.yaml");
@@ -465,7 +465,7 @@ fn generated_rust_projection_round_trips_exact_live_models() {
     let sdk_v2_files = sdk_v2_report.as_ref().map(|_| {
         let directory = stage.path().join("sdk-v2");
         fs::create_dir_all(&directory).expect("sdk-v2 contract stage is created");
-        let manifest = directory.join("manifest-v1.json");
+        let manifest = directory.join("manifest.json");
         let catalog = directory.join("catalog-v2.json");
         let journey = directory.join("journey-v2.json");
         let schema = directory.join("schema.yaml");

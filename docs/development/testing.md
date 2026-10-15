@@ -35,7 +35,7 @@ Key evidence:
 - `crates/schema-codegen/tests/rust_acceptance.rs` — external generated Rust crate
 - `crates/schema-codegen/tests/c_emitter.rs` — deterministic internal C package
   and strict installed-compiler checks
-- `tests/contracts/sdk_conformance/manifest-v1.json` — capability,
+- `tests/contracts/sdk_conformance/manifest.json` — capability,
   proof-profile, binding-state, and transition authority
 - `tests/contracts/sdk_conformance/sdk-v*/` — executable catalogs,
   journeys, report schemas, and evidence contracts

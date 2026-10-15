@@ -41,7 +41,7 @@ from compare_sdk_conformance import (  # noqa: E402, F401
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest-v1.json"
+MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest.json"
 CATALOG_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/catalog-v3.json"
 JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"
 REPORT_SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/report-schema-v3.json"

@@ -94,7 +94,7 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
 
 def test_sdk_v5_history_is_preserved_after_final_broad_transition() -> None:
     catalog = _load("tests/contracts/sdk_conformance/sdk-v5/catalog-v5.json")
-    manifest = _load("tests/contracts/sdk_conformance/manifest-v1.json")
+    manifest = _load("tests/contracts/sdk_conformance/manifest.json")
 
     assert catalog["authority_state"] == "finalized"
     assert catalog["report_bindings"] == ["python", "node", "rust", "c"]

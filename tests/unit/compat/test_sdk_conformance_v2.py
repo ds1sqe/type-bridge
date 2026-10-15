@@ -253,7 +253,7 @@ def test_committed_catalog_and_manifest_freeze_exact_transition_subset() -> None
     assert contracts.manifest.value["baseline"] == "shared-sdk"
     assert contracts.manifest.value["canonical_case_catalog"] == {
         "state": "accepted_shared_runtime_baseline",
-        "path": "tests/contracts/sdk_conformance/sdk-v1",
+        "path": "tests/contracts/sdk_conformance/cases.json",
     }
     assert contracts.manifest_transition_cases == comparator.EXPECTED_MANIFEST_TRANSITION_CASES
     assert contracts.catalog.value["manifest_transition_cases"] == list(

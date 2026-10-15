@@ -70,7 +70,7 @@ export function profileIdentity(root = MODULE_REPOSITORY_ROOT, environment = {})
       { cause: error },
     );
   }
-  const profiles = matrix?.set === "sdk-v3" ? matrix.profiles : undefined;
+  const profiles = matrix?.suite === "models" ? matrix.profiles : undefined;
   const entry =
     profiles !== null && typeof profiles === "object" && Object.hasOwn(profiles, profile)
       ? profiles[profile]

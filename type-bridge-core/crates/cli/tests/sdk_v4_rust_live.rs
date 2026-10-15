@@ -169,7 +169,7 @@ fn generated_rust_observes_v4_administration_controls_and_lifecycle() {
     let report = serde_json::json!({
         "format": "typebridge.sdk-conformance-report/v4",
         "binding": "rust",
-        "manifest": source_identity(&root, "tests/contracts/sdk_conformance/manifest-v1.json"),
+        "manifest": source_identity(&root, "tests/contracts/sdk_conformance/manifest.json"),
         "catalog": source_identity(&root, "tests/contracts/sdk_conformance/sdk-v4/catalog-v4.json"),
         "journey": source_identity(&root, "tests/contracts/sdk_conformance/sdk-v4/journey-v4.json"),
         "server_version": server_version,

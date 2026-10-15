@@ -22,7 +22,26 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 MATRIX_FORMAT = "typebridge.sdk-profile-matrix/v1"
 CONTRACT_ROOT = "tests/contracts/sdk_conformance"
+# The smoke set remains until it is folded into queries.
+SUITES = {
+    "queries": "sdk-v2",
+    "models": "sdk-v3",
+    "administration": "sdk-v4",
+    "serialization": "sdk-v5",
+    "artifacts": "sdk-v6",
+}
 SET_VERSIONS = (1, 2, 3, 4, 5, 6)
+
+
+def suite_directory(suite: str) -> str:
+    return f"{CONTRACT_ROOT}/{SUITES[suite]}"
+
+
+def contract_relative(version: int, kind: str) -> str:
+    directory = "sdk-v1" if version == 1 else SUITES[tuple(SUITES)[version - 2]]
+    return f"{CONTRACT_ROOT}/{directory}/{kind}-v{version}.json"
+
+
 SEMANTIC_PROFILE_ENV = "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE"
 
 ErrorFactory = Callable[[str, str], Exception]
@@ -40,18 +59,18 @@ class ProfileMatrixError(ValueError):
 class ProfileIdentity:
     """Expected identity of one conformance set on one semantic profile."""
 
-    set_id: str
+    suite: str
     semantic_profile: str
     live_server_version: str
     expected_fingerprints: dict[str, Any] | None
 
 
 def matrix_relative(version: int) -> str:
-    return f"{CONTRACT_ROOT}/sdk-v{version}/profiles-v{version}.json"
+    return contract_relative(version, "profiles")
 
 
 def catalog_relative(version: int) -> str:
-    return f"{CONTRACT_ROOT}/sdk-v{version}/catalog-v{version}.json"
+    return contract_relative(version, "catalog")
 
 
 def load_matrix(
@@ -65,12 +84,12 @@ def load_matrix(
         value = json.loads((root / matrix_relative(version)).read_text(encoding="utf-8"))
     except (OSError, ValueError) as failure:
         raise error("invalid_profile_matrix", f"sdk-v{version} matrix is unreadable") from failure
-    set_id = f"sdk-v{version}"
+    set_id = "sdk-v1" if version == 1 else tuple(SUITES)[version - 2]
     if (
         type(value) is not dict
-        or set(value) != {"format", "set", "catalog_path", "profiles"}
+        or set(value) != {"format", "suite", "catalog_path", "profiles"}
         or value["format"] != MATRIX_FORMAT
-        or value["set"] != set_id
+        or value["suite"] != set_id
         or value["catalog_path"] != catalog_relative(version)
         or type(value["profiles"]) is not dict
         or not value["profiles"]
@@ -232,3 +251,23 @@ def declared_profile(version: int, report: Any, fallback: str) -> str:
 
     value = report_field(report, "semantic_profile")
     return value if value in supported_profiles(version) else fallback
+
+
+def report_directory(version: int) -> str:
+    """Report location while the numbered producers are migrated."""
+    return f"v{version}"
+
+
+if __name__ == "__main__":
+    print(
+        json.dumps(
+            {
+                str(version): {
+                    "suite": "sdk-v1" if version == 1 else tuple(SUITES)[version - 2],
+                    "catalog": catalog_relative(version),
+                    "matrix": matrix_relative(version),
+                }
+                for version in SET_VERSIONS
+            }
+        )
+    )

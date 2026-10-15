@@ -24,7 +24,7 @@ def _stage_contracts(destination: Path) -> Path:
     sdk_source = ROOT / "tests/contracts/sdk_conformance"
     sdk_target = destination / "tests/contracts/sdk_conformance"
     (sdk_target / "sdk-v5").mkdir(parents=True)
-    shutil.copy2(sdk_source / "manifest-v1.json", sdk_target / "manifest-v1.json")
+    shutil.copy2(sdk_source / "manifest.json", sdk_target / "manifest.json")
     for name in (
         "catalog-v5.json",
         "journey-v5.json",

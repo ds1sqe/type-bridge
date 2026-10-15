@@ -6,7 +6,7 @@ nine runtime proof rows. It is not the complete sdk journey and it does
 not promote any binding or capability status.
 
 `catalog-v1.json` maps every manifest case to one disposition. Binding status
-remains owned exclusively by `../manifest-v1.json`. `journey-v1.json` supplies
+remains owned exclusively by `../manifest.json`. `journey-v1.json` supplies
 the shared generated-model input and the exact stable observations expected
 from Python, Node, and Rust. `report-schema-v1.json` documents the closed report
 wire accepted by `scripts/ci/compare_sdk_conformance.py`.

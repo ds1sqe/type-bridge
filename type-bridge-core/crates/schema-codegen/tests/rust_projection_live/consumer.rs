@@ -340,7 +340,7 @@ async fn database() -> Database<AppSchema> {
         .expect("schema binding handshake succeeds")
 }
 
-const SDK_MANIFEST_PATH: &str = "tests/contracts/sdk_conformance/manifest-v1.json";
+const SDK_MANIFEST_PATH: &str = "tests/contracts/sdk_conformance/manifest.json";
 const SDK_CATALOG_PATH: &str = "tests/contracts/sdk_conformance/sdk-v1/catalog-v1.json";
 const SDK_SCHEMA_PATH: &str = "type-bridge-core/crates/schema-codegen/tests/acceptance/schema.yaml";
 const SDK_PROVIDER_SCHEMA_PATH: &str =

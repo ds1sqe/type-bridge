@@ -9,5 +9,5 @@
       "live_server_version": "3.13.6"
     }
   },
-  "set": "sdk-v5"
+  "suite": "serialization"
 }

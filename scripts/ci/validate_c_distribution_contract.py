@@ -13,7 +13,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONTRACT = ROOT / "tests/contracts/c-distribution-v1.json"
 V6_CATALOG = ROOT / "tests/contracts/sdk_conformance/sdk-v6/catalog-v6.json"
-MANIFEST = ROOT / "tests/contracts/sdk_conformance/manifest-v1.json"
+MANIFEST = ROOT / "tests/contracts/sdk_conformance/manifest.json"
 FULL_C_AUDIT = ROOT / "tests/contracts/c-full-sdk-audit-v1.json"
 TRANSITION_CASES = [
     "sdk.runtime.cancellation",

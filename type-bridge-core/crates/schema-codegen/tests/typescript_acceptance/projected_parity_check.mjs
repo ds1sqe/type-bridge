@@ -56,7 +56,7 @@ export function selectedProfile(root, environment = {}) {
   } catch {
     throw new ProducerError("invalid_profile_matrix", "sdk-v3 profile matrix is unreadable");
   }
-  const profiles = matrix?.set === "sdk-v3" ? matrix.profiles : undefined;
+  const profiles = matrix?.suite === "models" ? matrix.profiles : undefined;
   if (
     profiles === null ||
     typeof profiles !== "object" ||

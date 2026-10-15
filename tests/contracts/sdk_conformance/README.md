@@ -7,7 +7,7 @@ records evidence retained through the 2.1 generated-only cutover, including
 binding-specific conveniences and known uniform omissions. It is evidence
 input, not the definition of FULL support.
 
-`manifest-v1.json` maps granular canonical capabilities to exactly one Rust
+`manifest.json` maps granular canonical capabilities to exactly one Rust
 semantic owner, canonical cases, proof applicability, and one status for every
 current and planned binding. A workflow may compose several capabilities; a
 large historical operation row must not become one ambiguous capability with

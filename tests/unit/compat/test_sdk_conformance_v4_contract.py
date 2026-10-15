@@ -8,7 +8,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[3]
 CONTRACT_ROOT = ROOT / "tests/contracts/sdk_conformance/sdk-v4"
-MANIFEST = ROOT / "tests/contracts/sdk_conformance/manifest-v1.json"
+MANIFEST = ROOT / "tests/contracts/sdk_conformance/manifest.json"
 
 TRANSITION_CASES = [
     "sdk.runtime.database-administration",

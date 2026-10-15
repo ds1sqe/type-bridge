@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sdk_profile_matrix as profile_matrix  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-MANIFEST = "tests/contracts/sdk_conformance/manifest-v1.json"
+MANIFEST = "tests/contracts/sdk_conformance/manifest.json"
 CATALOG = "tests/contracts/sdk_conformance/sdk-v5/catalog-v5.json"
 JOURNEY = "tests/contracts/sdk_conformance/sdk-v5/journey-v5.json"
 RECORD_CONTRACT = "tests/contracts/projected-record-v1.json"

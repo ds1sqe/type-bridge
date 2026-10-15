@@ -5,7 +5,7 @@
   "seed_inventory": "tests/fixtures/generated-only-operation-parity-inventory.json",
   "canonical_case_catalog": {
     "state": "accepted_shared_runtime_baseline",
-    "path": "tests/contracts/sdk_conformance/sdk-v1"
+    "path": "tests/contracts/sdk_conformance/cases.json"
   },
   "bindings": [
     "python",

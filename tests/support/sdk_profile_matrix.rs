@@ -51,10 +51,21 @@ fn read_json(path: &Path) -> Value {
         .unwrap_or_else(|error| panic!("{} is JSON: {error}", path.display()))
 }
 
+/// Paths from the shared Python suite table.
+pub fn contract_paths(root: &Path, set: u8) -> Value {
+    let output = std::process::Command::new("python3")
+        .arg(root.join("scripts/ci/sdk_profile_matrix.py"))
+        .output()
+        .expect("shared suite table runs");
+    assert!(output.status.success(), "shared suite table succeeds");
+    let paths: Value = serde_json::from_slice(&output.stdout).expect("suite paths are JSON");
+    paths[set.to_string()].clone()
+}
+
 /// The entry of `sdk-v{set}` for `profile`; panics on an unsupported profile.
 pub fn select_from(root: &Path, set: u8, profile: &str) -> SdkProfile {
-    let directory = root.join(format!("tests/contracts/sdk_conformance/sdk-v{set}"));
-    let matrix = read_json(&directory.join(format!("profiles-v{set}.json")));
+    let paths = contract_paths(root, set);
+    let matrix = read_json(&root.join(paths["matrix"].as_str().expect("matrix path")));
     let entry = matrix["profiles"]
         .get(profile)
         .unwrap_or_else(|| panic!("sdk-v{set} has no matrix entry for profile {profile:?}"));
@@ -73,9 +84,8 @@ pub fn select_from(root: &Path, set: u8, profile: &str) -> SdkProfile {
 
 /// The profile `sdk-v{set}`'s catalog was frozen on.
 pub fn catalog_profile(root: &Path, set: u8) -> String {
-    let catalog = read_json(&root.join(format!(
-        "tests/contracts/sdk_conformance/sdk-v{set}/catalog-v{set}.json"
-    )));
+    let paths = contract_paths(root, set);
+    let catalog = read_json(&root.join(paths["catalog"].as_str().expect("catalog path")));
     catalog["fixture"]["semantic_profile"]
         .as_str()
         .unwrap_or_else(|| panic!("sdk-v{set} catalog declares its semantic profile"))
