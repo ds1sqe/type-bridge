@@ -1,0 +1,818 @@
+[
+  {
+    "id": 1,
+    "construct": "`define` schema query",
+    "file": "define.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 2,
+    "construct": "`undefine` (labels, `X from T`, `@a from T`, `as R from T relates`, `fun f`, `struct s`)",
+    "file": "undefine.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 3,
+    "construct": "`redefine`",
+    "file": "redefine.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 4,
+    "construct": "`end;` terminator",
+    "file": "end.tql",
+    "render": "unsupported"
+  },
+  {
+    "id": 5,
+    "construct": "Multi-stage pipeline",
+    "file": "pipeline.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 6,
+    "construct": "`with fun ...` preamble",
+    "file": "preamble.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 7,
+    "construct": "Function definition `fun f($a: T) -> T: ... return ...`",
+    "file": "preamble.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 8,
+    "construct": "Function return: stream `return { $x };`",
+    "file": "function-stream.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 9,
+    "construct": "Function return: `return first/last $x;`",
+    "file": "function-single.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 10,
+    "construct": "Function return: `return count($x), sum(...)` / `return check;`",
+    "file": "preamble.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 11,
+    "construct": "Function signature types: `T?`, `T[]`, `{T, U}` stream",
+    "file": "function-stream.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 12,
+    "construct": "`struct` definition",
+    "file": "struct.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 13,
+    "construct": "`given $x: T, ...;` stage",
+    "file": "given.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 14,
+    "construct": "`match`",
+    "file": "pipeline.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 15,
+    "construct": "`insert`",
+    "file": "insert.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 16,
+    "construct": "`put`",
+    "file": "put.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 17,
+    "construct": "`update`",
+    "file": "update.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 18,
+    "construct": "`delete`",
+    "file": "delete.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 19,
+    "construct": "`fetch { ... };` terminal",
+    "file": "fetch.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 20,
+    "construct": "`select $a, $b;`",
+    "file": "pipeline.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 21,
+    "construct": "`require $a;`",
+    "file": "pipeline.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 22,
+    "construct": "`distinct;`",
+    "file": "pipeline.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 23,
+    "construct": "`sort $x [asc\\|desc], ...`",
+    "file": "pipeline.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 24,
+    "construct": "`offset N;`",
+    "file": "pipeline.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 25,
+    "construct": "`limit N;`",
+    "file": "pipeline.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 26,
+    "construct": "`reduce ...;`",
+    "file": "reduce.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 27,
+    "construct": "`let $x = expr;`",
+    "file": "let.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 28,
+    "construct": "`let $x in f(...)` / `let $x in [list]` / `let $x in $l[1..2]`",
+    "file": "let.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 29,
+    "construct": "`let { k: $v } = $s;` struct destructor",
+    "file": "struct-destructuring.tql",
+    "render": "unsupported"
+  },
+  {
+    "id": 30,
+    "construct": "`let $x? = ...` optional assignment",
+    "file": "let.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 31,
+    "construct": "Conjunction block `{ ...; };`",
+    "file": "conjunction.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 32,
+    "construct": "Disjunction `{..} or {..}`",
+    "file": "disjunction.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 33,
+    "construct": "Negation `not { .. }`",
+    "file": "negation.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 34,
+    "construct": "Optional `try { .. }`",
+    "file": "optional.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 35,
+    "construct": "`$x isa T`",
+    "file": "isa.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 36,
+    "construct": "`$x isa! T`",
+    "file": "isa.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 37,
+    "construct": "`$x isa $t` (type variable)",
+    "file": "isa.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 38,
+    "construct": "Scoped label `T:role` anywhere",
+    "file": "expressions.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 39,
+    "construct": "`$a isa name \"v\"` / `isa name == expr` / `isa T {struct}`",
+    "file": "isa.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 40,
+    "construct": "`$r isa T (role: $x, ...)`",
+    "file": "relation.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 41,
+    "construct": "`$r links (role: $x)` / `$r isa T, links (...)` in match",
+    "file": "relation.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 42,
+    "construct": "Anonymous relation `T (role: $x)` / `(role: $x)` in match",
+    "file": "relation.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 43,
+    "construct": "Untyped role player `($x)`",
+    "file": "relation.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 44,
+    "construct": "Role var / role list `$role: $x`, `role[]: $x`",
+    "file": "relation.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 45,
+    "construct": "`$x has T $v`",
+    "file": "has.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 46,
+    "construct": "`$x has T <literal>`",
+    "file": "has.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 47,
+    "construct": "`$x has T == $v` / `has T > 18` / `has T like \"...\"`",
+    "file": "has.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 48,
+    "construct": "`$x has T <expr>` (arithmetic/function)",
+    "file": "has.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 49,
+    "construct": "`$x has $a` (untyped)",
+    "file": "has.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 50,
+    "construct": "`$x has T[] $list` / list value",
+    "file": "has.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 51,
+    "construct": "`$x has $t $v` (type var)",
+    "file": "has.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 52,
+    "construct": "Multi-constraint thing statement `$x isa T, has A 1, iid 0x..`",
+    "file": "has.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 53,
+    "construct": "`$x iid 0x..`",
+    "file": "iid.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 54,
+    "construct": "`$x is $y`",
+    "file": "identity.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 55,
+    "construct": "Comparison `$a == expr` (`!= < <= > >=`)",
+    "file": "comparison.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 56,
+    "construct": "`like` / `contains`",
+    "file": "comparison.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 57,
+    "construct": "`$t sub T`",
+    "file": "types.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 58,
+    "construct": "`$t sub! T`",
+    "file": "types.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 59,
+    "construct": "`$t label T`",
+    "file": "types.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 60,
+    "construct": "`$t owns T` / `relates R [as R2]` / `plays T:R` (match)",
+    "file": "types.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 61,
+    "construct": "`$t value string`",
+    "file": "types.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 62,
+    "construct": "Kind statement `entity $t` / `relation $t` / `attribute $t`",
+    "file": "types.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 63,
+    "construct": "Annotations on match type constraints (`$t owns A @card(1..)`)",
+    "file": "types.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 65,
+    "construct": "`$x isa T`",
+    "file": "insert.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 66,
+    "construct": "`$x has T <value\\|$v>`",
+    "file": "insert.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 67,
+    "construct": "`$x has T == $v` (insert by value from a bound value var)",
+    "file": "insert.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 68,
+    "construct": "`$a isa name \"v\"` (standalone attribute insert)",
+    "file": "insert.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 69,
+    "construct": "`$r isa T, links (role: $p)` with bound players",
+    "file": "insert.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 70,
+    "construct": "`(role: $p) isa T` / `T (role: $p)` anonymous insert",
+    "file": "relation.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 71,
+    "construct": "`$r isa T (role: $p)`",
+    "file": "relation.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 72,
+    "construct": "`$r links (role: $p)` (insert/update a player on an existing relation)",
+    "file": "update.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 73,
+    "construct": "Untyped/role-var/role-list players in writes",
+    "file": "relation.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 74,
+    "construct": "`delete $x;`",
+    "file": "delete.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 75,
+    "construct": "`delete has $a of $x;` / `delete $a of $x;`",
+    "file": "delete-has.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 76,
+    "construct": "`delete links (role: $p) of $r;`",
+    "file": "delete-links.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 77,
+    "construct": "`delete try { ... };`",
+    "file": "delete-optional.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 78,
+    "construct": "`try { ... }` inside insert/put/update",
+    "file": "write-optional.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 79,
+    "construct": "`$x iid 0x..` inside write statements",
+    "file": "write-optional.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 81,
+    "construct": "`$x`",
+    "file": "variables.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 82,
+    "construct": "`$_`",
+    "file": "variables.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 83,
+    "construct": "`$x?` optional var",
+    "file": "let.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 84,
+    "construct": "Arithmetic `+ - * / % ^`",
+    "file": "expressions.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 85,
+    "construct": "Parenthesized expression",
+    "file": "expressions.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 86,
+    "construct": "Built-ins `abs ceil floor round len max min label iid`",
+    "file": "expressions.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 87,
+    "construct": "User function call `f($a, ...)`",
+    "file": "expressions.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 88,
+    "construct": "List literal `[a, b]`",
+    "file": "expressions.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 89,
+    "construct": "List index `$l[i]`",
+    "file": "expressions.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 90,
+    "construct": "List subrange `$l[a..b]`",
+    "file": "expressions.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 91,
+    "construct": "Struct literal `{ k: v }`",
+    "file": "struct-instance.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 92,
+    "construct": "Label as expression (`T`, `T:R`)",
+    "file": "expressions.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 93,
+    "construct": "String literal",
+    "file": "literals.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 94,
+    "construct": "Boolean",
+    "file": "literals.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 95,
+    "construct": "Integer (signed)",
+    "file": "literals.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 96,
+    "construct": "Double",
+    "file": "literals.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 97,
+    "construct": "Decimal `1.25dec`",
+    "file": "literals.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 98,
+    "construct": "Date",
+    "file": "literals.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 99,
+    "construct": "Datetime",
+    "file": "literals.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 100,
+    "construct": "Datetime-tz (`Z`, `\u00b1HH`, `\u00b1HHMM`, `\u00b1HH:MM`, ` Area/City` IANA)",
+    "file": "literals.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 101,
+    "construct": "Duration",
+    "file": "literals.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 102,
+    "construct": "Value-type names in signatures/given (`T?`, `T[]`)",
+    "file": "function-stream.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 103,
+    "construct": "`@abstract`",
+    "file": "annotations.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 104,
+    "construct": "`@cascade`",
+    "file": "annotations.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 105,
+    "construct": "`@distinct`",
+    "file": "annotations.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 106,
+    "construct": "`@independent`",
+    "file": "annotations.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 107,
+    "construct": "`@key`",
+    "file": "annotations.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 108,
+    "construct": "`@unique`",
+    "file": "annotations.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 109,
+    "construct": "`@card(n..m)`",
+    "file": "annotations.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 110,
+    "construct": "`@doc(\"...\")`",
+    "file": "annotations.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 111,
+    "construct": "`@meta(\"k\",\"v\")`",
+    "file": "annotations.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 112,
+    "construct": "`@range(a..b)`",
+    "file": "annotations.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 113,
+    "construct": "`@regex(\"...\")`",
+    "file": "annotations.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 114,
+    "construct": "`@subkey(id)`",
+    "file": "annotations.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 115,
+    "construct": "`@values(...)`",
+    "file": "annotations.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 116,
+    "construct": "Annotations on functions/structs/struct fields",
+    "file": "struct.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 117,
+    "construct": "`undefine @a from T [owns X]`",
+    "file": "undefine.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 118,
+    "construct": "`\"k\": $x`",
+    "file": "fetch.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 119,
+    "construct": "`\"k\": $x.attr`",
+    "file": "fetch.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 120,
+    "construct": "`\"k\": [$x.attr]`",
+    "file": "fetch.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 121,
+    "construct": "`\"k\": $x.attr[]` (label_list)",
+    "file": "fetch.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 122,
+    "construct": "`fetch { $x.* }` (whole body)",
+    "file": "fetch-all.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 123,
+    "construct": "`\"k\": $x.*`",
+    "file": "fetch-all.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 124,
+    "construct": "`\"k\": { $x.* }`",
+    "file": "fetch.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 125,
+    "construct": "Nested object `\"k\": { \"a\": ..., \"b\": ... }`",
+    "file": "fetch.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 126,
+    "construct": "Sub-query list `\"k\": [ match ...; fetch {..}; ]` / `[ match ...; return {..}; ]`",
+    "file": "fetch-subqueries.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 127,
+    "construct": "Single function block `\"k\": ( match ...; return first $x; )`",
+    "file": "fetch-subqueries.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 128,
+    "construct": "Function call in fetch `\"k\": f($x)` / `[f($x)]`",
+    "file": "fetch.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 129,
+    "construct": "Expressions in fetch (`\"k\": $a + 1`, literals)",
+    "file": "fetch.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 130,
+    "construct": "Fetch key escaping",
+    "file": "fetch.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 132,
+    "construct": "`$c = count` (bare)",
+    "file": "reduce.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 133,
+    "construct": "`count($x)`",
+    "file": "reduce.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 134,
+    "construct": "`sum max min mean median std ($x)`",
+    "file": "reduce.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 135,
+    "construct": "`list($x)`",
+    "file": "reduce.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 136,
+    "construct": "Multiple assignments",
+    "file": "reduce.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 137,
+    "construct": "`groupby $a`",
+    "file": "reduce-single-group.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 138,
+    "construct": "`groupby $a, $b`",
+    "file": "reduce.tql",
+    "render": "round_trip"
+  },
+  {
+    "id": 139,
+    "construct": "`$c? = ...` optional assign",
+    "file": "reduce.tql",
+    "render": "round_trip"
+  }
+]

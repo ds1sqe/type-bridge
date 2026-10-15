@@ -11,6 +11,40 @@ fn document() -> DocumentId {
 }
 
 #[test]
+fn namespaced_calls_fail_closed_until_the_contract_can_name_them() {
+    let source = "define fun inspect($x: integer) -> integer: match let $y = math::absolute($x); return first $y;";
+    assert!(typeql::parse_query(source).is_ok());
+    let diagnostics = typeql_to_declared_with_references(document(), source).unwrap_err();
+    assert_eq!(
+        diagnostics
+            .iter()
+            .next()
+            .unwrap()
+            .diagnostic()
+            .code()
+            .as_str(),
+        "typeql_function_reference_invalid"
+    );
+}
+
+#[test]
+fn newly_parsed_label_renames_are_not_treated_as_schema_declarations() {
+    let source = "redefine entity person label human;";
+    assert!(typeql::parse_query(source).is_ok());
+    let diagnostics = typeql_to_declared(document(), source).unwrap_err();
+    assert_eq!(
+        diagnostics
+            .iter()
+            .next()
+            .unwrap()
+            .diagnostic()
+            .code()
+            .as_str(),
+        "expected_typeql_define"
+    );
+}
+
+#[test]
 fn collects_static_references_without_changing_declared_schema() {
     let source = include_str!("fixtures/cross_form/schema.tql");
     let enriched = typeql_to_declared_with_references(document(), source).expect("valid TypeQL");

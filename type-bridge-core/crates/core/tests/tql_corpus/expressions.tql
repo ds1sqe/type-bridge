@@ -1,0 +1,1 @@
+match let $a = (1 + 2) * 3 - 4 / 2 % 2 ^ 3; let $list = [1, 2]; let $item = $list[0]; let $sub in $list[0..1]; let $label = person; let $role = friendship:friend; let $n = abs(-1); let $c = ceil(1.1); let $f = floor(1.1); let $r = round(1.1); let $len = len("text"); let $max = max(1, 2); let $min = min(1, 2); let $l = label($x); let $id = iid($x); let $v = custom($x);

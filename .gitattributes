@@ -19,3 +19,7 @@ type-bridge-core/crates/*/tests/fixtures/** -text
 # Vendored chart library: tests/unit/perf/test_assets.py checks these bytes
 # against docs/perf/assets/CHECKSUMS.
 docs/perf/assets/uPlot* -text -whitespace
+
+# Official TypeQL Display includes spaces before line breaks. Preserve these
+# canonical fixtures so round trips compare upstream AST source spans too.
+type-bridge-core/crates/core/tests/tql_corpus/*.tql -whitespace

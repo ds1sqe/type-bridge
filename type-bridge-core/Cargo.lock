@@ -3324,6 +3324,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "type-bridge-contract",
+ "typeql",
  "unicode-ident",
  "ureq",
  "winnow",
@@ -3656,9 +3657,9 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "typeql"
-version = "3.12.0"
+version = "3.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e24a287f8584e26f76da31ac7465a1120fb79e323d42303be581a6614e4f5e5"
+checksum = "dc3edc20fe55190f7cc72c8d5343abf5c4141657595bd693d69ea3ea65a6c66f"
 dependencies = [
  "chrono",
  "itertools 0.14.0",

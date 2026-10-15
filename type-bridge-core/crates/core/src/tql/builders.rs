@@ -1,0 +1,531 @@
+use super::{Query, TqlError};
+use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
+use typeql::{
+    Variable,
+    common::{identifier::Identifier, token},
+    expression::{self, Expression},
+    pattern,
+    query::{
+        self, QueryStructure,
+        stage::{self, delete, fetch, modifier, reduce},
+    },
+    schema::definable::function::Argument,
+    statement::{self, comparison, thing},
+    type_::{self, NamedType, NamedTypeAny, TypeRef, TypeRefAny},
+    value::{self, IntegerLiteral, StringLiteral},
+};
+
+macro_rules! node {
+    ($name:ident, $inner:ty) => {
+        #[derive(Clone, Debug)]
+        pub struct $name {
+            pub(super) inner: $inner,
+        }
+    };
+}
+node!(Pattern, pattern::Pattern);
+node!(Expr, Expression);
+node!(Constraint, thing::Constraint);
+node!(Stage, stage::Stage);
+node!(FetchValue, fetch::FetchSome);
+node!(Deletable, delete::Deletable);
+node!(Reducer, reduce::Reducer);
+
+fn variable(name: &str) -> Result<Variable, TqlError> {
+    let name = name.strip_prefix('$').unwrap_or(name);
+    if name == "_" {
+        return Ok(Variable::Anonymous {
+            span: None,
+            optional: None,
+        });
+    }
+    if !typeql::common::identifier::is_valid_var_identifier(name) {
+        return Err(TqlError::InvalidIdentifier);
+    }
+    Ok(Variable::Named {
+        span: None,
+        ident: Identifier::from(name),
+        optional: None,
+    })
+}
+
+fn type_ref(name: &str) -> Result<TypeRef, TqlError> {
+    if name.starts_with('$') {
+        return variable(name).map(TypeRef::Variable);
+    }
+    if let Some((scope, name)) = name.split_once(':') {
+        return Ok(TypeRef::Scoped(type_::ScopedLabel::new(
+            None,
+            typeql::parse_label(scope).map_err(|_| TqlError::InvalidIdentifier)?,
+            typeql::parse_label(name).map_err(|_| TqlError::InvalidIdentifier)?,
+        )));
+    }
+    typeql::parse_label(name)
+        .map(TypeRef::Label)
+        .map_err(|_| TqlError::InvalidIdentifier)
+}
+
+pub fn var(name: &str) -> Result<Expr, TqlError> {
+    Ok(Expr {
+        inner: Expression::Variable(variable(name)?),
+    })
+}
+
+pub fn literal(value: &CanonicalValue) -> Result<Expr, TqlError> {
+    let source = match value {
+        CanonicalValue::String(value) => {
+            serde_json::to_string(value.as_str()).map_err(|_| TqlError::InvalidLiteral)?
+        }
+        CanonicalValue::Long(value) => value.to_string(),
+        CanonicalValue::Double(value) => {
+            let mut source = value.get().to_string();
+            if !source.contains(['.', 'e', 'E']) {
+                source.push_str(".0");
+            }
+            source
+        }
+        CanonicalValue::Boolean(value) => value.to_string(),
+        CanonicalValue::Date(value) => value.to_string(),
+        CanonicalValue::DateTime(value) => value.to_string(),
+        CanonicalValue::DateTimeTz(value) => match value.zone() {
+            type_bridge_contract::temporal::TimeZoneDesignator::Named(name) => {
+                format!("{} {name}", value.local())
+            }
+            _ => value.to_string(),
+        },
+        CanonicalValue::Decimal(value) => format!("{}dec", value.as_str()),
+        CanonicalValue::Duration(value) => value.to_string(),
+    };
+    let inner = typeql::parse_value(&source).map_err(|_| TqlError::InvalidLiteral)?;
+    Ok(Expr {
+        inner: Expression::Value(value::Literal { span: None, inner }),
+    })
+}
+
+pub fn function(name: &str, args: Vec<Expr>) -> Result<Expr, TqlError> {
+    let name = if token::Function::NAMES.contains(&name) {
+        expression::FunctionName::Builtin(expression::BuiltinFunctionName::new(
+            None,
+            token::Function::from(name),
+        ))
+    } else if name.contains("::")
+        && name.split("::").all(|part| {
+            typeql::common::identifier::is_valid_label(part)
+                && Identifier::from(part).as_str_unreserved().is_ok()
+        })
+    {
+        expression::FunctionName::Namespaced(expression::NamespacedFunctionName::new(
+            None,
+            name.to_owned(),
+        ))
+    } else {
+        let ident = Identifier::from(name);
+        if !typeql::common::identifier::is_valid_label(name) || ident.as_str_unreserved().is_err() {
+            return Err(TqlError::InvalidIdentifier);
+        }
+        expression::FunctionName::Identifier(ident)
+    };
+    Ok(Expr {
+        inner: Expression::Function(expression::FunctionCall::new(
+            None,
+            name,
+            args.into_iter().map(|v| v.inner).collect(),
+        )),
+    })
+}
+
+pub fn arithmetic(left: Expr, operator: &str, right: Expr) -> Result<Expr, TqlError> {
+    if !token::ArithmeticOperator::NAMES.contains(&operator) {
+        return Err(TqlError::InvalidOperator);
+    }
+    let operation = Expression::Operation(Box::new(expression::Operation::new(
+        token::ArithmeticOperator::from(operator),
+        left.inner,
+        right.inner,
+    )));
+    Ok(Expr {
+        inner: Expression::Paren(Box::new(expression::Paren {
+            span: None,
+            inner: operation,
+        })),
+    })
+}
+
+fn comparison(operator: &str, rhs: Expr) -> Result<comparison::Comparison, TqlError> {
+    if !token::Comparator::NAMES.contains(&operator) {
+        return Err(TqlError::InvalidOperator);
+    }
+    Ok(comparison::Comparison {
+        span: None,
+        comparator: token::Comparator::from(operator),
+        rhs: rhs.inner,
+    })
+}
+
+pub fn compare(left: Expr, operator: &str, right: Expr) -> Result<Pattern, TqlError> {
+    Ok(Pattern {
+        inner: pattern::Pattern::Statement(statement::Statement::Comparison(
+            comparison::ComparisonStatement::new(None, left.inner, comparison(operator, right)?),
+        )),
+    })
+}
+
+pub fn isa(name: &str, exact: bool) -> Result<Constraint, TqlError> {
+    Ok(Constraint {
+        inner: thing::Constraint::Isa(thing::isa::Isa::new(
+            None,
+            if exact {
+                thing::isa::IsaKind::Exact
+            } else {
+                thing::isa::IsaKind::Subtype
+            },
+            type_ref(name)?,
+            None,
+        )),
+    })
+}
+
+pub fn iid(value: &str) -> Result<Constraint, TqlError> {
+    if !value
+        .strip_prefix("0x")
+        .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        return Err(TqlError::InvalidLiteral);
+    }
+    Ok(Constraint {
+        inner: thing::Constraint::Iid(thing::Iid {
+            span: None,
+            iid: value.to_owned(),
+        }),
+    })
+}
+
+pub fn has(name: &str, value: Expr) -> Result<Constraint, TqlError> {
+    let value = match value.inner {
+        Expression::Variable(v) => thing::HasValue::Variable(v),
+        v => thing::HasValue::Expression(v),
+    };
+    Ok(Constraint {
+        inner: thing::Constraint::Has(thing::Has::new(
+            None,
+            Some(TypeRefAny::Type(type_ref(name)?)),
+            value,
+        )),
+    })
+}
+
+pub fn has_comparison(name: &str, operator: &str, value: Expr) -> Result<Constraint, TqlError> {
+    Ok(Constraint {
+        inner: thing::Constraint::Has(thing::Has::new(
+            None,
+            Some(TypeRefAny::Type(type_ref(name)?)),
+            thing::HasValue::Comparison(comparison(operator, value)?),
+        )),
+    })
+}
+
+fn relation(players: Vec<(&str, &str)>) -> Result<thing::Relation, TqlError> {
+    let role_players = players
+        .into_iter()
+        .map(|(role, player)| {
+            Ok(thing::RolePlayer::Typed(
+                TypeRefAny::Type(type_ref(role)?),
+                variable(player)?,
+            ))
+        })
+        .collect::<Result<_, TqlError>>()?;
+    Ok(thing::Relation {
+        span: None,
+        role_players,
+    })
+}
+
+pub fn links(players: Vec<(&str, &str)>) -> Result<Constraint, TqlError> {
+    Ok(Constraint {
+        inner: thing::Constraint::Links(thing::Links::new(None, relation(players)?)),
+    })
+}
+
+pub fn thing(name: &str, constraints: Vec<Constraint>) -> Result<Pattern, TqlError> {
+    Ok(Pattern {
+        inner: pattern::Pattern::from(thing::Thing::new(
+            None,
+            thing::Head::Variable(variable(name)?),
+            constraints.into_iter().map(|v| v.inner).collect(),
+        )),
+    })
+}
+
+pub fn let_value(names: &[&str], value: Expr, stream: bool) -> Result<Pattern, TqlError> {
+    let lhs = names
+        .iter()
+        .map(|name| variable(name))
+        .collect::<Result<_, _>>()?;
+    let stmt = if stream {
+        statement::Statement::InIterable(statement::InIterable {
+            span: None,
+            lhs,
+            rhs: value.inner,
+        })
+    } else {
+        statement::Statement::Assignment(statement::Assignment::new(
+            None,
+            statement::AssignmentPattern::Variables(lhs),
+            value.inner,
+        ))
+    };
+    Ok(Pattern {
+        inner: pattern::Pattern::Statement(stmt),
+    })
+}
+
+pub fn optional(patterns: Vec<Pattern>) -> Pattern {
+    Pattern {
+        inner: pattern::Pattern::Optional(pattern::Optional {
+            span: None,
+            patterns: patterns.into_iter().map(|v| v.inner).collect(),
+        }),
+    }
+}
+pub fn not(patterns: Vec<Pattern>) -> Pattern {
+    Pattern {
+        inner: pattern::Pattern::Negation(pattern::Negation {
+            span: None,
+            patterns: patterns.into_iter().map(|v| v.inner).collect(),
+        }),
+    }
+}
+pub fn or(branches: Vec<Vec<Pattern>>) -> Pattern {
+    Pattern {
+        inner: pattern::Pattern::Disjunction(pattern::Disjunction {
+            span: None,
+            branches: branches
+                .into_iter()
+                .map(|b| b.into_iter().map(|v| v.inner).collect())
+                .collect(),
+        }),
+    }
+}
+
+pub fn match_stage(patterns: Vec<Pattern>) -> Stage {
+    Stage {
+        inner: stage::Stage::Match(stage::Match {
+            span: None,
+            patterns: patterns.into_iter().map(|v| v.inner).collect(),
+        }),
+    }
+}
+pub fn insert(patterns: Vec<Pattern>) -> Stage {
+    Stage {
+        inner: stage::Stage::Insert(stage::Insert {
+            span: None,
+            patterns: patterns.into_iter().map(|v| v.inner).collect(),
+        }),
+    }
+}
+pub fn put(patterns: Vec<Pattern>) -> Stage {
+    Stage {
+        inner: stage::Stage::Put(stage::Put {
+            span: None,
+            patterns: patterns.into_iter().map(|v| v.inner).collect(),
+        }),
+    }
+}
+pub fn update(patterns: Vec<Pattern>) -> Stage {
+    Stage {
+        inner: stage::Stage::Update(stage::Update {
+            span: None,
+            patterns: patterns.into_iter().map(|v| v.inner).collect(),
+        }),
+    }
+}
+pub fn delete_thing(name: &str) -> Result<Deletable, TqlError> {
+    Ok(Deletable {
+        inner: delete::Deletable::new(
+            None,
+            delete::DeletableKind::Concept {
+                variable: variable(name)?,
+            },
+        ),
+    })
+}
+pub fn delete(items: Vec<Deletable>) -> Stage {
+    Stage {
+        inner: stage::Stage::Delete(stage::Delete::new(
+            None,
+            items.into_iter().map(|v| v.inner).collect(),
+        )),
+    }
+}
+
+pub fn fetch_expr(value: Expr) -> FetchValue {
+    FetchValue {
+        inner: fetch::FetchSome::Single(fetch::FetchSingle::Expression(value.inner)),
+    }
+}
+pub fn fetch_attributes(name: &str) -> Result<FetchValue, TqlError> {
+    Ok(FetchValue {
+        inner: fetch::FetchSome::Object(fetch::FetchObject::new(
+            None,
+            fetch::FetchObjectBody::AttributesAll(variable(name)?),
+        )),
+    })
+}
+pub fn fetch(entries: Vec<(&str, FetchValue)>) -> Result<Stage, TqlError> {
+    let entries = entries
+        .into_iter()
+        .map(|(key, value)| {
+            Ok(fetch::FetchObjectEntry::new(
+                None,
+                StringLiteral {
+                    value: serde_json::to_string(key).map_err(|_| TqlError::InvalidLiteral)?,
+                },
+                value.inner,
+            ))
+        })
+        .collect::<Result<_, TqlError>>()?;
+    Ok(Stage {
+        inner: stage::Stage::Fetch(stage::Fetch::new(
+            None,
+            fetch::FetchObject::new(None, fetch::FetchObjectBody::Entries(entries)),
+        )),
+    })
+}
+
+pub fn select(names: &[&str]) -> Result<Stage, TqlError> {
+    Ok(Stage {
+        inner: stage::Stage::Operator(modifier::Operator::Select(modifier::Select::new(
+            None,
+            names
+                .iter()
+                .map(|name| variable(name))
+                .collect::<Result<_, _>>()?,
+        ))),
+    })
+}
+pub fn sort(fields: &[(&str, bool)]) -> Result<Stage, TqlError> {
+    let fields = fields
+        .iter()
+        .map(|(name, descending)| {
+            Ok(modifier::OrderedVariable::new(
+                None,
+                variable(name)?,
+                Some(if *descending {
+                    token::Order::Desc
+                } else {
+                    token::Order::Asc
+                }),
+            ))
+        })
+        .collect::<Result<_, TqlError>>()?;
+    Ok(Stage {
+        inner: stage::Stage::Operator(modifier::Operator::Sort(modifier::Sort::new(None, fields))),
+    })
+}
+pub fn offset(value: u64) -> Stage {
+    Stage {
+        inner: stage::Stage::Operator(modifier::Operator::Offset(modifier::Offset::new(
+            None,
+            IntegerLiteral {
+                value: value.to_string(),
+            },
+        ))),
+    }
+}
+pub fn limit(value: u64) -> Stage {
+    Stage {
+        inner: stage::Stage::Operator(modifier::Operator::Limit(modifier::Limit::new(
+            None,
+            IntegerLiteral {
+                value: value.to_string(),
+            },
+        ))),
+    }
+}
+pub fn count(target: &str, input: Option<&str>, group: &[&str]) -> Result<Stage, TqlError> {
+    reduce_stage(vec![(target, reducer("count", input)?)], group)
+}
+
+pub fn reducer(name: &str, input: Option<&str>) -> Result<Reducer, TqlError> {
+    let input = input.map(variable).transpose()?;
+    let inner = match (name, input) {
+        ("count", input) => reduce::Reducer::Count(reduce::Count::new(None, input)),
+        ("list", Some(input)) => reduce::Reducer::Collect(reduce::Collect::new(
+            None,
+            token::ReduceOperatorCollect::List,
+            input,
+        )),
+        (name, Some(input)) if token::ReduceOperatorStat::NAMES.contains(&name) => {
+            reduce::Reducer::Stat(reduce::Stat::new(
+                None,
+                token::ReduceOperatorStat::from(name),
+                input,
+            ))
+        }
+        _ => return Err(TqlError::InvalidOperator),
+    };
+    Ok(Reducer { inner })
+}
+
+pub fn reduce_stage(assignments: Vec<(&str, Reducer)>, group: &[&str]) -> Result<Stage, TqlError> {
+    let assignments = assignments
+        .into_iter()
+        .map(|(name, reducer)| {
+            Ok(reduce::ReduceAssign {
+                variable: variable(name)?,
+                reducer: reducer.inner,
+            })
+        })
+        .collect::<Result<_, TqlError>>()?;
+    let groupby = if group.is_empty() {
+        None
+    } else {
+        Some(
+            group
+                .iter()
+                .map(|name| variable(name))
+                .collect::<Result<_, _>>()?,
+        )
+    };
+    Ok(Stage {
+        inner: stage::Stage::Operator(modifier::Operator::Reduce(stage::Reduce::new(
+            None,
+            assignments,
+            groupby,
+        ))),
+    })
+}
+pub fn given(columns: &[(&str, ValueTypeTag)]) -> Result<Stage, TqlError> {
+    let arguments = columns
+        .iter()
+        .map(|(name, domain)| {
+            let spelling = match domain {
+                ValueTypeTag::Long => "integer",
+                ValueTypeTag::DateTimeTz => "datetime-tz",
+                other => other.as_str(),
+            };
+            Ok(Argument::new(
+                None,
+                variable(name)?,
+                NamedTypeAny::Simple(NamedType::BuiltinValueType(type_::BuiltinValueType::new(
+                    None,
+                    token::ValueType::from(spelling),
+                ))),
+            ))
+        })
+        .collect::<Result<_, TqlError>>()?;
+    Ok(Stage {
+        inner: stage::Stage::Given(stage::Given::new(None, arguments)),
+    })
+}
+pub fn pipeline(stages: Vec<Stage>) -> Query {
+    Query::from_ast(typeql::Query {
+        span: None,
+        structure: QueryStructure::Pipeline(query::Pipeline::new(
+            None,
+            Vec::new(),
+            stages.into_iter().map(|v| v.inner).collect(),
+        )),
+        has_explicit_end: false,
+    })
+}

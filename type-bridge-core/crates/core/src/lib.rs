@@ -45,9 +45,15 @@ pub mod proxy_http;
 pub mod query_parser;
 /// TypeQL reserved-word detection.
 pub mod reserved_words;
+mod tql;
 /// Schema-aware query validation plus a custom validation-rule DSL.
 pub mod validation;
 mod validation_rule_wire;
+/// Implementation-only TypeQL construction boundary for sibling crates.
+#[doc(hidden)]
+pub mod __internal {
+    pub use crate::tql::*;
+}
 /// Coerces raw values into TypeDB value-types and formats TypeQL literals.
 pub mod value_coercion;
 /// TypeDB compatibility window, protocol-band map, and connect-time version gate.

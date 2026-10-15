@@ -1,0 +1,1 @@
+match let $a = 3; let $b = "sample"; $a + 1 > 2; $a != 0; $a >= 1; $a < 9; $a <= 9; $a == 3; $b like "s.*"; $b contains "amp";

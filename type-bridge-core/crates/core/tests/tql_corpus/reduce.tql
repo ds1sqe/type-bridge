@@ -1,0 +1,1 @@
+match $x isa person, has age $a, has name $n; reduce $c = count, $count? = count($x), $sum = sum($a), $max = max($a), $min = min($a), $mean = mean($a), $median = median($a), $std = std($a), $list = list($a) groupby $n, $a;

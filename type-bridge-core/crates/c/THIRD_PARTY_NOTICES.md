@@ -775,7 +775,7 @@ and fails the byte-for-byte CI freshness check.
 - C root: `crates/c/Cargo.toml` with default features
 - Release targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`
 - Excluded from this package inventory: build-only and development-only dependencies, plus private TypeBridge-authored crates covered by the MIT section
-- Closure fingerprint: `sha256:638f858f25ca86cd806e2f2e05f17fdebb4e3453cb8270a2f1467f40b13ea92c`
+- Closure fingerprint: `sha256:5888363973e32643807c20dc96b35aa5bed83edd4decc2f77a2acaf88d533d52`
 
 Every evaluated package's complete cargo-about-resolved SPDX expression is retained
 below. The
@@ -1038,7 +1038,7 @@ bytes actually reproduced in this notice.
 | `typedb-driver` | `3.13.6` | Python, Node, CLI, C | `crates.io` | `Apache-2.0` | `Apache-2.0@sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff` |
 | `typedb-protocol` | `3.13.4` | Python, Node, CLI, C | `crates.io` | `MPL-2.0` | `MPL-2.0@sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04` |
 | `typenum` | `1.20.1` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:a825bd853ab71619a4923d7b4311221427848070ff44d990da39b0b274c1683f` |
-| `typeql` | `3.12.0` | Python, Node, CLI, C | `crates.io` | `Apache-2.0` | `Apache-2.0@sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff` |
+| `typeql` | `3.13.4` | Python, Node, CLI, C | `crates.io` | `Apache-2.0` | `Apache-2.0@sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff` |
 | `ucd-trie` | `0.1.7` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f` |
 | `uncased` | `0.9.10` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:361df454e66f5cd7f4d4f2ded7045dfec007580c6d8833ebf7db7a21fe461ab1` |
 | `unicase` | `2.9.0` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:4f6bd11a0f17fe5b085ace1daaedb7b002a08316850dd9577c246c6a68a68e8c` |

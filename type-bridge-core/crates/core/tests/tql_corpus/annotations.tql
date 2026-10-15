@@ -1,0 +1,1 @@
+define attribute name @independent, value string @regex("[a-z]+") @values("a", "b"); attribute age, value integer @range(0..150); entity person @abstract @doc("person") @meta("key", "value"), owns name @key @unique @card(1) @subkey(identity) @cascade @distinct;

@@ -39,6 +39,9 @@ run_rust() {
 
     run_step "internal eager dependency boundary" python3 scripts/ci/check_internal_eager.py
 
+    run_step "private TypeQL AST public API boundary" \
+        python scripts/ci/check_typeql_public_api.py
+
     run_step "cargo audit (all maintained lockfiles)" \
         bash scripts/ci/check_dependency_security.sh
 

@@ -47,7 +47,7 @@ uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 tokio = { version = "1", features = ["full", "test-util"] }
 criterion = { version = "0.5", features = ["html_reports"] }
-typeql = "=3.12.0"
+typeql.workspace = true
 # Instruction-count benches; the CI runner installs gungraun-runner at the
 # same exact version.
 gungraun = "=0.20.0"

@@ -629,12 +629,17 @@ def test_workspace_dependency_cannot_rename_a_historical_band9_package(
     tmp_path: Path,
 ) -> None:
     workspace = copy_workspace_manifests(tmp_path)
-    with workspace.open("a", encoding="utf-8") as manifest:
-        manifest.write(
-            "\n[workspace.dependencies]\n"
-            'retired-driver = { package = "type-bridge-typedb-driver-b9", '
-            'path = "vendor/typedb-driver-b9" }\n'
+    marker = "[workspace.dependencies]\n"
+    source = workspace.read_text()
+    assert marker in source
+    workspace.write_text(
+        source.replace(
+            marker,
+            marker + 'retired-driver = { package = "type-bridge-typedb-driver-b9", '
+            'path = "vendor/typedb-driver-b9" }\n',
+            1,
         )
+    )
 
     with pytest.raises(validator.ValidationError, match="forbidden historical band-9"):
         validate(workspace_manifest=workspace)

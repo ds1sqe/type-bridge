@@ -1,0 +1,1 @@
+redefine person, owns name @card(0..2);
