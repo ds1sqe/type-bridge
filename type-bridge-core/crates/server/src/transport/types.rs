@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use type_bridge_core_lib::ast::Clause;

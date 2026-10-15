@@ -2,6 +2,7 @@
 //! count) benches, so both measure the same work under the same ids.
 // Each bench binary compiles this module but uses only its own fixtures.
 #![allow(dead_code)]
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 
 use serde_json::json;
 use type_bridge_core_lib::ast::{

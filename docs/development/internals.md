@@ -159,6 +159,15 @@ The executable operation inventory and removal map are the audit authority for
 operation maps to generated evidence or a separately retained query/archive
 contract.
 
+Legacy query nodes remain deprecated until 3.0. The core TypeQL adapter owns
+structured query lowering, official parsing, rendering, and checked projection
+back to those nodes. Internal callers use `QueryCompiler::try_compile` and
+propagate errors; Python exports also emit `DeprecationWarning`. Only deprecated
+caller-owned `Raw` fragments bypass structured lowering and retain their text.
+Released String compiler wrappers retain their historical non-`Has` relation
+attribute discard behavior and otherwise return empty output when lowering is
+impossible. They do not expose the checked contract.
+
 ## Change checklist
 
 When changing a shared operation:

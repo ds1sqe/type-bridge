@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::future::Future;

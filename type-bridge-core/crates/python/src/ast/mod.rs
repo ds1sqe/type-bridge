@@ -3,6 +3,7 @@
 //! These are 1:1 Python-facing re-exports of the core AST structs and are
 //! intentionally undocumented — see the core crate for semantics.
 
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 #![allow(missing_docs)]
 
 use pyo3::prelude::*;

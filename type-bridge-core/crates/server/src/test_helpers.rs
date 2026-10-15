@@ -1,5 +1,6 @@
 //! Shared test utilities for the type-bridge-server crate.
 
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 use std::sync::{Arc, Mutex};
 
 use type_bridge_core_lib::ast::{Clause, Constraint, LiteralValue, Pattern, Value};

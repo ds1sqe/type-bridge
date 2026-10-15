@@ -69,9 +69,9 @@ async fn relation_insert_backend_failure_propagates() {
 
     let mut employment = make_employment(
         None,
-        Some("0xemp"),
+        Some("0xa002"),
         None,
-        Some("0xer"),
+        Some("0xc003"),
         None,
         Some("Engineer"),
     );

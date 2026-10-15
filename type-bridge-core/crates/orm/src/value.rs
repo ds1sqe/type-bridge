@@ -1,5 +1,6 @@
 //! Typed attribute values corresponding to TypeDB value types.
 
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 use serde::{Deserialize, Serialize};
 use type_bridge_core_lib::ast::{LiteralValue, Value};
 

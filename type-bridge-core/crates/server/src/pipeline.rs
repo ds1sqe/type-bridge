@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -213,7 +214,9 @@ impl QueryPipeline {
 
         // Compile to TypeQL
         let compiler = QueryCompiler::new();
-        let typeql = compiler.compile(&clauses);
+        let typeql = compiler
+            .try_compile(&clauses)
+            .map_err(|error| PipelineError::Validation(error.to_string()))?;
         ctx.metadata.insert(
             "compiled_typeql".to_string(),
             serde_json::Value::String(typeql.clone()),

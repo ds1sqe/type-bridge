@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 #[cfg(feature = "v2-query")]
 use futures::future::join_all;
 use type_bridge_core_lib::ast::Clause;

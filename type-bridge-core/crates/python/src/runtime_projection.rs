@@ -1,5 +1,6 @@
 //! Verified package-scoped runtime projections for generated Python models.
 
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -39,7 +40,6 @@ use type_bridge_contract::temporal::{
 };
 use type_bridge_contract::value::{CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue};
 use type_bridge_core_lib::ast::{Clause, Constraint, Pattern, RolePlayer, Statement};
-use type_bridge_core_lib::compiler::QueryCompiler;
 use type_bridge_orm::_attribute::ValueType;
 use type_bridge_orm::_descriptor::{
     EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor, TypeDescriptor,
@@ -5707,14 +5707,9 @@ fn ensure_manageable(package: &InstalledPackage, id: &TypeId) -> PyResult<()> {
     Ok(())
 }
 
-fn compatibility_clause_body(clause: Clause, keyword: &str) -> PyResult<String> {
-    let compiled = QueryCompiler::new().compile_clause(&clause);
-    let prefix = format!("{keyword}\n");
-    compiled
-        .strip_prefix(&prefix)
-        .and_then(|body| body.strip_suffix(';'))
-        .map(str::to_owned)
-        .ok_or_else(|| py_runtime_error("native query compiler returned an invalid clause shape"))
+fn compatibility_clause_body(clause: Clause, _keyword: &str) -> PyResult<String> {
+    type_bridge_core_lib::__internal::legacy_clause_body(&clause)
+        .map_err(|error| py_runtime_error(error.to_string()))
 }
 
 fn lower_attributes(

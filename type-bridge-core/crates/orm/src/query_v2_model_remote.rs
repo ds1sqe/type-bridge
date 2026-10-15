@@ -1030,7 +1030,7 @@ functions:
             )
             .expect("model-only remote lowering")
             .expect("model-only compatibility program");
-        assert!(model_only_lowered.typeql().starts_with("match\n"));
+        assert!(model_only_lowered.typeql().starts_with("match "));
         assert!(
             model_only_lowered
                 .typeql()
@@ -1090,7 +1090,7 @@ functions:
         )
         .expect("remote function plan lowers through the provider compatibility compiler")
         .expect("adapted model plan has a compatibility program");
-        assert!(lowered.typeql().starts_with("given $g0: integer;\nmatch\n"));
+        assert!(lowered.typeql().starts_with("given $g0: integer; match "));
         let qualifying = lowered
             .typeql()
             .find("let $c0 = qualifying-score($b0, $g0)")

@@ -1,26 +1,7 @@
-//! Winnow-based parser for TypeQL data-manipulation queries.
-//!
-//! Converts TypeQL query strings (match, insert, delete, update, fetch, reduce)
-//! back into [`Clause`](crate::ast::Clause) AST nodes — the reverse of [`QueryCompiler`](crate::compiler::QueryCompiler).
-
+//! Compatibility projection of the official TypeQL parser onto legacy clauses.
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
+use crate::ast::Clause;
 use std::fmt;
-
-use winnow::combinator::{alt, opt, separated};
-use winnow::error::ContextError;
-use winnow::prelude::*;
-use winnow::token::{literal, take_while};
-
-use crate::ast::{
-    Clause, Constraint, FetchItem, LetAssignment, LiteralValue, Pattern, ReduceAssignment,
-    RolePlayer, SortField, Statement, Value,
-};
-
-/// Type alias for winnow parser results.
-type PResult<T> = winnow::error::Result<T>;
-
-// ---------------------------------------------------------------------------
-// Error type
-// ---------------------------------------------------------------------------
 
 /// Error returned by [`parse_typeql_query`].
 #[derive(Debug, Clone)]
@@ -50,1366 +31,129 @@ impl fmt::Display for QueryParseError {
 
 impl std::error::Error for QueryParseError {}
 
-// ---------------------------------------------------------------------------
-// Public entry point
-// ---------------------------------------------------------------------------
+/// Parse TypeQL using the official grammar and project supported legacy nodes.
+/// Unsupported constructs return a typed adapter error without dropping data.
+pub fn parse_typeql_query_checked(input: &str) -> Result<Vec<Clause>, crate::compiler::TqlError> {
+    crate::tql::project_legacy(&crate::tql::parse(input)?)
+}
 
-/// Parse a TypeQL query string into a list of [`Clause`] AST nodes.
-///
-/// Handles multi-clause queries (e.g. `match ... insert ...`).
+/// Parse TypeQL into the deprecated clause vocabulary.
+/// Use the checked entry point to distinguish unsupported constructs.
 pub fn parse_typeql_query(input: &str) -> Result<Vec<Clause>, QueryParseError> {
-    let mut input_ref = input;
-    // Handle empty/whitespace-only input gracefully
-    ws_comments(&mut input_ref);
-    if input_ref.is_empty() {
+    if input.trim().is_empty() {
         return Ok(Vec::new());
     }
-    match parse_clauses(&mut input_ref) {
-        Ok(clauses) => {
-            ws_comments(&mut input_ref);
-            if !input_ref.is_empty() {
-                let consumed = input.len() - input_ref.len();
-                let (line, column) = line_col(input, consumed);
-                return Err(QueryParseError::ParseError {
-                    message: format!("unexpected trailing content at {}:{}", line, column),
-                    line,
-                    column,
-                });
-            }
-            Ok(clauses)
-        }
-        Err(_e) => {
-            let consumed = input.len() - input_ref.len();
-            let (line, column) = line_col(input, consumed);
-            Err(QueryParseError::ParseError {
-                message: format!("unexpected input at {}:{}", line, column),
-                line,
-                column,
-            })
-        }
-    }
-}
-
-/// Compute 1-based line and column from a byte offset.
-fn line_col(input: &str, offset: usize) -> (usize, usize) {
-    let parsed_portion = &input[..offset];
-    let line = parsed_portion.chars().filter(|c| *c == '\n').count() + 1;
-    let last_newline = parsed_portion.rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let column = offset - last_newline + 1;
-    (line, column)
-}
-
-// ---------------------------------------------------------------------------
-// Whitespace / comment helpers (duplicated from parser.rs to avoid coupling)
-// ---------------------------------------------------------------------------
-
-/// Skip whitespace and comments (`#`, `//`, `/* */`).
-fn ws_comments(input: &mut &str) {
-    loop {
-        let before = *input;
-        let _: &str = take_while::<_, _, ContextError>(0.., |c: char| c.is_ascii_whitespace())
-            .parse_next(input)
-            .unwrap();
-
-        if input.starts_with('#') || input.starts_with("//") {
-            if let Some(pos) = input.find('\n') {
-                *input = &input[pos + 1..];
-            } else {
-                *input = &input[input.len()..];
-            }
-            continue;
-        }
-
-        if input.starts_with("/*")
-            && let Some(pos) = input.find("*/")
-        {
-            *input = &input[pos + 2..];
-            continue;
-        }
-
-        if *input == before {
-            break;
-        }
-    }
-}
-
-/// Require at least one whitespace character or comment.
-fn ws_comments_required(input: &mut &str) -> PResult<()> {
-    let before = *input;
-    ws_comments(input);
-    if *input == before {
-        return Err(ContextError::new());
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Token parsers
-// ---------------------------------------------------------------------------
-
-/// Parse an identifier: `[a-zA-Z_][a-zA-Z0-9_-]*`.
-fn identifier<'a>(input: &mut &'a str) -> PResult<&'a str> {
-    let ident: &str = take_while(1.., |c: char| {
-        c.is_ascii_alphanumeric() || c == '_' || c == '-'
-    })
-    .parse_next(input)?;
-
-    let first = ident.chars().next().unwrap();
-    if !first.is_ascii_alphabetic() && first != '_' {
-        return Err(ContextError::new());
-    }
-
-    Ok(ident)
-}
-
-/// Parse a variable: `$identifier`.
-fn variable(input: &mut &str) -> PResult<String> {
-    literal("$").parse_next(input)?;
-    let name = identifier(input)?;
-    Ok(format!("${}", name))
-}
-
-/// Parse a double-quoted string literal with escape handling.
-fn quoted_string(input: &mut &str) -> PResult<String> {
-    literal("\"").parse_next(input)?;
-    let mut result = String::new();
-    loop {
-        if input.is_empty() {
-            return Err(ContextError::new());
-        }
-        if input.starts_with('"') {
-            *input = &input[1..];
-            break;
-        }
-        if input.starts_with('\\') {
-            *input = &input[1..];
-            if input.is_empty() {
-                return Err(ContextError::new());
-            }
-            let ch = input.chars().next().unwrap();
-            match ch {
-                'n' => result.push('\n'),
-                't' => result.push('\t'),
-                'r' => result.push('\r'),
-                '\\' => result.push('\\'),
-                '"' => result.push('"'),
-                other => {
-                    result.push('\\');
-                    result.push(other);
-                }
-            };
-            *input = &input[ch.len_utf8()..];
-        } else {
-            let ch = input.chars().next().unwrap();
-            result.push(ch);
-            *input = &input[ch.len_utf8()..];
-        }
-    }
-    Ok(result)
-}
-
-/// Parse a hex ID: `0x[0-9a-fA-F]+`.
-fn hex_id<'a>(input: &mut &'a str) -> PResult<&'a str> {
-    let start = *input;
-    literal("0x").parse_next(input)?;
-    let _digits: &str = take_while(1.., |c: char| c.is_ascii_hexdigit()).parse_next(input)?;
-    let consumed = start.len() - input.len();
-    Ok(&start[..consumed])
-}
-
-// ---------------------------------------------------------------------------
-// Value parsers
-// ---------------------------------------------------------------------------
-
-/// Parse a value (literal, variable, function call, or arithmetic expression).
-fn parse_value(input: &mut &str) -> PResult<Value> {
-    alt((
-        parse_arithmetic_value,
-        parse_function_call_or_variable,
-        parse_literal,
-    ))
-    .parse_next(input)
-}
-
-/// Parse a parenthesized arithmetic expression: `(left op right)`.
-fn parse_arithmetic_value(input: &mut &str) -> PResult<Value> {
-    literal("(").parse_next(input)?;
-    ws_comments(input);
-    let left = parse_value(input)?;
-    ws_comments(input);
-    let op = parse_arithmetic_op(input)?;
-    ws_comments(input);
-    let right = parse_value(input)?;
-    ws_comments(input);
-    literal(")").parse_next(input)?;
-    Ok(Value::Arithmetic(super::ast::ArithmeticValue {
-        left: Box::new(left),
-        operator: op.to_string(),
-        right: Box::new(right),
-    }))
-}
-
-fn parse_arithmetic_op<'a>(input: &mut &'a str) -> PResult<&'a str> {
-    alt((
-        literal("+"),
-        literal("-"),
-        literal("*"),
-        literal("/"),
-        literal("%"),
-        literal("^"),
-    ))
-    .parse_next(input)
-}
-
-/// Parse a function call `func(args...)` or a plain variable `$var`.
-/// Combined because both start with an identifier-like prefix.
-fn parse_function_call_or_variable(input: &mut &str) -> PResult<Value> {
-    // Try variable first (starts with $)
-    if input.starts_with('$') {
-        let var = variable(input)?;
-        return Ok(Value::Variable(var));
-    }
-
-    // Otherwise try function call: identifier(args)
-    let func_name = identifier(input)?;
-    ws_comments(input);
-    literal("(").parse_next(input)?;
-    ws_comments(input);
-
-    let args = if input.starts_with(')') {
-        vec![]
-    } else {
-        let args: Vec<Value> = separated(
-            1..,
-            |i: &mut &str| {
-                ws_comments(i);
-                let v = parse_value(i)?;
-                ws_comments(i);
-                Ok(v)
-            },
-            ",",
-        )
-        .parse_next(input)?;
-        args
-    };
-
-    ws_comments(input);
-    literal(")").parse_next(input)?;
-
-    Ok(Value::FunctionCall(super::ast::FunctionCallValue {
-        function: func_name.to_string(),
-        args,
-    }))
-}
-
-/// Parse a literal value (string, boolean, decimal, datetime-tz, datetime, date, duration, double, long).
-fn parse_literal(input: &mut &str) -> PResult<Value> {
-    alt((
-        parse_string_literal,
-        parse_boolean_literal,
-        parse_number_or_date_literal,
-        parse_duration_literal,
-    ))
-    .parse_next(input)
-}
-
-/// Parse a string literal: `"..."`.
-fn parse_string_literal(input: &mut &str) -> PResult<Value> {
-    let s = quoted_string(input)?;
-    Ok(Value::Literal(LiteralValue {
-        value: serde_json::Value::String(s),
-        value_type: "string".to_string(),
-    }))
-}
-
-/// Parse a boolean literal: `true` or `false`.
-fn parse_boolean_literal(input: &mut &str) -> PResult<Value> {
-    let val = alt((literal("true"), literal("false"))).parse_next(input)?;
-    // Make sure the boolean keyword isn't followed by alphanumeric (e.g., "trueish")
-    if let Some(c) = input.chars().next()
-        && (c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(ContextError::new());
-    }
-    Ok(Value::Literal(LiteralValue {
-        value: serde_json::Value::Bool(val == "true"),
-        value_type: "boolean".to_string(),
-    }))
-}
-
-/// Parse a number literal (long, double, decimal) or a date/datetime literal.
-/// These share a leading digit pattern so they must be tried together.
-fn parse_number_or_date_literal(input: &mut &str) -> PResult<Value> {
-    let start = *input;
-
-    // Check for negative sign
-    let negative = opt(literal::<_, _, ContextError>("-"))
-        .parse_next(input)?
-        .is_some();
-
-    // Parse leading digits
-    let digits: &str = take_while(1.., |c: char| c.is_ascii_digit()).parse_next(input)?;
-
-    // Check if this looks like a date: YYYY-MM-DD (4 digits followed by -)
-    if !negative && digits.len() == 4 && input.starts_with('-') {
-        // Try parsing as date/datetime — restore input and parse specifically
-        *input = start;
-        if let Ok(v) = parse_date_or_datetime(input) {
-            return Ok(v);
-        }
-        // If date parse fails, restore and try as number
-        *input = start;
-        if negative {
-            literal::<_, _, ContextError>("-").parse_next(input).ok();
-        }
-        let _: &str = take_while::<_, _, ContextError>(1.., |c: char| c.is_ascii_digit())
-            .parse_next(input)?;
-    }
-
-    // Check for decimal point (double)
-    if input.starts_with('.') {
-        *input = &input[1..];
-        let frac: &str = take_while(1.., |c: char| c.is_ascii_digit()).parse_next(input)?;
-
-        // Check for 'dec' suffix (decimal type)
-        if input.starts_with("dec") {
-            let consumed = start.len() - input.len();
-            let num_str = &start[..consumed];
-            *input = &input[3..];
-            // Strip "dec" wasn't consumed above, but the number string is clean
-            return Ok(Value::Literal(LiteralValue {
-                value: serde_json::json!(num_str.parse::<f64>().unwrap_or(0.0)),
-                value_type: "decimal".to_string(),
-            }));
-        }
-
-        // Regular double
-        let num_str = if negative {
-            format!("-{}.{}", digits, frac)
-        } else {
-            format!("{}.{}", digits, frac)
+    parse_typeql_query_checked(input).map_err(|error| {
+        let (line, column) = match error {
+            crate::tql::TqlError::InvalidSyntax { line, column } => (line, column),
+            _ => (1, 1),
         };
-        let f: f64 = num_str.parse().map_err(|_| ContextError::new())?;
-        return Ok(Value::Literal(LiteralValue {
-            value: serde_json::Number::from_f64(f)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null),
-            value_type: "double".to_string(),
-        }));
-    }
-
-    // Check for 'dec' suffix on integer (decimal type)
-    if input.starts_with("dec") {
-        *input = &input[3..];
-        let num_str = if negative {
-            format!("-{}", digits)
-        } else {
-            digits.to_string()
-        };
-        let n: i64 = num_str.parse().map_err(|_| ContextError::new())?;
-        return Ok(Value::Literal(LiteralValue {
-            value: serde_json::json!(n),
-            value_type: "decimal".to_string(),
-        }));
-    }
-
-    // Plain integer (long)
-    let num_str = if negative {
-        format!("-{}", digits)
-    } else {
-        digits.to_string()
-    };
-    let n: i64 = num_str.parse().map_err(|_| ContextError::new())?;
-    Ok(Value::Literal(LiteralValue {
-        value: serde_json::json!(n),
-        value_type: "long".to_string(),
-    }))
-}
-
-/// Parse a date or datetime literal (unquoted in TypeQL).
-/// Formats: `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS[.fff]`, `YYYY-MM-DDTHH:MM:SS[.fff]+HH:MM`.
-fn parse_date_or_datetime(input: &mut &str) -> PResult<Value> {
-    let start = *input;
-
-    // YYYY-MM-DD
-    let _year: &str = take_while(4..=4, |c: char| c.is_ascii_digit()).parse_next(input)?;
-    literal("-").parse_next(input)?;
-    let _month: &str = take_while(2..=2, |c: char| c.is_ascii_digit()).parse_next(input)?;
-    literal("-").parse_next(input)?;
-    let _day: &str = take_while(2..=2, |c: char| c.is_ascii_digit()).parse_next(input)?;
-
-    // Check for time component
-    if !input.starts_with('T') {
-        let consumed = start.len() - input.len();
-        let date_str = &start[..consumed];
-        return Ok(Value::Literal(LiteralValue {
-            value: serde_json::Value::String(date_str.to_string()),
-            value_type: "date".to_string(),
-        }));
-    }
-
-    // THH:MM:SS
-    literal("T").parse_next(input)?;
-    let _hour: &str = take_while(2..=2, |c: char| c.is_ascii_digit()).parse_next(input)?;
-    literal(":").parse_next(input)?;
-    let _min: &str = take_while(2..=2, |c: char| c.is_ascii_digit()).parse_next(input)?;
-    literal(":").parse_next(input)?;
-    let _sec: &str = take_while(2..=2, |c: char| c.is_ascii_digit()).parse_next(input)?;
-
-    // Optional fractional seconds
-    if input.starts_with('.') {
-        *input = &input[1..];
-        let _frac: &str = take_while(1.., |c: char| c.is_ascii_digit()).parse_next(input)?;
-    }
-
-    // Check for timezone
-    if input.starts_with('+') || input.starts_with('-') {
-        let _sign = &input[..1];
-        *input = &input[1..];
-        let _tz_h: &str = take_while(2..=2, |c: char| c.is_ascii_digit()).parse_next(input)?;
-        literal(":").parse_next(input)?;
-        let _tz_m: &str = take_while(2..=2, |c: char| c.is_ascii_digit()).parse_next(input)?;
-
-        let consumed = start.len() - input.len();
-        let dt_str = &start[..consumed];
-        return Ok(Value::Literal(LiteralValue {
-            value: serde_json::Value::String(dt_str.to_string()),
-            value_type: "datetime-tz".to_string(),
-        }));
-    }
-
-    let consumed = start.len() - input.len();
-    let dt_str = &start[..consumed];
-    Ok(Value::Literal(LiteralValue {
-        value: serde_json::Value::String(dt_str.to_string()),
-        value_type: "datetime".to_string(),
-    }))
-}
-
-/// Parse an ISO 8601 duration literal: `P[nY][nM][nW][nD][T[nH][nM][nS]]`.
-fn parse_duration_literal(input: &mut &str) -> PResult<Value> {
-    let start = *input;
-    literal("P").parse_next(input)?;
-
-    // Consume duration components
-    let mut has_component = false;
-    loop {
-        let _digits: &str = take_while(0.., |c: char| c.is_ascii_digit()).parse_next(input)?;
-        if _digits.is_empty() {
-            // Check for 'T' time separator
-            if input.starts_with('T') {
-                *input = &input[1..];
-                has_component = true;
-                continue;
-            }
-            break;
+        QueryParseError::ParseError {
+            message: error.to_string(),
+            line,
+            column,
         }
-        // Expect a designator letter after digits
-        if let Some(c) = input.chars().next()
-            && "YMWDHmSs".contains(c)
-        {
-            *input = &input[c.len_utf8()..];
-            has_component = true;
-            continue;
-        }
-        break;
-    }
-
-    if !has_component {
-        return Err(ContextError::new());
-    }
-
-    let consumed = start.len() - input.len();
-    let dur_str = &start[..consumed];
-    Ok(Value::Literal(LiteralValue {
-        value: serde_json::Value::String(dur_str.to_string()),
-        value_type: "duration".to_string(),
-    }))
-}
-
-// ---------------------------------------------------------------------------
-// Constraint parsers
-// ---------------------------------------------------------------------------
-
-/// Parse a constraint (inside entity/relation patterns).
-fn parse_constraint(input: &mut &str) -> PResult<Constraint> {
-    alt((
-        parse_iid_constraint,
-        parse_has_constraint,
-        parse_isa_constraint,
-    ))
-    .parse_next(input)
-}
-
-/// Parse `iid 0x...`.
-fn parse_iid_constraint(input: &mut &str) -> PResult<Constraint> {
-    literal("iid").parse_next(input)?;
-    ws_comments_required(input)?;
-    let id = hex_id(input)?;
-    Ok(Constraint::Iid(id.to_string()))
-}
-
-/// Parse `has attr_name value`.
-fn parse_has_constraint(input: &mut &str) -> PResult<Constraint> {
-    literal("has").parse_next(input)?;
-    ws_comments_required(input)?;
-    let attr_name = identifier(input)?;
-    ws_comments_required(input)?;
-    let value = parse_value(input)?;
-    Ok(Constraint::Has {
-        attr_name: attr_name.to_string(),
-        value,
     })
 }
-
-/// Parse `isa type_name` or `isa! type_name`.
-fn parse_isa_constraint(input: &mut &str) -> PResult<Constraint> {
-    let strict = if input.starts_with("isa!") {
-        literal("isa!").parse_next(input)?;
-        true
-    } else {
-        literal("isa").parse_next(input)?;
-        false
-    };
-    ws_comments_required(input)?;
-    let type_name = identifier(input)?;
-    Ok(Constraint::Isa {
-        type_name: type_name.to_string(),
-        strict,
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Pattern parsers (match clause body)
-// ---------------------------------------------------------------------------
-
-/// Parse a list of patterns separated by `;` (the body of a match clause).
-fn parse_patterns(input: &mut &str) -> PResult<Vec<Pattern>> {
-    let mut patterns = Vec::new();
-    loop {
-        ws_comments(input);
-        if input.is_empty()
-            || input.starts_with("insert")
-            || input.starts_with("put")
-            || input.starts_with("delete")
-            || input.starts_with("update")
-            || input.starts_with("fetch")
-            || input.starts_with("reduce")
-            || input.starts_with("match")
-            || input.starts_with("sort")
-            || input.starts_with("limit")
-            || input.starts_with("offset")
-        {
-            break;
-        }
-        let pattern = parse_pattern(input)?;
-        patterns.push(pattern);
-        ws_comments(input);
-        // Consume optional semicolon
-        let _ = opt(literal::<_, _, ContextError>(";")).parse_next(input);
-    }
-    Ok(patterns)
-}
-
-/// Parse a single pattern.
-fn parse_pattern(input: &mut &str) -> PResult<Pattern> {
-    ws_comments(input);
-    alt((
-        parse_not_pattern,
-        parse_or_pattern,
-        parse_variable_led_pattern,
-    ))
-    .parse_next(input)
-}
-
-/// Parse `not { patterns; }`.
-fn parse_not_pattern(input: &mut &str) -> PResult<Pattern> {
-    literal("not").parse_next(input)?;
-    ws_comments(input);
-    literal("{").parse_next(input)?;
-    ws_comments(input);
-    let inner = parse_inner_patterns(input)?;
-    ws_comments(input);
-    literal("}").parse_next(input)?;
-    Ok(Pattern::Not(inner))
-}
-
-/// Parse `{ patterns; } or { patterns; } [or { patterns; }]*`.
-fn parse_or_pattern(input: &mut &str) -> PResult<Pattern> {
-    let first = parse_braced_patterns(input)?;
-    ws_comments(input);
-    literal("or").parse_next(input)?;
-    ws_comments(input);
-    let second = parse_braced_patterns(input)?;
-
-    let mut alternatives = vec![first, second];
-    loop {
-        ws_comments(input);
-        if opt(literal::<_, _, ContextError>("or"))
-            .parse_next(input)?
-            .is_none()
-        {
-            break;
-        }
-        ws_comments(input);
-        let next = parse_braced_patterns(input)?;
-        alternatives.push(next);
-    }
-
-    Ok(Pattern::Or(alternatives))
-}
-
-/// Parse `{ patterns; }` — patterns enclosed in braces.
-fn parse_braced_patterns(input: &mut &str) -> PResult<Vec<Pattern>> {
-    literal("{").parse_next(input)?;
-    ws_comments(input);
-    let patterns = parse_inner_patterns(input)?;
-    ws_comments(input);
-    literal("}").parse_next(input)?;
-    Ok(patterns)
-}
-
-/// Parse patterns inside braces (used by Not and Or).
-/// Patterns are separated by `;`.
-fn parse_inner_patterns(input: &mut &str) -> PResult<Vec<Pattern>> {
-    let mut patterns = Vec::new();
-    loop {
-        ws_comments(input);
-        if input.starts_with('}') {
-            break;
-        }
-        let pattern = parse_pattern(input)?;
-        patterns.push(pattern);
-        ws_comments(input);
-        let _ = opt(literal::<_, _, ContextError>(";")).parse_next(input);
-    }
-    Ok(patterns)
-}
-
-/// Parse a pattern that starts with a variable `$var ...`.
-fn parse_variable_led_pattern(input: &mut &str) -> PResult<Pattern> {
-    let var = variable(input)?;
-    ws_comments(input);
-
-    // $var iid 0x...
-    if input.starts_with("iid") {
-        literal("iid").parse_next(input)?;
-        ws_comments_required(input)?;
-        let id = hex_id(input)?;
-        return Ok(Pattern::Iid {
-            variable: var,
-            iid: id.to_string(),
-        });
-    }
-
-    // $var sub parent_type
-    if input.starts_with("sub") && !input.starts_with("sub!") {
-        // Make sure "sub" is followed by whitespace, not part of another keyword
-        let after_sub = &input[3..];
-        if after_sub.starts_with(|c: char| c.is_ascii_whitespace()) {
-            literal("sub").parse_next(input)?;
-            ws_comments_required(input)?;
-            let parent = identifier(input)?;
-            return Ok(Pattern::SubType {
-                variable: var,
-                parent_type: parent.to_string(),
-            });
-        }
-    }
-
-    // $var has attr_type $attr_var
-    if input.starts_with("has") {
-        let saved = *input;
-        literal("has").parse_next(input)?;
-        ws_comments_required(input)?;
-        let attr_type = identifier(input)?;
-        ws_comments_required(input)?;
-        // The attr_var must be a variable ($...)
-        if input.starts_with('$') {
-            let attr_var = variable(input)?;
-            return Ok(Pattern::Has {
-                thing_var: var,
-                attr_type: attr_type.to_string(),
-                attr_var,
-            });
-        }
-        // Not a Has pattern (value is not a variable), restore
-        *input = saved;
-    }
-
-    // $var isa[!] type_name ...
-    if input.starts_with("isa") {
-        let is_strict = if input.starts_with("isa!") {
-            literal("isa!").parse_next(input)?;
-            true
-        } else {
-            literal("isa").parse_next(input)?;
-            false
-        };
-        ws_comments_required(input)?;
-        let type_name = identifier(input)?;
-        ws_comments(input);
-
-        // Check for relation pattern: (role: $player, ...)
-        if input.starts_with('(') {
-            let role_players = parse_role_players(input)?;
-            ws_comments(input);
-
-            // Optional trailing constraints
-            let mut constraints = Vec::new();
-            while input.starts_with(',') {
-                literal(",").parse_next(input)?;
-                ws_comments(input);
-                let c = parse_constraint(input)?;
-                constraints.push(c);
-                ws_comments(input);
-            }
-
-            return Ok(Pattern::Relation {
-                variable: var,
-                type_name: type_name.to_string(),
-                role_players,
-                constraints,
-            });
-        }
-
-        // Check for entity constraints: , has ... | , iid ...
-        if input.starts_with(',') {
-            let mut constraints = Vec::new();
-            while input.starts_with(',') {
-                literal(",").parse_next(input)?;
-                ws_comments(input);
-                let c = parse_constraint(input)?;
-                constraints.push(c);
-                ws_comments(input);
-            }
-            return Ok(Pattern::Entity {
-                variable: var,
-                type_name: type_name.to_string(),
-                constraints,
-                is_strict,
-            });
-        }
-
-        // Check for Attribute with value: $var isa type; $same_var value
-        // The compiler outputs this as a single compiled pattern containing `;`
-        let saved = *input;
-        if input.starts_with(';') {
-            // Peek: consume ; ws $same_var value
-            let peek_input = &input[1..]; // skip ;
-            let mut peek = peek_input;
-            ws_comments(&mut peek);
-            if peek.starts_with(&var as &str) {
-                // Try to parse: $same_var value
-                let mut try_input = peek;
-                if let Ok(parsed_var) = variable(&mut try_input)
-                    && parsed_var == var
-                {
-                    ws_comments(&mut try_input);
-                    if let Ok(value) = parse_value(&mut try_input) {
-                        // Commit: advance input past the consumed content
-                        *input = try_input;
-                        return Ok(Pattern::Attribute {
-                            variable: var,
-                            type_name: type_name.to_string(),
-                            value: Some(value),
-                        });
-                    }
-                }
-            }
-            *input = saved;
-        }
-
-        // Default: Entity with no constraints (same output as Attribute { value: None })
-        return Ok(Pattern::Entity {
-            variable: var,
-            type_name: type_name.to_string(),
-            constraints: vec![],
-            is_strict,
-        });
-    }
-
-    // $var op value (ValueComparison)
-    let op = parse_comparison_op(input)?;
-    ws_comments(input);
-    let value = parse_value(input)?;
-    Ok(Pattern::ValueComparison {
-        var,
-        operator: op.to_string(),
-        value,
-    })
-}
-
-/// Parse a comparison operator.
-fn parse_comparison_op<'a>(input: &mut &'a str) -> PResult<&'a str> {
-    alt((
-        literal(">="),
-        literal("<="),
-        literal("!="),
-        literal("=="),
-        literal(">"),
-        literal("<"),
-        literal("contains"),
-        literal("like"),
-    ))
-    .parse_next(input)
-}
-
-/// Parse `(role: $player, ...)` role player list.
-fn parse_role_players(input: &mut &str) -> PResult<Vec<RolePlayer>> {
-    literal("(").parse_next(input)?;
-    ws_comments(input);
-    let players: Vec<RolePlayer> = separated(
-        1..,
-        |i: &mut &str| {
-            ws_comments(i);
-            let role = identifier(i)?;
-            ws_comments(i);
-            literal(":").parse_next(i)?;
-            ws_comments(i);
-            let player_var = variable(i)?;
-            ws_comments(i);
-            Ok(RolePlayer {
-                role: role.to_string(),
-                player_var,
-            })
-        },
-        ",",
-    )
-    .parse_next(input)?;
-    ws_comments(input);
-    literal(")").parse_next(input)?;
-    Ok(players)
-}
-
-// ---------------------------------------------------------------------------
-// Statement parsers (insert/delete/update clause body)
-// ---------------------------------------------------------------------------
-
-/// Context for statement parsing.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum StmtContext {
-    Insert,
-    Delete,
-    Update,
-}
-
-/// Parse a list of statements separated by `;`.
-fn parse_statements(input: &mut &str, ctx: StmtContext) -> PResult<Vec<Statement>> {
-    let mut stmts = Vec::new();
-    loop {
-        ws_comments(input);
-        if input.is_empty()
-            || input.starts_with("match")
-            || input.starts_with("insert")
-            || input.starts_with("put")
-            || input.starts_with("delete")
-            || input.starts_with("update")
-            || input.starts_with("fetch")
-            || input.starts_with("reduce")
-            || input.starts_with("sort")
-            || input.starts_with("limit")
-            || input.starts_with("offset")
-        {
-            break;
-        }
-        let stmt = parse_statement(input, ctx)?;
-        stmts.push(stmt);
-        ws_comments(input);
-        let _ = opt(literal::<_, _, ContextError>(";")).parse_next(input);
-    }
-    Ok(stmts)
-}
-
-/// Parse a single statement.
-fn parse_statement(input: &mut &str, ctx: StmtContext) -> PResult<Statement> {
-    ws_comments(input);
-
-    // Relation without variable: (role: $p, ...) isa type [, has ...]
-    if input.starts_with('(') {
-        return parse_relation_stmt_no_var(input);
-    }
-
-    // Must start with $var
-    let var = variable(input)?;
-    ws_comments(input);
-
-    // $var isa type, links (role: $p, ...) — Relation with variable
-    if input.starts_with("isa") {
-        literal("isa").parse_next(input)?;
-        ws_comments_required(input)?;
-        let type_name = identifier(input)?;
-        ws_comments(input);
-
-        // Check for ", links" → Relation
-        if input.starts_with(',') {
-            let saved2 = *input;
-            literal(",").parse_next(input)?;
-            ws_comments(input);
-            if input.starts_with("links") {
-                literal("links").parse_next(input)?;
-                ws_comments(input);
-                let role_players = parse_role_players(input)?;
-                ws_comments(input);
-
-                // Optional inline attributes: , has attr value, ...
-                let attrs = parse_inline_has_attrs(input)?;
-
-                return Ok(Statement::Relation {
-                    variable: var,
-                    type_name: type_name.to_string(),
-                    role_players,
-                    include_variable: true,
-                    attributes: attrs,
-                });
-            }
-            // Not "links", restore to before comma
-            *input = saved2;
-        }
-
-        // Plain Isa statement
-        return Ok(Statement::Isa {
-            variable: var,
-            type_name: type_name.to_string(),
-        });
-    }
-
-    // $var has attr_name value — Has statement
-    if input.starts_with("has") {
-        literal("has").parse_next(input)?;
-        ws_comments_required(input)?;
-        let attr_name = identifier(input)?;
-        ws_comments_required(input)?;
-        let value = parse_value(input)?;
-        return Ok(Statement::Has {
-            subject_var: var,
-            attr_name: attr_name.to_string(),
-            value,
-        });
-    }
-
-    // Bare $var in delete context → DeleteThing
-    if ctx == StmtContext::Delete {
-        return Ok(Statement::DeleteThing(var));
-    }
-
-    Err(ContextError::new())
-}
-
-/// Parse `(role: $p, ...) isa type [, has attr value, ...]`.
-fn parse_relation_stmt_no_var(input: &mut &str) -> PResult<Statement> {
-    let role_players = parse_role_players(input)?;
-    ws_comments(input);
-    literal("isa").parse_next(input)?;
-    ws_comments_required(input)?;
-    let type_name = identifier(input)?;
-    ws_comments(input);
-
-    let attrs = parse_inline_has_attrs(input)?;
-
-    Ok(Statement::Relation {
-        variable: String::new(),
-        type_name: type_name.to_string(),
-        role_players,
-        include_variable: false,
-        attributes: attrs,
-    })
-}
-
-/// Parse optional inline `has` attributes: `, has attr value [, has attr value ...]`.
-fn parse_inline_has_attrs(input: &mut &str) -> PResult<Vec<Statement>> {
-    let mut attrs = Vec::new();
-    loop {
-        ws_comments(input);
-        if !input.starts_with(',') {
-            break;
-        }
-        let saved = *input;
-        literal(",").parse_next(input)?;
-        ws_comments(input);
-        if !input.starts_with("has") {
-            *input = saved;
-            break;
-        }
-        literal("has").parse_next(input)?;
-        ws_comments_required(input)?;
-        let attr_name = identifier(input)?;
-        ws_comments_required(input)?;
-        let value = parse_value(input)?;
-        attrs.push(Statement::Has {
-            subject_var: String::new(),
-            attr_name: attr_name.to_string(),
-            value,
-        });
-    }
-    Ok(attrs)
-}
-
-// ---------------------------------------------------------------------------
-// Fetch item parsers
-// ---------------------------------------------------------------------------
-
-/// Parse the body of a fetch clause: `{ items }`.
-fn parse_fetch_items(input: &mut &str) -> PResult<Vec<FetchItem>> {
-    literal("{").parse_next(input)?;
-    ws_comments(input);
-
-    let items: Vec<FetchItem> = separated(
-        1..,
-        |i: &mut &str| {
-            ws_comments(i);
-            parse_fetch_item(i)
-        },
-        ",",
-    )
-    .parse_next(input)?;
-
-    ws_comments(input);
-    // Optional trailing comma
-    let _ = opt(literal::<_, _, ContextError>(",")).parse_next(input);
-    ws_comments(input);
-    literal("}").parse_next(input)?;
-    Ok(items)
-}
-
-/// Parse a single fetch item: `"key": value`.
-fn parse_fetch_item(input: &mut &str) -> PResult<FetchItem> {
-    let key = quoted_string(input)?;
-    ws_comments(input);
-    literal(":").parse_next(input)?;
-    ws_comments(input);
-
-    alt((
-        // { $var.* } → NestedWildcard
-        |i: &mut &str| {
-            literal("{").parse_next(i)?;
-            ws_comments(i);
-            let var = variable(i)?;
-            literal(".*").parse_next(i)?;
-            ws_comments(i);
-            literal("}").parse_next(i)?;
-            Ok(FetchItem::NestedWildcard {
-                key: key.clone(),
-                var,
-            })
-        },
-        // [$var.attr] → AttributeList
-        |i: &mut &str| {
-            literal("[").parse_next(i)?;
-            let var = variable(i)?;
-            literal(".").parse_next(i)?;
-            let attr_name = identifier(i)?;
-            literal("]").parse_next(i)?;
-            Ok(FetchItem::AttributeList {
-                key: key.clone(),
-                var,
-                attr_name: attr_name.to_string(),
-            })
-        },
-        // func($var) → Function (identifier followed by parenthesized variable)
-        |i: &mut &str| {
-            let func_name = identifier(i)?;
-            literal("(").parse_next(i)?;
-            let var = variable(i)?;
-            literal(")").parse_next(i)?;
-            Ok(FetchItem::Function {
-                key: key.clone(),
-                func_name: func_name.to_string(),
-                var,
-            })
-        },
-        // $var.* → Wildcard
-        |i: &mut &str| {
-            let var = variable(i)?;
-            literal(".*").parse_next(i)?;
-            Ok(FetchItem::Wildcard {
-                key: key.clone(),
-                var,
-            })
-        },
-        // $var.attr → Attribute
-        |i: &mut &str| {
-            let var = variable(i)?;
-            literal(".").parse_next(i)?;
-            let attr_name = identifier(i)?;
-            Ok(FetchItem::Attribute {
-                key: key.clone(),
-                var,
-                attr_name: attr_name.to_string(),
-            })
-        },
-        // $var → Variable
-        |i: &mut &str| {
-            let var = variable(i)?;
-            Ok(FetchItem::Variable {
-                key: key.clone(),
-                var,
-            })
-        },
-    ))
-    .parse_next(input)
-}
-
-// ---------------------------------------------------------------------------
-// Let assignment parser
-// ---------------------------------------------------------------------------
-
-/// Parse `let $var1 [, $var2, ...] (= | in) expression`.
-fn parse_let_assignment(input: &mut &str) -> PResult<LetAssignment> {
-    literal("let").parse_next(input)?;
-    ws_comments_required(input)?;
-
-    let vars: Vec<String> = separated(
-        1..,
-        |i: &mut &str| {
-            ws_comments(i);
-            variable(i)
-        },
-        ",",
-    )
-    .parse_next(input)?;
-
-    ws_comments(input);
-
-    let is_stream =
-        if input.starts_with("in") && input[2..].starts_with(|c: char| c.is_ascii_whitespace()) {
-            literal("in").parse_next(input)?;
-            true
-        } else {
-            literal("=").parse_next(input)?;
-            false
-        };
-
-    ws_comments(input);
-    let expression = parse_value(input)?;
-
-    Ok(LetAssignment {
-        variables: vars,
-        expression,
-        is_stream,
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Clause parsers
-// ---------------------------------------------------------------------------
-
-/// Parse a sequence of clauses.
-fn parse_clauses(input: &mut &str) -> PResult<Vec<Clause>> {
-    let mut clauses = Vec::new();
-    loop {
-        ws_comments(input);
-        if input.is_empty() {
-            break;
-        }
-        let clause = parse_clause(input)?;
-        clauses.push(clause);
-    }
-    if clauses.is_empty() {
-        return Err(ContextError::new());
-    }
-    Ok(clauses)
-}
-
-/// Parse a single clause.
-fn parse_clause(input: &mut &str) -> PResult<Clause> {
-    ws_comments(input);
-    alt((
-        parse_match_clause,
-        parse_insert_clause,
-        parse_put_clause,
-        parse_delete_clause,
-        parse_update_clause,
-        parse_fetch_clause,
-        parse_reduce_clause,
-        parse_sort_clause,
-        parse_limit_clause,
-        parse_offset_clause,
-    ))
-    .parse_next(input)
-}
-
-/// Parse a match clause: `match\n<patterns|let-assignments>;`.
-fn parse_match_clause(input: &mut &str) -> PResult<Clause> {
-    literal("match").parse_next(input)?;
-    ws_comments(input);
-
-    // Peek: does the body start with "let"?
-    if input.starts_with("let") && input[3..].starts_with(|c: char| c.is_ascii_whitespace()) {
-        // Try MatchLet
-        let saved = *input;
-        if let Ok(assignments) = parse_let_assignments(input) {
-            return Ok(Clause::MatchLet(assignments));
-        }
-        *input = saved;
-    }
-
-    let patterns = parse_patterns(input)?;
-    Ok(Clause::Match(patterns))
-}
-
-/// Parse a list of let assignments separated by `;`.
-fn parse_let_assignments(input: &mut &str) -> PResult<Vec<LetAssignment>> {
-    let mut assignments = Vec::new();
-    loop {
-        ws_comments(input);
-        if !input.starts_with("let") {
-            break;
-        }
-        let assign = parse_let_assignment(input)?;
-        assignments.push(assign);
-        ws_comments(input);
-        let _ = opt(literal::<_, _, ContextError>(";")).parse_next(input);
-    }
-    if assignments.is_empty() {
-        return Err(ContextError::new());
-    }
-    Ok(assignments)
-}
-
-/// Parse an insert clause: `insert\n<statements>;`.
-fn parse_insert_clause(input: &mut &str) -> PResult<Clause> {
-    literal("insert").parse_next(input)?;
-    ws_comments(input);
-    let stmts = parse_statements(input, StmtContext::Insert)?;
-    Ok(Clause::Insert(stmts))
-}
-
-/// Parse a put clause: `put\n<statements>;`.
-fn parse_put_clause(input: &mut &str) -> PResult<Clause> {
-    literal("put").parse_next(input)?;
-    ws_comments(input);
-    let stmts = parse_statements(input, StmtContext::Insert)?;
-    Ok(Clause::Put(stmts))
-}
-
-/// Parse a delete clause: `delete\n<statements>;`.
-fn parse_delete_clause(input: &mut &str) -> PResult<Clause> {
-    literal("delete").parse_next(input)?;
-    ws_comments(input);
-    let stmts = parse_statements(input, StmtContext::Delete)?;
-    Ok(Clause::Delete(stmts))
-}
-
-/// Parse an update clause: `update\n<statements>;`.
-fn parse_update_clause(input: &mut &str) -> PResult<Clause> {
-    literal("update").parse_next(input)?;
-    ws_comments(input);
-    let stmts = parse_statements(input, StmtContext::Update)?;
-    Ok(Clause::Update(stmts))
-}
-
-/// Parse a fetch clause: `fetch { items };`.
-fn parse_fetch_clause(input: &mut &str) -> PResult<Clause> {
-    literal("fetch").parse_next(input)?;
-    ws_comments(input);
-    let items = parse_fetch_items(input)?;
-    ws_comments(input);
-    let _ = opt(literal::<_, _, ContextError>(";")).parse_next(input);
-    Ok(Clause::Fetch(items))
-}
-
-/// Parse a reduce clause: `reduce $var1 = expr1 [, ...] [groupby $var];`.
-fn parse_reduce_clause(input: &mut &str) -> PResult<Clause> {
-    literal("reduce").parse_next(input)?;
-    ws_comments_required(input)?;
-
-    let assignments: Vec<ReduceAssignment> = separated(
-        1..,
-        |i: &mut &str| {
-            ws_comments(i);
-            let var = variable(i)?;
-            ws_comments(i);
-            literal("=").parse_next(i)?;
-            ws_comments(i);
-            let expr = parse_value(i)?;
-            ws_comments(i);
-            Ok(ReduceAssignment {
-                variable: var,
-                expression: expr,
-            })
-        },
-        ",",
-    )
-    .parse_next(input)?;
-
-    ws_comments(input);
-
-    let group_by = if input.starts_with("groupby") {
-        literal("groupby").parse_next(input)?;
-        ws_comments_required(input)?;
-        let var = variable(input)?;
-        Some(var)
-    } else {
-        None
-    };
-
-    ws_comments(input);
-    let _ = opt(literal::<_, _, ContextError>(";")).parse_next(input);
-
-    Ok(Clause::Reduce {
-        assignments,
-        group_by,
-    })
-}
-
-/// Parse a sort clause: `sort $var asc[, $var2 desc, ...];`.
-fn parse_sort_clause(input: &mut &str) -> PResult<Clause> {
-    literal("sort").parse_next(input)?;
-    ws_comments_required(input)?;
-
-    let fields: Vec<SortField> = separated(
-        1..,
-        |i: &mut &str| {
-            ws_comments(i);
-            let var = variable(i)?;
-            ws_comments_required(i)?;
-            let dir = alt((literal("asc"), literal("desc"))).parse_next(i)?;
-            ws_comments(i);
-            Ok(SortField {
-                variable: var,
-                ascending: dir == "asc",
-            })
-        },
-        ",",
-    )
-    .parse_next(input)?;
-
-    ws_comments(input);
-    let _ = opt(literal::<_, _, ContextError>(";")).parse_next(input);
-
-    Ok(Clause::Sort(fields))
-}
-
-/// Parse a limit clause: `limit N;`.
-fn parse_limit_clause(input: &mut &str) -> PResult<Clause> {
-    literal("limit").parse_next(input)?;
-    ws_comments_required(input)?;
-    let digits: &str = take_while(1.., |c: char| c.is_ascii_digit()).parse_next(input)?;
-    let n: u64 = digits.parse().map_err(|_| ContextError::new())?;
-    ws_comments(input);
-    let _ = opt(literal::<_, _, ContextError>(";")).parse_next(input);
-    Ok(Clause::Limit(n))
-}
-
-/// Parse an offset clause: `offset N;`.
-fn parse_offset_clause(input: &mut &str) -> PResult<Clause> {
-    literal("offset").parse_next(input)?;
-    ws_comments_required(input)?;
-    let digits: &str = take_while(1.., |c: char| c.is_ascii_digit()).parse_next(input)?;
-    let n: u64 = digits.parse().map_err(|_| ContextError::new())?;
-    ws_comments(input);
-    let _ = opt(literal::<_, _, ContextError>(";")).parse_next(input);
-    Ok(Clause::Offset(n))
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::*;
+
+    enum StmtContext {
+        Insert,
+        Delete,
+    }
+    fn parse_statement(
+        input: &mut &str,
+        context: StmtContext,
+    ) -> Result<Statement, QueryParseError> {
+        let source = match context {
+            StmtContext::Insert => format!("insert {};", input.trim_end_matches(';')),
+            StmtContext::Delete => format!(
+                "match $x isa person; delete {};",
+                input.trim_end_matches(';')
+            ),
+        };
+        let clauses = parse_typeql_query(&source)?;
+        let values = match clauses.into_iter().last().unwrap() {
+            Clause::Insert(v) | Clause::Delete(v) => v,
+            _ => panic!("write"),
+        };
+        assert_eq!(values.len(), 1);
+        *input = "";
+        Ok(values.into_iter().next().unwrap())
+    }
+    // Test fragments are enclosed in complete queries before official parsing.
+    fn parse_pattern(input: &mut &str) -> Result<Pattern, QueryParseError> {
+        let clauses = parse_typeql_query(&format!("match {};", input.trim_end_matches(';')))?;
+        let Clause::Match(mut values) = clauses.into_iter().next().unwrap() else {
+            panic!("match")
+        };
+        *input = "";
+        Ok(values.remove(0))
+    }
+    fn parse_value(input: &mut &str) -> Result<Value, QueryParseError> {
+        let clauses = parse_typeql_query(&format!("match let $value = {};", input))?;
+        let Clause::MatchLet(mut values) = clauses.into_iter().next().unwrap() else {
+            panic!("let")
+        };
+        *input = "";
+        Ok(values.remove(0).expression)
+    }
+    fn variable(input: &mut &str) -> Result<String, QueryParseError> {
+        let Pattern::Entity { variable, .. } =
+            parse_pattern(&mut format!("{} isa person", input).as_str())?
+        else {
+            panic!("entity")
+        };
+        *input = "";
+        Ok(variable)
+    }
+    fn quoted_string(input: &mut &str) -> Result<String, QueryParseError> {
+        let Value::Literal(value) = parse_value(input)? else {
+            panic!("literal")
+        };
+        Ok(value.value.as_str().unwrap().to_owned())
+    }
+    fn hex_id(input: &mut &str) -> Result<String, QueryParseError> {
+        let Pattern::Iid { iid, .. } = parse_pattern(&mut format!("$x iid {}", input).as_str())?
+        else {
+            panic!("iid")
+        };
+        *input = "";
+        Ok(iid)
+    }
+    fn parse_constraint(input: &mut &str) -> Result<Constraint, QueryParseError> {
+        let Pattern::Entity {
+            mut constraints, ..
+        } = parse_pattern(&mut format!("$x isa person, {}", input).as_str())?
+        else {
+            panic!("entity")
+        };
+        *input = "";
+        Ok(constraints.remove(0))
+    }
+    fn parse_fetch_item(input: &mut &str) -> Result<FetchItem, QueryParseError> {
+        let mut clauses =
+            parse_typeql_query(&format!("match $x isa person; fetch {{ {} }};", input))?;
+        let Clause::Fetch(mut values) = clauses.remove(1) else {
+            panic!("fetch")
+        };
+        *input = "";
+        Ok(values.remove(0))
+    }
+    fn parse_comparison_op(input: &mut &str) -> Result<String, QueryParseError> {
+        let Pattern::ValueComparison { operator, .. } =
+            parse_pattern(&mut format!("$x {} \"value\"", input).as_str())?
+        else {
+            panic!("comparison")
+        };
+        *input = "";
+        Ok(operator)
+    }
+
     use crate::compiler::QueryCompiler;
     use serde_json::json;
 
@@ -1521,7 +265,7 @@ mod tests {
         let val = parse_value(&mut input).unwrap();
         match val {
             Value::Literal(lit) => {
-                assert_eq!(lit.value, json!(42));
+                assert_eq!(lit.value, json!("42"));
                 assert_eq!(lit.value_type, "decimal");
             }
             _ => panic!("expected Literal"),
@@ -1932,7 +676,7 @@ mod tests {
 
     #[test]
     fn test_parse_attribute_pattern_with_value() {
-        let mut input = r#"$a isa name; $a "John""#;
+        let mut input = r#"$a isa name "John""#;
         let p = parse_pattern(&mut input).unwrap();
         match p {
             Pattern::Attribute {
@@ -2123,10 +867,10 @@ mod tests {
 
     #[test]
     fn test_parse_fetch_wildcard() {
-        let mut input = r#""all": $p.*"#;
+        let mut input = r#""all": {$p.*}"#;
         let item = parse_fetch_item(&mut input).unwrap();
         match item {
-            FetchItem::Wildcard { key, var } => {
+            FetchItem::NestedWildcard { key, var } => {
                 assert_eq!(key, "all");
                 assert_eq!(var, "$p");
             }
@@ -2227,10 +971,10 @@ mod tests {
 
     #[test]
     fn test_parse_fetch_clause() {
-        let input = "fetch {\n  \"name\": $p.name,\n  \"age\": [$p.age]\n};";
+        let input = "match $p isa person; fetch {\n  \"name\": $p.name,\n  \"age\": [$p.age]\n};";
         let clauses = parse_typeql_query(input).unwrap();
-        assert_eq!(clauses.len(), 1);
-        match &clauses[0] {
+        assert_eq!(clauses.len(), 2);
+        match &clauses[1] {
             Clause::Fetch(items) => assert_eq!(items.len(), 2),
             _ => panic!("expected Fetch"),
         }
@@ -2366,11 +1110,8 @@ mod tests {
         let compiler = QueryCompiler::new();
         let parsed = parse_typeql_query(typeql).unwrap();
         let recompiled = compiler.compile(&parsed);
-        assert_eq!(
-            recompiled, typeql,
-            "\n--- INPUT ---\n{}\n--- RECOMPILED ---\n{}",
-            typeql, recompiled
-        );
+        let reparsed = parse_typeql_query(&recompiled).unwrap();
+        assert_eq!(parsed, reparsed, "{typeql}");
     }
 
     #[test]
@@ -2425,7 +1166,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_attribute_with_value() {
-        assert_roundtrip("match\n$a isa name; $a \"John\";");
+        assert_roundtrip("match\n$a isa name \"John\";");
     }
 
     #[test]
@@ -2464,13 +1205,15 @@ mod tests {
 
     #[test]
     fn test_roundtrip_fetch() {
-        assert_roundtrip("fetch {\n  \"name\": $p.name,\n  \"age\": [$p.age]\n};");
+        assert_roundtrip(
+            "match $p isa person; fetch {\n  \"name\": $p.name,\n  \"age\": [$p.age]\n};",
+        );
     }
 
     #[test]
     fn test_roundtrip_fetch_all_types() {
         assert_roundtrip(
-            "fetch {\n  \"a\": $p.name,\n  \"b\": $p,\n  \"c\": [$p.nick],\n  \"d\": iid($p),\n  \"e\": $p.*,\n  \"f\": { $p.* }\n};",
+            "match $p isa person; fetch {\n  \"a\": $p.name,\n  \"b\": $p,\n  \"c\": [$p.nick],\n  \"d\": iid($p),\n  \"e\": {$p.*},\n  \"f\": { $p.* }\n};",
         );
     }
 

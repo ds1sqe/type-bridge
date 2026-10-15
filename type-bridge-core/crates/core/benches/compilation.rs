@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 mod common;
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};

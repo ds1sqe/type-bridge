@@ -239,3 +239,13 @@ impl Prepare {
         }
     }
 }
+
+pub(super) fn prepare_pattern(pattern: &mut Pattern) -> Option<UnsupportedConstruct> {
+    let mut visitor = Prepare { unsupported: None };
+    visitor.patterns(std::slice::from_mut(pattern));
+    visitor.unsupported
+}
+
+pub(super) fn prepare_expression(value: &mut Expression) {
+    Prepare { unsupported: None }.expression(value);
+}

@@ -55,6 +55,7 @@ from type_bridge.query.ast import (
     RelationStatement,
     Statement,
     SubTypePattern,
+    TryPattern,
     UpdateClause,
     Value,
     ValueComparisonPattern,
@@ -208,6 +209,8 @@ def _pattern_to_dict(pattern: Pattern) -> dict[str, Any]:
         }
     if isinstance(pattern, NotPattern):
         return {"type": "Not", "data": [_pattern_to_dict(p) for p in pattern.patterns]}
+    if isinstance(pattern, TryPattern):
+        return {"type": "Try", "data": [_pattern_to_dict(p) for p in pattern.patterns]}
     if isinstance(pattern, OrPattern):
         return {
             "type": "Or",
@@ -342,16 +345,23 @@ def _node_to_dict(node: QueryNode) -> dict[str, Any]:
 
 
 class QueryCompiler:
-    """Compiles AST nodes into TypeQL strings with the Rust core."""
+    """Compile legacy nodes through the native TypeQL adapter.
+
+    Legacy nodes are deprecated since 2.3.0 for removal in 3.0. Prefer generated
+    typed query plans. Raw escape hatches remain caller-owned text.
+    """
 
     def compile(self, node: QueryNode) -> str:
         """Compile a single clause, pattern, statement, constraint, or value.
 
         Raises:
-            ValueError: The node, or a value inside it, cannot be marshalled
-                to the core.
+            ValueError: The node cannot be marshalled or represented as TypeQL.
         """
         return _core_compiler.compile_node(_node_to_dict(node))
+
+    def compile_clause_body(self, clause: Clause) -> str:
+        """Render a legacy clause body through the native AST adapter."""
+        return _core_compiler.compile_clause_body(_clause_to_dict(clause))
 
     def compile_batch(self, nodes: list[QueryNode], operation: str = "") -> str:
         """Compile a list of nodes into a single query string.

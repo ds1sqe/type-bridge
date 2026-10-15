@@ -1334,7 +1334,7 @@ mod tests {
         assert!(band9.plain.is_empty());
         assert_eq!(band9.prepared.len(), 1);
         let (typeql, rows) = &band9.prepared[0];
-        assert!(typeql.starts_with("given $g0: string;\nmatch"));
+        assert!(typeql.starts_with("given $g0: string; match"));
         assert!(typeql.contains("$f0 == $g0"));
         assert_eq!(rows.variables, ["g0"]);
         assert_eq!(rows.rows, [vec![GivenValue::String("Alice".into())]]);
@@ -1365,8 +1365,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(band9.prepared.len(), 3);
-        assert!(band9.prepared[1].0.starts_with("given $g0: string;\nmatch"));
-        assert!(band9.prepared[2].0.starts_with("given $g0: string;\nmatch"));
+        assert!(band9.prepared[1].0.starts_with("given $g0: string; match"));
+        assert!(band9.prepared[2].0.starts_with("given $g0: string; match"));
         assert!(band9.prepared.iter().all(|(_, rows)| rows.rows.len() == 1));
 
         let temporal_fetch = typed_literal_fetch(TypedLiteral::DateTimeTz(

@@ -17,6 +17,27 @@ All notable changes to TypeBridge will be documented in this file.
   application transport errors retain their existing messages.
 - TypeDB transport failures keep a fixed failure kind and the operation name.
 
+### Query rendering
+
+- Core query compilation and parsing now use the official TypeQL AST. Plain
+  rendering changes stage separators and indentation, whitespace inside
+  optional/negated blocks, fetch objects and lists, and numeric spelling.
+  Fetch keys are escaped as string literals and decimals preserve exact digits.
+- Attribute values render as one `isa` constraint, keyed wildcards render as
+  fetch objects, and zero-argument `count` renders as a reducer. Updates use
+  the TypeQL 3 equality constraint. Optional patterns retain `try` semantics.
+- Legacy query nodes and String-returning compiler methods are deprecated
+  since 2.3.0 for removal in 3.0. Use generated typed query plans, or
+  `try_compile` / `try_compile_node` when bridging legacy nodes. Python legacy
+  query exports emit `DeprecationWarning` and propagate checked errors.
+- Checked lowering rejects non-`Has` relation attributes rather than discarding
+  them. Legacy ownership-delete statements are also refused when their
+  attribute type cannot be retained. Deprecated String methods retain the
+  released relation-attribute discard behavior and
+  return empty output for other unrenderable structured shapes. Caller-owned
+  deprecated `Raw` fragments remain verbatim. Parsing rejects unofficial
+  syntax and constructs that cannot be represented by legacy nodes; empty
+  legacy input still returns an empty clause list.
 
 ### Tests
 

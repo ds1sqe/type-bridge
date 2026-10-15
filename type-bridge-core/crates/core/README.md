@@ -17,26 +17,25 @@ type-bridge-core-lib = "2.2.6"
 | `ast` | TypeQL Abstract Syntax Tree — patterns, statements, clauses, and values |
 | `validation` | Schema-aware query validation plus a portable JSON validation-rule DSL |
 | `compiler` | Compiles an AST back into a TypeQL query string |
-| `query_parser` | Parses a TypeQL query string into the AST (bidirectional round-trip) |
+| `query_parser` | Official parsing with checked projection onto compatibility nodes |
 | `value_coercion` | Coerces raw values into TypeDB value-types and formats TypeQL literals |
 | `reserved_words` | TypeQL reserved-word detection |
 
 ## Usage
 
 ```rust
-use type_bridge_core_lib::query_parser::parse_typeql_query;
+use type_bridge_core_lib::query_parser::parse_typeql_query_checked;
 use type_bridge_core_lib::compiler::QueryCompiler;
 
 // Parse a TypeQL query into AST clauses
-let clauses = parse_typeql_query(r#"match $p isa person, has name "Alice";"#).unwrap();
+let clauses = parse_typeql_query_checked(r#"match $p isa person, has name "Alice";"#).unwrap();
 
 // Compile back to TypeQL
 let compiler = QueryCompiler::new();
-let typeql = compiler.compile(&clauses);
+let typeql = compiler.try_compile(&clauses).unwrap();
 assert_eq!(
     typeql,
-    r#"match
-$p isa person, has name "Alice";"#,
+    r#"match $p isa person, has name "Alice";"#,
 );
 ```
 

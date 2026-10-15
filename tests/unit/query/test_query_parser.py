@@ -14,7 +14,6 @@ from type_bridge.query.ast import (
     FetchFunction,
     FetchNestedWildcard,
     FetchVariable,
-    FetchWildcard,
     HasConstraint,
     HasPattern,
     HasStatement,
@@ -54,7 +53,9 @@ def _roundtrip(typeql: str) -> str:
     """Parse TypeQL -> AST -> compile back to TypeQL."""
     clauses = parse_typeql_query(typeql)
     parts = [compiler.compile(c) for c in clauses]
-    return "\n".join(parts)
+    rendered = "\n".join(parts)
+    assert parse_typeql_query(rendered) == clauses
+    return rendered
 
 
 # ---------------------------------------------------------------------------
@@ -252,13 +253,13 @@ class TestDeleteClause:
         assert isinstance(stmt, DeleteThingStatement)
         assert stmt.variable == "$p"
 
-    def test_delete_has(self):
-        tql = 'delete\n$p has name "Alice";'
-        clauses = parse_typeql_query(tql)
-        clause = clauses[0]
-        assert isinstance(clause, DeleteClause)
-        stmt = clause.statements[0]
-        assert isinstance(stmt, HasStatement)
+    def test_delete_has_invalid_legacy_syntax_is_refused(self):
+        with pytest.raises(ValueError, match="invalid TypeQL syntax"):
+            parse_typeql_query('delete $p has name "Alice";')
+
+    def test_ownership_deletion_has_no_legacy_attribute_type_to_project(self):
+        with pytest.raises(ValueError, match="unsupported TypeQL construct"):
+            parse_typeql_query("match $p isa person, has name $n; delete $n of $p;")
 
 
 # ---------------------------------------------------------------------------
@@ -283,53 +284,53 @@ class TestUpdateClause:
 
 class TestFetchClause:
     def test_fetch_wildcard(self):
-        tql = 'fetch {\n  "data": $p.*\n};'
+        tql = 'match $p isa person; fetch {\n  "data": {$p.*}\n};'
         clauses = parse_typeql_query(tql)
-        clause = clauses[0]
+        clause = clauses[1]
         assert isinstance(clause, FetchClause)
         item = clause.items[0]
-        assert isinstance(item, FetchWildcard)
+        assert isinstance(item, FetchNestedWildcard)
         assert item.key == "data"
         assert item.var == "$p"
 
     def test_fetch_attribute(self):
-        tql = 'fetch {\n  "name": $p.name\n};'
+        tql = 'match $p isa person; fetch {\n  "name": $p.name\n};'
         clauses = parse_typeql_query(tql)
-        clause = clauses[0]
+        clause = clauses[1]
         assert isinstance(clause, FetchClause)
         item = clause.items[0]
         assert isinstance(item, FetchAttribute)
         assert item.attr_name == "name"
 
     def test_fetch_variable(self):
-        tql = 'fetch {\n  "person": $p\n};'
+        tql = 'match $p isa person; fetch {\n  "person": $p\n};'
         clauses = parse_typeql_query(tql)
-        clause = clauses[0]
+        clause = clauses[1]
         assert isinstance(clause, FetchClause)
         item = clause.items[0]
         assert isinstance(item, FetchVariable)
 
     def test_fetch_attribute_list(self):
-        tql = 'fetch {\n  "names": [$p.name]\n};'
+        tql = 'match $p isa person; fetch {\n  "names": [$p.name]\n};'
         clauses = parse_typeql_query(tql)
-        clause = clauses[0]
+        clause = clauses[1]
         assert isinstance(clause, FetchClause)
         item = clause.items[0]
         assert isinstance(item, FetchAttributeList)
 
     def test_fetch_function(self):
-        tql = 'fetch {\n  "_iid": iid($p)\n};'
+        tql = 'match $p isa person; fetch {\n  "_iid": iid($p)\n};'
         clauses = parse_typeql_query(tql)
-        clause = clauses[0]
+        clause = clauses[1]
         assert isinstance(clause, FetchClause)
         item = clause.items[0]
         assert isinstance(item, FetchFunction)
         assert item.func_name == "iid"
 
     def test_fetch_nested_wildcard(self):
-        tql = 'fetch {\n  "data": { $p.* }\n};'
+        tql = 'match $p isa person; fetch {\n  "data": { $p.* }\n};'
         clauses = parse_typeql_query(tql)
-        clause = clauses[0]
+        clause = clauses[1]
         assert isinstance(clause, FetchClause)
         item = clause.items[0]
         assert isinstance(item, FetchNestedWildcard)
@@ -405,7 +406,7 @@ class TestMultiClause:
         assert isinstance(clauses[1], DeleteClause)
 
     def test_match_fetch(self):
-        tql = 'match\n$p isa person;\nfetch {\n  "data": $p.*\n};'
+        tql = 'match\n$p isa person;\nfetch {\n  "data": {$p.*}\n};'
         clauses = parse_typeql_query(tql)
         assert len(clauses) == 2
         assert isinstance(clauses[0], MatchClause)
@@ -413,70 +414,70 @@ class TestMultiClause:
 
 
 # ---------------------------------------------------------------------------
-# Roundtrip tests: compile(parse(tql)) == tql
+# Roundtrip tests preserve parsed nodes across canonical rendering
 # ---------------------------------------------------------------------------
 
 
 class TestRoundtrip:
     def test_simple_match(self):
         tql = "match\n$p isa person;"
-        assert _roundtrip(tql) == tql
+        _roundtrip(tql)
 
     def test_match_with_constraints(self):
         tql = 'match\n$p isa person, has name "Alice", has age 30;'
-        assert _roundtrip(tql) == tql
+        _roundtrip(tql)
 
     def test_relation_match(self):
         tql = "match\n$r isa employment (employee: $p, employer: $c);"
-        assert _roundtrip(tql) == tql
+        _roundtrip(tql)
 
     def test_insert_isa(self):
         tql = "insert\n$p isa person;"
-        assert _roundtrip(tql) == tql
+        _roundtrip(tql)
 
     def test_insert_has(self):
         tql = 'insert\n$p has name "Alice";'
-        assert _roundtrip(tql) == tql
+        _roundtrip(tql)
 
     def test_delete_thing(self):
         tql = "delete\n$p;"
-        assert _roundtrip(tql) == tql
+        _roundtrip(tql)
 
     def test_match_insert_roundtrip(self):
         tql = 'match\n$p isa person;\ninsert\n$p has name "Bob";'
-        assert _roundtrip(tql) == tql
+        _roundtrip(tql)
 
     def test_fetch_roundtrip(self):
-        tql = 'fetch {\n  "data": $p.*\n};'
-        assert _roundtrip(tql) == tql
+        tql = 'match $p isa person; fetch {\n  "data": {$p.*}\n};'
+        _roundtrip(tql)
 
     def test_reduce_roundtrip(self):
         tql = "reduce $count = count($p);"
-        assert _roundtrip(tql) == tql
+        _roundtrip(tql)
 
     def test_subtype_roundtrip(self):
         tql = "match\n$t sub person;"
-        assert _roundtrip(tql) == tql
+        _roundtrip(tql)
 
     def test_has_pattern_roundtrip(self):
         tql = "match\n$p has name $n;"
-        assert _roundtrip(tql) == tql
+        _roundtrip(tql)
 
     def test_not_pattern_roundtrip(self):
         tql = "match\nnot { $p has name $n; };"
-        assert _roundtrip(tql) == tql
+        _roundtrip(tql)
 
     def test_or_pattern_roundtrip(self):
         tql = "match\n{ $p isa person; } or { $p isa company; };"
-        assert _roundtrip(tql) == tql
+        _roundtrip(tql)
 
     def test_iid_pattern_roundtrip(self):
         tql = "match\n$p iid 0xabc;"
-        assert _roundtrip(tql) == tql
+        _roundtrip(tql)
 
     def test_value_comparison_roundtrip(self):
         tql = "match\n$a > 10;"
-        assert _roundtrip(tql) == tql
+        _roundtrip(tql)
 
 
 # ---------------------------------------------------------------------------

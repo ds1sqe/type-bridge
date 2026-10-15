@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 use super::{Query, TqlError};
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use typeql::{
@@ -31,7 +32,7 @@ node!(FetchValue, fetch::FetchSome);
 node!(Deletable, delete::Deletable);
 node!(Reducer, reduce::Reducer);
 
-fn variable(name: &str) -> Result<Variable, TqlError> {
+pub(super) fn variable(name: &str) -> Result<Variable, TqlError> {
     let name = name.strip_prefix('$').unwrap_or(name);
     if name == "_" {
         return Ok(Variable::Anonymous {
@@ -49,7 +50,7 @@ fn variable(name: &str) -> Result<Variable, TqlError> {
     })
 }
 
-fn type_ref(name: &str) -> Result<TypeRef, TqlError> {
+pub(super) fn type_ref(name: &str) -> Result<TypeRef, TqlError> {
     if name.starts_with('$') {
         return variable(name).map(TypeRef::Variable);
     }
@@ -224,7 +225,7 @@ pub fn has_comparison(name: &str, operator: &str, value: Expr) -> Result<Constra
     })
 }
 
-fn relation(players: Vec<(&str, &str)>) -> Result<thing::Relation, TqlError> {
+pub(super) fn relation(players: Vec<(&str, &str)>) -> Result<thing::Relation, TqlError> {
     let role_players = players
         .into_iter()
         .map(|(role, player)| {
@@ -528,4 +529,158 @@ pub fn pipeline(stages: Vec<Stage>) -> Query {
         )),
         has_explicit_end: false,
     })
+}
+
+pub fn conjunction(patterns: Vec<Pattern>) -> Pattern {
+    Pattern {
+        inner: pattern::Pattern::Conjunction(pattern::Conjunction {
+            span: None,
+            patterns: patterns.into_iter().map(|value| value.inner).collect(),
+        }),
+    }
+}
+
+pub fn distinct() -> Stage {
+    Stage {
+        inner: stage::Stage::Operator(modifier::Operator::Distinct(modifier::Distinct::new(None))),
+    }
+}
+
+pub fn identity(left: &str, right: &str) -> Result<Pattern, TqlError> {
+    Ok(Pattern {
+        inner: pattern::Pattern::Statement(statement::Statement::Is(statement::Is {
+            span: None,
+            lhs: variable(left)?,
+            rhs: variable(right)?,
+        })),
+    })
+}
+
+pub fn subtype(name: &str, parent: &str) -> Result<Pattern, TqlError> {
+    use statement::type_::{Constraint, ConstraintBase, Sub, SubKind, Type};
+    Ok(Pattern {
+        inner: pattern::Pattern::Statement(statement::Statement::Type(Type::new(
+            None,
+            None,
+            type_ref(name)?,
+            vec![Constraint::new(
+                None,
+                ConstraintBase::Sub(Sub::new(None, SubKind::Transitive, type_ref(parent)?)),
+                vec![],
+            )],
+        ))),
+    })
+}
+
+pub fn isa_value(name: &str, exact: bool, value: Expr) -> Result<Constraint, TqlError> {
+    let mut result = isa(name, exact)?;
+    let thing::Constraint::Isa(isa) = &mut result.inner else {
+        unreachable!()
+    };
+    isa.constraint = Some(match value.inner {
+        Expression::Value(value) => thing::isa::IsaInstanceConstraint::Value(value),
+        value => thing::isa::IsaInstanceConstraint::Expression(value),
+    });
+    Ok(result)
+}
+
+pub fn isa_relation(name: &str, players: Vec<(&str, &str)>) -> Result<Constraint, TqlError> {
+    let mut result = isa(name, false)?;
+    let thing::Constraint::Isa(isa) = &mut result.inner else {
+        unreachable!()
+    };
+    isa.constraint = Some(thing::isa::IsaInstanceConstraint::Relation(relation(
+        players,
+    )?));
+    Ok(result)
+}
+
+pub fn anonymous_relation(
+    players: Vec<(&str, &str)>,
+    constraints: Vec<Constraint>,
+) -> Result<Pattern, TqlError> {
+    Ok(Pattern {
+        inner: pattern::Pattern::from(thing::Thing::new(
+            None,
+            thing::Head::Relation(None, relation(players)?),
+            constraints.into_iter().map(|value| value.inner).collect(),
+        )),
+    })
+}
+
+pub fn fetch_attribute(owner: &str, name: &str, list: bool) -> Result<FetchValue, TqlError> {
+    let attribute = fetch::FetchAttribute {
+        span: None,
+        owner: variable(owner)?,
+        attribute: TypeRefAny::Type(type_ref(name)?),
+    };
+    Ok(FetchValue {
+        inner: if list {
+            fetch::FetchSome::List(fetch::FetchList::new(
+                None,
+                fetch::FetchStream::Attribute(attribute),
+            ))
+        } else {
+            fetch::FetchSome::Single(fetch::FetchSingle::Attribute(attribute))
+        },
+    })
+}
+
+pub fn typed_literal(value: &crate::ast::TypedLiteral) -> Result<Expr, TqlError> {
+    use crate::ast::TypedLiteral as L;
+    let source = match value {
+        L::String(value) => serde_json::to_string(value).map_err(|_| TqlError::InvalidLiteral)?,
+        L::Long(value) => value.to_string(),
+        L::Double(value) if value.is_finite() => {
+            let s = value.to_string();
+            if s.contains(['.', 'e', 'E']) {
+                s
+            } else {
+                format!("{s}.0")
+            }
+        }
+        L::Double(_) => return Err(TqlError::InvalidLiteral),
+        L::Boolean(value) => value.to_string(),
+        L::Decimal(value) => format!("{}dec", value.strip_suffix("dec").unwrap_or(value)),
+        L::Date(value) | L::DateTime(value) | L::DateTimeTz(value) | L::Duration(value) => {
+            value.clone()
+        }
+    };
+    Ok(Expr {
+        inner: Expression::Value(value::Literal {
+            span: None,
+            inner: typeql::parse_value(&source).map_err(|_| TqlError::InvalidLiteral)?,
+        }),
+    })
+}
+
+pub fn fetch_object(entries: Vec<(&str, FetchValue)>) -> Result<FetchValue, TqlError> {
+    let Stage {
+        inner: stage::Stage::Fetch(value),
+    } = fetch(entries)?
+    else {
+        unreachable!()
+    };
+    Ok(FetchValue {
+        inner: fetch::FetchSome::Object(value.object),
+    })
+}
+pub fn fetch_subquery(stages: Vec<Stage>) -> FetchValue {
+    FetchValue {
+        inner: fetch::FetchSome::List(fetch::FetchList {
+            span: None,
+            stream: fetch::FetchStream::SubQueryFetch(
+                stages.into_iter().map(|v| v.inner).collect(),
+            ),
+        }),
+    }
+}
+
+/// Render a validated adapter pattern fragment through official Display.
+pub fn render_pattern(value: &Pattern) -> Result<String, TqlError> {
+    let mut value = value.clone();
+    if let Some(construct) = super::render_guard::prepare_pattern(&mut value.inner) {
+        return Err(TqlError::Unsupported { construct });
+    }
+    Ok(value.inner.to_string())
 }

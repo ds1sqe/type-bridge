@@ -51,7 +51,7 @@ class Expression(ABC):
         # Render the patterns as one match body, without the keyword.
         from type_bridge.query.ast import MatchClause
 
-        return compiler.compile(MatchClause(patterns=patterns)).replace("match\n", "").strip(";")
+        return compiler.compile_clause_body(MatchClause(patterns=patterns))
 
     def get_attribute_types(self) -> set[type["Attribute"]]:
         """Get all attribute types referenced by this expression.

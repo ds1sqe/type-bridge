@@ -16,6 +16,7 @@
 //! # $e isa person, has name "Alice", has age 30;
 //! ```
 
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 use std::collections::HashMap;
 
 use pyo3::prelude::*;
@@ -127,7 +128,9 @@ impl CrudQueryBuilder {
         }
 
         let clauses = vec![Clause::Insert(statements)];
-        Ok(self.compiler.compile(&clauses))
+        self.compiler
+            .try_compile(&clauses)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
     }
 
     /// Build an entity MATCH+FETCH query.
@@ -201,7 +204,9 @@ impl CrudQueryBuilder {
             clauses.push(Clause::Offset(n));
         }
 
-        Ok(self.compiler.compile(&clauses))
+        self.compiler
+            .try_compile(&clauses)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
     }
 
     /// Build an entity DELETE query by IID.
@@ -212,7 +217,7 @@ impl CrudQueryBuilder {
     ///
     /// Returns:
     ///     The compiled TypeQL MATCH+DELETE string.
-    fn build_entity_delete(&self, type_name: &str, iid: &str) -> String {
+    fn build_entity_delete(&self, type_name: &str, iid: &str) -> PyResult<String> {
         let clauses = vec![
             Clause::Match(vec![Pattern::Entity {
                 variable: "$e".to_string(),
@@ -222,7 +227,9 @@ impl CrudQueryBuilder {
             }]),
             Clause::Delete(vec![Statement::DeleteThing("$e".to_string())]),
         ];
-        self.compiler.compile(&clauses)
+        self.compiler
+            .try_compile(&clauses)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
     }
 
     /// Build an entity UPDATE query by IID.
@@ -279,7 +286,9 @@ impl CrudQueryBuilder {
             Clause::Delete(delete_stmts),
             Clause::Insert(insert_stmts),
         ];
-        Ok(self.compiler.compile(&clauses))
+        self.compiler
+            .try_compile(&clauses)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
     }
 
     /// Build an entity COUNT query.
@@ -289,7 +298,7 @@ impl CrudQueryBuilder {
     ///
     /// Returns:
     ///     The compiled TypeQL MATCH+REDUCE COUNT string.
-    fn build_entity_count(&self, type_name: &str) -> String {
+    fn build_entity_count(&self, type_name: &str) -> PyResult<String> {
         let clauses = vec![
             Clause::Match(vec![Pattern::Entity {
                 variable: "$e".to_string(),
@@ -308,7 +317,9 @@ impl CrudQueryBuilder {
                 group_by: None,
             },
         ];
-        self.compiler.compile(&clauses)
+        self.compiler
+            .try_compile(&clauses)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
     }
 
     /// Build a relation INSERT query.
@@ -393,7 +404,9 @@ impl CrudQueryBuilder {
         }
         clauses.push(Clause::Insert(vec![insert_stmt]));
 
-        Ok(self.compiler.compile(&clauses))
+        self.compiler
+            .try_compile(&clauses)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
     }
 
     /// Build an entity "PUT" (upsert) query.

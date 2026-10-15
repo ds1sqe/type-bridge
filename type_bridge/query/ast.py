@@ -161,6 +161,13 @@ class NotPattern(Pattern):
 
 
 @dataclass
+class TryPattern(Pattern):
+    """Legacy optional pattern (try { ... }); use generated query plans."""
+
+    patterns: list[Pattern]
+
+
+@dataclass
 class OrPattern(Pattern):
     """Pattern for disjunction ({ ... } or { ... })."""
 

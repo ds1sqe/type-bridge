@@ -3,6 +3,7 @@
 //! The V2 route test executes against a live TypeDB (TYPEDB_ADDRESS /
 //! TYPEDB_HTTP_PORT); run it explicitly with `-- --ignored`.
 
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 mod support;
 
 use std::collections::BTreeMap;

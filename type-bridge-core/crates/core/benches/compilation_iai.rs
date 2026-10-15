@@ -1,6 +1,7 @@
 //! Instruction counts for `compilation.rs`; see `validation_iai.rs` for the
 //! conventions.
 
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 mod common;
 
 use std::hint::black_box;

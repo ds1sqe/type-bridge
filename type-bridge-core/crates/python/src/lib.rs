@@ -13,6 +13,7 @@
 
 // Database one-shot calls await the deeper staged::Transaction::commit future.
 #![recursion_limit = "256"]
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 #![warn(missing_docs)]
 
 pub mod ast;
@@ -43,6 +44,10 @@ use type_bridge_core_lib as core;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyList};
 use pythonize::{depythonize, pythonize};
+
+fn warn_legacy_query_api(py: Python<'_>) -> PyResult<()> {
+    PyErr::warn(py, py.get_type::<pyo3::exceptions::PyDeprecationWarning>().as_any(), c"Legacy query nodes are deprecated since 2.3.0 and will be removed in 3.0; use generated typed query plans.", 1)
+}
 
 /// Python-facing wrapper around the Rust [`type_bridge_core_lib::validation::ValidationEngine`].
 #[pyclass]
@@ -205,7 +210,8 @@ impl QueryCompiler {
         }
     }
 
-    fn compile(&self, clauses: Vec<Bound<'_, PyAny>>) -> PyResult<String> {
+    fn compile(&self, py: Python<'_>, clauses: Vec<Bound<'_, PyAny>>) -> PyResult<String> {
+        warn_legacy_query_api(py)?;
         let mut core_clauses = Vec::new();
         for clause in &clauses {
             let c: core::ast::Clause = depythonize(clause).map_err(|e| {
@@ -216,12 +222,15 @@ impl QueryCompiler {
             })?;
             core_clauses.push(c);
         }
-        Ok(self.inner.compile(&core_clauses))
+        self.inner
+            .try_compile(&core_clauses)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
     }
 
     /// Compile from Python dicts matching the serde-tagged-enum format.
     /// This accepts Python dataclasses that have been converted to dicts.
-    fn compile_dicts(&self, clauses: Vec<Bound<'_, PyAny>>) -> PyResult<String> {
+    fn compile_dicts(&self, py: Python<'_>, clauses: Vec<Bound<'_, PyAny>>) -> PyResult<String> {
+        warn_legacy_query_api(py)?;
         let mut core_clauses = Vec::new();
         for clause in &clauses {
             let c: core::ast::Clause = depythonize(clause).map_err(|e| {
@@ -232,23 +241,38 @@ impl QueryCompiler {
             })?;
             core_clauses.push(c);
         }
-        Ok(self.inner.compile(&core_clauses))
+        self.inner
+            .try_compile(&core_clauses)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
     }
 
     /// Compile one node dict tagged with its kind (`{"Pattern": {...}}`):
     /// a clause, pattern, statement, constraint, or value.
-    fn compile_node(&self, node: Bound<'_, PyAny>) -> PyResult<String> {
+    fn compile_node(&self, py: Python<'_>, node: Bound<'_, PyAny>) -> PyResult<String> {
+        warn_legacy_query_api(py)?;
         let node: core::ast::QueryNode = depythonize(&node).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!(
                 "Failed to deserialize query node: {}",
                 e
             ))
         })?;
-        Ok(self.inner.compile_node(&node))
+        self.inner
+            .try_compile_node(&node)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+    }
+
+    /// Render the body of a legacy match/write clause through structured nodes.
+    fn compile_clause_body(&self, py: Python<'_>, clause: Bound<'_, PyAny>) -> PyResult<String> {
+        warn_legacy_query_api(py)?;
+        let clause: core::ast::Clause = depythonize(&clause)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        core::__internal::legacy_clause_body(&clause)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
     }
 
     /// Parse a TypeQL query string into a list of clause dicts (serde-tagged-enum format).
     fn parse(&self, py: Python<'_>, input: &str) -> PyResult<Py<PyAny>> {
+        warn_legacy_query_api(py)?;
         let clauses = core::query_parser::parse_typeql_query(input)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         pythonize(py, &clauses)
@@ -674,6 +698,7 @@ fn coerce_value(py: Python<'_>, value: Bound<'_, PyAny>, target_type: &str) -> P
 /// Standalone function equivalent to `QueryCompiler().parse(input)`.
 #[pyfunction]
 fn parse_typeql_query(py: Python<'_>, input: &str) -> PyResult<Py<PyAny>> {
+    warn_legacy_query_api(py)?;
     let clauses = core::query_parser::parse_typeql_query(input)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
     pythonize(py, &clauses)

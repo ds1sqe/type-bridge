@@ -3,6 +3,7 @@
 //! `common/mod.rs`. Inputs are built outside the measured function and
 //! returned from it, so neither construction nor drop is counted.
 
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 mod common;
 
 use std::hint::black_box;

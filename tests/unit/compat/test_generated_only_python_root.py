@@ -306,7 +306,7 @@ def test_transaction_context_has_no_handwritten_manager_factory() -> None:
 def test_raw_query_facade_remains_public() -> None:
     assert {"Query", "QueryBuilder"} <= set(type_bridge.__all__)
     assert type_bridge.Query().match("$person isa person").fetch("$person").build() == (
-        'match\n$person isa person;\nfetch {\n  "person": $person.*\n};'
+        'match $person isa person;\nfetch { "person": {  $person.*}};'
     )
 
 

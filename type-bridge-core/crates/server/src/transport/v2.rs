@@ -4,6 +4,7 @@
 //! provider transaction, and executes under a mandatory server deadline. The
 //! typed request/result bytes remain owned by `type-bridge-contract`.
 
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::future::Future;

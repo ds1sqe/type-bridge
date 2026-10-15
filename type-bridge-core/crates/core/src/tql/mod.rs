@@ -2,16 +2,21 @@
 #![allow(missing_docs)]
 
 mod builders;
+mod legacy;
+mod legacy_projection;
+pub use legacy::*;
+pub use legacy_projection::project_legacy;
 mod render_guard;
 pub use builders::*;
 
-/// A grammar construct whose upstream renderer is incomplete.
+/// A grammar construct unsupported by rendering or legacy projection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum UnsupportedConstruct {
     StructDestructuring,
     ExplicitEnd,
     SchemaRename,
+    LegacyProjection,
 }
 
 /// Stable adapter errors contain neither upstream types nor query values.
@@ -22,6 +27,7 @@ pub enum TqlError {
     InvalidIdentifier,
     InvalidLiteral,
     InvalidOperator,
+    InvalidLegacyShape,
     Unsupported { construct: UnsupportedConstruct },
 }
 
@@ -33,8 +39,9 @@ impl std::fmt::Display for TqlError {
             }
             Self::InvalidIdentifier => f.write_str("invalid TypeQL identifier"),
             Self::InvalidLiteral => f.write_str("invalid TypeQL literal"),
+            Self::InvalidLegacyShape => f.write_str("invalid legacy TypeQL node shape"),
             Self::InvalidOperator => f.write_str("invalid TypeQL operator"),
-            Self::Unsupported { .. } => f.write_str("unsupported TypeQL rendering construct"),
+            Self::Unsupported { .. } => f.write_str("unsupported TypeQL construct"),
         }
     }
 }
