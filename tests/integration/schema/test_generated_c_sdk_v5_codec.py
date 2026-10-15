@@ -19,6 +19,11 @@ PRODUCER = CORE / "crates/schema-codegen/tests/c_acceptance/sdk_v5_codec.c"
 SCHEMA = ROOT / "tests/contracts/sdk_conformance/models/schema.yaml"
 
 
+def library_directory() -> Path:
+    configured = Path(os.environ.get("CARGO_TARGET_DIR", CORE / "target"))
+    return (CORE / configured / "debug").resolve()
+
+
 def generate_package(stage: Path, schema: Path, *, app_label: str, scope: str) -> Path:
     workspace = stage / "workspace"
     fragments = workspace / "schema/fragments"
@@ -128,9 +133,9 @@ def compile_producer(package: Path, foreign_package: Path, executable: Path) -> 
             str(foreign_package / "src/models.c"),
             str(PRODUCER),
             "-L",
-            str(CORE / "target/debug"),
+            str(library_directory()),
             "-ltype_bridge_c",
-            f"-Wl,-rpath,{CORE / 'target/debug'}",
+            f"-Wl,-rpath,{library_directory()}",
             "-o",
             str(executable),
         ],
@@ -151,7 +156,7 @@ def run_c_producer(executable: Path, seed: dict[str, object], stage: Path) -> tu
         assert isinstance(encoded, str)
         (inputs / f"record-{index}.bin").write_bytes(base64.b64decode(encoded))
     environment = os.environ.copy()
-    library_path = str(CORE / "target/debug")
+    library_path = str(library_directory())
     environment["LD_LIBRARY_PATH"] = os.pathsep.join(
         filter(None, [library_path, environment.get("LD_LIBRARY_PATH", "")])
     )
