@@ -555,6 +555,23 @@ pub enum SdkProjectionEvidenceSlotPresence {
     Present,
 }
 
+/// Schema context for a staged failure, supplied from the executing plan only.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct FailureContext {
+    /// Possible owning type; never parsed from provider text.
+    pub owner: Option<TypeId>,
+    /// Possible ownership fact; never parsed from provider text.
+    pub attribute: Option<OwnsFactId>,
+}
+impl FailureContext {
+    /// Context naming the possible owning type and ownership fact.
+    #[must_use]
+    pub const fn new(owner: Option<TypeId>, attribute: Option<OwnsFactId>) -> Self {
+        Self { owner, attribute }
+    }
+}
+
 /// One stable, binding-neutral SDK execution failure.
 ///
 /// This value is versioned but intentionally has no wire representation. A
@@ -562,6 +579,7 @@ pub enum SdkProjectionEvidenceSlotPresence {
 /// handle and must not expose this Rust layout.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SdkExecutionDiagnostic {
+    failure: Option<Box<crate::failure::Failure>>,
     version: SdkDiagnosticVersion,
     category: SdkDiagnosticCategory,
     code: SdkDiagnosticCode,
@@ -577,6 +595,7 @@ impl SdkExecutionDiagnostic {
         message: SdkDiagnosticMessage,
     ) -> Self {
         Self {
+            failure: None,
             version: SdkDiagnosticVersion::CURRENT,
             category,
             code,
@@ -745,6 +764,97 @@ impl SdkExecutionDiagnostic {
             static_name("commit_outcome"),
             SdkDiagnosticDetailValue::CommitOutcome(outcome),
         )
+    }
+
+    /// Construct the released diagnostic for a typed provider failure.
+    ///
+    /// The code stays on the released vocabulary: an indeterminate commit is
+    /// `commit_outcome_unknown`, a commit rejection `commit_definitely_aborted`
+    /// and a query rejection `provider_operation_failed` for a `write`. The
+    /// typed failure is added through [`Self::with_failure`].
+    #[must_use]
+    pub fn from_failure(failure: &crate::failure::Failure, context: FailureContext) -> Self {
+        use crate::failure::{Failure, Phase};
+        let released = match failure {
+            Failure::Indeterminate { .. } => Self::commit_failure(SdkCommitFailureOutcome::Unknown),
+            Failure::Rejected {
+                phase: Phase::Commit,
+                ..
+            } => Self::commit_failure(SdkCommitFailureOutcome::DefinitelyAborted),
+            Failure::Rejected {
+                phase: Phase::Query,
+                ..
+            } => Self::provider_failure(SdkProviderOperation::Write),
+        };
+        released.with_failure(failure, context)
+    }
+
+    /// Attach a typed provider failure to a released diagnostic.
+    ///
+    /// Code, category, message and existing details are kept. The additive
+    /// details are `retry_safe`, `code` (provider code), `rejection` (reason),
+    /// `lock_kind` and `annotation`; the staged index and schema context
+    /// extend the path.
+    #[must_use]
+    pub fn with_failure(
+        mut self,
+        failure: &crate::failure::Failure,
+        context: FailureContext,
+    ) -> Self {
+        use crate::failure::Failure;
+        self.failure = Some(Box::new(failure.clone()));
+        let mut diagnostic = self.with_static_detail(
+            static_name("retry_safe"),
+            SdkDiagnosticDetailValue::Boolean(failure.retry_safe()),
+        );
+        let host = failure.host_json();
+        for (key, name) in [
+            ("code", "code"),
+            ("reason", "rejection"),
+            ("lock_kind", "lock_kind"),
+            ("annotation", "annotation"),
+        ] {
+            if let Some(value) = host[key].as_str() {
+                diagnostic = diagnostic.with_static_detail(
+                    static_name(name),
+                    SdkDiagnosticDetailValue::QueryIdentity(
+                        SdkQueryDiagnosticIdentity::new(value)
+                            .expect("closed failure vocabulary is a bounded identity"),
+                    ),
+                );
+            }
+        }
+        if let Failure::Rejected {
+            op_index: Some(index),
+            ..
+        } = failure
+        {
+            diagnostic
+                .path
+                .push(SdkDiagnosticPathSegment::Index(u64::from(*index)));
+        }
+        if let Some(owner) = context.owner {
+            diagnostic.path.push(SdkDiagnosticPathSegment::Type(owner));
+        }
+        if let Some(field) = context.attribute {
+            diagnostic.path.push(SdkDiagnosticPathSegment::Field(field));
+        }
+        diagnostic
+    }
+
+    /// Typed provider failure when constructed from the runtime's classification.
+    #[must_use]
+    pub fn failure(&self) -> Option<&crate::failure::Failure> {
+        self.failure.as_deref()
+    }
+
+    /// Typed commit outcome, including the released umbrella constructors.
+    #[must_use]
+    pub fn commit_outcome(&self) -> Option<SdkCommitFailureOutcome> {
+        self.details.values().find_map(|value| match value {
+            SdkDiagnosticDetailValue::CommitOutcome(outcome) => Some(*outcome),
+            _ => None,
+        })
     }
 
     /// Construct a stable transaction-lifecycle diagnostic.

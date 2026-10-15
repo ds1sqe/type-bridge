@@ -796,3 +796,48 @@ operation inventory maps those outcomes to their binding-specific evidence.
 The compiler fixtures import the emitted package, not a handwritten authoring
 barrel. Separately unscheduled query compatibility and read-only archive
 baselines remain independent gates.
+
+## Provider failures
+
+The runtime classifies provider failures once. A `Failure::Rejected` contains
+`phase` (`query` or `commit`), a value-free reason and, on staged execution, an
+operation index. Reasons are conflict (with a reported lock kind), cardinality,
+unique, another annotation constraint, or another validated provider code.
+A `Failure::Indeterminate` means a commit may have applied. Its code is optional.
+No winner identity, query value, database name or provider prose is retained.
+
+Canonical SDK diagnostics add these rejection codes:
+
+| Phase | Codes |
+| --- | --- |
+| Commit | `commit_rejected_conflict`, `commit_rejected_cardinality`, `commit_rejected_unique`, `commit_rejected_constraint`, `commit_rejected_other` |
+| Query | `query_rejected_cardinality`, `query_rejected_unique`, `query_rejected_constraint`, `query_rejected_other` |
+
+The released `commit_definitely_aborted` umbrella remains available. Its typed
+children retain `sdk_category: transaction` and the existing
+`commit_outcome: definitely_aborted` detail. Match that category and outcome to
+handle all proven commit rejections; matching only the umbrella code selects
+only diagnostics constructed without a more specific reason.
+`commit_outcome_unknown` remains the indeterminate code with
+`commit_outcome: unknown`.
+
+New diagnostics include `retry_safe` as a boolean and `code` as a validated
+TypeDB identity. Conflict diagnostics include `lock_kind`; annotation
+constraints include `annotation`. These use bounded identity detail values,
+without extending the C ABI 1.6 detail vocabulary. A staged operation index
+is an `Index` path segment; possible owner and attribute sites are `Type` and
+`Field` path segments taken only from plan metadata. They are possible sites,
+not evidence that a particular site or another transaction caused the failure.
+
+New staged errors carry this classification structurally. Additive `.failure()`
+accessors on released runtime/ORM/server error enums recover only the code and
+fixed description written by the runtime; these released string carriers have
+no operation index or plan-derived owner/attribute context. Their enum variants
+remain unchanged. Arbitrary application messages are not parsed as failures.
+
+A rejection is safe to retry only by rerunning the whole transaction against a
+fresh snapshot, including its reads and conditions. It does not promise that
+another attempt will succeed. Indeterminate commits require reconciliation
+before retrying. TypeDB-origin ordinary error messages, debug output and source
+chains contain a code plus fixed description; local validation messages and
+application-owned transport errors retain their existing contracts.

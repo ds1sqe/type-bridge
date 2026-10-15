@@ -1,0 +1,531 @@
+{
+  "commit_definitely_aborted-CNT5": {
+    "category": "transaction",
+    "code": "commit_definitely_aborted",
+    "details": {
+      "code": {
+        "kind": "query_identity",
+        "value": "CNT5"
+      },
+      "commit_outcome": {
+        "kind": "text",
+        "value": "definitely_aborted"
+      },
+      "rejection": {
+        "kind": "query_identity",
+        "value": "cardinality"
+      },
+      "retry_safe": {
+        "kind": "boolean",
+        "value": true
+      }
+    },
+    "message": "The provider proves that the transaction did not commit",
+    "path": [
+      {
+        "kind": "index",
+        "value": 2
+      },
+      {
+        "kind": "type",
+        "value": {
+          "kind": "entity",
+          "label": "item"
+        }
+      },
+      {
+        "kind": "field",
+        "value": {
+          "attribute": "score",
+          "owner": {
+            "kind": "entity",
+            "label": "item"
+          }
+        }
+      }
+    ],
+    "query_category": null,
+    "sdk_category": "transaction",
+    "version": 1
+  },
+  "commit_definitely_aborted-CNT7": {
+    "category": "transaction",
+    "code": "commit_definitely_aborted",
+    "details": {
+      "annotation": {
+        "kind": "query_identity",
+        "value": "range"
+      },
+      "code": {
+        "kind": "query_identity",
+        "value": "CNT7"
+      },
+      "commit_outcome": {
+        "kind": "text",
+        "value": "definitely_aborted"
+      },
+      "rejection": {
+        "kind": "query_identity",
+        "value": "constraint"
+      },
+      "retry_safe": {
+        "kind": "boolean",
+        "value": true
+      }
+    },
+    "message": "The provider proves that the transaction did not commit",
+    "path": [
+      {
+        "kind": "index",
+        "value": 2
+      },
+      {
+        "kind": "type",
+        "value": {
+          "kind": "entity",
+          "label": "item"
+        }
+      },
+      {
+        "kind": "field",
+        "value": {
+          "attribute": "score",
+          "owner": {
+            "kind": "entity",
+            "label": "item"
+          }
+        }
+      }
+    ],
+    "query_category": null,
+    "sdk_category": "transaction",
+    "version": 1
+  },
+  "commit_definitely_aborted-CNT9": {
+    "category": "transaction",
+    "code": "commit_definitely_aborted",
+    "details": {
+      "code": {
+        "kind": "query_identity",
+        "value": "CNT9"
+      },
+      "commit_outcome": {
+        "kind": "text",
+        "value": "definitely_aborted"
+      },
+      "rejection": {
+        "kind": "query_identity",
+        "value": "unique"
+      },
+      "retry_safe": {
+        "kind": "boolean",
+        "value": true
+      }
+    },
+    "message": "The provider proves that the transaction did not commit",
+    "path": [
+      {
+        "kind": "index",
+        "value": 2
+      },
+      {
+        "kind": "type",
+        "value": {
+          "kind": "entity",
+          "label": "item"
+        }
+      },
+      {
+        "kind": "field",
+        "value": {
+          "attribute": "score",
+          "owner": {
+            "kind": "entity",
+            "label": "item"
+          }
+        }
+      }
+    ],
+    "query_category": null,
+    "sdk_category": "transaction",
+    "version": 1
+  },
+  "commit_definitely_aborted-DVL1": {
+    "category": "transaction",
+    "code": "commit_definitely_aborted",
+    "details": {
+      "code": {
+        "kind": "query_identity",
+        "value": "DVL1"
+      },
+      "commit_outcome": {
+        "kind": "text",
+        "value": "definitely_aborted"
+      },
+      "rejection": {
+        "kind": "query_identity",
+        "value": "other"
+      },
+      "retry_safe": {
+        "kind": "boolean",
+        "value": true
+      }
+    },
+    "message": "The provider proves that the transaction did not commit",
+    "path": [
+      {
+        "kind": "index",
+        "value": 2
+      },
+      {
+        "kind": "type",
+        "value": {
+          "kind": "entity",
+          "label": "item"
+        }
+      },
+      {
+        "kind": "field",
+        "value": {
+          "attribute": "score",
+          "owner": {
+            "kind": "entity",
+            "label": "item"
+          }
+        }
+      }
+    ],
+    "query_category": null,
+    "sdk_category": "transaction",
+    "version": 1
+  },
+  "commit_definitely_aborted-STC2": {
+    "category": "transaction",
+    "code": "commit_definitely_aborted",
+    "details": {
+      "code": {
+        "kind": "query_identity",
+        "value": "STC2"
+      },
+      "commit_outcome": {
+        "kind": "text",
+        "value": "definitely_aborted"
+      },
+      "lock_kind": {
+        "kind": "query_identity",
+        "value": "exclusive"
+      },
+      "rejection": {
+        "kind": "query_identity",
+        "value": "conflict"
+      },
+      "retry_safe": {
+        "kind": "boolean",
+        "value": true
+      }
+    },
+    "message": "The provider proves that the transaction did not commit",
+    "path": [
+      {
+        "kind": "index",
+        "value": 2
+      },
+      {
+        "kind": "type",
+        "value": {
+          "kind": "entity",
+          "label": "item"
+        }
+      },
+      {
+        "kind": "field",
+        "value": {
+          "attribute": "score",
+          "owner": {
+            "kind": "entity",
+            "label": "item"
+          }
+        }
+      }
+    ],
+    "query_category": null,
+    "sdk_category": "transaction",
+    "version": 1
+  },
+  "commit_outcome_unknown-STC5": {
+    "category": "transaction",
+    "code": "commit_outcome_unknown",
+    "details": {
+      "code": {
+        "kind": "query_identity",
+        "value": "STC5"
+      },
+      "commit_outcome": {
+        "kind": "text",
+        "value": "unknown"
+      },
+      "retry_safe": {
+        "kind": "boolean",
+        "value": false
+      }
+    },
+    "message": "The transaction commit outcome is unknown and state must be reconciled before retry",
+    "path": [],
+    "query_category": null,
+    "sdk_category": "transaction",
+    "version": 1
+  },
+  "provider_operation_failed-CNT5": {
+    "category": "provider",
+    "code": "provider_operation_failed",
+    "details": {
+      "code": {
+        "kind": "query_identity",
+        "value": "CNT5"
+      },
+      "operation": {
+        "kind": "text",
+        "value": "write"
+      },
+      "rejection": {
+        "kind": "query_identity",
+        "value": "cardinality"
+      },
+      "retry_safe": {
+        "kind": "boolean",
+        "value": true
+      }
+    },
+    "message": "The database provider could not complete the requested operation",
+    "path": [
+      {
+        "kind": "index",
+        "value": 2
+      },
+      {
+        "kind": "type",
+        "value": {
+          "kind": "entity",
+          "label": "item"
+        }
+      },
+      {
+        "kind": "field",
+        "value": {
+          "attribute": "score",
+          "owner": {
+            "kind": "entity",
+            "label": "item"
+          }
+        }
+      }
+    ],
+    "query_category": null,
+    "sdk_category": "provider",
+    "version": 1
+  },
+  "provider_operation_failed-CNT7": {
+    "category": "provider",
+    "code": "provider_operation_failed",
+    "details": {
+      "annotation": {
+        "kind": "query_identity",
+        "value": "range"
+      },
+      "code": {
+        "kind": "query_identity",
+        "value": "CNT7"
+      },
+      "operation": {
+        "kind": "text",
+        "value": "write"
+      },
+      "rejection": {
+        "kind": "query_identity",
+        "value": "constraint"
+      },
+      "retry_safe": {
+        "kind": "boolean",
+        "value": true
+      }
+    },
+    "message": "The database provider could not complete the requested operation",
+    "path": [
+      {
+        "kind": "index",
+        "value": 2
+      },
+      {
+        "kind": "type",
+        "value": {
+          "kind": "entity",
+          "label": "item"
+        }
+      },
+      {
+        "kind": "field",
+        "value": {
+          "attribute": "score",
+          "owner": {
+            "kind": "entity",
+            "label": "item"
+          }
+        }
+      }
+    ],
+    "query_category": null,
+    "sdk_category": "provider",
+    "version": 1
+  },
+  "provider_operation_failed-CNT9": {
+    "category": "provider",
+    "code": "provider_operation_failed",
+    "details": {
+      "code": {
+        "kind": "query_identity",
+        "value": "CNT9"
+      },
+      "operation": {
+        "kind": "text",
+        "value": "write"
+      },
+      "rejection": {
+        "kind": "query_identity",
+        "value": "unique"
+      },
+      "retry_safe": {
+        "kind": "boolean",
+        "value": true
+      }
+    },
+    "message": "The database provider could not complete the requested operation",
+    "path": [
+      {
+        "kind": "index",
+        "value": 2
+      },
+      {
+        "kind": "type",
+        "value": {
+          "kind": "entity",
+          "label": "item"
+        }
+      },
+      {
+        "kind": "field",
+        "value": {
+          "attribute": "score",
+          "owner": {
+            "kind": "entity",
+            "label": "item"
+          }
+        }
+      }
+    ],
+    "query_category": null,
+    "sdk_category": "provider",
+    "version": 1
+  },
+  "provider_operation_failed-DVL1": {
+    "category": "provider",
+    "code": "provider_operation_failed",
+    "details": {
+      "code": {
+        "kind": "query_identity",
+        "value": "DVL1"
+      },
+      "operation": {
+        "kind": "text",
+        "value": "write"
+      },
+      "rejection": {
+        "kind": "query_identity",
+        "value": "other"
+      },
+      "retry_safe": {
+        "kind": "boolean",
+        "value": true
+      }
+    },
+    "message": "The database provider could not complete the requested operation",
+    "path": [
+      {
+        "kind": "index",
+        "value": 2
+      },
+      {
+        "kind": "type",
+        "value": {
+          "kind": "entity",
+          "label": "item"
+        }
+      },
+      {
+        "kind": "field",
+        "value": {
+          "attribute": "score",
+          "owner": {
+            "kind": "entity",
+            "label": "item"
+          }
+        }
+      }
+    ],
+    "query_category": null,
+    "sdk_category": "provider",
+    "version": 1
+  },
+  "provider_operation_failed-STC2": {
+    "category": "provider",
+    "code": "provider_operation_failed",
+    "details": {
+      "code": {
+        "kind": "query_identity",
+        "value": "STC2"
+      },
+      "lock_kind": {
+        "kind": "query_identity",
+        "value": "exclusive"
+      },
+      "operation": {
+        "kind": "text",
+        "value": "write"
+      },
+      "rejection": {
+        "kind": "query_identity",
+        "value": "conflict"
+      },
+      "retry_safe": {
+        "kind": "boolean",
+        "value": true
+      }
+    },
+    "message": "The database provider could not complete the requested operation",
+    "path": [
+      {
+        "kind": "index",
+        "value": 2
+      },
+      {
+        "kind": "type",
+        "value": {
+          "kind": "entity",
+          "label": "item"
+        }
+      },
+      {
+        "kind": "field",
+        "value": {
+          "attribute": "score",
+          "owner": {
+            "kind": "entity",
+            "label": "item"
+          }
+        }
+      }
+    ],
+    "query_category": null,
+    "sdk_category": "provider",
+    "version": 1
+  }
+}
