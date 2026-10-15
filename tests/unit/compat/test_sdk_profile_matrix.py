@@ -5,10 +5,13 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -206,3 +209,39 @@ def test_administration_rejects_missing_or_malformed_history_digest(
     path.write_text(json.dumps(value))
     with pytest.raises(matrix.ProfileMatrixError, match="history digest is malformed"):
         matrix.load_matrix("administration", root=tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("profile", "supported"),
+    [("typedb-3.11.5/v1", "no"), (BASE, "yes"), (NEXT, "yes")],
+)
+def test_live_fixture_selects_the_models_suite(profile: str, supported: str) -> None:
+    script = (CI / "prepare_generated_live_fixture.sh").read_text()
+    command = next(
+        shlex.split(line.strip().removesuffix("\\"))
+        for line in script.splitlines()
+        if "import sdk_profile_matrix as m" in line
+    )
+    result = subprocess.run(
+        [sys.executable, *command[1:], str(CI), profile],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.strip() == supported
+
+
+@pytest.mark.parametrize(("profile", "server"), SERVERS.items())
+def test_models_live_profile_gate_admits_the_named_suite_before_schema_io(
+    profile: str, server: str
+) -> None:
+    from tests.integration.schema import test_generated_projection_live as live
+
+    generated = ModuleType("generated_models")
+    generated.SEMANTIC_SCHEMA_FINGERPRINT_JSON = json.dumps({"semantic_profile": profile})
+    database = Mock()
+    database.detected_server_version.return_value = server
+    database.execute_query.side_effect = RuntimeError("schema I/O reached")
+
+    with pytest.raises(RuntimeError, match="schema I/O reached"):
+        live.sdk_models_data_model_runtime_live(database, generated)

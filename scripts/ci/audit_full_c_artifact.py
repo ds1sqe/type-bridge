@@ -231,7 +231,8 @@ def audit(
     if any(
         report.get("source_commit") != source_commit
         for report in [
-            load_unique(path, "Artifacts report") for path in report_paths(reports_root, 6)
+            load_unique(path, "Artifacts report")
+            for path in report_paths(reports_root, "artifacts")
         ]
     ):
         reject("artifact_source_drift", "Artifacts reports and artifacts bind different sources")

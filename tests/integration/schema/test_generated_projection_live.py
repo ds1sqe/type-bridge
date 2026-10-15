@@ -2116,7 +2116,7 @@ def sdk_models_package(
 ) -> Iterator[ModuleType]:
     """Import the exact Models Python projection generated for this run."""
     _, _, semantic_profile = _acceptance_contract(clean_db)
-    if semantic_profile not in _profile_matrix().supported_profiles(3):
+    if semantic_profile not in _profile_matrix().supported_profiles("models"):
         pytest.skip(f"models has no matrix entry for {semantic_profile}")
     supplied_stage = os.environ.get("TYPE_BRIDGE_GENERATED_PYTHON_STAGE")
     if supplied_stage is None:
@@ -2168,7 +2168,7 @@ def sdk_models_data_model_runtime_live(
 ) -> None:
     generated = sdk_models_package
     detected = clean_db.detected_server_version()
-    _require_profile_server_version(_generated_profile(generated), detected, 3)
+    _require_profile_server_version(_generated_profile(generated), detected, "models")
     clean_db.execute_query(
         SDK_MODELS_PROVIDER_SCHEMA.read_text(encoding="utf-8"),
         transaction_type="schema",

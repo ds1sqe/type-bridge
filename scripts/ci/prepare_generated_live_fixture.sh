@@ -47,7 +47,7 @@ fi
 mkdir -p "$output_dir"
 
 sdk_models_profile="$(
-    python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import sdk_profile_matrix as m; print("yes" if sys.argv[2] in m.supported_profiles(3) else "no")' \
+    python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import sdk_profile_matrix as m; print("yes" if sys.argv[2] in m.supported_profiles("models") else "no")' \
         "$ROOT_DIR/scripts/ci" "$semantic_profile"
 )"
 
