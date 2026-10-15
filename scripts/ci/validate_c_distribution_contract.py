@@ -216,7 +216,7 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
         full_c.get("capability_codes") == list(capabilities),
         "FULL-C capability inventory disagrees with the manifest",
     )
-    _require(full_c.get("report_versions") == [1, 2, 3, 4, 5, 6], "FULL-C report fan-in drifted")
+    _require(full_c.get("report_versions") == [2, 3, 4, 5, 6], "FULL-C report fan-in drifted")
     _require(
         full_c.get("output", {}).get("manual_override") is False, "FULL-C permits manual override"
     )

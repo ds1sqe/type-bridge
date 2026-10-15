@@ -1,7 +1,7 @@
 //! Select the SDK conformance identity a live producer runs under.
 //!
 //! Each `tests/contracts/sdk_conformance/sdk-vN/profiles-vN.json` lists, per
-//! semantic profile, the exact live TypeDB server and (for sdk-v1..v3) the
+//! semantic profile, the exact live TypeDB server and (for queries and models) the
 //! expected semantic and per-binding projection fingerprints. Producers pick
 //! the profile from `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`, defaulting to
 //! the catalog's own profile, and emit that entry instead of literals.
@@ -67,15 +67,16 @@ pub fn contract_paths(root: &Path, set: u8) -> Value {
 /// The entry of `sdk-v{set}` for `profile`; panics on an unsupported profile.
 pub fn select_from(root: &Path, set: u8, profile: &str) -> SdkProfile {
     let paths = contract_paths(root, set);
+    let suite = paths["suite"].as_str().expect("suite name");
     let matrix = read_json(&root.join(paths["matrix"].as_str().expect("matrix path")));
     let entry = matrix["profiles"]
         .get(profile)
-        .unwrap_or_else(|| panic!("sdk-v{set} has no matrix entry for profile {profile:?}"));
+        .unwrap_or_else(|| panic!("{suite} has no matrix entry for profile {profile:?}"));
     SdkProfile {
         semantic_profile: profile.to_owned(),
         live_server_version: entry["live_server_version"]
             .as_str()
-            .unwrap_or_else(|| panic!("sdk-v{set} {profile} names its live server"))
+            .unwrap_or_else(|| panic!("{suite} {profile} names its live server"))
             .to_owned(),
         expected_fingerprints: entry
             .get("expected_fingerprints")

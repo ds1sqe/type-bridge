@@ -1,4 +1,4 @@
-"""Frozen source-contract tests for the four-binding sdk-v2 journey."""
+"""Frozen source-contract tests for the four-binding queries journey."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[3]
-CONTRACT_ROOT = ROOT / "tests/contracts/sdk_conformance/sdk-v2"
+CONTRACT_ROOT = ROOT / "tests/contracts/sdk_conformance/queries"
 
 
 def _load(name: str) -> dict[str, Any]:
@@ -16,8 +16,8 @@ def _load(name: str) -> dict[str, Any]:
     return value
 
 
-def test_sdk_v2_report_schema_freezes_four_bindings_and_34_rows() -> None:
-    schema = _load("report-schema-v2.json")
+def test_sdk_queries_report_schema_freezes_four_bindings_and_34_rows() -> None:
+    schema = _load("report-schema.json")
 
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["additionalProperties"] is False
@@ -29,21 +29,21 @@ def test_sdk_v2_report_schema_freezes_four_bindings_and_34_rows() -> None:
         "fixture",
         "results",
     ]
-    assert schema["properties"]["format"] == {"const": "typebridge.sdk-conformance-report/v2"}
+    assert schema["properties"]["format"] == {"const": "typebridge.sdk-queries-report/v1"}
     assert schema["properties"]["binding"] == {"enum": ["python", "node", "rust", "c"]}
     assert schema["properties"]["results"]["minItems"] == 34
     assert schema["properties"]["results"]["maxItems"] == 34
     fixture = schema["$defs"]["fixture"]
     assert fixture["additionalProperties"] is False
-    assert fixture["properties"]["id"] == {"const": "sdk-v2"}
+    assert fixture["properties"]["id"] == {"const": "queries"}
     assert fixture["properties"]["version"] == {"const": 2}
     assert fixture["properties"]["projection_target"] == {
         "enum": ["python", "typescript", "rust", "c"]
     }
 
 
-def test_sdk_v2_proof_fragment_is_same_run_source_bound_and_closed() -> None:
-    schema = _load("proof-fragment-schema-v1.json")
+def test_sdk_queries_proof_fragment_is_same_run_source_bound_and_closed() -> None:
+    schema = _load("proof-fragment-schema.json")
 
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["additionalProperties"] is False
@@ -57,7 +57,7 @@ def test_sdk_v2_proof_fragment_is_same_run_source_bound_and_closed() -> None:
         "results",
     ]
     properties = schema["properties"]
-    assert properties["format"] == {"const": "typebridge.sdk-v2-proof-fragment/v1"}
+    assert properties["format"] == {"const": "typebridge.sdk-queries-proof-fragment/v1"}
     assert properties["binding"] == {"enum": ["python", "node", "rust", "c"]}
     assert properties["semantic_profile"] == {"const": "typedb-3.12.1/v1"}
     assert properties["run_nonce"]["pattern"] == "^[0-9a-f]{64}$"
@@ -82,8 +82,8 @@ def test_sdk_v2_proof_fragment_is_same_run_source_bound_and_closed() -> None:
     ]
     assert result["properties"]["outcome"] == {"const": "passed"}
 
-    allowlist = _load("proof-fragment-allowlist-v1.json")
-    assert allowlist["format"] == "typebridge.sdk-v2-proof-fragment-allowlist/v1"
+    allowlist = _load("proof-fragment-allowlist.json")
+    assert allowlist["format"] == "typebridge.sdk-queries-proof-fragment-allowlist/v1"
     assert allowlist["semantic_profile"] == "typedb-3.12.1/v1"
     assert set(allowlist["bindings"]) == {"python", "node", "rust", "c"}
     expected_lanes = {
@@ -153,13 +153,13 @@ def test_sdk_v2_proof_fragment_is_same_run_source_bound_and_closed() -> None:
                 "sources": ["type-bridge-core/crates/rust/src/remote.rs"],
                 "results": {
                     ("cancellation_direct", "direct_runtime"): (
-                        "remote::tests::sdk_v2_rust_deterministic_proof_fragment"
+                        "remote::tests::sdk_queries_rust_deterministic_proof_fragment"
                     ),
                     ("cancellation_remote", "remote_runtime"): (
-                        "remote::tests::sdk_v2_rust_deterministic_proof_fragment"
+                        "remote::tests::sdk_queries_rust_deterministic_proof_fragment"
                     ),
                     ("remote_structured_diagnostic", "diagnostic"): (
-                        "remote::tests::sdk_v2_rust_deterministic_proof_fragment"
+                        "remote::tests::sdk_queries_rust_deterministic_proof_fragment"
                     ),
                 },
             }
@@ -173,13 +173,13 @@ def test_sdk_v2_proof_fragment_is_same_run_source_bound_and_closed() -> None:
                 ],
                 "results": {
                     ("cancellation_direct", "direct_runtime"): (
-                        "query::tests::sdk_v2_c_deterministic_proof_fragment"
+                        "query::tests::sdk_queries_c_deterministic_proof_fragment"
                     ),
                     ("cancellation_remote", "remote_runtime"): (
-                        "query::tests::sdk_v2_c_deterministic_proof_fragment"
+                        "query::tests::sdk_queries_c_deterministic_proof_fragment"
                     ),
                     ("remote_structured_diagnostic", "diagnostic"): (
-                        "query::tests::sdk_v2_c_deterministic_proof_fragment"
+                        "query::tests::sdk_queries_c_deterministic_proof_fragment"
                     ),
                 },
             }
@@ -203,11 +203,11 @@ def test_sdk_v2_proof_fragment_is_same_run_source_bound_and_closed() -> None:
         assert actual_lanes == expected_lanes
 
 
-def test_sdk_v2_authored_dataset_is_deterministic_and_cleanup_reversed() -> None:
-    journey = _load("journey-v2.json")
+def test_sdk_queries_authored_dataset_is_deterministic_and_cleanup_reversed() -> None:
+    journey = _load("journey.json")
 
-    assert journey["format"] == "typebridge.sdk-journey/v2"
-    assert journey["fixture_id"] == "sdk-v2"
+    assert journey["format"] == "typebridge.sdk-queries-journey/v1"
+    assert journey["fixture_id"] == "queries"
     assert journey["version"] == 2
     assert journey["semantic_profile"] == "typedb-3.12.1/v1"
     assert set(journey["records"]) == {
@@ -240,8 +240,8 @@ def test_sdk_v2_authored_dataset_is_deterministic_and_cleanup_reversed() -> None
     assert journey["cleanup_order"] == list(reversed(journey["create_order"]))
 
 
-def test_sdk_v2_freezes_21_normalized_observations_without_runtime_identity() -> None:
-    journey = _load("journey-v2.json")
+def test_sdk_queries_freezes_21_normalized_observations_without_runtime_identity() -> None:
+    journey = _load("journey.json")
     observations = journey["expected_observations"]
 
     assert set(observations) == {

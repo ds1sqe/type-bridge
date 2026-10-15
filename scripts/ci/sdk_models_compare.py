@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_sdk_conformance import (  # noqa: E402, F401
+from sdk_conformance_common import (  # noqa: E402, F401
     FORBIDDEN_OBSERVATION_KEYS,
     MAX_JSON_BYTES,
     OBSERVATION_KEY_RE,

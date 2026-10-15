@@ -55,7 +55,7 @@
   ],
   "full_c": {
     "capability_count": 44,
-    "required_predecessor_reports": [1, 2, 3, 4, 5, 6],
+    "required_predecessor_reports": [2, 3, 4, 5, 6],
     "manual_badge": false,
     "fails_on_gap_or_planned_c_cell": true,
     "publication_authority": false

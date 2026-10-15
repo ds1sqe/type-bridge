@@ -1,5 +1,5 @@
 {
-  "catalog_path": "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json",
+  "catalog_path": "tests/contracts/sdk_conformance/queries/catalog.json",
   "format": "typebridge.sdk-profile-matrix/v1",
   "profiles": {
     "typedb-3.12.1/v1": {

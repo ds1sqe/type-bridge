@@ -542,40 +542,26 @@ class ProofContract:
 
 
 # Only these two accepted contracts emit same-run proof fragments.
-CONTRACTS = {
-    version: ProofContract(
+CONTRACTS = {}
+for version, kinds, limit in (
+    (2, frozenset({"direct_runtime", "remote_runtime", "diagnostic", "lifecycle"}), 16),
+    (3, frozenset({"direct_runtime", "diagnostic"}), 4),
+):
+    suite = tuple(profile_matrix.SUITES)[version - 2]
+    directory = profile_matrix.suite_directory(suite)
+    legacy = profile_matrix.SUITES[suite].startswith("sdk-v")
+    suffix = "-v1" if legacy else ""
+    wire = f"v{version}" if legacy else suite
+    CONTRACTS[version] = ProofContract(
         set_version=version,
-        proof_schema_relative=str(
-            Path(profile_matrix.catalog_relative(version)).parent
-            / ("proof-fragment-schema.json" if version == 3 else "proof-fragment-schema-v1.json")
-        ),
-        allowlist_relative=str(
-            Path(profile_matrix.catalog_relative(version)).parent
-            / (
-                "proof-fragment-allowlist.json"
-                if version == 3
-                else "proof-fragment-allowlist-v1.json"
-            )
-        ),
+        proof_schema_relative=f"{directory}/proof-fragment-schema{suffix}.json",
+        allowlist_relative=f"{directory}/proof-fragment-allowlist{suffix}.json",
         journey_relative=profile_matrix.contract_relative(version, "journey"),
-        fragment_format=(
-            "typebridge.sdk-models-proof-fragment/v1"
-            if version == 3
-            else f"typebridge.sdk-v{version}-proof-fragment/v1"
-        ),
-        allowlist_format=(
-            "typebridge.sdk-models-proof-fragment-allowlist/v1"
-            if version == 3
-            else f"typebridge.sdk-v{version}-proof-fragment-allowlist/v1"
-        ),
+        fragment_format=f"typebridge.sdk-{wire}-proof-fragment/v1",
+        allowlist_format=f"typebridge.sdk-{wire}-proof-fragment-allowlist/v1",
         proof_kinds=kinds,
         max_results=limit,
     )
-    for version, kinds, limit in (
-        (2, frozenset({"direct_runtime", "remote_runtime", "diagnostic", "lifecycle"}), 16),
-        (3, frozenset({"direct_runtime", "diagnostic"}), 4),
-    )
-}
 
 
 def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
@@ -597,6 +583,7 @@ def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
     parser.add_argument("fragments", nargs="+", type=Path)
     args = parser.parse_args(argv)
     contract = CONTRACTS[args.sdk]
+    suite = tuple(profile_matrix.SUITES)[args.sdk - 2]
     try:
         observations = contract.load_proof_fragments(
             args.fragments,
@@ -606,7 +593,7 @@ def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
             semantic_profile=args.semantic_profile,
         )
     except ProofFragmentError as error:
-        print(f"sdk-v{args.sdk} proof fragments rejected: {error}")
+        print(f"{suite} proof fragments rejected: {error}")
         return 1
     if args.observations_json:
         rows = [
@@ -619,7 +606,7 @@ def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
         ]
         print(canonical_json_bytes(rows).decode("utf-8"), end="")
     else:
-        print(f"validated {len(observations)} sdk-v{args.sdk} proof lanes for {args.binding}")
+        print(f"validated {len(observations)} {suite} proof lanes for {args.binding}")
     return 0
 
 

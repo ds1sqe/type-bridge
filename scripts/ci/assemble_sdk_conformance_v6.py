@@ -105,7 +105,7 @@ def _predecessors(values: list[bytes], binding: str) -> list[dict[str, Any]]:
             raw, report, version
         ):
             reject("noncanonical_predecessor_report", f"V{version} report is not canonical")
-        if report.get("format") != f"typebridge.sdk-conformance-report/v{version}":
+        if report.get("format") != profile_matrix.report_format(version):
             reject("predecessor_report_identity_drift", f"V{version} format drifted")
         if report.get("binding") != binding:
             reject("predecessor_report_identity_drift", f"V{version} binding drifted")
@@ -269,8 +269,8 @@ def _predecessor_argument(value: str) -> tuple[int, Path]:
         version = int(version_text)
     except (ValueError, TypeError):
         raise argparse.ArgumentTypeError("predecessor must be VERSION=PATH") from None
-    if version not in range(1, 6) or not path_text:
-        raise argparse.ArgumentTypeError("predecessor version must be 1 through 5")
+    if version not in range(2, 6) or not path_text:
+        raise argparse.ArgumentTypeError("predecessor version must be 2 through 5")
     return (version, Path(path_text))
 
 
@@ -368,7 +368,7 @@ def compose(
     predecessor_digests = []
     for version, (report, body) in zip(versions, predecessors, strict=True):
         if (
-            report.get("format") != f"typebridge.sdk-conformance-report/v{version}"
+            report.get("format") != profile_matrix.report_format(version)
             or report.get("binding") != binding
         ):
             composition_reject(

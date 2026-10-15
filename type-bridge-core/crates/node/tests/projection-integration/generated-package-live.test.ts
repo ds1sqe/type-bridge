@@ -46,14 +46,10 @@ const REMOTE_PROFILE = IS_TYPEDB_3_11
   ? "typedb-3.11.5/v1"
   : process.env.TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE ?? DEFAULT_ACCEPTANCE_PROFILE;
 const SDK_MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest.json";
-const SDK_CATALOG_RELATIVE =
-  "tests/contracts/sdk_conformance/sdk-v1/catalog-v1.json";
-const SDK_JOURNEY_RELATIVE =
-  "tests/contracts/sdk_conformance/sdk-v1/journey-v1.json";
-const SDK_V2_CATALOG_RELATIVE =
-  "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json";
-const SDK_V2_JOURNEY_RELATIVE =
-  "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json";
+const SDK_QUERIES_CATALOG_RELATIVE =
+  "tests/contracts/sdk_conformance/queries/catalog.json";
+const SDK_QUERIES_JOURNEY_RELATIVE =
+  "tests/contracts/sdk_conformance/queries/journey.json";
 const SDK_MODELS_JOURNEY = resolve(
   ROOT,
   "tests/contracts/sdk_conformance/models/journey.json",
@@ -63,32 +59,31 @@ const SDK_MODELS_PROVIDER_SCHEMA = resolve(
   "tests/contracts/sdk_conformance/models/provider-3.12.1.tql",
 );
 const SDK_MANIFEST = resolve(ROOT, SDK_MANIFEST_RELATIVE);
-const SDK_CATALOG = resolve(ROOT, SDK_CATALOG_RELATIVE);
-const SDK_JOURNEY = resolve(ROOT, SDK_JOURNEY_RELATIVE);
-const SDK_V2_CATALOG = resolve(ROOT, SDK_V2_CATALOG_RELATIVE);
-const SDK_V2_JOURNEY = resolve(ROOT, SDK_V2_JOURNEY_RELATIVE);
-const SDK_V2_PROOF_VALIDATOR = resolve(
+const SDK_QUERIES_CATALOG = resolve(ROOT, SDK_QUERIES_CATALOG_RELATIVE);
+const SDK_QUERIES_JOURNEY = resolve(ROOT, SDK_QUERIES_JOURNEY_RELATIVE);
+const SDK_QUERIES_PROOF_VALIDATOR = resolve(
   ROOT,
   "scripts/ci/proof_fragments.py",
 );
 
 const SEMANTIC_PROFILE_ENV = "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE";
-const SDK_SET_VERSIONS = [1, 2, 3, 4, 5, 6] as const;
+const SDK_SET_VERSIONS = [2, 3, 4, 5, 6] as const;
 
 /** One `sdk-vN/profiles-vN.json` entry: the identity a report carries on a profile. */
 interface SdkProfileIdentity {
   readonly set: string;
   readonly semanticProfile: string;
   readonly liveServerVersion: string;
-  /** Semantic and per-binding projection fingerprints; sdk-v1..v3 only. */
+  /** Semantic and per-binding projection fingerprints; queries and models only. */
   readonly expectedFingerprints: any;
 }
 
+const sdkPathsResult = spawnSync("python3", [resolve(ROOT, "scripts/ci/sdk_profile_matrix.py")], { encoding: "utf8" });
+assert.equal(sdkPathsResult.status, 0, sdkPathsResult.stderr);
+const SDK_CONTRACT_PATHS = JSON.parse(sdkPathsResult.stdout) as Record<number, Record<string, string>>;
+
 function sdkContractRelative(version: number, name: string): string {
-  const suite = version === 3 ? "models" : version === 5 ? "serialization" : null;
-  return suite !== null
-    ? `tests/contracts/sdk_conformance/${suite}/${name}.json`
-    : `tests/contracts/sdk_conformance/sdk-v${version}/${name}-v${version}.json`;
+  return SDK_CONTRACT_PATHS[version][name === "profiles" ? "matrix" : name];
 }
 
 function sdkProfileMatrix(version: number): Record<string, any> {
@@ -134,7 +129,7 @@ function sdkProfileIdentity(
     throw new Error(`sdk-v${version} entry ${selected} fingerprints name another profile`);
   }
   return {
-    set: `sdk-v${version}`,
+    set: SDK_CONTRACT_PATHS[version].suite,
     semanticProfile: selected,
     liveServerVersion: entry.live_server_version,
     expectedFingerprints: fingerprints,
@@ -284,29 +279,29 @@ function sdkModelsSupplementObservations(): ReadonlyMap<string, Record<string, u
   ]);
 }
 
-function loadSdkV2ProofObservations(): ReadonlyMap<string, Record<string, unknown>> {
-  const rawPaths = process.env.TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS;
-  const runNonce = process.env.TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE;
-  const python = process.env.TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON;
+function loadSdkQueriesProofObservations(): ReadonlyMap<string, Record<string, unknown>> {
+  const rawPaths = process.env.TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS;
+  const runNonce = process.env.TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE;
+  const python = process.env.TYPE_BRIDGE_SDK_QUERIES_VALIDATOR_PYTHON;
   if (rawPaths === undefined || runNonce === undefined || python === undefined) {
     throw new Error(
-      "sdk-v2 reports require proof fragment paths, the same-run nonce, "
+      "queries reports require proof fragment paths, the same-run nonce, "
       + "and an explicit validator Python executable",
     );
   }
   if (!isAbsolute(python)) {
     throw new TypeError(
-      "TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON must be an absolute path",
+      "TYPE_BRIDGE_SDK_QUERIES_VALIDATOR_PYTHON must be an absolute path",
     );
   }
   const paths = rawPaths.split(delimiter);
   if (paths.length === 0 || paths.some((value) => value.length === 0)) {
-    throw new Error("sdk-v2 proof fragment paths must be a nonempty path list");
+    throw new Error("queries proof fragment paths must be a nonempty path list");
   }
   const validation = spawnSync(
     python,
     [
-      SDK_V2_PROOF_VALIDATOR,
+      SDK_QUERIES_PROOF_VALIDATOR,
       "--sdk",
       "2",
       "--binding",
@@ -326,16 +321,16 @@ function loadSdkV2ProofObservations(): ReadonlyMap<string, Record<string, unknow
   if (validation.error !== undefined) throw validation.error;
   if (validation.status !== 0) {
     throw new Error(
-      `sdk-v2 proof fragments were rejected (${validation.status ?? "unknown"}): `
+      `queries proof fragments were rejected (${validation.status ?? "unknown"}): `
       + validation.stderr,
     );
   }
   if (validation.stderr !== "") {
-    throw new Error(`sdk-v2 proof validator wrote stderr: ${validation.stderr}`);
+    throw new Error(`queries proof validator wrote stderr: ${validation.stderr}`);
   }
   const rows: unknown = JSON.parse(validation.stdout);
   if (!Array.isArray(rows)) {
-    throw new TypeError("sdk-v2 proof validator returned a non-array payload");
+    throw new TypeError("queries proof validator returned a non-array payload");
   }
   const observations = new Map<string, Record<string, unknown>>();
   for (const row of rows) {
@@ -345,7 +340,7 @@ function loadSdkV2ProofObservations(): ReadonlyMap<string, Record<string, unknow
       || Array.isArray(row)
       || Object.keys(row).sort().join("\0") !== "observation\0observation_ref\0proof_kind"
     ) {
-      throw new TypeError("sdk-v2 proof validator returned a malformed row");
+      throw new TypeError("queries proof validator returned a malformed row");
     }
     const value = row as Record<string, unknown>;
     if (
@@ -355,7 +350,7 @@ function loadSdkV2ProofObservations(): ReadonlyMap<string, Record<string, unknow
       || typeof value.observation !== "object"
       || Array.isArray(value.observation)
     ) {
-      throw new TypeError("sdk-v2 proof validator returned an invalid observation");
+      throw new TypeError("queries proof validator returned an invalid observation");
     }
     const key = observationKey(value.observation_ref, value.proof_kind);
     assert.equal(observations.has(key), false);
@@ -365,7 +360,7 @@ function loadSdkV2ProofObservations(): ReadonlyMap<string, Record<string, unknow
   return observations;
 }
 
-async function sdkReport(
+async function sdkQueriesReport(
   identity: SdkProfileIdentity,
   catalogRaw: Buffer,
   catalog: any,
@@ -379,47 +374,12 @@ async function sdkReport(
   const schemaRaw = await readFile(resolve(ROOT, fixture.schema_path));
   const providerSchemaRaw = await readFile(resolve(ROOT, fixture.provider_schema_path));
   const manifestRaw = await readFile(SDK_MANIFEST);
-  assert.equal(catalog.journey_path, SDK_JOURNEY_RELATIVE);
+  assert.equal(catalog.journey_path, SDK_QUERIES_JOURNEY_RELATIVE);
   return {
-    format: "typebridge.sdk-conformance-report/v1",
+    format: "typebridge.sdk-queries-report/v1",
     binding: "node",
     manifest: sourceIdentity(SDK_MANIFEST_RELATIVE, manifestRaw),
-    catalog: sourceIdentity(SDK_CATALOG_RELATIVE, catalogRaw),
-    fixture: {
-      id: fixture.id,
-      version: fixture.version,
-      semantic_profile: identity.semanticProfile,
-      schema: sourceIdentity(fixture.schema_path, schemaRaw),
-      provider_schema: sourceIdentity(fixture.provider_schema_path, providerSchemaRaw),
-      journey: sourceIdentity(catalog.journey_path, journeyRaw),
-      semantic_fingerprint: identity.expectedFingerprints.semantic,
-      projection_target: catalog.projection_targets.node,
-      projection_fingerprint: identity.expectedFingerprints.projections.node,
-    },
-    results,
-  };
-}
-
-async function sdkV2Report(
-  identity: SdkProfileIdentity,
-  catalogRaw: Buffer,
-  catalog: any,
-  journeyRaw: Buffer,
-  semanticFingerprint: Record<string, unknown>,
-  projectionFingerprint: Record<string, unknown>,
-  results: readonly Record<string, unknown>[],
-): Promise<Record<string, unknown>> {
-  requireSdkFingerprints(identity, semanticFingerprint, projectionFingerprint);
-  const fixture = catalog.fixture;
-  const schemaRaw = await readFile(resolve(ROOT, fixture.schema_path));
-  const providerSchemaRaw = await readFile(resolve(ROOT, fixture.provider_schema_path));
-  const manifestRaw = await readFile(SDK_MANIFEST);
-  assert.equal(catalog.journey_path, SDK_V2_JOURNEY_RELATIVE);
-  return {
-    format: "typebridge.sdk-conformance-report/v2",
-    binding: "node",
-    manifest: sourceIdentity(SDK_MANIFEST_RELATIVE, manifestRaw),
-    catalog: sourceIdentity(SDK_V2_CATALOG_RELATIVE, catalogRaw),
+    catalog: sourceIdentity(SDK_QUERIES_CATALOG_RELATIVE, catalogRaw),
     fixture: {
       id: fixture.id,
       version: fixture.version,
@@ -459,13 +419,13 @@ async function metadataIfPresent(path: string): Promise<Awaited<ReturnType<typeo
 async function validateSdkReportPath(rawPath: string): Promise<string> {
   const encodedPath = Buffer.from(rawPath, "utf8");
   if (encodedPath.toString("utf8") !== rawPath) {
-    throw new TypeError("TYPE_BRIDGE_SDK_REPORT must be a UTF-8 path");
+    throw new TypeError("SDK report must be a UTF-8 path");
   }
   if (encodedPath.length === 0 || encodedPath.length > 4096) {
-    throw new RangeError("TYPE_BRIDGE_SDK_REPORT must contain 1 to 4096 UTF-8 bytes");
+    throw new RangeError("SDK report must contain 1 to 4096 UTF-8 bytes");
   }
   if (!isAbsolute(rawPath)) {
-    throw new TypeError("TYPE_BRIDGE_SDK_REPORT must be an absolute path");
+    throw new TypeError("SDK report must be an absolute path");
   }
   const parent = dirname(rawPath);
   const parentMetadata = await metadataIfPresent(parent);
@@ -475,11 +435,11 @@ async function validateSdkReportPath(rawPath: string): Promise<string> {
     || !parentMetadata.isDirectory()
   ) {
     throw new TypeError(
-      "TYPE_BRIDGE_SDK_REPORT parent must be an existing non-symlink directory",
+      "SDK report parent must be an existing non-symlink directory",
     );
   }
   if (await metadataIfPresent(rawPath) !== undefined) {
-    throw new Error("TYPE_BRIDGE_SDK_REPORT destination must not exist");
+    throw new Error("SDK report destination must not exist");
   }
   return parent;
 }
@@ -613,7 +573,7 @@ async function publishSdkReport(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") {
         throw new Error(
-          "TYPE_BRIDGE_SDK_REPORT destination appeared during publication",
+          "SDK report destination appeared during publication",
           { cause: error },
         );
       }
@@ -625,263 +585,12 @@ async function publishSdkReport(
   assert.equal(published, true);
 }
 
-async function runSdkJourney(
-  generated: any,
-  personManager: any,
-  membershipManager: any,
-  querySession: any,
-  remoteSession: any,
-  requests: Buffer[],
-  catalog: any,
-  journey: any,
-): Promise<Record<string, unknown>[]> {
-  const {
-    Aliases,
-    FooBar,
-    Identifier,
-    Membership,
-    Nickname,
-    Person,
-    Score,
-    ScoreGte,
-    ValBool,
-    ValConstrained,
-    ValDate,
-    ValDatetime,
-    ValDatetimeTz,
-    ValDecimal,
-    ValDouble,
-    ValDuration,
-  } = generated;
-  const personRecord = journey.records.person;
-  const membershipRecord = journey.records.membership;
-  const fields = personRecord.fields;
-  const update = personRecord.update;
-  const doubleBytes = Buffer.from(fields.val_double.bits, "hex");
-  assert.equal(doubleBytes.length, 8);
-  const doubleValue = doubleBytes.readDoubleBE(0);
-  const person = (nicknameValue: string) => Person.create({
-    identifier: Identifier.create(fields.identifier.value),
-    nickname: Nickname.create(nicknameValue),
-    aliases: fields.aliases.map((alias: any) => Aliases.create(alias.value)),
-    score: Score.create(BigInt(fields.score.value)),
-    fooBar: FooBar.create(BigInt(fields.foo__bar.value)),
-    scoreGte: ScoreGte.create(BigInt(fields.score__gte.value)),
-    valBool: ValBool.create(fields.val_bool.value),
-    valConstrained: ValConstrained.create(BigInt(fields.val_constrained.value)),
-    valDate: ValDate.create(new Date(`${fields.val_date.value}T00:00:00Z`)),
-    valDatetime: ValDatetime.create(new Date(`${fields.val_datetime.value}Z`)),
-    valDatetimeTz: ValDatetimeTz.create(new Date(fields.val_datetime_tz.value)),
-    valDecimal: ValDecimal.create(fields.val_decimal.value),
-    valDouble: ValDouble.create(doubleValue),
-    valDuration: ValDuration.create(fields.val_duration.value),
-  });
-  const normalizePerson = (candidate: any, nicknameField: any): Record<string, unknown> => {
-    assert.equal(candidate.__typebridgeModel, Person.typeKey);
-    assert.equal(candidate.identifier.__typebridgeModel, Identifier.typeKey);
-    assert.equal(candidate.identifier.value, fields.identifier.value);
-    assert.equal(candidate.nickname.__typebridgeModel, Nickname.typeKey);
-    assert.equal(candidate.nickname.value, nicknameField.value);
-    const aliases = candidate.aliases.map((alias: any) => {
-      assert.equal(alias.__typebridgeModel, Aliases.typeKey);
-      return alias.value;
-    }).sort(compareText);
-    assert.deepEqual(
-      aliases,
-      fields.aliases.map((alias: any) => alias.value).sort(compareText),
-    );
-    assert.equal(candidate.score.__typebridgeModel, Score.typeKey);
-    assert.equal(candidate.score.value, BigInt(fields.score.value));
-    assert.equal(candidate.fooBar.__typebridgeModel, FooBar.typeKey);
-    assert.equal(candidate.fooBar.value, BigInt(fields.foo__bar.value));
-    assert.equal(candidate.scoreGte.__typebridgeModel, ScoreGte.typeKey);
-    assert.equal(candidate.scoreGte.value, BigInt(fields.score__gte.value));
-    assert.equal(candidate.valBool.__typebridgeModel, ValBool.typeKey);
-    assert.equal(candidate.valBool.value, fields.val_bool.value);
-    assert.equal(candidate.valConstrained.__typebridgeModel, ValConstrained.typeKey);
-    assert.equal(candidate.valConstrained.value, BigInt(fields.val_constrained.value));
-    assert.equal(candidate.valDate.__typebridgeModel, ValDate.typeKey);
-    assert.equal(candidate.valDate.value.toISOString().slice(0, 10), fields.val_date.value);
-    assert.equal(candidate.valDatetime.__typebridgeModel, ValDatetime.typeKey);
-    assert.equal(
-      candidate.valDatetime.value.toISOString().replace(".000Z", "Z").slice(0, -1),
-      fields.val_datetime.value,
-    );
-    assert.equal(candidate.valDatetimeTz.__typebridgeModel, ValDatetimeTz.typeKey);
-    assert.equal(
-      candidate.valDatetimeTz.value.toISOString().replace(".000Z", "Z"),
-      fields.val_datetime_tz.value,
-    );
-    assert.equal(candidate.valDecimal.__typebridgeModel, ValDecimal.typeKey);
-    assert.equal(candidate.valDecimal.value, fields.val_decimal.value);
-    assert.equal(candidate.valDouble.__typebridgeModel, ValDouble.typeKey);
-    const candidateDouble = Buffer.alloc(8);
-    candidateDouble.writeDoubleBE(candidate.valDouble.value);
-    assert.equal(candidateDouble.toString("hex"), fields.val_double.bits);
-    assert.equal(candidate.valDuration.__typebridgeModel, ValDuration.typeKey);
-    assert.equal(candidate.valDuration.value, fields.val_duration.value);
-    const scalarDomains = [...new Set<string>(
-      Object.values(fields).flatMap((field: any) =>
-        (Array.isArray(field) ? field : [field]).map((member: any) => member.kind)
-      ),
-    )].sort(compareText);
-    return {
-      aliases,
-      key: fields.identifier.value,
-      model: personRecord.model,
-      nickname: nicknameField.value,
-      scalar_domains: scalarDomains,
-    };
-  };
-  const normalizeRole = (relation: any, player: any) => {
-    assert.equal(relation.__typebridgeModel, Membership.typeKey);
-    assert.equal(player.__typebridgeModel, Person.typeKey);
-    assert.equal(relation.member.__typebridgeModel, Person.typeKey);
-    assert.equal(relation.member.identifier.value, membershipRecord.player.key);
-    assert.equal(player.identifier.value, membershipRecord.player.key);
-    assertIid(player.iid);
-    const reference = Person.reference(player.iid, { identifier: player.identifier });
-    assert.equal(reference.__typebridgeModel, Person.typeKey);
-    assert.equal(reference.__typebridgeForm, "reference");
-    assert.equal(reference.iid, player.iid);
-    assert.equal(reference.identifier.__typebridgeModel, Identifier.typeKey);
-    assert.equal(reference.identifier.value, membershipRecord.player.key);
-    const playerIdentity = {
-      key: reference.identifier.value,
-      model: membershipRecord.player.model,
-    };
-    return {
-      hydrated: {
-        relation: { model: membershipRecord.model },
-        role: membershipRecord.role,
-        player: playerIdentity,
-      },
-      traversal: {
-        relation: membershipRecord.model,
-        role: membershipRecord.role,
-        player: playerIdentity,
-      },
-      reference: playerIdentity,
-    };
-  };
-
-  const observed = new Map<string, Record<string, unknown>>();
-  let insertedPerson: any;
-  let insertedMembership: any;
-  let personIid: string | undefined;
-  let membershipIid: string | undefined;
-  let personCreated = false;
-  let membershipCreated = false;
-  let personDeleted = false;
-  let membershipDeleted = false;
-  let readAfterUpdate = false;
-  try {
-    insertedPerson = personManager.insert(person(fields.nickname.value));
-    assertIid(insertedPerson.iid);
-    personIid = insertedPerson.iid;
-    personCreated = true;
-    const readPerson = personManager.getByIid(personIid);
-    assert.notEqual(readPerson, null);
-    normalizePerson(readPerson, fields.nickname);
-
-    const updatedPerson = personManager.update(personIid, person(update.nickname.value));
-    const storedUpdatedPerson = personManager.getByIid(personIid);
-    assert.notEqual(storedUpdatedPerson, null);
-    normalizePerson(storedUpdatedPerson, update.nickname);
-    readAfterUpdate = true;
-
-    insertedMembership = membershipManager.insert(Membership.create({ member: updatedPerson }));
-    assertIid(insertedMembership.iid);
-    membershipIid = insertedMembership.iid;
-    membershipCreated = true;
-    const storedMembership = membershipManager.getByIid(membershipIid);
-    assert.notEqual(storedMembership, null);
-    assert.equal(storedMembership.member.identifier.value, membershipRecord.player.key);
-
-    // One role query, run on the direct and the exchange connection.
-    const roleLane = async (session: any): Promise<number> => {
-      const relationVariable = session.exact(Membership);
-      const personVariable = session.exact(Person);
-      const requestsBefore = requests.length;
-      const [relation, player] = await session
-        .query(relationVariable, personVariable)
-        .where(
-          relationVariable.role(Membership.member).connects(personVariable),
-          personVariable
-            .field(Person.identifier)
-            .eq(Identifier.create(fields.identifier.value)),
-        )
-        .one();
-      const exchangeCount = requests.length - requestsBefore;
-      assert.ok(requests.slice(requestsBefore).every((request) => request.length > 0));
-      const lane = session === querySession ? "direct_runtime" : "remote_runtime";
-      const role = normalizeRole(relation, player);
-      observed.set(
-        observationKey("model_values_and_references", lane),
-        { ...normalizePerson(player, update.nickname), reference: role.reference },
-      );
-      observed.set(observationKey("hydrated_role_result", lane), role.hydrated);
-      observed.set(observationKey("role_traversal", lane), role.traversal);
-      return exchangeCount;
-    };
-    assert.equal(await roleLane(querySession), 0);
-    const exchangeCount = await roleLane(remoteSession);
-    assert.equal(exchangeCount, 1);
-    observed.set(
-      observationKey("remote_one_exchange", "remote_runtime"),
-      { exchange_count: exchangeCount, terminal: "one" },
-    );
-  } finally {
-    const cleanupFailures: unknown[] = [];
-    if (insertedMembership !== undefined && membershipIid !== undefined) {
-      try {
-        membershipManager.delete(insertedMembership);
-        membershipDeleted = membershipManager.getByIid(membershipIid) === null;
-      } catch (error) {
-        cleanupFailures.push(error);
-      }
-    }
-    if (insertedPerson !== undefined && personIid !== undefined) {
-      try {
-        personManager.delete(insertedPerson);
-        personDeleted = personManager.getByIid(personIid) === null;
-      } catch (error) {
-        cleanupFailures.push(error);
-      }
-    }
-    if (cleanupFailures.length > 0) throw cleanupFailures[0];
-  }
-
-  observed.set(
-    observationKey("entity_lifecycle", "direct_runtime"),
-    {
-      created: personCreated,
-      deleted: personDeleted,
-      key: fields.identifier.value,
-      model: personRecord.model,
-      nickname_after_update: update.nickname.value,
-      read_after_update: readAfterUpdate,
-    },
-  );
-  observed.set(
-    observationKey("relation_lifecycle", "direct_runtime"),
-    {
-      created: membershipCreated,
-      deleted: membershipDeleted,
-      model: membershipRecord.model,
-      player_key: membershipRecord.player.key,
-      role: membershipRecord.role,
-    },
-  );
-  return sdkResults(catalog, journey, observed);
-}
-
-function sdkV2Key(value: any): string {
+function sdkQueriesKey(value: any): string {
   assert.equal(typeof value.identifier?.value, "string");
   return value.identifier.value;
 }
 
-function sdkV2Model(generated: any, value: any): string {
+function sdkQueriesModel(generated: any, value: any): string {
   for (const [model, name] of [
     [generated.Person, "person"],
     [generated.Employee, "employee"],
@@ -891,21 +600,21 @@ function sdkV2Model(generated: any, value: any): string {
   ] as const) {
     if (value.__typebridgeModel === model.typeKey) return name;
   }
-  throw new TypeError(`unexpected sdk-v2 projected model ${value.__typebridgeModel}`);
+  throw new TypeError(`unexpected queries projected model ${value.__typebridgeModel}`);
 }
 
-function sdkV2ModelKey(
+function sdkQueriesModelKey(
   generated: any,
   value: any,
 ): Record<string, string> {
-  return { model: sdkV2Model(generated, value), key: sdkV2Key(value) };
+  return { model: sdkQueriesModel(generated, value), key: sdkQueriesKey(value) };
 }
 
-function sdkV2Keys(values: readonly any[]): string[] {
-  return values.map(sdkV2Key);
+function sdkQueriesKeys(values: readonly any[]): string[] {
+  return values.map(sdkQueriesKey);
 }
 
-function sdkV2PersonValues(
+function sdkQueriesPersonValues(
   generated: any,
   person: any,
   membership: any,
@@ -924,42 +633,42 @@ function sdkV2PersonValues(
   assert.ok(scalarFields.every(([, field]) => field.value !== undefined));
   return {
     aliases: person.aliases.map((alias: any) => alias.value),
-    key: sdkV2Key(person),
-    model: sdkV2Model(generated, person),
+    key: sdkQueriesKey(person),
+    model: sdkQueriesModel(generated, person),
     nickname: person.nickname.value,
-    reference: sdkV2ModelKey(generated, membership.member),
+    reference: sdkQueriesModelKey(generated, membership.member),
     scalar_domains: scalarFields.map(([domain]) => domain),
   };
 }
 
-function sdkV2RoleObservation(
+function sdkQueriesRoleObservation(
   generated: any,
   membership: any,
   network: any,
 ): Record<string, unknown> {
   return {
     membership: {
-      relation: sdkV2Model(generated, membership),
+      relation: sdkQueriesModel(generated, membership),
       role: "member",
-      players: [sdkV2ModelKey(generated, membership.member)],
+      players: [sdkQueriesModelKey(generated, membership.member)],
     },
     network_link: {
-      relation: sdkV2Model(generated, network),
-      origin: sdkV2Key(network.origin),
-      destination: sdkV2Key(network.destination),
-      participants: sdkV2Keys(network.participant).sort(compareText),
+      relation: sdkQueriesModel(generated, network),
+      origin: sdkQueriesKey(network.origin),
+      destination: sdkQueriesKey(network.destination),
+      participants: sdkQueriesKeys(network.participant).sort(compareText),
     },
   };
 }
 
-function sdkV2HydratedResult(
+function sdkQueriesHydratedResult(
   generated: any,
   membership: any,
 ): Record<string, unknown> {
   return {
     rows: [{
-      model: sdkV2Model(generated, membership),
-      roles: { member: [sdkV2ModelKey(generated, membership.member)] },
+      model: sdkQueriesModel(generated, membership),
+      roles: { member: [sdkQueriesModelKey(generated, membership.member)] },
     }],
   };
 }
@@ -977,7 +686,7 @@ function assertUnknownEnumValue(operation: () => unknown, kind: string): void {
   });
 }
 
-function sdkV2CardinalityDiagnostic(error: any): Record<string, unknown> {
+function sdkQueriesCardinalityDiagnostic(error: any): Record<string, unknown> {
   assert.ok(error instanceof Error);
   assert.equal(error.name, "QueryV2Error");
   const diagnostic = error as QueryV2Error;
@@ -1007,7 +716,7 @@ function sdkV2CardinalityDiagnostic(error: any): Record<string, unknown> {
   };
 }
 
-async function sdkV2ResourceLimits(
+async function sdkQueriesResourceLimits(
   generated: any,
   database: any,
   advertisement: Uint8Array,
@@ -1138,7 +847,7 @@ async function sdkV2ResourceLimits(
   };
 }
 
-async function sdkV2Lifecycle(
+async function sdkQueriesLifecycle(
   generated: any,
   database: any,
   advertisement: Uint8Array,
@@ -1157,7 +866,7 @@ async function sdkV2Lifecycle(
     );
     closedDescendant.close();
     closedDescendant.close();
-    const ancestorUsable = sdkV2Key(await ancestor.one()) === "query-ada";
+    const ancestorUsable = sdkQueriesKey(await ancestor.one()) === "query-ada";
     const descendant = ancestor.where(
       person.field(generated.Person.score).gte(generated.Score.create(1n)),
     );
@@ -1176,13 +885,13 @@ async function sdkV2Lifecycle(
       ancestor_usable_after_descendant_close: ancestorUsable,
       close_idempotent: ancestor.isClosed && closedDescendant.isClosed,
       descendant_usable_after_ancestor_close:
-        sdkV2Key(await descendant.one()) === "query-ada",
+        sdkQueriesKey(await descendant.one()) === "query-ada",
       handle_invalidated: ancestor.isClosed,
       post_close_io_count: postCloseIoCount,
       post_close_rejected: rejected,
       session_usable_after_query_close:
-        sdkV2Key(await session.query(person).where(scope).one()) === "query-ada",
-      sibling_usable: sdkV2Key(await sibling.one()) === "query-ada",
+        sdkQueriesKey(await session.query(person).where(scope).one()) === "query-ada",
+      sibling_usable: sdkQueriesKey(await sibling.one()) === "query-ada",
     };
     descendant.close();
     sibling.close();
@@ -1198,12 +907,12 @@ async function sdkV2Lifecycle(
     lanes: ["direct", "remote"],
     query: direct,
     result_usable_after_query_close:
-      sdkV2Key(directResult) === "query-ada"
-      && sdkV2Key(remoteResult) === "query-ada",
+      sdkQueriesKey(directResult) === "query-ada"
+      && sdkQueriesKey(remoteResult) === "query-ada",
   };
 }
 
-function sdkV2Reducers(
+function sdkQueriesReducers(
     values: readonly unknown[],
     binding: readonly any[],
     field: readonly any[],
@@ -1244,11 +953,11 @@ function sdkV2Reducers(
 }
 
 /**
- * The sdk-v2 query program, run once per connection. Every lane observation
+ * The queries query program, run once per connection. Every lane observation
  * comes from this one program, so the direct and remote lanes differ only in
  * the connection the session was opened on.
  */
-async function sdkV2QueryLane(
+async function sdkQueriesQueryLane(
   generated: any,
   session: any,
   requests: readonly Uint8Array[],
@@ -1324,19 +1033,19 @@ async function sdkV2QueryLane(
     )
     .one();
 
-  const ownerKeys = sdkV2Keys(
+  const ownerKeys = sdkQueriesKeys(
     await session
       .query(person)
       .where(person.field(Person.score).isPresent(), scope)
       .rows({ limit: 2n, orderBy: [identifier.asc()] }),
   );
-  const optionalKeys = sdkV2Keys(
+  const optionalKeys = sdkQueriesKeys(
     await session
       .query(person)
       .where(person.field(Person.nickname).isPresent(), scope)
       .rows({ limit: 2n, orderBy: [identifier.asc()] }),
   );
-  const iidKeys = sdkV2Keys(
+  const iidKeys = sdkQueriesKeys(
     await session
       .query(person)
       .where(person.iidIn(personIids))
@@ -1365,7 +1074,7 @@ async function sdkV2QueryLane(
   const score = person.field(Person.score);
   const scoreGte = person.field(Person.scoreGte);
   const boolean = person.field(Person.valBool);
-  const andKeys = sdkV2Keys(
+  const andKeys = sdkQueriesKeys(
     await session
       .query(person)
       .where(
@@ -1374,19 +1083,19 @@ async function sdkV2QueryLane(
       )
       .rows({ limit: 2n, orderBy: [identifier.asc()] }),
   );
-  const orKeys = sdkV2Keys(
+  const orKeys = sdkQueriesKeys(
     await session
       .query(person)
       .where(scope)
       .rows({ limit: 2n, orderBy: [identifier.asc()] }),
   );
-  const notKeys = sdkV2Keys(
+  const notKeys = sdkQueriesKeys(
     await session
       .query(person)
       .where(scope, boolean.eq(ValBool.create(true)).not())
       .rows({ limit: 2n, orderBy: [identifier.asc()] }),
   );
-  const fieldComparisonKeys = sdkV2Keys(
+  const fieldComparisonKeys = sdkQueriesKeys(
     await session
       .query(person)
       .where(scope, score.gteField(scoreGte))
@@ -1429,7 +1138,7 @@ async function sdkV2QueryLane(
       limit: 4n,
       orderBy: [crossLeftId.asc(), crossRightId.asc()],
     }))
-    .map(([left, right]: readonly any[]) => [sdkV2Key(left), sdkV2Key(right)]);
+    .map(([left, right]: readonly any[]) => [sdkQueriesKey(left), sdkQueriesKey(right)]);
 
   const selectionLink = session.exact(NetworkLink);
   const selectionOrigin = session.exact(Person);
@@ -1470,12 +1179,12 @@ async function sdkV2QueryLane(
   const named = namedPage.items[0];
   const selection = {
     positional: [
-      sdkV2Key(positionalOrigin),
-      sdkV2Keys(positionalParticipants),
+      sdkQueriesKey(positionalOrigin),
+      sdkQueriesKeys(positionalParticipants),
     ],
     named: {
-      origin: sdkV2Key(named.origin),
-      participants: sdkV2Keys(named.participants),
+      origin: sdkQueriesKey(named.origin),
+      participants: sdkQueriesKeys(named.participants),
     },
     collected_distinct:
       new Set(positionalParticipants.map((value: any) => value.iid)).size
@@ -1496,11 +1205,11 @@ async function sdkV2QueryLane(
     includeTotal: true,
   });
   const terminals = {
-    one: sdkV2Key(dana),
-    first: sdkV2Key(first),
+    one: sdkQueriesKey(dana),
+    first: sdkQueriesKey(first),
     rows: keys,
     page: {
-      items: sdkV2Keys(page.items),
+      items: sdkQueriesKeys(page.items),
       offset: Number(page.offset),
       limit: Number(page.limit),
       total: Number(page.total),
@@ -1508,7 +1217,7 @@ async function sdkV2QueryLane(
     count: Number(await query.countBy(person)),
     exists: await query.existsBy(person),
   };
-  const scalarDomainKeys = sdkV2Keys(
+  const scalarDomainKeys = sdkQueriesKeys(
     await session
       .query(person)
       .where(scope, score.gte(Score.create(40n)))
@@ -1536,7 +1245,7 @@ async function sdkV2QueryLane(
   const tuple = await query
     .groupBy(person, score, person.field(Person.scoreGte))
     .aggregate([aggregate.count()] as const);
-  const reducers = sdkV2Reducers(
+  const reducers = sdkQueriesReducers(
     values,
     binding,
     field,
@@ -1558,13 +1267,13 @@ async function sdkV2QueryLane(
   try {
     await query.one();
   } catch (error) {
-    diagnostic = sdkV2CardinalityDiagnostic(error);
+    diagnostic = sdkQueriesCardinalityDiagnostic(error);
   }
   assert.notEqual(diagnostic, undefined, "one() over two rows must fail");
   return {
     oneExchange,
     observations: {
-      model_values_and_references: sdkV2PersonValues(generated, ada, membership),
+      model_values_and_references: sdkQueriesPersonValues(generated, ada, membership),
       owner_iid_set: {
         owner_field: "score",
         owner_keys: ownerKeys,
@@ -1574,8 +1283,8 @@ async function sdkV2QueryLane(
       },
       exact_subtypes: {
         declared_model: "employee",
-        exact: exactValues.map((value: any) => sdkV2ModelKey(generated, value)),
-        subtypes: subtypeValues.map((value: any) => sdkV2ModelKey(generated, value)),
+        exact: exactValues.map((value: any) => sdkQueriesModelKey(generated, value)),
+        subtypes: subtypeValues.map((value: any) => sdkQueriesModelKey(generated, value)),
       },
       scalar_boolean: {
         and_keys: andKeys,
@@ -1583,11 +1292,11 @@ async function sdkV2QueryLane(
         not_keys: notKeys,
         field_comparison_keys: fieldComparisonKeys,
       },
-      roles: sdkV2RoleObservation(generated, membership, network),
+      roles: sdkQueriesRoleObservation(generated, membership, network),
       topology: {
         reachable: [{
-          from: sdkV2Key(reachablePair[0]),
-          to: sdkV2Key(reachablePair[1]),
+          from: sdkQueriesKey(reachablePair[0]),
+          to: sdkQueriesKey(reachablePair[1]),
           max_hops: 1,
         }],
         cross_join_pairs: crossPairs,
@@ -1595,7 +1304,7 @@ async function sdkV2QueryLane(
       selection_shapes: selection,
       terminals,
       grouped_reducer: reducers,
-      hydrated_result: sdkV2HydratedResult(generated, membership),
+      hydrated_result: sdkQueriesHydratedResult(generated, membership),
       scalar_domain: {
         domain: "long",
         operator: "gte",
@@ -1613,7 +1322,7 @@ async function sdkV2QueryLane(
 }
 
 
-async function runSdkV2Journey(
+async function runSdkQueriesJourney(
   generated: any,
   database: any,
   remoteSession: any,
@@ -1704,18 +1413,18 @@ async function runSdkV2Journey(
     people = personManager.insertMany(personInputs);
     assert.equal(people.length, personInputs.length);
     for (let index = 0; index < people.length; index += 1) {
-      assert.equal(sdkV2Key(people[index]), sdkV2Key(personInputs[index]));
+      assert.equal(sdkQueriesKey(people[index]), sdkQueriesKey(personInputs[index]));
       inserted.push([personManager, people[index]]);
     }
     insertedCount = inserted.length;
 
     employee = employeeManager.insert(employeeInput);
-    assert.equal(sdkV2Key(employee), sdkV2Key(employeeInput));
+    assert.equal(sdkQueriesKey(employee), sdkQueriesKey(employeeInput));
     inserted.push([employeeManager, employee]);
     insertedCount = inserted.length;
 
     manager = managerManager.insert(managerInput);
-    assert.equal(sdkV2Key(manager), sdkV2Key(managerInput));
+    assert.equal(sdkQueriesKey(manager), sdkQueriesKey(managerInput));
     inserted.push([managerManager, manager]);
     insertedCount = inserted.length;
 
@@ -1730,7 +1439,7 @@ async function runSdkV2Journey(
       origin: people[0],
       participant: people,
     }));
-    assert.equal(sdkV2Key(network), networkFields.identifier.value);
+    assert.equal(sdkQueriesKey(network), networkFields.identifier.value);
     inserted.push([networkManager, network]);
     insertedCount = inserted.length;
 
@@ -1741,7 +1450,7 @@ async function runSdkV2Journey(
     const entityReadAfterCreate = personManager.getByIid(personIids[0]) !== null;
     const relationReadAfterCreate = membershipManager.getByIid(membershipIid) !== null;
 
-    const lane = (session: any) => sdkV2QueryLane(
+    const lane = (session: any) => sdkQueriesQueryLane(
       generated,
       session,
       requests,
@@ -1766,14 +1475,14 @@ async function runSdkV2Journey(
     );
     assert.equal(direct.oneExchange, 0);
     assert.equal(remote.oneExchange, 1);
-    const resourceLimits = await sdkV2ResourceLimits(
+    const resourceLimits = await sdkQueriesResourceLimits(
       generated,
       database,
       advertisement,
       exchange,
       membershipIid,
     );
-    const queryResourceLifecycle = await sdkV2Lifecycle(
+    const queryResourceLifecycle = await sdkQueriesLifecycle(
       generated,
       database,
       advertisement,
@@ -1802,7 +1511,7 @@ async function runSdkV2Journey(
       observationKey("query_resource_lifecycle", "lifecycle"),
       queryResourceLifecycle,
     );
-    assert.equal(observed.size, 29, "sdk-v2 must measure 29 pre-cleanup live lanes");
+    assert.equal(observed.size, 29, "queries must measure 29 pre-cleanup live lanes");
     assert.equal(proofObservations.size, 3);
     for (const [key, observation] of proofObservations) {
       assert.equal(observed.has(key), false, `proof fragment duplicated live lane ${key}`);
@@ -1820,18 +1529,18 @@ async function runSdkV2Journey(
     observed.set(observationKey("entity_lifecycle", "direct_runtime"), {
       created: true,
       deleted: entityDeleted,
-      key: sdkV2Key(people[0]),
-      model: sdkV2Model(generated, people[0]),
+      key: sdkQueriesKey(people[0]),
+      model: sdkQueriesModel(generated, people[0]),
       read_after_create: entityReadAfterCreate,
     });
     observed.set(observationKey("relation_lifecycle", "direct_runtime"), {
       created: true,
       deleted: relationDeleted,
-      model: sdkV2Model(generated, membership),
-      player_key: sdkV2Key(people[0]),
+      model: sdkQueriesModel(generated, membership),
+      player_key: sdkQueriesKey(people[0]),
       role: "member",
     });
-    assert.equal(observed.size, 34, "sdk-v2 requires 31 live and 3 proof lanes");
+    assert.equal(observed.size, 34, "queries requires 31 live and 3 proof lanes");
     assert.equal(relationReadAfterCreate, true);
     return sdkResults(catalog, journey, observed);
   } finally {
@@ -1960,19 +1669,9 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
   const foreignDirectory = resolve(stage, "generated_foreign");
   let database;
   let failure: unknown;
-  let preparedSdkReport: Record<string, unknown> | undefined;
-  let preparedSdkV2Report: Record<string, unknown> | undefined;
-  let sdkIdentity: SdkProfileIdentity | undefined;
-  let sdkV2Identity: SdkProfileIdentity | undefined;
-  const sdkReportPath = process.env.TYPE_BRIDGE_SDK_REPORT;
-  const sdkV2ReportPath = process.env.TYPE_BRIDGE_SDK_REPORT_V2;
-  if (
-    sdkReportPath !== undefined
-    && sdkV2ReportPath !== undefined
-    && sdkReportPath === sdkV2ReportPath
-  ) {
-    throw new Error("sdk-v1 and sdk-v2 reports require distinct paths");
-  }
+  let preparedSdkQueriesReport: Record<string, unknown> | undefined;
+  let sdkQueriesIdentity: SdkProfileIdentity | undefined;
+  const sdkQueriesReportPath = process.env.TYPE_BRIDGE_SDK_QUERIES_REPORT;
 
   try {
     if (ownsStage) {
@@ -2060,16 +1759,11 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     assert.equal(semanticFingerprint.semantic_profile, REMOTE_PROFILE);
     assert.deepEqual(runtimeProjection.semantic_fingerprint, semanticFingerprint);
     assert.deepEqual(runtimeProjection.projection_fingerprint, projectionFingerprint);
-
-    let sdkCatalogRaw: Buffer | undefined;
-    let sdkCatalog: any;
-    let sdkJourneyRaw: Buffer | undefined;
-    let sdkJourney: any;
-    let sdkV2CatalogRaw: Buffer | undefined;
-    let sdkV2Catalog: any;
-    let sdkV2JourneyRaw: Buffer | undefined;
-    let sdkV2Journey: any;
-    let sdkV2ProofObservations:
+    let sdkQueriesCatalogRaw: Buffer | undefined;
+    let sdkQueriesCatalog: any;
+    let sdkQueriesJourneyRaw: Buffer | undefined;
+    let sdkQueriesJourney: any;
+    let sdkQueriesProofObservations:
       | ReadonlyMap<string, Record<string, unknown>>
       | undefined;
     if (!IS_TYPEDB_3_11) {
@@ -2078,36 +1772,21 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
         await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
       );
     }
-    if (sdkReportPath !== undefined) {
-      sdkIdentity = sdkReportIdentity(1);
-      await validateSdkReportPath(sdkReportPath);
+    if (sdkQueriesReportPath !== undefined) {
+      sdkQueriesIdentity = sdkReportIdentity(2);
+      await validateSdkReportPath(sdkQueriesReportPath);
       requireSdkServerVersion(
-        sdkIdentity,
+        sdkQueriesIdentity,
         await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
       );
-      sdkCatalogRaw = await readFile(SDK_CATALOG);
-      sdkCatalog = JSON.parse(sdkCatalogRaw.toString("utf8"));
-      sdkJourneyRaw = await readFile(SDK_JOURNEY);
-      sdkJourney = JSON.parse(sdkJourneyRaw.toString("utf8"));
-      assert.equal(sdkJourney.format, "typebridge.sdk-journey/v1");
-      assert.equal(sdkJourney.fixture_id, sdkCatalog.fixture.id);
-      assert.equal(sdkJourney.version, sdkCatalog.fixture.version);
-    }
-    if (sdkV2ReportPath !== undefined) {
-      sdkV2Identity = sdkReportIdentity(2);
-      await validateSdkReportPath(sdkV2ReportPath);
-      requireSdkServerVersion(
-        sdkV2Identity,
-        await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
-      );
-      sdkV2CatalogRaw = await readFile(SDK_V2_CATALOG);
-      sdkV2Catalog = JSON.parse(sdkV2CatalogRaw.toString("utf8"));
-      sdkV2JourneyRaw = await readFile(SDK_V2_JOURNEY);
-      sdkV2Journey = JSON.parse(sdkV2JourneyRaw.toString("utf8"));
-      sdkV2ProofObservations = loadSdkV2ProofObservations();
-      assert.equal(sdkV2Journey.format, "typebridge.sdk-journey/v2");
-      assert.equal(sdkV2Journey.fixture_id, sdkV2Catalog.fixture.id);
-      assert.equal(sdkV2Journey.version, sdkV2Catalog.fixture.version);
+      sdkQueriesCatalogRaw = await readFile(SDK_QUERIES_CATALOG);
+      sdkQueriesCatalog = JSON.parse(sdkQueriesCatalogRaw.toString("utf8"));
+      sdkQueriesJourneyRaw = await readFile(SDK_QUERIES_JOURNEY);
+      sdkQueriesJourney = JSON.parse(sdkQueriesJourneyRaw.toString("utf8"));
+      sdkQueriesProofObservations = loadSdkQueriesProofObservations();
+      assert.equal(sdkQueriesJourney.format, "typebridge.sdk-queries-journey/v1");
+      assert.equal(sdkQueriesJourney.fixture_id, sdkQueriesCatalog.fixture.id);
+      assert.equal(sdkQueriesJourney.version, sdkQueriesCatalog.fixture.version);
     }
     database = connectIntegration();
     database.resetDatabase();
@@ -3148,61 +2827,33 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
         assert.equal(requests.length, requestsBefore);
       }
       assert.ok(requests.every((request) => request.length > 0));
-
-      if (sdkReportPath !== undefined) {
-        if (sdkCatalogRaw === undefined || sdkJourneyRaw === undefined) {
-          throw new Error("sdk contracts were not loaded after report preflight");
-        }
-        const results = await runSdkJourney(
-          generated,
-          personManager,
-          membershipManager,
-          querySession,
-          remoteSession,
-          requests,
-          sdkCatalog,
-          sdkJourney,
-        );
-        if (sdkIdentity === undefined) {
-          throw new Error("sdk-v1 profile was not selected after report preflight");
-        }
-        preparedSdkReport = await sdkReport(
-          sdkIdentity,
-          sdkCatalogRaw,
-          sdkCatalog,
-          sdkJourneyRaw,
-          semanticFingerprint,
-          projectionFingerprint,
-          results,
-        );
-      }
-      if (sdkV2ReportPath !== undefined) {
+      if (sdkQueriesReportPath !== undefined) {
         if (
-          sdkV2CatalogRaw === undefined
-          || sdkV2JourneyRaw === undefined
-          || sdkV2ProofObservations === undefined
+          sdkQueriesCatalogRaw === undefined
+          || sdkQueriesJourneyRaw === undefined
+          || sdkQueriesProofObservations === undefined
         ) {
-          throw new Error("sdk-v2 contracts were not loaded after report preflight");
+          throw new Error("queries contracts were not loaded after report preflight");
         }
-        const results = await runSdkV2Journey(
+        const results = await runSdkQueriesJourney(
           generated,
           database,
           remoteSession,
           requests,
           advertisement,
           exchange,
-          sdkV2Catalog,
-          sdkV2Journey,
-          sdkV2ProofObservations,
+          sdkQueriesCatalog,
+          sdkQueriesJourney,
+          sdkQueriesProofObservations,
         );
-        if (sdkV2Identity === undefined) {
-          throw new Error("sdk-v2 profile was not selected after report preflight");
+        if (sdkQueriesIdentity === undefined) {
+          throw new Error("queries profile was not selected after report preflight");
         }
-        preparedSdkV2Report = await sdkV2Report(
-          sdkV2Identity,
-          sdkV2CatalogRaw,
-          sdkV2Catalog,
-          sdkV2JourneyRaw,
+        preparedSdkQueriesReport = await sdkQueriesReport(
+          sdkQueriesIdentity,
+          sdkQueriesCatalogRaw,
+          sdkQueriesCatalog,
+          sdkQueriesJourneyRaw,
           semanticFingerprint,
           projectionFingerprint,
           results,
@@ -3270,19 +2921,12 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
   if (failure !== undefined) {
     throw failure;
   }
-  if (sdkReportPath !== undefined) {
-    assert.equal(sdkIdentity?.semanticProfile, REMOTE_PROFILE);
-    if (preparedSdkReport === undefined) {
-      throw new Error("sdk report was not prepared after the successful journey");
+  if (sdkQueriesReportPath !== undefined) {
+    assert.equal(sdkQueriesIdentity?.semanticProfile, REMOTE_PROFILE);
+    if (preparedSdkQueriesReport === undefined) {
+      throw new Error("queries report was not prepared after the successful journey");
     }
-    await publishSdkReport(sdkReportPath, preparedSdkReport);
-  }
-  if (sdkV2ReportPath !== undefined) {
-    assert.equal(sdkV2Identity?.semanticProfile, REMOTE_PROFILE);
-    if (preparedSdkV2Report === undefined) {
-      throw new Error("sdk-v2 report was not prepared after the successful journey");
-    }
-    await publishSdkReport(sdkV2ReportPath, preparedSdkV2Report);
+    await publishSdkReport(sdkQueriesReportPath, preparedSdkQueriesReport);
   }
 });
 

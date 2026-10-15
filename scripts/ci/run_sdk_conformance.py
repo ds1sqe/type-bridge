@@ -29,8 +29,7 @@ from persist_binding_reports import PublishError, publish_files
 ROOT = Path(__file__).resolve().parents[2]
 CORE = ROOT / "type-bridge-core"
 NODE = CORE / "crates/node"
-V1_BINDINGS = ("python", "node", "rust")
-BINDINGS = (*V1_BINDINGS, "c")
+BINDINGS = ("python", "node", "rust", "c")
 SUITES = tuple(profile_matrix.SUITES)
 PYTHON_PROVIDER = ROOT / "tests/integration/schema/test_sdk_serialization_codec.py"
 NODE_PROVIDER = CORE / "crates/schema-codegen/tests/typescript_acceptance/codec_check.py"
@@ -126,11 +125,11 @@ def rust_live(test: str, suite: str) -> list[str]:
 def fragment_environment(
     version: int, environment: dict[str, str], destination: Path, nonce: str
 ) -> dict[str, str]:
+    directory = profile_matrix.SUITES[tuple(profile_matrix.SUITES)[version - 2]]
+    suffix = f"V{version}" if directory.startswith("sdk-v") else directory.upper()
     return environment | {
-        f"{'TYPE_BRIDGE_SDK_MODELS' if version == 3 else f'TYPE_BRIDGE_SDK_V{version}'}_PROOF_FRAGMENT": str(
-            destination
-        ),
-        f"{'TYPE_BRIDGE_SDK_MODELS' if version == 3 else f'TYPE_BRIDGE_SDK_V{version}'}_PROOF_RUN_NONCE": nonce,
+        f"TYPE_BRIDGE_SDK_{suffix}_PROOF_FRAGMENT": str(destination),
+        f"TYPE_BRIDGE_SDK_{suffix}_PROOF_RUN_NONCE": nonce,
     }
 
 
@@ -208,9 +207,13 @@ def query_proofs(directory: Path, environment: dict[str, str], nonce: str) -> No
             ],
         ),
         "rust": (
-            cargo_test("type-bridge", "remote::tests::sdk_v2_rust_deterministic_proof_fragment"),
+            cargo_test(
+                "type-bridge", "remote::tests::sdk_queries_rust_deterministic_proof_fragment"
+            ),
         ),
-        "c": (cargo_test("type-bridge-c", "query::tests::sdk_v2_c_deterministic_proof_fragment"),),
+        "c": (
+            cargo_test("type-bridge-c", "query::tests::sdk_queries_c_deterministic_proof_fragment"),
+        ),
     }
     produce_proofs(2, directory, environment, nonce, commands)
 
@@ -222,17 +225,14 @@ def query_environment(
     if not fragments:
         raise RunnerError(f"{binding} V2 proof fragments are missing")
     result = environment | {
-        "TYPE_BRIDGE_SDK_REPORT_V2": str(directory / f"v2/{binding}.json"),
-        "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS": os.pathsep.join(str(path) for path in fragments),
-        "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE": nonce,
+        "TYPE_BRIDGE_SDK_QUERIES_REPORT": str(directory / f"v2/{binding}.json"),
+        "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS": os.pathsep.join(str(path) for path in fragments),
+        "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE": nonce,
     }
-    if binding in V1_BINDINGS:
-        result["TYPE_BRIDGE_SDK_REPORT"] = str(directory / f"v1/{binding}.json")
     return result
 
 
 def query_live(directory: Path, environment: dict[str, str], nonce: str) -> None:
-    (directory / "v1").mkdir()
     (directory / "v2").mkdir()
     python_env = query_environment(environment, directory, "python", nonce) | {
         "USE_DOCKER": "false"
@@ -252,7 +252,7 @@ def query_live(directory: Path, environment: dict[str, str], nonce: str) -> None
     run(["npm", "run", "build"], cwd=NODE, env=environment)
     run(["npm", "run", "typecheck:projection-integration"], cwd=NODE, env=environment)
     node_env = query_environment(environment, directory, "node", nonce) | {
-        "TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON": str(Path(sys.executable).resolve()),
+        "TYPE_BRIDGE_SDK_QUERIES_VALIDATOR_PYTHON": str(Path(sys.executable).resolve()),
         "TYPE_BRIDGE_NODE_INTG_DATABASE": f"type_bridge_v2_node_{os.getpid()}",
     }
     node_live("generated package round-trips exact models on TypeDB", node_env)
@@ -265,7 +265,7 @@ def query_live(directory: Path, environment: dict[str, str], nonce: str) -> None
         ),
         env=rust_env,
     )
-    c_target = directory / "c-target"
+    c_target = Path(environment.get("CARGO_TARGET_DIR", directory / "c-target"))
     c_env = query_environment(environment, directory, "c", nonce) | {
         "TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE": f"type_bridge_v2_c_{os.getpid()}",
         "TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER": "1",
@@ -298,14 +298,7 @@ def query_live(directory: Path, environment: dict[str, str], nonce: str) -> None
 def compare_queries(directory: Path, environment: dict[str, str]) -> None:
     run(
         python_command(
-            "compare_sdk_conformance.py",
-            *(str(directory / f"v1/{binding}.json") for binding in V1_BINDINGS),
-        ),
-        env=environment,
-    )
-    run(
-        python_command(
-            "compare_sdk_conformance_v2.py",
+            "sdk_queries_compare.py",
             *(str(directory / f"v2/{binding}.json") for binding in BINDINGS),
         ),
         env=environment,
@@ -922,8 +915,8 @@ def execute(
         compare_queries(directory, environment)
         return {
             f"v{version}/{binding}.json": directory / f"v{version}/{binding}.json"
-            for version in (1, 2)
-            for binding in (V1_BINDINGS if version == 1 else BINDINGS)
+            for version in (2,)
+            for binding in BINDINGS
         }
     if suite == "models":
         nonce = secrets.token_hex(32)

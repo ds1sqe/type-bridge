@@ -399,14 +399,21 @@ def test_hosted_fan_ins_are_provider_free_and_keep_v1_and_v2_separate() -> None:
     assert "TYPE_BRIDGE_SDK_FINGERPRINTS_OUTPUT" not in str(v2)
 
 
-def test_local_full_suite_emits_fragments_then_fans_in_both_versions() -> None:
+def test_local_full_suite_emits_fragments_then_compares_queries() -> None:
     source = LOCAL.read_text(encoding="utf-8")
 
     assert "urllib.request.urlopen(" in source
     assert 'f"http://127.0.0.1:{sys.argv[1]}/v1/version"' in source
     assert "TypeDB gRPC and HTTP endpoints did not become ready in time" in source
 
-    for variable in RUNNER_OWNED:
+    for variable in {
+        "TYPE_BRIDGE_SDK_QUERIES_REPORT",
+        "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT",
+        "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS",
+        "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE",
+        "TYPE_BRIDGE_SDK_QUERIES_VALIDATED_OBSERVATIONS",
+        "TYPE_BRIDGE_SDK_QUERIES_VALIDATOR_PYTHON",
+    }:
         assert variable in source
     assert "${!runner_owned_sdk_variable+x}" in source
     assert "is runner-owned; unset it before invoking test.sh" in source
@@ -417,17 +424,14 @@ def test_local_full_suite_emits_fragments_then_fans_in_both_versions() -> None:
     assert "forwarded pytest arguments may change collection" in source
     assert 'mktemp -d "${TMPDIR:-/tmp}/typebridge-sdk.XXXXXXXXXX"' in source
     assert 'sdk_report_dir="$(cd "$sdk_report_dir" && pwd -P)"' in source
-    assert 'mkdir -p "$sdk_report_dir/v2"' in source
+    assert 'mkdir -p "$sdk_report_dir/queries"' in source
     assert source.count("secrets.token_hex(32)") == 4
     assert "declare -A sdk_nonce_set=()" in source
-    assert "Sdk-v2 binding nonces must be distinct" in source
+    assert "SDK queries binding nonces must be distinct" in source
 
-    for binding in ("python", "node", "rust"):
-        assert f"TYPE_BRIDGE_SDK_REPORT=$sdk_report_dir/{binding}.json" in source
-        assert f'"$sdk_report_dir/{binding}.json"' in source
     for binding in ("python", "node", "rust", "c"):
-        assert f"TYPE_BRIDGE_SDK_REPORT_V2=$sdk_report_dir/v2/{binding}.json" in source
-        assert f'"$sdk_report_dir/v2/{binding}.json"' in source
+        assert f"TYPE_BRIDGE_SDK_QUERIES_REPORT=$sdk_report_dir/queries/{binding}.json" in source
+        assert f'"$sdk_report_dir/queries/{binding}.json"' in source
 
     emitter_ids = (
         "match_runtime::tests::"
@@ -435,36 +439,34 @@ def test_local_full_suite_emits_fragments_then_fans_in_both_versions() -> None:
         "schema-codegen/tests/acceptance/check.py",
         "match_runtime::tests::node_direct_cancellation_fragment_is_measured_from_owned_execution",
         "schema-codegen/tests/typescript_acceptance/check.mjs",
-        "remote::tests::sdk_v2_rust_deterministic_proof_fragment",
-        "query::tests::sdk_v2_c_deterministic_proof_fragment",
+        "remote::tests::sdk_queries_rust_deterministic_proof_fragment",
+        "query::tests::sdk_queries_c_deterministic_proof_fragment",
     )
     for emitter_id in emitter_ids:
         assert emitter_id in source
-    assert source.index("emit Rust sdk-v2 deterministic proof fragment") < source.index(
+    assert source.index("emit Rust queries deterministic proof fragment") < source.index(
         'run_step "generated Rust application parity"'
     )
-    assert source.index("emit C sdk-v2 deterministic proof fragment") < source.index(
+    assert source.index("emit C queries deterministic proof fragment") < source.index(
         'run_step "compiled generated C17 Person and Membership CRUD lifecycle"'
     )
-    assert source.index("emit Python generated-remote sdk-v2 proof fragment") < source.index(
+    assert source.index("emit Python generated-remote queries proof fragment") < source.index(
         'run_step "pytest -m integration"'
     )
-    assert source.index("emit Node generated-remote sdk-v2 proof fragment") < source.index(
+    assert source.index("emit Node generated-remote queries proof fragment") < source.index(
         'run_step "npm run test:projection-integration"'
     )
-    assert "TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON=$sdk_validator_python" in source
-    assert "scripts/ci/compare_sdk_conformance.py" in source
-    assert "scripts/ci/compare_sdk_conformance_v2.py" in source
-    assert 'sdk_v1_summary="$sdk_report_dir/summary-v1.json"' in source
-    assert 'sdk_v2_summary="$sdk_report_dir/summary-v2.json"' in source
-    assert source.count("write_sdk_summary \\") == 2
+    assert "TYPE_BRIDGE_SDK_QUERIES_VALIDATOR_PYTHON=$sdk_validator_python" in source
+    assert "scripts/ci/sdk_queries_compare.py" in source
+    assert 'sdk_queries_summary="$sdk_report_dir/queries-comparison.json"' in source
+    assert source.count("write_sdk_summary \\") == 1
     assert 'mktemp "${summary}.tmp.XXXXXX"' in source
     assert 'ln -- "$staged" "$summary"' in source
     assert source.count('unlink -- "$staged"') == 4
     assert "validate_canonical_json_files" in source
     assert "empty JSON evidence" in source
     assert "noncanonical JSON evidence" in source
-    assert "sdk-v2 pending_manifest_promotions=" in source
+    assert "queries pending_manifest_promotions=" in source
     assert "log_sdk_evidence_sha256" in source
     assert 'sha256sum -- "$@"' in source
     hash_step = source.index('run_step "validate and log sdk report and summary SHA-256 evidence"')
@@ -473,23 +475,19 @@ def test_local_full_suite_emits_fragments_then_fans_in_both_versions() -> None:
     assert hash_step < source.index("    finish_sdk_evidence\n") < cleanup
     assert "((fail == lane_fail_start))" in source[cleanup:]
     for report in (
-        "python.json",
-        "node.json",
-        "rust.json",
-        "v2/python.json",
-        "v2/node.json",
-        "v2/rust.json",
-        "v2/c.json",
+        "queries/python.json",
+        "queries/node.json",
+        "queries/rust.json",
+        "queries/c.json",
     ):
         assert f'"$sdk_report_dir/{report}"' in source[hash_step:cleanup]
-    assert '"$sdk_v1_summary"' in source[hash_step:cleanup]
-    assert '"$sdk_v2_summary"' in source[hash_step:cleanup]
+    assert '"$sdk_queries_summary"' in source[hash_step:cleanup]
     assert "Preserved sdk reports for diagnosis" in source
     assert "Removed accepted sdk reports" in source
     assert 'preserve_sdk_evidence="${TYPE_BRIDGE_PRESERVE_SDK_EVIDENCE:-0}"' in source
     assert '[[ "$preserve_sdk_evidence" == 0 ]]' in source
     assert "Preserved accepted sdk evidence by request" in source
-    for summary in ("summary-v1.json", "summary-v2.json"):
+    for summary in ("queries-comparison.json",):
         assert f'"$sdk_report_dir/{summary}"' in source[cleanup:]
     for fragment in (
         "python-direct-proof.json",
@@ -499,4 +497,4 @@ def test_local_full_suite_emits_fragments_then_fans_in_both_versions() -> None:
         "rust-proof.json",
         "c-proof.json",
     ):
-        assert f'"$sdk_report_dir/v2/{fragment}"' in source
+        assert f'"$sdk_report_dir/queries/{fragment}"' in source

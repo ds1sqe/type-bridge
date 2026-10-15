@@ -1,4 +1,4 @@
-"""Fail-closed tests for the four-binding sdk-v2 transition gate."""
+"""Fail-closed tests for the four-binding queries transition gate."""
 
 from __future__ import annotations
 
@@ -13,12 +13,12 @@ from typing import Any
 import pytest
 
 SOURCE_ROOT = Path(__file__).resolve().parents[3]
-COMPARATOR_PATH = SOURCE_ROOT / "scripts/ci/compare_sdk_conformance_v2.py"
+COMPARATOR_PATH = SOURCE_ROOT / "scripts/ci/sdk_queries_compare.py"
 
 
 def _load_comparator() -> ModuleType:
     spec = importlib.util.spec_from_file_location(
-        "sdk_conformance_v2_comparator",
+        "sdk_queries_comparator",
         COMPARATOR_PATH,
     )
     assert spec is not None and spec.loader is not None
@@ -162,7 +162,7 @@ def _write_authority(root: Path, *, promoted: bool) -> None:
     catalog = {
         "format": comparator.CATALOG_FORMAT,
         "fixture": {
-            "id": "sdk-v2",
+            "id": "queries",
             "version": 2,
             "semantic_profile": "typedb-3.12.1/v1",
             "schema_path": comparator.SCHEMA_RELATIVE,
@@ -202,7 +202,7 @@ def _valid_report(binding: str, contracts: Any) -> dict[str, Any]:
             "sha256": contracts.catalog.sha256,
         },
         "fixture": {
-            "id": "sdk-v2",
+            "id": "queries",
             "journey": {
                 "path": comparator.JOURNEY_RELATIVE,
                 "sha256": contracts.journey.sha256,

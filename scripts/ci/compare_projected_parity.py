@@ -13,7 +13,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sdk_profile_matrix as profile_matrix  # noqa: E402
-from compare_sdk_conformance import (  # noqa: E402, F401
+from sdk_conformance_common import (  # noqa: E402, F401
     ContractError,
     _duplicate_key_object,
     _exact_object,

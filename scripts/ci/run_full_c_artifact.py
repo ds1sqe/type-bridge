@@ -35,7 +35,7 @@ def main() -> None:
     inputs = arguments.inputs.resolve()
     provider = ("--address", arguments.address, "--http-port", arguments.http_port)
     run("run_sdk_conformance.py", "queries", "--output", str(output / "v12"), *provider)
-    for version in (1, 2):
+    for version in (2,):
         shutil.move(str(output / "v12" / f"v{version}"), output / f"v{version}")
     (output / "v12").rmdir()
     for version, suite in enumerate(tuple(profile_matrix.SUITES)[1:-1], start=3):

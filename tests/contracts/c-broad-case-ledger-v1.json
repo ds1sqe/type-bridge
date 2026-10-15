@@ -7,8 +7,8 @@
     "query-remote": {
       "source_commit": "5ec1ec836efbcca75a789b7777aeef8ea4753b40",
       "authorities": [
-        {"path": "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json", "sha256": "39b60a2707b6602a5c407b1d5d5455e9b553b13f941c680232d67e623e8115f9"},
-        {"path": "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json", "sha256": "cb63ccb1b76e7f00f68fe6fd9d14fad978560f98cbc5a741949656b20e95ce96"}
+        {"path": "tests/contracts/sdk_conformance/queries/catalog.json", "sha256": "a50cddf6ff2244494948b7c2ec77cd50b35575568428fa6fe76ae909ea41a285"},
+        {"path": "tests/contracts/sdk_conformance/queries/journey.json", "sha256": "e03d136c6b8f98aa7d24d483c95112615f97483107e2f7c48175a782d6b842f0"}
       ]
     },
     "data-model": {

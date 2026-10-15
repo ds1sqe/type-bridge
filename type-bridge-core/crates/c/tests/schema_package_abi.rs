@@ -6241,7 +6241,7 @@ impl Drop for IsolatedLiveDatabase<'_> {
 
 /// Live transaction acceptance: a compiled C17 consumer owns the complete
 /// runtime/database/transaction lifecycle against an isolated database on the
-/// exact TypeDB server of the requested SDK profile: the sdk-v2 matrix entry
+/// exact TypeDB server of the requested SDK profile: the queries matrix entry
 /// for `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`, else the catalog's profile.
 ///
 /// Run through the repository integration lane, or directly after building

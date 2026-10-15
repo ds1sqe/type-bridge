@@ -34,8 +34,17 @@ def test_fragment_ledger_covers_each_binding_and_exact_validator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     commands: list[list[str]] = []
-    monkeypatch.setattr(RUNNER, "run", lambda command, **_kwargs: commands.append(command))
+    environments: list[dict[str, str]] = []
+
+    def record(command: list[str], **kwargs: Any) -> None:
+        commands.append(command)
+        environments.append(kwargs["env"])
+
+    monkeypatch.setattr(RUNNER, "run", record)
     RUNNER.query_proofs(tmp_path, {}, "0" * 64)
+    emitters = [env for env in environments if "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT" in env]
+    assert len(emitters) == 6
+    assert all(env["TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE"] == "0" * 64 for env in emitters)
     validators = [command for command in commands if "scripts/ci/proof_fragments.py" in command]
     assert len(validators) == 4
     assert all(command[command.index("--sdk") + 1] == "2" for command in validators)
@@ -48,22 +57,21 @@ def test_fragment_ledger_covers_each_binding_and_exact_validator(
     for marker in (
         "python_direct_cancellation_fragment_is_measured_from_owned_execution",
         "node_direct_cancellation_fragment_is_measured_from_owned_execution",
-        "sdk_v2_rust_deterministic_proof_fragment",
-        "sdk_v2_c_deterministic_proof_fragment",
+        "sdk_queries_rust_deterministic_proof_fragment",
+        "sdk_queries_c_deterministic_proof_fragment",
     ):
         command = next(command for command in commands if any(marker in item for item in command))
         assert "--locked" in command and command[-2:] == ["--", "--exact"]
 
 
-def test_comparator_ledger_preserves_v1_three_and_v2_four(
+def test_comparator_ledger_uses_four_queries_reports(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     commands: list[list[str]] = []
     monkeypatch.setattr(RUNNER, "run", lambda command, **_kwargs: commands.append(command))
     RUNNER.compare_queries(tmp_path, {})
-    assert len(commands) == 2
-    assert len(commands[0]) == 2 + len(RUNNER.V1_BINDINGS)
-    assert len(commands[1]) == 2 + len(RUNNER.BINDINGS)
+    assert len(commands) == 1
+    assert len(commands[0]) == 2 + len(RUNNER.BINDINGS)
 
 
 def test_phase_report_ledger_uses_all_three_validated_fan_ins(
@@ -177,7 +185,7 @@ def _reports(root: Path) -> None:
 
 def test_historical_inventory_does_not_invent_c_v1(tmp_path: Path) -> None:
     _reports(tmp_path)
-    assert [version for version, _ in RUNNER.predecessor_paths(tmp_path, "rust")] == [1, 2, 3, 4, 5]
+    assert [version for version, _ in RUNNER.predecessor_paths(tmp_path, "rust")] == [2, 3, 4, 5]
     assert [version for version, _ in RUNNER.predecessor_paths(tmp_path, "c")] == [2, 3, 4, 5]
     assert not (tmp_path / "v1/c.json").exists()
 
@@ -229,11 +237,7 @@ def test_suite_runs_in_order_and_publishes_only_validated_reports(
     calls: list[str] = []
     scratch: list[Path] = []
     names = (
-        [
-            f"v{version}/{binding}.json"
-            for version in (1, 2)
-            for binding in (RUNNER.V1_BINDINGS if version == 1 else RUNNER.BINDINGS)
-        ]
+        [f"v{version}/{binding}.json" for version in (2,) for binding in RUNNER.BINDINGS]
         if suite == "queries"
         else [f"{binding}.json" for binding in RUNNER.BINDINGS]
     )
@@ -369,7 +373,7 @@ def test_full_c_preserves_versioned_layout_with_named_suites(
     def run(*arguments: str) -> None:
         calls.append(arguments)
         if arguments[1] == "queries":
-            for version in (1, 2):
+            for version in (2,):
                 (output / f"v12/v{version}").mkdir(parents=True)
 
     monkeypatch.setattr(full_c, "run", run)
@@ -387,7 +391,7 @@ def test_full_c_preserves_versioned_layout_with_named_suites(
         "v5",
         "v6",
     ]
-    assert (output / "v1").is_dir() and (output / "v2").is_dir()
+    assert not (output / "v1").exists() and (output / "v2").is_dir()
     assert not (output / "v12").exists()
     assert calls[-1][calls[-1].index("--predecessors") + 1] == str(output)
 

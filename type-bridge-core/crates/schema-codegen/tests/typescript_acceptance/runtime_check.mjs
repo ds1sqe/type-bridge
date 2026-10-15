@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import {
   closeSync,
   fstatSync,
@@ -960,7 +961,7 @@ function proofSourceBytes(root, relative) {
   const path = resolve(root, relative);
   const metadata = lstatSync(path);
   if (!metadata.isFile() || metadata.isSymbolicLink()) {
-    throw new Error(`sdk-v2 proof source is not a regular file: ${relative}`);
+    throw new Error(`queries proof source is not a regular file: ${relative}`);
   }
   const descriptor = openSync(path, "r");
   try {
@@ -969,7 +970,7 @@ function proofSourceBytes(root, relative) {
     let offset = 0;
     while (offset < size) {
       const count = readSync(descriptor, bytes, offset, size - offset, offset);
-      if (count === 0) throw new Error(`sdk-v2 proof source was truncated: ${relative}`);
+      if (count === 0) throw new Error(`queries proof source was truncated: ${relative}`);
       offset += count;
     }
     return bytes;
@@ -1003,14 +1004,15 @@ function canonicalProofValue(value) {
  * (mirrors `scripts/ci/sdk_profile_matrix.py` `requested`).
  */
 function sdkProofProfile(root, version) {
-  const base = version === 3 ? "tests/contracts/sdk_conformance/models" : `tests/contracts/sdk_conformance/sdk-v${version}`;
-  const suffix = version === 3 ? "" : `-v${version}`;
-  const read = (name) => JSON.parse(proofSourceBytes(root, `${base}/${name}`).toString("utf8"));
+  const paths = JSON.parse(execFileSync(
+    "python3", [resolve(root, "scripts/ci/sdk_profile_matrix.py")], { encoding: "utf8" },
+  ))[version];
+  const read = (relative) => JSON.parse(proofSourceBytes(root, relative).toString("utf8"));
   const profile = process.env.TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE
-    || read(`catalog${suffix}.json`).fixture.semantic_profile;
-  const matrix = read(`profiles${suffix}.json`);
+    || read(paths.catalog).fixture.semantic_profile;
+  const matrix = read(paths.matrix);
   if (
-    matrix.catalog_path !== `${base}/catalog${suffix}.json`
+    matrix.catalog_path !== paths.catalog
     || typeof matrix.profiles !== "object"
     || matrix.profiles === null
     || !Object.hasOwn(matrix.profiles, profile)
@@ -1020,30 +1022,30 @@ function sdkProofProfile(root, version) {
   return profile;
 }
 
-function emitSdkV2RemoteProofFragment() {
-  const destination = process.env.TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT;
+function emitSdkQueriesRemoteProofFragment() {
+  const destination = process.env.TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT;
   if (destination === undefined) return;
-  const runNonce = process.env.TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE;
+  const runNonce = process.env.TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE;
   if (runNonce === undefined || !/^[0-9a-f]{64}$/.test(runNonce)) {
-    throw new Error("sdk-v2 proof run nonce must be 64 lowercase hex characters");
+    throw new Error("queries proof run nonce must be 64 lowercase hex characters");
   }
   if (!isAbsolute(destination)) {
-    throw new Error("sdk-v2 proof fragment path must be absolute");
+    throw new Error("queries proof fragment path must be absolute");
   }
   const parent = lstatSync(dirname(destination));
   if (!parent.isDirectory() || parent.isSymbolicLink()) {
-    throw new Error("sdk-v2 proof fragment parent must be a regular directory");
+    throw new Error("queries proof fragment parent must be a regular directory");
   }
   const root = process.cwd();
   if (!lstatSync(resolve(root, "type-bridge-core")).isDirectory()) {
-    throw new Error("sdk-v2 proof fragment emitter requires the repository root");
+    throw new Error("queries proof fragment emitter requires the repository root");
   }
   const contractPaths = {
     proof_schema:
-      "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-schema.json",
+      "tests/contracts/sdk_conformance/queries/proof-fragment-schema.json",
     allowlist:
-      "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-allowlist.json",
-    journey: "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json",
+      "tests/contracts/sdk_conformance/queries/proof-fragment-allowlist.json",
+    journey: "tests/contracts/sdk_conformance/queries/journey.json",
   };
   const producerPaths = [
     "type-bridge-core/crates/node/src/match_runtime.rs",
@@ -1054,7 +1056,7 @@ function emitSdkV2RemoteProofFragment() {
     "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/runtime_check.mjs",
   ];
   const fragment = {
-    format: "typebridge.sdk-v2-proof-fragment/v1",
+    format: "typebridge.sdk-queries-proof-fragment/v1",
     binding: "node",
     semantic_profile: sdkProofProfile(root, 2),
     run_nonce: runNonce,
@@ -1087,7 +1089,7 @@ function emitSdkV2RemoteProofFragment() {
   };
   const payload = Buffer.from(`${JSON.stringify(canonicalProofValue(fragment))}\n`);
   if (payload.length > 64 * 1024) {
-    throw new Error("sdk-v2 proof fragment exceeds 64 KiB");
+    throw new Error("queries proof fragment exceeds 64 KiB");
   }
   const descriptor = openSync(destination, "wx", 0o600);
   try {
@@ -1101,7 +1103,7 @@ function emitSdkV2RemoteProofFragment() {
   }
 }
 
-emitSdkV2RemoteProofFragment();
+emitSdkQueriesRemoteProofFragment();
 
 function emitSdkModelsPackageProofFragment() {
   const destination = process.env.TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGMENT;

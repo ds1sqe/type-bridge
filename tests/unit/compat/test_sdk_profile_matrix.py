@@ -1,4 +1,4 @@
-"""TypeDB version matrix of the SDK conformance sets (sdk-v1..v6)."""
+"""TypeDB version matrix of the SDK conformance suites."""
 
 from __future__ import annotations
 
@@ -31,8 +31,7 @@ def _load(name: str) -> ModuleType:
 
 
 matrix = _load("sdk_profile_matrix")
-v1 = _load("compare_sdk_conformance")
-v2 = _load("compare_sdk_conformance_v2")
+v2 = _load("sdk_queries_compare")
 runner = _load("run_sdk_conformance")
 fragments = _load("proof_fragments")
 
@@ -75,7 +74,7 @@ def _reports(module: ModuleType, contracts: Any, profile: str) -> dict[str, dict
             "binding": binding,
             "catalog": {"path": module.CATALOG_RELATIVE, "sha256": contracts.catalog.sha256},
             "fixture": {
-                "id": f"sdk-v{version}",
+                "id": contracts.catalog.value["fixture"]["id"],
                 "journey": {"path": module.JOURNEY_RELATIVE, "sha256": contracts.journey.sha256},
                 "projection_fingerprint": fingerprints["projections"][binding],
                 "projection_target": contracts.projection_targets[binding],
@@ -106,13 +105,15 @@ def _write(module: ModuleType, directory: Path, reports: dict[str, dict[str, Any
 
 
 @pytest.mark.parametrize("profile", [BASE, NEXT])
-def test_v1_report_set_compares_against_its_profile_entry(tmp_path: Path, profile: str) -> None:
-    reports = _reports(v1, v1.load_contracts(), profile)
+def test_queries_report_set_compares_against_its_profile_entry(
+    tmp_path: Path, profile: str
+) -> None:
+    reports = _reports(v2, v2.load_contracts(), profile)
 
-    summary = v1.compare_reports(_write(v1, tmp_path, reports))
+    summary = v2.compare_reports(_write(v2, tmp_path, reports))
 
     assert summary["fixture"]["semantic_profile"] == profile
-    expected = matrix.select(1, profile).expected_fingerprints
+    expected = matrix.select(2, profile).expected_fingerprints
     assert summary["fixture"]["semantic_fingerprint"] == expected["semantic"]
 
 
@@ -125,30 +126,30 @@ def test_v2_report_set_on_3_13_6_compares_against_its_entry(tmp_path: Path) -> N
 
 
 def test_mixed_profile_report_set_is_refused(tmp_path: Path) -> None:
-    contracts = v1.load_contracts()
-    reports = _reports(v1, contracts, NEXT)
-    reports["rust"] = _reports(v1, contracts, BASE)["rust"]
+    contracts = v2.load_contracts()
+    reports = _reports(v2, contracts, NEXT)
+    reports["rust"] = _reports(v2, contracts, BASE)["rust"]
 
-    with pytest.raises(v1.ContractError) as rejected:
-        v1.compare_reports(_write(v1, tmp_path, reports))
+    with pytest.raises(v2.ContractError) as rejected:
+        v2.compare_reports(_write(v2, tmp_path, reports))
     assert rejected.value.code == "mixed_semantic_profile"
 
 
 def test_unsupported_profile_and_cross_profile_fingerprints_are_refused(tmp_path: Path) -> None:
-    contracts = v1.load_contracts()
-    unsupported = _reports(v1, contracts, NEXT)
+    contracts = v2.load_contracts()
+    unsupported = _reports(v2, contracts, NEXT)
     for report in unsupported.values():
         report["fixture"]["semantic_profile"] = "typedb-3.11.5/v1"
-    with pytest.raises(v1.ContractError) as rejected:
-        v1.compare_reports(_write(v1, tmp_path / "unsupported", unsupported))
+    with pytest.raises(v2.ContractError) as rejected:
+        v2.compare_reports(_write(v2, tmp_path / "unsupported", unsupported))
     assert rejected.value.code == "semantic_profile_mismatch"
 
     # 3.12.1 fingerprints relabelled as 3.13.6 do not match the 3.13.6 entry.
-    relabelled = _reports(v1, contracts, BASE)
+    relabelled = _reports(v2, contracts, BASE)
     for report in relabelled.values():
         report["fixture"]["semantic_profile"] = NEXT
-    with pytest.raises(v1.ContractError) as rejected:
-        v1.compare_reports(_write(v1, tmp_path / "relabelled", relabelled))
+    with pytest.raises(v2.ContractError) as rejected:
+        v2.compare_reports(_write(v2, tmp_path / "relabelled", relabelled))
     assert rejected.value.code == "semantic_profile_mismatch"
 
 

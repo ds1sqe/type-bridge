@@ -307,10 +307,9 @@ fn sdk_catalogs_and_release_archive_use_current_emitter_resources() {
             .unwrap();
         output.sync_all().unwrap();
     }
-    for text in [
-        include_str!("../../../../tests/contracts/sdk_conformance/sdk-v1/catalog-v1.json"),
-        include_str!("../../../../tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json"),
-    ] {
+    for text in [include_str!(
+        "../../../../tests/contracts/sdk_conformance/queries/catalog.json"
+    )] {
         let catalog: serde_json::Value = serde_json::from_str(text).unwrap();
         assert_eq!(
             catalog["expected_fingerprints"]["semantic"],

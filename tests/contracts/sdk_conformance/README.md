@@ -27,7 +27,7 @@ several owners.
   spellings are representation details and are not copied into C.
 - Direct and remote reducers and grouping are common behavior. Generated
   schema-function invocation is likewise part of the immutable typed-query
-  contract. The `sdk-v2` exact17 transition accepts the selected direct
+  contract. The `queries` exact17 transition accepts the selected direct
   and remote cases live across Python, Node, Rust, and the internal C
   foundation.
 - The remote contract is query-only. Remote mutation is explicitly outside the
@@ -46,7 +46,7 @@ each target projection fingerprint; matching report strings without those
 fixture-owned identities are rejected. The checkpoint is deliberately narrow
 and does not promote any capability or future binding.
 
-The successor `sdk-v2` checkpoint assigns `accepted_live` through a
+The successor `queries` checkpoint assigns `accepted_live` through a
 dedicated four-binding profile only to the exact17 transition cases: C02, C04,
 C06, C13-C23, C28, C31, and G02. This acceptance does not widen a shared
 profile or imply that C is a supported or distributed SDK; C remains an
@@ -63,8 +63,8 @@ semantic profile:
 ```json
 {
   "format": "typebridge.sdk-profile-matrix/v1",
-  "set": "sdk-v2",
-  "catalog_path": "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json",
+  "set": "queries",
+  "catalog_path": "tests/contracts/sdk_conformance/queries/catalog.json",
   "profiles": {
     "typedb-3.12.1/v1": {"live_server_version": "3.12.3", "expected_fingerprints": {}},
     "typedb-3.13.6/v1": {"live_server_version": "3.13.6", "expected_fingerprints": {}}
@@ -91,7 +91,7 @@ evidence exists:
   by the current Split-YAML/schema IR;
 - G05 cancellation, G06 timeout and resource limits, G08 structured diagnostics
   across all workflows, and G13 explicit close across connection, transaction,
-  query, and native-resource lifecycles; their `sdk-v2` selected rows are
+  query, and native-resource lifecycles; their `queries` selected rows are
   query-scoped retained evidence, not broad-capability transitions;
 - a public V2 rollback command, binding-neutral data-backfill operation, and
   runtime migration facade;

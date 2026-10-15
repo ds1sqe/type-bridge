@@ -31,10 +31,7 @@ struct ConformanceSet {
     source: Option<&'static str>,
 }
 
-const SETS: [ConformanceSet; 6] = [
-    ConformanceSet {
-        source: Some(ACCEPTANCE_SOURCE),
-    },
+const SETS: [ConformanceSet; 5] = [
     ConformanceSet {
         source: Some(ACCEPTANCE_SOURCE),
     },
@@ -138,7 +135,7 @@ fn every_profile_matrix_entry_reproduces_from_its_fixture_source() {
     let mut inventory = BTreeMap::new();
     for (index, set) in SETS.iter().enumerate() {
         let root = producer_selection::repository_root();
-        let paths = producer_selection::contract_paths(&root, (index + 1) as u8);
+        let paths = producer_selection::contract_paths(&root, (index + 2) as u8);
         let read = |kind: &str| {
             std::fs::read_to_string(root.join(paths[kind].as_str().expect("contract path")))
                 .expect("contract readable")
@@ -198,7 +195,7 @@ mod producer_selection;
 #[test]
 fn producers_select_each_profiles_exact_live_server() {
     let root = producer_selection::repository_root();
-    for set in 1..=6 {
+    for set in 2..=6 {
         for (profile, server) in [
             ("typedb-3.12.1/v1", "3.12.3"),
             ("typedb-3.13.6/v1", "3.13.6"),
@@ -215,14 +212,14 @@ fn producers_select_each_profiles_exact_live_server() {
 fn producers_default_to_the_catalog_profile() {
     let root = producer_selection::repository_root();
     for requested in [None, Some("")] {
-        let entry = producer_selection::requested_from(&root, 1, requested);
+        let entry = producer_selection::requested_from(&root, 2, requested);
         assert_eq!(entry.semantic_profile, "typedb-3.12.1/v1");
         assert_eq!(entry.live_server_version, "3.12.3");
     }
 }
 
 #[test]
-#[should_panic(expected = "sdk-v2 has no matrix entry")]
+#[should_panic(expected = "queries has no matrix entry")]
 fn producers_reject_an_unknown_profile() {
     let root = producer_selection::repository_root();
     producer_selection::requested_from(&root, 2, Some("typedb-9.9.9/v1"));
@@ -237,7 +234,7 @@ fn producers_reject_another_live_server() {
 }
 
 #[test]
-fn sdk_v2_fingerprints_name_the_selected_profile() {
+fn sdk_queries_fingerprints_name_the_selected_profile() {
     let root = producer_selection::repository_root();
     let entry = producer_selection::requested_from(&root, 2, Some("typedb-3.13.6/v1"));
     let fingerprints = &entry.expected_fingerprints;
@@ -247,7 +244,7 @@ fn sdk_v2_fingerprints_name_the_selected_profile() {
     );
     let projections = fingerprints["projections"]
         .as_object()
-        .expect("sdk-v2 pins per-binding projections");
+        .expect("queries pins per-binding projections");
     assert_eq!(projections.len(), 4);
     for (binding, projection) in projections {
         assert_eq!(

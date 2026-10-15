@@ -1,14 +1,14 @@
 {
-  "format": "typebridge.sdk-catalog/v2",
+  "format": "typebridge.sdk-queries-catalog/v1",
   "fixture": {
-    "id": "sdk-v2",
+    "id": "queries",
     "version": 2,
     "semantic_profile": "typedb-3.12.1/v1",
     "schema_path": "type-bridge-core/crates/schema-codegen/tests/acceptance/schema.yaml",
     "provider_schema_path": "type-bridge-core/crates/schema-codegen/tests/acceptance/provider-3.12.1.tql"
   },
-  "journey_path": "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json",
-  "report_schema_path": "tests/contracts/sdk_conformance/sdk-v2/report-schema-v2.json",
+  "journey_path": "tests/contracts/sdk_conformance/queries/journey.json",
+  "report_schema_path": "tests/contracts/sdk_conformance/queries/report-schema.json",
   "report_bindings": [
     "python",
     "node",

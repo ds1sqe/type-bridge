@@ -121,12 +121,12 @@ done
 
 for runner_owned_sdk_variable in \
     TYPE_BRIDGE_SDK_REPORT \
-    TYPE_BRIDGE_SDK_REPORT_V2 \
-    TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT \
-    TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS \
-    TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE \
-    TYPE_BRIDGE_SDK_V2_VALIDATED_OBSERVATIONS \
-    TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON \
+    TYPE_BRIDGE_SDK_QUERIES_REPORT \
+    TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT \
+    TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS \
+    TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE \
+    TYPE_BRIDGE_SDK_QUERIES_VALIDATED_OBSERVATIONS \
+    TYPE_BRIDGE_SDK_QUERIES_VALIDATOR_PYTHON \
     TYPE_BRIDGE_PROJECTED_LIVE_REPORT \
     TYPE_BRIDGE_PROJECTED_LIVE_DATABASE \
     TYPE_BRIDGE_PROJECTED_PYTHON_PACKAGE_ROOT \
@@ -266,9 +266,9 @@ from pathlib import Path
 summary = json.loads(Path(sys.argv[1]).read_bytes())
 pending = summary.get("pending_manifest_promotions")
 if not isinstance(pending, list):
-    raise SystemExit("sdk-v2 summary has no pending_manifest_promotions list")
+    raise SystemExit("queries summary has no pending_manifest_promotions list")
 print(
-    "sdk-v2 pending_manifest_promotions="
+    "queries pending_manifest_promotions="
     + json.dumps(pending, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 )
 ' "$summary"; then
@@ -726,7 +726,7 @@ run_live_lane() {
             mktemp -d "${TMPDIR:-/tmp}/typebridge-sdk.XXXXXXXXXX"
         )"
         sdk_report_dir="$(cd "$sdk_report_dir" && pwd -P)"
-        mkdir -p "$sdk_report_dir/v2"
+        mkdir -p "$sdk_report_dir/queries"
         sdk_validator_python="$(
             uv run python -c 'import os, sys; print(os.path.realpath(sys.executable))'
         )"
@@ -756,46 +756,42 @@ run_live_lane() {
             "$sdk_c_nonce"; do
             if [[ ! "$sdk_nonce" =~ ^[0-9a-f]{64}$ \
                 || ${sdk_nonce_set[$sdk_nonce]+x} == x ]]; then
-                printf "${RED}Sdk-v2 binding nonces must be distinct lowercase 64-hex values.${RESET}\n" >&2
+                printf "${RED}SDK queries binding nonces must be distinct lowercase 64-hex values.${RESET}\n" >&2
                 exit 2
             fi
             sdk_nonce_set[$sdk_nonce]=1
         done
         unset sdk_nonce sdk_nonce_set
 
-        sdk_python_direct_fragment="$sdk_report_dir/v2/python-direct-proof.json"
-        sdk_python_remote_fragment="$sdk_report_dir/v2/python-remote-proof.json"
-        sdk_node_direct_fragment="$sdk_report_dir/v2/node-direct-proof.json"
-        sdk_node_remote_fragment="$sdk_report_dir/v2/node-remote-proof.json"
-        sdk_rust_fragment="$sdk_report_dir/v2/rust-proof.json"
-        sdk_c_fragment="$sdk_report_dir/v2/c-proof.json"
-        sdk_v1_summary="$sdk_report_dir/summary-v1.json"
-        sdk_v2_summary="$sdk_report_dir/summary-v2.json"
+        sdk_python_direct_fragment="$sdk_report_dir/queries/python-direct-proof.json"
+        sdk_python_remote_fragment="$sdk_report_dir/queries/python-remote-proof.json"
+        sdk_node_direct_fragment="$sdk_report_dir/queries/node-direct-proof.json"
+        sdk_node_remote_fragment="$sdk_report_dir/queries/node-remote-proof.json"
+        sdk_rust_fragment="$sdk_report_dir/queries/rust-proof.json"
+        sdk_c_fragment="$sdk_report_dir/queries/c-proof.json"
+        sdk_queries_summary="$sdk_report_dir/queries-comparison.json"
         sdk_rust_env=(
-            "TYPE_BRIDGE_SDK_REPORT=$sdk_report_dir/rust.json"
-            "TYPE_BRIDGE_SDK_REPORT_V2=$sdk_report_dir/v2/rust.json"
-            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$sdk_rust_fragment"
-            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$sdk_rust_nonce"
+            "TYPE_BRIDGE_SDK_QUERIES_REPORT=$sdk_report_dir/queries/rust.json"
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS=$sdk_rust_fragment"
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE=$sdk_rust_nonce"
             "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE=$lane_profile"
         )
         sdk_python_env=(
-            "TYPE_BRIDGE_SDK_REPORT=$sdk_report_dir/python.json"
-            "TYPE_BRIDGE_SDK_REPORT_V2=$sdk_report_dir/v2/python.json"
-            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$sdk_python_direct_fragment:$sdk_python_remote_fragment"
-            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$sdk_python_nonce"
+            "TYPE_BRIDGE_SDK_QUERIES_REPORT=$sdk_report_dir/queries/python.json"
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS=$sdk_python_direct_fragment:$sdk_python_remote_fragment"
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE=$sdk_python_nonce"
         )
         sdk_node_env=(
-            "TYPE_BRIDGE_SDK_REPORT=$sdk_report_dir/node.json"
-            "TYPE_BRIDGE_SDK_REPORT_V2=$sdk_report_dir/v2/node.json"
-            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$sdk_node_direct_fragment:$sdk_node_remote_fragment"
-            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$sdk_node_nonce"
-            "TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON=$sdk_validator_python"
+            "TYPE_BRIDGE_SDK_QUERIES_REPORT=$sdk_report_dir/queries/node.json"
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS=$sdk_node_direct_fragment:$sdk_node_remote_fragment"
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE=$sdk_node_nonce"
+            "TYPE_BRIDGE_SDK_QUERIES_VALIDATOR_PYTHON=$sdk_validator_python"
             "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE=$lane_profile"
         )
         sdk_c_env=(
-            "TYPE_BRIDGE_SDK_REPORT_V2=$sdk_report_dir/v2/c.json"
-            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$sdk_c_fragment"
-            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$sdk_c_nonce"
+            "TYPE_BRIDGE_SDK_QUERIES_REPORT=$sdk_report_dir/queries/c.json"
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS=$sdk_c_fragment"
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE=$sdk_c_nonce"
         )
         printf "${CYAN}Sdk reports: %s${RESET}\n\n" "$sdk_report_dir"
     elif [[ "$lane_in_sdk_matrix" == 1 ]]; then
@@ -860,12 +856,12 @@ run_live_lane() {
 
     printf "${BOLD}━━━ Generated Rust projection (integration) ━━━${RESET}\n\n"
     if [[ -n "$sdk_report_dir" ]]; then
-        run_step "emit Rust sdk-v2 deterministic proof fragment" \
-            env TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT="$sdk_rust_fragment" \
-                TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE="$sdk_rust_nonce" \
+        run_step "emit Rust queries deterministic proof fragment" \
+            env TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT="$sdk_rust_fragment" \
+                TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE="$sdk_rust_nonce" \
             cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
                 -p type-bridge --lib \
-                remote::tests::sdk_v2_rust_deterministic_proof_fragment \
+                remote::tests::sdk_queries_rust_deterministic_proof_fragment \
                 -- --exact
     fi
     run_step "generated Rust application parity" \
@@ -893,12 +889,12 @@ run_live_lane() {
 
         printf "${BOLD}━━━ Generated C entity and relation CRUD (integration) ━━━${RESET}\n\n"
         if [[ -n "$sdk_report_dir" ]]; then
-            run_step "emit C sdk-v2 deterministic proof fragment" \
-                env TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT="$sdk_c_fragment" \
-                    TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE="$sdk_c_nonce" \
+            run_step "emit C queries deterministic proof fragment" \
+                env TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT="$sdk_c_fragment" \
+                    TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE="$sdk_c_nonce" \
                 cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
                     -p type-bridge-c --lib \
-                    query::tests::sdk_v2_c_deterministic_proof_fragment \
+                    query::tests::sdk_queries_c_deterministic_proof_fragment \
                     -- --exact
         fi
         run_step "compiled generated C17 Person and Membership CRUD lifecycle" \
@@ -933,16 +929,16 @@ run_live_lane() {
 
     printf "${BOLD}━━━ Python (integration) ━━━${RESET}\n\n"
     if [[ -n "$sdk_report_dir" ]]; then
-        run_step "emit Python direct-cancellation sdk-v2 proof fragment" \
-            env TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT="$sdk_python_direct_fragment" \
-                TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE="$sdk_python_nonce" \
+        run_step "emit Python direct-cancellation queries proof fragment" \
+            env TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT="$sdk_python_direct_fragment" \
+                TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE="$sdk_python_nonce" \
             cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
                 -p type-bridge-core --lib \
                 match_runtime::tests::python_direct_cancellation_fragment_is_measured_from_owned_execution \
                 -- --exact
-        run_step "emit Python generated-remote sdk-v2 proof fragment" \
-            env TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT="$sdk_python_remote_fragment" \
-                TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE="$sdk_python_nonce" \
+        run_step "emit Python generated-remote queries proof fragment" \
+            env TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT="$sdk_python_remote_fragment" \
+                TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE="$sdk_python_nonce" \
             uv run python \
                 type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
     fi
@@ -965,16 +961,16 @@ run_live_lane() {
             TYPEDB_VERSION='$typedb_server_version' \
             npm run test:integration"
     if [[ -n "$sdk_report_dir" ]]; then
-        run_step "emit Node direct-cancellation sdk-v2 proof fragment" \
-            env TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT="$sdk_node_direct_fragment" \
-                TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE="$sdk_node_nonce" \
+        run_step "emit Node direct-cancellation queries proof fragment" \
+            env TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT="$sdk_node_direct_fragment" \
+                TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE="$sdk_node_nonce" \
             cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
                 -p type-bridge-node --lib \
                 match_runtime::tests::node_direct_cancellation_fragment_is_measured_from_owned_execution \
                 -- --exact
-        run_step "emit Node generated-remote sdk-v2 proof fragment" \
-            env TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT="$sdk_node_remote_fragment" \
-                TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE="$sdk_node_nonce" \
+        run_step "emit Node generated-remote queries proof fragment" \
+            env TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT="$sdk_node_remote_fragment" \
+                TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE="$sdk_node_nonce" \
             node type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/check.mjs
     fi
     run_step "npm run test:projection-integration" \
@@ -988,36 +984,24 @@ run_live_lane() {
         npm --prefix "$NODE_DIR" run test:projection-integration
 
     if [[ -n "$sdk_report_dir" ]]; then
-        run_step "compare generated SDK v1 reports" \
+        run_step "compare generated SDK queries reports" \
             write_sdk_summary \
-                "$sdk_v1_summary" \
-                "$sdk_validator_python" \
-                uv run python scripts/ci/compare_sdk_conformance.py \
-                "$sdk_report_dir/python.json" \
-                "$sdk_report_dir/node.json" \
-                "$sdk_report_dir/rust.json"
-        run_step "compare generated SDK v2 reports" \
-            write_sdk_summary \
-                "$sdk_v2_summary" \
+                "$sdk_queries_summary" \
                 "$sdk_validator_python" \
                 "$sdk_validator_python" \
-                scripts/ci/compare_sdk_conformance_v2.py \
-                "$sdk_report_dir/v2/python.json" \
-                "$sdk_report_dir/v2/node.json" \
-                "$sdk_report_dir/v2/rust.json" \
-                "$sdk_report_dir/v2/c.json"
+                scripts/ci/sdk_queries_compare.py \
+                "$sdk_report_dir/queries/python.json" \
+                "$sdk_report_dir/queries/node.json" \
+                "$sdk_report_dir/queries/rust.json" \
+                "$sdk_report_dir/queries/c.json"
         run_step "validate and log sdk report and summary SHA-256 evidence" \
             log_sdk_evidence_sha256 \
                 "$sdk_validator_python" \
-                "$sdk_report_dir/python.json" \
-                "$sdk_report_dir/node.json" \
-                "$sdk_report_dir/rust.json" \
-                "$sdk_v1_summary" \
-                "$sdk_report_dir/v2/python.json" \
-                "$sdk_report_dir/v2/node.json" \
-                "$sdk_report_dir/v2/rust.json" \
-                "$sdk_report_dir/v2/c.json" \
-                "$sdk_v2_summary"
+                "$sdk_report_dir/queries/python.json" \
+                "$sdk_report_dir/queries/node.json" \
+                "$sdk_report_dir/queries/rust.json" \
+                "$sdk_report_dir/queries/c.json" \
+                "$sdk_queries_summary"
     fi
 
     if [[ "$tls" == 1 ]]; then
@@ -1037,26 +1021,22 @@ finish_sdk_evidence() {
     if [[ -n "$sdk_report_dir" ]]; then
         if ((fail == lane_fail_start)) && [[ "$preserve_sdk_evidence" == 0 ]]; then
             rm -f -- \
-                "$sdk_report_dir/python.json" \
-                "$sdk_report_dir/node.json" \
-                "$sdk_report_dir/rust.json" \
-                "$sdk_report_dir/v2/python.json" \
-                "$sdk_report_dir/v2/node.json" \
-                "$sdk_report_dir/v2/rust.json" \
-                "$sdk_report_dir/v2/c.json" \
-                "$sdk_report_dir/v2/python-direct-proof.json" \
-                "$sdk_report_dir/v2/python-remote-proof.json" \
-                "$sdk_report_dir/v2/node-direct-proof.json" \
-                "$sdk_report_dir/v2/node-remote-proof.json" \
-                "$sdk_report_dir/v2/rust-proof.json" \
-                "$sdk_report_dir/v2/c-proof.json" \
-                "$sdk_report_dir/summary-v1.json" \
-                "$sdk_report_dir/summary-v2.json"
-            if ! rmdir -- "$sdk_report_dir/v2"; then
-                printf "${RED}Could not remove accepted sdk-v2 report directory: %s${RESET}\n\n" \
-                    "$sdk_report_dir/v2" >&2
+                "$sdk_report_dir/queries/python.json" \
+                "$sdk_report_dir/queries/node.json" \
+                "$sdk_report_dir/queries/rust.json" \
+                "$sdk_report_dir/queries/c.json" \
+                "$sdk_report_dir/queries/python-direct-proof.json" \
+                "$sdk_report_dir/queries/python-remote-proof.json" \
+                "$sdk_report_dir/queries/node-direct-proof.json" \
+                "$sdk_report_dir/queries/node-remote-proof.json" \
+                "$sdk_report_dir/queries/rust-proof.json" \
+                "$sdk_report_dir/queries/c-proof.json" \
+                "$sdk_report_dir/queries-comparison.json"
+            if ! rmdir -- "$sdk_report_dir/queries"; then
+                printf "${RED}Could not remove accepted queries report directory: %s${RESET}\n\n" \
+                    "$sdk_report_dir/queries" >&2
                 fail=$((fail + 1))
-                failures+=("remove accepted sdk-v2 report directory")
+                failures+=("remove accepted queries report directory")
             fi
             if rmdir -- "$sdk_report_dir"; then
                 printf "${GREEN}Removed accepted sdk reports: %s${RESET}\n\n" \

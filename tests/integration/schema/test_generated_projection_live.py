@@ -49,19 +49,15 @@ ACCEPTANCE_SCHEMA_3_11 = ACCEPTANCE_DIRECTORY / "schema-3.11.5.yaml"
 PROVIDER_SCHEMA = ACCEPTANCE_DIRECTORY / "provider-3.12.1.tql"
 PROVIDER_SCHEMA_3_11 = ACCEPTANCE_DIRECTORY / "provider-3.11.5.tql"
 SDK_MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest.json"
-SDK_CATALOG_RELATIVE = "tests/contracts/sdk_conformance/sdk-v1/catalog-v1.json"
-SDK_JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/sdk-v1/journey-v1.json"
-SDK_V2_CATALOG_RELATIVE = "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json"
-SDK_V2_JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json"
+SDK_QUERIES_CATALOG_RELATIVE = "tests/contracts/sdk_conformance/queries/catalog.json"
+SDK_QUERIES_JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/queries/journey.json"
 SDK_MODELS_JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/models/journey.json"
 SDK_MANIFEST = ROOT / SDK_MANIFEST_RELATIVE
-SDK_CATALOG = ROOT / SDK_CATALOG_RELATIVE
-SDK_JOURNEY = ROOT / SDK_JOURNEY_RELATIVE
-SDK_V2_CATALOG = ROOT / SDK_V2_CATALOG_RELATIVE
-SDK_V2_JOURNEY = ROOT / SDK_V2_JOURNEY_RELATIVE
+SDK_QUERIES_CATALOG = ROOT / SDK_QUERIES_CATALOG_RELATIVE
+SDK_QUERIES_JOURNEY = ROOT / SDK_QUERIES_JOURNEY_RELATIVE
 SDK_MODELS_JOURNEY = ROOT / SDK_MODELS_JOURNEY_RELATIVE
 SDK_MODELS_PROVIDER_SCHEMA = ROOT / "tests/contracts/sdk_conformance/models/provider-3.12.1.tql"
-SDK_V2_PROOF_LOADER = ROOT / "scripts/ci/proof_fragments.py"
+SDK_QUERIES_PROOF_LOADER = ROOT / "scripts/ci/proof_fragments.py"
 SDK_PROFILE_MATRIX_LOADER = ROOT / "scripts/ci/sdk_profile_matrix.py"
 
 
@@ -289,14 +285,14 @@ def _matrix_error(code: str, message: str) -> AssertionError:
 
 
 def _require_profile_server_version(
-    semantic_profile: str, detected: str | None, version: int = 1
+    semantic_profile: str, detected: str | None, version: int = 2
 ) -> Any:
     """Return sdk-v{version}'s matrix entry for ``semantic_profile``.
 
     The detected server must be exactly the entry's live server. A generated
     package admits exactly the server release its profile names
     (`GeneratedPackageRelease::for_profile` in type-bridge-core `core::version`);
-    the sdk-v1 matrix is that table for the acceptance profiles.
+    the queries matrix is that table for the acceptance profiles.
     """
     identity = _profile_matrix().select(version, semantic_profile, error=_matrix_error)
     if detected != identity.live_server_version:
@@ -340,7 +336,7 @@ def _sdk_python_fingerprints(
     expected = identity.expected_fingerprints
     if expected is None:
         raise AssertionError(
-            f"{identity.set_id} pins no fingerprints for {identity.semantic_profile}"
+            f"{identity.suite} pins no fingerprints for {identity.semantic_profile}"
         )
     semantic = expected["semantic"]
     projection = expected["projections"]["python"]
@@ -349,7 +345,7 @@ def _sdk_python_fingerprints(
         or json.loads(generated.PROJECTION_FINGERPRINT_JSON) != projection
     ):
         raise AssertionError(
-            f"generated Python package is not the {identity.set_id} projection "
+            f"generated Python package is not the {identity.suite} projection "
             f"for {identity.semantic_profile}"
         )
     return semantic, projection
@@ -393,17 +389,17 @@ def _sdk_results(
     return sorted(results, key=lambda result: (result["case_id"], result["proof_kind"]))
 
 
-def _load_sdk_v2_proof_observations(
+def _load_sdk_queries_proof_observations(
     semantic_profile: str,
 ) -> dict[tuple[str, str], dict[str, object]]:
-    raw_paths = os.environ.get("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS")
-    run_nonce = os.environ.get("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE")
+    raw_paths = os.environ.get("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS")
+    run_nonce = os.environ.get("TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE")
     if raw_paths is None or run_nonce is None:
-        raise AssertionError("sdk-v2 reports require proof fragment paths and the same-run nonce")
+        raise AssertionError("queries reports require proof fragment paths and the same-run nonce")
     path_values = raw_paths.split(os.pathsep)
     if not path_values or any(not value for value in path_values):
-        raise AssertionError("sdk-v2 proof fragment paths must be a nonempty path list")
-    loader = _load_ci_module("_typebridge_proof_fragments", SDK_V2_PROOF_LOADER)
+        raise AssertionError("queries proof fragment paths must be a nonempty path list")
+    loader = _load_ci_module("_typebridge_proof_fragments", SDK_QUERIES_PROOF_LOADER)
     load_proof_fragments = loader.CONTRACTS[2].load_proof_fragments
     loaded = load_proof_fragments(
         [Path(value) for value in path_values],
@@ -413,7 +409,7 @@ def _load_sdk_v2_proof_observations(
         semantic_profile=semantic_profile,
     )
     if not isinstance(loaded, dict):
-        raise AssertionError("sdk-v2 proof fragment validator returned an invalid map")
+        raise AssertionError("queries proof fragment validator returned an invalid map")
     observations: dict[tuple[str, str], dict[str, object]] = {}
     for lane, observation in loaded.items():
         if (
@@ -422,12 +418,12 @@ def _load_sdk_v2_proof_observations(
             or not all(isinstance(value, str) for value in lane)
             or not isinstance(observation, dict)
         ):
-            raise AssertionError("sdk-v2 proof fragment observation is malformed")
+            raise AssertionError("queries proof fragment observation is malformed")
         observations[(lane[0], lane[1])] = observation
     return observations
 
 
-def _sdk_report(
+def _sdk_queries_report(
     generated: ModuleType,
     identity: Any,
     catalog_raw: bytes,
@@ -446,57 +442,13 @@ def _sdk_report(
     assert isinstance(schema_relative, str)
     assert isinstance(provider_schema_relative, str)
     assert isinstance(journey_relative, str)
-    assert journey_relative == SDK_JOURNEY_RELATIVE
+    assert journey_relative == SDK_QUERIES_JOURNEY_RELATIVE
     semantic_fingerprint, projection_fingerprint = _sdk_python_fingerprints(identity, generated)
     return {
-        "format": "typebridge.sdk-conformance-report/v1",
+        "format": "typebridge.sdk-queries-report/v1",
         "binding": "python",
         "manifest": _source_identity(SDK_MANIFEST_RELATIVE, manifest_raw),
-        "catalog": _source_identity(SDK_CATALOG_RELATIVE, catalog_raw),
-        "fixture": {
-            "id": fixture["id"],
-            "version": fixture["version"],
-            "semantic_profile": identity.semantic_profile,
-            "schema": _source_identity(schema_relative, (ROOT / schema_relative).read_bytes()),
-            "provider_schema": _source_identity(
-                provider_schema_relative,
-                (ROOT / provider_schema_relative).read_bytes(),
-            ),
-            "journey": _source_identity(journey_relative, journey_raw),
-            "semantic_fingerprint": semantic_fingerprint,
-            "projection_target": projection_targets["python"],
-            "projection_fingerprint": projection_fingerprint,
-        },
-        "results": results,
-    }
-
-
-def _sdk_v2_report(
-    generated: ModuleType,
-    identity: Any,
-    catalog_raw: bytes,
-    catalog: dict[str, object],
-    journey_raw: bytes,
-    results: list[dict[str, object]],
-) -> dict[str, object]:
-    manifest_raw = SDK_MANIFEST.read_bytes()
-    fixture = catalog["fixture"]
-    projection_targets = catalog["projection_targets"]
-    assert isinstance(fixture, dict)
-    assert isinstance(projection_targets, dict)
-    schema_relative = fixture["schema_path"]
-    provider_schema_relative = fixture["provider_schema_path"]
-    journey_relative = catalog["journey_path"]
-    assert isinstance(schema_relative, str)
-    assert isinstance(provider_schema_relative, str)
-    assert isinstance(journey_relative, str)
-    assert journey_relative == SDK_V2_JOURNEY_RELATIVE
-    semantic_fingerprint, projection_fingerprint = _sdk_python_fingerprints(identity, generated)
-    return {
-        "format": "typebridge.sdk-conformance-report/v2",
-        "binding": "python",
-        "manifest": _source_identity(SDK_MANIFEST_RELATIVE, manifest_raw),
-        "catalog": _source_identity(SDK_V2_CATALOG_RELATIVE, catalog_raw),
+        "catalog": _source_identity(SDK_QUERIES_CATALOG_RELATIVE, catalog_raw),
         "fixture": {
             "id": fixture["id"],
             "version": fixture["version"],
@@ -519,24 +471,26 @@ def _validate_sdk_report_path(raw_path: str) -> Path:
     try:
         encoded_path = raw_path.encode("utf-8")
     except UnicodeEncodeError as error:
-        raise AssertionError("TYPE_BRIDGE_SDK_REPORT must be a UTF-8 path") from error
+        raise AssertionError("TYPE_BRIDGE_SDK_QUERIES_REPORT must be a UTF-8 path") from error
     if not encoded_path or len(encoded_path) > 4096:
-        raise AssertionError("TYPE_BRIDGE_SDK_REPORT must contain 1 to 4096 UTF-8 bytes")
+        raise AssertionError("TYPE_BRIDGE_SDK_QUERIES_REPORT must contain 1 to 4096 UTF-8 bytes")
     destination = Path(raw_path)
     if not destination.is_absolute():
-        raise AssertionError("TYPE_BRIDGE_SDK_REPORT must be an absolute path")
+        raise AssertionError("TYPE_BRIDGE_SDK_QUERIES_REPORT must be an absolute path")
     try:
         parent_metadata = destination.parent.lstat()
     except FileNotFoundError as error:
-        raise AssertionError("TYPE_BRIDGE_SDK_REPORT parent must exist") from error
+        raise AssertionError("TYPE_BRIDGE_SDK_QUERIES_REPORT parent must exist") from error
     if stat.S_ISLNK(parent_metadata.st_mode) or not stat.S_ISDIR(parent_metadata.st_mode):
-        raise AssertionError("TYPE_BRIDGE_SDK_REPORT parent must be a non-symlink directory")
+        raise AssertionError(
+            "TYPE_BRIDGE_SDK_QUERIES_REPORT parent must be a non-symlink directory"
+        )
     try:
         destination.lstat()
     except FileNotFoundError:
         pass
     else:
-        raise AssertionError("TYPE_BRIDGE_SDK_REPORT destination must not exist")
+        raise AssertionError("TYPE_BRIDGE_SDK_QUERIES_REPORT destination must not exist")
     return destination
 
 
@@ -561,7 +515,7 @@ def _publish_sdk_report(raw_path: str, report: dict[str, object]) -> None:
             os.link(temporary, destination)
         except FileExistsError as error:
             raise AssertionError(
-                "TYPE_BRIDGE_SDK_REPORT destination appeared during publication"
+                "TYPE_BRIDGE_SDK_QUERIES_REPORT destination appeared during publication"
             ) from error
     finally:
         temporary.unlink(missing_ok=True)
@@ -712,183 +666,7 @@ def _normalize_sdk_role(
     return hydrated, traversal, player_identity
 
 
-def _run_sdk_journey(
-    generated: ModuleType,
-    clean_db: Database,
-    person_manager: Any,
-    membership_manager: Any,
-    remote_session: Any,
-    remote_requests: list[bytes],
-    catalog: dict[str, object],
-    journey: dict[str, object],
-) -> list[dict[str, object]]:
-    records = journey["records"]
-    assert isinstance(records, dict)
-    person_record = records["person"]
-    membership_record = records["membership"]
-    assert isinstance(person_record, dict)
-    assert isinstance(membership_record, dict)
-    fields = person_record["fields"]
-    update = person_record["update"]
-    assert isinstance(fields, dict)
-    assert isinstance(update, dict)
-    aliases = fields["aliases"]
-    assert isinstance(aliases, list)
-    double_bits = fields["val_double"]["bits"]
-    assert isinstance(double_bits, str)
-    duration = fields["val_duration"]["value"]
-    assert isinstance(duration, str)
-    assert duration.startswith("PT") and duration.endswith("S")
-    person = generated.Person(
-        identifier=generated.Identifier(fields["identifier"]["value"]),
-        nickname=generated.Nickname(fields["nickname"]["value"]),
-        aliases=[generated.Aliases(alias["value"]) for alias in aliases],
-        score=generated.Score(int(fields["score"]["value"])),
-        foo__bar=generated.FooBar(int(fields["foo__bar"]["value"])),
-        score__gte=generated.ScoreGte(int(fields["score__gte"]["value"])),
-        val_bool=generated.ValBool(fields["val_bool"]["value"]),
-        val_constrained=generated.ValConstrained(int(fields["val_constrained"]["value"])),
-        val_date=generated.ValDate(date.fromisoformat(fields["val_date"]["value"])),
-        val_datetime=generated.ValDatetime(_sdk_datetime(fields["val_datetime"], timezone=False)),
-        val_datetime_tz=generated.ValDatetimeTz(
-            _sdk_datetime(fields["val_datetime_tz"], timezone=True)
-        ),
-        val_decimal=generated.ValDecimal(Decimal(fields["val_decimal"]["value"])),
-        val_double=generated.ValDouble(struct.unpack(">d", bytes.fromhex(double_bits))[0]),
-        val_duration=generated.ValDuration(timedelta(seconds=int(duration[2:-1]))),
-    )
-    membership = None
-    person_created = False
-    membership_created = False
-    membership_deleted = False
-    person_deleted = False
-    read_after_update = False
-    observed: dict[tuple[str, str], dict[str, object]] = {}
-    try:
-        assert person_manager.insert(person) is person
-        assert person.iid
-        person_created = True
-        inserted_person = person_manager.get_by_iid(person.iid)
-        assert inserted_person is not None
-        _normalize_sdk_person(generated, inserted_person, person_record, fields["nickname"])
-
-        person.nickname = generated.Nickname(update["nickname"]["value"])
-        assert person_manager.update(person) is person
-        updated_person = person_manager.get_by_iid(person.iid)
-        assert updated_person is not None
-        _normalize_sdk_person(generated, updated_person, person_record, update["nickname"])
-        read_after_update = True
-
-        membership = generated.Membership(member=updated_person)
-        assert membership_manager.insert(membership) is membership
-        assert membership.iid
-        membership_created = True
-        stored_membership = membership_manager.get_by_iid(membership.iid)
-        assert stored_membership is not None
-        assert stored_membership.member.identifier.value == membership_record["player"]["key"]
-
-        direct_session = blocking(generated.Membership.query(clean_db))
-        direct_relation_var = direct_session.exact(generated.Membership)
-        direct_person_var = direct_session.exact(generated.Person)
-        direct_relation, direct_person = (
-            direct_session.query(direct_relation_var, direct_person_var)
-            .where(
-                direct_relation_var.role(generated.Membership.member).connects(direct_person_var),
-                direct_person_var.field(generated.Person.identifier).eq(
-                    generated.Identifier(fields["identifier"]["value"])
-                ),
-            )
-            .one()
-        )
-        direct_hydrated, direct_traversal, direct_reference = _normalize_sdk_role(
-            generated,
-            direct_relation,
-            direct_person,
-            membership_record,
-        )
-        direct_person_observation = _normalize_sdk_person(
-            generated,
-            direct_person,
-            person_record,
-            update["nickname"],
-        )
-        direct_person_observation["reference"] = direct_reference
-        observed[("model_values_and_references", "direct_runtime")] = direct_person_observation
-        observed[("hydrated_role_result", "direct_runtime")] = direct_hydrated
-        observed[("role_traversal", "direct_runtime")] = direct_traversal
-
-        remote_relation_var = remote_session.exact(generated.Membership)
-        remote_person_var = remote_session.exact(generated.Person)
-        requests_before = len(remote_requests)
-        remote_relation, remote_person = asyncio.run(
-            remote_session.query(remote_relation_var, remote_person_var)
-            .where(
-                remote_relation_var.role(generated.Membership.member).connects(remote_person_var),
-                remote_person_var.field(generated.Person.identifier).eq(
-                    generated.Identifier(fields["identifier"]["value"])
-                ),
-            )
-            .one()
-        )
-        exchange_count = len(remote_requests) - requests_before
-        assert exchange_count == 1
-        assert all(remote_requests[index] for index in range(requests_before, len(remote_requests)))
-        remote_hydrated, remote_traversal, remote_reference = _normalize_sdk_role(
-            generated,
-            remote_relation,
-            remote_person,
-            membership_record,
-        )
-        remote_person_observation = _normalize_sdk_person(
-            generated,
-            remote_person,
-            person_record,
-            update["nickname"],
-        )
-        remote_person_observation["reference"] = remote_reference
-        observed[("model_values_and_references", "remote_runtime")] = remote_person_observation
-        observed[("hydrated_role_result", "remote_runtime")] = remote_hydrated
-        observed[("role_traversal", "remote_runtime")] = remote_traversal
-        observed[("remote_one_exchange", "remote_runtime")] = {
-            "exchange_count": exchange_count,
-            "terminal": "one",
-        }
-    finally:
-        cleanup_failures: list[BaseException] = []
-        if membership is not None and membership.iid is not None:
-            try:
-                membership_manager.delete(membership)
-                membership_deleted = membership_manager.get_by_iid(membership.iid) is None
-            except BaseException as error:
-                cleanup_failures.append(error)
-        if person.iid is not None:
-            try:
-                person_manager.delete(person)
-                person_deleted = person_manager.get_by_iid(person.iid) is None
-            except BaseException as error:
-                cleanup_failures.append(error)
-        if cleanup_failures:
-            raise cleanup_failures[0]
-
-    observed[("entity_lifecycle", "direct_runtime")] = {
-        "created": person_created,
-        "deleted": person_deleted,
-        "key": fields["identifier"]["value"],
-        "model": person_record["model"],
-        "nickname_after_update": update["nickname"]["value"],
-        "read_after_update": read_after_update,
-    }
-    observed[("relation_lifecycle", "direct_runtime")] = {
-        "created": membership_created,
-        "deleted": membership_deleted,
-        "model": membership_record["model"],
-        "player_key": membership_record["player"]["key"],
-        "role": membership_record["role"],
-    }
-    return _sdk_results(catalog, journey, observed)
-
-
-def _sdk_v2_person(generated: ModuleType, record: dict[str, object]) -> Any:
+def _sdk_queries_person(generated: ModuleType, record: dict[str, object]) -> Any:
     fields = record["fields"]
     assert isinstance(fields, dict)
     aliases = fields["aliases"]
@@ -917,7 +695,7 @@ def _sdk_v2_person(generated: ModuleType, record: dict[str, object]) -> Any:
     )
 
 
-def _sdk_v2_reducers(
+def _sdk_queries_reducers(
     generated: ModuleType,
     session: Any,
     query: Any,
@@ -983,14 +761,14 @@ def _sdk_v2_reducers(
     }
 
 
-def _sdk_v2_key(value: object) -> str:
+def _sdk_queries_key(value: object) -> str:
     identifier = getattr(value, "identifier")
     key = getattr(identifier, "value")
     assert isinstance(key, str)
     return key
 
 
-def _sdk_v2_model(generated: ModuleType, value: object) -> str:
+def _sdk_queries_model(generated: ModuleType, value: object) -> str:
     for model, name in (
         (generated.Person, "person"),
         (generated.Employee, "employee"),
@@ -1000,18 +778,18 @@ def _sdk_v2_model(generated: ModuleType, value: object) -> str:
     ):
         if type(value) is model:
             return name
-    raise AssertionError(f"unexpected sdk-v2 projected model: {type(value)!r}")
+    raise AssertionError(f"unexpected queries projected model: {type(value)!r}")
 
 
-def _sdk_v2_model_key(generated: ModuleType, value: object) -> dict[str, str]:
-    return {"model": _sdk_v2_model(generated, value), "key": _sdk_v2_key(value)}
+def _sdk_queries_model_key(generated: ModuleType, value: object) -> dict[str, str]:
+    return {"model": _sdk_queries_model(generated, value), "key": _sdk_queries_key(value)}
 
 
-def _sdk_v2_keys(values: Iterator[object] | list[object] | tuple[object, ...]) -> list[str]:
-    return [_sdk_v2_key(value) for value in values]
+def _sdk_queries_keys(values: Iterator[object] | list[object] | tuple[object, ...]) -> list[str]:
+    return [_sdk_queries_key(value) for value in values]
 
 
-def _sdk_v2_person_values(
+def _sdk_queries_person_values(
     generated: ModuleType,
     person: object,
     membership: object,
@@ -1032,15 +810,15 @@ def _sdk_v2_person_values(
     member = getattr(membership, "member")
     return {
         "aliases": [alias.value for alias in getattr(person, "aliases")],
-        "key": _sdk_v2_key(person),
-        "model": _sdk_v2_model(generated, person),
+        "key": _sdk_queries_key(person),
+        "model": _sdk_queries_model(generated, person),
         "nickname": getattr(person, "nickname").value,
-        "reference": _sdk_v2_model_key(generated, member),
+        "reference": _sdk_queries_model_key(generated, member),
         "scalar_domains": [domain for domain, _ in scalar_fields],
     }
 
 
-def _sdk_v2_role_observation(
+def _sdk_queries_role_observation(
     generated: ModuleType,
     membership: object,
     network: object,
@@ -1049,32 +827,32 @@ def _sdk_v2_role_observation(
     participants = getattr(network, "participant")
     return {
         "membership": {
-            "relation": _sdk_v2_model(generated, membership),
+            "relation": _sdk_queries_model(generated, membership),
             "role": "member",
-            "players": [_sdk_v2_model_key(generated, member)],
+            "players": [_sdk_queries_model_key(generated, member)],
         },
         "network_link": {
-            "relation": _sdk_v2_model(generated, network),
-            "origin": _sdk_v2_key(getattr(network, "origin")),
-            "destination": _sdk_v2_key(getattr(network, "destination")),
-            "participants": sorted(_sdk_v2_keys(tuple(participants))),
+            "relation": _sdk_queries_model(generated, network),
+            "origin": _sdk_queries_key(getattr(network, "origin")),
+            "destination": _sdk_queries_key(getattr(network, "destination")),
+            "participants": sorted(_sdk_queries_keys(tuple(participants))),
         },
     }
 
 
-def _sdk_v2_hydrated_result(generated: ModuleType, membership: object) -> dict[str, object]:
+def _sdk_queries_hydrated_result(generated: ModuleType, membership: object) -> dict[str, object]:
     member = getattr(membership, "member")
     return {
         "rows": [
             {
-                "model": _sdk_v2_model(generated, membership),
-                "roles": {"member": [_sdk_v2_model_key(generated, member)]},
+                "model": _sdk_queries_model(generated, membership),
+                "roles": {"member": [_sdk_queries_model_key(generated, member)]},
             }
         ]
     }
 
 
-def _sdk_v2_error_category(error: BaseException) -> tuple[str, str, str]:
+def _sdk_queries_error_category(error: BaseException) -> tuple[str, str, str]:
     category = getattr(error, "sdk_category")
     query_category = getattr(error, "query_category")
     code = getattr(error, "code")
@@ -1084,8 +862,8 @@ def _sdk_v2_error_category(error: BaseException) -> tuple[str, str, str]:
     return category, query_category, code
 
 
-def _sdk_v2_cardinality_diagnostic(error: BaseException) -> dict[str, object]:
-    category, query_category, code = _sdk_v2_error_category(error)
+def _sdk_queries_cardinality_diagnostic(error: BaseException) -> dict[str, object]:
+    category, query_category, code = _sdk_queries_error_category(error)
     message = getattr(error, "message")
     path = getattr(error, "path")
     details = getattr(error, "details")
@@ -1115,7 +893,7 @@ def _sdk_v2_cardinality_diagnostic(error: BaseException) -> dict[str, object]:
     }
 
 
-def _sdk_v2_resource_limits(
+def _sdk_queries_resource_limits(
     generated: ModuleType,
     clean_db: Database,
     remote_advertisement: bytes,
@@ -1169,7 +947,7 @@ def _sdk_v2_resource_limits(
         try:
             asyncio.run(query.one())
         except MatchRequestError as error:
-            errors.append(_sdk_v2_error_category(error))
+            errors.append(_sdk_queries_error_category(error))
         else:
             raise AssertionError("zero role-player budget accepted a hydrated relation")
         finally:
@@ -1190,7 +968,7 @@ def _sdk_v2_resource_limits(
     }
 
 
-def _sdk_v2_lifecycle(
+def _sdk_queries_lifecycle(
     generated: ModuleType,
     clean_db: Database,
     remote_advertisement: bytes,
@@ -1209,7 +987,7 @@ def _sdk_v2_lifecycle(
         )
         closed_descendant.close()
         closed_descendant.close()
-        ancestor_usable = _sdk_v2_key(await ancestor.one()) == "query-ada"
+        ancestor_usable = _sdk_queries_key(await ancestor.one()) == "query-ada"
         descendant = ancestor.where(person.field(generated.Person.score).gte(generated.Score(1)))
         result = await descendant.one()
         ancestor.close()
@@ -1221,9 +999,11 @@ def _sdk_v2_lifecycle(
         except MatchRequestError as error:
             rejected = error.code == "query_resource_closed"
         post_close_io_count = len(remote_requests) - requests_before_rejection
-        descendant_usable = _sdk_v2_key(await descendant.one()) == "query-ada"
-        sibling_usable = _sdk_v2_key(await sibling.one()) == "query-ada"
-        session_usable = _sdk_v2_key(await session.query(person).where(scope).one()) == "query-ada"
+        descendant_usable = _sdk_queries_key(await descendant.one()) == "query-ada"
+        sibling_usable = _sdk_queries_key(await sibling.one()) == "query-ada"
+        session_usable = (
+            _sdk_queries_key(await session.query(person).where(scope).one()) == "query-ada"
+        )
         descendant.close()
         sibling.close()
         session.close()
@@ -1251,12 +1031,13 @@ def _sdk_v2_lifecycle(
         "lanes": ["direct", "remote"],
         "query": direct,
         "result_usable_after_query_close": (
-            _sdk_v2_key(direct_result) == "query-ada" and _sdk_v2_key(remote_result) == "query-ada"
+            _sdk_queries_key(direct_result) == "query-ada"
+            and _sdk_queries_key(remote_result) == "query-ada"
         ),
     }
 
 
-def _run_sdk_v2_journey(
+def _run_sdk_queries_journey(
     generated: ModuleType,
     clean_db: Database,
     remote_session: Any,
@@ -1273,7 +1054,7 @@ def _run_sdk_v2_journey(
     assert isinstance(expected, dict)
     people_records = records["people"]
     assert isinstance(people_records, list) and len(people_records) == 2
-    people = [_sdk_v2_person(generated, record) for record in people_records]
+    people = [_sdk_queries_person(generated, record) for record in people_records]
     employee_record = records["employee"]
     manager_record = records["manager"]
     assert isinstance(employee_record, dict)
@@ -1387,17 +1168,17 @@ def _run_sdk_v2_journey(
             .one()
         )
 
-        direct_owner_keys = _sdk_v2_keys(
+        direct_owner_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(direct_person.field(generated.Person.score).is_present(), scoped)
             .rows(limit=2, order_by=(direct_identifier.asc(),))
         )
-        direct_optional_keys = _sdk_v2_keys(
+        direct_optional_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(direct_person.field(generated.Person.nickname).is_present(), scoped)
             .rows(limit=2, order_by=(direct_identifier.asc(),))
         )
-        direct_iid_keys = _sdk_v2_keys(
+        direct_iid_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(direct_person.iid_in(person_iids))
             .rows(limit=2, order_by=(direct_identifier.asc(),))
@@ -1427,7 +1208,7 @@ def _run_sdk_v2_journey(
         direct_score = direct_person.field(generated.Person.score)
         direct_score_gte = direct_person.field(generated.Person.score__gte)
         direct_boolean = direct_person.field(generated.Person.val_bool)
-        direct_and_keys = _sdk_v2_keys(
+        direct_and_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(
                 scoped,
@@ -1435,17 +1216,17 @@ def _run_sdk_v2_journey(
             )
             .rows(limit=2, order_by=(direct_identifier.asc(),))
         )
-        direct_or_keys = _sdk_v2_keys(
+        direct_or_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(scoped)
             .rows(limit=2, order_by=(direct_identifier.asc(),))
         )
-        direct_not_keys = _sdk_v2_keys(
+        direct_not_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(scoped, ~direct_boolean.eq(generated.ValBool(True)))
             .rows(limit=2, order_by=(direct_identifier.asc(),))
         )
-        direct_field_comparison_keys = _sdk_v2_keys(
+        direct_field_comparison_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(scoped, direct_score.gte_field(direct_score_gte))
             .rows(limit=2, order_by=(direct_identifier.asc(),))
@@ -1487,7 +1268,7 @@ def _run_sdk_v2_journey(
             | direct_cross_right_id.eq(generated.Identifier("query-dana"))
         )
         direct_cross_pairs = [
-            [_sdk_v2_key(left), _sdk_v2_key(right)]
+            [_sdk_queries_key(left), _sdk_queries_key(right)]
             for left, right in (
                 direct_session.query(direct_cross_left, direct_cross_right)
                 .allow_cross_join(direct_cross_left, direct_cross_right)
@@ -1527,7 +1308,7 @@ def _run_sdk_v2_journey(
         assert len(direct_positional_page.items) == 1
         positional_origin, positional_participants = direct_positional_page.items[0]
         selection_row = make_dataclass(
-            "SdkV2SelectionRow",
+            "SdkQueriesSelectionRow",
             [
                 ("origin", generated.Person),
                 ("participants", tuple[generated.Person, ...]),
@@ -1557,12 +1338,12 @@ def _run_sdk_v2_journey(
         direct_named = direct_named_page.items[0]
         direct_selection = {
             "positional": [
-                _sdk_v2_key(positional_origin),
-                _sdk_v2_keys(tuple(positional_participants)),
+                _sdk_queries_key(positional_origin),
+                _sdk_queries_keys(tuple(positional_participants)),
             ],
             "named": {
-                "origin": _sdk_v2_key(direct_named.origin),
-                "participants": _sdk_v2_keys(tuple(direct_named.participants)),
+                "origin": _sdk_queries_key(direct_named.origin),
+                "participants": _sdk_queries_keys(tuple(direct_named.participants)),
             },
             "collected_distinct": len({value.iid for value in positional_participants})
             == len(positional_participants),
@@ -1582,11 +1363,11 @@ def _run_sdk_v2_journey(
             include_total=True,
         )
         direct_terminals = {
-            "one": _sdk_v2_key(direct_dana),
-            "first": _sdk_v2_key(direct_first),
+            "one": _sdk_queries_key(direct_dana),
+            "first": _sdk_queries_key(direct_first),
             "rows": direct_keys,
             "page": {
-                "items": _sdk_v2_keys(tuple(direct_page.items)),
+                "items": _sdk_queries_keys(tuple(direct_page.items)),
                 "offset": direct_page.offset,
                 "limit": direct_page.limit,
                 "total": direct_page.total,
@@ -1597,16 +1378,16 @@ def _run_sdk_v2_journey(
         try:
             direct_query.one()
         except MatchRequestError as error:
-            structured_query_diagnostic = _sdk_v2_cardinality_diagnostic(error)
+            structured_query_diagnostic = _sdk_queries_cardinality_diagnostic(error)
         else:
-            raise AssertionError("sdk-v2 exactly-one query accepted two selected rows")
+            raise AssertionError("queries exactly-one query accepted two selected rows")
 
-        direct_scalar_domain_keys = _sdk_v2_keys(
+        direct_scalar_domain_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(scoped, direct_score.gte(generated.Score(40)))
             .rows(limit=2, order_by=(direct_identifier.asc(),))
         )
-        direct_reducers = _sdk_v2_reducers(
+        direct_reducers = _sdk_queries_reducers(
             generated,
             direct_session,
             direct_query,
@@ -1694,21 +1475,21 @@ def _run_sdk_v2_journey(
             .one()
         )
 
-        remote_owner_keys = _sdk_v2_keys(
+        remote_owner_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_person.field(generated.Person.score).is_present(), remote_scoped)
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
-        remote_optional_keys = _sdk_v2_keys(
+        remote_optional_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_person.field(generated.Person.nickname).is_present(), remote_scoped)
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
-        remote_iid_keys = _sdk_v2_keys(
+        remote_iid_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_person.iid_in(person_iids))
@@ -1740,7 +1521,7 @@ def _run_sdk_v2_journey(
         remote_score = remote_person.field(generated.Person.score)
         remote_score_gte = remote_person.field(generated.Person.score__gte)
         remote_boolean = remote_person.field(generated.Person.val_bool)
-        remote_and_keys = _sdk_v2_keys(
+        remote_and_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(
@@ -1751,21 +1532,21 @@ def _run_sdk_v2_journey(
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
-        remote_or_keys = _sdk_v2_keys(
+        remote_or_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_scoped)
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
-        remote_not_keys = _sdk_v2_keys(
+        remote_not_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_scoped, ~remote_boolean.eq(generated.ValBool(True)))
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
-        remote_field_comparison_keys = _sdk_v2_keys(
+        remote_field_comparison_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_scoped, remote_score.gte_field(remote_score_gte))
@@ -1809,7 +1590,7 @@ def _run_sdk_v2_journey(
             | remote_cross_right_id.eq(generated.Identifier("query-dana"))
         )
         remote_cross_pairs = [
-            [_sdk_v2_key(left), _sdk_v2_key(right)]
+            [_sdk_queries_key(left), _sdk_queries_key(right)]
             for left, right in asyncio.run(
                 remote_session.query(remote_cross_left, remote_cross_right)
                 .allow_cross_join(remote_cross_left, remote_cross_right)
@@ -1874,12 +1655,12 @@ def _run_sdk_v2_journey(
         remote_named = remote_named_page.items[0]
         remote_selection = {
             "positional": [
-                _sdk_v2_key(remote_positional_origin),
-                _sdk_v2_keys(tuple(remote_positional_participants)),
+                _sdk_queries_key(remote_positional_origin),
+                _sdk_queries_keys(tuple(remote_positional_participants)),
             ],
             "named": {
-                "origin": _sdk_v2_key(remote_named.origin),
-                "participants": _sdk_v2_keys(tuple(remote_named.participants)),
+                "origin": _sdk_queries_key(remote_named.origin),
+                "participants": _sdk_queries_keys(tuple(remote_named.participants)),
             },
             "collected_distinct": len({value.iid for value in remote_positional_participants})
             == len(remote_positional_participants),
@@ -1903,11 +1684,11 @@ def _run_sdk_v2_journey(
             )
         )
         remote_terminals = {
-            "one": _sdk_v2_key(remote_dana),
-            "first": _sdk_v2_key(remote_first),
+            "one": _sdk_queries_key(remote_dana),
+            "first": _sdk_queries_key(remote_first),
             "rows": remote_keys,
             "page": {
-                "items": _sdk_v2_keys(tuple(remote_page.items)),
+                "items": _sdk_queries_keys(tuple(remote_page.items)),
                 "offset": remote_page.offset,
                 "limit": remote_page.limit,
                 "total": remote_page.total,
@@ -1916,14 +1697,14 @@ def _run_sdk_v2_journey(
             "exists": asyncio.run(remote_query.exists_by(remote_person)),
         }
 
-        remote_scalar_domain_keys = _sdk_v2_keys(
+        remote_scalar_domain_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_scoped, remote_score.gte(generated.Score(40)))
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
-        remote_reducers = _sdk_v2_reducers(
+        remote_reducers = _sdk_queries_reducers(
             generated,
             remote_session,
             blocking(remote_query),
@@ -1963,8 +1744,8 @@ def _run_sdk_v2_journey(
         ]
         assert remote_nested_function_values == direct_nested_function_values
 
-        direct_model_values = _sdk_v2_person_values(generated, direct_ada, direct_membership)
-        remote_model_values = _sdk_v2_person_values(generated, remote_ada, remote_membership)
+        direct_model_values = _sdk_queries_person_values(generated, direct_ada, direct_membership)
+        remote_model_values = _sdk_queries_person_values(generated, remote_ada, remote_membership)
         assert remote_model_values == direct_model_values
         owner_iid_set_direct = {
             "owner_field": "score",
@@ -1983,13 +1764,17 @@ def _run_sdk_v2_journey(
         assert owner_iid_set_remote == owner_iid_set_direct
         exact_subtypes_direct: dict[str, object] = {
             "declared_model": "employee",
-            "exact": [_sdk_v2_model_key(generated, value) for value in direct_exact_values],
-            "subtypes": [_sdk_v2_model_key(generated, value) for value in direct_subtype_values],
+            "exact": [_sdk_queries_model_key(generated, value) for value in direct_exact_values],
+            "subtypes": [
+                _sdk_queries_model_key(generated, value) for value in direct_subtype_values
+            ],
         }
         exact_subtypes_remote: dict[str, object] = {
             "declared_model": "employee",
-            "exact": [_sdk_v2_model_key(generated, value) for value in remote_exact_values],
-            "subtypes": [_sdk_v2_model_key(generated, value) for value in remote_subtype_values],
+            "exact": [_sdk_queries_model_key(generated, value) for value in remote_exact_values],
+            "subtypes": [
+                _sdk_queries_model_key(generated, value) for value in remote_subtype_values
+            ],
         }
         assert exact_subtypes_remote == exact_subtypes_direct
         scalar_boolean_direct: dict[str, object] = {
@@ -2005,14 +1790,14 @@ def _run_sdk_v2_journey(
             "field_comparison_keys": remote_field_comparison_keys,
         }
         assert scalar_boolean_remote == scalar_boolean_direct
-        direct_roles = _sdk_v2_role_observation(generated, direct_membership, direct_network)
-        remote_roles = _sdk_v2_role_observation(generated, remote_membership, remote_network)
+        direct_roles = _sdk_queries_role_observation(generated, direct_membership, direct_network)
+        remote_roles = _sdk_queries_role_observation(generated, remote_membership, remote_network)
         assert remote_roles == direct_roles
         topology_direct = {
             "reachable": [
                 {
-                    "from": _sdk_v2_key(direct_reachable_pair[0]),
-                    "to": _sdk_v2_key(direct_reachable_pair[1]),
+                    "from": _sdk_queries_key(direct_reachable_pair[0]),
+                    "to": _sdk_queries_key(direct_reachable_pair[1]),
                     "max_hops": 1,
                 }
             ],
@@ -2021,8 +1806,8 @@ def _run_sdk_v2_journey(
         topology_remote = {
             "reachable": [
                 {
-                    "from": _sdk_v2_key(remote_reachable_pair[0]),
-                    "to": _sdk_v2_key(remote_reachable_pair[1]),
+                    "from": _sdk_queries_key(remote_reachable_pair[0]),
+                    "to": _sdk_queries_key(remote_reachable_pair[1]),
                     "max_hops": 1,
                 }
             ],
@@ -2031,8 +1816,8 @@ def _run_sdk_v2_journey(
         assert topology_remote == topology_direct
         assert remote_selection == direct_selection
         assert remote_terminals == direct_terminals
-        direct_hydrated = _sdk_v2_hydrated_result(generated, direct_membership)
-        remote_hydrated = _sdk_v2_hydrated_result(generated, remote_membership)
+        direct_hydrated = _sdk_queries_hydrated_result(generated, direct_membership)
+        remote_hydrated = _sdk_queries_hydrated_result(generated, remote_membership)
         assert remote_hydrated == direct_hydrated
         scalar_domain_direct = {
             "domain": "long",
@@ -2048,14 +1833,14 @@ def _run_sdk_v2_journey(
         }
         assert scalar_domain_remote == scalar_domain_direct
         assert remote_one_exchange == 1
-        resource_limits = _sdk_v2_resource_limits(
+        resource_limits = _sdk_queries_resource_limits(
             generated,
             clean_db,
             remote_advertisement,
             remote_exchange,
             membership_iid,
         )
-        query_resource_lifecycle = _sdk_v2_lifecycle(
+        query_resource_lifecycle = _sdk_queries_lifecycle(
             generated,
             clean_db,
             remote_advertisement,
@@ -2104,10 +1889,10 @@ def _run_sdk_v2_journey(
         observed[("resource_limits", "direct_runtime")] = resource_limits
         observed[("resource_limits", "remote_runtime")] = resource_limits
         observed[("query_resource_lifecycle", "lifecycle")] = query_resource_lifecycle
-        assert len(observed) == 29, "sdk-v2 must measure exactly 29 pre-cleanup live lanes"
+        assert len(observed) == 29, "queries must measure exactly 29 pre-cleanup live lanes"
         assert len(proof_observations) == 3
         overlap = set(observed).intersection(proof_observations)
-        assert not overlap, f"sdk-v2 proof fragments duplicate live lanes: {sorted(overlap)!r}"
+        assert not overlap, f"queries proof fragments duplicate live lanes: {sorted(overlap)!r}"
         observed.update(proof_observations)
         assert len(observed) == 32
     finally:
@@ -2125,18 +1910,18 @@ def _run_sdk_v2_journey(
     observed[("entity_lifecycle", "direct_runtime")] = {
         "created": True,
         "deleted": entity_deleted,
-        "key": _sdk_v2_key(people[0]),
-        "model": _sdk_v2_model(generated, people[0]),
+        "key": _sdk_queries_key(people[0]),
+        "model": _sdk_queries_model(generated, people[0]),
         "read_after_create": entity_read_after_create,
     }
     observed[("relation_lifecycle", "direct_runtime")] = {
         "created": True,
         "deleted": relation_deleted,
-        "model": _sdk_v2_model(generated, membership),
-        "player_key": _sdk_v2_key(people[0]),
+        "model": _sdk_queries_model(generated, membership),
+        "player_key": _sdk_queries_key(people[0]),
         "role": "member",
     }
-    assert len(observed) == 34, "sdk-v2 requires 31 live and 3 proof lanes"
+    assert len(observed) == 34, "queries requires 31 live and 3 proof lanes"
     return _sdk_results(catalog, journey, observed)
 
 
@@ -2171,7 +1956,7 @@ def test_generated_profile_server_gate_reads_the_matrix() -> None:
         _require_profile_server_version("typedb-3.11.5/v1", "3.11.5")
 
 
-@pytest.mark.parametrize("version", [1, 2, 3, 5])
+@pytest.mark.parametrize("version", [2, 3, 5])
 def test_sdk_reports_declare_the_requested_matrix_profile(version: int) -> None:
     catalog_profile = _profile_matrix().catalog_profile(version)
     entries = _profile_matrix().load_matrix(version)
@@ -2215,7 +2000,7 @@ def _fingerprinted_package(identity: Any) -> ModuleType:
 
 @pytest.mark.parametrize(
     ("version", "build", "catalog_path"),
-    [(1, "_sdk_report", SDK_CATALOG), (2, "_sdk_v2_report", SDK_V2_CATALOG)],
+    [(2, "_sdk_queries_report", SDK_QUERIES_CATALOG)],
 )
 def test_sdk_reports_emit_the_matrix_fingerprints_of_their_profile(
     version: int, build: str, catalog_path: Path
@@ -3478,54 +3263,29 @@ def test_generated_projection_round_trips_live_models(
 ) -> None:
     generated = generated_package
     _, provider_schema, semantic_profile = _acceptance_contract(clean_db)
-    sdk_report_path = os.environ.get("TYPE_BRIDGE_SDK_REPORT")
-    sdk_v2_report_path = os.environ.get("TYPE_BRIDGE_SDK_REPORT_V2")
-    catalog_raw: bytes | None = None
-    sdk_catalog: dict[str, object] | None = None
-    journey_raw: bytes | None = None
-    sdk_journey: dict[str, object] | None = None
-    sdk_results: list[dict[str, object]] | None = None
-    sdk_v2_catalog_raw: bytes | None = None
-    sdk_v2_catalog: dict[str, object] | None = None
-    sdk_v2_journey_raw: bytes | None = None
-    sdk_v2_journey: dict[str, object] | None = None
-    sdk_v2_results: list[dict[str, object]] | None = None
-    sdk_v2_proof_observations: dict[tuple[str, str], dict[str, object]] | None = None
-    sdk_identity: Any = None
-    sdk_v2_identity: Any = None
-    if (
-        sdk_report_path is not None
-        and sdk_v2_report_path is not None
-        and sdk_report_path == sdk_v2_report_path
-    ):
-        raise AssertionError("sdk-v1 and sdk-v2 reports require distinct paths")
-    if sdk_report_path is not None:
-        sdk_identity = _requested_sdk_profile(
-            1, semantic_profile, clean_db.detected_server_version()
-        )
-        _validate_sdk_report_path(sdk_report_path)
-        catalog_raw, sdk_catalog = _load_json_object(SDK_CATALOG)
-        journey_raw, sdk_journey = _load_json_object(SDK_JOURNEY)
-        assert sdk_journey["format"] == "typebridge.sdk-journey/v1"
-        sdk_fixture = sdk_catalog["fixture"]
-        assert isinstance(sdk_fixture, dict)
-        assert sdk_journey["fixture_id"] == sdk_fixture["id"]
-        assert sdk_journey["version"] == sdk_fixture["version"]
-    if sdk_v2_report_path is not None:
-        sdk_v2_identity = _requested_sdk_profile(
+    sdk_queries_report_path = os.environ.get("TYPE_BRIDGE_SDK_QUERIES_REPORT")
+    sdk_queries_catalog_raw: bytes | None = None
+    sdk_queries_catalog: dict[str, object] | None = None
+    sdk_queries_journey_raw: bytes | None = None
+    sdk_queries_journey: dict[str, object] | None = None
+    sdk_queries_results: list[dict[str, object]] | None = None
+    sdk_queries_proof_observations: dict[tuple[str, str], dict[str, object]] | None = None
+    sdk_queries_identity: Any = None
+    if sdk_queries_report_path is not None:
+        sdk_queries_identity = _requested_sdk_profile(
             2, semantic_profile, clean_db.detected_server_version()
         )
-        _validate_sdk_report_path(sdk_v2_report_path)
-        sdk_v2_catalog_raw, sdk_v2_catalog = _load_json_object(SDK_V2_CATALOG)
-        sdk_v2_journey_raw, sdk_v2_journey = _load_json_object(SDK_V2_JOURNEY)
-        sdk_v2_proof_observations = _load_sdk_v2_proof_observations(
-            sdk_v2_identity.semantic_profile
+        _validate_sdk_report_path(sdk_queries_report_path)
+        sdk_queries_catalog_raw, sdk_queries_catalog = _load_json_object(SDK_QUERIES_CATALOG)
+        sdk_queries_journey_raw, sdk_queries_journey = _load_json_object(SDK_QUERIES_JOURNEY)
+        sdk_queries_proof_observations = _load_sdk_queries_proof_observations(
+            sdk_queries_identity.semantic_profile
         )
-        assert sdk_v2_journey["format"] == "typebridge.sdk-journey/v2"
-        sdk_v2_fixture = sdk_v2_catalog["fixture"]
-        assert isinstance(sdk_v2_fixture, dict)
-        assert sdk_v2_journey["fixture_id"] == sdk_v2_fixture["id"]
-        assert sdk_v2_journey["version"] == sdk_v2_fixture["version"]
+        assert sdk_queries_journey["format"] == "typebridge.sdk-queries-journey/v1"
+        sdk_queries_fixture = sdk_queries_catalog["fixture"]
+        assert isinstance(sdk_queries_fixture, dict)
+        assert sdk_queries_journey["fixture_id"] == sdk_queries_fixture["id"]
+        assert sdk_queries_journey["version"] == sdk_queries_fixture["version"]
     clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
 
     runtime_projection = json.loads(generated.RUNTIME_PROJECTION_JSON)
@@ -4720,29 +4480,18 @@ def test_generated_projection_round_trips_live_models(
                 ceiling_refusal.value.details,
             ) == program_results[0]["limit_refusal"]
 
-        if sdk_catalog is not None and sdk_journey is not None:
-            sdk_results = _run_sdk_journey(
-                generated,
-                clean_db,
-                person_manager,
-                membership_manager,
-                remote_session,
-                remote_requests,
-                sdk_catalog,
-                sdk_journey,
-            )
-        if sdk_v2_catalog is not None and sdk_v2_journey is not None:
-            assert sdk_v2_proof_observations is not None
-            sdk_v2_results = _run_sdk_v2_journey(
+        if sdk_queries_catalog is not None and sdk_queries_journey is not None:
+            assert sdk_queries_proof_observations is not None
+            sdk_queries_results = _run_sdk_queries_journey(
                 generated,
                 clean_db,
                 remote_session,
                 remote_requests,
                 advertisement,
                 exchange,
-                sdk_v2_catalog,
-                sdk_v2_journey,
-                sdk_v2_proof_observations,
+                sdk_queries_catalog,
+                sdk_queries_journey,
+                sdk_queries_proof_observations,
             )
     finally:
         server.terminate()
@@ -4783,37 +4532,20 @@ def test_generated_projection_round_trips_live_models(
     person_manager.delete(transaction_person)
     assert person_manager.get_by_iid(transaction_person.iid) is None
 
-    if sdk_report_path is not None:
-        assert catalog_raw is not None
-        assert sdk_catalog is not None
-        assert journey_raw is not None
-        assert sdk_journey is not None
-        assert sdk_results is not None
+    if sdk_queries_report_path is not None:
+        assert sdk_queries_catalog_raw is not None
+        assert sdk_queries_catalog is not None
+        assert sdk_queries_journey_raw is not None
+        assert sdk_queries_results is not None
         _publish_sdk_report(
-            sdk_report_path,
-            _sdk_report(
+            sdk_queries_report_path,
+            _sdk_queries_report(
                 generated,
-                sdk_identity,
-                catalog_raw,
-                sdk_catalog,
-                journey_raw,
-                sdk_results,
-            ),
-        )
-    if sdk_v2_report_path is not None:
-        assert sdk_v2_catalog_raw is not None
-        assert sdk_v2_catalog is not None
-        assert sdk_v2_journey_raw is not None
-        assert sdk_v2_results is not None
-        _publish_sdk_report(
-            sdk_v2_report_path,
-            _sdk_v2_report(
-                generated,
-                sdk_v2_identity,
-                sdk_v2_catalog_raw,
-                sdk_v2_catalog,
-                sdk_v2_journey_raw,
-                sdk_v2_results,
+                sdk_queries_identity,
+                sdk_queries_catalog_raw,
+                sdk_queries_catalog,
+                sdk_queries_journey_raw,
+                sdk_queries_results,
             ),
         )
 

@@ -1515,7 +1515,7 @@ remote_cancellation_observation = {
 def _proof_source_identity(root: Path, relative: str) -> dict[str, str]:
     source = root / relative
     if source.is_symlink() or not source.is_file():
-        raise AssertionError(f"sdk-v2 proof source is not a regular file: {relative}")
+        raise AssertionError(f"queries proof source is not a regular file: {relative}")
     with source.open("rb") as source_file:
         digest = hashlib.sha256(source_file.read()).hexdigest()
     return {"path": relative, "sha256": digest}
@@ -1549,29 +1549,29 @@ def _proof_semantic_profile(root: Path, version: int) -> str:
     return profile
 
 
-def _emit_sdk_v2_remote_proof_fragment() -> None:
-    raw_destination = os.environ.get("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT")
+def _emit_sdk_queries_remote_proof_fragment() -> None:
+    raw_destination = os.environ.get("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT")
     if raw_destination is None:
         return
-    run_nonce = os.environ.get("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE")
+    run_nonce = os.environ.get("TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE")
     if (
         run_nonce is None
         or len(run_nonce) != 64
         or any(character not in "0123456789abcdef" for character in run_nonce)
     ):
-        raise AssertionError("sdk-v2 proof run nonce must be 64 lowercase hex characters")
+        raise AssertionError("queries proof run nonce must be 64 lowercase hex characters")
     destination = Path(raw_destination)
     if not destination.is_absolute():
-        raise AssertionError("sdk-v2 proof fragment path must be absolute")
+        raise AssertionError("queries proof fragment path must be absolute")
     if destination.parent.is_symlink() or not destination.parent.is_dir():
-        raise AssertionError("sdk-v2 proof fragment parent must be a regular directory")
+        raise AssertionError("queries proof fragment parent must be a regular directory")
     root = Path.cwd()
     if not (root / "type-bridge-core").is_dir():
-        raise AssertionError("sdk-v2 proof fragment emitter requires the repository root")
+        raise AssertionError("queries proof fragment emitter requires the repository root")
     contract_paths = {
-        "proof_schema": ("tests/contracts/sdk_conformance/sdk-v2/proof-fragment-schema.json"),
-        "allowlist": ("tests/contracts/sdk_conformance/sdk-v2/proof-fragment-allowlist.json"),
-        "journey": "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json",
+        "proof_schema": ("tests/contracts/sdk_conformance/queries/proof-fragment-schema.json"),
+        "allowlist": ("tests/contracts/sdk_conformance/queries/proof-fragment-allowlist.json"),
+        "journey": "tests/contracts/sdk_conformance/queries/journey.json",
     }
     producer_paths = sorted(
         (
@@ -1582,7 +1582,7 @@ def _emit_sdk_v2_remote_proof_fragment() -> None:
         )
     )
     fragment = {
-        "format": "typebridge.sdk-v2-proof-fragment/v1",
+        "format": "typebridge.sdk-queries-proof-fragment/v1",
         "binding": "python",
         "semantic_profile": _proof_semantic_profile(root, 2),
         "run_nonce": run_nonce,
@@ -1615,14 +1615,14 @@ def _emit_sdk_v2_remote_proof_fragment() -> None:
         json.dumps(fragment, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
     ).encode()
     if len(payload) > 64 * 1024:
-        raise AssertionError("sdk-v2 proof fragment exceeds 64 KiB")
+        raise AssertionError("queries proof fragment exceeds 64 KiB")
     with destination.open("xb") as output:
         output.write(payload)
         output.flush()
         os.fsync(output.fileno())
 
 
-_emit_sdk_v2_remote_proof_fragment()
+_emit_sdk_queries_remote_proof_fragment()
 
 
 def _emit_sdk_models_package_proof_fragment() -> None:

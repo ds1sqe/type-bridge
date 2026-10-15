@@ -76,7 +76,7 @@ def test_v6_freezes_only_the_five_terminal_transition_cases() -> None:
     assert catalog["required_non_selected_proof_count_per_binding"] == 25
     assert catalog["full_c"] == {
         "capability_count": 44,
-        "required_predecessor_reports": [1, 2, 3, 4, 5, 6],
+        "required_predecessor_reports": [2, 3, 4, 5, 6],
         "manual_badge": False,
         "fails_on_gap_or_planned_c_cell": True,
         "publication_authority": False,
@@ -88,6 +88,6 @@ def test_full_c_audit_inventory_is_exactly_the_manifest() -> None:
     manifest = json.loads((ROOT / "tests/contracts/sdk_conformance/manifest.json").read_text())
     assert audit["capability_codes"] == [item["code"] for item in manifest["capabilities"]]
     assert len(audit["capability_codes"]) == 44
-    assert audit["report_versions"] == [1, 2, 3, 4, 5, 6]
+    assert audit["report_versions"] == [2, 3, 4, 5, 6]
     assert audit["output"]["manual_override"] is False
     assert audit["output"]["publication_authority"] is False

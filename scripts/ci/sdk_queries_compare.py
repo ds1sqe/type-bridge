@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and compare the Python, Node, Rust, and C sdk-v2 reports."""
+"""Validate and compare the Python, Node, Rust, and C queries reports."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_sdk_conformance import (  # noqa: E402, F401
+from sdk_conformance_common import (  # noqa: E402, F401
     FORBIDDEN_OBSERVATION_KEYS,
     MAX_JSON_BYTES,
     OBSERVATION_KEY_RE,
@@ -41,18 +41,18 @@ from compare_sdk_conformance import (  # noqa: E402, F401
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest.json"
-CATALOG_RELATIVE = "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json"
-JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json"
-REPORT_SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/sdk-v2/report-schema-v2.json"
+CATALOG_RELATIVE = "tests/contracts/sdk_conformance/queries/catalog.json"
+JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/queries/journey.json"
+REPORT_SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/queries/report-schema.json"
 SCHEMA_RELATIVE = "type-bridge-core/crates/schema-codegen/tests/acceptance/schema.yaml"
 PROVIDER_SCHEMA_RELATIVE = (
     "type-bridge-core/crates/schema-codegen/tests/acceptance/provider-3.12.1.tql"
 )
 
-REPORT_FORMAT = "typebridge.sdk-conformance-report/v2"
-SUMMARY_FORMAT = "typebridge.sdk-conformance-summary/v2"
-CATALOG_FORMAT = "typebridge.sdk-catalog/v2"
-JOURNEY_FORMAT = "typebridge.sdk-journey/v2"
+REPORT_FORMAT = "typebridge.sdk-queries-report/v1"
+SUMMARY_FORMAT = "typebridge.sdk-queries-comparison/v1"
+CATALOG_FORMAT = "typebridge.sdk-queries-catalog/v1"
+JOURNEY_FORMAT = "typebridge.sdk-queries-journey/v1"
 REPORT_BINDINGS = ("python", "node", "rust", "c")
 FINAL_BROAD_SUCCESSOR_CASES = frozenset(
     {
@@ -273,7 +273,7 @@ def _validate_journey(value: Any) -> dict[str, dict[str, Any]]:
     )
     if journey["format"] != JOURNEY_FORMAT:
         raise ContractError("invalid_journey_format", "journey format is not v2")
-    if journey["fixture_id"] != "sdk-v2" or journey["version"] != 2:
+    if journey["fixture_id"] != "queries" or journey["version"] != 2:
         raise ContractError("invalid_fixture_identity", "journey fixture identity is not v2")
     if journey["semantic_profile"] not in profile_matrix.supported_profiles(2):
         raise ContractError("semantic_profile_mismatch", "journey profile is not a matrix profile")
@@ -367,7 +367,7 @@ def _validate_catalog(
         "catalog fixture",
     )
     if fixture != {
-        "id": "sdk-v2",
+        "id": "queries",
         "version": 2,
         "semantic_profile": catalog_profile(fixture, 2),
         "schema_path": SCHEMA_RELATIVE,
@@ -660,7 +660,7 @@ def _validate_report(report: LoadedJson, contracts: Contracts) -> dict[str, Any]
         },
         "report fixture",
     )
-    if fixture["id"] != "sdk-v2" or _integer(fixture["version"], "fixture version") != 2:
+    if fixture["id"] != "queries" or _integer(fixture["version"], "fixture version") != 2:
         raise ContractError("invalid_fixture_identity", f"{binding} report fixture is not v2")
     if fixture["semantic_profile"] != contracts.semantic_profile:
         raise ContractError("semantic_profile_mismatch", f"{binding} report profile is invalid")
@@ -854,7 +854,7 @@ def _derive_summary(reports: dict[str, dict[str, Any]], contracts: Contracts) ->
         "format": SUMMARY_FORMAT,
         "bindings": list(REPORT_BINDINGS),
         "fixture": {
-            "id": "sdk-v2",
+            "id": "queries",
             "version": 2,
             "semantic_profile": contracts.semantic_profile,
             "manifest": {"path": MANIFEST_RELATIVE, "sha256": contracts.manifest.sha256},
@@ -903,7 +903,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         summary = compare_reports(arguments.reports)
     except (ContractError, OSError) as error:
-        print(f"sdk-v2 conformance rejected: {error}", file=sys.stderr)
+        print(f"queries conformance rejected: {error}", file=sys.stderr)
         return 1
     sys.stdout.buffer.write(canonical_json_bytes(summary))
     return 0

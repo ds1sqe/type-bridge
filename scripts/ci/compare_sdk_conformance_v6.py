@@ -48,7 +48,7 @@ def predecessor_versions(binding: str) -> tuple[int, ...]:
     """Return the real historical report inventory for one binding."""
     if binding not in BINDINGS:
         reject("predecessor_report_identity_drift", f"unknown predecessor binding {binding!r}")
-    return (2, 3, 4, 5) if binding == "c" else (1, 2, 3, 4, 5)
+    return (2, 3, 4, 5)
 
 
 class ContractError(ValueError):

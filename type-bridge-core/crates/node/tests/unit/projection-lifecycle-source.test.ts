@@ -10,7 +10,7 @@ const sourcePath = path.resolve(
 
 test("close I/O is measured before later usable-lineage terminals", () => {
   const source = fs.readFileSync(sourcePath, "utf8");
-  const start = source.indexOf("async function sdkV2Lifecycle(");
+  const start = source.indexOf("async function sdkQueriesLifecycle(");
   const end = source.indexOf("async function runSdkV2Journey(", start);
   assert.notEqual(start, -1);
   assert.notEqual(end, -1);
@@ -28,7 +28,7 @@ test("close I/O is measured before later usable-lineage terminals", () => {
     rejectedTerminal,
   );
   const descendantTerminal = lifecycle.indexOf(
-    "sdkV2Key(await descendant.one())",
+    "sdkQueriesKey(await descendant.one())",
     measured,
   );
   assert.notEqual(snapshot, -1);

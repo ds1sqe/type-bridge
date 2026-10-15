@@ -885,12 +885,12 @@ def test_sdk_models_fragment_contract_freezes_two_producers_and_seven_lanes() ->
         )
 
 
-def test_sdk_models_environment_and_nonce_names_are_independent_from_v2() -> None:
+def test_sdk_models_environment_and_nonce_names_are_independent_from_queries() -> None:
     readme = (CONTRACT_ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "TYPE_BRIDGE_SDK_MODELS_REPORT" in readme
     assert "TYPE_BRIDGE_SDK_MODELS_PROOF_RUN_NONCE" in readme
     assert "TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGMENT" in readme
     assert "TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGMENTS" in readme
-    assert "TYPE_BRIDGE_SDK_REPORT_V2" not in readme
-    assert "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE" not in readme
+    assert "TYPE_BRIDGE_SDK_QUERIES_REPORT" not in readme
+    assert "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE" not in readme

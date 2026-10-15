@@ -1,5 +1,5 @@
 {
-  "format": "typebridge.sdk-v2-proof-fragment-allowlist/v1",
+  "format": "typebridge.sdk-queries-proof-fragment-allowlist/v1",
   "semantic_profile": "typedb-3.12.1/v1",
   "bindings": {
     "python": [
@@ -61,9 +61,9 @@
           "type-bridge-core/crates/rust/src/remote.rs"
         ],
         "results": [
-          {"observation_ref": "cancellation_direct", "proof_kind": "direct_runtime", "test_id": "remote::tests::sdk_v2_rust_deterministic_proof_fragment"},
-          {"observation_ref": "cancellation_remote", "proof_kind": "remote_runtime", "test_id": "remote::tests::sdk_v2_rust_deterministic_proof_fragment"},
-          {"observation_ref": "remote_structured_diagnostic", "proof_kind": "diagnostic", "test_id": "remote::tests::sdk_v2_rust_deterministic_proof_fragment"}
+          {"observation_ref": "cancellation_direct", "proof_kind": "direct_runtime", "test_id": "remote::tests::sdk_queries_rust_deterministic_proof_fragment"},
+          {"observation_ref": "cancellation_remote", "proof_kind": "remote_runtime", "test_id": "remote::tests::sdk_queries_rust_deterministic_proof_fragment"},
+          {"observation_ref": "remote_structured_diagnostic", "proof_kind": "diagnostic", "test_id": "remote::tests::sdk_queries_rust_deterministic_proof_fragment"}
         ]
       }
     ],
@@ -76,9 +76,9 @@
           "type-bridge-core/crates/c/src/query.rs"
         ],
         "results": [
-          {"observation_ref": "cancellation_direct", "proof_kind": "direct_runtime", "test_id": "query::tests::sdk_v2_c_deterministic_proof_fragment"},
-          {"observation_ref": "cancellation_remote", "proof_kind": "remote_runtime", "test_id": "query::tests::sdk_v2_c_deterministic_proof_fragment"},
-          {"observation_ref": "remote_structured_diagnostic", "proof_kind": "diagnostic", "test_id": "query::tests::sdk_v2_c_deterministic_proof_fragment"}
+          {"observation_ref": "cancellation_direct", "proof_kind": "direct_runtime", "test_id": "query::tests::sdk_queries_c_deterministic_proof_fragment"},
+          {"observation_ref": "cancellation_remote", "proof_kind": "remote_runtime", "test_id": "query::tests::sdk_queries_c_deterministic_proof_fragment"},
+          {"observation_ref": "remote_structured_diagnostic", "proof_kind": "diagnostic", "test_id": "query::tests::sdk_queries_c_deterministic_proof_fragment"}
         ]
       }
     ]

@@ -650,13 +650,13 @@ mod tests {
         crate::session::Database::from_test_parts(
             type_bridge_orm::Database::with_backend(
                 Box::new(DirectCancellationBackend { state }),
-                "rust-sdk-v2-proof",
+                "rust-queries-proof",
             ),
             installed,
         )
     }
 
-    async fn observe_sdk_v2_direct_cancellation() -> serde_json::Value {
+    async fn observe_sdk_queries_direct_cancellation() -> serde_json::Value {
         let pre_state = Arc::new(DirectCancellationState::default());
         let pre_database = direct_cancellation_database(Arc::clone(&pre_state));
         let pre_signal = AnswerCancellation::default();
@@ -894,7 +894,7 @@ mod tests {
     }
 
     fn unconnected_remote(mut options: ProxyConnectionPolicy) -> ProxyDatabase<Unbound> {
-        options.advertisement = Some(sdk_v2_transport(0x70).0.advertisement);
+        options.advertisement = Some(sdk_queries_transport(0x70).0.advertisement);
         ProxyDatabase {
             options: Some(options),
             runtime: None,
@@ -1122,7 +1122,7 @@ mod tests {
         }
     }
 
-    fn sdk_v2_transport(seed: u8) -> (Transport, Arc<Mutex<Vec<Vec<u8>>>>) {
+    fn sdk_queries_transport(seed: u8) -> (Transport, Arc<Mutex<Vec<Vec<u8>>>>) {
         let signer = RemoteReplySigningKey::from_secret_bytes([seed; 32]);
         let mut capabilities = query_plan_v2_capability_vocabulary();
         for capability in query_remote_v2_required_capabilities(true) {
@@ -1149,8 +1149,8 @@ mod tests {
         )
     }
 
-    async fn observe_sdk_v2_remote_cancellation() -> serde_json::Value {
-        let (pre_transport, pre_exchanges) = sdk_v2_transport(0x71);
+    async fn observe_sdk_queries_remote_cancellation() -> serde_json::Value {
+        let (pre_transport, pre_exchanges) = sdk_queries_transport(0x71);
         let remote = ProxyDatabase::connect(
             ProxyConnectionPolicy::with_exchange(pre_transport)
                 .answer_limits(QueryExecutionResourceLimits::default()),
@@ -1182,7 +1182,7 @@ mod tests {
 
         let decode_signal = AnswerCancellation::default();
         let response_completed = Arc::new(AtomicBool::new(false));
-        let (decode_inner, decode_exchanges) = sdk_v2_transport(0x72);
+        let (decode_inner, decode_exchanges) = sdk_queries_transport(0x72);
         let decode_remote = ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(
             CancelBeforeDecodeTransport {
                 inner: decode_inner,
@@ -1213,7 +1213,7 @@ mod tests {
         assert_eq!(decode_exchange_count, 1);
         assert!(!decode_partial_result);
 
-        let (abort_contract_transport, _) = sdk_v2_transport(0x73);
+        let (abort_contract_transport, _) = sdk_queries_transport(0x73);
         let abort_exchanges = Arc::new(AtomicUsize::new(0));
         let abort_entered = Arc::new(Notify::new());
         let abort_dropped = Arc::new(AtomicBool::new(false));
@@ -1287,7 +1287,7 @@ mod tests {
         })
     }
 
-    fn sdk_v2_query_category(error: &crate::Error) -> &'static str {
+    fn sdk_queries_query_category(error: &crate::Error) -> &'static str {
         error
             .details()
             .and_then(|details| {
@@ -1301,7 +1301,7 @@ mod tests {
             .expect("authenticated remote diagnostic carries result_decode")
     }
 
-    fn sdk_v2_remote_diagnostic_observation(
+    fn sdk_queries_remote_diagnostic_observation(
         error: &crate::Error,
         claim_consumed: bool,
     ) -> serde_json::Value {
@@ -1348,11 +1348,11 @@ mod tests {
         let visible = format!("{}{:?}{:?}", error.message(), path, details);
         let redacted = !visible.contains("provider-secret") && !visible.contains("must-not-cross");
         serde_json::json!({
-            "category": match (error.category(), sdk_v2_query_category(error)) {
+            "category": match (error.category(), sdk_queries_query_category(error)) {
                 (crate::ErrorCategory::ModelValidation, "result_decode") => "integrity",
                 (category, _) => category.as_str(),
             },
-            "query_category": sdk_v2_query_category(error),
+            "query_category": sdk_queries_query_category(error),
             "code": error.code().expect("authenticated remote diagnostic carries a stable code"),
             "message": error.message(),
             "path": path,
@@ -1362,7 +1362,7 @@ mod tests {
         })
     }
 
-    async fn observe_sdk_v2_remote_structured_diagnostic() -> serde_json::Value {
+    async fn observe_sdk_queries_remote_structured_diagnostic() -> serde_json::Value {
         let signer = RemoteReplySigningKey::from_secret_bytes([0x42; 32]);
         let mut capabilities = query_plan_v2_capability_vocabulary();
         for capability in query_remote_v2_required_capabilities(true) {
@@ -1424,12 +1424,12 @@ mod tests {
             && error.details().is_some();
         assert_eq!(exchange_count, 1);
         assert!(claim_consumed);
-        let observation = sdk_v2_remote_diagnostic_observation(&error, claim_consumed);
+        let observation = sdk_queries_remote_diagnostic_observation(&error, claim_consumed);
         assert_eq!(observation["redacted"], true);
         observation
     }
 
-    fn sdk_v2_proof_source(root: &Path, relative: &str) -> serde_json::Value {
+    fn sdk_queries_proof_source(root: &Path, relative: &str) -> serde_json::Value {
         let path = root.join(relative);
         let bytes = fs::read(&path)
             .unwrap_or_else(|error| panic!("proof source {} is readable: {error}", path.display()));
@@ -1439,9 +1439,9 @@ mod tests {
         })
     }
 
-    fn requested_sdk_v2_proof_fragment() -> Option<(PathBuf, String)> {
-        let destination = env::var_os("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT");
-        let run_nonce = env::var_os("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE");
+    fn requested_sdk_queries_proof_fragment() -> Option<(PathBuf, String)> {
+        let destination = env::var_os("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT");
+        let run_nonce = env::var_os("TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE");
         assert_eq!(
             destination.is_some(),
             run_nonce.is_some(),
@@ -1479,7 +1479,7 @@ mod tests {
         Some((destination, run_nonce))
     }
 
-    fn publish_sdk_v2_rust_proof_fragment(
+    fn publish_sdk_queries_rust_proof_fragment(
         destination: &Path,
         run_nonce: &str,
         results: Vec<serde_json::Value>,
@@ -1493,39 +1493,39 @@ mod tests {
             .expect("type-bridge-core has a repository parent");
         let sources = ["type-bridge-core/crates/rust/src/remote.rs"];
         let fragment = serde_json::json!({
-            "format": "typebridge.sdk-v2-proof-fragment/v1",
+            "format": "typebridge.sdk-queries-proof-fragment/v1",
             "binding": "rust",
             "semantic_profile": crate::sdk_profile_matrix::requested(2).semantic_profile,
             "run_nonce": run_nonce,
             "contract": {
-                "allowlist": sdk_v2_proof_source(repository, "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-allowlist-v1.json"),
-                "journey": sdk_v2_proof_source(repository, "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json"),
-                "proof_schema": sdk_v2_proof_source(repository, "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-schema-v1.json"),
+                "allowlist": sdk_queries_proof_source(repository, "tests/contracts/sdk_conformance/queries/proof-fragment-allowlist.json"),
+                "journey": sdk_queries_proof_source(repository, "tests/contracts/sdk_conformance/queries/journey.json"),
+                "proof_schema": sdk_queries_proof_source(repository, "tests/contracts/sdk_conformance/queries/proof-fragment-schema.json"),
             },
             "producer": {
                 "id": "type-bridge-rust.generated-query-proof",
                 "sources": sources
                     .iter()
-                    .map(|source| sdk_v2_proof_source(repository, source))
+                    .map(|source| sdk_queries_proof_source(repository, source))
                     .collect::<Vec<_>>(),
             },
             "results": results,
         });
         let mut bytes =
-            to_canonical_json(&fragment).expect("Rust sdk-v2 proof fragment canonicalizes");
+            to_canonical_json(&fragment).expect("Rust queries proof fragment canonicalizes");
         bytes.push(b'\n');
         assert!(bytes.len() <= 64 * 1024);
         let mut output = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(destination)
-            .expect("Rust sdk-v2 proof fragment is created once");
+            .expect("Rust queries proof fragment is created once");
         output
             .write_all(&bytes)
-            .expect("Rust sdk-v2 proof fragment is written completely");
+            .expect("Rust queries proof fragment is written completely");
         output
             .sync_all()
-            .expect("Rust sdk-v2 proof fragment is durable");
+            .expect("Rust queries proof fragment is durable");
     }
 
     #[tokio::test]
@@ -1789,33 +1789,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sdk_v2_rust_deterministic_proof_fragment() {
-        let test_id = "remote::tests::sdk_v2_rust_deterministic_proof_fragment";
+    async fn sdk_queries_rust_deterministic_proof_fragment() {
+        let test_id = "remote::tests::sdk_queries_rust_deterministic_proof_fragment";
         let results = vec![
             serde_json::json!({
                 "observation_ref": "cancellation_direct",
                 "proof_kind": "direct_runtime",
                 "test_id": test_id,
                 "outcome": "passed",
-                "observation": observe_sdk_v2_direct_cancellation().await,
+                "observation": observe_sdk_queries_direct_cancellation().await,
             }),
             serde_json::json!({
                 "observation_ref": "cancellation_remote",
                 "proof_kind": "remote_runtime",
                 "test_id": test_id,
                 "outcome": "passed",
-                "observation": observe_sdk_v2_remote_cancellation().await,
+                "observation": observe_sdk_queries_remote_cancellation().await,
             }),
             serde_json::json!({
                 "observation_ref": "remote_structured_diagnostic",
                 "proof_kind": "diagnostic",
                 "test_id": test_id,
                 "outcome": "passed",
-                "observation": observe_sdk_v2_remote_structured_diagnostic().await,
+                "observation": observe_sdk_queries_remote_structured_diagnostic().await,
             }),
         ];
-        if let Some((destination, run_nonce)) = requested_sdk_v2_proof_fragment() {
-            publish_sdk_v2_rust_proof_fragment(&destination, &run_nonce, results);
+        if let Some((destination, run_nonce)) = requested_sdk_queries_proof_fragment() {
+            publish_sdk_queries_rust_proof_fragment(&destination, &run_nonce, results);
         }
     }
 }

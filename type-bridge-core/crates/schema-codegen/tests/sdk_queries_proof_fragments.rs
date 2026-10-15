@@ -1,4 +1,4 @@
-//! Fail-closed Rust validation for sdk-v2 deterministic proof fragments.
+//! Fail-closed Rust validation for queries deterministic proof fragments.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,7 +24,7 @@ impl Stage {
         loop {
             let nonce = NEXT_STAGE.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "typebridge-sdk-v2-proof-{}-{nonce}",
+                "typebridge-queries-proof-{}-{nonce}",
                 std::process::id()
             ));
             match fs::create_dir(&path) {
@@ -78,15 +78,15 @@ fn authority() -> Stage {
     let stage = Stage::new();
     copy_contract(
         &stage,
-        support::SDK_V2_PROOF_SCHEMA,
+        support::SDK_QUERIES_PROOF_SCHEMA,
         include_bytes!(
-            "../../../../tests/contracts/sdk_conformance/sdk-v2/proof-fragment-schema-v1.json"
+            "../../../../tests/contracts/sdk_conformance/queries/proof-fragment-schema.json"
         ),
     );
     copy_contract(
         &stage,
-        support::SDK_V2_JOURNEY,
-        include_bytes!("../../../../tests/contracts/sdk_conformance/sdk-v2/journey-v2.json"),
+        support::SDK_QUERIES_JOURNEY,
+        include_bytes!("../../../../tests/contracts/sdk_conformance/queries/journey.json"),
     );
     copy_contract(
         &stage,
@@ -132,12 +132,16 @@ fn authority() -> Stage {
                 "sources": [PRODUCER_SOURCE],
             }],
         },
-        "format": "typebridge.sdk-v2-proof-fragment-allowlist/v1",
+        "format": "typebridge.sdk-queries-proof-fragment-allowlist/v1",
         "semantic_profile": support::TEST_PROFILE,
     });
     let mut allowlist_bytes = to_canonical_json(&allowlist).expect("allowlist canonicalizes");
     allowlist_bytes.push(b'\n');
-    copy_contract(&stage, support::SDK_V2_PROOF_ALLOWLIST, &allowlist_bytes);
+    copy_contract(
+        &stage,
+        support::SDK_QUERIES_PROOF_ALLOWLIST,
+        &allowlist_bytes,
+    );
     stage
 }
 
@@ -145,23 +149,23 @@ fn fragment(stage: &Stage) -> Value {
     json!({
         "binding": "rust",
         "contract": {
-            "allowlist": support::sdk_v2_source_identity(
+            "allowlist": support::sdk_queries_source_identity(
                 stage.root(),
-                support::SDK_V2_PROOF_ALLOWLIST,
+                support::SDK_QUERIES_PROOF_ALLOWLIST,
             ).expect("allowlist identity"),
-            "journey": support::sdk_v2_source_identity(
+            "journey": support::sdk_queries_source_identity(
                 stage.root(),
-                support::SDK_V2_JOURNEY,
+                support::SDK_QUERIES_JOURNEY,
             ).expect("journey identity"),
-            "proof_schema": support::sdk_v2_source_identity(
+            "proof_schema": support::sdk_queries_source_identity(
                 stage.root(),
-                support::SDK_V2_PROOF_SCHEMA,
+                support::SDK_QUERIES_PROOF_SCHEMA,
             ).expect("proof schema identity"),
         },
-        "format": "typebridge.sdk-v2-proof-fragment/v1",
+        "format": "typebridge.sdk-queries-proof-fragment/v1",
         "producer": {
             "id": PRODUCER_ID,
-            "sources": [support::sdk_v2_source_identity(stage.root(), PRODUCER_SOURCE)
+            "sources": [support::sdk_queries_source_identity(stage.root(), PRODUCER_SOURCE)
                 .expect("producer identity")],
         },
         "results": [
@@ -210,7 +214,7 @@ fn shared_validator_accepts_only_the_exact_source_bound_three_lane_fragment() {
     let path = stage.root().join("fragment.json");
     write_fragment(&path, &fragment(&stage));
 
-    let observations = support::validate_sdk_v2_proof_fragments(
+    let observations = support::validate_sdk_queries_proof_fragments(
         stage.root(),
         "rust",
         RUN_NONCE,
@@ -224,7 +228,7 @@ fn shared_validator_accepts_only_the_exact_source_bound_three_lane_fragment() {
             .keys()
             .cloned()
             .collect::<std::collections::BTreeSet<_>>(),
-        support::sdk_v2_proof_lanes(stage.root(), "rust").expect("committed lanes validate")
+        support::sdk_queries_proof_lanes(stage.root(), "rust").expect("committed lanes validate")
     );
 }
 
@@ -234,7 +238,7 @@ fn shared_validator_rejects_wrong_run_source_drift_and_lane_coverage() {
     let path = stage.root().join("fragment.json");
     write_fragment(&path, &fragment(&stage));
 
-    let wrong_run = support::validate_sdk_v2_proof_fragments(
+    let wrong_run = support::validate_sdk_queries_proof_fragments(
         stage.root(),
         "rust",
         &"8".repeat(64),
@@ -244,7 +248,7 @@ fn shared_validator_rejects_wrong_run_source_drift_and_lane_coverage() {
     assert!(wrong_run.contains("another run"));
 
     fs::write(stage.root().join(PRODUCER_SOURCE), "// changed\n").expect("producer source drifts");
-    let drift = support::validate_sdk_v2_proof_fragments(
+    let drift = support::validate_sdk_queries_proof_fragments(
         stage.root(),
         "rust",
         RUN_NONCE,
@@ -262,7 +266,7 @@ fn shared_validator_rejects_wrong_run_source_drift_and_lane_coverage() {
     let mut wrong_producer = fragment(&stage);
     wrong_producer["producer"]["id"] = json!("rust.uncommitted");
     write_fragment(&path, &wrong_producer);
-    let wrong_producer = support::validate_sdk_v2_proof_fragments(
+    let wrong_producer = support::validate_sdk_queries_proof_fragments(
         stage.root(),
         "rust",
         RUN_NONCE,
@@ -276,11 +280,11 @@ fn shared_validator_rejects_wrong_run_source_drift_and_lane_coverage() {
     let mut wrong_source = fragment(&stage);
     wrong_source["producer"]["sources"] =
         json!([
-            support::sdk_v2_source_identity(stage.root(), wrong_source_relative)
+            support::sdk_queries_source_identity(stage.root(), wrong_source_relative)
                 .expect("other producer identity")
         ]);
     write_fragment(&path, &wrong_source);
-    let wrong_source = support::validate_sdk_v2_proof_fragments(
+    let wrong_source = support::validate_sdk_queries_proof_fragments(
         stage.root(),
         "rust",
         RUN_NONCE,
@@ -292,7 +296,7 @@ fn shared_validator_rejects_wrong_run_source_drift_and_lane_coverage() {
     let mut wrong_test = fragment(&stage);
     wrong_test["results"][0]["test_id"] = json!("rust.query.wrong-test");
     write_fragment(&path, &wrong_test);
-    let wrong_test = support::validate_sdk_v2_proof_fragments(
+    let wrong_test = support::validate_sdk_queries_proof_fragments(
         stage.root(),
         "rust",
         RUN_NONCE,
@@ -307,7 +311,7 @@ fn shared_validator_rejects_wrong_run_source_drift_and_lane_coverage() {
         .expect("results are an array")
         .pop();
     write_fragment(&path, &missing);
-    let missing = support::validate_sdk_v2_proof_fragments(
+    let missing = support::validate_sdk_queries_proof_fragments(
         stage.root(),
         "rust",
         RUN_NONCE,
@@ -330,7 +334,7 @@ fn shared_validator_rejects_noncanonical_and_duplicate_paths() {
         ),
     )
     .expect("noncanonical fragment writes");
-    let noncanonical = support::validate_sdk_v2_proof_fragments(
+    let noncanonical = support::validate_sdk_queries_proof_fragments(
         stage.root(),
         "rust",
         RUN_NONCE,
@@ -340,7 +344,7 @@ fn shared_validator_rejects_noncanonical_and_duplicate_paths() {
     assert!(noncanonical.contains("not compact canonical JSON"));
 
     write_fragment(&path, &value);
-    let duplicate = support::validate_sdk_v2_proof_fragments(
+    let duplicate = support::validate_sdk_queries_proof_fragments(
         stage.root(),
         "rust",
         RUN_NONCE,
@@ -363,7 +367,7 @@ fn shared_validator_rejects_fragment_symlinks_and_symlinked_parents() {
 
     let linked_fragment = stage.root().join("fragment-link.json");
     symlink(&real_fragment, &linked_fragment).expect("fragment symlink is created");
-    let rejected = support::validate_sdk_v2_proof_fragments(
+    let rejected = support::validate_sdk_queries_proof_fragments(
         stage.root(),
         "rust",
         RUN_NONCE,
@@ -374,7 +378,7 @@ fn shared_validator_rejects_fragment_symlinks_and_symlinked_parents() {
 
     let linked_directory = stage.root().join("linked-fragments");
     symlink(&real_directory, &linked_directory).expect("fragment directory symlink is created");
-    let rejected = support::validate_sdk_v2_proof_fragments(
+    let rejected = support::validate_sdk_queries_proof_fragments(
         stage.root(),
         "rust",
         RUN_NONCE,

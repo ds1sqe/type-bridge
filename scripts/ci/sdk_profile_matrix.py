@@ -22,15 +22,14 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 MATRIX_FORMAT = "typebridge.sdk-profile-matrix/v1"
 CONTRACT_ROOT = "tests/contracts/sdk_conformance"
-# The smoke set remains until it is folded into queries.
 SUITES = {
-    "queries": "sdk-v2",
+    "queries": "queries",
     "models": "models",
     "administration": "administration",
     "serialization": "serialization",
     "artifacts": "sdk-v6",
 }
-SET_VERSIONS = (1, 2, 3, 4, 5, 6)
+SET_VERSIONS = (2, 3, 4, 5, 6)
 
 
 def suite_directory(suite: str) -> str:
@@ -38,7 +37,9 @@ def suite_directory(suite: str) -> str:
 
 
 def contract_relative(version: int, kind: str) -> str:
-    directory = "sdk-v1" if version == 1 else SUITES[tuple(SUITES)[version - 2]]
+    if version not in SET_VERSIONS:
+        raise KeyError(version)
+    directory = SUITES[tuple(SUITES)[version - 2]]
     suffix = f"-v{version}" if directory.startswith("sdk-v") else ""
     return f"{CONTRACT_ROOT}/{directory}/{kind}{suffix}.json"
 
@@ -86,7 +87,7 @@ def load_matrix(
         value = json.loads((root / matrix_relative(version)).read_text(encoding="utf-8"))
     except (OSError, ValueError) as failure:
         raise error("invalid_profile_matrix", f"sdk-v{version} matrix is unreadable") from failure
-    set_id = "sdk-v1" if version == 1 else tuple(SUITES)[version - 2]
+    set_id = tuple(SUITES)[version - 2]
     if (
         type(value) is not dict
         or set(value) != {"format", "suite", "catalog_path", "profiles"}
@@ -266,6 +267,18 @@ def declared_profile(version: int, report: Any, fallback: str) -> str:
     return value if value in supported_profiles(version) else fallback
 
 
+def report_format(version: int) -> str:
+    """Wire format of the suite's current report contract."""
+    if version not in SET_VERSIONS:
+        raise KeyError(version)
+    suite = tuple(SUITES)[version - 2]
+    return (
+        f"typebridge.sdk-conformance-report/v{version}"
+        if SUITES[suite].startswith("sdk-v")
+        else f"typebridge.sdk-{suite}-report/v1"
+    )
+
+
 def report_directory(version: int) -> str:
     """Report location while the numbered producers are migrated."""
     return f"v{version}"
@@ -276,7 +289,7 @@ if __name__ == "__main__":
         json.dumps(
             {
                 str(version): {
-                    "suite": "sdk-v1" if version == 1 else tuple(SUITES)[version - 2],
+                    "suite": tuple(SUITES)[version - 2],
                     "catalog": catalog_relative(version),
                     "matrix": matrix_relative(version),
                 }

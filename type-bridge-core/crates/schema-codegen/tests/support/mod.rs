@@ -32,17 +32,17 @@ use type_bridge_schema_codegen::{GeneratedPackage, RustEmitter};
 
 pub const TEST_PROFILE: &str = "typedb-3.12.1/v1";
 pub const TEST_SCOPE: &str = "schema-codegen-acceptance";
-pub const SDK_V2_PROOF_SCHEMA: &str =
-    "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-schema-v1.json";
-pub const SDK_V2_PROOF_ALLOWLIST: &str =
-    "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-allowlist-v1.json";
-pub const SDK_V2_JOURNEY: &str = "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json";
+pub const SDK_QUERIES_PROOF_SCHEMA: &str =
+    "tests/contracts/sdk_conformance/queries/proof-fragment-schema.json";
+pub const SDK_QUERIES_PROOF_ALLOWLIST: &str =
+    "tests/contracts/sdk_conformance/queries/proof-fragment-allowlist.json";
+pub const SDK_QUERIES_JOURNEY: &str = "tests/contracts/sdk_conformance/queries/journey.json";
 
-const SDK_V2_PROOF_FORMAT: &str = "typebridge.sdk-v2-proof-fragment/v1";
-const SDK_V2_ALLOWLIST_FORMAT: &str = "typebridge.sdk-v2-proof-fragment-allowlist/v1";
-const SDK_V2_PROOF_MAX_BYTES: u64 = 64 * 1024;
-const SDK_V2_PROOF_MAX_RESULTS: usize = 16;
-const SDK_V2_PROOF_MAX_SOURCES: usize = 16;
+const SDK_QUERIES_PROOF_FORMAT: &str = "typebridge.sdk-queries-proof-fragment/v1";
+const SDK_QUERIES_ALLOWLIST_FORMAT: &str = "typebridge.sdk-queries-proof-fragment-allowlist/v1";
+const SDK_QUERIES_PROOF_MAX_BYTES: u64 = 64 * 1024;
+const SDK_QUERIES_PROOF_MAX_RESULTS: usize = 16;
+const SDK_QUERIES_PROOF_MAX_SOURCES: usize = 16;
 
 pub type SdkV2ProofLane = (String, String);
 
@@ -133,7 +133,7 @@ fn proof_regular_source(root: &Path, relative: &str, context: &str) -> Result<Ve
     fs::read(&current).map_err(|error| format!("{context} is not readable: {error}"))
 }
 
-pub fn sdk_v2_source_identity(root: &Path, relative: &str) -> Result<Value, String> {
+pub fn sdk_queries_source_identity(root: &Path, relative: &str) -> Result<Value, String> {
     let bytes = proof_regular_source(root, relative, "proof source")?;
     Ok(serde_json::json!({
         "path": relative,
@@ -152,7 +152,7 @@ fn validate_proof_source_identity(
     if !is_lower_hex_64(digest) {
         return Err(format!("{context}.sha256 is not lowercase SHA-256"));
     }
-    let expected = sdk_v2_source_identity(root, relative)?;
+    let expected = sdk_queries_source_identity(root, relative)?;
     if value != &expected {
         return Err(format!("{context} digest does not match {relative}"));
     }
@@ -176,25 +176,25 @@ fn proof_lane(value: &Value, context: &str) -> Result<SdkV2ProofLane, String> {
     Ok((observation_ref.to_owned(), proof_kind.to_owned()))
 }
 
-fn sdk_v2_proof_authority(
+fn sdk_queries_proof_authority(
     root: &Path,
     binding: &str,
 ) -> Result<BTreeMap<String, SdkV2ProofProducerAuthority>, String> {
     if !matches!(binding, "python" | "node" | "rust" | "c") {
-        return Err(format!("unknown sdk-v2 binding {binding:?}"));
+        return Err(format!("unknown queries binding {binding:?}"));
     }
-    let raw = proof_regular_source(root, SDK_V2_PROOF_ALLOWLIST, "sdk-v2 proof allowlist")?;
+    let raw = proof_regular_source(root, SDK_QUERIES_PROOF_ALLOWLIST, "queries proof allowlist")?;
     let value: Value = serde_json::from_slice(&raw)
-        .map_err(|error| format!("sdk-v2 proof allowlist is invalid JSON: {error}"))?;
+        .map_err(|error| format!("queries proof allowlist is invalid JSON: {error}"))?;
     let allowlist = proof_object(
         &value,
         &["format", "semantic_profile", "bindings"],
         "allowlist",
     )?;
-    if proof_string(&allowlist["format"], "allowlist format")? != SDK_V2_ALLOWLIST_FORMAT
+    if proof_string(&allowlist["format"], "allowlist format")? != SDK_QUERIES_ALLOWLIST_FORMAT
         || proof_string(&allowlist["semantic_profile"], "allowlist profile")? != TEST_PROFILE
     {
-        return Err("sdk-v2 proof allowlist authority is not v1".to_owned());
+        return Err("queries proof allowlist authority is not v1".to_owned());
     }
     let bindings = proof_object(
         &allowlist["bindings"],
@@ -229,11 +229,11 @@ fn sdk_v2_proof_authority(
                 },
             )
         {
-            return Err("sdk-v2 proof allowlist producer ID is invalid".to_owned());
+            return Err("queries proof allowlist producer ID is invalid".to_owned());
         }
         let sources = producer["sources"]
             .as_array()
-            .filter(|sources| !sources.is_empty() && sources.len() <= SDK_V2_PROOF_MAX_SOURCES)
+            .filter(|sources| !sources.is_empty() && sources.len() <= SDK_QUERIES_PROOF_MAX_SOURCES)
             .ok_or_else(|| "proof allowlist producer must bind 1..16 sources".to_owned())?;
         let mut source_paths = Vec::with_capacity(sources.len());
         for (source_index, source) in sources.iter().enumerate() {
@@ -252,7 +252,7 @@ fn sdk_v2_proof_authority(
 
         let results = producer["results"]
             .as_array()
-            .filter(|results| !results.is_empty() && results.len() <= SDK_V2_PROOF_MAX_RESULTS)
+            .filter(|results| !results.is_empty() && results.len() <= SDK_QUERIES_PROOF_MAX_RESULTS)
             .ok_or_else(|| "proof allowlist producer must own 1..16 results".to_owned())?;
         let mut result_authority = BTreeMap::new();
         let mut ordered_lanes = Vec::with_capacity(results.len());
@@ -284,10 +284,10 @@ fn sdk_v2_proof_authority(
                     },
                 )
             {
-                return Err("sdk-v2 proof allowlist test ID is invalid".to_owned());
+                return Err("queries proof allowlist test ID is invalid".to_owned());
             }
             if !claimed_lanes.insert(lane.clone()) {
-                return Err("sdk-v2 proof allowlist lane is claimed twice".to_owned());
+                return Err("queries proof allowlist lane is claimed twice".to_owned());
             }
             result_authority.insert(lane.clone(), test_id.to_owned());
             ordered_lanes.push(lane);
@@ -305,7 +305,7 @@ fn sdk_v2_proof_authority(
             )
             .is_some()
         {
-            return Err("sdk-v2 proof allowlist producer ID is duplicated".to_owned());
+            return Err("queries proof allowlist producer ID is duplicated".to_owned());
         }
         ordered_producers.push(producer_id.to_owned());
     }
@@ -317,8 +317,11 @@ fn sdk_v2_proof_authority(
     Ok(authority)
 }
 
-pub fn sdk_v2_proof_lanes(root: &Path, binding: &str) -> Result<BTreeSet<SdkV2ProofLane>, String> {
-    Ok(sdk_v2_proof_authority(root, binding)?
+pub fn sdk_queries_proof_lanes(
+    root: &Path,
+    binding: &str,
+) -> Result<BTreeSet<SdkV2ProofLane>, String> {
+    Ok(sdk_queries_proof_authority(root, binding)?
         .values()
         .flat_map(|producer| producer.results.keys().cloned())
         .collect())
@@ -361,11 +364,11 @@ fn load_proof_fragment(path: &Path) -> Result<Value, String> {
             path.display()
         ));
     }
-    if metadata.len() > SDK_V2_PROOF_MAX_BYTES {
+    if metadata.len() > SDK_QUERIES_PROOF_MAX_BYTES {
         return Err(format!(
             "proof fragment {} exceeds {} bytes",
             path.display(),
-            SDK_V2_PROOF_MAX_BYTES
+            SDK_QUERIES_PROOF_MAX_BYTES
         ));
     }
     let raw = fs::read(path)
@@ -384,27 +387,27 @@ fn load_proof_fragment(path: &Path) -> Result<Value, String> {
     Ok(value)
 }
 
-pub fn sdk_v2_proof_paths(value: &std::ffi::OsStr) -> Result<Vec<PathBuf>, String> {
+pub fn sdk_queries_proof_paths(value: &std::ffi::OsStr) -> Result<Vec<PathBuf>, String> {
     let paths = std::env::split_paths(value).collect::<Vec<_>>();
     if paths.is_empty() || paths.iter().any(|path| path.as_os_str().is_empty()) {
-        return Err("sdk-v2 proof fragment path list is empty or malformed".to_owned());
+        return Err("queries proof fragment path list is empty or malformed".to_owned());
     }
     Ok(paths)
 }
 
 /// Validate fragments produced on the offline fixture profile, `TEST_PROFILE`.
-pub fn validate_sdk_v2_proof_fragments(
+pub fn validate_sdk_queries_proof_fragments(
     root: &Path,
     binding: &str,
     run_nonce: &str,
     fragment_paths: &[PathBuf],
 ) -> Result<BTreeMap<SdkV2ProofLane, Value>, String> {
-    validate_sdk_v2_proof_fragments_on(root, binding, TEST_PROFILE, run_nonce, fragment_paths)
+    validate_sdk_queries_proof_fragments_on(root, binding, TEST_PROFILE, run_nonce, fragment_paths)
 }
 
-/// Validate fragments a live run produced on `semantic_profile`, the sdk-v2
+/// Validate fragments a live run produced on `semantic_profile`, the queries
 /// matrix profile the run's report targets.
-pub fn validate_sdk_v2_proof_fragments_on(
+pub fn validate_sdk_queries_proof_fragments_on(
     root: &Path,
     binding: &str,
     semantic_profile: &str,
@@ -412,20 +415,20 @@ pub fn validate_sdk_v2_proof_fragments_on(
     fragment_paths: &[PathBuf],
 ) -> Result<BTreeMap<SdkV2ProofLane, Value>, String> {
     if !is_lower_hex_64(run_nonce) {
-        return Err("sdk-v2 proof run nonce must be 64 lowercase hex characters".to_owned());
+        return Err("queries proof run nonce must be 64 lowercase hex characters".to_owned());
     }
     if fragment_paths.is_empty() {
-        return Err("at least one sdk-v2 proof fragment is required".to_owned());
+        return Err("at least one queries proof fragment is required".to_owned());
     }
-    let producer_authority = sdk_v2_proof_authority(root, binding)?;
+    let producer_authority = sdk_queries_proof_authority(root, binding)?;
     let allowed = producer_authority
         .values()
         .flat_map(|producer| producer.results.keys().cloned())
         .collect::<BTreeSet<_>>();
     let expected_contract = serde_json::json!({
-        "allowlist": sdk_v2_source_identity(root, SDK_V2_PROOF_ALLOWLIST)?,
-        "journey": sdk_v2_source_identity(root, SDK_V2_JOURNEY)?,
-        "proof_schema": sdk_v2_source_identity(root, SDK_V2_PROOF_SCHEMA)?,
+        "allowlist": sdk_queries_source_identity(root, SDK_QUERIES_PROOF_ALLOWLIST)?,
+        "journey": sdk_queries_source_identity(root, SDK_QUERIES_JOURNEY)?,
+        "proof_schema": sdk_queries_source_identity(root, SDK_QUERIES_PROOF_SCHEMA)?,
     });
     let mut normalized_paths = BTreeSet::new();
     let mut producer_ids = BTreeSet::new();
@@ -439,7 +442,7 @@ pub fn validate_sdk_v2_proof_fragments_on(
             )
         })?;
         if !normalized_paths.insert(normalized) {
-            return Err("one sdk-v2 proof fragment path was supplied twice".to_owned());
+            return Err("one queries proof fragment path was supplied twice".to_owned());
         }
         let fragment = load_proof_fragment(path)?;
         let fragment = proof_object(
@@ -455,11 +458,11 @@ pub fn validate_sdk_v2_proof_fragments_on(
             ],
             "proof fragment",
         )?;
-        if proof_string(&fragment["format"], "proof fragment format")? != SDK_V2_PROOF_FORMAT
+        if proof_string(&fragment["format"], "proof fragment format")? != SDK_QUERIES_PROOF_FORMAT
             || proof_string(&fragment["semantic_profile"], "proof fragment profile")?
                 != semantic_profile
         {
-            return Err("proof fragment format/profile is not sdk-v2 v1".to_owned());
+            return Err("proof fragment format/profile is not queries v1".to_owned());
         }
         if proof_string(&fragment["binding"], "proof fragment binding")? != binding {
             return Err("proof fragment belongs to another binding".to_owned());
@@ -476,7 +479,7 @@ pub fn validate_sdk_v2_proof_fragments_on(
             validate_proof_source_identity(root, identity, &format!("contract.{name}"))?;
         }
         if fragment["contract"] != expected_contract {
-            return Err("proof fragment binds another sdk-v2 contract".to_owned());
+            return Err("proof fragment binds another queries contract".to_owned());
         }
 
         let producer = proof_object(&fragment["producer"], &["id", "sources"], "producer")?;
@@ -502,7 +505,7 @@ pub fn validate_sdk_v2_proof_fragments_on(
             .ok_or_else(|| format!("proof producer {producer_id:?} is not committed"))?;
         let sources = producer["sources"]
             .as_array()
-            .filter(|sources| !sources.is_empty() && sources.len() <= SDK_V2_PROOF_MAX_SOURCES)
+            .filter(|sources| !sources.is_empty() && sources.len() <= SDK_QUERIES_PROOF_MAX_SOURCES)
             .ok_or_else(|| "proof producer must bind 1..16 sources".to_owned())?;
         let mut source_paths = Vec::with_capacity(sources.len());
         for (index, source) in sources.iter().enumerate() {
@@ -524,7 +527,7 @@ pub fn validate_sdk_v2_proof_fragments_on(
 
         let results = fragment["results"]
             .as_array()
-            .filter(|results| !results.is_empty() && results.len() <= SDK_V2_PROOF_MAX_RESULTS)
+            .filter(|results| !results.is_empty() && results.len() <= SDK_QUERIES_PROOF_MAX_RESULTS)
             .ok_or_else(|| "proof fragment must carry 1..16 results".to_owned())?;
         let mut result_lanes = Vec::with_capacity(results.len());
         for (index, result) in results.iter().enumerate() {

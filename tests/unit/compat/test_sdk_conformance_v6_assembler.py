@@ -116,8 +116,8 @@ def _acceptance() -> dict[str, Any]:
 
 def _predecessors(binding: str = "rust") -> list[bytes]:
     values = []
-    for version in range(1, 6):
-        report = {"format": f"typebridge.sdk-conformance-report/v{version}", "binding": binding}
+    for version in range(2, 6):
+        report = {"format": ASSEMBLER.profile_matrix.report_format(version), "binding": binding}
         body = ASSEMBLER.conformance.canonical_json_bytes(report)
         if version in (1, 2, 3):
             body += b"\n"
@@ -154,7 +154,7 @@ def test_assembler_binds_real_fragment_surface_and_predecessor_bytes() -> None:
         ).hexdigest()
     )
     assert (
-        report["predecessor_reports"][4]["sha256"] == hashlib.sha256(_predecessors()[4]).hexdigest()
+        report["predecessor_reports"][3]["sha256"] == hashlib.sha256(_predecessors()[3]).hexdigest()
     )
     ASSEMBLER.conformance.validate_report(report, ROOT)
 
@@ -208,7 +208,7 @@ def test_rejects_wrong_predecessor_binding() -> None:
 
 def test_c_predecessor_history_starts_at_v2() -> None:
     evidence = _evidence("c")
-    predecessors = _predecessors("c")[1:]
+    predecessors = _predecessors("c")
     generated = b"c-generated-surface"
     acceptance = _acceptance()
     acceptance["artifacts"]["generated-package"]["sha256"] = hashlib.sha256(generated).hexdigest()
@@ -265,7 +265,7 @@ def composition_surface(binding: str = "rust") -> dict[str, Any]:
 def composition_predecessors(binding: str = "rust") -> list[tuple[dict[str, Any], bytes]]:
     values = []
     for version in ASSEMBLER.conformance.predecessor_versions(binding):
-        report = {"format": f"typebridge.sdk-conformance-report/v{version}", "binding": binding}
+        report = {"format": ASSEMBLER.profile_matrix.report_format(version), "binding": binding}
         body = ASSEMBLER.conformance.canonical_json_bytes(report)
         if version in (1, 2, 3):
             body += b"\n"
@@ -300,7 +300,7 @@ def test_composition_composes_exact_25_fresh_digest_bound_fragments() -> None:
     assert fragment["source_commit"] == "a" * 40
     assert fragment["predecessor_reports"] == [
         {"version": version, "sha256": ASSEMBLER.hashlib.sha256(body).hexdigest()}
-        for version, (_report, body) in enumerate(composition_predecessors(), 1)
+        for version, (_report, body) in enumerate(composition_predecessors(), 2)
     ]
     assert fragment["publication_authority"] is False
 
@@ -367,14 +367,14 @@ def test_composition_loader_preserves_acceptance_and_historical_canonical_spelli
         ASSEMBLER.load_canonical(acceptance_path, "Artifact acceptance", trailing_newline=True)[0]
         == acceptance
     )
-    v3 = composition_predecessors()[2][0]
+    v3 = composition_predecessors()[1][0]
     v3_path = tmp_path / "v3.json"
     v3_path.write_bytes(ASSEMBLER.conformance.canonical_json_bytes(v3) + b"\n")
     assert ASSEMBLER.load_canonical(v3_path, "V3", trailing_newline=True)[0] == v3
     with pytest.raises(ASSEMBLER.CompositionError) as raised:
         ASSEMBLER.load_canonical(v3_path, "V3")
     assert raised.value.code == "noncanonical_composition_json"
-    v4 = composition_predecessors()[3]
+    v4 = composition_predecessors()[2]
     v4_path = tmp_path / "v4.json"
     v4_path.write_bytes(v4[1])
     assert ASSEMBLER.load_canonical(v4_path, "V4", require_canonical=False)[0] == v4[0]
