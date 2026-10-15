@@ -1,3 +1,6 @@
+#[path = "support/plan_v3_examples.rs"]
+mod examples;
+
 #[path = "support/plan_v3.rs"]
 mod support;
 
@@ -95,7 +98,7 @@ fn stage_plans() -> BTreeMap<&'static str, QueryPlanV3> {
                 spec(
                     vec![
                         Stage::Match {
-                            patterns: vec![isa(0, entity("account")), isa(1, relation())],
+                            patterns: vec![pat(0, entity("account")), pat(1, relation())],
                         },
                         stage,
                     ],
@@ -304,7 +307,7 @@ fn write_roles_require_declared_plays_and_relates() {
     let mut input = spec(
         vec![
             Stage::Match {
-                patterns: vec![isa(0, entity("other")), isa(1, relation())],
+                patterns: vec![pat(0, entity("other")), pat(1, relation())],
             },
             Stage::Update {
                 sets: vec![Set::Link {
@@ -411,7 +414,7 @@ fn write_and_read_stages_share_caller_selected_limits() {
 #[test]
 fn inherited_owns_and_plays_are_valid_but_inherited_keys_are_immutable() {
     let matched = Stage::Match {
-        patterns: vec![isa(0, entity("child_account")), isa(1, relation())],
+        patterns: vec![pat(0, entity("child_account")), pat(1, relation())],
     };
     let update = Stage::Update {
         sets: vec![
@@ -442,4 +445,459 @@ fn inherited_owns_and_plays_are_valid_but_inherited_keys_are_immutable() {
             .as_str(),
         "query_plan_key_update"
     );
+}
+
+#[test]
+fn race_operations_and_every_expression_have_stable_goldens() {
+    let mut fixtures = BTreeMap::new();
+    for (name, plan) in examples::plans() {
+        let bytes = plan.canonical_bytes().unwrap();
+        assert_eq!(
+            decode_query_plan_v3(&bytes, &schema())
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            bytes
+        );
+        assert_eq!(plan.canonical_bytes().unwrap(), bytes);
+        assert!(
+            plan.required_capabilities()
+                .missing_from(
+                    &type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary()
+                )
+                .is_empty()
+        );
+        fixtures.insert(name,json!({"plan":serde_json::from_slice::<Value>(&bytes).unwrap(),"fingerprint":plan.fingerprint().unwrap()}));
+    }
+    let bytes = to_canonical_json(&fixtures).unwrap();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/query-plan-v3-expressions.json");
+    if std::env::var_os("TYPE_BRIDGE_UPDATE_PLAN_V3_FIXTURES").is_some() {
+        std::fs::write(&path, &bytes).unwrap();
+    }
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn numeric_promotion_matches_the_typedb_3_13_6_table() {
+    use type_bridge_contract::query_plan::v3::{ArithOp, Expr};
+    use type_bridge_contract::value::ValueTypeTag::{Decimal, Double, Long};
+    let operands = [literal(2), examples::decimal(), examples::double()];
+    let ring = [
+        [Long, Decimal, Double],
+        [Decimal, Decimal, Double],
+        [Double, Double, Double],
+    ];
+    let modulo = [
+        [Long, Double, Double],
+        [Double, Double, Double],
+        [Double, Double, Double],
+    ];
+    for (i, left) in operands.iter().enumerate() {
+        for (j, right) in operands.iter().enumerate() {
+            for (op, expected) in [
+                (ArithOp::Add, ring[i][j]),
+                (ArithOp::Sub, ring[i][j]),
+                (ArithOp::Mul, ring[i][j]),
+                (ArithOp::Div, Double),
+                (ArithOp::Pow, Double),
+                (ArithOp::Mod, modulo[i][j]),
+            ] {
+                let expr = Expr::Arith {
+                    op,
+                    lhs: Box::new(Expr::Operand(left.clone())),
+                    rhs: Box::new(Expr::Operand(right.clone())),
+                };
+                assert_eq!(
+                    expr.value_type(&BTreeMap::new(), &[]).unwrap(),
+                    expected,
+                    "{op:?}: {i}/{j}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn wrong_typed_or_wrong_arity_builtins_are_value_free_errors() {
+    use type_bridge_contract::query_plan::v3::{ArithOp, Builtin, Expr, Pattern};
+    let secret = "private-expression-value";
+    for expr in [
+        Expr::Arith {
+            op: ArithOp::Add,
+            lhs: Box::new(Expr::Operand(string(secret))),
+            rhs: Box::new(Expr::Operand(literal(1))),
+        },
+        Expr::Call {
+            func: Builtin::Ceil,
+            args: vec![Expr::Operand(literal(1))],
+        },
+        Expr::Call {
+            func: Builtin::Length,
+            args: vec![Expr::Operand(literal(1))],
+        },
+        Expr::Call {
+            func: Builtin::Abs,
+            args: vec![],
+        },
+        Expr::Call {
+            func: Builtin::Max,
+            args: vec![Expr::Operand(literal(1))],
+        },
+        Expr::Call {
+            func: Builtin::Min,
+            args: vec![Expr::Operand(literal(1)), Expr::Operand(examples::double())],
+        },
+    ] {
+        let error = QueryPlanV3::new(
+            spec(
+                vec![Stage::Match {
+                    patterns: vec![Pattern::Let {
+                        binding: id(0),
+                        expr,
+                    }],
+                }],
+                vec![0],
+            ),
+            &schema(),
+        )
+        .unwrap_err();
+        assert!(!format!("{error:?}").contains(secret));
+        assert!(error.code().as_str().starts_with("query_plan_expression_"));
+    }
+}
+
+#[test]
+fn let_assignments_are_fresh_and_references_are_already_typed() {
+    use type_bridge_contract::query_plan::QueryOperand;
+    use type_bridge_contract::query_plan::v3::{Expr, Pattern};
+    for patterns in [
+        vec![
+            Pattern::Let {
+                binding: id(0),
+                expr: Expr::Operand(QueryOperand::Binding { binding: id(1) }),
+            },
+            Pattern::Let {
+                binding: id(1),
+                expr: Expr::Operand(literal(1)),
+            },
+        ],
+        vec![
+            Pattern::Let {
+                binding: id(0),
+                expr: Expr::Operand(literal(1)),
+            },
+            Pattern::Let {
+                binding: id(0),
+                expr: Expr::Operand(literal(2)),
+            },
+        ],
+        vec![
+            pat(0, entity("account")),
+            Pattern::Let {
+                binding: id(0),
+                expr: Expr::Operand(literal(1)),
+            },
+        ],
+    ] {
+        assert!(
+            QueryPlanV3::new(spec(vec![Stage::Match { patterns }], vec![0]), &schema()).is_err()
+        );
+    }
+}
+
+#[test]
+fn operations_cannot_hide_writes_or_invent_them() {
+    use type_bridge_contract::query_plan::v3::{Operation, WriteReturns};
+    assert_eq!(
+        examples::batch()
+            .with_operation(Operation::Rows, &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_operation_write_mismatch"
+    );
+    let read = QueryPlanV3::new(spec(vec![matched()], vec![0]), &schema()).unwrap();
+    assert_eq!(
+        read.with_operation(
+            Operation::Write {
+                returns: WriteReturns::Rows
+            },
+            &schema()
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "query_plan_operation_write_mismatch"
+    );
+    assert_eq!(
+        examples::batch()
+            .with_operation(
+                Operation::Write {
+                    returns: WriteReturns::Rows
+                },
+                &schema()
+            )
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_output_limit"
+    );
+}
+
+#[test]
+fn given_rows_enforce_types_presence_width_and_the_4096_ceiling() {
+    use type_bridge_contract::query_plan::InputRow;
+    use type_bridge_contract::value::{CanonicalString, CanonicalValue};
+    let batch = examples::batch();
+    let rows: Vec<_> = (0..4096)
+        .map(|n| {
+            InputRow::new(vec![
+                Some(CanonicalValue::String(
+                    CanonicalString::new(format!("row-{n}")).unwrap(),
+                )),
+                Some(CanonicalValue::Long(n)),
+            ])
+        })
+        .collect();
+    batch.with_given_rows(rows.clone(), &schema()).unwrap();
+    let mut too_many = rows;
+    too_many.push(too_many[0].clone());
+    assert_eq!(
+        batch
+            .with_given_rows(too_many, &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_invocation_row_limit"
+    );
+    for (row, code) in [
+        (vec![None], "query_invocation_row_arity"),
+        (
+            vec![None, Some(CanonicalValue::Long(1))],
+            "query_invocation_missing_value",
+        ),
+        (
+            vec![
+                Some(CanonicalValue::String(
+                    CanonicalString::new("private-batch-value").unwrap(),
+                )),
+                Some(CanonicalValue::Boolean(true)),
+            ],
+            "query_invocation_value_type",
+        ),
+    ] {
+        let error = batch
+            .with_given_rows(vec![InputRow::new(row)], &schema())
+            .unwrap_err();
+        assert_eq!(error.code().as_str(), code);
+        assert!(!format!("{error:?}").contains("private-batch-value"));
+    }
+}
+
+#[test]
+fn let_values_must_match_the_written_field_and_stay_bounded() {
+    use type_bridge_contract::limits::QueryLimits;
+    use type_bridge_contract::query_plan::QueryOperand;
+    use type_bridge_contract::query_plan::v3::{ArithOp, Expr, Pattern};
+    let expr = Expr::Arith {
+        op: ArithOp::Div,
+        lhs: Box::new(Expr::Operand(literal(3))),
+        rhs: Box::new(Expr::Operand(literal(2))),
+    };
+    let plan = spec(
+        vec![
+            Stage::Match {
+                patterns: vec![
+                    pat(0, entity("account")),
+                    Pattern::Let {
+                        binding: id(1),
+                        expr: expr.clone(),
+                    },
+                ],
+            },
+            Stage::Update {
+                sets: vec![Set::Field {
+                    owner: id(0),
+                    field: field("score"),
+                    operand: QueryOperand::Binding { binding: id(1) },
+                }],
+            },
+        ],
+        vec![0],
+    );
+    assert_eq!(
+        QueryPlanV3::new(plan, &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_write_value_type"
+    );
+    let mut limits = QueryLimits::CANONICAL;
+    limits.structural.predicate_depth = 1;
+    let error = QueryPlanV3::new_with_limits(
+        spec(
+            vec![Stage::Match {
+                patterns: vec![Pattern::Let {
+                    binding: id(0),
+                    expr,
+                }],
+            }],
+            vec![0],
+        ),
+        &schema(),
+        limits,
+    )
+    .unwrap_err();
+    assert_eq!(error.code().as_str(), "query_plan_expression_limit");
+}
+
+#[test]
+fn let_cannot_reassign_a_branch_local_concept_binding() {
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    use type_bridge_contract::query_plan::QueryPattern;
+    use type_bridge_contract::query_plan::v3::{Expr, Pattern};
+    let patterns = vec![
+        pat(0, entity("account")),
+        QueryPattern::Or {
+            branches: vec![
+                vec![isa(1, entity("account"))],
+                vec![QueryPattern::Value {
+                    comparator: ValueComparator::Equal,
+                    left: literal(1),
+                    right: literal(1),
+                }],
+            ],
+        }
+        .into(),
+        Pattern::Let {
+            binding: id(1),
+            expr: Expr::Operand(literal(1)),
+        },
+    ];
+    assert_eq!(
+        QueryPlanV3::new(spec(vec![Stage::Match { patterns }], vec![1]), &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_let_binding_not_fresh"
+    );
+}
+
+#[test]
+fn v2_inputs_lift_to_a_reusable_v3_template_then_bind_without_mutating_v2() {
+    use type_bridge_contract::id::AttributeId;
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    use type_bridge_contract::query_plan::v3::Operation;
+    use type_bridge_contract::query_plan::{
+        InputColumn, InputColumnId, InputRow, QueryOperand, QueryPattern,
+    };
+    use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
+    let old = QueryPlan::new_v2(
+        vec![binding(0, "account"), binding(1, "score")],
+        vec![InputColumn::new(
+            InputColumnId::new(0),
+            type_bridge_contract::migration_assertion::QueryVariable::new("minimum").unwrap(),
+            ValueTypeTag::Long,
+            false,
+        )],
+        vec![ReadStage::Match {
+            patterns: vec![
+                isa(0, entity("account")),
+                QueryPattern::Has {
+                    owner: id(0),
+                    attribute: id(1),
+                    attribute_id: AttributeId::new("score").unwrap(),
+                },
+                QueryPattern::Value {
+                    comparator: ValueComparator::Greater,
+                    left: QueryOperand::Binding { binding: id(1) },
+                    right: QueryOperand::Input {
+                        column: InputColumnId::new(0),
+                    },
+                },
+            ],
+        }],
+        QueryOutput::Rows {
+            columns: vec![id(0)],
+        },
+        semantics(),
+    )
+    .unwrap();
+    let old_bytes = old.canonical_bytes().unwrap();
+    let template = old.to_v3(&schema()).unwrap();
+    assert!(template.given_rows().is_none());
+    assert_eq!(
+        decode_query_plan_v3(&template.canonical_bytes().unwrap(), &schema()).unwrap(),
+        template
+    );
+    let bound = template
+        .with_given_rows(
+            vec![InputRow::new(vec![Some(CanonicalValue::Long(3))])],
+            &schema(),
+        )
+        .unwrap()
+        .with_operation(Operation::Count, &schema())
+        .unwrap();
+    assert_ne!(
+        bound.fingerprint().unwrap(),
+        template.fingerprint().unwrap()
+    );
+    assert_eq!(old.canonical_bytes().unwrap(), old_bytes);
+    assert_eq!(
+        decode_query_plan_v3(&bound.canonical_bytes().unwrap(), &schema()).unwrap(),
+        bound
+    );
+}
+
+#[test]
+fn delete_thing_rejects_let_and_function_scalar_bindings() {
+    use type_bridge_contract::id::FunctionId;
+    use type_bridge_contract::query_plan::v3::{Expr, Pattern};
+    use type_bridge_contract::query_plan::{LocalFunction, LocalReturn, QueryPattern};
+    use type_bridge_contract::value::ValueTypeTag;
+    for function in [false, true] {
+        let pattern = if function {
+            QueryPattern::FunctionCall {
+                assigned: id(1),
+                function: FunctionId::new("account_count").unwrap(),
+                arguments: vec![type_bridge_contract::query_plan::QueryOperand::Binding {
+                    binding: id(0),
+                }],
+            }
+            .into()
+        } else {
+            Pattern::Let {
+                binding: id(1),
+                expr: Expr::Operand(literal(1)),
+            }
+        };
+        let mut plan = spec(
+            vec![
+                Stage::Match {
+                    patterns: vec![pat(0, entity("account")), pattern],
+                },
+                Stage::Delete {
+                    items: vec![DeleteItem::Thing { binding: id(1) }],
+                },
+            ],
+            vec![],
+        );
+        if function {
+            plan.functions = vec![LocalFunction::new(
+                FunctionId::new("account_count").unwrap(),
+                vec![binding(0, "account")],
+                vec![type_bridge_contract::id::Label::new("account").unwrap()],
+                vec![isa(0, entity("account"))],
+                LocalReturn::new(Reducer::Count, id(0), ValueTypeTag::Long),
+            )];
+        }
+        assert_eq!(
+            QueryPlanV3::new(plan, &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_plan_delete_untyped_thing"
+        );
+    }
 }

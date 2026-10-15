@@ -1519,73 +1519,7 @@ impl QueryInvocation {
         inputs: Vec<InputRow>,
         limits: StructuralLimits,
     ) -> Result<Self, Diagnostic> {
-        if plan.inputs().is_empty() {
-            if !inputs.is_empty() {
-                return Err(failure(
-                    DiagnosticCategory::InvalidContract,
-                    "query_invocation_unexpected_inputs",
-                    "the plan declares no input columns yet the invocation carries rows",
-                ));
-            }
-        } else {
-            if inputs.is_empty() {
-                return Err(failure(
-                    DiagnosticCategory::InvalidContract,
-                    "query_invocation_missing_inputs",
-                    "the plan declares input columns and requires at least one row",
-                ));
-            }
-            if !limits.allows_input_rows(inputs.len()) {
-                return Err(failure(
-                    DiagnosticCategory::ResourceLimit,
-                    "query_invocation_row_limit",
-                    "invocation input row count exceeds the structural ceiling",
-                ));
-            }
-            let input_bytes = serde_json::to_vec(&inputs).map_err(|_| {
-                failure(
-                    DiagnosticCategory::InvalidContract,
-                    "query_invocation_inputs_unencodable",
-                    "invocation input rows cannot be encoded",
-                )
-            })?;
-            if !limits.allows_input_bytes(input_bytes.len()) {
-                return Err(failure(
-                    DiagnosticCategory::ResourceLimit,
-                    "query_invocation_input_byte_limit",
-                    "invocation input rows exceed the structural byte ceiling",
-                ));
-            }
-            for row in &inputs {
-                if row.values().len() != plan.inputs().len() {
-                    return Err(failure(
-                        DiagnosticCategory::InvalidContract,
-                        "query_invocation_row_arity",
-                        "input row does not carry exactly the declared column set",
-                    ));
-                }
-                for (column, value) in plan.inputs().iter().zip(row.values()) {
-                    match value {
-                        None if column.optional() => {}
-                        None => {
-                            return Err(failure(
-                                DiagnosticCategory::InvalidContract,
-                                "query_invocation_missing_value",
-                                "a required input column carries no value",
-                            ));
-                        }
-                        Some(value) if value.value_type() == column.value_type() => {}
-                        Some(_) => {
-                            return Err(failure(
-                                DiagnosticCategory::InvalidContract,
-                                "query_invocation_value_type",
-                                "input value type differs from the declared column type",
-                            ));
-                        }
-                    }
-                }
-            }
-        }
+        validate_input_rows(plan.inputs(), &inputs, limits)?;
         Ok(Self {
             inputs,
             operation,
@@ -2799,4 +2733,79 @@ pub(crate) fn failure(
         DiagnosticCode::new(code).expect("static query-plan diagnostic code"),
         message,
     )
+}
+
+fn validate_input_rows(
+    columns: &[InputColumn],
+    inputs: &[InputRow],
+    limits: StructuralLimits,
+) -> Result<(), Diagnostic> {
+    if columns.is_empty() {
+        if !inputs.is_empty() {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_invocation_unexpected_inputs",
+                "the plan declares no input columns yet the invocation carries rows",
+            ));
+        }
+    } else {
+        if inputs.is_empty() {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_invocation_missing_inputs",
+                "the plan declares input columns and requires at least one row",
+            ));
+        }
+        if !limits.allows_input_rows(inputs.len()) {
+            return Err(failure(
+                DiagnosticCategory::ResourceLimit,
+                "query_invocation_row_limit",
+                "invocation input row count exceeds the structural ceiling",
+            ));
+        }
+        let input_bytes = serde_json::to_vec(inputs).map_err(|_| {
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "query_invocation_inputs_unencodable",
+                "invocation input rows cannot be encoded",
+            )
+        })?;
+        if !limits.allows_input_bytes(input_bytes.len()) {
+            return Err(failure(
+                DiagnosticCategory::ResourceLimit,
+                "query_invocation_input_byte_limit",
+                "invocation input rows exceed the structural byte ceiling",
+            ));
+        }
+        for row in inputs {
+            if row.values().len() != columns.len() {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_invocation_row_arity",
+                    "input row does not carry exactly the declared column set",
+                ));
+            }
+            for (column, value) in columns.iter().zip(row.values()) {
+                match value {
+                    None if column.optional() => {}
+                    None => {
+                        return Err(failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_invocation_missing_value",
+                            "a required input column carries no value",
+                        ));
+                    }
+                    Some(value) if value.value_type() == column.value_type() => {}
+                    Some(_) => {
+                        return Err(failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_invocation_value_type",
+                            "input value type differs from the declared column type",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }

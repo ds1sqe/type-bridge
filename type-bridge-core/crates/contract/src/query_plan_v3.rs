@@ -8,6 +8,7 @@ use super::*;
 use crate::codec::from_canonical_json_with_limits;
 use crate::id::TypeKind;
 use crate::migration_assertion_wire::{FingerprintWire, RoleIdWire, TypeIdWire};
+use crate::query_plan_wire::rebuild_pattern_v2;
 use crate::query_plan_wire::{
     InputColumnWire, LocalFunctionWire, QueryBindingWire, QueryOperandWire, rebuild_output,
     rebuild_read_stage_v2,
@@ -21,6 +22,110 @@ use crate::schema::{
 pub const QUERY_PLAN_FORMAT_V3: &str = "typebridge.query-plan/v3";
 /// Canonicalization version separating V3 fingerprints from frozen V2.
 pub const QUERY_PLAN_CANONICALIZATION_V3: &str = "typebridge.query-plan-c14n/v3";
+
+#[path = "query_plan_v3_expr.rs"]
+mod expression;
+pub use expression::{ArithOp, Builtin, Expr};
+use expression::{ExprWire, operand_type};
+
+/// A closed match pattern, including a fresh scalar expression assignment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Pattern {
+    /// A released closed read pattern.
+    Read(QueryPattern),
+    /// Assign a fresh value binding in source order.
+    Let {
+        /// Fresh declared scalar binding.
+        binding: BindingId,
+        /// Typed expression over present bindings, literals and inputs.
+        expr: Expr,
+    },
+}
+impl From<QueryPattern> for Pattern {
+    fn from(pattern: QueryPattern) -> Self {
+        Self::Read(pattern)
+    }
+}
+impl Serialize for Pattern {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Read(pattern) => pattern.serialize(serializer),
+            Self::Let { binding, expr } => {
+                #[derive(Serialize)]
+                struct View<'a> {
+                    kind: &'static str,
+                    binding: BindingId,
+                    expr: &'a Expr,
+                }
+                View {
+                    kind: "let",
+                    binding: *binding,
+                    expr,
+                }
+                .serialize(serializer)
+            }
+        }
+    }
+}
+
+/// The terminal operation is part of V3 plan identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Operation {
+    /// Project read rows.
+    Rows,
+    /// Count matched read rows.
+    Count,
+    /// Whether any read row matched.
+    Exists,
+    /// Execute at least one write stage.
+    Write {
+        /// Resolve a match count or the same pipeline's projection.
+        returns: WriteReturns,
+    },
+}
+
+/// A write plan's result category.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteReturns {
+    /// Number of rows matched by the write pipeline.
+    Matched,
+    /// Project rows after the writes, in the same pipeline.
+    Rows,
+}
+
+/// Every capability derivable from closed V3 syntax.
+#[must_use]
+pub fn query_plan_v3_capability_vocabulary() -> CapabilitySet {
+    query_plan_v2_capability_vocabulary()
+        .into_iter()
+        .chain(
+            [
+                "query.plan.v3",
+                "query.write.insert",
+                "query.write.update",
+                "query.write.delete",
+                "query.write.put",
+                "query.let",
+                "query.expr.add",
+                "query.expr.sub",
+                "query.expr.mul",
+                "query.expr.div",
+                "query.expr.mod",
+                "query.expr.pow",
+                "query.expr.abs",
+                "query.expr.ceil",
+                "query.expr.floor",
+                "query.expr.round",
+                "query.expr.min",
+                "query.expr.max",
+                "query.expr.length",
+            ]
+            .map(|name| CapabilityId::new(name).expect("static capability")),
+        )
+        .collect()
+}
 
 /// A thing created or matched by insert/put. Field and player order is retained.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -93,7 +198,7 @@ pub enum Stage {
     /// Initial closed match conjunction.
     Match {
         /// Typed read patterns.
-        patterns: Vec<QueryPattern>,
+        patterns: Vec<Pattern>,
     },
     /// Create fresh things.
     Insert {
@@ -154,7 +259,9 @@ pub enum Stage {
 impl From<ReadStage> for Stage {
     fn from(stage: ReadStage) -> Self {
         match stage {
-            ReadStage::Match { patterns } => Self::Match { patterns },
+            ReadStage::Match { patterns } => Self::Match {
+                patterns: patterns.into_iter().map(Pattern::Read).collect(),
+            },
             ReadStage::Select { bindings } => Self::Select { bindings },
             ReadStage::Require { bindings } => Self::Require { bindings },
             ReadStage::Distinct => Self::Distinct,
@@ -185,7 +292,13 @@ impl Stage {
     fn read_stage(&self) -> Option<ReadStage> {
         Some(match self {
             Self::Match { patterns } => ReadStage::Match {
-                patterns: patterns.clone(),
+                patterns: patterns
+                    .iter()
+                    .filter_map(|pattern| match pattern {
+                        Pattern::Read(pattern) => Some(pattern.clone()),
+                        Pattern::Let { .. } => None,
+                    })
+                    .collect(),
             },
             Self::Select { bindings } => ReadStage::Select {
                 bindings: bindings.clone(),
@@ -218,6 +331,10 @@ pub struct PlanSpec {
     pub bindings: Vec<AssertionBinding>,
     /// Typed invocation columns.
     pub inputs: Vec<InputColumn>,
+    /// Bound rows, or None for an invocation-free reusable template.
+    pub given_rows: Option<Vec<InputRow>>,
+    /// Terminal read or write operation.
+    pub operation: Operation,
     /// Ordered read/write pipeline.
     pub pipeline: Vec<Stage>,
     /// Final projection. A write without a projection uses empty row columns.
@@ -239,6 +356,9 @@ pub struct QueryPlanV3 {
     format: String,
     functions: Vec<LocalFunction>,
     inputs: Vec<InputColumn>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    given_rows: Option<Vec<InputRow>>,
+    operation: Operation,
     #[serde(skip)]
     limits: QueryLimits,
     managed_semantics: ManagedSemanticSchemaFingerprint,
@@ -259,7 +379,32 @@ impl QueryPlanV3 {
         schema: &DeclaredSchema,
         limits: QueryLimits,
     ) -> Result<Self, Diagnostic> {
+        limits.validate().map_err(|_| {
+            failure(
+                DiagnosticCategory::ResourceLimit,
+                "query_plan_invalid_limits",
+                "plan limits are outside the supported protocol range",
+            )
+        })?;
+        Self::build(spec, schema, limits).map_err(|diagnostic| limits.annotate(diagnostic))
+    }
+
+    fn build(
+        spec: PlanSpec,
+        schema: &DeclaredSchema,
+        limits: QueryLimits,
+    ) -> Result<Self, Diagnostic> {
         validate_declarations(&spec.bindings, &spec.inputs, limits.structural)?;
+        validate_operation(&spec)?;
+        if let Some(rows) = &spec.given_rows {
+            if spec.inputs.is_empty() {
+                return Err(invalid(
+                    "query_invocation_unexpected_inputs",
+                    "given rows require declared input columns",
+                ));
+            }
+            validate_input_rows(&spec.inputs, rows, limits.structural)?;
+        }
         let mut nodes = 0;
         validate_local_functions(&spec.functions, limits.structural, &mut nodes)?;
         validate_stages(&spec, schema, limits, &mut nodes)?;
@@ -275,6 +420,44 @@ impl QueryPlanV3 {
             spec.compatibility.as_ref(),
         )?;
         insert_capability(&mut required_capabilities, "query.plan.v3")?;
+        add_read_given_capability(
+            &spec.pipeline,
+            &spec.functions,
+            &spec.inputs,
+            &mut required_capabilities,
+        )?;
+        for stage in &spec.pipeline {
+            if let Stage::Match { patterns } = stage {
+                for pattern in patterns {
+                    if let Pattern::Let { expr, .. } = pattern {
+                        insert_capability(&mut required_capabilities, "query.let")?;
+                        expr.capabilities(&mut required_capabilities)?;
+                    }
+                }
+            }
+            let operands: Vec<&QueryOperand> = match stage {
+                Stage::Insert { things } | Stage::Put { things } => things
+                    .iter()
+                    .flat_map(|thing| thing.fields.iter().map(|(_, operand)| operand))
+                    .collect(),
+                Stage::Update { sets } => sets
+                    .iter()
+                    .filter_map(|set| match set {
+                        Set::Field { operand, .. } => Some(operand),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => vec![],
+            };
+            if operands.iter().any(|operand| {
+                matches!(
+                    operand,
+                    QueryOperand::Literal { .. } | QueryOperand::Input { .. }
+                )
+            }) {
+                insert_capability(&mut required_capabilities, "query.input.given-rows")?;
+            }
+        }
         for stage in &spec.pipeline {
             let capability = match stage {
                 Stage::Insert { .. } => "query.write.insert",
@@ -291,6 +474,8 @@ impl QueryPlanV3 {
             format: QUERY_PLAN_FORMAT_V3.into(),
             functions: spec.functions,
             inputs: spec.inputs,
+            given_rows: spec.given_rows,
+            operation: spec.operation,
             limits,
             managed_semantics: spec.managed_semantics,
             output: spec.output,
@@ -311,6 +496,8 @@ impl QueryPlanV3 {
                 compatibility: plan.compatibility.clone(),
                 functions: plan.functions.clone(),
                 inputs: plan.inputs.clone(),
+                given_rows: None,
+                operation: Operation::Rows,
                 managed_semantics: plan.managed_semantics.clone(),
                 output: plan.output.clone(),
                 pipeline: plan.pipeline.iter().cloned().map(Stage::from).collect(),
@@ -349,6 +536,49 @@ impl QueryPlanV3 {
     #[must_use]
     pub fn compatibility(&self) -> Option<&QueryPlanV2Compatibility> {
         self.compatibility.as_ref()
+    }
+    /// Bound given rows, absent for a reusable template.
+    #[must_use]
+    pub fn given_rows(&self) -> Option<&[InputRow]> {
+        self.given_rows.as_deref()
+    }
+    /// Terminal operation.
+    #[must_use]
+    pub const fn operation(&self) -> Operation {
+        self.operation
+    }
+    /// Bind values to a reusable plan; rows participate in its V3 fingerprint.
+    pub fn with_given_rows(
+        &self,
+        rows: Vec<InputRow>,
+        schema: &DeclaredSchema,
+    ) -> Result<Self, Diagnostic> {
+        let mut spec = self.spec();
+        spec.given_rows = Some(rows);
+        Self::new_with_limits(spec, schema, self.limits)
+    }
+    /// Select an operation when lifting an invocation from V2.
+    pub fn with_operation(
+        &self,
+        operation: Operation,
+        schema: &DeclaredSchema,
+    ) -> Result<Self, Diagnostic> {
+        let mut spec = self.spec();
+        spec.operation = operation;
+        Self::new_with_limits(spec, schema, self.limits)
+    }
+    fn spec(&self) -> PlanSpec {
+        PlanSpec {
+            bindings: self.bindings.clone(),
+            inputs: self.inputs.clone(),
+            given_rows: self.given_rows.clone(),
+            operation: self.operation,
+            pipeline: self.pipeline.clone(),
+            output: self.output.clone(),
+            managed_semantics: self.managed_semantics.clone(),
+            compatibility: self.compatibility.clone(),
+            functions: self.functions.clone(),
+        }
     }
     /// Final projection.
     #[must_use]
@@ -401,6 +631,7 @@ fn validate_stages(
     let mut optional = BTreeSet::new();
     let mut referenced = BTreeSet::new();
     let mut types = BTreeMap::<BindingId, BTreeSet<TypeId>>::new();
+    let mut scalar_types = BTreeMap::new();
     let mut read_tail = Vec::new();
     let mut reading = false;
     if !matches!(
@@ -429,18 +660,59 @@ fn validate_stages(
                         "match occurs only at the start",
                     ));
                 }
-                (mandatory, optional, _) = validate_pipeline(
-                    &[ReadStage::Match {
-                        patterns: patterns.clone(),
-                    }],
-                    spec.bindings.len(),
-                    spec.inputs.len(),
-                    limits.structural,
-                    nodes,
-                )?;
-                for pattern in patterns {
+                nonempty(patterns.len(), limits, nodes)?;
+                let reads: Vec<_> = patterns
+                    .iter()
+                    .filter_map(|pattern| match pattern {
+                        Pattern::Read(pattern) => Some(pattern.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                *nodes -= reads.len();
+                if !reads.is_empty() {
+                    (mandatory, optional, _) = validate_pipeline(
+                        &[ReadStage::Match {
+                            patterns: reads.clone(),
+                        }],
+                        spec.bindings.len(),
+                        spec.inputs.len(),
+                        limits.structural,
+                        nodes,
+                    )?;
+                }
+                for pattern in &reads {
                     collect_pattern_bindings(pattern, &mut referenced);
                     index.pattern_types(pattern, &mut types)?;
+                }
+                for (binding, domains) in &types {
+                    if mandatory.contains(binding)
+                        && let Some(domain) = index.scalar_domain(domains)
+                    {
+                        scalar_types.insert(*binding, domain);
+                    }
+                }
+                index.function_values(&reads, &spec.functions, &mandatory, &mut scalar_types)?;
+                let mut produced = BTreeSet::new();
+                for pattern in &reads {
+                    collect_produced_bindings(pattern, &mut produced);
+                }
+                for pattern in patterns {
+                    if let Pattern::Let { binding, expr } = pattern {
+                        check_binding(*binding, spec.bindings.len())?;
+                        if produced.contains(binding)
+                            || mandatory.contains(binding)
+                            || optional.contains(binding)
+                        {
+                            return Err(invalid(
+                                "query_plan_let_binding_not_fresh",
+                                "let requires a fresh value binding",
+                            ));
+                        }
+                        let domain = expr.infer(&scalar_types, &spec.inputs, limits, 1, nodes)?;
+                        mandatory.insert(*binding);
+                        referenced.insert(*binding);
+                        scalar_types.insert(*binding, domain);
+                    }
                 }
             }
             Stage::Insert { things } | Stage::Put { things } => {
@@ -482,6 +754,7 @@ fn validate_stages(
                     for (field, operand) in &thing.fields {
                         index.ownership(thing.binding, field, &types, false)?;
                         validate_operand(operand, &mandatory, &optional, spec.inputs.len())?;
+                        index.field_value(field, operand, &scalar_types, &spec.inputs)?;
                     }
                     for (role, player) in &thing.players {
                         bound(*player, &mandatory)?;
@@ -508,6 +781,7 @@ fn validate_stages(
                             bound(*owner, &mandatory)?;
                             index.ownership(*owner, field, &types, true)?;
                             validate_operand(operand, &mandatory, &optional, spec.inputs.len())?;
+                            index.field_value(field, operand, &scalar_types, &spec.inputs)?;
                         }
                         Set::Link {
                             relation,
@@ -587,7 +861,7 @@ fn validate_stages(
             "offset and limit require explicit sort",
         ));
     }
-    if !matches!(&spec.output, QueryOutput::Rows { columns } if columns.is_empty() && spec.pipeline.iter().any(Stage::is_write))
+    if !matches!(&spec.output, QueryOutput::Rows { columns } if columns.is_empty() && matches!(spec.operation,Operation::Count|Operation::Exists|Operation::Write{returns:WriteReturns::Matched}))
     {
         validate_output(&spec.output, &mandatory, &optional, limits.structural)?;
     }
@@ -886,6 +1160,9 @@ struct PlanWire {
     format: String,
     functions: Vec<LocalFunctionWire>,
     inputs: Vec<InputColumnWire>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    given_rows: Option<Vec<Vec<Option<CanonicalValue>>>>,
+    operation: Operation,
     managed_semantics: FingerprintWire,
     output: serde_json::Value,
     pipeline: Vec<serde_json::Value>,
@@ -1044,6 +1321,45 @@ impl WriteWire {
     }
 }
 fn decode_stage(value: serde_json::Value) -> Result<Stage, Diagnostic> {
+    if value.get("kind").and_then(serde_json::Value::as_str) == Some("match") {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct MatchWire {
+            kind: String,
+            patterns: Vec<serde_json::Value>,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct LetWire {
+            kind: String,
+            binding: u16,
+            expr: ExprWire,
+        }
+        let wire: MatchWire = serde_json::from_value(value)
+            .map_err(|_| invalid("invalid_canonical_value", "invalid match stage"))?;
+        debug_assert_eq!(wire.kind, "match");
+        return Ok(Stage::Match {
+            patterns: wire
+                .patterns
+                .into_iter()
+                .map(|value| {
+                    if value.get("kind").and_then(serde_json::Value::as_str) == Some("let") {
+                        let wire: LetWire = serde_json::from_value(value).map_err(|_| {
+                            invalid("invalid_canonical_value", "invalid let pattern")
+                        })?;
+                        debug_assert_eq!(wire.kind, "let");
+                        Ok(Pattern::Let {
+                            binding: BindingId::new(wire.binding)?,
+                            expr: wire.expr.rebuild()?,
+                        })
+                    } else {
+                        Ok(Pattern::Read(rebuild_pattern_v2(value)?))
+                    }
+                })
+                .collect::<Result<_, Diagnostic>>()?,
+        });
+    }
+
     if matches!(
         value.get("kind").and_then(serde_json::Value::as_str),
         Some("insert" | "update" | "delete" | "put")
@@ -1085,6 +1401,10 @@ pub fn decode_query_plan_v3_with_limits(
                 .into_iter()
                 .map(QueryBindingWire::rebuild)
                 .collect::<Result<_, _>>()?,
+            given_rows: wire
+                .given_rows
+                .map(|rows| rows.into_iter().map(InputRow::new).collect()),
+            operation: wire.operation,
             inputs: wire
                 .inputs
                 .into_iter()
@@ -1122,4 +1442,187 @@ pub fn decode_query_plan_v3_with_limits(
         ));
     }
     Ok(plan)
+}
+
+fn validate_operation(spec: &PlanSpec) -> Result<(), Diagnostic> {
+    let writes = spec.pipeline.iter().any(Stage::is_write);
+    if writes != matches!(spec.operation, Operation::Write { .. }) {
+        return Err(invalid(
+            "query_plan_operation_write_mismatch",
+            "read operations require read stages; write requires a write stage",
+        ));
+    }
+    if matches!(
+        spec.operation,
+        Operation::Write {
+            returns: WriteReturns::Matched
+        }
+    ) && !matches!(&spec.output,QueryOutput::Rows{columns} if columns.is_empty())
+    {
+        return Err(invalid(
+            "query_plan_matched_projection",
+            "matched writes have no projected output",
+        ));
+    }
+    Ok(())
+}
+
+fn read_uses_given(pattern: &QueryPattern) -> bool {
+    match pattern {
+        QueryPattern::Value { left, right, .. } => [left, right].iter().any(|operand| {
+            matches!(
+                operand,
+                QueryOperand::Literal { .. } | QueryOperand::Input { .. }
+            )
+        }),
+        QueryPattern::FunctionCall { .. } => true,
+        QueryPattern::Or { branches } => branches.iter().flatten().any(read_uses_given),
+        QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
+            patterns.iter().any(read_uses_given)
+        }
+        _ => false,
+    }
+}
+fn add_read_given_capability(
+    pipeline: &[Stage],
+    functions: &[LocalFunction],
+    inputs: &[InputColumn],
+    capabilities: &mut CapabilitySet,
+) -> Result<(), Diagnostic> {
+    if !inputs.is_empty() || pipeline.iter().any(|stage|matches!(stage,Stage::Match{patterns} if patterns.iter().any(|pattern|matches!(pattern,Pattern::Read(pattern) if read_uses_given(pattern))))) || functions.iter().any(|function|function.body().iter().any(read_uses_given)) {
+        insert_capability(capabilities,"query.input.given-rows")?;
+    }
+    Ok(())
+}
+
+impl SchemaIndex<'_> {
+    fn attribute_domain(&self, attribute: &AttributeId) -> Option<ValueTypeTag> {
+        let type_id = TypeId::new(TypeKind::Attribute, attribute.label().as_str()).ok()?;
+        self.ancestors(&type_id).iter().find_map(|id| {
+            let attribute = AttributeId::new(id.label().as_str()).ok()?;
+            match self
+                .schema
+                .fact(&SchemaFactId::Value(crate::schema::ValueFactId::new(
+                    attribute,
+                ))) {
+                Some(SchemaFact::Value(fact)) => Some(fact.value_type()),
+                _ => None,
+            }
+        })
+    }
+    fn scalar_domain(&self, types: &BTreeSet<TypeId>) -> Option<ValueTypeTag> {
+        let mut domain = None;
+        for type_id in types {
+            if type_id.kind() != TypeKind::Attribute {
+                return None;
+            }
+            let found = self.attribute_domain(&AttributeId::new(type_id.label().as_str()).ok()?)?;
+            if domain.is_some_and(|domain| domain != found) {
+                return None;
+            }
+            domain = Some(found);
+        }
+        domain
+    }
+    fn field_value(
+        &self,
+        field: &OwnsFactId,
+        operand: &QueryOperand,
+        bindings: &BTreeMap<BindingId, ValueTypeTag>,
+        inputs: &[InputColumn],
+    ) -> Result<(), Diagnostic> {
+        let expected = self.attribute_domain(field.attribute()).ok_or_else(|| {
+            invalid(
+                "query_plan_write_value_type",
+                "ownership has no unique scalar domain",
+            )
+        })?;
+        let actual = operand_type(operand, bindings, inputs)?;
+        if actual != expected {
+            return Err(invalid(
+                "query_plan_write_value_type",
+                "write operand differs from the ownership scalar domain",
+            ));
+        }
+        Ok(())
+    }
+    fn function_values(
+        &self,
+        patterns: &[QueryPattern],
+        functions: &[LocalFunction],
+        mandatory: &BTreeSet<BindingId>,
+        values: &mut BTreeMap<BindingId, ValueTypeTag>,
+    ) -> Result<(), Diagnostic> {
+        use crate::schema::{FunctionReturnMode, TypeReference};
+        for pattern in patterns {
+            match pattern {
+                QueryPattern::FunctionCall {
+                    assigned, function, ..
+                } if mandatory.contains(assigned) => {
+                    let domain = if let Some(local) =
+                        functions.iter().find(|local| local.name() == function)
+                    {
+                        Some(local.returns().value_type())
+                    } else if let Some(SchemaFact::Function(function)) =
+                        self.schema.fact(&SchemaFactId::Function(function.clone()))
+                    {
+                        match function.signature().returns() {
+                            FunctionReturnMode::Scalar(element) if !element.optional() => {
+                                match element.type_ref() {
+                                    TypeReference::Value(domain) => Some(*domain),
+                                    TypeReference::Schema(label) => {
+                                        self.attribute_domain(&AttributeId::new(label.as_str())?)
+                                    }
+                                }
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        return Err(invalid(
+                            "query_plan_unknown_function",
+                            "expression references an undeclared function",
+                        ));
+                    };
+                    if let Some(domain) = domain
+                        && values
+                            .insert(*assigned, domain)
+                            .is_some_and(|previous| previous != domain)
+                    {
+                        return Err(invalid(
+                            "query_plan_expression_binding",
+                            "function binding has inconsistent scalar domains",
+                        ));
+                    }
+                }
+                QueryPattern::Or { branches } => {
+                    for branch in branches {
+                        self.function_values(branch, functions, mandatory, values)?;
+                    }
+                }
+                QueryPattern::Try { patterns } => {
+                    self.function_values(patterns, functions, mandatory, values)?
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+fn collect_produced_bindings(pattern: &QueryPattern, bindings: &mut BTreeSet<BindingId>) {
+    match pattern {
+        QueryPattern::Or { branches } => {
+            for branch in branches {
+                for pattern in branch {
+                    collect_produced_bindings(pattern, bindings);
+                }
+            }
+        }
+        QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
+            for pattern in patterns {
+                collect_produced_bindings(pattern, bindings);
+            }
+        }
+        _ => collect_direct_positive_bindings(pattern, bindings),
+    }
 }

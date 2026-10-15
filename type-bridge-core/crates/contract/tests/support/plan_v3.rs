@@ -3,7 +3,7 @@ use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
-use type_bridge_contract::query_plan::v3::{InsertThing, PlanSpec, Stage};
+use type_bridge_contract::query_plan::v3::{InsertThing, Operation, PlanSpec, Stage, WriteReturns};
 use type_bridge_contract::query_plan::{QueryOperand, QueryOutput, QueryPattern};
 use type_bridge_contract::schema::*;
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
@@ -100,6 +100,78 @@ pub fn schema() -> DeclaredSchema {
         )
         .unwrap(),
     ));
+    for (owner, attributes) in [
+        (
+            entity("item"),
+            vec![
+                ("item-id", ValueTypeTag::String, true),
+                ("stock", ValueTypeTag::Long, false),
+                ("price", ValueTypeTag::Long, false),
+            ],
+        ),
+        (
+            TypeId::new(TypeKind::Relation, "purchase").unwrap(),
+            vec![("purchase-id", ValueTypeTag::String, true)],
+        ),
+        (
+            entity("doctor"),
+            vec![
+                ("name", ValueTypeTag::String, true),
+                ("on-call", ValueTypeTag::Boolean, false),
+            ],
+        ),
+    ] {
+        facts.push(SchemaFact::Type(TypeFact::new(owner.clone()).unwrap()));
+        for (name, domain, key) in attributes {
+            let attribute = AttributeId::new(name).unwrap();
+            facts.push(SchemaFact::Type(
+                TypeFact::new(TypeId::new(TypeKind::Attribute, name).unwrap()).unwrap(),
+            ));
+            facts.push(SchemaFact::Value(ValueFact::new(
+                ValueFactId::new(attribute.clone()),
+                domain,
+            )));
+            let owns = OwnsFactId::new(owner.clone(), attribute).unwrap();
+            facts.push(SchemaFact::Owns(OwnsFact::new(owns.clone())));
+            if key {
+                facts.push(SchemaFact::Annotation(
+                    AnnotationFact::new(
+                        AnnotationFactId::new(
+                            AnnotationSubjectId::Owns(owns),
+                            AnnotationKindId::Key,
+                        ),
+                        SchemaAnnotationValue::Presence,
+                    )
+                    .unwrap(),
+                ));
+            }
+        }
+    }
+    let purchase = TypeId::new(TypeKind::Relation, "purchase").unwrap();
+    for (name, player) in [("buyer", entity("account")), ("item", entity("item"))] {
+        let role = RoleId::new("purchase", name).unwrap();
+        facts.push(SchemaFact::Relates(
+            RelatesFact::new(
+                RelatesFactId::new(purchase.clone(), role.clone()).unwrap(),
+                None,
+            )
+            .unwrap(),
+        ));
+        facts.push(SchemaFact::Plays(PlaysFact::new(
+            PlaysFactId::new(player, role).unwrap(),
+        )));
+    }
+    let balance = AttributeId::new("balance").unwrap();
+    facts.push(SchemaFact::Type(
+        TypeFact::new(TypeId::new(TypeKind::Attribute, "balance").unwrap()).unwrap(),
+    ));
+    facts.push(SchemaFact::Value(ValueFact::new(
+        ValueFactId::new(balance.clone()),
+        ValueTypeTag::Long,
+    )));
+    facts.push(SchemaFact::Owns(OwnsFact::new(
+        OwnsFactId::new(entity("account"), balance).unwrap(),
+    )));
     DeclaredSchema::from_facts(
         FormatVersion::V1,
         CapabilitySet::new(),
@@ -140,6 +212,18 @@ pub fn spec(pipeline: Vec<Stage>, output: Vec<u16>) -> PlanSpec {
             binding(2, "total"),
         ],
         inputs: vec![],
+        given_rows: None,
+        operation: if pipeline.iter().any(Stage::is_write) {
+            Operation::Write {
+                returns: if output.is_empty() {
+                    WriteReturns::Matched
+                } else {
+                    WriteReturns::Rows
+                },
+            }
+        } else {
+            Operation::Rows
+        },
         pipeline,
         output: QueryOutput::Rows {
             columns: output.into_iter().map(id).collect(),
@@ -151,6 +235,10 @@ pub fn spec(pipeline: Vec<Stage>, output: Vec<u16>) -> PlanSpec {
 }
 pub fn matched() -> Stage {
     Stage::Match {
-        patterns: vec![isa(0, entity("account"))],
+        patterns: vec![isa(0, entity("account")).into()],
     }
+}
+
+pub fn pat(n: u16, type_id: TypeId) -> type_bridge_contract::query_plan::v3::Pattern {
+    isa(n, type_id).into()
 }

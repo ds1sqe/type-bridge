@@ -838,3 +838,15 @@ pub(crate) fn rebuild_output(value: Value) -> Result<QueryOutput, Diagnostic> {
         })?
         .rebuild()
 }
+
+pub(crate) fn rebuild_pattern_v2(value: Value) -> Result<QueryPattern, Diagnostic> {
+    serde_json::from_value::<QueryPatternWireV2>(value)
+        .map_err(|_| {
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "invalid_canonical_value",
+                "invalid read pattern",
+            )
+        })?
+        .rebuild()
+}
