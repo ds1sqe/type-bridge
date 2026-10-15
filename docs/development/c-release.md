@@ -7,7 +7,9 @@ CMake or pkg-config. Public C support for this matrix was established with
 2.2.0 on 2026-09-14. The 2.2.2 artifacts completed promotion and independent public
 verification on 2026-09-14. The 2.2.3 artifacts completed promotion and
 independent public verification on 2026-10-07. The 2.2.4 artifacts completed
-promotion and independent public verification on 2026-10-11.
+promotion and independent public verification on 2026-10-11. The 2.2.5
+artifacts completed promotion and independent public verification on
+2026-10-15.
 
 The standalone CLI, native runtime and generated sdk example are
 separate archives. Application owners generate and distribute their own
@@ -174,3 +176,15 @@ retains the signed evidence, verification receipt, promotion record, and
 Sigstore bundles. Public archive signatures, provenance, clean installation,
 and the complete C application journeys passed against the downloaded bytes.
 This release keeps C ABI 1.6.0 and includes the #247 bounded-query fix.
+
+The 2.2.5 public artifacts were independently verified on 2026-10-15.
+They bind source `51f15f5f92c4b954de94aaf7a7f67e03e877e16c`,
+[CI run 38670370556](https://github.com/ds1sqe/type-bridge/actions/runs/38670370556),
+[C verification run 38676152137](https://github.com/ds1sqe/type-bridge/actions/runs/38676152137),
+and [promotion run 38689373079](https://github.com/ds1sqe/type-bridge/actions/runs/38689373079).
+The [2.2.5 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.5)
+retains the signed evidence, verification receipt, promotion record, and
+Sigstore bundles. Public archive signatures, provenance, clean installation,
+and the complete C application journeys passed against the downloaded bytes.
+This release keeps C ABI 1.6.0 and includes patched rustls 0.23.46 for
+RUSTSEC-2026-0346 through RUSTSEC-2026-0349.
