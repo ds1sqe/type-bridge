@@ -2,7 +2,7 @@
 
 # CMake compatibility follows the native ABI, independently from the semantic
 # runtime version returned by type_bridge_runtime_version().
-set(TypeBridge_C_ABI_VERSION "@PROJECT_VERSION@")
+set(TypeBridge_C_ABI_VERSION "@TYPE_BRIDGE_C_ABI_VERSION@")
 
 if(NOT TARGET TypeBridge::C)
   add_library(TypeBridge::C SHARED IMPORTED)

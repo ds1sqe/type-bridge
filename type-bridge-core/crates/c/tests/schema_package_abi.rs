@@ -2622,7 +2622,7 @@ fn clean_staged_cmake_consumer_finds_links_and_runs_generated_package() {
     assert!(
         fs::read_to_string(&installed_config)
             .expect("CMake metadata is UTF-8")
-            .contains("set(TypeBridge_C_ABI_VERSION \"1.6.0\")")
+            .contains("set(TypeBridge_C_ABI_VERSION \"1.7.0\")")
     );
     assert!(
         fs::read_to_string(&installed_pkg_config)
@@ -2663,6 +2663,72 @@ find_package(TypeBridge 1.2.0 EXACT CONFIG REQUIRED)
         !output.status.success(),
         "the installed package incorrectly satisfied an incompatible ABI request"
     );
+
+    // ABI 1.7 serves every 1.6 request, exact pins included, and 1.7
+    // consumers can require the new minor.
+    for (request, accepted) in [
+        ("1.6.0 EXACT", true),
+        ("1.6", true),
+        ("1.7", true),
+        ("1.7.0 EXACT", true),
+        ("1.6...1.7", true),
+        ("1.5", false),
+        ("1.6.1 EXACT", false),
+        ("1.7.1 EXACT", false),
+        ("1.8", false),
+        ("2.0", false),
+        ("1.8...2.0", false),
+    ] {
+        let source = stage.path().join("version-request");
+        let build = stage.path().join("version-request-build");
+        let _ = fs::remove_dir_all(&build);
+        fs::create_dir_all(&source).expect("version request consumer directory is created");
+        fs::write(
+            source.join("CMakeLists.txt"),
+            format!(
+                "cmake_minimum_required(VERSION 3.20)\nproject(type_bridge_version_request LANGUAGES NONE)\nfind_package(TypeBridge {request} CONFIG REQUIRED)\n"
+            ),
+        )
+        .expect("version request consumer is written");
+        let output = Command::new("cmake")
+            .args(["-S"])
+            .arg(&source)
+            .args(["-B"])
+            .arg(&build)
+            .arg(format!(
+                "-DTypeBridge_DIR={}",
+                runtime_package_directory.display()
+            ))
+            .output()
+            .expect("version request configure launches");
+        assert_eq!(
+            output.status.success(),
+            accepted,
+            "find_package(TypeBridge {request}):\n{}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    #[cfg(unix)]
+    if command_exists("pkg-config") {
+        let pkg_config = |query: &str| {
+            Command::new("pkg-config")
+                .arg("--exists")
+                .arg(query)
+                .env("PKG_CONFIG_PATH", install.join("lib/pkgconfig"))
+                .status()
+                .expect("pkg-config launches")
+                .success()
+        };
+        assert!(
+            pkg_config("type-bridge = 1.6.0"),
+            "legacy exact pins resolve"
+        );
+        assert!(
+            pkg_config("type-bridge-abi >= 1.7.0"),
+            "1.7 consumers resolve"
+        );
+        assert!(!pkg_config("type-bridge-abi >= 1.8.0"));
+    }
 
     let output = Command::new("cmake")
         .args(["-S"])

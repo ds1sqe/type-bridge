@@ -13,7 +13,7 @@
     "decision": "additive-1.7",
     "version": "1.7.0",
     "package_metadata_version": "1.6.0",
-    "package_metadata_description": "Installed CMake and pkg-config versions retain 1.6.0 for exact-version consumers.",
+    "package_metadata_description": "pkg-config type-bridge keeps Version 1.6.0 for exact pins and provides type-bridge-abi 1.7.0; CMake reports 1.7.0 and accepts 1.6 and 1.7 requests, EXACT included.",
     "contract_path": "tests/contracts/c-abi.json",
     "contract_sha256": "76619b453fac106473e0bfc0f07d5d44afd8baa546e6b666a6a10eda2519a4dc",
     "static_linkage": "unsupported",
@@ -240,15 +240,19 @@
     },
     {
       "path": "type-bridge-core/crates/c/CMakeLists.txt",
-      "sha256": "1d49298c8d57f079b4df902c650697154a383e4085a3d8d41f18d1e3f4859b8b"
+      "sha256": "35f574c6116f63b997752a3bdd8ab9804b3fc8f81624139439067eedca331ebc"
     },
     {
       "path": "type-bridge-core/crates/c/cmake/TypeBridgeConfig.cmake.in",
-      "sha256": "4e8e9f5740b0892625f58f86cb16f849bd31453d16ff500c1fb8b40ed07ee897"
+      "sha256": "f70eb547519cea4f3baacad98d198d4127d4c63598832a3c154c92344d1c3641"
+    },
+    {
+      "path": "type-bridge-core/crates/c/cmake/TypeBridgeConfigVersion.cmake.in",
+      "sha256": "6a717c5a5a9521806cb86c81d61e1a86071072bc3095993a2616793ad888096d"
     },
     {
       "path": "type-bridge-core/crates/c/cmake/type-bridge.pc.in",
-      "sha256": "46ff15b1455eaa70bcec61510e3b3ea2c598f906a2ffac09b35e87375b2e12d4"
+      "sha256": "0eaa7c510bb003272d9a14178526a2a9585fba1331219f38970a21823e25d38d"
     },
     {
       "path": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",

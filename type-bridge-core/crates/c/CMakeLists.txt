@@ -1,7 +1,24 @@
 cmake_minimum_required(VERSION 3.20)
-# This package version tracks the stable native ABI. The product/runtime
-# version is reported at run time by type_bridge_runtime_version().
+# PROJECT_VERSION is the frozen ABI 1.6 package-metadata line: pkg-config
+# reports it so generated packages pinned to `type-bridge = 1.6.0` keep
+# resolving. The native ABI the runtime implements comes from the header;
+# CMake reports it and serves every earlier minor down to 1.6 (see
+# cmake/TypeBridgeConfigVersion.cmake.in), and pkg-config provides it as
+# `type-bridge-abi`. The product/runtime version is reported at run time by
+# type_bridge_runtime_version().
 project(TypeBridge VERSION 1.6.0 LANGUAGES NONE)
+set(TYPE_BRIDGE_C_ABI_OLDEST "1.6.0")
+file(STRINGS "include/typebridge/type_bridge.h" TYPE_BRIDGE_C_ABI_MAJOR
+     REGEX "^#define TYPE_BRIDGE_C_ABI_MAJOR [0-9]+u$")
+file(STRINGS "include/typebridge/type_bridge.h" TYPE_BRIDGE_C_ABI_MINOR
+     REGEX "^#define TYPE_BRIDGE_C_ABI_MINOR [0-9]+u$")
+string(REGEX REPLACE "^.* ([0-9]+)u$" "\\1" TYPE_BRIDGE_C_ABI_MAJOR "${TYPE_BRIDGE_C_ABI_MAJOR}")
+string(REGEX REPLACE "^.* ([0-9]+)u$" "\\1" TYPE_BRIDGE_C_ABI_MINOR "${TYPE_BRIDGE_C_ABI_MINOR}")
+if(NOT TYPE_BRIDGE_C_ABI_MAJOR MATCHES "^[0-9]+$" OR
+   NOT TYPE_BRIDGE_C_ABI_MINOR MATCHES "^[0-9]+$")
+  message(FATAL_ERROR "the runtime header does not declare its native ABI version")
+endif()
+set(TYPE_BRIDGE_C_ABI_VERSION "${TYPE_BRIDGE_C_ABI_MAJOR}.${TYPE_BRIDGE_C_ABI_MINOR}.0")
 
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
@@ -93,10 +110,10 @@ configure_package_config_file(
   "${CMAKE_CURRENT_BINARY_DIR}/TypeBridgeConfig.cmake"
   INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/TypeBridge"
 )
-write_basic_package_version_file(
+configure_file(
+  "cmake/TypeBridgeConfigVersion.cmake.in"
   "${CMAKE_CURRENT_BINARY_DIR}/TypeBridgeConfigVersion.cmake"
-  VERSION "${PROJECT_VERSION}"
-  COMPATIBILITY ExactVersion
+  @ONLY
 )
 configure_file(
   "cmake/type-bridge.pc.in"
