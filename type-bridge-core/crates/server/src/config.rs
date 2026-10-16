@@ -265,6 +265,7 @@ impl V2Section {
     /// values past a dimension's supported maximum. An unnamed dimension
     /// keeps the proxy (wire) default, so an unconfigured server advertises
     /// no answer limit.
+    #[cfg(feature = "v2-query")]
     pub fn resolved_answer_limits(
         &self,
     ) -> Result<type_bridge_orm::QueryExecutionResourceLimits, String> {
@@ -3461,6 +3462,7 @@ enabled = ["audit-log", "rate-limiter", "custom"]
         );
     }
 
+    #[cfg(feature = "v2-query")]
     #[test]
     fn v2_answer_limits_resolve_by_name_and_refuse_unknown_or_unsupported_values() {
         use type_bridge_orm::{AnswerTransport, QueryExecutionResourceLimits};
