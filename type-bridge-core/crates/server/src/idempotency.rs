@@ -25,7 +25,11 @@ pub const DEFAULT_IDEMPOTENCY_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_IDEMPOTENCY_TTL: Duration = Duration::from_millis(MAX_REMOTE_DEADLINE_MS);
 
 /// Explicit memory and expiry configuration for the standalone store.
+///
+/// Build it with [`IdempotencyConfig::new`] or from [`Default`] and adjust
+/// the public fields; [`IdempotencyStore::new`] validates the result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct IdempotencyConfig {
     /// Maximum live entries, including in-flight operations.
     pub capacity: usize,
@@ -33,6 +37,18 @@ pub struct IdempotencyConfig {
     pub max_reply_bytes: usize,
     /// Maximum remaining request lifetime, at most five minutes.
     pub max_ttl: Duration,
+}
+impl IdempotencyConfig {
+    /// A store bound of `capacity` live entries, `max_reply_bytes` retained
+    /// plus reserved reply bytes and a `max_ttl` remaining lifetime.
+    #[must_use]
+    pub const fn new(capacity: usize, max_reply_bytes: usize, max_ttl: Duration) -> Self {
+        Self {
+            capacity,
+            max_reply_bytes,
+            max_ttl,
+        }
+    }
 }
 impl Default for IdempotencyConfig {
     fn default() -> Self {
@@ -651,6 +667,15 @@ mod tests {
                 .unwrap(),
             IdempotencyAdmission::Replay(_)
         ));
+    }
+    #[test]
+    fn config_constructor_matches_the_defaults() {
+        let config = IdempotencyConfig::new(
+            DEFAULT_IDEMPOTENCY_CAPACITY,
+            DEFAULT_IDEMPOTENCY_BYTES,
+            MAX_IDEMPOTENCY_TTL,
+        );
+        assert_eq!(config, IdempotencyConfig::default());
     }
     #[test]
     fn invalid_config_lifetime_identity_and_overflow_fail_closed() {
