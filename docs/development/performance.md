@@ -110,3 +110,26 @@ the Documentation workflow rebuilds the site from `perf-data`.
 
 The chart library is uPlot, vendored in `docs/perf/assets/` and pinned by
 `docs/perf/assets/CHECKSUMS`, which a unit test verifies.
+
+## Build times
+
+The build job measures cold release builds of the published Cargo inventory,
+Python native extension plus maturin wheel assembly, and Node native addon.
+Each group uses a fresh target directory; registry downloads may be cached,
+compiled dependencies are never reused between groups. Wall metrics are
+`build.public.wall`, `build.python.wall` and `build.node.wall` in seconds.
+Stable Cargo `--timings` HTML supplies the 20 slowest `build.unit.<crate>`
+metrics: cumulative unit durations per crate across the measured groups,
+including build scripts. Units overlap, so they do not sum to build wall time.
+The run records the Rust toolchain and the wheel builder's Python interpreter.
+
+```bash
+python -m perf.harness.build --target-dir tmp/perf-cold --out tmp/perf/build.json
+# A smaller local smoke; the target directory must still be fresh.
+python -m perf.harness.build --group public --package type-bridge-toml-transpiler \
+  --target-dir tmp/perf-smoke --out tmp/perf/build-smoke.json
+```
+
+Install maturin 1.14.1 before selecting the Python group. Existing group target
+directories are rejected, never deleted. Logs are retained beside the result;
+a failed build produces no result.
