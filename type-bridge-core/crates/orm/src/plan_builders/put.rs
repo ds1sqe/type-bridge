@@ -11,7 +11,7 @@ use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::TypeId;
 use type_bridge_contract::query_plan::QueryOutput;
 use type_bridge_contract::query_plan::v3::{
-    DeleteItem, InsertThing, Operation, Set, Stage, ThingDocument, WriteReturns,
+    AttachItem, DeleteItem, InsertThing, Operation, Set, Stage, ThingDocument, WriteReturns,
 };
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::CanonicalValue;
@@ -20,12 +20,14 @@ use super::authority::PlanAuthority;
 use super::{BuiltPlan, PlanDraft, ValueTransport};
 
 /// One keyed entity put: `keys` and single-valued `fields` are given
-/// values; `cleared` are the non-key ownerships the input omits.
+/// values; `cleared` are the non-key ownerships to empty (omitted, or
+/// multi-valued and given); `attached` are the given multi-valued values.
 pub(crate) struct KeyedPut<'a> {
     pub(crate) type_id: &'a TypeId,
     pub(crate) keys: &'a [(OwnsFactId, CanonicalValue)],
     pub(crate) fields: &'a [(OwnsFactId, CanonicalValue)],
     pub(crate) cleared: &'a [OwnsFactId],
+    pub(crate) attached: &'a [(OwnsFactId, CanonicalValue)],
 }
 
 /// Build the keyed put. It answers the thing's hydration document once: an
@@ -76,6 +78,20 @@ pub(crate) fn keyed_entity_put(
             })
             .collect::<Result<Vec<_>, Diagnostic>>()?;
         pipeline.push(Stage::Update { sets });
+    }
+    if !put.attached.is_empty() {
+        let items = put
+            .attached
+            .iter()
+            .map(|(field, value)| {
+                Ok(AttachItem::Has {
+                    owner: thing,
+                    field: field.clone(),
+                    operand: draft.value(value.clone())?,
+                })
+            })
+            .collect::<Result<Vec<_>, Diagnostic>>()?;
+        pipeline.push(Stage::Attach { items });
     }
     pipeline.push(Stage::Select {
         bindings: vec![thing],

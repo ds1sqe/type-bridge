@@ -681,7 +681,7 @@ async fn stale_entity_update_rolls_back_and_never_reports_success() {
     let create = person_create(&installed);
     let (backend, state) = RecordingBackend::new(
         vec![
-            RecordingResponse::Result(QueryResult::Ok),
+            // The update plan matched no IID: no document, nothing written.
             documents(vec![]),
         ],
         CommitBehavior::Success,
@@ -697,7 +697,7 @@ async fn stale_entity_update_rolls_back_and_never_reports_success() {
     assert_eq!(diagnostic.code().as_str(), "mutation_rehydration_missing");
     let state = state.lock().unwrap();
     assert_eq!(state.opens, [TxType::Write]);
-    assert_eq!(state.queries.len(), 2);
+    assert_eq!(state.queries.len(), 1);
     assert_eq!(state.commits, 0);
     assert_eq!(state.rollbacks, 1);
     assert_eq!(state.closes, 0);
@@ -708,14 +708,11 @@ async fn hydration_failure_after_insert_rolls_back_and_redacts_provider_shape() 
     let installed = installed();
     let create = person_create(&installed);
     let (backend, state) = RecordingBackend::new(
-        vec![
-            insert_iid("0x10"),
-            documents(vec![serde_json::json!({
-                "_iid": "0x10",
-                "_type": "person",
-                "attributes": {"identifier": [{"value": "ada"}]}
-            })]),
-        ],
+        vec![documents(vec![serde_json::json!({
+            "_iid": "0x10",
+            "_type": "person",
+            "attributes": {"identifier": [{"value": "ada"}]}
+        })])],
         CommitBehavior::Success,
     );
     let database = Database::with_backend(Box::new(backend), "test");
@@ -1037,7 +1034,7 @@ async fn borrowed_write_transaction_is_never_implicitly_finished() {
     let installed = installed();
     let create = person_create(&installed);
     let (backend, state) = RecordingBackend::new(
-        vec![insert_iid("0x10"), documents(vec![person_document("0x10")])],
+        vec![documents(vec![person_document("0x10")])],
         CommitBehavior::Success,
     );
     let database = Database::with_backend(Box::new(backend), "test");
@@ -1147,12 +1144,7 @@ async fn owned_relation_put_and_update_rehydrate_before_commit() {
     }
 
     let (update_backend, update_state) = RecordingBackend::new(
-        vec![
-            documents(vec![serde_json::json!({"iid": "0x10"})]),
-            RecordingResponse::Result(QueryResult::Ok),
-            RecordingResponse::Result(QueryResult::Ok),
-            documents(vec![membership_document("0x20")]),
-        ],
+        vec![documents(vec![membership_document("0x20")])],
         CommitBehavior::Success,
     );
     let update_database = Database::with_backend(Box::new(update_backend), "test");
@@ -1164,12 +1156,12 @@ async fn owned_relation_put_and_update_rehydrate_before_commit() {
     assert_eq!(updated.iid(), "0x20");
     let state = update_state.lock().unwrap();
     assert_eq!(state.opens, [TxType::Write]);
-    assert_eq!(state.queries.len(), 4);
-    assert!(state.queries[0].contains("isa! person"));
-    assert!(state.queries[1].contains("delete"));
-    assert!(state.queries[2].contains("insert"));
-    assert!(state.queries[3].contains("isa! membership"));
-    assert_eq!(state.query_modes, ["canonical"; 4]);
+    // One plan: match the relation and the player, clear, attach, fetch.
+    assert_eq!(state.queries.len(), 1);
+    let update = &state.queries[0];
+    assert!(update.contains("isa! membership") && update.contains("isa! person"));
+    assert!(update.contains("delete") && update.contains("insert") && update.contains("fetch"));
+    assert_eq!(state.query_modes, ["canonical"]);
     assert_eq!(state.commits, 1);
     assert_eq!(state.rollbacks, 0);
 }
@@ -1182,7 +1174,7 @@ async fn relation_get_count_and_blind_delete_preserve_exact_behavior() {
         vec![
             documents(vec![membership_document("0x20")]),
             RecordingResponse::Result(QueryResult::Rows(vec![serde_json::json!({"$count": 2})])),
-            RecordingResponse::Result(QueryResult::Ok),
+            RecordingResponse::Result(QueryResult::Rows(vec![])),
         ],
         CommitBehavior::Success,
     );
@@ -1230,6 +1222,7 @@ async fn delete_is_one_blind_exact_mutation_and_absent_is_success() {
     let installed = installed();
     let person = type_id(TypeKind::Entity, "person");
     let (backend, state) = RecordingBackend::new(
+        // A bare acknowledgement is success, like the released blind delete.
         vec![RecordingResponse::Result(QueryResult::Ok)],
         CommitBehavior::Success,
     );
@@ -1300,7 +1293,7 @@ async fn classified_commit_outcomes_are_exact_and_provider_text_is_redacted() {
         let installed = installed();
         let create = person_create(&installed);
         let (backend, state) = RecordingBackend::new(
-            vec![insert_iid("0x10"), documents(vec![person_document("0x10")])],
+            vec![documents(vec![person_document("0x10")])],
             CommitBehavior::Failure(certainty, SECRET),
         );
         let database = Database::with_backend(Box::new(backend), "test");
@@ -1626,4 +1619,132 @@ async fn two_distinct_players_in_one_role_hydrate_from_several_documents() {
     let state = state.lock().unwrap();
     assert_eq!(state.queries.len(), 1);
     assert_eq!(state.commits, 1);
+}
+
+#[tokio::test]
+async fn relation_update_without_players_keeps_the_released_path() {
+    let documents_set = SchemaDocumentSet::parse([(
+        DocumentId::new("projected-crud-optional-role.yaml").unwrap(),
+        r#"format: typebridge.schema/v2
+attributes:
+  identifier: { value: string }
+entities:
+  person:
+    owns:
+      identifier: { key: true }
+relations:
+  tagging:
+    relates:
+      target: { card: { min: 0, max: 2 } }
+plays:
+  person:
+    tagging: [target]
+"#,
+    )])
+    .unwrap();
+    let resolved = resolve(
+        &normalize_documents(&documents_set).unwrap(),
+        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+    )
+    .unwrap();
+    let installed = InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Python,
+            &ProjectionConfig::python(),
+            &[ProjectionHandler::python_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let create = ProjectedCreate::try_new(
+        &installed,
+        type_id(TypeKind::Relation, "tagging"),
+        vec![],
+        vec![],
+    )
+    .unwrap();
+    let (backend, state) = RecordingBackend::new(
+        vec![RecordingResponse::Error("released path reached")],
+        CommitBehavior::Success,
+    );
+    let database = Database::with_backend(Box::new(backend), "test");
+    let _ = ProjectedCrudExecutor::new(&installed)
+        .update_relation(&database, "0x20", &create)
+        .await;
+    // No plan clears every role (which would delete the relation at
+    // commit); the released update runs instead.
+    let state = state.lock().unwrap();
+    assert!(
+        state
+            .queries
+            .iter()
+            .all(|query| !query.contains("PlanFetchType")),
+        "{:?}",
+        state.queries
+    );
+}
+
+#[tokio::test]
+async fn control_characters_on_band_8_fall_back_to_the_released_insert() {
+    let installed = installed();
+    let person = type_id(TypeKind::Entity, "person");
+    let create = ProjectedCreate::try_new(
+        &installed,
+        person.clone(),
+        vec![
+            (
+                field(&person, "identifier"),
+                vec![string_value(&installed, "identifier", "ada")],
+            ),
+            (
+                field(&person, "email"),
+                vec![string_value(&installed, "email", "line\nbreak")],
+            ),
+        ],
+        vec![],
+    )
+    .unwrap();
+    let (backend, state) = RecordingBackend::new(
+        vec![insert_iid("0x10"), documents(vec![person_document("0x10")])],
+        CommitBehavior::Success,
+    );
+    let database = Database::with_backend(Box::new(backend), "test");
+
+    ProjectedCrudExecutor::new(&installed)
+        .insert_entity(&database, &create)
+        .await
+        .unwrap();
+
+    let state = state.lock().unwrap();
+    // The released insert escapes the text; no plan literal was attempted.
+    assert_eq!(state.queries.len(), 2);
+    assert!(state.queries[0].starts_with("insert"));
+    assert!(!state.queries[0].contains("PlanFetchType"));
+}
+
+#[tokio::test]
+async fn relation_update_matching_nothing_keeps_the_released_codes() {
+    let installed = installed();
+    let create = membership_create(&installed);
+    for (probe, expected) in [
+        (documents(vec![]), "mutation_rehydration_missing"),
+        (
+            documents(vec![membership_document("0x20")]),
+            "provider_hydration_failed",
+        ),
+    ] {
+        let (backend, state) =
+            RecordingBackend::new(vec![documents(vec![]), probe], CommitBehavior::Success);
+        let database = Database::with_backend(Box::new(backend), "test");
+        let diagnostic = ProjectedCrudExecutor::new(&installed)
+            .update_relation(&database, "0x20", &create)
+            .await
+            .unwrap_err();
+        assert_eq!(diagnostic.code().as_str(), expected);
+        let state = state.lock().unwrap();
+        assert_eq!(state.queries.len(), 2);
+        assert_eq!(state.commits, 0);
+    }
 }

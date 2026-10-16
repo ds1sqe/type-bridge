@@ -391,12 +391,6 @@ fn test_db(responses: Vec<Response>) -> (crate::session::Database<TestSchema>, A
     )
 }
 
-fn iid_doc(iid: &str) -> Response {
-    Response::Result(QueryResult::Documents(vec![serde_json::json!({
-        "iid": iid
-    })]))
-}
-
 fn worker_fetch(iid: &str, name: &str) -> Response {
     Response::Result(QueryResult::Documents(vec![serde_json::json!({
         "_iid": iid,
@@ -539,7 +533,6 @@ async fn read_transaction_reuses_one_borrowed_context_and_closes_without_commit(
 #[tokio::test]
 async fn write_transaction_commits_multiple_operations_in_one_context() {
     let (db, state) = test_db(vec![
-        iid_doc("0x1"),
         worker_fetch("0x1", "alice"),
         assignment_fetch("0x2", "captain", "0x1", "alice"),
     ]);
@@ -593,7 +586,7 @@ async fn write_transaction_commits_multiple_operations_in_one_context() {
 
 #[tokio::test]
 async fn write_transaction_explicit_rollback_discards_operations() {
-    let (db, state) = test_db(vec![iid_doc("0x1"), worker_fetch("0x1", "alice")]);
+    let (db, state) = test_db(vec![worker_fetch("0x1", "alice")]);
     let tx = db.write().await.unwrap();
     tx.entities::<Worker>()
         .insert(WorkerCreate {
@@ -614,7 +607,7 @@ async fn write_transaction_explicit_rollback_discards_operations() {
 
 #[tokio::test]
 async fn write_transaction_uncommitted_drop_releases_without_commit() {
-    let (db, state) = test_db(vec![iid_doc("0x1"), worker_fetch("0x1", "alice")]);
+    let (db, state) = test_db(vec![worker_fetch("0x1", "alice")]);
     let tx = db.write().await.unwrap();
     tx.entities::<Worker>()
         .insert(WorkerCreate {
@@ -831,7 +824,7 @@ async fn sdk_models_rust_data_plane_fragment() {
 
 #[tokio::test]
 async fn rollback_keep_accepts_more_work_and_commit() {
-    let (db, state) = test_db(vec![iid_doc("0x1"), worker_fetch("0x1", "alice")]);
+    let (db, state) = test_db(vec![worker_fetch("0x1", "alice")]);
     let mut tx = db.write().await.unwrap();
     tx.rollback_keep().await.unwrap();
     tx.entities::<Worker>()

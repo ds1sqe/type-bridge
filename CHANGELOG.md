@@ -31,20 +31,29 @@ All notable changes to TypeBridge will be documented in this file.
 - A projected entity `put` with a key value is one write: it puts the key
   on exactly the declared type, clears the non-key fields the input omits
   and updates the given ones in the same pipeline, so no key lookup runs
-  first. A put that gives a multi-valued or ordered field, or omits an
-  ordered one, and every relation put still look the key up first.
-- When a projected relation insert or keyed entity put fails after its
-  write ran (including hydration), a borrowed transaction is now
-  rollback-only.
+  first. A multi-valued field it gives is emptied and its values attached
+  in the same plan. A put on a model with an ordered field, and every
+  relation put, still look the key up first.
+- Projected entity insert, update and delete, and relation update and
+  delete, are each one write plan; inserts and updates answer their own
+  hydration document, so no read-back follows. Updates keep the complete
+  replacement: every non-key field (and, for a relation, every role) is
+  cleared and the given values and players attached, references resolved
+  in the same plan. Inserts and updates on models with ordered fields or
+  roles, and relation updates without players, keep the released path;
+  deletes always run as a plan. For the Rust SDK single insert, provider answers that do not
+  describe exactly one canonical thing now report `missing_post_write_row`,
+  `provider_identity_cardinality_invalid` or `provider_identity_mismatch`
+  instead of `invalid_provider_evidence`.
+- When a projected insert, update, keyed put or delete (entity or
+  relation) fails after its write plan was dispatched (including
+  hydration), a borrowed transaction is now rollback-only. A plan that
+  could not be lowered reached no provider and latches nothing.
 - A projected relation insert or keyed entity put hydrates its result from
   the write's own fetch, so one query does the whole call and no read-back
   follows it. If that answer names two relations, the call fails with
   `provider_identity_cardinality_invalid` (the write made two) instead of the
   read-back's `provider_hydration_failed`.
-- On connections without the TypeDB 3.12+ `given` stage, a projected
-  relation insert or keyed entity put whose text values contain control
-  characters is refused with `literal_control_character_unsupported`
-  instead of being inlined into the query.
 
 ### Tests
 

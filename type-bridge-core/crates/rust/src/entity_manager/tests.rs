@@ -345,9 +345,6 @@ async fn public_preflight_failures_are_zero_io() {
 #[tokio::test]
 async fn public_canonical_database_and_batch_paths_select_canonical_queries() {
     let responses = vec![
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"iid":"0x1"}),
-        ])),
         fetch("0x1", "n1", "v"),
         Response::Result(QueryResult::Documents(vec![
             serde_json::json!({"iid":"0x2"}),
@@ -373,13 +370,7 @@ async fn public_canonical_database_and_batch_paths_select_canonical_queries() {
     db.entities::<Record>().count().await.unwrap();
     assert_eq!(
         state.lock().unwrap().query_modes,
-        vec![
-            "canonical",
-            "canonical",
-            "canonical",
-            "canonical",
-            "canonical"
-        ]
+        vec!["canonical", "canonical", "canonical", "canonical"]
     );
 }
 
@@ -586,37 +577,26 @@ fn assert_insert_failure_events(events: &[Event]) {
 }
 
 fn assert_post_write_events(events: &[Event], insert_value_needle: &str) {
+    // One query: the insert fetches its own document.
     let [
         Event::Open(TxType::Write),
         Event::Query(insert),
-        Event::Query(fetch),
         Event::Rollback,
     ] = events
     else {
         panic!("unexpected event stream: {events:?}")
     };
-    for needle in ["insert", "isa record", "n1", insert_value_needle] {
+    for needle in ["insert", "isa record", "n1", insert_value_needle, "fetch"] {
         assert!(
             insert.contains(needle),
             "insert query missing {needle}: {insert}"
-        );
-    }
-    for needle in ["isa! record", "iid 0x1", "fetch"] {
-        assert!(
-            fetch.contains(needle),
-            "fetch query missing {needle}: {fetch}"
         );
     }
 }
 
 #[tokio::test]
 async fn public_insert_missing_post_write_row_rolls_back() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"iid":"0x1"}),
-        ])),
-        Response::Result(QueryResult::Documents(Vec::new())),
-    ]);
+    let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(Vec::new()))]);
     let error = db
         .entities::<Record>()
         .insert(RecordCreate {
@@ -645,14 +625,9 @@ async fn public_insert_missing_post_write_row_rolls_back() {
 
 #[tokio::test]
 async fn public_insert_wrong_concrete_provider_row_rolls_back() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"iid":"0x1"}),
-        ])),
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"_iid":"0x1","_type":"outside","attributes":{"name":["n1"],"text":["v"]}}),
-        ])),
-    ]);
+    let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
+        serde_json::json!({"_iid":"0x1","_type":"outside","attributes":{"name":["n1"],"text":["v"]}}),
+    ]))]);
     let error = db
         .entities::<Record>()
         .insert(RecordCreate {
@@ -684,14 +659,9 @@ async fn public_insert_wrong_concrete_provider_row_rolls_back() {
 
 #[tokio::test]
 async fn public_insert_materializer_rejection_rolls_back() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"iid":"0x1"}),
-        ])),
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"_iid":"0x1","_type":"record","attributes":{"name":["n1"],"text":["reject-materialize"]}}),
-        ])),
-    ]);
+    let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
+        serde_json::json!({"_iid":"0x1","_type":"record","attributes":{"name":["n1"],"text":["reject-materialize"]}}),
+    ]))]);
     let error = db
         .entities::<Record>()
         .insert(RecordCreate {
@@ -804,26 +774,6 @@ async fn public_insert_provider_error_survives_rollback_failure() {
     let guard = state.lock().unwrap();
     assert!(matches!(guard.events.last(), Some(Event::Close)));
     assert_insert_failure_events(&guard.events[..guard.events.len() - 1]);
-}
-
-fn assert_provider_evidence_error(error: &crate::Error, expected: &str) {
-    let crate::Error::ModelValidation {
-        phase,
-        code,
-        path,
-        message,
-        ..
-    } = error
-    else {
-        panic!("wrong public error: {error:?}")
-    };
-    assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
-    assert_eq!(code, "invalid_provider_evidence");
-    assert!(path.is_empty());
-    assert_eq!(message, expected);
-    let source = std::error::Error::source(error).expect("provider source");
-    assert_eq!(source.to_string(), expected);
-    assert!(source.is::<type_bridge_orm::OrmError>());
 }
 
 macro_rules! stand_in {
@@ -1674,18 +1624,15 @@ async fn public_insert_zero_iid_documents_rolls_back() {
         })
         .await
         .unwrap_err();
-    assert_provider_evidence_error(
-        &err,
-        "Hydration error for type 'record': Insert returned 0 documents; expected exactly one",
-    );
+    assert_eq!(err.code(), Some("missing_post_write_row"));
     assert_insert_failure_events(&state.lock().unwrap().events);
 }
 
 #[tokio::test]
 async fn public_insert_multiple_iid_documents_rolls_back() {
     let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
-        serde_json::json!({"iid":"0x1"}),
-        serde_json::json!({"iid":"0x2"}),
+        serde_json::json!({"_iid":"0x1","_type":"record","attributes":{}}),
+        serde_json::json!({"_iid":"0x2","_type":"record","attributes":{}}),
     ]))]);
     let err = db
         .entities::<Record>()
@@ -1695,17 +1642,14 @@ async fn public_insert_multiple_iid_documents_rolls_back() {
         })
         .await
         .unwrap_err();
-    assert_provider_evidence_error(
-        &err,
-        "Hydration error for type 'record': Insert returned 2 documents; expected exactly one",
-    );
+    assert_eq!(err.code(), Some("provider_identity_cardinality_invalid"));
     assert_insert_failure_events(&state.lock().unwrap().events);
 }
 
 #[tokio::test]
 async fn public_insert_noncanonical_iid_rolls_back_without_refetch() {
     let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
-        serde_json::json!({"iid":"bad"}),
+        serde_json::json!({"_iid":"bad","_type":"record","attributes":{}}),
     ]))]);
     let err = db
         .entities::<Record>()
@@ -1715,24 +1659,16 @@ async fn public_insert_noncanonical_iid_rolls_back_without_refetch() {
         })
         .await
         .unwrap_err();
-    assert_provider_evidence_error(
-        &err,
-        "Hydration error for type 'record': Insert returned noncanonical IID",
-    );
+    assert_eq!(err.code(), Some("provider_identity_mismatch"));
     assert_insert_failure_events(&state.lock().unwrap().events);
 }
 
 #[tokio::test]
 async fn public_insert_uses_recording_projection_and_materializes_iid() {
     let state = Arc::new(Mutex::new(State::default()));
-    let responses = VecDeque::from([
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"iid":"0x1"}),
-        ])),
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"_iid":"0x1","_type":"record","attributes":{"name":["n1"],"text":["hello"]}}),
-        ])),
-    ]);
+    let responses = VecDeque::from([Response::Result(QueryResult::Documents(vec![
+        serde_json::json!({"_iid":"0x1","_type":"record","attributes":{"name":["n1"],"text":["hello"]}}),
+    ]))]);
     let backend = Backend {
         state: Arc::clone(&state),
         responses: Arc::new(Mutex::new(responses)),
@@ -1754,10 +1690,7 @@ async fn public_insert_uses_recording_projection_and_materializes_iid() {
     let s = state.lock().unwrap();
     assert_queries(
         &s.events,
-        &[
-            &["insert", "isa record", "n1", "hello"],
-            &["isa! record", "iid 0x1", "fetch"],
-        ],
+        &[&["insert", "isa record", "n1", "hello", "fetch"]],
     );
     assert_eq!(result.name, "n1");
 }
@@ -1825,10 +1758,7 @@ async fn public_put_update_delete_success_lifecycles() {
         );
     }
 
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Ok),
-        fetch("0x2", "n2", "upd"),
-    ]);
+    let (db, state) = test_db(vec![fetch("0x2", "n2", "upd")]);
     let result = db
         .entities::<Record>()
         .update(
@@ -1848,14 +1778,12 @@ async fn public_put_update_delete_success_lifecycles() {
         let s = state.lock().unwrap();
         assert_queries(
             &s.events,
-            &[
-                &["isa! record", "iid 0x2", "upd"],
-                &["isa! record", "iid 0x2", "fetch"],
-            ],
+            // One update plan: match by IID, replace, fetch.
+            &[&["isa! record", "iid 0x2", "upd", "fetch"]],
         );
     }
 
-    let (db, state) = test_db(vec![Response::Result(QueryResult::Ok)]);
+    let (db, state) = test_db(vec![Response::Result(QueryResult::Rows(Vec::new()))]);
     db.entities::<Record>().delete("0x2").await.unwrap();
     let events = &state.lock().unwrap().events;
     assert_queries(events, &[&["isa! record", "iid 0x2", "delete"]]);

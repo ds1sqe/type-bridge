@@ -953,7 +953,7 @@ async fn public_relation_count_uses_one_exact_reduction() {
 
 #[tokio::test]
 async fn public_relation_delete_commits_one_exact_delete() {
-    let (db, state) = test_db(vec![Response::Result(QueryResult::Ok)]);
+    let (db, state) = test_db(vec![Response::Result(QueryResult::Rows(Vec::new()))]);
     db.relations::<Assignment>().delete("0x1").await.unwrap();
     let guard = state.lock().unwrap();
     let [
@@ -970,12 +970,8 @@ async fn public_relation_delete_commits_one_exact_delete() {
 
 #[tokio::test]
 async fn public_relation_update_replaces_and_rehydrates() {
-    let (db, state) = test_db(vec![
-        iid_doc("0x9"),
-        Response::Result(QueryResult::Ok),
-        Response::Result(QueryResult::Ok),
-        fetch("0x1", "captain", "0x9", "alice"),
-    ]);
+    // One plan: match the relation and its player, replace, fetch.
+    let (db, state) = test_db(vec![fetch("0x1", "captain", "0x9", "alice")]);
     let value = db
         .relations::<Assignment>()
         .update("0x1", create("captain", "0x9"))

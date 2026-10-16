@@ -724,7 +724,7 @@ functions:
     #[test]
     fn database_owned_insert_rehydrates_then_commits_once() {
         let fixture = fixture(
-            vec![insert_iid("0x10"), documents(vec![person_document("0x10")])],
+            vec![documents(vec![person_document("0x10")])],
             COMMIT_SUCCESS,
         );
         let mut thing = ptr::dangling_mut();
@@ -748,7 +748,7 @@ functions:
         // SAFETY: success returned one live projected thing.
         assert_eq!(unsafe { &*thing }.value.iid(), "0x10");
         assert_eq!(*fixture.state.opens.lock().unwrap(), [TxType::Write]);
-        assert_eq!(fixture.state.query_count(), 2);
+        assert_eq!(fixture.state.query_count(), 1);
         assert_eq!(fixture.state.commits.load(Ordering::Acquire), 1);
         assert_eq!(fixture.state.rollbacks.load(Ordering::Acquire), 0);
         close_thing(&mut thing);
@@ -757,7 +757,7 @@ functions:
     #[test]
     fn projected_thing_reservation_failure_is_pre_provider_and_retry_safe() {
         let fixture = fixture(
-            vec![insert_iid("0x10"), documents(vec![person_document("0x10")])],
+            vec![documents(vec![person_document("0x10")])],
             COMMIT_SUCCESS,
         );
         let mut thing = ptr::dangling_mut();
@@ -800,7 +800,7 @@ functions:
             },
             TypeBridgeStatus::Ok
         );
-        assert_eq!(fixture.state.query_count(), 2);
+        assert_eq!(fixture.state.query_count(), 1);
         assert_eq!(fixture.state.commits.load(Ordering::Acquire), 1);
         assert_eq!(fixture.state.rollbacks.load(Ordering::Acquire), 0);
         close_thing(&mut thing);
@@ -809,7 +809,7 @@ functions:
     #[test]
     fn borrowed_thing_reservation_failure_leaves_transaction_live_and_unpoisoned() {
         let fixture = fixture(
-            vec![insert_iid("0x10"), documents(vec![person_document("0x10")])],
+            vec![documents(vec![person_document("0x10")])],
             COMMIT_SUCCESS,
         );
         let mut transaction = ptr::null_mut();
@@ -887,7 +887,7 @@ functions:
             TypeBridgeStatus::Ok
         );
         assert!(transaction.is_null());
-        assert_eq!(fixture.state.query_count(), 2);
+        assert_eq!(fixture.state.query_count(), 1);
         assert_eq!(fixture.state.commits.load(Ordering::Acquire), 0);
         assert_eq!(fixture.state.rollbacks.load(Ordering::Acquire), 1);
     }
@@ -895,10 +895,7 @@ functions:
     #[test]
     fn database_owned_write_rolls_back_errors_and_classifies_commit_certainty() {
         for (responses, expected_code) in [
-            (
-                vec![insert_iid("0x10"), documents(vec![])],
-                "mutation_rehydration_missing",
-            ),
+            (vec![documents(vec![])], "mutation_rehydration_missing"),
             (vec![Response::Error], "provider_operation_failed"),
         ] {
             let fixture = fixture(responses, COMMIT_SUCCESS);
@@ -944,10 +941,7 @@ functions:
                 "commit_outcome_unknown",
             ),
         ] {
-            let fixture = fixture(
-                vec![insert_iid("0x10"), documents(vec![person_document("0x10")])],
-                behavior,
-            );
+            let fixture = fixture(vec![documents(vec![person_document("0x10")])], behavior);
             let mut thing = ptr::dangling_mut();
             let mut diagnostics = ptr::dangling_mut();
             assert_eq!(
@@ -981,7 +975,7 @@ functions:
             vec![
                 documents(vec![]),
                 Response::Result(QueryResult::Rows(vec![serde_json::json!({"$count": 7})])),
-                Response::Result(QueryResult::Ok),
+                Response::Result(QueryResult::Rows(Vec::new())),
             ],
             COMMIT_SUCCESS,
         );
@@ -1053,7 +1047,6 @@ functions:
     fn borrowed_transactions_never_terminal_the_callers_handle() {
         let fixture = fixture(
             vec![
-                insert_iid("0x10"),
                 documents(vec![person_document("0x10")]),
                 Response::Result(QueryResult::Rows(vec![serde_json::json!({"$count": 1})])),
             ],
@@ -1684,10 +1677,7 @@ functions:
         close_thing(&mut thing);
 
         let update_fixture = fixture(
-            vec![
-                Response::Result(QueryResult::Ok),
-                documents(vec![person_document("0x20")]),
-            ],
+            vec![documents(vec![person_document("0x20")])],
             COMMIT_SUCCESS,
         );
         assert_eq!(
@@ -1705,7 +1695,7 @@ functions:
             },
             TypeBridgeStatus::Ok
         );
-        assert_eq!(update_fixture.state.query_count(), 2);
+        assert_eq!(update_fixture.state.query_count(), 1);
         assert_eq!(update_fixture.state.commits.load(Ordering::Acquire), 1);
         close_thing(&mut thing);
 
@@ -1753,9 +1743,8 @@ functions:
             vec![
                 documents(vec![person_document("0x30")]),
                 documents(vec![person_document("0x30")]),
-                Response::Result(QueryResult::Ok),
                 documents(vec![person_document("0x30")]),
-                Response::Result(QueryResult::Ok),
+                Response::Result(QueryResult::Rows(Vec::new())),
             ],
             COMMIT_SUCCESS,
         );
@@ -1831,7 +1820,7 @@ functions:
             },
             TypeBridgeStatus::Ok
         );
-        assert_eq!(write_fixture.state.query_count(), 5);
+        assert_eq!(write_fixture.state.query_count(), 4);
         assert_eq!(write_fixture.state.commits.load(Ordering::Acquire), 0);
         assert_eq!(write_fixture.state.rollbacks.load(Ordering::Acquire), 0);
         assert_eq!(
@@ -1898,12 +1887,7 @@ functions:
         close_thing(&mut thing);
 
         let update = relation_fixture(
-            vec![
-                documents(vec![serde_json::json!({"iid": "0x10"})]),
-                Response::Result(QueryResult::Ok),
-                Response::Result(QueryResult::Ok),
-                documents(vec![membership_document("0x22")]),
-            ],
+            vec![documents(vec![membership_document("0x22")])],
             COMMIT_SUCCESS,
         );
         assert_eq!(
@@ -1922,7 +1906,7 @@ functions:
             TypeBridgeStatus::Ok
         );
         assert_eq!(unsafe { &*thing }.value.iid(), "0x22");
-        assert_eq!(update.state.query_count(), 4);
+        assert_eq!(update.state.query_count(), 1);
         assert_eq!(update.state.commits.load(Ordering::Acquire), 1);
         assert_eq!(update.state.rollbacks.load(Ordering::Acquire), 0);
         close_thing(&mut thing);
@@ -1934,7 +1918,7 @@ functions:
             vec![
                 documents(vec![]),
                 Response::Result(QueryResult::Rows(vec![serde_json::json!({"$count": 3})])),
-                Response::Result(QueryResult::Ok),
+                Response::Result(QueryResult::Rows(Vec::new())),
             ],
             COMMIT_SUCCESS,
         );
@@ -2043,11 +2027,8 @@ functions:
                 insert_iid("0x31"),
                 documents(vec![membership_document("0x31")]),
                 documents(vec![membership_document("0x31")]),
-                documents(vec![serde_json::json!({"iid": "0x10"})]),
-                Response::Result(QueryResult::Ok),
-                Response::Result(QueryResult::Ok),
                 documents(vec![membership_document("0x31")]),
-                Response::Result(QueryResult::Ok),
+                Response::Result(QueryResult::Rows(Vec::new())),
                 Response::Result(QueryResult::Rows(vec![serde_json::json!({"$count": 1})])),
             ],
             COMMIT_SUCCESS,
@@ -2144,7 +2125,7 @@ functions:
             TypeBridgeStatus::Ok
         );
         assert_eq!(count, 1);
-        assert_eq!(write_fixture.state.query_count(), 11);
+        assert_eq!(write_fixture.state.query_count(), 8);
         assert_eq!(write_fixture.state.commits.load(Ordering::Acquire), 0);
         assert_eq!(write_fixture.state.rollbacks.load(Ordering::Acquire), 0);
         assert_eq!(
@@ -2560,8 +2541,8 @@ functions:
     fn repeated_relation_blind_delete_is_one_exact_absence_safe_statement() {
         let fixture = relation_fixture(
             vec![
-                Response::Result(QueryResult::Ok),
-                Response::Result(QueryResult::Ok),
+                Response::Result(QueryResult::Rows(Vec::new())),
+                Response::Result(QueryResult::Rows(Vec::new())),
             ],
             COMMIT_SUCCESS,
         );

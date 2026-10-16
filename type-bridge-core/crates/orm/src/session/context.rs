@@ -303,30 +303,45 @@ impl TransactionContext {
         tx.query_v2_bounded(typeql, limits, consumer).await
     }
 
-    /// Execute one trusted v3 plan now and resolve its answer.
+    /// Lower one trusted v3 plan for this transaction without dispatching
+    /// it. A failure here means nothing reached the provider.
     ///
-    /// Helpers that still run inside an eager transaction use this until they
-    /// stage plans. The plan lowers through the TypeQL adaptor; its inputs
-    /// travel as `given` rows, so the caller builds literal-only plans for
-    /// connections without the `given` stage.
-    pub(crate) async fn execute_plan(
+    /// Helpers that still run inside an eager transaction use this and
+    /// [`Self::dispatch_plan`] until they stage plans. Inputs travel as
+    /// `given` rows, so the caller builds literal-only plans for connections
+    /// without the `given` stage.
+    pub(crate) async fn prepare_plan(
         &self,
         plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
-    ) -> Result<crate::query_plan_exec::PlanAnswer> {
+    ) -> Result<crate::session::staged::StagedQuery> {
         let supports_given = self.supports_given_stage().await?;
         let query = crate::query_plan_exec::staged_query(plan, supports_given)
             .map_err(plan_diagnostic_error)?;
         self.check_schema_annotation_support(&query.typeql)?;
+        Ok(query)
+    }
+
+    /// Dispatch one prepared plan query and return the provider answer.
+    pub(crate) async fn dispatch_plan(
+        &self,
+        query: crate::session::staged::StagedQuery,
+    ) -> Result<QueryResult> {
         let mut guard = self.inner.lock().await;
         let tx = active_transaction(&mut guard)?;
-        let answer = tx
-            .query_materialized_bounded(
-                &query.typeql,
-                query.rows,
-                BoundedAnswerLimits::default(),
-                query.canonical,
-            )
-            .await?;
+        tx.query_materialized_bounded(
+            &query.typeql,
+            query.rows,
+            BoundedAnswerLimits::default(),
+            query.canonical,
+        )
+        .await
+    }
+
+    /// Resolve a dispatched plan answer.
+    pub(crate) fn resolve_plan(
+        plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+        answer: QueryResult,
+    ) -> Result<crate::query_plan_exec::PlanAnswer> {
         crate::query_plan_exec::resolve(plan.operation(), answer).map_err(plan_diagnostic_error)
     }
 

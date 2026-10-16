@@ -10,6 +10,7 @@ pub(crate) mod authority;
 pub(crate) mod insert;
 pub(crate) mod put;
 pub(crate) mod reference;
+pub(crate) mod write;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
@@ -291,6 +292,7 @@ fetch { \"_iid\": iid($relation0), \"_type\": label($PlanFetchType), \"attribute
             keys: &keys,
             fields: if fields { &on_call } else { &[] },
             cleared: if fields { &[] } else { &cleared },
+            attached: &[],
         };
         let plan = keyed_entity_put(&authority(), ValueTransport::Given, &put).unwrap();
         let (query, given) = lower(plan.local()).unwrap();
