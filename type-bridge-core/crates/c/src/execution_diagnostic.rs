@@ -555,7 +555,7 @@ fn empty_view() -> TypeBridgeByteView {
     }
 }
 
-fn empty_diagnostic_view() -> TypeBridgeExecutionDiagnosticViewV1 {
+pub(crate) fn empty_diagnostic_view() -> TypeBridgeExecutionDiagnosticViewV1 {
     TypeBridgeExecutionDiagnosticViewV1 {
         struct_size: 0,
         version: 0,
@@ -581,7 +581,7 @@ fn empty_path_view() -> TypeBridgeExecutionDiagnosticPathViewV1 {
     }
 }
 
-fn empty_detail_view() -> TypeBridgeExecutionDiagnosticDetailViewV1 {
+pub(crate) fn empty_detail_view() -> TypeBridgeExecutionDiagnosticDetailViewV1 {
     TypeBridgeExecutionDiagnosticDetailViewV1 {
         struct_size: 0,
         kind: TypeBridgeExecutionDiagnosticDetailKind::Unknown,

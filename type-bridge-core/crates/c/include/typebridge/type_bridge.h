@@ -1147,10 +1147,19 @@ type_bridge_write_transaction_close(
  * ABI 1.7: deferred transactions. A plan is decoded from canonical
  * query-plan/v3 bytes under declared schema bytes; C never serializes plans.
  * Staging sends nothing. Commit sends every staged plan in one provider
- * transaction and consumes the handle, except when the outcome is unknown
- * (TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN): then the handle stays live and
- * commit_retry resends the identical request. Pending answers are readable
- * after a successful commit.
+ * transaction and consumes the handle, except when the transaction can retry
+ * an unknown outcome: then the handle stays live and commit_retry resends the
+ * identical request. A direct provider commit cannot retry, so its
+ * TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN still consumes the handle.
+ * Commit and commit_retry on a consumed (null) owner return
+ * TYPE_BRIDGE_STATUS_INVALID_ARGUMENT; rollback, close and the frees accept a
+ * null owner and clear every owner they consume. Pending answers and plans
+ * outlive the transaction that staged them.
+ *
+ * Output slots may be unaligned. Outputs that overlap each other, an input
+ * buffer, an input handle or bytes it retains return
+ * TYPE_BRIDGE_STATUS_INVALID_ARGUMENT before anything is written; otherwise
+ * every non-null output is cleared first.
  */
 typedef struct type_bridge_plan type_bridge_plan_t;
 typedef struct type_bridge_staged_transaction type_bridge_staged_transaction_t;
@@ -1208,7 +1217,9 @@ type_bridge_staged_transaction_close(
     type_bridge_staged_transaction_t **transaction);
 
 /* Rows report the row count as the value; exists reports 0 or 1. Before a
- * successful commit this returns TYPE_BRIDGE_STATUS_IN_USE. */
+ * commit this returns TYPE_BRIDGE_STATUS_IN_USE; after a failed commit,
+ * rollback or close it returns TYPE_BRIDGE_STATUS_EXECUTION_FAILED. A
+ * non-OK status leaves both outputs zero. */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_pending_answer(
     const type_bridge_pending_t *pending,

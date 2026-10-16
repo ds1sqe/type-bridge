@@ -213,19 +213,20 @@ impl TypeBridgeDatabase {
     pub(crate) fn staged_transaction(
         &self,
         options: type_bridge_orm::session::staged::TransactionOptions,
-    ) -> (
-        type_bridge_orm::session::staged::Transaction,
-        StagedDatabaseGuard,
-    ) {
-        self.state
-            .transaction_children
-            .fetch_add(1, Ordering::AcqRel);
+    ) -> Result<
         (
+            type_bridge_orm::session::staged::Transaction,
+            StagedDatabaseGuard,
+        ),
+        SdkExecutionDiagnostic,
+    > {
+        increment_child(&self.state.transaction_children)?;
+        Ok((
             self.state.database.transaction(options),
             StagedDatabaseGuard {
                 database: Arc::clone(&self.state),
             },
-        )
+        ))
     }
 }
 
@@ -237,6 +238,19 @@ pub(crate) struct StagedDatabaseGuard {
 impl StagedDatabaseGuard {
     pub(crate) fn block_on<F: Future>(&self, future: F) -> F::Output {
         self.database.runtime.runtime.block_on(future)
+    }
+
+    /// Fence the retained package and server-version bytes, as the 1.6
+    /// transaction terminals do for their owners.
+    pub(crate) fn check_borrowed_ranges(
+        &self,
+        preflight: &DirectOutputPreflight,
+    ) -> Result<(), TypeBridgeStatus> {
+        preflight.check_package_borrowed_ranges(&self.database._package)?;
+        preflight.check_bytes(
+            self.database.server_version.as_ptr().cast(),
+            self.database.server_version.len(),
+        )
     }
 }
 
@@ -880,7 +894,7 @@ fn aliases<Input, Output>(input: *const Input, output: *mut Output) -> bool {
     !input.is_null() && !output.is_null() && input.cast::<()>() == output.cast::<()>()
 }
 
-pub(crate) unsafe fn initialize_handle_outputs<T>(
+unsafe fn initialize_handle_outputs<T>(
     out_handle: *mut *mut T,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> Result<(), TypeBridgeStatus> {

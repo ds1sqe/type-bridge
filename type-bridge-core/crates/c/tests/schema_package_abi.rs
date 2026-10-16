@@ -6716,3 +6716,442 @@ int main(void) {
         String::from_utf8_lossy(&run.stderr),
     );
 }
+
+/// Live ABI 1.7 staging: a compiled C17 consumer decodes the contract
+/// `query-plan/v3` purchase and batch fixtures under the declared schema
+/// fixture, stages both on one deferred transaction, commits them in one
+/// provider transaction and reads the ROWS and MATCHED answers. A read
+/// transaction then counts the result, and a repeated purchase key is a
+/// typed failure that consumes the handle.
+///
+/// ```text
+/// TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
+/// TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE=typedb-3.13.6/v1 \
+/// TYPEDB_ADDRESS=127.0.0.1:<grpc-port> TYPEDB_HTTP_PORT=<http-port> \
+/// TYPE_BRIDGE_C_INTG_DATABASE=type_bridge_c_staged_live_<unique> \
+/// cargo test --locked -p type-bridge-c --test schema_package_abi \
+///   live_c17_consumer_stages_and_commits_contract_v3_plans \
+///   -- --exact --ignored --nocapture
+/// ```
+#[cfg(unix)]
+#[test]
+#[ignore = "requires an isolated TypeDB 3.13 server and the C shared library"]
+fn live_c17_consumer_stages_and_commits_contract_v3_plans() {
+    let profile = sdk_profile_matrix::requested("queries");
+    let native_library = native_library().unwrap_or_else(|| {
+        panic!("build the TypeBridge C shared library before running the staged C live test")
+    });
+    let compiler = ["gcc", "clang"]
+        .into_iter()
+        .find(|candidate| command_exists(candidate))
+        .expect("GCC or Clang is required for the staged C live test");
+    let address = required_live_environment("TYPEDB_ADDRESS");
+    let database_name = required_live_environment("TYPE_BRIDGE_C_INTG_DATABASE");
+    let username = std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned());
+    let password = std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned());
+    let http_port_text = required_live_environment("TYPEDB_HTTP_PORT");
+    let http_port = http_port_text
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .expect("TYPEDB_HTTP_PORT must be an integer from 1 through 65535");
+    let plan_directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../tests/contracts/plan_v3")
+        .canonicalize()
+        .expect("the contract plan-v3 fixtures exist");
+
+    let fixture = emitted_fixture();
+    let stage = TempDirectory::new("schema_package_abi");
+    write_package(&fixture.package, stage.path());
+    let consumer = stage.path().join("staged-live.c");
+    fs::write(
+        &consumer,
+        r#"#include <errno.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <typebridge/type_bridge.h>
+#include <fixture/models.h>
+
+#define CHECK(condition) do { if (!(condition)) { fprintf(stderr, "check failed at line %d\n", __LINE__); return __LINE__; } } while (0)
+
+typedef struct bytes {
+  uint8_t *data;
+  size_t length;
+} bytes_t;
+
+static type_bridge_byte_view_t view_of(const char *text) {
+  type_bridge_byte_view_t view;
+  view.data = (const uint8_t *)text;
+  view.length = strlen(text);
+  return view;
+}
+
+static uint32_t required_http_port(void) {
+  const char *text = getenv("TYPEDB_HTTP_PORT");
+  char *end = NULL;
+  unsigned long value;
+  if (text == NULL || text[0] == '\0') {
+    return 0u;
+  }
+  errno = 0;
+  value = strtoul(text, &end, 10);
+  if (errno != 0 || end == text || *end != '\0' || value == 0ul ||
+      value > 65535ul) {
+    return 0u;
+  }
+  return (uint32_t)value;
+}
+
+/* Exact fixture bytes: the plan files are canonical with no trailing newline. */
+static int read_fixture(const char *name, bytes_t *out) {
+  char path[4096];
+  FILE *file;
+  long size;
+  const char *directory = getenv("TYPE_BRIDGE_C_PLAN_DIR");
+  out->data = NULL;
+  out->length = 0u;
+  if (directory == NULL ||
+      snprintf(path, sizeof(path), "%s/%s", directory, name) >= (int)sizeof(path)) {
+    return 0;
+  }
+  file = fopen(path, "rb");
+  if (file == NULL) {
+    return 0;
+  }
+  if (fseek(file, 0, SEEK_END) != 0 || (size = ftell(file)) <= 0 ||
+      fseek(file, 0, SEEK_SET) != 0) {
+    fclose(file);
+    return 0;
+  }
+  out->data = (uint8_t *)malloc((size_t)size);
+  if (out->data == NULL ||
+      fread(out->data, 1u, (size_t)size, file) != (size_t)size) {
+    fclose(file);
+    return 0;
+  }
+  out->length = (size_t)size;
+  fclose(file);
+  return 1;
+}
+
+static int decode(const bytes_t *schema, const char *name,
+                  type_bridge_plan_t **plan) {
+  bytes_t source;
+  uint8_t *echo;
+  size_t length = 0u;
+  type_bridge_execution_diagnostics_t *diagnostics = NULL;
+  int same;
+  if (!read_fixture(name, &source)) {
+    return 0;
+  }
+  if (type_bridge_plan_v3_decode(schema->data, schema->length, source.data,
+                                 source.length, plan, &diagnostics) !=
+          TYPE_BRIDGE_STATUS_OK ||
+      *plan == NULL || diagnostics != NULL) {
+    free(source.data);
+    return 0;
+  }
+  /* The decoded plan reproduces the contract bytes exactly. */
+  echo = (uint8_t *)malloc(source.length);
+  same = echo != NULL &&
+         type_bridge_plan_v3_canonical_bytes(*plan, echo, source.length,
+                                             &length) == TYPE_BRIDGE_STATUS_OK &&
+         length == source.length && memcmp(echo, source.data, length) == 0;
+  free(echo);
+  free(source.data);
+  return same;
+}
+
+static int answer(const type_bridge_pending_t *pending,
+                  type_bridge_plan_answer_kind_t expected_kind,
+                  uint64_t expected_value) {
+  type_bridge_plan_answer_kind_t kind = TYPE_BRIDGE_PLAN_ANSWER_ROWS;
+  uint64_t value = 0u;
+  return type_bridge_pending_answer(pending, &kind, &value) ==
+             TYPE_BRIDGE_STATUS_OK &&
+         kind == expected_kind && value == expected_value;
+}
+
+int main(void) {
+  const char *address = getenv("TYPEDB_ADDRESS");
+  const char *database_name = getenv("TYPE_BRIDGE_C_INTG_DATABASE");
+  const char *username = getenv("TYPEDB_USERNAME");
+  const char *password = getenv("TYPEDB_PASSWORD");
+  const uint32_t http_port = required_http_port();
+  type_bridge_schema_package_t *package = NULL;
+  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *diagnostics = NULL;
+  type_bridge_runtime_t *runtime = NULL;
+  type_bridge_database_t *database = NULL;
+  type_bridge_staged_transaction_t *transaction = NULL;
+  type_bridge_plan_t *purchase = NULL;
+  type_bridge_plan_t *batch = NULL;
+  type_bridge_plan_t *count = NULL;
+  type_bridge_plan_t *exists = NULL;
+  type_bridge_plan_t *rows = NULL;
+  type_bridge_pending_t *purchased = NULL;
+  type_bridge_pending_t *inserted = NULL;
+  type_bridge_pending_t *counted = NULL;
+  type_bridge_pending_t *existing = NULL;
+  type_bridge_pending_t *listed = NULL;
+  type_bridge_pending_t *repeated = NULL;
+  bytes_t schema;
+  type_bridge_plan_answer_kind_t kind = TYPE_BRIDGE_PLAN_ANSWER_ROWS;
+  uint64_t value = 99u;
+  type_bridge_runtime_config_v1_t runtime_config = {
+      sizeof(type_bridge_runtime_config_v1_t),
+      TYPE_BRIDGE_RUNTIME_CONFIG_VERSION,
+      TYPE_BRIDGE_RUNTIME_WORKER_THREADS_MIN,
+      0u,
+      {0u, 0u, 0u, 0u}};
+  type_bridge_database_config_v1_t database_config;
+
+  CHECK(address != NULL && address[0] != '\0');
+  CHECK(database_name != NULL && database_name[0] != '\0');
+  CHECK(username != NULL && username[0] != '\0');
+  CHECK(password != NULL);
+  CHECK(http_port != 0u);
+  CHECK(read_fixture("schema.json", &schema));
+  CHECK(decode(&schema, "purchase.json", &purchase));
+  CHECK(decode(&schema, "batch.json", &batch));
+  CHECK(decode(&schema, "count.json", &count));
+  CHECK(decode(&schema, "exists.json", &exists));
+  CHECK(decode(&schema, "rows.json", &rows));
+
+  memset(&database_config, 0, sizeof(database_config));
+  database_config.struct_size = sizeof(database_config);
+  database_config.version = TYPE_BRIDGE_DATABASE_CONFIG_VERSION;
+  database_config.address = view_of(address);
+  database_config.database = view_of(database_name);
+  database_config.username = view_of(username);
+  database_config.password = view_of(password);
+  database_config.http_port = http_port;
+  database_config.tls_mode = TYPE_BRIDGE_TLS_DISABLED;
+
+  CHECK(fixture_schema_package_open(&package, &package_diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_runtime_open_v1(
+            &runtime_config, &runtime, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_database_open_v1(
+            runtime, package, &database_config, NULL, &database,
+            &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_schema_package_close(&package) == TYPE_BRIDGE_STATUS_OK);
+
+  /* One write transaction: the purchase program and a two-row batch. */
+  CHECK(type_bridge_database_transaction(database, TYPE_BRIDGE_TRANSACTION_WRITE,
+                                         &transaction, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(transaction != NULL && diagnostics == NULL);
+  CHECK(type_bridge_staged_transaction_stage(transaction, purchase, &purchased,
+                                             &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_staged_transaction_stage(transaction, batch, &inserted,
+                                             &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_pending_answer(inserted, &kind, &value) ==
+        TYPE_BRIDGE_STATUS_IN_USE);
+  CHECK(value == 0u);
+  {
+    type_bridge_database_t *const original = database;
+    CHECK(type_bridge_database_close(&database, &diagnostics) ==
+          TYPE_BRIDGE_STATUS_IN_USE);
+    CHECK(database == original);
+    CHECK(type_bridge_execution_diagnostics_close(&diagnostics) ==
+          TYPE_BRIDGE_STATUS_OK);
+  }
+  CHECK(type_bridge_staged_transaction_commit(&transaction, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(transaction == NULL && diagnostics == NULL);
+  CHECK(answer(purchased, TYPE_BRIDGE_PLAN_ANSWER_ROWS, 1u));
+  CHECK(answer(inserted, TYPE_BRIDGE_PLAN_ANSWER_MATCHED, 2u));
+  printf("write commit: purchase rows=1 batch matched=2\n");
+
+  /* A read transaction observes the committed accounts. */
+  CHECK(type_bridge_database_transaction(database, TYPE_BRIDGE_TRANSACTION_READ,
+                                         &transaction, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_staged_transaction_stage(transaction, count, &counted,
+                                             &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_staged_transaction_stage(transaction, exists, &existing,
+                                             &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_staged_transaction_stage(transaction, rows, &listed,
+                                             &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_staged_transaction_commit(&transaction, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(transaction == NULL && diagnostics == NULL);
+  CHECK(answer(counted, TYPE_BRIDGE_PLAN_ANSWER_COUNT, 3u));
+  CHECK(answer(existing, TYPE_BRIDGE_PLAN_ANSWER_EXISTS, 1u));
+  CHECK(answer(listed, TYPE_BRIDGE_PLAN_ANSWER_ROWS, 3u));
+  printf("read commit: count=3 exists=1 rows=3\n");
+
+  /* The same purchase key again fails, consumes the handle and leaves the
+   * staged answer failed. */
+  CHECK(type_bridge_database_transaction(database, TYPE_BRIDGE_TRANSACTION_WRITE,
+                                         &transaction, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_staged_transaction_stage(transaction, purchase, &repeated,
+                                             &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  {
+    const type_bridge_status_t status =
+        type_bridge_staged_transaction_commit(&transaction, &diagnostics);
+    CHECK(status == TYPE_BRIDGE_STATUS_EXECUTION_FAILED);
+    CHECK(transaction == NULL && diagnostics != NULL);
+    CHECK(type_bridge_execution_diagnostics_close(&diagnostics) ==
+          TYPE_BRIDGE_STATUS_OK);
+  }
+  CHECK(type_bridge_pending_answer(repeated, &kind, &value) ==
+        TYPE_BRIDGE_STATUS_EXECUTION_FAILED);
+  printf("repeated purchase: EXECUTION_FAILED, handle consumed\n");
+
+  type_bridge_pending_free(&purchased);
+  type_bridge_pending_free(&inserted);
+  type_bridge_pending_free(&counted);
+  type_bridge_pending_free(&existing);
+  type_bridge_pending_free(&listed);
+  type_bridge_pending_free(&repeated);
+  type_bridge_pending_free(&repeated);
+  type_bridge_plan_free(&purchase);
+  type_bridge_plan_free(&batch);
+  type_bridge_plan_free(&count);
+  type_bridge_plan_free(&exists);
+  type_bridge_plan_free(&rows);
+  CHECK(purchased == NULL && repeated == NULL && purchase == NULL);
+  free(schema.data);
+  CHECK(type_bridge_database_close(&database, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_runtime_close(&runtime, &diagnostics) ==
+        TYPE_BRIDGE_STATUS_OK);
+  return 0;
+}
+"#,
+    )
+    .expect("staged C live consumer source is written");
+
+    let runtime_include = Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
+    let generated_include = stage.path().join("include");
+    let generated_source = stage.path().join("src/models.c");
+    let native_directory = native_library
+        .parent()
+        .expect("native library has a parent directory");
+    let executable = stage.path().join("staged-live");
+    let compile = Command::new(compiler)
+        .args([
+            "-std=c17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-pedantic-errors",
+        ])
+        .arg("-I")
+        .arg(&runtime_include)
+        .arg("-I")
+        .arg(&generated_include)
+        .arg(&generated_source)
+        .arg(&consumer)
+        .arg("-L")
+        .arg(native_directory)
+        .arg("-ltype_bridge_c")
+        .arg(format!("-Wl,-rpath,{}", native_directory.display()))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .unwrap_or_else(|error| panic!("failed to launch {compiler}: {error}"));
+    assert!(
+        compile.status.success(),
+        "{compiler} failed to build the staged C live consumer:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let administration_runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("the live database administration runtime opens");
+    let options = type_bridge_orm::ConnectOptions {
+        http_port,
+        tls: false,
+        server_version: None,
+    };
+    let administrator = administration_runtime
+        .block_on(type_bridge_orm::Database::connect_with_options(
+            &address,
+            &database_name,
+            &username,
+            &password,
+            options,
+        ))
+        .unwrap_or_else(|_| panic!("the isolated TypeDB administration connection opens"));
+    let detected = administrator
+        .server_version()
+        .expect("the live administration connection has authoritative version evidence");
+    profile.require_server_version(Some(&format!(
+        "{}.{}.{}",
+        detected.major, detected.minor, detected.patch
+    )));
+    assert!(
+        !administration_runtime
+            .block_on(administrator.database_exists())
+            .unwrap_or_else(|_| panic!("the isolated live database absence check succeeds")),
+        "TYPE_BRIDGE_C_INTG_DATABASE must name an absent isolated database"
+    );
+    let mut isolated_database = IsolatedLiveDatabase {
+        runtime: &administration_runtime,
+        database: administrator,
+        cleanup_complete: false,
+    };
+    assert!(
+        isolated_database.create(),
+        "the isolated live database is created"
+    );
+    // The provider schema of the contract plan-v3 declared schema fixture,
+    // restricted to the types the staged plans touch.
+    administration_runtime
+        .block_on(isolated_database.database.execute_raw(
+            "define
+attribute id, value string;
+attribute item-id, value string;
+attribute stock, value integer;
+attribute price, value integer;
+attribute balance, value integer;
+attribute score, value integer;
+attribute purchase-id, value string;
+entity account, owns id @key, owns balance, owns score, plays purchase:buyer;
+entity item, owns item-id @key, owns stock, owns price, plays purchase:item;
+relation purchase, relates buyer, relates item, owns purchase-id @key;",
+            type_bridge_orm::TxType::Schema,
+        ))
+        .expect("the staged plan fixture schema is installed");
+    administration_runtime
+        .block_on(isolated_database.database.execute_raw(
+            "insert
+$item isa item, has item-id \"item-1\", has stock 5, has price 10;
+$buyer isa account, has id \"buyer-1\", has balance 100;",
+            type_bridge_orm::TxType::Write,
+        ))
+        .expect("the staged plan fixture data is seeded");
+
+    let run = Command::new(&executable)
+        .env("TYPEDB_ADDRESS", &address)
+        .env("TYPEDB_HTTP_PORT", &http_port_text)
+        .env("TYPE_BRIDGE_C_INTG_DATABASE", &database_name)
+        .env("TYPEDB_USERNAME", &username)
+        .env("TYPEDB_PASSWORD", &password)
+        .env("TYPE_BRIDGE_C_PLAN_DIR", &plan_directory)
+        .output()
+        .expect("the staged C live consumer launches");
+
+    assert!(
+        isolated_database.cleanup(),
+        "the isolated live database is deleted and its administration connection closes"
+    );
+    println!("{}", String::from_utf8_lossy(&run.stdout));
+    assert!(
+        run.status.success(),
+        "the staged C live consumer failed with {}:\nstdout:\n{}\nstderr:\n{}",
+        run.status,
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+}

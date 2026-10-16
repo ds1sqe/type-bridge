@@ -151,9 +151,13 @@ functions:
 "#;
 
     pub(crate) const COMMIT_SUCCESS: u8 = 0;
-    const COMMIT_ABORTED: u8 = 1;
-    const COMMIT_UNKNOWN: u8 = 2;
-    const COMMIT_PANIC: u8 = 3;
+    pub(crate) const COMMIT_ABORTED: u8 = 1;
+    pub(crate) const COMMIT_UNKNOWN: u8 = 2;
+    pub(crate) const COMMIT_PANIC: u8 = 3;
+    /// A definite rejection whose redacted description carries a typed failure.
+    pub(crate) const COMMIT_CONFLICT: u8 = 4;
+    pub(crate) const COMMIT_CONFLICT_MESSAGE: &str =
+        "[STC2] TypeDB commit rejected: exclusive lock conflict";
 
     pub(crate) enum Response {
         Result(QueryResult),
@@ -339,6 +343,10 @@ functions:
                         message: "provider-secret-unknown".to_owned(),
                     }),
                     COMMIT_PANIC => panic!("fake provider commit panic"),
+                    COMMIT_CONFLICT => Err(ClassifiedCommitError::Driver {
+                        certainty: CommitFailureCertainty::DefinitelyAborted,
+                        message: COMMIT_CONFLICT_MESSAGE.to_owned(),
+                    }),
                     value => panic!("unknown fake commit behavior {value}"),
                 }
             })
