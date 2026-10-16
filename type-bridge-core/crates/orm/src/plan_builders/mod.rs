@@ -90,19 +90,6 @@ impl PlanDraft {
         Ok(QueryOperand::Input { column })
     }
 
-    /// The variable names of the given bindings.
-    pub(crate) fn names(&self, bindings: &[BindingId]) -> Vec<String> {
-        bindings
-            .iter()
-            .map(|binding| {
-                self.bindings[usize::from(binding.get())]
-                    .variable()
-                    .as_str()
-                    .to_owned()
-            })
-            .collect()
-    }
-
     /// Validate the program against the installed authority.
     pub(crate) fn finish(
         self,
@@ -240,8 +227,9 @@ mod tests {
                     },
                 ),
             ],
+            Vec::new(),
         )?;
-        let (query, given) = lower(plan.plan.local()).unwrap();
+        let (query, given) = lower(plan.local()).unwrap();
         Ok((
             tql::render(&query).unwrap(),
             given.map(|given| given.variables),
@@ -260,7 +248,8 @@ match
   $player3 iid 0x1e00000000000000000001;
 insert
   $relation0 isa purchase, links (buyer: $player1, item: $player3), has order-id == $in1;
-select $relation0, $player1, $player3;";
+match $relation0 isa! $PlanFetchType;
+fetch { \"_iid\": iid($relation0), \"_type\": label($PlanFetchType), \"attributes\": { $relation0.* } };";
         assert!(
             tql::equivalent(&typeql, expected).unwrap(),
             "lowered:\n{typeql}\nexpected:\n{expected}"
@@ -281,7 +270,8 @@ select $relation0, $player1, $player3;";
   $player3 iid 0x1e00000000000000000001;
 insert
   $relation0 isa purchase, links (buyer: $player1, item: $player3), has order-id \"O1\";
-select $relation0, $player1, $player3;";
+match $relation0 isa! $PlanFetchType;
+fetch { \"_iid\": iid($relation0), \"_type\": label($PlanFetchType), \"attributes\": { $relation0.* } };";
         assert!(
             tql::equivalent(&typeql, expected).unwrap(),
             "lowered:\n{typeql}\nexpected:\n{expected}"
@@ -314,7 +304,9 @@ select $relation0, $player1, $player3;";
         let expected = "given $in0: string, $in1: boolean;
 put $thing0 isa! doctor, has name == $in0;
 update $thing0 has on-call == $in1;
-select $thing0; distinct; select $thing0;";
+select $thing0; distinct;
+match $thing0 isa! $PlanFetchType;
+fetch { \"_iid\": iid($thing0), \"_type\": label($PlanFetchType), \"attributes\": { $thing0.* } };";
         assert!(
             tql::equivalent(&updated, expected).unwrap(),
             "lowered:\n{updated}\nexpected:\n{expected}"
@@ -324,7 +316,9 @@ select $thing0; distinct; select $thing0;";
 put $thing0 isa! doctor, has name == $in0;
 match try { $thing0 has on-call $PlanHas1x0; $PlanHas1x0 isa! on-call; };
 delete try { has $PlanHas1x0 of $thing0; };
-select $thing0; distinct; select $thing0;";
+select $thing0; distinct;
+match $thing0 isa! $PlanFetchType;
+fetch { \"_iid\": iid($thing0), \"_type\": label($PlanFetchType), \"attributes\": { $thing0.* } };";
         assert!(
             tql::equivalent(&cleared, expected).unwrap(),
             "lowered:\n{cleared}\nexpected:\n{expected}"
@@ -343,7 +337,8 @@ select $thing0; distinct; select $thing0;";
 insert
   $relation0 isa purchase, links (buyer: $player1, item: $player3),
     has order-id \"say \\\"hi\\\" \\\\ back\";
-select $relation0, $player1, $player3;";
+match $relation0 isa! $PlanFetchType;
+fetch { \"_iid\": iid($relation0), \"_type\": label($PlanFetchType), \"attributes\": { $relation0.* } };";
         assert!(
             tql::equivalent(&typeql, expected).unwrap(),
             "lowered:\n{typeql}\nexpected:\n{expected}"
@@ -373,9 +368,9 @@ select $relation0, $player1, $player3;";
                         identity: ReferenceIdentity::Iid("0x1e00000000000000000001"),
                     },
                 )],
+                Vec::new(),
             )
             .unwrap()
-            .plan
         };
         let verified = insert(&authority());
         assert!(verified.remote().is_ok());

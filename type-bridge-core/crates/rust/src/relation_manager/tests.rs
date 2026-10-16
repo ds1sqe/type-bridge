@@ -430,13 +430,6 @@ fn test_db(responses: Vec<Response>) -> (crate::session::Database<TestSchema>, A
     )
 }
 
-/// The row a relation insert plan answers with: the new relation.
-fn plan_relation_row(iid: &str) -> Response {
-    Response::Result(QueryResult::Rows(vec![serde_json::json!({
-        "relation0": {"category": "relation", "label": "assignment", "iid": iid}
-    })]))
-}
-
 fn iid_doc(iid: &str) -> Response {
     Response::Result(QueryResult::Documents(vec![serde_json::json!({
         "iid": iid
@@ -648,10 +641,7 @@ async fn public_relation_managers_report_schema_not_bound_before_io() {
 
 #[tokio::test]
 async fn public_relation_insert_runs_canonical_insert_fetch_commit() {
-    let (db, state) = test_db(vec![
-        plan_relation_row("0x1"),
-        fetch("0x1", "captain", "0x9", "alice"),
-    ]);
+    let (db, state) = test_db(vec![fetch("0x1", "captain", "0x9", "alice")]);
     let value = db
         .relations::<Assignment>()
         .insert(create("captain", "0x9"))
@@ -659,20 +649,24 @@ async fn public_relation_insert_runs_canonical_insert_fetch_commit() {
         .unwrap();
     assert_assignment(&value, "0x1", "captain", "0x9");
     let guard = state.lock().unwrap();
+    // One query: the insert fetches its own hydration document.
     let [
         Event::Open(TxType::Write),
         Event::Query(insert),
-        Event::Query(fetch),
         Event::Commit,
     ] = guard.events.as_slice()
     else {
         panic!("unexpected events: {:?}", guard.events)
     };
-    for needle in ["insert", "isa assignment", "worker", "captain", "iid 0x9"] {
+    for needle in [
+        "insert",
+        "isa assignment",
+        "worker",
+        "captain",
+        "iid 0x9",
+        "fetch",
+    ] {
         assert!(insert.contains(needle), "insert missing {needle}: {insert}");
-    }
-    for needle in ["iid 0x1", "fetch"] {
-        assert!(fetch.contains(needle), "fetch missing {needle}: {fetch}");
     }
     assert!(guard.query_modes.iter().all(|mode| *mode == "canonical"));
 }
@@ -681,7 +675,6 @@ async fn public_relation_insert_runs_canonical_insert_fetch_commit() {
 async fn hydrated_generated_reference_preserves_database_origin_before_relation_io() {
     let (source, source_state) = test_db(vec![
         person_fetch("0x9", "alice"),
-        plan_relation_row("0x1"),
         fetch("0x1", "captain", "0x9", "alice"),
     ]);
     let person = source
@@ -791,39 +784,31 @@ async fn public_relation_insert_provider_error_rolls_back() {
 }
 
 #[tokio::test]
-async fn public_relation_insert_missing_post_write_row_rolls_back() {
-    let (db, state) = test_db(vec![
-        plan_relation_row("0x1"),
-        Response::Result(QueryResult::Documents(Vec::new())),
-    ]);
+async fn public_relation_insert_without_a_written_row_rolls_back() {
+    let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(Vec::new()))]);
     let error = db
         .relations::<Assignment>()
         .insert(create("p", "0x9"))
         .await
         .unwrap_err();
-    assert_model_error(
-        error,
-        crate::error::ModelValidationPhase::Hydration,
-        "missing_post_write_row",
-        &["iid"],
-    );
+    // An empty answer means the write matched nothing: no row was written.
+    assert_eq!(error.code(), Some("provider_identity_cardinality_invalid"));
     let guard = state.lock().unwrap();
     assert!(matches!(guard.events.last(), Some(Event::Rollback)));
 }
 
 #[tokio::test]
 async fn public_relation_hydration_failure_rolls_back() {
-    let (db, state) = test_db(vec![
-        plan_relation_row("0x1"),
-        Response::Result(QueryResult::Documents(vec![serde_json::json!({
+    let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
+        serde_json::json!({
             "_iid": "0x1",
             "_type": "assignment",
             "attributes": {"position": ["p"]},
             "_role_0_iid": "0x9",
             "_role_0_type": "person",
             "_role_0_attributes": {"bogus": ["x"]}
-        })])),
-    ]);
+        }),
+    ]))]);
     let error = db
         .relations::<Assignment>()
         .insert(create("p", "0x9"))
@@ -841,10 +826,7 @@ async fn public_relation_hydration_failure_rolls_back() {
 
 #[tokio::test]
 async fn public_relation_materializer_failure_rolls_back() {
-    let (db, state) = test_db(vec![
-        plan_relation_row("0x1"),
-        fetch("0x1", "reject-materialize", "0x9", "alice"),
-    ]);
+    let (db, state) = test_db(vec![fetch("0x1", "reject-materialize", "0x9", "alice")]);
     let error = db
         .relations::<Assignment>()
         .insert(create("p", "0x9"))

@@ -391,13 +391,6 @@ fn test_db(responses: Vec<Response>) -> (crate::session::Database<TestSchema>, A
     )
 }
 
-/// The row a relation insert plan answers with: the new relation.
-fn plan_relation_row(iid: &str) -> Response {
-    Response::Result(QueryResult::Rows(vec![serde_json::json!({
-        "relation0": {"category": "relation", "label": "assignment", "iid": iid}
-    })]))
-}
-
 fn iid_doc(iid: &str) -> Response {
     Response::Result(QueryResult::Documents(vec![serde_json::json!({
         "iid": iid
@@ -548,7 +541,6 @@ async fn write_transaction_commits_multiple_operations_in_one_context() {
     let (db, state) = test_db(vec![
         iid_doc("0x1"),
         worker_fetch("0x1", "alice"),
-        plan_relation_row("0x2"),
         assignment_fetch("0x2", "captain", "0x1", "alice"),
     ]);
     let tx = db.write().await.unwrap();

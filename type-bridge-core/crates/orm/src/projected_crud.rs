@@ -31,7 +31,7 @@ use crate::execution_diagnostic::{lower_commit_error, lower_orm_error};
 use crate::match_request::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
 use crate::plan_builders::authority::PlanAuthority;
 use crate::plan_builders::insert::relation_insert;
-use crate::plan_builders::put::{KeyedPut, PUT_THING, keyed_entity_put};
+use crate::plan_builders::put::{KeyedPut, keyed_entity_put};
 use crate::plan_builders::reference::{Reference, ReferenceIdentity};
 use crate::plan_builders::{LITERAL_CONTROL_CHARACTER, ValueTransport};
 use crate::projected_batch::{
@@ -53,6 +53,7 @@ use crate::session::database::DatabaseExecutionIdentity;
 use crate::session::{Database, TransactionContext, TxType};
 use crate::value::AttributeValue;
 use crate::{ClassifiedCommitError, OrmError};
+use type_bridge_contract::query_plan::v3::DocumentRole;
 
 /// Binding-neutral exact single-model CRUD executor.
 ///
@@ -3165,14 +3166,9 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .as_ref()
             .and_then(|put| Some((put, self.installed.plan_authority().ok()?)));
         if let Some((put, authority)) = authority {
-            let iid = self
-                .put_entity_by_plan(transaction, &prepared.type_id, put, &authority, mode)
-                .await?;
-            // The write ran: a failed read-back poisons a borrowed transaction.
-            let hydrated = self
-                .rehydrate_entity(&manager, transaction, &prepared.type_id, &iid, mode)
+            return self
+                .put_entity_by_plan(transaction, prepared, put, &authority, mode)
                 .await;
-            return after_write(transaction, hydrated).await;
         }
         let iid = manager
             .put_exact(&prepared.attributes)
@@ -3312,14 +3308,9 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             self.installed.plan_authority().ok()
         };
         if let Some(authority) = authority {
-            let iid = self
+            return self
                 .insert_relation_by_plan(transaction, prepared, &authority, mode)
-                .await?;
-            // The write ran: a failed read-back poisons a borrowed transaction.
-            let hydrated = self
-                .rehydrate_relation(&manager, transaction, &prepared.type_id, &iid, mode)
                 .await;
-            return after_write(transaction, hydrated).await;
         }
         let iid = if let Some(role_players) = direct_entity_role_player_inputs(prepared) {
             // Preserve the released one-query path for exact concrete entity
@@ -3375,21 +3366,22 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     }
 
     /// Insert one relation as one write plan whose match resolves every
-    /// role-player reference, so no reference is read before the write.
+    /// role-player reference and whose fetch answers the hydration document,
+    /// so nothing is read before or after the write.
     ///
-    /// Zero rows mean a reference matched nothing and nothing was written;
-    /// that keeps the released missing-reference diagnostic. Every failure
-    /// after that is raised after writes, so it poisons a borrowed
+    /// Zero documents mean a reference matched nothing and nothing was
+    /// written; that keeps the released missing-reference diagnostic. Every
+    /// failure after that is raised after writes, so it poisons a borrowed
     /// transaction: several relations (a polymorphic reference matched
-    /// several things), or two references of one role resolving to one
-    /// player, which the released resolver refused before writing.
+    /// several things), two references of one role resolving to one player
+    /// (which the released resolver refused before writing), or hydration.
     async fn insert_relation_by_plan(
         &self,
         transaction: &TransactionContext,
         prepared: &PreparedRelationCreate,
         authority: &PlanAuthority,
         mode: ExecutionMode<'_>,
-    ) -> Result<String, SdkExecutionDiagnostic> {
+    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         let type_id = &prepared.type_id;
         let resolved_path = direct_entity_role_player_inputs(prepared).is_none();
         if resolved_path {
@@ -3417,37 +3409,68 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 ))
             })
             .collect::<Result<Vec<_>, SdkExecutionDiagnostic>>()?;
-        let insert = relation_insert(
+        let document_roles = self.document_roles(prepared)?;
+        let plan = relation_insert(
             authority,
             transport,
             type_id,
             &prepared.plan_fields,
             &players,
+            document_roles,
         )
         .map_err(|diagnostic| plan_build_failure(&diagnostic, type_id))?;
-        let rows = execute_write_rows(transaction, insert.plan.local(), type_id, mode).await?;
-        if rows.is_empty() {
+        let documents = execute_write_rows(transaction, plan.local(), type_id, mode).await?;
+        if documents.is_empty() {
             return Err(identity_cardinality(type_id));
         }
-        let read = || {
-            let iid = single_thing_iid(&rows, &insert.relation, type_id)?;
+        let hydrate = || {
+            let iid = single_document_iid(&documents, type_id)?;
             if resolved_path {
-                reject_resolved_duplicates(&rows[0], &insert.players, type_id)?;
+                reject_resolved_duplicates(prepared, &documents)?;
             }
-            Ok(iid)
+            let rows = coalesce_dynamic_relation_by_iid(&prepared.descriptor, &documents, &iid)
+                .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Read, type_id))?;
+            let row = require_mutation_relation_row(rows, type_id)?;
+            self.hydrate_relation(row, type_id, &iid, transaction.execution_identity(), mode)
         };
-        after_write(transaction, read()).await
+        after_write(transaction, hydrate()).await
     }
 
-    /// Put one keyed entity as one write plan: no key lookup precedes it.
+    /// Every descriptor role in descriptor order (the document key order of
+    /// the released read-back), required when its minimum is at least one.
+    fn document_roles(
+        &self,
+        prepared: &PreparedRelationCreate,
+    ) -> Result<Vec<DocumentRole>, SdkExecutionDiagnostic> {
+        let model = self.model_integrity(&prepared.type_id)?;
+        prepared
+            .descriptor
+            .roles
+            .iter()
+            .map(|descriptor_role| {
+                let role = model
+                    .query_tokens()
+                    .roles()
+                    .keys()
+                    .find(|role| role.label().as_str() == descriptor_role.role_name)
+                    .ok_or_else(|| write_plan_invalid(&prepared.type_id))?;
+                let required = descriptor_role.cardinality.is_some_and(|(min, _)| min >= 1);
+                Ok(DocumentRole::new(role.clone(), required))
+            })
+            .collect()
+    }
+
+    /// Put one keyed entity as one write plan that answers its hydration
+    /// document: no key lookup precedes it and no read-back follows it.
     async fn put_entity_by_plan(
         &self,
         transaction: &TransactionContext,
-        type_id: &TypeId,
+        prepared: &PreparedEntityCreate,
         put: &PreparedKeyedPut,
         authority: &PlanAuthority,
         mode: ExecutionMode<'_>,
-    ) -> Result<String, SdkExecutionDiagnostic> {
+    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        let type_id = &prepared.type_id;
         let transport = plan_transport(transaction, type_id, mode).await?;
         let plan = keyed_entity_put(
             authority,
@@ -3460,8 +3483,14 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             },
         )
         .map_err(|diagnostic| plan_build_failure(&diagnostic, type_id))?;
-        let rows = execute_write_rows(transaction, plan.local(), type_id, mode).await?;
-        after_write(transaction, single_thing_iid(&rows, PUT_THING, type_id)).await
+        let documents = execute_write_rows(transaction, plan.local(), type_id, mode).await?;
+        let hydrate = || {
+            let iid = single_document_iid(&documents, type_id)?;
+            let row = hydrate_dynamic_entity(&prepared.descriptor, &documents[0])
+                .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Read, type_id))?;
+            self.hydrate_entity(row, type_id, &iid, transaction.execution_identity(), mode)
+        };
+        after_write(transaction, hydrate()).await
     }
 
     async fn resolve_relation_players_exact(
@@ -5005,33 +5034,51 @@ fn identity_cardinality(type_id: &TypeId) -> SdkExecutionDiagnostic {
     )
 }
 
-/// The one thing every row names under `column`.
-fn single_thing_iid(
-    rows: &[serde_json::Value],
-    column: &str,
+/// The one thing every document describes (`_iid`).
+fn single_document_iid(
+    documents: &[serde_json::Value],
     type_id: &TypeId,
 ) -> Result<String, SdkExecutionDiagnostic> {
-    let mut iids = rows
-        .iter()
-        .map(|row| row_iid(row, column, type_id))
-        .collect::<Result<Vec<_>, _>>()?;
-    iids.sort_unstable();
-    iids.dedup();
-    match iids.as_slice() {
-        [_] => Ok(iids.remove(0)),
+    let mut iids = BTreeSet::new();
+    for document in documents {
+        iids.insert(document_iid(document, "_iid", type_id)?.ok_or_else(|| {
+            integrity_at_type(
+                "provider_identity_answer_invalid",
+                "The provider identity query omitted its canonical IID",
+                type_id,
+            )
+        })?);
+    }
+    match iids.len() {
+        1 => Ok(iids.pop_first().expect("one IID")),
         _ => Err(identity_cardinality(type_id)),
     }
 }
 
-/// Two references of one role that resolved to the same player.
+/// Two references of one role that resolved to the same player: the role
+/// lists fewer distinct players than it has references.
 fn reject_resolved_duplicates(
-    row: &serde_json::Value,
-    players: &[(RoleId, String)],
-    type_id: &TypeId,
+    prepared: &PreparedRelationCreate,
+    documents: &[serde_json::Value],
 ) -> Result<(), SdkExecutionDiagnostic> {
-    let mut seen = BTreeSet::new();
-    for (role, column) in players {
-        if !seen.insert((role, row_iid(row, column, type_id)?)) {
+    let type_id = &prepared.type_id;
+    for (index, role) in prepared.descriptor.roles.iter().enumerate() {
+        let references = prepared
+            .role_players
+            .iter()
+            .filter(|player| player.role_name == role.role_name)
+            .count();
+        if references < 2 {
+            continue;
+        }
+        let key = format!("_role_{index}_iid");
+        let mut players = BTreeSet::new();
+        for document in documents {
+            if let Some(iid) = document_iid(document, &key, type_id)? {
+                players.insert(iid);
+            }
+        }
+        if players.len() < references {
             return Err(integrity_at_type(
                 "duplicate_resolved_role_player",
                 "Exact relation references resolved to a duplicate role player",
@@ -5042,32 +5089,37 @@ fn reject_resolved_duplicates(
     Ok(())
 }
 
-/// Read a thing's IID from a plan row keyed by its binding name.
-fn row_iid(
-    row: &serde_json::Value,
-    column: &str,
+/// Read one canonical IID key of a fetched document; `null` is absent.
+fn document_iid(
+    document: &serde_json::Value,
+    key: &str,
     type_id: &TypeId,
-) -> Result<String, SdkExecutionDiagnostic> {
-    let iid = row
-        .as_object()
-        .and_then(|row| row.get(column).or_else(|| row.get(&format!("${column}"))))
-        .and_then(|concept| concept.get("iid"))
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| {
-            integrity_at_type(
-                "provider_identity_answer_invalid",
-                "The provider identity query omitted its canonical IID",
-                type_id,
-            )
-        })?;
-    if !is_canonical_thing_iid(iid) {
-        return Err(integrity_at_type(
-            "provider_identity_mismatch",
-            "The provider identity query returned a different or noncanonical IID",
+) -> Result<Option<String>, SdkExecutionDiagnostic> {
+    let invalid = || {
+        integrity_at_type(
+            "provider_identity_answer_invalid",
+            "The provider identity query omitted its canonical IID",
             type_id,
-        ));
+        )
+    };
+    match document.as_object().ok_or_else(invalid)?.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => {
+            let iid = value
+                .get("value")
+                .unwrap_or(value)
+                .as_str()
+                .ok_or_else(invalid)?;
+            if !is_canonical_thing_iid(iid) {
+                return Err(integrity_at_type(
+                    "provider_identity_mismatch",
+                    "The provider identity query returned a different or noncanonical IID",
+                    type_id,
+                ));
+            }
+            Ok(Some(iid.to_owned()))
+        }
     }
-    Ok(iid.to_owned())
 }
 
 /// Two references to one thing in one role were refused after resolution;

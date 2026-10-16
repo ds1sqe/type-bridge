@@ -11,7 +11,7 @@ use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::TypeId;
 use type_bridge_contract::query_plan::QueryOutput;
 use type_bridge_contract::query_plan::v3::{
-    DeleteItem, InsertThing, Operation, Set, Stage, WriteReturns,
+    DeleteItem, InsertThing, Operation, Set, Stage, ThingDocument, WriteReturns,
 };
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::CanonicalValue;
@@ -28,12 +28,9 @@ pub(crate) struct KeyedPut<'a> {
     pub(crate) cleared: &'a [OwnsFactId],
 }
 
-/// Column the keyed put answers with.
-pub(crate) const PUT_THING: &str = "thing0";
-
-/// Build the keyed put. It answers with the thing once: an ownership
-/// deletion repeats the row per deleted value, so the rows are made
-/// distinct in the same pipeline.
+/// Build the keyed put. It answers the thing's hydration document once: an
+/// ownership deletion repeats the row per deleted value, so the rows are
+/// made distinct before the fetch.
 pub(crate) fn keyed_entity_put(
     authority: &PlanAuthority,
     transport: ValueTransport,
@@ -84,6 +81,7 @@ pub(crate) fn keyed_entity_put(
         bindings: vec![thing],
     });
     pipeline.push(Stage::Distinct);
+    pipeline.push(Stage::Fetch(ThingDocument::new(thing, Vec::new())));
     draft.finish(
         authority,
         pipeline,
@@ -91,7 +89,7 @@ pub(crate) fn keyed_entity_put(
             returns: WriteReturns::Rows,
         },
         QueryOutput::Rows {
-            columns: vec![thing],
+            columns: Vec::new(),
         },
     )
 }

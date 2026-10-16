@@ -290,6 +290,14 @@ async fn helper_relation_inserts_resolve_references_inside_the_write() {
         )
         .await
         .unwrap();
+    // Hydrated from the write's own fetch, equal to a separate read.
+    let read = crud
+        .get_relation_by_iid(&db, &membership_type, exact.iid())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.fields(), exact.fields());
+    assert_eq!(read.roles(), exact.roles());
     let ada = &exact.roles()[&member][0];
     assert_eq!(ada.type_id(), &party_type(TypeKind::Entity, "person"));
 
@@ -500,6 +508,12 @@ async fn helper_put_is_one_plan_with_replace_semantics_and_key_races() {
         .unwrap();
     assert_eq!(updated.iid(), created.iid());
     assert_eq!(texts(&updated, "email"), ["b@example.test"]);
+    let read = crud
+        .get_entity_by_iid(&db, &person_type, updated.iid())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.fields(), updated.fields());
     assert!(texts(&updated, "nickname").is_empty());
 
     // Partial attribute set (key only): the stored email is cleared, not kept.

@@ -431,16 +431,6 @@ fn retained_reference_facade(
     .unwrap()
 }
 
-/// The row a relation insert plan returns: its relation, keyed by binding.
-/// The row a relation insert plan returns: the new relation and its one
-/// resolved player.
-fn plan_insert(iid: &str) -> RecordingResponse {
-    RecordingResponse::Result(QueryResult::Rows(vec![serde_json::json!({
-        "relation0": {"category": "relation", "label": "membership", "iid": iid},
-        "player1": {"category": "entity", "label": "person", "iid": "0x10"}
-    })]))
-}
-
 fn insert_iid(iid: &str) -> RecordingResponse {
     RecordingResponse::Result(QueryResult::Documents(vec![
         serde_json::json!({"iid": iid}),
@@ -613,10 +603,9 @@ async fn ordered_role_order_survives_write_lowering_and_hydration() {
     let installed = installed_ordered();
     let create = ordered_collaboration_create(&installed).unwrap();
     let (backend, state) = RecordingBackend::new(
-        vec![
-            plan_insert("0x20"),
-            documents(vec![ordered_collaboration_document(&["0x10", "0x11"])]),
-        ],
+        vec![documents(vec![ordered_collaboration_document(&[
+            "0x10", "0x11",
+        ])])],
         CommitBehavior::Success,
     );
     let database = Database::with_backend(Box::new(backend), "test");
@@ -651,7 +640,7 @@ async fn ordered_role_order_survives_write_lowering_and_hydration() {
     let write = &state.queries[0];
     assert!(write.find("iid 0x10").unwrap() < write.find("iid 0x11").unwrap());
     assert_eq!(state.opens, [TxType::Write]);
-    assert_eq!(state.queries.len(), 2);
+    assert_eq!(state.queries.len(), 1);
     assert_eq!(state.commits, 1);
     assert_eq!(state.rollbacks, 0);
 }
@@ -750,13 +739,10 @@ async fn relation_iid_ambiguity_is_rejected_before_commit() {
     let installed = installed();
     let create = membership_create(&installed);
     let (backend, state) = RecordingBackend::new(
-        vec![
-            plan_insert("0x20"),
-            documents(vec![
-                membership_document("0x20"),
-                membership_document("0x21"),
-            ]),
-        ],
+        vec![documents(vec![
+            membership_document("0x20"),
+            membership_document("0x21"),
+        ])],
         CommitBehavior::Success,
     );
     let database = Database::with_backend(Box::new(backend), "test");
@@ -771,7 +757,9 @@ async fn relation_iid_ambiguity_is_rejected_before_commit() {
     assert_eq!(state.commits, 0);
     assert_eq!(state.rollbacks, 1);
     assert!(state.queries[0].contains("insert") && state.queries[0].contains("membership"));
-    assert!(state.queries[1].contains("isa! membership"));
+    // The relation's own fetch is the hydration read; nothing follows it.
+    assert_eq!(state.queries.len(), 1);
+    assert!(state.queries[0].contains("isa! $PlanFetchType"));
 }
 
 #[tokio::test]
@@ -779,10 +767,7 @@ async fn abstract_nominal_role_reference_resolves_one_exact_concrete_player() {
     let installed = installed();
     let create = membership_create_for_player(&installed, "actor");
     let (backend, state) = RecordingBackend::new(
-        vec![
-            plan_insert("0x20"),
-            documents(vec![membership_document("0x20")]),
-        ],
+        vec![documents(vec![membership_document("0x20")])],
         CommitBehavior::Success,
     );
     let database = Database::with_backend(Box::new(backend), "test");
@@ -803,7 +788,7 @@ async fn abstract_nominal_role_reference_resolves_one_exact_concrete_player() {
         &CanonicalValue::String(CanonicalString::new("ada@example.test").unwrap())
     );
     let state = state.lock().unwrap();
-    assert_eq!(state.queries.len(), 2);
+    assert_eq!(state.queries.len(), 1);
     assert!(state.queries[0].contains("isa! person"));
     assert!(!state.queries[0].contains("isa! actor"));
     assert_eq!(state.commits, 1);
@@ -815,10 +800,9 @@ async fn relation_role_player_resolves_inside_the_write_by_strict_identity() {
     let installed = installed();
     let create = membership_create_for_relation_player(&installed);
     let (backend, state) = RecordingBackend::new(
-        vec![
-            plan_insert("0x20"),
-            documents(vec![membership_with_relation_player_document("0x20")]),
-        ],
+        vec![documents(vec![membership_with_relation_player_document(
+            "0x20",
+        )])],
         CommitBehavior::Success,
     );
     let database = Database::with_backend(Box::new(backend), "test");
@@ -841,7 +825,7 @@ async fn relation_role_player_resolves_inside_the_write_by_strict_identity() {
     assert!(player.reference().origin_carrier().is_some());
     let state = state.lock().unwrap();
     // The reference resolves inside the write: no lookup precedes it.
-    assert_eq!(state.queries.len(), 2);
+    assert_eq!(state.queries.len(), 1);
     assert!(state.queries[0].contains("$player1 isa! event"));
     assert!(state.queries[0].contains("$player1 iid 0x11"));
     assert!(!state.queries[0].contains("$player1 isa event"));
@@ -914,10 +898,7 @@ async fn retained_complete_entity_origin_accepts_same_database_and_fences_foreig
     let create = membership_create_with_reference(&installed, reference);
 
     let (same_backend, same_state) = RecordingBackend::new(
-        vec![
-            plan_insert("0x20"),
-            documents(vec![membership_document("0x20")]),
-        ],
+        vec![documents(vec![membership_document("0x20")])],
         CommitBehavior::Success,
     );
     let same_database =
@@ -930,7 +911,7 @@ async fn retained_complete_entity_origin_accepts_same_database_and_fences_foreig
     {
         let state = same_state.lock().unwrap();
         assert_eq!(state.opens, [TxType::Write]);
-        assert_eq!(state.queries.len(), 2);
+        assert_eq!(state.queries.len(), 1);
         assert_eq!(state.commits, 1);
         assert_eq!(state.rollbacks, 0);
     }
@@ -1032,10 +1013,7 @@ async fn borrowed_origin_is_preserved_and_a_value_equal_lookalike_remains_unboun
 
     let lookalike_create = membership_create_with_reference(&installed, visible_lookalike);
     let (foreign_backend, foreign_state) = RecordingBackend::new(
-        vec![
-            plan_insert("0x20"),
-            documents(vec![membership_document("0x20")]),
-        ],
+        vec![documents(vec![membership_document("0x20")])],
         CommitBehavior::Success,
     );
     let foreign_database = Database::with_backend(Box::new(foreign_backend), "foreign");
@@ -1047,7 +1025,7 @@ async fn borrowed_origin_is_preserved_and_a_value_equal_lookalike_remains_unboun
     {
         let state = foreign_state.lock().unwrap();
         assert_eq!(state.opens, [TxType::Write]);
-        assert_eq!(state.queries.len(), 2);
+        assert_eq!(state.queries.len(), 1);
         assert_eq!(state.commits, 1);
     }
     transaction.close().await.unwrap();
@@ -1086,12 +1064,9 @@ async fn borrowed_write_transaction_is_never_implicitly_finished() {
 async fn owned_entity_put_rehydrates_before_one_classified_commit() {
     let installed = installed();
     let create = person_create(&installed);
-    let row =
-        serde_json::json!({"thing0": {"category": "entity", "label": "person", "iid": "0x30"}});
     let (backend, state) = RecordingBackend::new(
         vec![
-            // An ownership deletion repeats the row once per deleted value.
-            RecordingResponse::Result(QueryResult::Rows(vec![row.clone(), row])),
+            // The put answers its own hydration document.
             documents(vec![person_document("0x30")]),
         ],
         CommitBehavior::Success,
@@ -1106,9 +1081,9 @@ async fn owned_entity_put_rehydrates_before_one_classified_commit() {
     assert_eq!(thing.iid(), "0x30");
     let state = state.lock().unwrap();
     assert_eq!(state.opens, [TxType::Write]);
-    // One put plan, no key lookup: put the key, clear the omitted
-    // nickname, update the given email; then the read-back.
-    assert_eq!(state.queries.len(), 2);
+    // One put plan, no key lookup and no read-back: put the key, clear the
+    // omitted nickname, update the given email, fetch the document.
+    assert_eq!(state.queries.len(), 1);
     let put = &state.queries[0];
     assert!(
         put.starts_with("put $thing0 isa! person, has identifier \"ada\""),
@@ -1122,8 +1097,8 @@ async fn owned_entity_put_rehydrates_before_one_classified_commit() {
         put.contains("update $thing0 has email \"ada@example.test\""),
         "{put}"
     );
-    assert!(state.queries[1].contains("iid 0x30"));
-    assert_eq!(state.query_modes, ["canonical"; 2]);
+    assert!(put.contains("fetch"), "{put}");
+    assert_eq!(state.query_modes, ["canonical"]);
     assert_eq!(state.commits, 1);
     assert_eq!(state.rollbacks, 0);
     assert_eq!(state.closes, 0);
@@ -1430,10 +1405,7 @@ async fn polymorphic_key_reference_is_one_disjunctive_write_without_a_lookup() {
     let installed = installed_polymorphic();
     let create = party_key_membership(&installed, "acme");
     let (backend, state) = RecordingBackend::new(
-        vec![
-            plan_insert("0x20"),
-            RecordingResponse::Error("stop after the write"),
-        ],
+        vec![RecordingResponse::Error("stop after the write")],
         CommitBehavior::Success,
     );
     let database = Database::with_backend(Box::new(backend), "test");
@@ -1443,14 +1415,14 @@ async fn polymorphic_key_reference_is_one_disjunctive_write_without_a_lookup() {
         .await;
 
     let state = state.lock().unwrap();
-    // The write comes first; the only other query is the read-back by IID.
+    // One query: the write resolves the reference and fetches the result.
     let write = &state.queries[0];
-    assert_eq!(state.queries.len(), 2, "{:?}", state.queries);
+    assert_eq!(state.queries.len(), 1, "{:?}", state.queries);
     assert!(write.starts_with("match"), "{write}");
     assert!(write.contains("$player1 isa! company") && write.contains("$player1 isa! person"));
     assert!(write.contains(" or "), "{write}");
     assert!(write.contains("insert $relation0 isa membership, links (member: $player1)"));
-    assert!(!state.queries[1].contains("insert") && state.queries[1].contains("0x20"));
+    assert!(write.contains("fetch"), "{write}");
 }
 
 #[tokio::test]
@@ -1484,12 +1456,11 @@ async fn missing_reference_writes_nothing_and_keeps_the_released_diagnostic() {
 async fn a_reference_matching_several_things_poisons_the_borrowed_transaction() {
     let installed = installed_polymorphic();
     let create = party_key_membership(&installed, "shared");
-    let row = |iid: &str| serde_json::json!({"relation0": {"category": "relation", "label": "membership", "iid": iid}});
     let (backend, state) = RecordingBackend::new(
-        vec![RecordingResponse::Result(QueryResult::Rows(vec![
-            row("0x20"),
-            row("0x21"),
-        ]))],
+        vec![documents(vec![
+            membership_document("0x20"),
+            membership_document("0x21"),
+        ])],
         CommitBehavior::Success,
     );
     let database = Database::with_backend(Box::new(backend), "test");
@@ -1540,13 +1511,14 @@ async fn two_references_resolving_to_one_player_are_refused_and_poison_the_trans
     )
     .unwrap();
     let (backend, state) = RecordingBackend::new(
-        vec![RecordingResponse::Result(QueryResult::Rows(vec![
-            serde_json::json!({
-                "relation0": {"iid": "0x20"},
-                "player1": {"iid": "0x10"},
-                "player2": {"iid": "0x10"}
-            }),
-        ]))],
+        vec![documents(vec![serde_json::json!({
+            "_iid": "0x20",
+            "_type": "membership",
+            "attributes": {},
+            "_role_0_iid": "0x10",
+            "_role_0_type": "person",
+            "_role_0_attributes": {}
+        })])],
         CommitBehavior::Success,
     );
     let database = Database::with_backend(Box::new(backend), "test");
@@ -1564,25 +1536,20 @@ async fn two_references_resolving_to_one_player_are_refused_and_poison_the_trans
     );
     let queries = state.lock().unwrap().queries.clone();
     assert_eq!(queries.len(), 1);
-    assert!(
-        queries[0].contains("select $relation0, $player1, $player2"),
-        "{}",
-        queries[0]
-    );
+    assert!(queries[0].contains("_role_0_iid"), "{}", queries[0]);
     transaction.rollback().await.unwrap();
 }
 
 #[tokio::test]
-async fn a_failed_read_back_after_a_put_poisons_the_borrowed_transaction() {
+async fn a_failed_hydration_after_a_put_poisons_the_borrowed_transaction() {
     let installed = installed();
     let create = person_create(&installed);
     let (backend, _state) = RecordingBackend::new(
-        vec![
-            RecordingResponse::Result(QueryResult::Rows(vec![serde_json::json!({
-                "thing0": {"iid": "0x30"}
-            })])),
-            documents(vec![]),
-        ],
+        vec![documents(vec![serde_json::json!({
+            "_iid": "0x30",
+            "_type": "actor",
+            "attributes": {}
+        })])],
         CommitBehavior::Success,
     );
     let database = Database::with_backend(Box::new(backend), "test");
@@ -1593,7 +1560,7 @@ async fn a_failed_read_back_after_a_put_poisons_the_borrowed_transaction() {
         .await
         .unwrap_err();
 
-    assert_eq!(diagnostic.code().as_str(), "mutation_rehydration_missing");
+    assert_eq!(diagnostic.code().as_str(), "provider_hydration_failed");
     assert_eq!(
         transaction.lifecycle_state().await,
         type_bridge_orm::session::TransactionContextState::RollbackOnly

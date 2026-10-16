@@ -514,13 +514,6 @@ functions:
         })
     }
 
-    /// The row a single-thing write plan answers with, keyed by its binding.
-    pub(crate) fn plan_row(binding: &str, iid: &str) -> Response {
-        Response::Result(QueryResult::Rows(vec![
-            serde_json::json!({ binding: {"iid": iid} }),
-        ]))
-    }
-
     pub(crate) fn insert_iid(iid: &str) -> Response {
         Response::Result(QueryResult::Documents(vec![
             serde_json::json!({"iid": iid}),
@@ -1664,10 +1657,7 @@ functions:
     #[test]
     fn remaining_put_update_get_and_delete_exports_share_exact_lifecycles() {
         let put_fixture = fixture(
-            vec![
-                plan_row("thing0", "0x20"),
-                documents(vec![person_document("0x20")]),
-            ],
+            vec![documents(vec![person_document("0x20")])],
             COMMIT_SUCCESS,
         );
         let mut thing = ptr::null_mut();
@@ -1686,8 +1676,8 @@ functions:
             },
             TypeBridgeStatus::Ok
         );
-        // One put plan and the read-back; no key lookup.
-        assert_eq!(put_fixture.state.query_count(), 2);
+        // One put plan that fetches its own document: no lookup, no read-back.
+        assert_eq!(put_fixture.state.query_count(), 1);
         // The put matches exactly the declared type, as the released lookup did.
         assert!(put_fixture.state.queries.lock().unwrap()[0].contains("put $thing0 isa! person"));
         assert_eq!(put_fixture.state.commits.load(Ordering::Acquire), 1);
@@ -1761,7 +1751,6 @@ functions:
 
         let write_fixture = fixture(
             vec![
-                plan_row("thing0", "0x30"),
                 documents(vec![person_document("0x30")]),
                 documents(vec![person_document("0x30")]),
                 Response::Result(QueryResult::Ok),
@@ -1842,7 +1831,7 @@ functions:
             },
             TypeBridgeStatus::Ok
         );
-        assert_eq!(write_fixture.state.query_count(), 6);
+        assert_eq!(write_fixture.state.query_count(), 5);
         assert_eq!(write_fixture.state.commits.load(Ordering::Acquire), 0);
         assert_eq!(write_fixture.state.rollbacks.load(Ordering::Acquire), 0);
         assert_eq!(
@@ -1856,10 +1845,7 @@ functions:
     #[test]
     fn relation_database_owned_mutations_rehydrate_before_one_commit() {
         let insert = relation_fixture(
-            vec![
-                plan_row("relation0", "0x20"),
-                documents(vec![membership_document("0x20")]),
-            ],
+            vec![documents(vec![membership_document("0x20")])],
             COMMIT_SUCCESS,
         );
         let mut thing = ptr::dangling_mut();
@@ -1879,7 +1865,7 @@ functions:
             TypeBridgeStatus::Ok
         );
         assert_eq!(unsafe { &*thing }.value.iid(), "0x20");
-        assert_eq!(insert.state.query_count(), 2);
+        assert_eq!(insert.state.query_count(), 1);
         assert_eq!(insert.state.commits.load(Ordering::Acquire), 1);
         assert_eq!(insert.state.rollbacks.load(Ordering::Acquire), 0);
         close_thing(&mut thing);
@@ -2052,7 +2038,6 @@ functions:
 
         let write_fixture = relation_fixture(
             vec![
-                plan_row("relation0", "0x30"),
                 documents(vec![membership_document("0x30")]),
                 documents(vec![serde_json::json!({"iid": "0x10"})]),
                 insert_iid("0x31"),
@@ -2159,7 +2144,7 @@ functions:
             TypeBridgeStatus::Ok
         );
         assert_eq!(count, 1);
-        assert_eq!(write_fixture.state.query_count(), 12);
+        assert_eq!(write_fixture.state.query_count(), 11);
         assert_eq!(write_fixture.state.commits.load(Ordering::Acquire), 0);
         assert_eq!(write_fixture.state.rollbacks.load(Ordering::Acquire), 0);
         assert_eq!(
@@ -2172,13 +2157,9 @@ functions:
     #[test]
     fn relation_player_resolution_is_exact_and_ambiguous_hydration_rolls_back() {
         let fixture = relation_fixture(
-            vec![
-                Response::Result(QueryResult::Rows(vec![serde_json::json!({
-                    "relation0": {"iid": "0x20"},
-                    "player1": {"iid": "0x11"}
-                })])),
-                documents(vec![membership_with_relation_player_document("0x20")]),
-            ],
+            vec![documents(vec![membership_with_relation_player_document(
+                "0x20",
+            )])],
             COMMIT_SUCCESS,
         );
         let create = relation_create(&fixture.package, TypeKind::Relation, "event", "0x11");
@@ -2204,7 +2185,7 @@ functions:
         assert_eq!(player.reference().type_id().kind(), TypeKind::Relation);
         let queries = fixture.state.queries.lock().unwrap();
         // The relation-as-player reference resolves inside the write.
-        assert_eq!(queries.len(), 2);
+        assert_eq!(queries.len(), 1);
         assert!(queries[0].contains("$player1 isa! event"));
         assert!(queries[0].contains("$player1 iid 0x11"));
         assert!(!queries[0].contains("$player1 isa event"));
@@ -2212,13 +2193,10 @@ functions:
         close_thing(&mut thing);
 
         let ambiguous = relation_fixture(
-            vec![
-                plan_row("relation0", "0x20"),
-                documents(vec![
-                    membership_document("0x20"),
-                    membership_document("0x21"),
-                ]),
-            ],
+            vec![documents(vec![
+                membership_document("0x20"),
+                membership_document("0x21"),
+            ])],
             COMMIT_SUCCESS,
         );
         assert_eq!(
@@ -2236,7 +2214,11 @@ functions:
             TypeBridgeStatus::ExecutionFailed
         );
         assert!(thing.is_null());
-        assert_eq!(diagnostic(diagnostics).1, "provider_hydration_failed");
+        // Two relations in the write's own answer mean the write made two.
+        assert_eq!(
+            diagnostic(diagnostics).1,
+            "provider_identity_cardinality_invalid"
+        );
         assert_eq!(ambiguous.state.commits.load(Ordering::Acquire), 0);
         assert_eq!(ambiguous.state.rollbacks.load(Ordering::Acquire), 1);
         close_diagnostics(&mut diagnostics);
@@ -2427,13 +2409,8 @@ functions:
                 "commit_outcome_unknown",
             ),
         ] {
-            let fixture = relation_fixture(
-                vec![
-                    plan_row("relation0", "0x20"),
-                    documents(vec![membership_document("0x20")]),
-                ],
-                behavior,
-            );
+            let fixture =
+                relation_fixture(vec![documents(vec![membership_document("0x20")])], behavior);
             assert_eq!(
                 // SAFETY: all retained inputs and writable outputs remain live.
                 unsafe {

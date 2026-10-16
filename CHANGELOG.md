@@ -34,8 +34,13 @@ All notable changes to TypeBridge will be documented in this file.
   first. A put that gives a multi-valued or ordered field, or omits an
   ordered one, and every relation put still look the key up first.
 - When a projected relation insert or keyed entity put fails after its
-  write ran (including a failed read-back), a borrowed transaction is now
+  write ran (including hydration), a borrowed transaction is now
   rollback-only.
+- A projected relation insert or keyed entity put hydrates its result from
+  the write's own fetch, so one query does the whole call and no read-back
+  follows it. If that answer names two relations, the call fails with
+  `provider_identity_cardinality_invalid` (the write made two) instead of the
+  read-back's `provider_hydration_failed`.
 - On connections without the TypeDB 3.12+ `given` stage, a projected
   relation insert or keyed entity put whose text values contain control
   characters is refused with `literal_control_character_unsupported`
