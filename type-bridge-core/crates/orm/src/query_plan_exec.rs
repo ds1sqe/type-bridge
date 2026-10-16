@@ -65,6 +65,11 @@ impl PlanAnswer {
             Self::Exists(value) => StagedAnswerV3::Exists { value: *value },
             Self::Matched(value) => StagedAnswerV3::Matched { value: *value },
             Self::Rows(rows) => {
+                // A thing fetch answers documents under an empty row
+                // output; projecting them as rows would drop every value.
+                if matches!(plan.pipeline().last(), Some(Stage::Fetch(_))) {
+                    return Err(staged_documents_unsupported());
+                }
                 let QueryOutput::Rows { columns } = plan.output() else {
                     return Err(staged_documents_unsupported());
                 };
@@ -259,6 +264,13 @@ pub(crate) fn lower(plan: &QueryPlanV3) -> Result<(tql::Query, Option<GivenRowsS
             Stage::Offset { rows } => stages.push(tql::offset(*rows)),
             Stage::Limit { rows } => stages.push(tql::limit(*rows)),
             Stage::Fetch(document) => scope.fetch(document, &mut stages)?,
+            _ => {
+                return Err(failure(
+                    DiagnosticCategory::UnsupportedCapability,
+                    "query_plan_stage_unsupported",
+                    "this executor cannot lower the plan stage",
+                ));
+            }
         }
     }
     let projects = matches!(

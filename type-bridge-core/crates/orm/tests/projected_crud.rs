@@ -1567,3 +1567,63 @@ async fn a_failed_hydration_after_a_put_poisons_the_borrowed_transaction() {
     );
     transaction.rollback().await.unwrap();
 }
+
+#[tokio::test]
+async fn two_distinct_players_in_one_role_hydrate_from_several_documents() {
+    let installed = installed_polymorphic();
+    let party = type_id(TypeKind::Entity, "party");
+    let by_iid =
+        ProjectedReference::try_new(&installed, party.clone(), Some("0x10".into()), vec![])
+            .unwrap();
+    let by_key = ProjectedReference::try_new(
+        &installed,
+        party.clone(),
+        None,
+        vec![(
+            field(&party, "identifier"),
+            string_value(&installed, "identifier", "acme"),
+        )],
+    )
+    .unwrap();
+    let member = RoleId::new("membership", "member").unwrap();
+    let create = ProjectedCreate::try_new(
+        &installed,
+        type_id(TypeKind::Relation, "membership"),
+        vec![],
+        vec![(member.clone(), vec![by_iid, by_key])],
+    )
+    .unwrap();
+    let document = |player: &str, player_type: &str, key: &str| {
+        serde_json::json!({
+            "_iid": "0x20",
+            "_type": "membership",
+            "attributes": {},
+            "_role_0_iid": player,
+            "_role_0_type": player_type,
+            "_role_0_attributes": {"identifier": key}
+        })
+    };
+    let (backend, state) = RecordingBackend::new(
+        vec![documents(vec![
+            document("0x10", "person", "ada"),
+            document("0x11", "company", "acme"),
+        ])],
+        CommitBehavior::Success,
+    );
+    let database = Database::with_backend(Box::new(backend), "test");
+
+    let relation = ProjectedCrudExecutor::new(&installed)
+        .insert_relation(&database, &create)
+        .await
+        .unwrap();
+
+    let mut players: Vec<_> = relation.roles()[&member]
+        .iter()
+        .map(|player| player.iid().to_owned())
+        .collect();
+    players.sort();
+    assert_eq!(players, ["0x10", "0x11"]);
+    let state = state.lock().unwrap();
+    assert_eq!(state.queries.len(), 1);
+    assert_eq!(state.commits, 1);
+}

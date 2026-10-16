@@ -3437,7 +3437,9 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     }
 
     /// Every descriptor role in descriptor order (the document key order of
-    /// the released read-back), required when its minimum is at least one.
+    /// the released read-back), all listed optional: the fetch then yields a
+    /// document for every inserted relation, so zero documents strictly
+    /// mean nothing was inserted. Role cardinality is checked by hydration.
     fn document_roles(
         &self,
         prepared: &PreparedRelationCreate,
@@ -3448,14 +3450,16 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .roles
             .iter()
             .map(|descriptor_role| {
+                // A relation's role labels are unique (inherited roles keep
+                // their declaring relation but not a second label), so the
+                // label finds the one projected role.
                 let role = model
                     .query_tokens()
                     .roles()
                     .keys()
                     .find(|role| role.label().as_str() == descriptor_role.role_name)
                     .ok_or_else(|| write_plan_invalid(&prepared.type_id))?;
-                let required = descriptor_role.cardinality.is_some_and(|(min, _)| min >= 1);
-                Ok(DocumentRole::new(role.clone(), required))
+                Ok(DocumentRole::new(role.clone(), false))
             })
             .collect()
     }

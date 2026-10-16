@@ -568,3 +568,16 @@ fn opaque_plan_bytes_do_not_inherit_the_scalar_string_ceiling() {
             .is_err()
     );
 }
+
+#[test]
+fn staged_requests_carrying_a_thing_fetch_are_refused_at_admission() {
+    // Proxies do not advertise `query.fetch.thing` yet.
+    let mut fetching = spec();
+    fetching.plans = vec![entry(examples::fetch_written(false))];
+    let error = StagedRequestV3::new(fetching, &support::schema(), &advertisement()).unwrap_err();
+    assert_eq!(error.code().as_str(), "unsupported_required_capability");
+    assert_eq!(
+        error.category(),
+        type_bridge_contract::diagnostic::DiagnosticCategory::UnsupportedCapability
+    );
+}

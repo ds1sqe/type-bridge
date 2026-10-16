@@ -268,6 +268,7 @@ impl ThingDocument {
 /// Ordered V3 pipeline vocabulary. Read tails retain the V2 order.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Stage {
     /// Initial closed match conjunction.
     Match {
