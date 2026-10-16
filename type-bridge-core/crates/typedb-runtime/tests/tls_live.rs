@@ -893,8 +893,9 @@ async fn wrong_tls_trust_reports_tls_kind_live() {
     .expect("the unrelated CA must also fail direct gRPC admission");
     let message = error.to_string();
     // The driver stringifies tonic transport errors; only the pinned band-9
-    // driver's exact templates classify as TLS, so band 8 reports "other".
-    let expected_kind = if cfg!(feature = "band9") {
+    // driver's exact templates classify as TLS, so a band-8 connection
+    // reports "other" even in builds that also carry band 9.
+    let expected_kind = if expected.driver_band == 9 {
         "TypeDB transport failed: TLS/certificate failure"
     } else {
         "TypeDB transport failed: other transport"
