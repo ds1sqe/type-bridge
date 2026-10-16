@@ -121,7 +121,7 @@ def test_compile_each_node_kind(compiler):
 def test_compile_batch_joins_nodes_and_prefixes_the_operation(compiler):
     patterns = [EntityPattern("$p", "person"), HasPattern("$p", "age", "$a")]
     assert compiler.compile_batch(patterns) == "$p isa person\n$p has age $a"
-    assert compiler.compile_batch(patterns, "match") == "match\n$p isa person\n$p has age $a"
+    assert compiler.compile_batch(patterns, "match") == "match $p isa person; $p has age $a;"
 
 
 def test_raw_fetch_items_pass_through(compiler):

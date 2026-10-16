@@ -15,6 +15,7 @@ import type_bridge.crud as crud
 import type_bridge.fields as fields
 import type_bridge.migration as migration
 import type_bridge.models as models
+from tests.utils.typeql import assert_typeql_equivalent
 
 ROOT = Path(__file__).parents[3]
 PUBLIC_REFERENCE_MODULES = {
@@ -305,8 +306,9 @@ def test_transaction_context_has_no_handwritten_manager_factory() -> None:
 
 def test_raw_query_facade_remains_public() -> None:
     assert {"Query", "QueryBuilder"} <= set(type_bridge.__all__)
-    assert type_bridge.Query().match("$person isa person").fetch("$person").build() == (
-        'match $person isa person;\nfetch { "person": {  $person.*}};'
+    assert_typeql_equivalent(
+        type_bridge.Query().match("$person isa person").fetch("$person").build(),
+        'match $person isa person;\nfetch { "person": {  $person.*}};',
     )
 
 

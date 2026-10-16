@@ -296,30 +296,19 @@ class AttributeFlags:
         Returns:
             List of TypeQL annotation strings
         """
-        from type_bridge.typeql.annotations import (
-            format_card_annotation,
-            format_doc_meta_annotations,
+        from type_bridge import _rust_runtime
+
+        return _rust_runtime.rust_core()._render_schema_annotations(
+            {
+                "is_key": self.is_key,
+                "is_unique": self.is_unique,
+                "is_distinct": self.is_distinct,
+                "card_min": self.card_min,
+                "card_max": self.card_max,
+                "doc": self.doc,
+                "meta": self.meta,
+            }
         )
-
-        annotations = []
-        if self.is_key:
-            annotations.append("@key")
-        if self.is_unique:
-            annotations.append("@unique")
-        if self.is_distinct:
-            annotations.append("@distinct")
-
-        # @key alone implies @card(1..1). Bare @unique does not imply a
-        # cardinality, so its independently derived/declared card must survive.
-        should_output_card = self.card_min is not None or self.card_max is not None
-
-        if should_output_card and not self.is_key:
-            card_annotation = format_card_annotation(self.card_min, self.card_max)
-            if card_annotation:
-                annotations.append(card_annotation)
-
-        annotations.extend(format_doc_meta_annotations(self.doc, self.meta))
-        return annotations
 
 
 def Flag(*annotations: Any) -> Annotated[Any, AttributeFlags]:

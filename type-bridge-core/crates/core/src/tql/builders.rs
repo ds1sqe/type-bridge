@@ -386,6 +386,17 @@ pub fn delete_has(owner: &str, attribute: &str) -> Result<Deletable, TqlError> {
     })
 }
 
+pub fn delete_optional(items: Vec<Deletable>) -> Deletable {
+    Deletable {
+        inner: delete::Deletable::new(
+            None,
+            delete::DeletableKind::Optional {
+                deletables: items.into_iter().map(|value| value.inner).collect(),
+            },
+        ),
+    }
+}
+
 pub fn delete(items: Vec<Deletable>) -> Stage {
     Stage {
         inner: stage::Stage::Delete(stage::Delete::new(
@@ -933,4 +944,9 @@ pub fn render_commented(query: &Query, comment: &str) -> Result<String, TqlError
         return Err(TqlError::InvalidLegacyShape);
     }
     Ok(format!("# {comment}\n{}", super::render(query)?))
+}
+
+/// Join already-rendered complete queries for retained document-returning APIs.
+pub fn render_query_document(queries: &[String]) -> String {
+    queries.join("\n\n")
 }

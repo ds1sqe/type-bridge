@@ -8,7 +8,14 @@ from typing import TYPE_CHECKING, Any, cast
 from .base import Expression
 
 if TYPE_CHECKING:
-    from type_bridge.query.ast import FetchItem, FunctionCallValue, Pattern, Value
+    from type_bridge.query.ast import (
+        FetchClause,
+        FetchItem,
+        FunctionCallValue,
+        MatchLetClause,
+        Pattern,
+        Value,
+    )
 
 
 @dataclass
@@ -177,25 +184,16 @@ class FunctionQuery[T]:
         """Generate just the function call expression string."""
         from type_bridge.query.compiler import QueryCompiler
 
-        return QueryCompiler().compile(self.to_call_ast())
+        return QueryCompiler()._compile(self.to_call_ast())
 
     def to_match_let(
         self,
         result_vars: list[str] | None = None,
     ) -> str:
         """Generate the match let clause string for calling this function."""
-        vars_list = self._get_result_vars(result_vars)
-        call_ast = self.to_call_ast()
-        is_stream = self.return_type.is_stream
-
-        from type_bridge.query.ast import LetAssignment, MatchLetClause
         from type_bridge.query.compiler import QueryCompiler
 
-        assignment = LetAssignment(variables=vars_list, expression=call_ast, is_stream=is_stream)
-        clause = MatchLetClause(assignments=[assignment])
-        compiler = QueryCompiler()
-
-        return compiler.compile(clause)
+        return QueryCompiler()._compile(self._match_let_ast(result_vars))
 
     def to_fetch(
         self,
@@ -203,8 +201,32 @@ class FunctionQuery[T]:
         fetch_keys: list[str] | None = None,
     ) -> str:
         """Generate the fetch clause string for the function results."""
-        from type_bridge.query.ast import FetchClause, FetchVariable
         from type_bridge.query.compiler import QueryCompiler
+
+        return QueryCompiler()._compile(self._fetch_ast(result_vars, fetch_keys))
+
+    def _match_let_ast(
+        self,
+        result_vars: list[str] | None = None,
+    ) -> MatchLetClause:
+        """Generate the match let clause string for calling this function."""
+        vars_list = self._get_result_vars(result_vars)
+        call_ast = self.to_call_ast()
+        is_stream = self.return_type.is_stream
+
+        from type_bridge.query.ast import LetAssignment, MatchLetClause
+
+        assignment = LetAssignment(variables=vars_list, expression=call_ast, is_stream=is_stream)
+        clause = MatchLetClause(assignments=[assignment])
+        return clause
+
+    def _fetch_ast(
+        self,
+        result_vars: list[str] | None = None,
+        fetch_keys: list[str] | None = None,
+    ) -> FetchClause:
+        """Generate the fetch clause string for the function results."""
+        from type_bridge.query.ast import FetchClause, FetchVariable
 
         vars_list = self._get_result_vars(result_vars)
 
@@ -216,9 +238,7 @@ class FunctionQuery[T]:
 
         items = [FetchVariable(key=k, var=v) for k, v in zip(keys, vars_list, strict=True)]
         clause = FetchClause(items=cast(list["FetchItem | str"], items))
-        compiler = QueryCompiler()
-
-        return compiler.compile(clause)
+        return clause
 
     def to_query(
         self,
@@ -246,23 +266,18 @@ class FunctionQuery[T]:
             >>> fn.to_query(limit=10, offset=5)
             'match let $id in get-ids(); offset 5; limit 10; fetch { "id": $id };'
         """
-        parts = [self.to_match_let(result_vars)]
+        from type_bridge.query.compiler import QueryCompiler
 
-        # Add sort if specified (must come before offset/limit)
+        sort = []
         if sort_var:
             var = sort_var if sort_var.startswith("$") else f"${sort_var}"
-            parts.append(f"sort {var} {sort_order};")
-
-        # Add offset before limit (TypeQL order)
-        if offset is not None:
-            parts.append(f"offset {offset};")
-
-        if limit is not None:
-            parts.append(f"limit {limit};")
-
-        parts.append(self.to_fetch(result_vars, fetch_keys))
-
-        return "\n".join(parts)
+            sort = [(var, sort_order)]
+        return QueryCompiler()._compile_query(
+            [self._match_let_ast(result_vars), self._fetch_ast(result_vars, fetch_keys)],
+            sort,
+            offset,
+            limit,
+        )
 
     def to_reduce_query(
         self,

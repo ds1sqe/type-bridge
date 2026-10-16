@@ -411,10 +411,10 @@ class RustTypeDBManager[T: "TypeDBType"]:
                 self._hook_runner.run_post(event, self.model_class, instance)
 
     def _clear_attributes(self, instance: T, attr_names: list[str], var: str) -> None:
+        if not attr_names:
+            return
         iid = getattr(instance, "_iid", None)
-        if iid:
-            match_line = f"{var} isa {self.model_class.get_type_name()}, iid {iid};"
-        elif isinstance(instance, Entity):
+        if not iid and isinstance(instance, Entity):
             filters = _key_filters_for_entity(instance)
             expressions = _entity_filter_expressions(self.model_class, filters)
             lowered = [
@@ -427,24 +427,16 @@ class RustTypeDBManager[T: "TypeDBType"]:
             iid = rows[0].get("_iid")
             if not iid:
                 return
-            match_line = f"{var} isa {self.model_class.get_type_name()}, iid {iid};"
-        elif isinstance(instance, Relation):
+        elif not iid and isinstance(instance, Relation):
             iid = self._resolve_delete_iid(instance)
             if not iid:
                 return
-            match_line = f"{var} isa {self.model_class.get_type_name()}, iid {iid};"
-        else:
+        elif not iid:
             return
 
-        match_parts = [f"match {match_line}"]
-        delete_parts = []
-        for index, attr_name in enumerate(attr_names):
-            old_var = f"$old_attr_{index}"
-            match_parts.append(
-                f"try {{ {var} has {attr_name} {old_var}; {old_var} isa {attr_name}; }};"
-            )
-            delete_parts.append(f"try {{ {old_var} of {var}; }};")
-        query = "\n".join(match_parts) + "\ndelete\n" + "\n".join(delete_parts)
+        query = rust_core()._clear_attribute_query(
+            self.model_class.get_type_name(), iid, var, attr_names
+        )
         _execute_write_query(self._connection, query)
 
 

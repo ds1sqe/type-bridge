@@ -429,9 +429,44 @@ fn py_value_error(message: impl Into<String>) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(message.into())
 }
 
+#[pyfunction(name = "_render_legacy_migration_operation")]
+fn render_legacy_migration_operation(
+    py: Python<'_>,
+    operation: Bound<'_, PyAny>,
+) -> PyResult<Py<PyAny>> {
+    use type_bridge_core_lib::__internal as tql;
+    use type_bridge_migration::spec::OperationSpec;
+    let operation: OperationSpec =
+        depythonize(&operation).map_err(|error| py_value_error(error.to_string()))?;
+    let operation = operation
+        .normalized()
+        .map_err(|error| py_value_error(error.to_string()))?;
+    let steps = type_bridge_migration::plan::render_legacy_operation_steps(&operation)
+        .map_err(|error| py_value_error(error.to_string()))?;
+    let forward_steps = steps
+        .iter()
+        .map(|step| step.forward.clone())
+        .collect::<Vec<_>>();
+    let reverse_steps = steps
+        .iter()
+        .rev()
+        .map(|step| step.reverse.clone())
+        .collect::<Option<Vec<_>>>();
+    let result = serde_json::json!({
+        "forward": tql::render_query_document(&forward_steps),
+        "reverse": reverse_steps.as_ref().map(|queries| tql::render_query_document(queries)),
+        "forward_steps": forward_steps,
+        "reverse_steps": reverse_steps,
+    });
+    pythonize(py, &result)
+        .map(|value| value.unbind())
+        .map_err(|error| py_value_error(error.to_string()))
+}
+
 /// Register migration-runtime facade functions on the Python module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(normalize_migration_spec, m)?)?;
+    m.add_function(wrap_pyfunction!(render_legacy_migration_operation, m)?)?;
     m.add_function(wrap_pyfunction!(normalize_migration_graph, m)?)?;
     m.add_function(wrap_pyfunction!(migration_spec_to_json, m)?)?;
     m.add_function(wrap_pyfunction!(migration_spec_from_json, m)?)?;

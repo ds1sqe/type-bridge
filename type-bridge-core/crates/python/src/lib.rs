@@ -246,10 +246,92 @@ impl QueryCompiler {
             .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
     }
 
+    #[pyo3(signature = (clauses, sort, offset=None, limit=None))]
+    fn _compile_query(
+        &self,
+        clauses: Vec<Bound<'_, PyAny>>,
+        sort: Vec<(String, String)>,
+        offset: Option<u64>,
+        limit: Option<u64>,
+    ) -> PyResult<String> {
+        let mut clauses = clauses
+            .iter()
+            .map(|value| {
+                depythonize::<core::ast::Clause>(value)
+                    .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let mut modifiers = Vec::new();
+        if !sort.is_empty() {
+            let fields = sort
+                .into_iter()
+                .map(|(variable, direction)| {
+                    let ascending = match direction.as_str() {
+                        "asc" => true,
+                        "desc" => false,
+                        _ => {
+                            return Err(pyo3::exceptions::PyValueError::new_err(
+                                "invalid sort direction",
+                            ));
+                        }
+                    };
+                    Ok(core::ast::SortField {
+                        variable,
+                        ascending,
+                    })
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            modifiers.push(core::ast::Clause::Sort(fields));
+        }
+        if let Some(value) = offset {
+            modifiers.push(core::ast::Clause::Offset(value));
+        }
+        if let Some(value) = limit {
+            modifiers.push(core::ast::Clause::Limit(value));
+        }
+        let index = clauses
+            .iter()
+            .position(|value| matches!(value, core::ast::Clause::Fetch(_)))
+            .unwrap_or(clauses.len());
+        clauses.splice(index..index, modifiers).for_each(drop);
+        self.inner
+            .try_compile(&clauses)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+    }
+
+    fn _compile_batch(&self, nodes: Vec<Bound<'_, PyAny>>, operation: &str) -> PyResult<String> {
+        let nodes = nodes
+            .iter()
+            .map(|value| {
+                depythonize::<core::ast::QueryNode>(value)
+                    .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        core::__internal::compile_legacy_batch(&nodes, operation)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+    }
+
+    fn _compile_fetch_items(&self, items: Vec<Bound<'_, PyAny>>) -> PyResult<Vec<String>> {
+        let items = items
+            .iter()
+            .map(|value| {
+                depythonize::<core::ast::FetchItem>(value)
+                    .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        core::__internal::render_legacy_fetch_items(&items)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+    }
+
     /// Compile one node dict tagged with its kind (`{"Pattern": {...}}`):
     /// a clause, pattern, statement, constraint, or value.
     fn compile_node(&self, py: Python<'_>, node: Bound<'_, PyAny>) -> PyResult<String> {
         warn_legacy_query_api(py)?;
+        self._compile_node(node)
+    }
+
+    /// Non-warning [`Self::compile_node`] for type-bridge's own internal callers.
+    fn _compile_node(&self, node: Bound<'_, PyAny>) -> PyResult<String> {
         let node: core::ast::QueryNode = depythonize(&node).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!(
                 "Failed to deserialize query node: {}",
@@ -264,6 +346,11 @@ impl QueryCompiler {
     /// Render the body of a legacy match/write clause through structured nodes.
     fn compile_clause_body(&self, py: Python<'_>, clause: Bound<'_, PyAny>) -> PyResult<String> {
         warn_legacy_query_api(py)?;
+        self._compile_clause_body(clause)
+    }
+
+    /// Non-warning [`Self::compile_clause_body`] for internal callers.
+    fn _compile_clause_body(&self, clause: Bound<'_, PyAny>) -> PyResult<String> {
         let clause: core::ast::Clause = depythonize(&clause)
             .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
         core::__internal::legacy_clause_body(&clause)
@@ -583,6 +670,16 @@ fn py_to_json_value(value: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
 
 /// Detect the TypeDB value type from a Python object and return (formatted_string, type_hint).
 /// This handles the Python type dispatch that cannot be done in pure Rust.
+fn render_python_literal(value: serde_json::Value, value_type: &str) -> PyResult<String> {
+    let value = core::ast::Value::Literal(core::ast::LiteralValue {
+        value,
+        value_type: value_type.to_owned(),
+    });
+    core::__internal::lower_legacy_value(&value)
+        .map(|value| core::__internal::render_expression(&value))
+        .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+}
+
 fn detect_type_and_format(value: &Bound<'_, PyAny>) -> PyResult<String> {
     let py = value.py();
 
@@ -592,7 +689,7 @@ fn detect_type_and_format(value: &Bound<'_, PyAny>) -> PyResult<String> {
         // Guard: don't unwrap if .value is a method or the object is a string/bool/int
         // (strings have .value... no they don't in Python, but be safe)
         if inner.is_none() {
-            return Ok("\"None\"".to_string());
+            return render_python_literal(serde_json::json!("None"), "string");
         }
         inner
     } else {
@@ -602,11 +699,7 @@ fn detect_type_and_format(value: &Bound<'_, PyAny>) -> PyResult<String> {
     // 2. Check bool BEFORE int (Python bool is subclass of int)
     if value.is_instance_of::<PyBool>() {
         let b: bool = value.extract()?;
-        return Ok(if b {
-            "true".to_string()
-        } else {
-            "false".to_string()
-        });
+        return render_python_literal(serde_json::json!(b), "boolean");
     }
 
     // 3. Check for Decimal (from decimal module)
@@ -614,7 +707,7 @@ fn detect_type_and_format(value: &Bound<'_, PyAny>) -> PyResult<String> {
     let decimal_type = decimal_mod.getattr("Decimal")?;
     if value.is_instance(&decimal_type)? {
         let s = value.str()?.to_string();
-        return Ok(format!("{}dec", s));
+        return render_python_literal(serde_json::json!(s), "decimal");
     }
 
     // 4. Check float BEFORE int (0.0 must format as "0.0", not "0")
@@ -622,12 +715,12 @@ fn detect_type_and_format(value: &Bound<'_, PyAny>) -> PyResult<String> {
     //    So we must match Python's behavior by calling Python's str() on the float.
     if value.is_instance_of::<pyo3::types::PyFloat>() {
         let s = value.str()?.to_string();
-        return Ok(s);
+        return render_python_literal(serde_json::json!(s), "double");
     }
 
     // 5. Check int
     if let Ok(i) = value.extract::<i64>() {
-        return Ok(i.to_string());
+        return render_python_literal(serde_json::json!(i), "long");
     }
 
     // 6. Check datetime (before date, since datetime is subclass of date)
@@ -635,14 +728,19 @@ fn detect_type_and_format(value: &Bound<'_, PyAny>) -> PyResult<String> {
     let datetime_type = datetime_mod.getattr("datetime")?;
     if value.is_instance(&datetime_type)? {
         let iso: String = value.call_method0("isoformat")?.extract()?;
-        return Ok(iso);
+        let kind = if value.getattr("tzinfo")?.is_none() {
+            "datetime"
+        } else {
+            "datetime-tz"
+        };
+        return render_python_literal(serde_json::json!(iso), kind);
     }
 
     // 7. Check date
     let date_type = datetime_mod.getattr("date")?;
     if value.is_instance(&date_type)? {
         let iso: String = value.call_method0("isoformat")?.extract()?;
-        return Ok(iso);
+        return render_python_literal(serde_json::json!(iso), "date");
     }
 
     // 8. Check timedelta / isodate.Duration
@@ -653,7 +751,7 @@ fn detect_type_and_format(value: &Bound<'_, PyAny>) -> PyResult<String> {
         let formatted: String = isodate_mod
             .call_method1("duration_isoformat", (&value,))?
             .extract()?;
-        return Ok(formatted);
+        return render_python_literal(serde_json::json!(formatted), "duration");
     }
 
     // 9. Check for isodate.Duration explicitly (it may not be a timedelta subclass)
@@ -664,17 +762,17 @@ fn detect_type_and_format(value: &Bound<'_, PyAny>) -> PyResult<String> {
         let formatted: String = isodate_mod
             .call_method1("duration_isoformat", (&value,))?
             .extract()?;
-        return Ok(formatted);
+        return render_python_literal(serde_json::json!(formatted), "duration");
     }
 
     // 10. String (check last among common types)
     if let Ok(s) = value.extract::<String>() {
-        return Ok(core::value_coercion::format_string_literal(&s));
+        return render_python_literal(serde_json::json!(s), "string");
     }
 
     // 11. Fallback: convert to string, then quote+escape
     let s = value.str()?.to_string();
-    Ok(core::value_coercion::format_string_literal(&s))
+    render_python_literal(serde_json::json!(s), "string")
 }
 
 /// Standalone function: format a Python value for TypeQL (infers type).
@@ -682,6 +780,36 @@ fn detect_type_and_format(value: &Bound<'_, PyAny>) -> PyResult<String> {
 #[pyfunction]
 fn format_value(value: Bound<'_, PyAny>) -> PyResult<String> {
     detect_type_and_format(&value)
+}
+
+#[pyfunction]
+fn _clear_attribute_query(
+    type_name: &str,
+    iid: &str,
+    variable: &str,
+    attributes: Vec<String>,
+) -> PyResult<String> {
+    use core::__internal as tql;
+    let build = || -> Result<String, tql::TqlError> {
+        let mut patterns = vec![tql::thing(
+            variable,
+            vec![tql::isa(type_name, false)?, tql::iid(iid)?],
+        )?];
+        let mut deletables = Vec::new();
+        for (index, name) in attributes.iter().enumerate() {
+            let old = format!("$old_attr_{index}");
+            patterns.push(tql::optional(vec![
+                tql::thing(variable, vec![tql::has(name, tql::var(&old)?)?])?,
+                tql::thing(&old, vec![tql::isa(name, false)?])?,
+            ]));
+            deletables.push(tql::delete_optional(vec![tql::delete_has(variable, &old)?]));
+        }
+        tql::render(&tql::pipeline(vec![
+            tql::match_stage(patterns),
+            tql::delete(deletables),
+        ]))
+    };
+    build().map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
 }
 
 /// Standalone coerce function.
@@ -773,6 +901,7 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(render_models_json, m)?)?;
     m.add_function(wrap_pyfunction!(generated_declared_descriptors_json, m)?)?;
     m.add_function(wrap_pyfunction!(format_value, m)?)?;
+    m.add_function(wrap_pyfunction!(_clear_attribute_query, m)?)?;
     m.add_function(wrap_pyfunction!(coerce_value, m)?)?;
     m.add_function(wrap_pyfunction!(transpiler::toml_to_typeql, m)?)?;
     m.add_function(wrap_pyfunction!(run_v2_cli, m)?)?;

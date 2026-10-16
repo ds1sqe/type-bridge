@@ -1175,6 +1175,160 @@ impl PyRuntimeProjection {
             type_bridge_contract::limits::QueryLimits::CANONICAL,
         )
     }
+
+    fn lower_query_builder_match_entity(
+        &self,
+        py: Python<'_>,
+        model: Py<PyType>,
+        variable: &str,
+        filters: &Bound<'_, PyDict>,
+    ) -> PyResult<Clause> {
+        let id = self.package.model_id_for_class(py, &model)?;
+        if id.kind() != TypeKind::Entity {
+            return Err(py_type_error(
+                "generated entity matches require an exact installed entity class",
+            ));
+        }
+        let descriptor = self
+            .package
+            .projection
+            .entity_descriptor(&id)
+            .map_err(py_orm_error)?;
+        let mut constraints = Vec::with_capacity(filters.len());
+        for (field_name, value) in filters.iter() {
+            let field_name: String = field_name
+                .cast_exact::<PyString>()
+                .map_err(|_| py_type_error("generated entity filter names must be exact strings"))?
+                .extract()?;
+            let field = descriptor
+                .owned_attributes
+                .iter()
+                .find(|field| field.field_name == field_name)
+                .ok_or_else(|| {
+                    py_value_error(format!(
+                        "generated entity {:?} has no projected field {field_name:?}",
+                        id.label().as_str()
+                    ))
+                })?;
+            let attribute_id = self
+                .package
+                .type_by_label(&field.attr_name, TypeKind::Attribute)?;
+            let attribute_class = self
+                .package
+                .class(attribute_id, ProjectedModelForm::Complete)?;
+            let scalar = if value.get_type().as_ptr() == attribute_class.bind(py).as_ptr() {
+                value.call_method0("runtime_attribute_value")?
+            } else {
+                value
+            };
+            let value = attribute_value_from_py(py, &scalar, field.value_type)?;
+            constraints.push(Constraint::Has {
+                attr_name: field.attr_name.clone(),
+                value: value.to_ast_value(),
+            });
+        }
+        Ok(Clause::Match(vec![Pattern::Entity {
+            variable: variable.to_owned(),
+            type_name: id.label().as_str().to_owned(),
+            constraints,
+            is_strict: false,
+        }]))
+    }
+
+    fn lower_query_builder_insert_entity(
+        &self,
+        py: Python<'_>,
+        instance: Bound<'_, PyAny>,
+        variable: &str,
+    ) -> PyResult<Clause> {
+        let (id, form) = self.package.identify_value(py, &instance)?;
+        if id.kind() != TypeKind::Entity || form != ProjectedModelForm::Complete {
+            return Err(py_type_error(
+                "generated entity inserts require an exact installed complete entity",
+            ));
+        }
+        let descriptor = self
+            .package
+            .projection
+            .entity_descriptor(&id)
+            .map_err(py_orm_error)?;
+        let attributes = lower_attributes(
+            py,
+            self.package.as_ref(),
+            &id,
+            &descriptor.owned_attributes,
+            &instance,
+        )?;
+        let mut statements = vec![Statement::Isa {
+            variable: variable.to_owned(),
+            type_name: id.label().as_str().to_owned(),
+        }];
+        statements.extend(
+            attributes
+                .into_iter()
+                .map(|(attribute, value)| Statement::Has {
+                    subject_var: variable.to_owned(),
+                    attr_name: attribute,
+                    value: value.to_ast_value(),
+                }),
+        );
+        Ok(Clause::Insert(statements))
+    }
+
+    fn lower_query_builder_match_relation(
+        &self,
+        py: Python<'_>,
+        model: Py<PyType>,
+        variable: &str,
+        role_players: Option<Bound<'_, PyDict>>,
+    ) -> PyResult<Clause> {
+        let id = self.package.model_id_for_class(py, &model)?;
+        if id.kind() != TypeKind::Relation {
+            return Err(py_type_error(
+                "generated relation matches require an exact installed relation class",
+            ));
+        }
+        let projected = &self.package.projection.projection().models()[&id];
+        let mut players = Vec::new();
+        if let Some(role_players) = role_players {
+            players.reserve(role_players.len());
+            for (role_name, player_variable) in role_players.iter() {
+                let role_name: String = role_name
+                    .cast_exact::<PyString>()
+                    .map_err(|_| {
+                        py_type_error("generated relation role names must be exact strings")
+                    })?
+                    .extract()?;
+                let token = projected
+                    .query_tokens()
+                    .roles()
+                    .values()
+                    .find(|token| token.target_name().as_str() == role_name)
+                    .ok_or_else(|| {
+                        py_value_error(format!(
+                            "generated relation {:?} has no projected role {role_name:?}",
+                            id.label().as_str()
+                        ))
+                    })?;
+                let player_variable: String = player_variable
+                    .cast_exact::<PyString>()
+                    .map_err(|_| {
+                        py_type_error("generated relation player variables must be exact strings")
+                    })?
+                    .extract()?;
+                players.push(RolePlayer {
+                    role: token.role().label().as_str().to_owned(),
+                    player_var: player_variable,
+                });
+            }
+        }
+        Ok(Clause::Match(vec![Pattern::Relation {
+            variable: variable.to_owned(),
+            type_name: id.label().as_str().to_owned(),
+            role_players: players,
+            constraints: Vec::new(),
+        }]))
+    }
 }
 
 #[pymethods]
@@ -2008,7 +2162,7 @@ impl PyRuntimeProjection {
         PyList::new(py, records)
     }
 
-    /// Compile a retained raw-query entity match from one exact generated class.
+    /// Retained string fragment API, deprecated until removal in 3.0.
     fn query_builder_match_entity(
         &self,
         py: Python<'_>,
@@ -2016,103 +2170,53 @@ impl PyRuntimeProjection {
         variable: &str,
         filters: &Bound<'_, PyDict>,
     ) -> PyResult<String> {
-        let id = self.package.model_id_for_class(py, &model)?;
-        if id.kind() != TypeKind::Entity {
-            return Err(py_type_error(
-                "generated entity matches require an exact installed entity class",
-            ));
-        }
-        let descriptor = self
-            .package
-            .projection
-            .entity_descriptor(&id)
-            .map_err(py_orm_error)?;
-        let mut constraints = Vec::with_capacity(filters.len());
-        for (field_name, value) in filters.iter() {
-            let field_name: String = field_name
-                .cast_exact::<PyString>()
-                .map_err(|_| py_type_error("generated entity filter names must be exact strings"))?
-                .extract()?;
-            let field = descriptor
-                .owned_attributes
-                .iter()
-                .find(|field| field.field_name == field_name)
-                .ok_or_else(|| {
-                    py_value_error(format!(
-                        "generated entity {:?} has no projected field {field_name:?}",
-                        id.label().as_str()
-                    ))
-                })?;
-            let attribute_id = self
-                .package
-                .type_by_label(&field.attr_name, TypeKind::Attribute)?;
-            let attribute_class = self
-                .package
-                .class(attribute_id, ProjectedModelForm::Complete)?;
-            let scalar = if value.get_type().as_ptr() == attribute_class.bind(py).as_ptr() {
-                value.call_method0("runtime_attribute_value")?
-            } else {
-                value
-            };
-            let value = attribute_value_from_py(py, &scalar, field.value_type)?;
-            constraints.push(Constraint::Has {
-                attr_name: field.attr_name.clone(),
-                value: value.to_ast_value(),
-            });
-        }
+        crate::warn_legacy_query_api(py)?;
         compatibility_clause_body(
-            Clause::Match(vec![Pattern::Entity {
-                variable: variable.to_owned(),
-                type_name: id.label().as_str().to_owned(),
-                constraints,
-                is_strict: false,
-            }]),
+            self.lower_query_builder_match_entity(py, model, variable, filters)?,
             "match",
         )
     }
 
-    /// Compile a retained raw-query entity insert from one exact generated value.
+    fn _query_builder_match_entity_clause(
+        &self,
+        py: Python<'_>,
+        model: Py<PyType>,
+        variable: &str,
+        filters: &Bound<'_, PyDict>,
+    ) -> PyResult<Py<PyAny>> {
+        crate::pythonize_serde_value(
+            py,
+            &self.lower_query_builder_match_entity(py, model, variable, filters)?,
+        )
+    }
+
+    /// Retained string fragment API, deprecated until removal in 3.0.
     fn query_builder_insert_entity(
         &self,
         py: Python<'_>,
         instance: Bound<'_, PyAny>,
         variable: &str,
     ) -> PyResult<String> {
-        let (id, form) = self.package.identify_value(py, &instance)?;
-        if id.kind() != TypeKind::Entity || form != ProjectedModelForm::Complete {
-            return Err(py_type_error(
-                "generated entity inserts require an exact installed complete entity",
-            ));
-        }
-        let descriptor = self
-            .package
-            .projection
-            .entity_descriptor(&id)
-            .map_err(py_orm_error)?;
-        let attributes = lower_attributes(
-            py,
-            self.package.as_ref(),
-            &id,
-            &descriptor.owned_attributes,
-            &instance,
-        )?;
-        let mut statements = vec![Statement::Isa {
-            variable: variable.to_owned(),
-            type_name: id.label().as_str().to_owned(),
-        }];
-        statements.extend(
-            attributes
-                .into_iter()
-                .map(|(attribute, value)| Statement::Has {
-                    subject_var: variable.to_owned(),
-                    attr_name: attribute,
-                    value: value.to_ast_value(),
-                }),
-        );
-        compatibility_clause_body(Clause::Insert(statements), "insert")
+        crate::warn_legacy_query_api(py)?;
+        compatibility_clause_body(
+            self.lower_query_builder_insert_entity(py, instance, variable)?,
+            "insert",
+        )
     }
 
-    /// Compile a retained raw-query relation match from generated role tokens.
+    fn _query_builder_insert_entity_clause(
+        &self,
+        py: Python<'_>,
+        instance: Bound<'_, PyAny>,
+        variable: &str,
+    ) -> PyResult<Py<PyAny>> {
+        crate::pythonize_serde_value(
+            py,
+            &self.lower_query_builder_insert_entity(py, instance, variable)?,
+        )
+    }
+
+    /// Retained string fragment API, deprecated until removal in 3.0.
     #[pyo3(signature = (model, variable, role_players=None))]
     fn query_builder_match_relation(
         &self,
@@ -2121,54 +2225,24 @@ impl PyRuntimeProjection {
         variable: &str,
         role_players: Option<Bound<'_, PyDict>>,
     ) -> PyResult<String> {
-        let id = self.package.model_id_for_class(py, &model)?;
-        if id.kind() != TypeKind::Relation {
-            return Err(py_type_error(
-                "generated relation matches require an exact installed relation class",
-            ));
-        }
-        let projected = &self.package.projection.projection().models()[&id];
-        let mut players = Vec::new();
-        if let Some(role_players) = role_players {
-            players.reserve(role_players.len());
-            for (role_name, player_variable) in role_players.iter() {
-                let role_name: String = role_name
-                    .cast_exact::<PyString>()
-                    .map_err(|_| {
-                        py_type_error("generated relation role names must be exact strings")
-                    })?
-                    .extract()?;
-                let token = projected
-                    .query_tokens()
-                    .roles()
-                    .values()
-                    .find(|token| token.target_name().as_str() == role_name)
-                    .ok_or_else(|| {
-                        py_value_error(format!(
-                            "generated relation {:?} has no projected role {role_name:?}",
-                            id.label().as_str()
-                        ))
-                    })?;
-                let player_variable: String = player_variable
-                    .cast_exact::<PyString>()
-                    .map_err(|_| {
-                        py_type_error("generated relation player variables must be exact strings")
-                    })?
-                    .extract()?;
-                players.push(RolePlayer {
-                    role: token.role().label().as_str().to_owned(),
-                    player_var: player_variable,
-                });
-            }
-        }
+        crate::warn_legacy_query_api(py)?;
         compatibility_clause_body(
-            Clause::Match(vec![Pattern::Relation {
-                variable: variable.to_owned(),
-                type_name: id.label().as_str().to_owned(),
-                role_players: players,
-                constraints: Vec::new(),
-            }]),
+            self.lower_query_builder_match_relation(py, model, variable, role_players)?,
             "match",
+        )
+    }
+
+    #[pyo3(signature = (model, variable, role_players=None))]
+    fn _query_builder_match_relation_clause(
+        &self,
+        py: Python<'_>,
+        model: Py<PyType>,
+        variable: &str,
+        role_players: Option<Bound<'_, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        crate::pythonize_serde_value(
+            py,
+            &self.lower_query_builder_match_relation(py, model, variable, role_players)?,
         )
     }
 

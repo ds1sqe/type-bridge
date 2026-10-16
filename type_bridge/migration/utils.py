@@ -25,16 +25,18 @@ def type_exists(db: "Database", type_name: str) -> bool:
         >>> type_exists(db, "nonexistent")
         False
     """
-    query = f"""
-    match $t isa {type_name};
-    fetch {{ $t.* }};
-    """
-
     try:
+        from type_bridge.query import Query
+        from type_bridge.query.ast import EntityPattern
+
+        query = Query()
+        query.match_clause.patterns.append(EntityPattern(variable="$t", type_name=type_name))
+        query.fetch("$t")
+        query_text = query.build()
         with db.transaction("read") as tx:
             # If type exists, query succeeds (even with 0 results)
             # If type doesn't exist, query raises an error
-            list(tx.execute(query))
+            list(tx.execute(query_text))
             return True
     except Exception:
         return False

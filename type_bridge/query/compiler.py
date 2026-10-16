@@ -7,6 +7,7 @@ into the core's serde form.
 from __future__ import annotations
 
 import math
+import warnings
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -59,9 +60,22 @@ from type_bridge.query.ast import (
     UpdateClause,
     Value,
     ValueComparisonPattern,
+    _NativePattern,
+    _NativeStatement,
 )
 
 _core_compiler = _CoreQueryCompiler()
+_LEGACY_DEPRECATION = (
+    "Legacy query nodes are deprecated since 2.3.0 and will be removed in 3.0; "
+    "use generated typed query plans."
+)
+
+
+def _warn_legacy_query_api() -> None:
+    # stacklevel 3 attributes the warning to the caller of the public method.
+    warnings.warn(_LEGACY_DEPRECATION, DeprecationWarning, stacklevel=3)
+
+
 _MIN_INTEGER = -(2**63)
 _MAX_INTEGER = 2**63 - 1
 
@@ -152,6 +166,8 @@ def _constraint_to_dict(constraint: Constraint) -> dict[str, Any]:
 
 def _pattern_to_dict(pattern: Pattern) -> dict[str, Any]:
     """Convert a Pattern AST node to a serde-compatible dict."""
+    if isinstance(pattern, _NativePattern):
+        return pattern.data
     if isinstance(pattern, EntityPattern):
         return {
             "type": "Entity",
@@ -228,6 +244,8 @@ def _pattern_to_dict(pattern: Pattern) -> dict[str, Any]:
 
 def _statement_to_dict(stmt: Statement) -> dict[str, Any]:
     """Convert a Statement AST node to a serde-compatible dict."""
+    if isinstance(stmt, _NativeStatement):
+        return stmt.data
     if isinstance(stmt, HasStatement):
         return {
             "type": "Has",
@@ -357,11 +375,13 @@ class QueryCompiler:
         Raises:
             ValueError: The node cannot be marshalled or represented as TypeQL.
         """
-        return _core_compiler.compile_node(_node_to_dict(node))
+        _warn_legacy_query_api()
+        return self._compile(node)
 
     def compile_clause_body(self, clause: Clause) -> str:
         """Render a legacy clause body through the native AST adapter."""
-        return _core_compiler.compile_clause_body(_clause_to_dict(clause))
+        _warn_legacy_query_api()
+        return self._compile_clause_body(clause)
 
     def compile_batch(self, nodes: list[QueryNode], operation: str = "") -> str:
         """Compile a list of nodes into a single query string.
@@ -371,7 +391,27 @@ class QueryCompiler:
             operation: Optional operation keyword (e.g., "match", "insert") to
                 prepend when the nodes are bare patterns or statements.
         """
-        query = "\n".join(self.compile(node) for node in nodes)
-        if operation:
-            return f"{operation}\n{query}"
-        return query
+        _warn_legacy_query_api()
+        return _core_compiler._compile_batch([_node_to_dict(node) for node in nodes], operation)
+
+    def _compile(self, node: QueryNode) -> str:
+        """Non-warning :meth:`compile` for type-bridge's own internal callers."""
+        return _core_compiler._compile_node(_node_to_dict(node))
+
+    def _compile_clause_body(self, clause: Clause) -> str:
+        """Non-warning :meth:`compile_clause_body` for internal callers."""
+        return _core_compiler._compile_clause_body(_clause_to_dict(clause))
+
+    def _compile_query(
+        self,
+        clauses: list[Clause],
+        sort: list[tuple[str, str]],
+        offset: int | None,
+        limit: int | None,
+    ) -> str:
+        return _core_compiler._compile_query(
+            [_clause_to_dict(clause) for clause in clauses], sort, offset, limit
+        )
+
+    def _compile_fetch_items(self, items: list[FetchItem]) -> list[str]:
+        return _core_compiler._compile_fetch_items([_fetch_item_to_dict(item) for item in items])

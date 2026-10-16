@@ -16,72 +16,7 @@ All notable changes to TypeBridge will be documented in this file.
   credentials and endpoint text are excluded. Locally authored validation and
   application transport errors retain their existing messages.
 - TypeDB transport failures keep a fixed failure kind and the operation name.
-- Ordered ownership and role lists in live schemas are now read through the
-  official AST. List drift reports `migration_typedb_observation_no_candidate_match`
-  instead of `migration_typedb_export_invalid`, while refusing the migration.
 
-### Fixed
-
-- Native schema migrations preserve ordered ownership and role list markers,
-  including annotations, specialisations and removals, preventing scalar drift.
-
-- Backfill count queries retain unrelated negative filters and accept equivalent
-  compact carried statements, correcting overstated matched/skipped totals.
-
-- Structured migration tuple functions emit comma-separated return types,
-  correcting headers rejected with TQL03. Ordered role specialisations emit
-  matching list markers on the parent, correcting invalid `as` clauses.
-
-- TOML `long`/`int` and `bool` aliases now emit TypeDB builtin `integer`
-  and `boolean` domains instead of unresolved type labels (SYR4).
-- Schema generation omits unchanged inherited plays declarations on subtypes,
-  correcting schemas rejected by TypeDB with SVL42. Introspection stores
-  scoped role labels as local role names.
-
-- TOML structs now use TypeQL 3 `struct name: field value type;` syntax.
-  Schema introspection binds type labels with `label`, correcting the
-  obsolete `type` constraint in ownership and role queries.
-
-### Schema rendering
-
-- Schema generation and TOML conversion use the official TypeQL AST.
-  Whitespace and capability commas follow its plain display form. Active
-  schema readers use the official grammar; unsupported projections fail
-  explicitly. The deprecated archive reader retains released inputs until
-  3.0. Existing snapshots, migration sources, carried queries and checksums
-  retain their original bytes; new artifacts hash their new rendered bytes.
-  Caller-owned function bodies, including TOML bodies, remain verbatim after
-  official AST validation to preserve export fingerprints and avoid false drift.
-
-- Rust String schema-generation and fragment helpers are deprecated since
-  2.3.0 for removal in 3.0. Use checked `SchemaInfo::to_typeql` or adapter
-  builders. Compatibility helpers return empty output for invalid structured
-  inputs; Python schema generation propagates checked errors as `ValueError`.
-
-### Query rendering
-
-- V2 read plans, local functions, bounded fetch lists and prepared control
-  reads now render through the same AST adapter. Canonical stage and block
-  whitespace changes; plan bytes and ordered given rows stay unchanged.
-- Core query compilation and parsing now use the official TypeQL AST. Plain
-  rendering changes stage separators and indentation, whitespace inside
-  optional/negated blocks, fetch objects and lists, and numeric spelling.
-  Fetch keys are escaped as string literals and decimals preserve exact digits.
-- Attribute values render as one `isa` constraint, keyed wildcards render as
-  fetch objects, and zero-argument `count` renders as a reducer. Updates use
-  the TypeQL 3 equality constraint. Optional patterns retain `try` semantics.
-- Legacy query nodes and String-returning compiler methods are deprecated
-  since 2.3.0 for removal in 3.0. Use generated typed query plans, or
-  `try_compile` / `try_compile_node` when bridging legacy nodes. Python legacy
-  query exports emit `DeprecationWarning` and propagate checked errors.
-- Checked lowering rejects non-`Has` relation attributes rather than discarding
-  them. Legacy ownership-delete statements are also refused when their
-  attribute type cannot be retained. Deprecated String methods retain the
-  released relation-attribute discard behavior and
-  return empty output for other unrenderable structured shapes. Caller-owned
-  deprecated `Raw` fragments remain verbatim. Parsing rejects unofficial
-  syntax and constructs that cannot be represented by legacy nodes; empty
-  legacy input still returns an empty clause list.
 
 ### Tests
 
@@ -479,6 +414,33 @@ differently direct and through a proxy. Each entry says what to do instead.
 
 ### Fixed
 
+- Legacy query compilation no longer emits TypeQL that the TypeQL 3 parser
+  rejects: attribute values render as one `isa` constraint instead of
+  `$a isa T; $a "v"`, keyed wildcards as fetch objects, zero-argument `count`
+  as a reducer, and optional blocks parse back as `try`. Decimals keep exact
+  digits and fetch keys are escaped.
+- Deprecated String compile and schema helpers return empty output for structured
+  shapes the official AST rejects, instead of invalid TypeQL. Python
+  `QueryCompiler.compile` and the server pipeline raise on non-`Has` relation
+  attributes that earlier releases silently dropped.
+- Python `compile_batch(..., "match")` terminates each pattern with a
+  semicolon, correcting batches rejected by TypeDB with TQL03.
+- Native schema migrations preserve ordered ownership and role list markers,
+  including annotations, specialisations and removals, preventing scalar drift.
+- Backfill count queries retain unrelated negative filters and accept equivalent
+  compact carried statements, correcting overstated matched/skipped totals.
+- Structured migration tuple functions emit comma-separated return types,
+  correcting headers rejected with TQL03. Ordered role specialisations emit
+  matching list markers on the parent, correcting invalid `as` clauses.
+- TOML `long`/`int` and `bool` aliases now emit TypeDB builtin `integer`
+  and `boolean` domains instead of unresolved type labels (SYR4).
+- Schema generation omits unchanged inherited plays declarations on subtypes,
+  correcting schemas rejected by TypeDB with SVL42. Introspection stores
+  scoped role labels as local role names.
+- TOML structs now use TypeQL 3 `struct name: field value type;` syntax.
+  Schema introspection binds type labels with `label`, correcting the
+  obsolete `type` constraint in ownership and role queries.
+
 - Python and Node generated queries on a direct connection now run under
   the connection's answer limits (`answer_limits` / `answerLimits` given
   when connecting). They used only the session's own limits, so a session
@@ -494,6 +456,29 @@ differently direct and through a proxy. Each entry says what to do instead.
   executor.
 
 ### Changed
+
+- Schema generation, TOML conversion, migration statements, V2 read plans,
+  local functions, bounded fetch lists and prepared control reads render
+  through the official TypeQL AST. Whitespace, stage separators, block
+  indentation, capability commas, fetch objects and numeric spelling follow
+  its plain display form; plan bytes and ordered given rows are unchanged.
+  Snapshots, migration sources, carried queries, caller-owned function bodies
+  and checksums keep their original bytes; new artifacts hash their new
+  rendered bytes. Updates use the TypeQL 3 equality constraint.
+- Active schema and query parsers use the official grammar and refuse
+  unofficial syntax or constructs legacy nodes cannot hold; empty legacy input
+  still parses to an empty clause list. The deprecated archive reader keeps
+  released inputs until 3.0. Checked lowering refuses non-`Has` relation
+  attributes and ownership deletes whose attribute type it cannot retain.
+- Retained Python schema, migration, CRUD and query helpers pass typed
+  metadata to Rust for rendering; their signatures are unchanged.
+- TOML function bodies the official parser rejects report
+  `MalformedFunctionBody`.
+- Ordered ownership and role lists in live schemas are read through the
+  official AST. List drift reports `migration_typedb_observation_no_candidate_match`
+  instead of `migration_typedb_export_invalid`, while refusing the migration.
+- The published `type-bridge-orm` and `type-bridge-schema-compat` crates pin
+  `typeql =3.13.4` (was `=3.12.0`).
 
 - Band 9 runs on the official Rust `typedb-driver` 3.13.6 (with
   `typedb-protocol` 3.13.4), up from 3.12.3. It serves TypeDB 3.12 and 3.13
@@ -577,6 +562,15 @@ differently direct and through a proxy. Each entry says what to do instead.
 Each name below builds its replacement and is removed in 3.0. 2.2 remote
 terminals were already awaited, so 2.2 remote-session code runs unchanged.
 
+- Rust String schema-generation and fragment helpers are deprecated since
+  2.3.0 for removal in 3.0. Use checked `SchemaInfo::to_typeql` or adapter
+  builders. Python schema generation propagates checked errors as `ValueError`.
+- Legacy query nodes and String-returning compiler methods are deprecated
+  since 2.3.0 for removal in 3.0. Use generated typed query plans, or
+  `try_compile` / `try_compile_node`, which return `compiler::TqlError`, when
+  bridging legacy nodes. Python `QueryCompiler.compile`, `compile_clause_body`,
+  `compile_batch` and `parse_typeql_query` emit `DeprecationWarning`;
+  type-bridge's own helpers do not.
 - Generated Python packages (each constructor emits a
   `DeprecationWarning`):
   - `RemoteQuerySession(advertisement, exchange, limits, *, cancellation=None)`

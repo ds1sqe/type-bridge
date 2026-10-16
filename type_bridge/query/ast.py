@@ -416,3 +416,17 @@ class ReduceClause(Clause):
 
     assignments: list[ReduceAssignment]
     group_by: str | None = None  # Variable to group by
+
+
+@dataclass
+class _NativePattern(Pattern):
+    """A first-party clause payload lowered by the native projection."""
+
+    data: dict[str, Any]
+
+
+@dataclass
+class _NativeStatement(Statement):
+    """A first-party statement payload lowered by the native projection."""
+
+    data: dict[str, Any]

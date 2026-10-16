@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from type_bridge_core import PyProjectedModelManager, PyRuntimeProjection
@@ -101,6 +101,35 @@ def projected_query_builder_match_relation_for(
     """Compile a raw-query relation match from verified generated role tokens."""
     projection = _installed_projection_for(model)
     return projection.query_builder_match_relation(model, variable, role_players)
+
+
+def _projected_query_builder_match_entity_clause_for(
+    model: type[GeneratedEntityProjection],
+    variable: str,
+    filters: dict[str, object],
+) -> dict[str, Any]:
+    return _installed_projection_for(model)._query_builder_match_entity_clause(
+        model, variable, filters
+    )
+
+
+def _projected_query_builder_insert_entity_clause_for(
+    instance: GeneratedEntityProjection,
+    variable: str,
+) -> dict[str, Any]:
+    return _installed_projection_for(type(instance))._query_builder_insert_entity_clause(
+        instance, variable
+    )
+
+
+def _projected_query_builder_match_relation_clause_for(
+    model: type[GeneratedRelationProjection],
+    variable: str,
+    role_players: dict[str, str] | None,
+) -> dict[str, Any]:
+    return _installed_projection_for(model)._query_builder_match_relation_clause(
+        model, variable, role_players
+    )
 
 
 def projected_manager_for(

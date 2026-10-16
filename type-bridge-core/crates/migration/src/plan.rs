@@ -420,6 +420,53 @@ fn shadowed_by_remove_relation(op: &OperationSpec, removed: &BTreeSet<&str>) -> 
 }
 
 /// Lower a slice of [`OperationSpec`] into [`ExecutionStep`]s.
+/// Render the retained Python operation String API without changing its AST.
+///
+/// These helpers historically rely on provider cascades and declaration order;
+/// execution planning keeps its explicit cleanup and canonical ordering.
+#[doc(hidden)]
+pub fn render_legacy_operation_steps(
+    operation: &OperationSpec,
+) -> crate::Result<Vec<ExecutionStep>> {
+    let mut steps = assemble_steps(std::slice::from_ref(operation), true)?;
+    match operation {
+        OperationSpec::AddRelation { relation } => {
+            let mut nodes = vec![type_bridge_orm::_schema::generator::relation_node(
+                relation, None,
+            )?];
+            for role in &relation.roles {
+                for player in &role.player_type_names {
+                    nodes.push(tql::schema_type(
+                        None,
+                        player,
+                        vec![],
+                        vec![tql::schema_plays(
+                            &relation.type_name,
+                            &role.role_name,
+                            vec![],
+                        )?],
+                    )?);
+                }
+            }
+            steps[0].forward = render_query(tql::schema_define(nodes))?;
+            steps[0].reverse = Some(undefine_relation(&relation.type_name)?);
+        }
+        OperationSpec::AddRole {
+            relation_type,
+            role,
+        } => {
+            steps[0].reverse = Some(render_query(tql::schema_undefine(vec![
+                tql::schema_undefine_capability(
+                    relation_type,
+                    tql::schema_relates(&role.role_name, role.ordered, None, vec![])?,
+                )?,
+            ]))?);
+        }
+        _ => {}
+    }
+    Ok(steps)
+}
+
 fn assemble_steps(
     operations: &[OperationSpec],
     migration_reversible: bool,

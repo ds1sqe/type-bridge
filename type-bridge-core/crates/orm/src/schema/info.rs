@@ -48,55 +48,10 @@ impl OwnedAttributeEntry {
     /// matching the annotation order of TypeDB's schema export (constraints
     /// first, then doc, then meta).
     pub fn flags_string(&self) -> String {
-        let mut parts = Vec::new();
-        for ann in &self.annotations {
-            match ann {
-                Annotation::Key => parts.push("@key".to_string()),
-                Annotation::Unique => parts.push("@unique".to_string()),
-                Annotation::Distinct => parts.push("@distinct".to_string()),
-                Annotation::Card(min, max) => {
-                    // TypeDB 3.x spells an unbounded upper bound as `@card(min..)`.
-                    let max_str = match max {
-                        Some(m) => m.to_string(),
-                        None => String::new(),
-                    };
-                    parts.push(format!("@card({min}..{max_str})"));
-                }
-            }
-        }
-        append_doc_meta_annotations(&mut parts, self.doc.as_deref(), &self.meta);
-        parts.join(" ")
+        generator::ownership_annotations(self)
+            .map(|values| type_bridge_core_lib::__internal::render_schema_annotations(&values))
+            .unwrap_or_default()
     }
-}
-
-/// Append `@doc("...")` / `@meta("key", "value")` annotation tokens in the
-/// canonical order of TypeDB's schema export (doc before meta, meta sorted
-/// by key). Values are escaped for TypeQL string-literal emission.
-pub(crate) fn append_doc_meta_annotations(
-    parts: &mut Vec<String>,
-    doc: Option<&str>,
-    meta: &BTreeMap<String, String>,
-) {
-    if let Some(text) = doc {
-        parts.push(format!("@doc({})", escaped_string_literal(text)));
-    }
-    for (key, value) in meta {
-        parts.push(format!(
-            "@meta({}, {})",
-            escaped_string_literal(key),
-            escaped_string_literal(value)
-        ));
-    }
-}
-
-/// Render a TypeQL string literal for `@doc` / `@meta` values, escaping
-/// backslashes, quotes, and control characters the way TypeDB's schema
-/// export renders them (so parse -> emit round-trips byte-identically).
-///
-/// Distinct from the `@regex` emission path, which preserves user escape
-/// sequences verbatim and must not be double-escaped.
-pub(crate) fn escaped_string_literal(value: &str) -> String {
-    super::annotations::escaped_string_literal(value)
 }
 
 /// Metadata for one role in a relation.

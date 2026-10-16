@@ -243,41 +243,14 @@ class Relation(TypeDBType):
         Raises:
             ValueError: If any role player cannot be identified
         """
-        type_name = self.get_type_name()
+        from type_bridge.query.compiler import QueryCompiler
 
-        # Prefer IID-based matching when available
-        relation_iid = getattr(self, "_iid", None)
-        if relation_iid:
-            main_clause = f"{var_name} isa {type_name}, iid {relation_iid}"
-            return MatchClauseInfo(main_clause=main_clause, extra_clauses=[], var_name=var_name)
-
-        # Fall back to role player matching
-        roles = self.__class__._roles
-        role_parts = []
-        extra_clauses = []
-
-        for role_name, role in roles.items():
-            entity_or_list = self.__dict__.get(role_name)
-            if entity_or_list is None:
-                raise ValueError(f"Role player '{role_name}' is required for matching")
-
-            # Normalize to list for uniform handling
-            entities = entity_or_list if isinstance(entity_or_list, list) else [entity_or_list]
-
-            for i, entity in enumerate(entities):
-                player_var = f"${role_name}_{i}" if len(entities) > 1 else f"${role_name}"
-                role_parts.append(f"{role.role_name}: {player_var}")
-
-                # Get match clause for the role player entity
-                player_match = entity.get_match_clause_info(player_var)
-                extra_clauses.append(player_match.main_clause)
-                extra_clauses.extend(player_match.extra_clauses)
-
-        roles_str = ", ".join(role_parts)
-        main_clause = f"{var_name} isa {type_name} ({roles_str})"
-
+        compiler = QueryCompiler()
+        patterns = self.get_match_patterns(var_name)
         return MatchClauseInfo(
-            main_clause=main_clause, extra_clauses=extra_clauses, var_name=var_name
+            main_clause=compiler._compile(patterns[0]),
+            extra_clauses=[compiler._compile(pattern) for pattern in patterns[1:]],
+            var_name=var_name,
         )
 
     def get_match_patterns(self, var_name: str = "$r") -> list[Pattern]:
@@ -358,58 +331,9 @@ class Relation(TypeDBType):
         Returns:
             TypeQL schema definition string, or None if this is a base class
         """
-        from type_bridge.typeql.annotations import (
-            format_card_annotation,
-            format_doc_meta_annotations,
-            format_type_annotations,
-        )
+        from type_bridge.typeql._schema import model_definition
 
-        # Base classes don't appear in TypeDB schema
-        if cls.is_base():
-            return None
-
-        type_name = cls.get_type_name()
-        lines = []
-
-        # Define relation type with supertype from Python inheritance
-        # TypeDB 3.x syntax: relation name @abstract, sub parent,
-        supertype = cls.get_supertype()
-        type_annotations = format_type_annotations(abstract=cls.is_abstract())
-        type_annotations.extend(format_doc_meta_annotations(cls.get_doc(), cls.get_meta()))
-
-        relation_def = f"relation {type_name}"
-        if type_annotations:
-            relation_def += " " + " ".join(type_annotations)
-        if supertype:
-            relation_def += f", sub {supertype}"
-
-        lines.append(relation_def)
-
-        # Add locally declared roles in the same marker order as the canonical
-        # Rust schema generator: list suffix, specialization, constraints, then
-        # documentation metadata.
-        for role in cls._roles.values():
-            role_name_token = f"{role.role_name}[]" if role.ordered else role.role_name
-            role_def = f"    relates {role_name_token}"
-            if role.overrides is not None:
-                role_def += f" as {role.overrides}"
-            if role.is_abstract:
-                role_def += " @abstract"
-            if role.distinct:
-                role_def += " @distinct"
-            if role.cardinality is not None:
-                card_annotation = format_card_annotation(role.cardinality.min, role.cardinality.max)
-                if card_annotation:
-                    role_def += f" {card_annotation}"
-            for annotation in format_doc_meta_annotations(role.doc, role.meta):
-                role_def += f" {annotation}"
-            lines.append(role_def)
-
-        # Add attribute ownerships using shared helper
-        lines.extend(cls._build_owns_lines())
-
-        # Join with commas, but end with semicolon (no comma before semicolon)
-        return ",\n".join(lines) + ";"
+        return model_definition(cls, "relation")
 
     def __repr__(self) -> str:
         """Developer-friendly string representation of relation."""

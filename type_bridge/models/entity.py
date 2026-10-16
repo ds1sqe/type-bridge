@@ -117,37 +117,9 @@ class Entity(TypeDBType):
         Returns:
             TypeQL schema definition string, or None if this is a base class
         """
-        from type_bridge.typeql.annotations import (
-            format_doc_meta_annotations,
-            format_type_annotations,
-        )
+        from type_bridge.typeql._schema import model_definition
 
-        # Base classes don't appear in TypeDB schema
-        if cls.is_base():
-            return None
-
-        type_name = cls.get_type_name()
-        lines = []
-
-        # Define entity type with supertype from Python inheritance
-        # TypeDB 3.x syntax: entity name @abstract, sub parent,
-        supertype = cls.get_supertype()
-        type_annotations = format_type_annotations(abstract=cls.is_abstract())
-        type_annotations.extend(format_doc_meta_annotations(cls.get_doc(), cls.get_meta()))
-
-        entity_def = f"entity {type_name}"
-        if type_annotations:
-            entity_def += " " + " ".join(type_annotations)
-        if supertype:
-            entity_def += f", sub {supertype}"
-
-        lines.append(entity_def)
-
-        # Add attribute ownerships using shared helper
-        lines.extend(cls._build_owns_lines())
-
-        # Join with commas, but end with semicolon (no comma before semicolon)
-        return ",\n".join(lines) + ";"
+        return model_definition(cls, "entity")
 
     def to_ast(self, var: str = "$e") -> InsertClause:
         """Generate AST InsertClause for this instance.
@@ -183,43 +155,12 @@ class Entity(TypeDBType):
         Raises:
             ValueError: If entity has neither _iid nor key attributes
         """
-        type_name = self.get_type_name()
+        from type_bridge.query.compiler import QueryCompiler
 
-        # Prefer IID-based matching when available
-        entity_iid = getattr(self, "_iid", None)
-        if entity_iid:
-            main_clause = f"{var_name} isa {type_name}, iid {entity_iid}"
-            return MatchClauseInfo(main_clause=main_clause, extra_clauses=[], var_name=var_name)
-
-        # Fall back to key attribute matching
-        key_attrs = {
-            field_name: attr_info
-            for field_name, attr_info in self.get_all_attributes().items()
-            if attr_info.flags.is_key
-        }
-
-        if key_attrs:
-            parts = [f"{var_name} isa {type_name}"]
-            for field_name, attr_info in key_attrs.items():
-                value = getattr(self, field_name, None)
-                if value is None:
-                    from type_bridge.crud.exceptions import KeyAttributeError
-
-                    raise KeyAttributeError(
-                        entity_type=self.__class__.__name__,
-                        operation="identify",
-                        field_name=field_name,
-                    )
-                attr_name = attr_info.typ.get_attribute_name()
-                parts.append(f"has {attr_name} {self._format_value(value)}")
-            main_clause = ", ".join(parts)
-            return MatchClauseInfo(main_clause=main_clause, extra_clauses=[], var_name=var_name)
-
-        # Neither IID nor key attributes available
-        raise ValueError(
-            f"Entity '{self.__class__.__name__}' cannot be identified: "
-            f"no _iid set and no @key attributes defined. Either fetch the entity from the "
-            f"database first (to populate _iid) or add Flag(Key) to an attribute."
+        return MatchClauseInfo(
+            main_clause=QueryCompiler()._compile(self.get_match_pattern(var_name)),
+            extra_clauses=[],
+            var_name=var_name,
         )
 
     def _build_identification_constraints(self) -> list[Any]:

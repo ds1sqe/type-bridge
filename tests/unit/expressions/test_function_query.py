@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests.utils.typeql import assert_typeql_equivalent
 from type_bridge.expressions import FunctionQuery, ReturnType
 
 
@@ -327,7 +328,7 @@ class TestFunctionQueryRealWorldExamples:
         )
         query = fn.to_query()
         expected = 'match let $integer = count-artifacts();\nfetch { "integer": $integer};'
-        assert query == expected
+        assert_typeql_equivalent(query, expected)
 
     def test_list_user_artifact_ids(self) -> None:
         """Stream function returning single values."""

@@ -755,3 +755,62 @@ pub fn legacy_clause_body(value: &old::Clause) -> Result<String, TqlError> {
         .collect::<Result<Vec<_>, _>>()
         .map(|v| v.join("; "))
 }
+
+/// Compile retained batch helpers through typed clauses and the same renderer.
+pub fn compile_legacy_batch(nodes: &[old::QueryNode], operation: &str) -> Result<String, TqlError> {
+    if operation.is_empty() {
+        return nodes
+            .iter()
+            .map(compile_legacy_node)
+            .collect::<Result<Vec<_>, _>>()
+            .map(|values| values.join("\n"));
+    }
+    let clause = match operation {
+        "match" => old::Clause::Match(
+            nodes
+                .iter()
+                .map(|node| match node {
+                    old::QueryNode::Pattern(value) => Ok(value.clone()),
+                    _ => invalid(),
+                })
+                .collect::<Result<_, _>>()?,
+        ),
+        "insert" | "delete" | "update" | "put" => {
+            let statements = nodes
+                .iter()
+                .map(|node| match node {
+                    old::QueryNode::Statement(value) => Ok(value.clone()),
+                    _ => invalid(),
+                })
+                .collect::<Result<_, _>>()?;
+            match operation {
+                "insert" => old::Clause::Insert(statements),
+                "delete" => old::Clause::Delete(statements),
+                "update" => old::Clause::Update(statements),
+                _ => old::Clause::Put(statements),
+            }
+        }
+        _ => return invalid(),
+    };
+    compile_legacy(&[clause])
+}
+
+/// Render typed legacy fetch entries without building JSON fragments in a host.
+pub fn render_legacy_fetch_items(values: &[old::FetchItem]) -> Result<Vec<String>, TqlError> {
+    let query = pipeline(vec![lower_legacy_clause(&old::Clause::Fetch(
+        values.to_vec(),
+    ))?]);
+    if let Some(construct) = query.render_problem {
+        return Err(TqlError::Unsupported { construct });
+    }
+    let QueryStructure::Pipeline(mut query) = query.inner.structure else {
+        return invalid();
+    };
+    let Some(stage::Stage::Fetch(fetch)) = query.stages.pop() else {
+        return invalid();
+    };
+    let typeql::query::stage::fetch::FetchObjectBody::Entries(entries) = fetch.object.body else {
+        return invalid();
+    };
+    Ok(entries.into_iter().map(|entry| entry.to_string()).collect())
+}

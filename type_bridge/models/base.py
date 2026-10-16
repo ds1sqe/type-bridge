@@ -535,19 +535,9 @@ class TypeDBType(BaseModel, ABC):
         Returns:
             List of TypeQL 'owns' lines with proper formatting
         """
-        lines = []
-        for _field_name, attr_info in cls._owned_attrs.items():
-            attr_class = attr_info.typ
-            flags = attr_info.flags
-            attr_name = attr_class.get_attribute_name()
+        from type_bridge.typeql._schema import owns_lines
 
-            name_token = f"{attr_name}[]" if flags.is_ordered else attr_name
-            ownership = f"    owns {name_token}"
-            annotations = flags.to_typeql_annotations()
-            if annotations:
-                ownership += " " + " ".join(annotations)
-            lines.append(ownership)
-        return lines
+        return owns_lines(cls)
 
     @classmethod
     @abstractmethod
@@ -669,7 +659,7 @@ class TypeDBType(BaseModel, ABC):
         from type_bridge.query.compiler import QueryCompiler
 
         insert_clause = self.to_ast(var=var)
-        return QueryCompiler().compile(insert_clause)
+        return QueryCompiler()._compile(insert_clause)
 
 
 _QueryTypeDBType = TypeDBType

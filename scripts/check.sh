@@ -38,6 +38,8 @@ run_rust() {
     printf "${BOLD}━━━ Rust ━━━${RESET}\n\n"
 
     run_step "internal eager dependency boundary" python3 scripts/ci/check_internal_eager.py
+    run_step "TypeQL text construction boundary" \
+        python scripts/ci/check_typeql_text.py
 
     run_step "private TypeQL AST public API boundary" \
         python scripts/ci/check_typeql_public_api.py

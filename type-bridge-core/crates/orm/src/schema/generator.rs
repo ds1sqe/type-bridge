@@ -71,35 +71,7 @@ pub fn try_generate_define_block(info: &SchemaInfo) -> Result<String, super::err
                 .parent_type
                 .as_ref()
                 .and_then(|name| info.entities.get(name));
-            let parent_attributes: BTreeMap<_, _> = parent
-                .into_iter()
-                .flat_map(|parent| &parent.owned_attributes)
-                .map(|attribute| (attribute.attr_name.as_str(), attribute))
-                .collect();
-            let mut capabilities = Vec::new();
-            if let Some(parent) = &entity.parent_type {
-                capabilities.push(tql::schema_sub(parent)?);
-            }
-            for attribute in &entity.owned_attributes {
-                if parent_attributes
-                    .get(attribute.attr_name.as_str())
-                    .is_some_and(|parent| *parent == attribute)
-                {
-                    continue;
-                }
-                capabilities.push(ownership_node(attribute)?);
-            }
-            let mut annotations = Vec::new();
-            if entity.is_abstract {
-                annotations.push(tql::schema_flag("abstract")?);
-            }
-            doc_meta(&mut annotations, entity.doc.as_deref(), &entity.meta)?;
-            definitions.push(tql::schema_type(
-                Some("entity"),
-                &entity.type_name,
-                annotations,
-                capabilities,
-            )?);
+            definitions.push(entity_node(entity, parent)?);
         }
         let mut plays_clauses = Vec::new();
         for name in topological_sort(&info.relations, |entry| entry.parent_type.as_deref()) {
@@ -108,42 +80,17 @@ pub fn try_generate_define_block(info: &SchemaInfo) -> Result<String, super::err
                 .parent_type
                 .as_ref()
                 .and_then(|name| info.relations.get(name));
-            let parent_attributes: BTreeMap<_, _> = parent
-                .into_iter()
-                .flat_map(|parent| &parent.owned_attributes)
-                .map(|attribute| (attribute.attr_name.as_str(), attribute))
-                .collect();
+            definitions.push(relation_node(relation, parent)?);
             let parent_roles: BTreeSet<_> = parent
                 .into_iter()
                 .flat_map(|parent| &parent.roles)
                 .map(|role| role.role_name.as_str())
                 .collect();
-            let mut capabilities = Vec::new();
-            if let Some(parent) = &relation.parent_type {
-                capabilities.push(tql::schema_sub(parent)?);
-            }
             let mut seen = BTreeSet::new();
             for role in &relation.roles {
                 if parent_roles.contains(role.role_name.as_str()) || !seen.insert(&role.role_name) {
                     continue;
                 }
-                let mut annotations = Vec::new();
-                if role.is_abstract {
-                    annotations.push(tql::schema_flag("abstract")?);
-                }
-                if role.distinct {
-                    annotations.push(tql::schema_flag("distinct")?);
-                }
-                if let Some((min, max)) = role.cardinality {
-                    annotations.push(tql::schema_card(u64::from(min), max.map(u64::from))?);
-                }
-                doc_meta(&mut annotations, role.doc.as_deref(), &role.meta)?;
-                capabilities.push(tql::schema_relates(
-                    &role.role_name,
-                    role.ordered,
-                    role.overrides.as_deref(),
-                    annotations,
-                )?);
                 let role_ref = format!("{}:{}", relation.type_name, role.role_name);
                 for player in &role.player_type_names {
                     plays_clauses.push(PlaysClause {
@@ -153,26 +100,6 @@ pub fn try_generate_define_block(info: &SchemaInfo) -> Result<String, super::err
                     });
                 }
             }
-            for attribute in &relation.owned_attributes {
-                if parent_attributes
-                    .get(attribute.attr_name.as_str())
-                    .is_some_and(|parent| *parent == attribute)
-                {
-                    continue;
-                }
-                capabilities.push(ownership_node(attribute)?);
-            }
-            let mut annotations = Vec::new();
-            if relation.is_abstract {
-                annotations.push(tql::schema_flag("abstract")?);
-            }
-            doc_meta(&mut annotations, relation.doc.as_deref(), &relation.meta)?;
-            definitions.push(tql::schema_type(
-                Some("relation"),
-                &relation.type_name,
-                annotations,
-                capabilities,
-            )?);
         }
         plays_clauses.sort();
         plays_clauses.dedup();
@@ -233,7 +160,102 @@ pub fn try_generate_define_block(info: &SchemaInfo) -> Result<String, super::err
     })
 }
 
-fn doc_meta(
+/// Build one checked entity definition with its declared parent context.
+pub fn entity_node(
+    entity: &super::info::EntitySchemaEntry,
+    parent: Option<&super::info::EntitySchemaEntry>,
+) -> Result<tql::SchemaDefinition, tql::TqlError> {
+    let parent_attributes: BTreeMap<_, _> = parent
+        .into_iter()
+        .flat_map(|parent| &parent.owned_attributes)
+        .map(|attribute| (attribute.attr_name.as_str(), attribute))
+        .collect();
+    let mut capabilities = Vec::new();
+    if let Some(parent) = &entity.parent_type {
+        capabilities.push(tql::schema_sub(parent)?);
+    }
+    for attribute in &entity.owned_attributes {
+        if parent_attributes
+            .get(attribute.attr_name.as_str())
+            .is_some_and(|parent| *parent == attribute)
+        {
+            continue;
+        }
+        capabilities.push(ownership_node(attribute)?);
+    }
+    let mut annotations = Vec::new();
+    if entity.is_abstract {
+        annotations.push(tql::schema_flag("abstract")?);
+    }
+    doc_meta(&mut annotations, entity.doc.as_deref(), &entity.meta)?;
+    tql::schema_type(Some("entity"), &entity.type_name, annotations, capabilities)
+}
+
+/// Build one checked relation definition with its declared parent context.
+pub fn relation_node(
+    relation: &super::info::RelationSchemaEntry,
+    parent: Option<&super::info::RelationSchemaEntry>,
+) -> Result<tql::SchemaDefinition, tql::TqlError> {
+    let parent_attributes: BTreeMap<_, _> = parent
+        .into_iter()
+        .flat_map(|parent| &parent.owned_attributes)
+        .map(|attribute| (attribute.attr_name.as_str(), attribute))
+        .collect();
+    let parent_roles: BTreeSet<_> = parent
+        .into_iter()
+        .flat_map(|parent| &parent.roles)
+        .map(|role| role.role_name.as_str())
+        .collect();
+    let mut capabilities = Vec::new();
+    if let Some(parent) = &relation.parent_type {
+        capabilities.push(tql::schema_sub(parent)?);
+    }
+    let mut seen = BTreeSet::new();
+    for role in &relation.roles {
+        if parent_roles.contains(role.role_name.as_str()) || !seen.insert(&role.role_name) {
+            continue;
+        }
+        let mut annotations = Vec::new();
+        if role.is_abstract {
+            annotations.push(tql::schema_flag("abstract")?);
+        }
+        if role.distinct {
+            annotations.push(tql::schema_flag("distinct")?);
+        }
+        if let Some((min, max)) = role.cardinality {
+            annotations.push(tql::schema_card(u64::from(min), max.map(u64::from))?);
+        }
+        doc_meta(&mut annotations, role.doc.as_deref(), &role.meta)?;
+        capabilities.push(tql::schema_relates_with_parent_source(
+            &role.role_name,
+            role.ordered,
+            role.overrides.as_deref(),
+            annotations,
+        )?);
+    }
+    for attribute in &relation.owned_attributes {
+        if parent_attributes
+            .get(attribute.attr_name.as_str())
+            .is_some_and(|parent| *parent == attribute)
+        {
+            continue;
+        }
+        capabilities.push(ownership_node(attribute)?);
+    }
+    let mut annotations = Vec::new();
+    if relation.is_abstract {
+        annotations.push(tql::schema_flag("abstract")?);
+    }
+    doc_meta(&mut annotations, relation.doc.as_deref(), &relation.meta)?;
+    tql::schema_type(
+        Some("relation"),
+        &relation.type_name,
+        annotations,
+        capabilities,
+    )
+}
+
+pub(crate) fn doc_meta(
     output: &mut Vec<tql::SchemaAnnotation>,
     doc: Option<&str>,
     meta: &BTreeMap<String, String>,
@@ -247,9 +269,21 @@ fn doc_meta(
     Ok(())
 }
 
-fn ownership_node(
+/// Build one checked ownership capability.
+pub fn ownership_node(
     attribute: &super::info::OwnedAttributeEntry,
 ) -> Result<tql::SchemaCapability, tql::TqlError> {
+    tql::schema_owns(
+        &attribute.attr_name,
+        attribute.is_ordered,
+        ownership_annotations(attribute)?,
+    )
+}
+
+/// Build checked ownership annotations in their declared order.
+pub fn ownership_annotations(
+    attribute: &super::info::OwnedAttributeEntry,
+) -> Result<Vec<tql::SchemaAnnotation>, tql::TqlError> {
     use crate::_entity::Annotation;
     let mut annotations = Vec::new();
     for annotation in &attribute.annotations {
@@ -261,7 +295,7 @@ fn ownership_node(
         });
     }
     doc_meta(&mut annotations, attribute.doc.as_deref(), &attribute.meta)?;
-    tql::schema_owns(&attribute.attr_name, attribute.is_ordered, annotations)
+    Ok(annotations)
 }
 
 /// Build checked attribute nodes for schema generation and migration authoring.

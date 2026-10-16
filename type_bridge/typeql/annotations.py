@@ -29,13 +29,13 @@ def format_card_annotation(
         >>> format_card_annotation(None, None)
         None
     """
+    from type_bridge import _rust_runtime
+
     if min_val is None and max_val is None:
         return None
-
-    min_v = min_val if min_val is not None else 0
-    if max_val is None:
-        return f"@card({min_v}..)"
-    return f"@card({min_v}..{max_val})"
+    return _rust_runtime.rust_core()._render_schema_annotations(
+        {"card_min": min_val, "card_max": max_val}
+    )[0]
 
 
 def format_type_annotations(
@@ -60,12 +60,11 @@ def format_type_annotations(
         >>> format_type_annotations()
         []
     """
-    annotations = []
-    if abstract:
-        annotations.append("@abstract")
-    if independent:
-        annotations.append("@independent")
-    return annotations
+    from type_bridge import _rust_runtime
+
+    return _rust_runtime.rust_core()._render_schema_annotations(
+        {"abstract": abstract, "independent": independent}
+    )
 
 
 def escape_annotation_string(value: str) -> str:
@@ -81,14 +80,9 @@ def escape_annotation_string(value: str) -> str:
         >>> escape_annotation_string('line1\\nline2')
         '"line1\\\\nline2"'
     """
-    escaped = (
-        value.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\n", "\\n")
-        .replace("\t", "\\t")
-        .replace("\r", "\\r")
-    )
-    return f'"{escaped}"'
+    from type_bridge import _rust_runtime
+
+    return _rust_runtime.rust_core().format_value(value)
 
 
 def format_doc_meta_annotations(doc: str | None, meta: dict[str, str]) -> list[str]:
@@ -104,11 +98,6 @@ def format_doc_meta_annotations(doc: str | None, meta: dict[str, str]) -> list[s
         >>> format_doc_meta_annotations(None, {})
         []
     """
-    annotations = []
-    if doc is not None:
-        annotations.append(f"@doc({escape_annotation_string(doc)})")
-    for key in sorted(meta):
-        annotations.append(
-            f"@meta({escape_annotation_string(key)}, {escape_annotation_string(meta[key])})"
-        )
-    return annotations
+    from type_bridge import _rust_runtime
+
+    return _rust_runtime.rust_core()._render_schema_annotations({"doc": doc, "meta": meta})

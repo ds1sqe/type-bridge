@@ -176,6 +176,11 @@ pub fn render_schema_annotations(values: &[SchemaAnnotation]) -> String {
         .join(" ")
 }
 
+/// Render one checked schema capability without a surrounding definition.
+pub fn render_schema_capability(value: &SchemaCapability) -> String {
+    value.inner.to_string()
+}
+
 pub fn schema_sub(parent: &str) -> Result<SchemaCapability, TqlError> {
     Ok(capability(
         d::CapabilityBase::Sub(c::Sub::new(None, label(parent)?)),

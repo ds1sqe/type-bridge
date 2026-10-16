@@ -26,10 +26,10 @@ pub struct AnnotationToken {
 impl AnnotationToken {
     /// Render the token back to its `@name` / `@name(args)` form.
     pub fn render(&self) -> String {
-        match &self.args {
-            Some(args) => format!("@{}({})", self.name, args),
-            None => format!("@{}", self.name),
-        }
+        use type_bridge_core_lib::__internal as tql;
+        tql::schema_annotation(&self.name, self.args.as_deref())
+            .map(|annotation| tql::render_schema_annotations(&[annotation]))
+            .unwrap_or_default()
     }
 
     /// Whether this token is a `@doc` or `@meta` annotation.
@@ -67,14 +67,17 @@ impl AnnotationToken {
 
     /// Build a `@meta("key", "value")` token from unescaped key and value.
     pub fn meta(key: &str, value: &str) -> Self {
-        AnnotationToken {
-            name: "meta".to_string(),
-            args: Some(format!(
-                "{}, {}",
-                escaped_string_literal(key),
-                escaped_string_literal(value)
-            )),
-        }
+        use type_bridge_core_lib::__internal as tql;
+        let rendered = tql::schema_meta(key, value)
+            .map(|annotation| tql::render_schema_annotations(&[annotation]))
+            .unwrap_or_default();
+        // Project the retained raw-argument DTO from the one rendered AST.
+        split_annotation_tokens(&rendered)
+            .pop()
+            .unwrap_or_else(|| Self {
+                name: "meta".to_owned(),
+                args: None,
+            })
     }
 }
 
@@ -283,20 +286,10 @@ pub(crate) fn check_schema_annotation_support(
 /// Render a TypeQL string literal, escaping backslash, quote, `\n`, `\t`,
 /// and `\r` — the escape set mirrored by the server's schema export.
 pub fn escaped_string_literal(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            other => out.push(other),
-        }
-    }
-    out.push('"');
-    out
+    use type_bridge_core_lib::__internal as tql;
+    tql::string(value)
+        .map(|value| tql::render_expression(&value))
+        .unwrap_or_default()
 }
 
 /// Extract the first double-quoted string literal from an argument list,

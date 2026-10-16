@@ -134,10 +134,19 @@ def build_metadata_fetch(var: str) -> str:
         >>> build_metadata_fetch("e")
         'fetch {\\n  "_iid": iid($e), "_type": label($e)\\n}'
     """
+    from type_bridge.query.ast import FetchClause, FetchFunction
+    from type_bridge.query.compiler import QueryCompiler
+
     if not var.startswith("$"):
         var = f"${var}"
-
-    return f'fetch {{\n  "_iid": iid({var}), "_type": label({var})\n}}'
+    return QueryCompiler()._compile(
+        FetchClause(
+            items=[
+                FetchFunction(key="_iid", func_name="iid", var=var),
+                FetchFunction(key="_type", func_name="label", var=var),
+            ]
+        )
+    )
 
 
 def hydrate_attributes(
