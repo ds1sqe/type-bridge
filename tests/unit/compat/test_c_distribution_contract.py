@@ -48,6 +48,7 @@ def test_distribution_contract_matches_every_live_source_authority() -> None:
         (("abi", "static_linkage"), "artifact"),
         (("abi", "accepted_descriptor_minors"), [5, 6, 7]),
         (("abi", "added_exports"), []),
+        (("abi", "added_exports"), ["type_bridge_write_transaction_rollback_keep"]),
         (("compatibility", "provider_io_on_failure"), True),
         (("artifact_policy", "symlinks"), True),
         (("artifact_policy", "debug_symbols"), "retained"),

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,9 @@ DEFAULT_CONTRACT = ROOT / "tests/contracts/c-distribution-v1.json"
 ARTIFACTS_CATALOG = ROOT / "tests/contracts/sdk_conformance/artifacts/catalog.json"
 MANIFEST = ROOT / "tests/contracts/sdk_conformance/manifest.json"
 FULL_C_AUDIT = ROOT / "tests/contracts/c-full-sdk-audit.json"
+# The frozen released 1.6 header; 1.7 exports beyond it are the additive set.
+ABI_1_6_HEADER = "type-bridge-core/crates/c/tests/fixtures/abi-1.6/typebridge/type_bridge.h"
+HEADER_EXPORT = re.compile(r"\b(type_bridge_[a-z0-9_]+)\s*\(")
 TRANSITION_CASES = [
     "sdk.runtime.cancellation",
     "sdk.runtime.timeout-resource-limits",
@@ -55,6 +59,24 @@ def _require(condition: bool, message: str) -> None:
         raise ContractError(message)
 
 
+def _added_exports(root: Path, contract_path: object) -> list[str]:
+    """Exports of the current ABI contract absent from the released 1.6 header."""
+    _require(isinstance(contract_path, str), "ABI contract path is missing")
+    inventory = _load(root / str(contract_path)).get("exports")
+    if not isinstance(inventory, list) or not all(isinstance(name, str) for name in inventory):
+        raise ContractError("ABI export inventory is missing")
+    exports = {str(name) for name in inventory}
+    try:
+        previous = (root / ABI_1_6_HEADER).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ContractError(f"cannot read the released 1.6 header: {error}") from error
+    released = set(HEADER_EXPORT.findall(previous))
+    _require(released <= exports, "ABI 1.7 removed a released 1.6 export")
+    added = sorted(exports - released)
+    _require(bool(added), "ABI 1.7 adds no exports")
+    return added
+
+
 def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[str, Any]:
     contract = _load(contract_path)
     _require(contract.get("format") == "typebridge.c-distribution/v1", "format drifted")
@@ -86,7 +108,7 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
     )
     _require(abi.get("accepted_descriptor_minors") == [6, 7], "descriptor ABI range drifted")
     _require(
-        abi.get("added_exports") == ["type_bridge_write_transaction_rollback_keep"],
+        abi.get("added_exports") == _added_exports(root, abi.get("contract_path")),
         "additive ABI exports drifted",
     )
     _require(abi.get("static_linkage") == "unsupported", "static linkage was not selected")

@@ -15,7 +15,7 @@
     "package_metadata_version": "1.6.0",
     "package_metadata_description": "Installed CMake and pkg-config versions retain 1.6.0 for exact-version consumers.",
     "contract_path": "tests/contracts/c-abi.json",
-    "contract_sha256": "9127d77266cf2938191faa923f2c922b4cd36883d0ef51b745f7cf7627cee2c7",
+    "contract_sha256": "4ffc6ccf1197ea708f54abfd0a63496bf9cdbb0947a80baa8fb3d02736332483",
     "static_linkage": "unsupported",
     "shared_linkage": "artifact",
     "accepted_descriptor_minors": [
@@ -23,6 +23,17 @@
       7
     ],
     "added_exports": [
+      "type_bridge_database_transaction",
+      "type_bridge_pending_answer",
+      "type_bridge_pending_free",
+      "type_bridge_plan_free",
+      "type_bridge_plan_v3_canonical_bytes",
+      "type_bridge_plan_v3_decode",
+      "type_bridge_staged_transaction_close",
+      "type_bridge_staged_transaction_commit",
+      "type_bridge_staged_transaction_commit_retry",
+      "type_bridge_staged_transaction_rollback",
+      "type_bridge_staged_transaction_stage",
       "type_bridge_write_transaction_rollback_keep"
     ]
   },
@@ -203,7 +214,7 @@
     },
     {
       "path": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-      "sha256": "f9e3f3bbeac05d623d412a895c794ea843455159e488ecb2336b56f9ce6fde29"
+      "sha256": "3c71960a80973b6469ecdded1a40ec034ccf7adc38bec7c685d9a0649759ec72"
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/CMakeLists.txt.in",
