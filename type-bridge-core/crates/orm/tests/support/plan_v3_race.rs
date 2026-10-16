@@ -11,7 +11,7 @@ use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
 use type_bridge_contract::query_plan::v3::{
-    ArithOp, DeleteItem, DocumentRole, Expr, InsertThing, Operation, Pattern, PlanSpec,
+    ArithOp, AttachItem, DeleteItem, DocumentRole, Expr, InsertThing, Operation, Pattern, PlanSpec,
     QueryPlanV3, Set, Stage, ThingDocument, WriteReturns,
 };
 use type_bridge_contract::query_plan::{
@@ -385,6 +385,57 @@ pub fn touch_rows() -> QueryPlanV3 {
             Operation::Write {
                 returns: WriteReturns::Rows,
             },
+        ),
+        &schema(),
+    )
+    .unwrap()
+}
+
+/// Add an on-call value to every doctor without replacing one.
+pub fn attach_on_call() -> QueryPlanV3 {
+    QueryPlanV3::new(
+        spec(
+            &["doctor"],
+            vec![
+                Stage::Match {
+                    patterns: vec![isa(0, entity("doctor"))],
+                },
+                Stage::Attach {
+                    items: vec![AttachItem::Has {
+                        owner: id(0),
+                        field: owns(entity("doctor"), "on-call"),
+                        operand: QueryOperand::Literal {
+                            value: CanonicalValue::Boolean(true),
+                        },
+                    }],
+                },
+            ],
+            MATCHED,
+            vec![],
+        ),
+        &schema(),
+    )
+    .unwrap()
+}
+
+/// Remove every buyer of every purchase.
+pub fn drop_buyers() -> QueryPlanV3 {
+    QueryPlanV3::new(
+        spec(
+            &["purchase"],
+            vec![
+                Stage::Match {
+                    patterns: vec![isa(0, purchase_type())],
+                },
+                Stage::Delete {
+                    items: vec![DeleteItem::Players {
+                        relation: id(0),
+                        role: role("buyer"),
+                    }],
+                },
+            ],
+            MATCHED,
+            vec![],
         ),
         &schema(),
     )

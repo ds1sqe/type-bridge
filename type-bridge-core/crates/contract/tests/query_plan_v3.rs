@@ -870,6 +870,8 @@ fn shared_plan_v3_fixtures() {
     // they derive is not advertised by proxies yet.
     plans.insert("fetch_entity", examples::fetch_written(false));
     plans.insert("fetch_relation", examples::fetch_written(true));
+    plans.insert("attach", examples::attach());
+    plans.insert("replace_players", examples::replace_players());
     let mut manifest = BTreeMap::new();
     for (name, plan) in plans {
         let bytes = plan.canonical_bytes().unwrap();
@@ -1166,4 +1168,98 @@ fn thing_fetch_is_terminal_typed_and_lists_declared_roles_once() {
             code
         );
     }
+}
+
+#[test]
+fn attach_adds_to_bound_things_and_refuses_keys_and_unbound_targets() {
+    use type_bridge_contract::query_plan::v3::AttachItem;
+    let plan = examples::attach();
+    let bytes = plan.canonical_bytes().unwrap();
+    let text = std::str::from_utf8(&bytes).unwrap();
+    assert!(text.contains(r#"{"items":[{"field":{"attribute":"score","owner":{"kind":"entity","label":"account"}},"kind":"has","operand":{"kind":"literal","value":{"kind":"long","value":"3"}},"owner":0},{"kind":"links","player":0,"relation":1,"role":{"declaring_relation":"membership","label":"member"}}],"kind":"attach"}"#), "{text}");
+    assert!(
+        plan.required_capabilities()
+            .iter()
+            .any(|capability| capability.as_str() == "query.write.attach")
+    );
+    assert!(plan.writes());
+    assert_eq!(decode_query_plan_v3(&bytes, &schema()).unwrap(), plan);
+    let attach = |items: Vec<AttachItem>, patterns| {
+        spec(
+            vec![Stage::Match { patterns }, Stage::Attach { items }],
+            vec![],
+        )
+    };
+    for (plan, code) in [
+        (
+            attach(
+                vec![AttachItem::Has {
+                    owner: id(0),
+                    field: field("id"),
+                    operand: string("account-c"),
+                }],
+                vec![pat(0, entity("account"))],
+            ),
+            "query_plan_key_update",
+        ),
+        (
+            attach(
+                vec![AttachItem::Has {
+                    owner: id(1),
+                    field: field("score"),
+                    operand: literal(1),
+                }],
+                vec![pat(0, entity("account"))],
+            ),
+            "query_plan_write_unbound_target",
+        ),
+        (
+            attach(
+                vec![AttachItem::Links {
+                    relation: id(0),
+                    role: role(),
+                    player: id(0),
+                }],
+                vec![pat(0, entity("account"))],
+            ),
+            "query_plan_wrong_role_owner",
+        ),
+    ] {
+        assert_eq!(
+            QueryPlanV3::new(plan, &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            code
+        );
+    }
+}
+
+#[test]
+fn removing_every_player_of_a_role_needs_a_declared_role_of_the_relation() {
+    let plan = examples::replace_players();
+    let bytes = plan.canonical_bytes().unwrap();
+    assert!(std::str::from_utf8(&bytes).unwrap().contains(
+        r#"{"items":[{"kind":"players","relation":1,"role":{"declaring_relation":"membership","label":"member"}}],"kind":"delete"}"#
+    ));
+    assert_eq!(decode_query_plan_v3(&bytes, &schema()).unwrap(), plan);
+    let wrong = spec(
+        vec![
+            matched(),
+            Stage::Delete {
+                items: vec![DeleteItem::Players {
+                    relation: id(0),
+                    role: role(),
+                }],
+            },
+        ],
+        vec![],
+    );
+    assert_eq!(
+        QueryPlanV3::new(wrong, &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_wrong_role_owner"
+    );
 }

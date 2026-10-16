@@ -178,6 +178,7 @@ follow in any order before the read tail. Write stage payloads are nonempty.
 | insert, put | `things:[Thing,...]` |
 | update | `sets:[Set,...]` |
 | delete | `items:[Delete,...]` |
+| attach | `items:[Attach,...]` |
 | fetch | `thing:B`, `roles:[{"role":R,"required":boolean},...]` |
 
 A Thing has `binding`, `type_id`, `fields`, `players`. Fields are ordered pairs
@@ -192,11 +193,21 @@ A Set is `{"kind":"field","owner":B,"field":ownership,"operand":O}` or
 be updated, including keys declared on any descendant of a subtype-inclusive
 match. Descendants are enumerated from the declared subtype facts. A Delete is `{"kind":"thing","binding":B}`,
 `{"kind":"has","owner":B,"field":ownership}`, or
-`{"kind":"links","relation":B,"role":R,"player":B}`. Thing deletion ends
+`{"kind":"links","relation":B,"role":R,"player":B}`, or
+`{"kind":"players","relation":B,"role":R}` (every player of the role, like an
+ownership deletion removes every value). Thing deletion ends
 its binding lifetime after that stage; scalar let/function results are not
 thing deletion targets; later stages/output cannot refer to it.
 Ownership/link deletion leaves the owner/relation alive. All inferred possible
 owner/player types must satisfy the requested fact; inference is conservative.
+
+An Attach is `{"kind":"has","owner":B,"field":ownership,"operand":O}` or
+`{"kind":"links","relation":B,"role":R,"player":B}`. It adds a value or a
+player to a bound thing and keeps the existing ones, which `update` (a
+replacement, valid only up to one value) cannot do for multi-valued
+ownerships and roles. Key ownerships cannot be attached. An attach adds
+`query.write.attach`, which proxies do not advertise yet: a staged request
+carrying one is refused at capability admission.
 
 A fetch is the last stage. It answers one hydration document per row for a
 present entity or relation binding, so the operation is `rows` or
@@ -335,6 +346,7 @@ are illustrative forms, not a snapshot read followed by a separate mutation.
 | builtins | Same names except length becomes `len($text)` |
 | insert / put | `insert $o isa order, has order-id $id;` / `put $o isa! order, has order-id $id;` (put matches the exact declared type) |
 | field / role update | `update $x has score == $next;` / `update $r links (member: $new);` |
+| attach | `insert $x has tag == $value;` / `insert $r links (member: $p);` over bound variables |
 | delete thing / ownership / link | `delete $x;` / `delete has $old_score of $x;` / `delete links (member: $old) of $r;` |
 | select / require / distinct | `select $x;` / `require $x;` / `distinct;` |
 | fetch | `match $x isa! $T; $x links (member: $P0); $P0 isa! $P0T;` (optional roles inside `try`), then `fetch { "_iid": iid($x), "_type": label($T), "attributes": { $x.* }, "_role_0_iid": iid($P0), "_role_0_type": label($P0T), "_role_0_attributes": { $P0.* } };` |

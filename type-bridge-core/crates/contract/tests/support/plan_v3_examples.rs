@@ -300,6 +300,67 @@ pub fn fetch_written(relation_players: bool) -> QueryPlanV3 {
     QueryPlanV3::new(plan, &schema()).unwrap()
 }
 
+/// Add a score value and a member to bound things, keeping existing ones.
+pub fn attach() -> QueryPlanV3 {
+    use type_bridge_contract::query_plan::v3::AttachItem;
+    QueryPlanV3::new(
+        spec(
+            vec![
+                Stage::Match {
+                    patterns: vec![pat(0, entity("account")), pat(1, relation())],
+                },
+                Stage::Attach {
+                    items: vec![
+                        AttachItem::Has {
+                            owner: id(0),
+                            field: field("score"),
+                            operand: literal(3),
+                        },
+                        AttachItem::Links {
+                            relation: id(1),
+                            role: role(),
+                            player: id(0),
+                        },
+                    ],
+                },
+            ],
+            vec![],
+        ),
+        &schema(),
+    )
+    .unwrap()
+}
+
+/// Remove every member of a membership, then attach a new one.
+pub fn replace_players() -> QueryPlanV3 {
+    use type_bridge_contract::query_plan::v3::AttachItem;
+    QueryPlanV3::new(
+        spec(
+            vec![
+                Stage::Match {
+                    patterns: vec![pat(0, entity("account")), pat(1, relation())],
+                },
+                Stage::Delete {
+                    items: vec![DeleteItem::Players {
+                        relation: id(1),
+                        role: role(),
+                    }],
+                },
+                Stage::Attach {
+                    items: vec![AttachItem::Links {
+                        relation: id(1),
+                        role: role(),
+                        player: id(0),
+                    }],
+                },
+            ],
+            vec![],
+        ),
+        &schema(),
+    )
+    .unwrap()
+}
+
 pub fn plans() -> BTreeMap<&'static str, QueryPlanV3> {
     let mut result = BTreeMap::from([
         ("purchase", purchase()),

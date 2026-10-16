@@ -198,6 +198,7 @@ pub enum Set {
 /// One deletion within a pipeline.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum DeleteItem {
     /// Delete a thing and end its binding's lifetime.
     Thing {
@@ -212,6 +213,38 @@ pub enum DeleteItem {
         field: OwnsFactId,
     },
     /// Remove one role player.
+    Links {
+        /// Bound relation.
+        relation: BindingId,
+        /// Declared role.
+        role: RoleId,
+        /// Bound player.
+        player: BindingId,
+    },
+    /// Remove every player of one declared role, leaving the relation alive.
+    Players {
+        /// Bound relation.
+        relation: BindingId,
+        /// Declared role.
+        role: RoleId,
+    },
+}
+
+/// One addition to an already bound thing.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum AttachItem {
+    /// Add one value of a non-key ownership; existing values stay.
+    Has {
+        /// Bound owner.
+        owner: BindingId,
+        /// Declared ownership; key fields cannot be attached.
+        field: OwnsFactId,
+        /// Value to add.
+        operand: QueryOperand,
+    },
+    /// Add one player to a declared role; existing players stay.
     Links {
         /// Bound relation.
         relation: BindingId,
@@ -290,6 +323,12 @@ pub enum Stage {
         /// Deletions in source order.
         items: Vec<DeleteItem>,
     },
+    /// Add ownerships or role players to bound things, keeping existing
+    /// ones (for multi-valued fields and roles, where `update` replaces).
+    Attach {
+        /// Additions in source order.
+        items: Vec<AttachItem>,
+    },
     /// Match or create things.
     Put {
         /// Things matched or created together.
@@ -363,7 +402,11 @@ impl Stage {
     pub const fn is_write(&self) -> bool {
         matches!(
             self,
-            Self::Insert { .. } | Self::Update { .. } | Self::Delete { .. } | Self::Put { .. }
+            Self::Insert { .. }
+                | Self::Update { .. }
+                | Self::Delete { .. }
+                | Self::Put { .. }
+                | Self::Attach { .. }
         )
     }
 
@@ -531,6 +574,13 @@ impl QueryPlanV3 {
                         _ => None,
                     })
                     .collect(),
+                Stage::Attach { items } => items
+                    .iter()
+                    .filter_map(|item| match item {
+                        AttachItem::Has { operand, .. } => Some(operand),
+                        AttachItem::Links { .. } => None,
+                    })
+                    .collect(),
                 _ => vec![],
             };
             if operands.iter().any(|operand| {
@@ -549,6 +599,7 @@ impl QueryPlanV3 {
                 Stage::Delete { .. } => "query.write.delete",
                 Stage::Put { .. } => "query.write.put",
                 Stage::Fetch(_) => "query.fetch.thing",
+                Stage::Attach { .. } => "query.write.attach",
                 _ => continue,
             };
             insert_capability(&mut required_capabilities, capability)?;
@@ -918,6 +969,39 @@ fn validate_stages(
                     }
                 }
             }
+            Stage::Attach { items } => {
+                if reading {
+                    return Err(invalid(
+                        "query_plan_stage_order",
+                        "write stages precede the read tail",
+                    ));
+                }
+                nonempty(items.len(), limits, nodes)?;
+                for item in items {
+                    match item {
+                        AttachItem::Has {
+                            owner,
+                            field,
+                            operand,
+                        } => {
+                            bound(*owner, &mandatory)?;
+                            // A key is fixed at creation, as for update.
+                            index.ownership(*owner, field, &types, true)?;
+                            validate_operand(operand, &mandatory, &optional, spec.inputs.len())?;
+                            index.field_value(field, operand, &scalar_types, &spec.inputs)?;
+                        }
+                        AttachItem::Links {
+                            relation,
+                            role,
+                            player,
+                        } => {
+                            bound(*relation, &mandatory)?;
+                            bound(*player, &mandatory)?;
+                            index.role(*relation, role, *player, &types)?;
+                        }
+                    }
+                }
+            }
             Stage::Delete { items } => {
                 if reading {
                     return Err(invalid(
@@ -951,6 +1035,10 @@ fn validate_stages(
                             bound(*relation, &mandatory)?;
                             bound(*player, &mandatory)?;
                             index.role(*relation, role, *player, &types)?;
+                        }
+                        DeleteItem::Players { relation, role } => {
+                            bound(*relation, &mandatory)?;
+                            index.relation_role(*relation, role, &types)?;
                         }
                     }
                 }
@@ -1308,6 +1396,39 @@ impl<'a> SchemaIndex<'a> {
         Ok(())
     }
 
+    /// The role is declared by a relation type the bound relation can be.
+    fn relation_role(
+        &self,
+        relation: BindingId,
+        role: &RoleId,
+        types: &BTreeMap<BindingId, BTreeSet<TypeId>>,
+    ) -> Result<(), Diagnostic> {
+        let owner = TypeId::new(TypeKind::Relation, role.declaring_relation().as_str())?;
+        let relates = RelatesFactId::new(owner.clone(), role.clone())?;
+        if self.schema.fact(&SchemaFactId::Relates(relates)).is_none() {
+            return Err(invalid(
+                "query_plan_undeclared_relates",
+                "write role is not declared",
+            ));
+        }
+        let relations = types.get(&relation).ok_or_else(|| {
+            invalid(
+                "query_plan_write_untyped_target",
+                "relation has no schema type",
+            )
+        })?;
+        if relations
+            .iter()
+            .any(|id| !self.ancestors(id).contains(&owner))
+        {
+            return Err(invalid(
+                "query_plan_wrong_role_owner",
+                "role does not belong to the relation type",
+            ));
+        }
+        Ok(())
+    }
+
     fn role(
         &self,
         relation: BindingId,
@@ -1469,6 +1590,10 @@ enum DeleteWire {
         role: RoleIdWire,
         player: u16,
     },
+    Players {
+        relation: u16,
+        role: RoleIdWire,
+    },
 }
 impl DeleteWire {
     fn rebuild(self) -> Result<DeleteItem, Diagnostic> {
@@ -1489,12 +1614,55 @@ impl DeleteWire {
                 role: role.rebuild()?,
                 player: BindingId::new(player)?,
             },
+            Self::Players { relation, role } => DeleteItem::Players {
+                relation: BindingId::new(relation)?,
+                role: role.rebuild()?,
+            },
+        })
+    }
+}
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum AttachWire {
+    Has {
+        owner: u16,
+        field: OwnsWire,
+        operand: QueryOperandWire,
+    },
+    Links {
+        relation: u16,
+        role: RoleIdWire,
+        player: u16,
+    },
+}
+impl AttachWire {
+    fn rebuild(self) -> Result<AttachItem, Diagnostic> {
+        Ok(match self {
+            Self::Has {
+                owner,
+                field,
+                operand,
+            } => AttachItem::Has {
+                owner: BindingId::new(owner)?,
+                field: field.rebuild()?,
+                operand: operand.rebuild()?,
+            },
+            Self::Links {
+                relation,
+                role,
+                player,
+            } => AttachItem::Links {
+                relation: BindingId::new(relation)?,
+                role: role.rebuild()?,
+                player: BindingId::new(player)?,
+            },
         })
     }
 }
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum WriteWire {
+    Attach { items: Vec<AttachWire> },
     Insert { things: Vec<ThingWire> },
     Update { sets: Vec<SetWire> },
     Delete { items: Vec<DeleteWire> },
@@ -1503,6 +1671,12 @@ enum WriteWire {
 impl WriteWire {
     fn rebuild(self) -> Result<Stage, Diagnostic> {
         Ok(match self {
+            Self::Attach { items } => Stage::Attach {
+                items: items
+                    .into_iter()
+                    .map(AttachWire::rebuild)
+                    .collect::<Result<_, _>>()?,
+            },
             Self::Insert { things } => Stage::Insert {
                 things: things
                     .into_iter()
@@ -1613,7 +1787,7 @@ fn decode_stage(value: serde_json::Value) -> Result<Stage, Diagnostic> {
     }
     if matches!(
         value.get("kind").and_then(serde_json::Value::as_str),
-        Some("insert" | "update" | "delete" | "put")
+        Some("insert" | "update" | "delete" | "put" | "attach")
     ) {
         serde_json::from_value::<WriteWire>(value)
             .map_err(|_| invalid("invalid_canonical_value", "invalid write stage"))?

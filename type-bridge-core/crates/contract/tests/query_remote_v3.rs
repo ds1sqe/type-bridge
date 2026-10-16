@@ -570,14 +570,18 @@ fn opaque_plan_bytes_do_not_inherit_the_scalar_string_ceiling() {
 }
 
 #[test]
-fn staged_requests_carrying_a_thing_fetch_are_refused_at_admission() {
+fn staged_requests_carrying_unadvertised_terms_are_refused_at_admission() {
     // Proxies do not advertise `query.fetch.thing` yet.
-    let mut fetching = spec();
-    fetching.plans = vec![entry(examples::fetch_written(false))];
-    let error = StagedRequestV3::new(fetching, &support::schema(), &advertisement()).unwrap_err();
-    assert_eq!(error.code().as_str(), "unsupported_required_capability");
-    assert_eq!(
-        error.category(),
-        type_bridge_contract::diagnostic::DiagnosticCategory::UnsupportedCapability
-    );
+    // Nor `query.write.attach`.
+    for plan in [examples::fetch_written(false), examples::attach()] {
+        let mut request = spec();
+        request.plans = vec![entry(plan)];
+        let error =
+            StagedRequestV3::new(request, &support::schema(), &advertisement()).unwrap_err();
+        assert_eq!(error.code().as_str(), "unsupported_required_capability");
+        assert_eq!(
+            error.category(),
+            type_bridge_contract::diagnostic::DiagnosticCategory::UnsupportedCapability
+        );
+    }
 }

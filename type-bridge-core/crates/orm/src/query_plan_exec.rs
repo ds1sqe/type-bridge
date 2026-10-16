@@ -13,8 +13,8 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId};
 use type_bridge_contract::query_plan::v3::{
-    ArithOp, Builtin, DeleteItem, Expr, InsertThing, Operation, Pattern, QueryPlanV3, Set, Stage,
-    ThingDocument, WriteReturns,
+    ArithOp, AttachItem, Builtin, DeleteItem, Expr, InsertThing, Operation, Pattern, QueryPlanV3,
+    Set, Stage, ThingDocument, WriteReturns,
 };
 use type_bridge_contract::query_plan::{
     DocumentSource, InputColumn, OrderDirection, QueryOperand, QueryOutput, QueryPattern,
@@ -264,6 +264,14 @@ pub(crate) fn lower(plan: &QueryPlanV3) -> Result<(tql::Query, Option<GivenRowsS
             Stage::Offset { rows } => stages.push(tql::offset(*rows)),
             Stage::Limit { rows } => stages.push(tql::limit(*rows)),
             Stage::Fetch(document) => scope.fetch(document, &mut stages)?,
+            // Additions to bound things are an insert stage over existing
+            // variables; nothing fresh is created.
+            Stage::Attach { items } => stages.push(tql::insert(
+                items
+                    .iter()
+                    .map(|item| scope.attach(item))
+                    .collect::<Result<_, _>>()?,
+            )),
             _ => {
                 return Err(failure(
                     DiagnosticCategory::UnsupportedCapability,
@@ -518,6 +526,35 @@ impl Scope<'_> {
             .collect()
     }
 
+    fn attach(&self, item: &AttachItem) -> Result<tql::Pattern, Diagnostic> {
+        match item {
+            AttachItem::Has {
+                owner,
+                field,
+                operand,
+            } => ast(tql::thing(
+                self.name(*owner)?,
+                vec![self.has(field.attribute(), operand)?],
+            )),
+            AttachItem::Links {
+                relation,
+                role,
+                player,
+            } => ast(tql::thing(
+                self.name(*relation)?,
+                vec![ast(tql::links(vec![(
+                    role.label().as_str(),
+                    self.name(*player)?,
+                )]))?],
+            )),
+            _ => Err(failure(
+                DiagnosticCategory::UnsupportedCapability,
+                "query_plan_stage_unsupported",
+                "this executor cannot lower the attach item",
+            )),
+        }
+    }
+
     fn set(&self, set: &Set) -> Result<tql::Pattern, Diagnostic> {
         match set {
             Set::Field {
@@ -646,6 +683,28 @@ impl Scope<'_> {
                     ]));
                     tql::delete_optional(vec![ast(tql::delete_has(owner, &value))?])
                 }
+                DeleteItem::Players { relation, role } => {
+                    // Like an ownership deletion: bind every player of the
+                    // role optionally, then delete those links.
+                    let player = format!("PlanPlayers{stage}x{index}");
+                    let relation = self.name(*relation)?;
+                    let role = role.label().as_str();
+                    optional.push(tql::optional(vec![ast(tql::thing(
+                        relation,
+                        vec![ast(tql::links(vec![(role, player.as_str())]))?],
+                    ))?]));
+                    tql::delete_optional(vec![ast(tql::delete_links(
+                        relation,
+                        vec![(role, player.as_str())],
+                    ))?])
+                }
+                _ => {
+                    return Err(failure(
+                        DiagnosticCategory::UnsupportedCapability,
+                        "query_plan_stage_unsupported",
+                        "this executor cannot lower the deletion",
+                    ));
+                }
             });
         }
         if !optional.is_empty() {
@@ -707,6 +766,24 @@ mod tests {
         );
         let count = race::stock_read(Operation::Count);
         assert_same_ast(&typeql(&count).0, race::STOCK_READ_TYPEQL);
+    }
+
+    #[test]
+    fn removing_role_players_lowers_like_an_ownership_deletion() {
+        assert_same_ast(
+            &typeql(&race::drop_buyers()).0,
+            "match $purchase isa! purchase;
+             match try { $purchase links (buyer: $PlanPlayers1x0); };
+             delete try { links (buyer: $PlanPlayers1x0) of $purchase; };",
+        );
+    }
+
+    #[test]
+    fn attach_lowers_to_an_insert_over_bound_variables() {
+        assert_same_ast(
+            &typeql(&race::attach_on_call()).0,
+            "match $doctor isa! doctor; insert $doctor has on-call true;",
+        );
     }
 
     #[test]

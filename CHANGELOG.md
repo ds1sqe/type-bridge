@@ -495,6 +495,9 @@ differently direct and through a proxy. Each entry says what to do instead.
   hydration document (IID, exact type, owned attributes, and the players of
   listed roles) in the same pipeline (`query.fetch.thing`, not yet
   advertised by proxies).
+- `query-plan/v3` gains an `attach` write stage that adds an ownership
+  value or a role player to an already bound thing, keeping the existing
+  ones (`query.write.attach`, not yet advertised by proxies).
 
 ### Fixed
 
