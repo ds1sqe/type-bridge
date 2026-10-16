@@ -4,6 +4,7 @@
   },
   "constants": {
     "type-bridge-core/crates/schema-compat/src/live_authority.rs#MANAGED_FENCE_SCHEMA_TYPEQL": "Released managed-fence schema bytes are immutable input data.",
-    "type-bridge-core/crates/schema-compat/src/adopted_genesis.rs#LEGACY_LEDGER_SCHEMA_TYPEQL": "Released legacy-ledger schema bytes are immutable input data."
+    "type-bridge-core/crates/schema-compat/src/adopted_genesis.rs#LEGACY_LEDGER_SCHEMA_TYPEQL": "Released legacy-ledger schema bytes are immutable input data.",
+    "type-bridge-core/crates/schema-migration-typedb/src/control_schema.rs#JOURNAL_CONTROL_SCHEMA_TYPEQL": "11.15: frozen journal-control schema bytes are immutable contract input data."
   }
 }

@@ -5,6 +5,7 @@
 //! TypeQL fragments or alter the fixed conflict and postcondition semantics.
 
 use type_bridge_contract::migration_backfill::AttributeBackfillPlan;
+use type_bridge_core_lib::__internal as tql;
 use type_bridge_schema_migration::BackfillExecutionDirection;
 
 pub(crate) struct LoweredBackfill<'a> {
@@ -20,55 +21,118 @@ impl<'a> LoweredBackfill<'a> {
         Self { plan, direction }
     }
 
-    /// Return a bounded witness query for a value that makes execution unsafe.
-    pub(crate) fn conflict_witness(&self) -> Option<String> {
-        match self.direction {
-            BackfillExecutionDirection::Forward => Some(format!(
-                "match\n  $owner isa {owner}, has {source} $source, has {destination} $destination;\n  $destination != $source;\nlimit 1;\nfetch {{ \"conflict\": $destination }};",
-                owner = self.plan.owner().label(),
-                source = self.plan.source().label(),
-                destination = self.plan.destination().label(),
-            )),
-            BackfillExecutionDirection::Reverse => None,
+    fn source_patterns(
+        &self,
+        with_destination: bool,
+        with_stable: bool,
+    ) -> Result<Vec<tql::Pattern>, tql::TqlError> {
+        let mut constraints = vec![
+            tql::isa(self.plan.owner().label().as_str(), false)?,
+            tql::has(self.plan.source().label().as_str(), tql::var("source")?)?,
+        ];
+        if with_destination {
+            constraints.push(tql::has(
+                self.plan.destination().label().as_str(),
+                tql::var("destination")?,
+            )?);
         }
+        if with_stable {
+            constraints.push(tql::has(
+                self.plan.partition().stable_attribute().label().as_str(),
+                tql::var("stable")?,
+            )?);
+        }
+        Ok(vec![tql::thing("owner", constraints)?])
+    }
+
+    fn equal_destination(&self) -> Result<Vec<tql::Pattern>, tql::TqlError> {
+        Ok(vec![
+            tql::thing(
+                "owner",
+                vec![tql::has(
+                    self.plan.destination().label().as_str(),
+                    tql::var("destination")?,
+                )?],
+            )?,
+            tql::compare(tql::var("destination")?, "==", tql::var("source")?)?,
+        ])
+    }
+
+    /// Return a bounded witness query for a value that makes execution unsafe.
+    pub(crate) fn conflict_witness(&self) -> Result<Option<String>, tql::TqlError> {
+        if self.direction == BackfillExecutionDirection::Reverse {
+            return Ok(None);
+        }
+        let mut patterns = self.source_patterns(true, false)?;
+        patterns.push(tql::compare(
+            tql::var("destination")?,
+            "!=",
+            tql::var("source")?,
+        )?);
+        Ok(Some(tql::render(&tql::pipeline(vec![
+            tql::match_stage(patterns),
+            tql::limit(1),
+            tql::fetch(vec![(
+                "conflict",
+                tql::fetch_expr(tql::var("destination")?),
+            )])?,
+        ]))?))
     }
 
     /// Return a bounded witness query proving the terminal predicate is false.
-    pub(crate) fn incomplete_witness(&self) -> String {
-        match self.direction {
-            BackfillExecutionDirection::Forward => format!(
-                "match\n  $owner isa {owner}, has {source} $source;\n  not {{ $owner has {destination} $destination; $destination == $source; }};\nlimit 1;\nfetch {{ \"incomplete\": $source }};",
-                owner = self.plan.owner().label(),
-                source = self.plan.source().label(),
-                destination = self.plan.destination().label(),
-            ),
-            BackfillExecutionDirection::Reverse => format!(
-                "match\n  $owner isa {owner}, has {source} $source, has {destination} $destination;\n  $destination == $source;\nlimit 1;\nfetch {{ \"incomplete\": $destination }};",
-                owner = self.plan.owner().label(),
-                source = self.plan.source().label(),
-                destination = self.plan.destination().label(),
-            ),
-        }
+    pub(crate) fn incomplete_witness(&self) -> Result<String, tql::TqlError> {
+        let reverse = self.direction == BackfillExecutionDirection::Reverse;
+        let mut patterns = self.source_patterns(reverse, false)?;
+        let value = if reverse {
+            patterns.push(tql::compare(
+                tql::var("destination")?,
+                "==",
+                tql::var("source")?,
+            )?);
+            "destination"
+        } else {
+            patterns.push(tql::not(self.equal_destination()?));
+            "source"
+        };
+        tql::render(&tql::pipeline(vec![
+            tql::match_stage(patterns),
+            tql::limit(1),
+            tql::fetch(vec![("incomplete", tql::fetch_expr(tql::var(value)?))])?,
+        ]))
     }
 
     /// Return one deterministic bounded mutation pipeline.
-    pub(crate) fn mutation_group(&self) -> String {
-        let batch_rows = self.plan.partition().batch_rows();
-        let stable = self.plan.partition().stable_attribute().label();
-        match self.direction {
-            BackfillExecutionDirection::Forward => format!(
-                "match\n  $owner isa {owner}, has {source} $source, has {stable} $stable;\n  not {{ $owner has {destination} $destination; $destination == $source; }};\nsort $stable;\nlimit {batch_rows};\ninsert\n  $owner has {destination} == $source;\nfetch {{ \"changed_partition\": $stable }};",
-                owner = self.plan.owner().label(),
-                source = self.plan.source().label(),
-                destination = self.plan.destination().label(),
-            ),
-            BackfillExecutionDirection::Reverse => format!(
-                "match\n  $owner isa {owner}, has {source} $source, has {destination} $destination, has {stable} $stable;\n  $destination == $source;\nsort $stable;\nlimit {batch_rows};\ndelete\n  has $destination of $owner;\nfetch {{ \"changed_partition\": $stable }};",
-                owner = self.plan.owner().label(),
-                source = self.plan.source().label(),
-                destination = self.plan.destination().label(),
-            ),
-        }
+    pub(crate) fn mutation_group(&self) -> Result<String, tql::TqlError> {
+        let reverse = self.direction == BackfillExecutionDirection::Reverse;
+        let mut patterns = self.source_patterns(reverse, true)?;
+        let mutation = if reverse {
+            patterns.push(tql::compare(
+                tql::var("destination")?,
+                "==",
+                tql::var("source")?,
+            )?);
+            tql::delete(vec![tql::delete_has("owner", "destination")?])
+        } else {
+            patterns.push(tql::not(self.equal_destination()?));
+            tql::insert(vec![tql::thing(
+                "owner",
+                vec![tql::has_comparison(
+                    self.plan.destination().label().as_str(),
+                    "==",
+                    tql::var("source")?,
+                )?],
+            )?])
+        };
+        tql::render(&tql::pipeline(vec![
+            tql::match_stage(patterns),
+            tql::sort_default(&["stable"])?,
+            tql::limit(u64::from(self.plan.partition().batch_rows())),
+            mutation,
+            tql::fetch(vec![(
+                "changed_partition",
+                tql::fetch_expr(tql::var("stable")?),
+            )])?,
+        ]))
     }
 }
 
@@ -100,13 +164,13 @@ mod tests {
     fn forward_lowering_is_closed_bounded_and_idempotent() {
         let plan = plan();
         let lowered = LoweredBackfill::new(&plan, BackfillExecutionDirection::Forward);
-        assert_eq!(
-            lowered.conflict_witness().unwrap(),
+        assert!(tql::equivalent(
+            &lowered.conflict_witness().unwrap().unwrap(),
             "match\n  $owner isa person, has old-name $source, has display-name $destination;\n  $destination != $source;\nlimit 1;\nfetch { \"conflict\": $destination };"
-        );
-        let mutation = lowered.mutation_group();
+        ).unwrap());
+        let mutation = lowered.mutation_group().unwrap();
         assert!(mutation.contains("not { $owner has display-name $destination;"));
-        assert!(mutation.contains("sort $stable;\nlimit 37;\ninsert"));
+        assert!(mutation.contains("sort $stable; limit 37; insert"));
         assert!(mutation.contains("$owner has display-name == $source;"));
     }
 
@@ -114,14 +178,15 @@ mod tests {
     fn reverse_lowering_removes_only_an_equal_copy() {
         let plan = plan();
         let lowered = LoweredBackfill::new(&plan, BackfillExecutionDirection::Reverse);
-        assert!(lowered.conflict_witness().is_none());
+        assert!(lowered.conflict_witness().unwrap().is_none());
         assert!(
             lowered
                 .incomplete_witness()
+                .unwrap()
                 .contains("$destination == $source;")
         );
-        let mutation = lowered.mutation_group();
-        assert!(mutation.contains("sort $stable;\nlimit 37;\ndelete"));
+        let mutation = lowered.mutation_group().unwrap();
+        assert!(mutation.contains("sort $stable; limit 37; delete"));
         assert!(mutation.contains("has $destination of $owner;"));
     }
 }

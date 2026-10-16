@@ -45,7 +45,14 @@ pub(super) fn prepare(query: &mut typeql::Query) -> Option<UnsupportedConstruct>
         QueryStructure::Schema(schema) => {
             let definables = match schema {
                 SchemaQuery::Define(query) => &mut query.definables,
-                SchemaQuery::Redefine(query) => &mut query.definables,
+                SchemaQuery::Redefine(query) => {
+                    if query.definables.len() > 1 {
+                        visitor
+                            .unsupported
+                            .get_or_insert(UnsupportedConstruct::RedefineSequence);
+                    }
+                    &mut query.definables
+                }
                 SchemaQuery::Undefine(_) => return visitor.unsupported,
             };
             for definable in definables {

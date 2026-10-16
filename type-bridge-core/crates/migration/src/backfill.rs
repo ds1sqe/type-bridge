@@ -74,8 +74,8 @@ pub(crate) struct PreparedBackfill {
 ///
 /// # Invariant 2
 ///
-/// Both count queries are derived from `step.forward` by string manipulation of
-/// the carried match clause.  No `OperationSpec` is inspected here.
+/// Both count queries are derived from the official AST of `step.forward`.
+/// Only the destination ownership guard is removed for the total count.  No `OperationSpec` is inspected here.
 pub async fn execute_backfill(
     db: &Database,
     step: &ExecutionStep,
@@ -98,34 +98,10 @@ pub(crate) async fn prepare_backfill(
     step: &ExecutionStep,
     step_index: usize,
 ) -> Result<PreparedBackfill, MigrationError> {
-    // ── Decompose the carried forward text ──────────────────────────────────
-    //
-    // The planner writes CopyAttribute steps in the form:
-    //   "match\n  ...\n  not { ... };\n...\ninsert\n  ..."
-    //
-    // We split on "\ninsert\n" to extract the match section.
-    let (match_section, _insert_section) = step
-        .forward
-        .split_once("\ninsert\n")
-        .ok_or_else(|| MigrationError::BackfillQuery {
-            message: format!(
-                "backfill step {step_index}: forward TypeQL does not contain '\\ninsert\\n' separator; \
-                 cannot compose count queries without re-deriving semantics (invariant 2)"
-            ),
-        })?;
-
-    // ── Guarded count: rows the insert will affect (insert-if-absent set) ──
-    //
-    // The match section already contains the `not { $x has <dest> $d; }` guard,
-    // so this count == inserted.
-    let guarded_count_query = format!("{match_section}\nreduce $c = count;");
-
-    // ── Unguarded count: all candidate rows (matched) ───────────────────────
-    //
-    // Strip the `not { ... }` line from the match section.  The guard line is
-    // always of the form `  not { ... };` in the planner output.
-    let unguarded_match = strip_not_guard(match_section);
-    let total_count_query = format!("{unguarded_match}\nreduce $c = count;");
+    use type_bridge_core_lib::__internal as tql;
+    let (guarded, total) = tql::backfill_count_views(&step.forward)?;
+    let guarded_count_query = tql::render(&guarded)?;
+    let total_count_query = tql::render(&total)?;
 
     // ── Run guarded count (Read tx) ─────────────────────────────────────────
     let inserted: u64 = {
@@ -253,19 +229,6 @@ fn scalar_to_u64(value: &serde_json::Value) -> Option<u64> {
         serde_json::Value::Object(map) => map.get("value").and_then(scalar_to_u64),
         _ => None,
     }
-}
-
-/// Remove the `not { ... };` guard line from a match section.
-///
-/// The planner always writes the guard on a single line starting with
-/// `  not { ` (two-space indent).  We strip any line whose trimmed form starts
-/// with `not {`.
-fn strip_not_guard(match_section: &str) -> String {
-    match_section
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("not {"))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -464,21 +427,18 @@ mod tests {
         );
     }
 
-    // ── test: strip_not_guard removes the guard line ──────────────────────────
-
     #[test]
-    fn strip_not_guard_removes_not_line() {
-        let match_section =
-            "match\n  $x isa person, has old-name $v;\n  not { $x has new-name $d; };";
-        let stripped = strip_not_guard(match_section);
-        assert!(
-            !stripped.contains("not {"),
-            "stripped result must not contain 'not {{': {stripped}"
-        );
-        assert!(
-            stripped.contains("$x isa person"),
-            "stripped result must preserve the main match line: {stripped}"
-        );
+    fn count_views_remove_only_the_destination_guard() {
+        use type_bridge_core_lib::__internal as tql;
+        let forward = "match $x isa person, has old-name $v; not { $x has new-name $d; }; not { $x has blocked true; }; insert $x has new-name == $v;";
+        let before = forward.to_owned();
+        let (guarded, total) = tql::backfill_count_views(forward).unwrap();
+        assert!(tql::equivalent(&tql::render(&guarded).unwrap(),
+            "match $x isa person, has old-name $v; not { $x has new-name $d; }; not { $x has blocked true; }; reduce $c = count;").unwrap());
+        assert!(tql::equivalent(&tql::render(&total).unwrap(),
+            "match $x isa person, has old-name $v; not { $x has blocked true; }; reduce $c = count;").unwrap());
+        assert_eq!(forward, before);
+        assert!(tql::backfill_count_views("match $x isa person; delete $x;").is_err());
     }
 
     // ── test: zero counts (empty database) ───────────────────────────────────

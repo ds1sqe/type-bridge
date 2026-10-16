@@ -8,6 +8,7 @@
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
+use type_bridge_core_lib::__internal as tql;
 use type_bridge_orm::_schema::annotations::{
     AnnotationToken, AnnotationTokenDiff, diff_annotation_tokens, split_annotation_tokens,
 };
@@ -228,6 +229,7 @@ pub fn plan(
 
     // Gate 2: checksum drift (04 gate, hard stop before any step assembly).
     check_checksum_drift(graph, applied)?;
+    validate_role_ordering(graph)?;
 
     // Build an applied-key set for O(1) membership checks.
     let applied_keys: std::collections::BTreeSet<(&str, &str)> = applied
@@ -305,6 +307,82 @@ pub fn plan(
         to_apply: apply_executions,
         to_rollback: rollback_executions,
     })
+}
+
+// Released AddRole has no live schema input. Validate facts supplied in the
+// graph, and leave absent parent declarations to provider validation.
+fn validate_role_ordering(graph: &MigrationGraph) -> crate::Result<()> {
+    let mut relations = std::collections::BTreeMap::new();
+    let mut roles = std::collections::BTreeMap::new();
+    for operation in graph
+        .migrations
+        .iter()
+        .flat_map(|migration| &migration.operations)
+    {
+        let mut added_roles = Vec::new();
+        match operation {
+            OperationSpec::DefineSchema { schema } => {
+                for relation in schema.relations.values() {
+                    relations.insert(relation.type_name.as_str(), relation.parent_type.as_deref());
+                    for role in &relation.roles {
+                        roles.insert((relation.type_name.as_str(), role.role_name.as_str()), role);
+                        added_roles.push((relation.type_name.as_str(), role));
+                    }
+                }
+            }
+            OperationSpec::AddRelation { relation } => {
+                relations.insert(relation.type_name.as_str(), relation.parent_type.as_deref());
+                for role in &relation.roles {
+                    roles.insert((relation.type_name.as_str(), role.role_name.as_str()), role);
+                    added_roles.push((relation.type_name.as_str(), role));
+                }
+            }
+            OperationSpec::AddRole {
+                relation_type,
+                role,
+            } => {
+                roles.insert((relation_type.as_str(), role.role_name.as_str()), role);
+                added_roles.push((relation_type.as_str(), role));
+            }
+            OperationSpec::RemoveRelation { type_name } => {
+                relations.remove(type_name.as_str());
+                roles.retain(|(relation, _), _| *relation != type_name);
+            }
+            OperationSpec::RemoveRole {
+                relation_type,
+                role_name,
+            } => {
+                roles.remove(&(relation_type.as_str(), role_name.as_str()));
+            }
+            _ => {}
+        }
+        for (relation, role) in added_roles {
+            let Some(parent_role) = role.overrides.as_deref() else {
+                continue;
+            };
+            let parent_role = parent_role.strip_suffix("[]").unwrap_or(parent_role);
+            let mut ancestor = relations.get(relation).copied().flatten();
+            let mut visited = BTreeSet::new();
+            while let Some(parent) = ancestor {
+                if !visited.insert(parent) {
+                    break;
+                }
+                if let Some(parent_role) = roles.get(&(parent, parent_role)) {
+                    if role.ordered != parent_role.ordered {
+                        return Err(MigrationError::AuthoringInput {
+                            message: format!(
+                                "role {relation}:{} has different ordering from parent {parent}:{}",
+                                role.role_name, parent_role.role_name
+                            ),
+                        });
+                    }
+                    break;
+                }
+                ancestor = relations.get(parent).copied().flatten();
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Relation labels deleted wholesale by a `RemoveRelation` in this migration.
@@ -388,51 +466,52 @@ fn assemble_steps(
             }
             OperationSpec::AddAttribute { attribute } => vec![schema_step(
                 define_attribute(attribute)?,
-                Some(undefine_attribute(&attribute.attr_name)),
+                Some(undefine_attribute(&attribute.attr_name)?),
             )],
             OperationSpec::RemoveAttribute { attr_name } => {
-                vec![schema_step(undefine_attribute(attr_name), None)]
+                vec![schema_step(undefine_attribute(attr_name)?, None)]
             }
             OperationSpec::AddEntity { entity } => vec![schema_step(
                 define_entity(entity)?,
-                Some(undefine_entity(&entity.type_name)),
+                Some(undefine_entity(&entity.type_name)?),
             )],
             OperationSpec::RemoveEntity { type_name } => {
-                vec![schema_step(undefine_entity(type_name), None)]
+                vec![schema_step(undefine_entity(type_name)?, None)]
             }
             OperationSpec::AddRelation { relation } => vec![schema_step(
                 define_relation(relation)?,
-                Some(undefine_relation_with_players(relation)),
+                Some(undefine_relation_with_players(relation)?),
             )],
             OperationSpec::RemoveRelation { type_name } => {
-                vec![schema_step(undefine_relation(type_name), None)]
+                vec![schema_step(undefine_relation(type_name)?, None)]
             }
             OperationSpec::AddOwnership {
                 owner_type,
                 attribute,
             } => vec![schema_step(
-                define_ownership(owner_type, attribute),
-                Some(undefine_ownership(
-                    owner_type,
-                    &owned_attribute_type_ref(attribute),
-                )),
+                define_ownership(owner_type, attribute)?,
+                Some(undefine_known_ownership(owner_type, attribute)?),
             )],
             OperationSpec::RemoveOwnership {
                 owner_type,
                 attr_name,
-            } => vec![schema_step(undefine_ownership(owner_type, attr_name), None)],
+            } => vec![schema_step(
+                undefine_ownership(owner_type, attr_name)?,
+                None,
+            )],
             OperationSpec::ModifyOwnership {
                 owner_type,
                 attr_name,
                 old_annotations,
                 new_annotations,
             } => annotation_token_steps(
-                &format!("{owner_type} owns {attr_name}"),
+                owner_type,
+                Some(tql::schema_owns_source(attr_name, vec![])?),
                 &diff_annotation_tokens(
                     &split_annotation_tokens(old_annotations),
                     &split_annotation_tokens(new_annotations),
                 ),
-            ),
+            )?,
             OperationSpec::ModifyTypeAnnotations {
                 type_name,
                 old_doc,
@@ -441,11 +520,12 @@ fn assemble_steps(
                 new_meta,
             } => annotation_token_steps(
                 type_name,
+                None,
                 &diff_annotation_tokens(
                     &doc_meta_tokens(old_doc.as_deref(), old_meta),
                     &doc_meta_tokens(new_doc.as_deref(), new_meta),
                 ),
-            ),
+            )?,
             OperationSpec::ModifyRoleAnnotations {
                 relation_type,
                 role_name,
@@ -454,46 +534,47 @@ fn assemble_steps(
                 old_meta,
                 new_meta,
             } => annotation_token_steps(
-                &format!("{relation_type} relates {role_name}"),
+                relation_type,
+                Some(tql::schema_relates_source(role_name, vec![])?),
                 &diff_annotation_tokens(
                     &doc_meta_tokens(old_doc.as_deref(), old_meta),
                     &doc_meta_tokens(new_doc.as_deref(), new_meta),
                 ),
-            ),
+            )?,
             OperationSpec::AddRole {
                 relation_type,
                 role,
             } => vec![schema_step(
-                define_role(relation_type, role),
-                Some(undefine_role_with_players(relation_type, role)),
+                define_role(relation_type, role)?,
+                Some(undefine_role_with_players(relation_type, role)?),
             )],
             OperationSpec::RemoveRole {
                 relation_type,
                 role_name,
-            } => vec![schema_step(undefine_role(relation_type, role_name), None)],
+            } => vec![schema_step(undefine_role(relation_type, role_name)?, None)],
             OperationSpec::AddRolePlayer {
                 relation_type,
                 role_name,
                 player_type_name,
             } => vec![schema_step(
-                define_role_player(relation_type, role_name, player_type_name),
+                define_role_player(relation_type, role_name, player_type_name)?,
                 Some(undefine_role_player(
                     relation_type,
                     role_name,
                     player_type_name,
-                )),
+                )?),
             )],
             OperationSpec::RemoveRolePlayer {
                 relation_type,
                 role_name,
                 player_type_name,
             } => vec![schema_step(
-                undefine_role_player(relation_type, role_name, player_type_name),
+                undefine_role_player(relation_type, role_name, player_type_name)?,
                 Some(define_role_player(
                     relation_type,
                     role_name,
                     player_type_name,
-                )),
+                )?),
             )],
             copy @ OperationSpec::CopyAttribute { .. } => {
                 // Carried TypeQL (the frozen `CopyAttribute.to_typeql()` output)
@@ -540,71 +621,79 @@ fn assemble_steps(
 /// first — adding `@key` while a conflicting explicit `@card` is still
 /// declared fails schema validation. Reverse steps restore the prior state
 /// with the mirrored verb.
-fn annotation_token_steps(subject: &str, diff: &AnnotationTokenDiff) -> Vec<ExecutionStep> {
+fn annotation_definition(
+    subject: &str,
+    capability: Option<&tql::SchemaCapability>,
+    token: &AnnotationToken,
+) -> crate::Result<tql::SchemaDefinition> {
+    let annotation = tql::schema_annotation(&token.name, token.args.as_deref())?;
+    let (head, capabilities) = if let Some(capability) = capability {
+        (vec![], vec![capability.clone().annotated(vec![annotation])])
+    } else {
+        (vec![annotation], vec![])
+    };
+    Ok(tql::schema_type(None, subject, head, capabilities)?)
+}
+fn annotation_undefinition(
+    subject: &str,
+    capability: Option<&tql::SchemaCapability>,
+    token: &AnnotationToken,
+) -> crate::Result<tql::SchemaUndefinition> {
+    let key = token.meta_key();
+    Ok(tql::schema_undefine_annotation(
+        &token.name,
+        key.as_deref(),
+        subject,
+        capability.cloned(),
+    )?)
+}
+fn annotation_token_steps(
+    subject: &str,
+    capability: Option<tql::SchemaCapability>,
+    diff: &AnnotationTokenDiff,
+) -> crate::Result<Vec<ExecutionStep>> {
     let mut steps = Vec::new();
     if !diff.removed.is_empty() {
-        let forward = typeql_block(
-            "undefine",
-            diff.removed
-                .iter()
-                .map(|token| format!("{} from {subject};", undefine_annotation_ref(token)))
-                .collect(),
-        );
-        let reverse = typeql_block(
-            "define",
-            diff.removed
-                .iter()
-                .map(|token| format!("{subject} {};", token.render()))
-                .collect(),
-        );
-        steps.push(schema_step(forward, Some(reverse)));
-    }
-    for (old_token, new_token) in &diff.changed {
+        let removed = diff
+            .removed
+            .iter()
+            .map(|token| annotation_undefinition(subject, capability.as_ref(), token))
+            .collect::<crate::Result<Vec<_>>>()?;
+        let restore = diff
+            .removed
+            .iter()
+            .map(|token| annotation_definition(subject, capability.as_ref(), token))
+            .collect::<crate::Result<Vec<_>>>()?;
         steps.push(schema_step(
-            typeql_block(
-                "redefine",
-                vec![format!("{subject} {};", new_token.render())],
-            ),
-            Some(typeql_block(
-                "redefine",
-                vec![format!("{subject} {};", old_token.render())],
-            )),
+            render_query(tql::schema_undefine(removed))?,
+            Some(render_query(tql::schema_define(restore))?),
+        ));
+    }
+    for (old, new) in &diff.changed {
+        let forward = annotation_definition(subject, capability.as_ref(), new)?;
+        let reverse = annotation_definition(subject, capability.as_ref(), old)?;
+        steps.push(schema_step(
+            render_query(tql::schema_redefine(vec![forward]))?,
+            Some(render_query(tql::schema_redefine(vec![reverse]))?),
         ));
     }
     if !diff.added.is_empty() {
-        let forward = typeql_block(
-            "define",
-            diff.added
-                .iter()
-                .map(|token| format!("{subject} {};", token.render()))
-                .collect(),
-        );
-        let reverse = typeql_block(
-            "undefine",
-            diff.added
-                .iter()
-                .map(|token| format!("{} from {subject};", undefine_annotation_ref(token)))
-                .collect(),
-        );
-        steps.push(schema_step(forward, Some(reverse)));
+        let added = diff
+            .added
+            .iter()
+            .map(|token| annotation_definition(subject, capability.as_ref(), token))
+            .collect::<crate::Result<Vec<_>>>()?;
+        let remove = diff
+            .added
+            .iter()
+            .map(|token| annotation_undefinition(subject, capability.as_ref(), token))
+            .collect::<crate::Result<Vec<_>>>()?;
+        steps.push(schema_step(
+            render_query(tql::schema_define(added))?,
+            Some(render_query(tql::schema_undefine(remove))?),
+        ));
     }
-    steps
-}
-
-/// The `@...` reference used in `undefine <ref> from <subject>`.
-///
-/// `@meta` must use the keyed form `@meta("key")`; every other annotation
-/// (parameterless or parameterized) undefines by bare name.
-fn undefine_annotation_ref(token: &AnnotationToken) -> String {
-    if token.name == "meta"
-        && let Some(key) = token.meta_key()
-    {
-        return format!(
-            "@meta({})",
-            type_bridge_orm::_schema::annotations::escaped_string_literal(&key)
-        );
-    }
-    format!("@{}", token.name)
+    Ok(steps)
 }
 
 /// Build the `@doc`/`@meta` token list for one side of a type or role
@@ -650,14 +739,16 @@ fn run_typeql_tx_type(forward: &str) -> TxType {
     }
 }
 
+fn render_query(query: tql::Query) -> crate::Result<String> {
+    Ok(tql::render(&query)?)
+}
 fn schema_to_typeql(schema: &SchemaInfo) -> crate::Result<String> {
     schema
         .to_typeql()
-        .map_err(|e| MigrationError::SchemaGeneration {
-            message: e.to_string(),
+        .map_err(|error| MigrationError::SchemaGeneration {
+            message: error.to_string(),
         })
 }
-
 fn define_attribute(attribute: &AttributeSchemaEntry) -> crate::Result<String> {
     let mut schema = SchemaInfo::default();
     schema
@@ -665,11 +756,9 @@ fn define_attribute(attribute: &AttributeSchemaEntry) -> crate::Result<String> {
         .insert(attribute.attr_name.clone(), attribute.clone());
     schema_to_typeql(&schema)
 }
-
-fn undefine_attribute(attr_name: &str) -> String {
-    format!("undefine\n{attr_name};")
+fn undefine_attribute(name: &str) -> crate::Result<String> {
+    render_query(tql::schema_undefine(vec![tql::schema_undefine_type(name)?]))
 }
-
 fn define_entity(entity: &EntitySchemaEntry) -> crate::Result<String> {
     let mut schema = SchemaInfo::default();
     schema
@@ -677,11 +766,9 @@ fn define_entity(entity: &EntitySchemaEntry) -> crate::Result<String> {
         .insert(entity.type_name.clone(), entity.clone());
     schema_to_typeql(&schema)
 }
-
-fn undefine_entity(type_name: &str) -> String {
-    format!("undefine\n{type_name};")
+fn undefine_entity(name: &str) -> crate::Result<String> {
+    undefine_attribute(name)
 }
-
 fn define_relation(relation: &RelationSchemaEntry) -> crate::Result<String> {
     let mut schema = SchemaInfo::default();
     schema
@@ -689,145 +776,115 @@ fn define_relation(relation: &RelationSchemaEntry) -> crate::Result<String> {
         .insert(relation.type_name.clone(), relation.clone());
     schema_to_typeql(&schema)
 }
-
-fn undefine_relation(type_name: &str) -> String {
-    format!("undefine\n{type_name};")
+fn undefine_relation(name: &str) -> crate::Result<String> {
+    undefine_attribute(name)
 }
-
-fn undefine_relation_with_players(relation: &RelationSchemaEntry) -> String {
-    let mut statements = Vec::new();
+fn undefine_relation_with_players(relation: &RelationSchemaEntry) -> crate::Result<String> {
+    let mut nodes = Vec::new();
     for role in &relation.roles {
-        for player_type_name in &role.player_type_names {
-            statements.push(format!(
-                "plays {}:{} from {player_type_name};",
-                relation.type_name, role.role_name
-            ));
+        for player in &role.player_type_names {
+            nodes.push(tql::schema_undefine_capability(
+                player,
+                tql::schema_plays(&relation.type_name, &role.role_name, vec![])?,
+            )?);
         }
     }
-    statements.push(format!("{};", relation.type_name));
-    typeql_block("undefine", statements)
+    nodes.push(tql::schema_undefine_type(&relation.type_name)?);
+    render_query(tql::schema_undefine(nodes))
 }
-
-fn define_ownership(owner_type: &str, attribute: &OwnedAttributeEntry) -> String {
-    let attr_ref = owned_attribute_type_ref(attribute);
-    let flags = annotation_suffix(&attribute.flags_string());
-    typeql_block(
-        "define",
-        vec![format!("{owner_type} owns {attr_ref}{flags};")],
-    )
+fn define_ownership(owner: &str, attribute: &OwnedAttributeEntry) -> crate::Result<String> {
+    let values = tql::schema_annotations_source(&attribute.flags_string())?;
+    render_query(tql::schema_define(vec![tql::schema_type(
+        None,
+        owner,
+        vec![],
+        vec![tql::schema_owns(
+            &attribute.attr_name,
+            attribute.is_ordered,
+            values,
+        )?],
+    )?]))
 }
-
-fn undefine_ownership(owner_type: &str, attr_name: &str) -> String {
-    typeql_block(
-        "undefine",
-        vec![format!("owns {attr_name} from {owner_type};")],
-    )
+fn undefine_ownership(owner: &str, name: &str) -> crate::Result<String> {
+    render_query(tql::schema_undefine(vec![tql::schema_undefine_capability(
+        owner,
+        tql::schema_owns_source(name, vec![])?,
+    )?]))
 }
-
-fn owned_attribute_type_ref(attribute: &OwnedAttributeEntry) -> String {
-    if attribute.is_ordered {
-        format!("{}[]", attribute.attr_name)
-    } else {
-        attribute.attr_name.clone()
-    }
+fn undefine_known_ownership(owner: &str, attribute: &OwnedAttributeEntry) -> crate::Result<String> {
+    render_query(tql::schema_undefine(vec![tql::schema_undefine_capability(
+        owner,
+        tql::schema_owns(&attribute.attr_name, attribute.is_ordered, vec![])?,
+    )?]))
 }
-
-fn define_role(relation_type: &str, role: &RoleEntry) -> String {
-    let mut statements = vec![format!(
-        "{relation_type} relates {};",
-        role_definition(role)
-    )];
-    for player_type_name in &role.player_type_names {
-        statements.push(format!(
-            "{player_type_name} plays {relation_type}:{};",
-            role.role_name
-        ));
-    }
-    typeql_block("define", statements)
-}
-
-fn undefine_role(relation_type: &str, role_name: &str) -> String {
-    typeql_block(
-        "undefine",
-        vec![format!("relates {role_name} from {relation_type};")],
-    )
-}
-
-fn undefine_role_with_players(relation_type: &str, role: &RoleEntry) -> String {
-    let mut statements = Vec::new();
-    for player_type_name in &role.player_type_names {
-        statements.push(format!(
-            "plays {relation_type}:{} from {player_type_name};",
-            role.role_name
-        ));
-    }
-    statements.push(format!(
-        "relates {} from {relation_type};",
-        role_type_ref(role)
-    ));
-    typeql_block("undefine", statements)
-}
-
-fn define_role_player(relation_type: &str, role_name: &str, player_type_name: &str) -> String {
-    typeql_block(
-        "define",
-        vec![format!(
-            "{player_type_name} plays {relation_type}:{role_name};"
-        )],
-    )
-}
-
-fn undefine_role_player(relation_type: &str, role_name: &str, player_type_name: &str) -> String {
-    typeql_block(
-        "undefine",
-        vec![format!(
-            "plays {relation_type}:{role_name} from {player_type_name};"
-        )],
-    )
-}
-
-fn role_definition(role: &RoleEntry) -> String {
-    let mut definition = role_type_ref(role);
-    if let Some(ref parent_role) = role.overrides {
-        definition.push_str(&format!(" as {parent_role}"));
-    }
+fn role_capability(role: &RoleEntry) -> crate::Result<tql::SchemaCapability> {
+    let mut annotations = Vec::new();
     if role.is_abstract {
-        definition.push_str(" @abstract");
+        annotations.push(tql::schema_flag("abstract")?);
     }
     if role.distinct {
-        definition.push_str(" @distinct");
+        annotations.push(tql::schema_flag("distinct")?);
     }
     if let Some((min, max)) = role.cardinality {
-        definition.push(' ');
-        definition.push_str(&card_annotation(min, max));
+        annotations.push(tql::schema_card(u64::from(min), max.map(u64::from))?);
     }
-    definition
+    Ok(tql::schema_relates_with_parent_source(
+        &role.role_name,
+        role.ordered,
+        role.overrides.as_deref(),
+        annotations,
+    )?)
 }
-
-fn role_type_ref(role: &RoleEntry) -> String {
-    if role.ordered {
-        format!("{}[]", role.role_name)
-    } else {
-        role.role_name.clone()
+fn define_role(relation: &str, role: &RoleEntry) -> crate::Result<String> {
+    let mut nodes = vec![tql::schema_type(
+        None,
+        relation,
+        vec![],
+        vec![role_capability(role)?],
+    )?];
+    for player in &role.player_type_names {
+        nodes.push(tql::schema_type(
+            None,
+            player,
+            vec![],
+            vec![tql::schema_plays(relation, &role.role_name, vec![])?],
+        )?);
     }
+    render_query(tql::schema_define(nodes))
 }
-
-fn card_annotation(min: u32, max: Option<u32>) -> String {
-    let max_str = max.map(|value| value.to_string()).unwrap_or_default();
-    format!("@card({min}..{max_str})")
+fn undefine_role(relation: &str, role: &str) -> crate::Result<String> {
+    render_query(tql::schema_undefine(vec![tql::schema_undefine_capability(
+        relation,
+        tql::schema_relates_source(role, vec![])?,
+    )?]))
 }
-
-fn annotation_suffix(annotations: &str) -> String {
-    let trimmed = annotations.trim();
-    if trimmed.is_empty() {
-        String::new()
-    } else {
-        format!(" {trimmed}")
+fn undefine_role_with_players(relation: &str, role: &RoleEntry) -> crate::Result<String> {
+    let mut nodes = Vec::new();
+    for player in &role.player_type_names {
+        nodes.push(tql::schema_undefine_capability(
+            player,
+            tql::schema_plays(relation, &role.role_name, vec![])?,
+        )?);
     }
+    nodes.push(tql::schema_undefine_capability(
+        relation,
+        tql::schema_relates(&role.role_name, role.ordered, None, vec![])?,
+    )?);
+    render_query(tql::schema_undefine(nodes))
 }
-
-fn typeql_block(keyword: &str, statements: Vec<String>) -> String {
-    format!("{keyword}\n{}", statements.join("\n"))
+fn define_role_player(relation: &str, role: &str, player: &str) -> crate::Result<String> {
+    render_query(tql::schema_define(vec![tql::schema_type(
+        None,
+        player,
+        vec![],
+        vec![tql::schema_plays(relation, role, vec![])?],
+    )?]))
+}
+fn undefine_role_player(relation: &str, role: &str, player: &str) -> crate::Result<String> {
+    render_query(tql::schema_undefine(vec![tql::schema_undefine_capability(
+        player,
+        tql::schema_plays(relation, role, vec![])?,
+    )?]))
 }
 
 /// Return a stable string name for an [`OperationSpec`] variant.
@@ -1252,8 +1309,8 @@ delete $a has email "ops@example.com";"#,
 
         assert_eq!(steps.len(), 2);
         assert!(steps[0].forward.contains("attribute score, value integer;"));
-        assert_eq!(steps[0].reverse.as_deref(), Some("undefine\nscore;"));
-        assert_eq!(steps[1].forward, "undefine\nlegacy-score;");
+        assert_typeql_eq!(steps[0].reverse.as_deref(), Some("undefine\nscore;"));
+        assert_typeql_eq!(steps[1].forward, "undefine\nlegacy-score;");
         assert!(steps[1].reverse.is_none());
         assert!(!result.to_apply[0].reversible);
     }
@@ -1278,13 +1335,13 @@ delete $a has email "ops@example.com";"#,
 
         assert!(steps[0].forward.contains("entity person,"));
         assert!(steps[0].forward.contains("owns name @key;"));
-        assert_eq!(steps[0].reverse.as_deref(), Some("undefine\nperson;"));
+        assert_typeql_eq!(steps[0].reverse.as_deref(), Some("undefine\nperson;"));
         assert!(steps[1].forward.contains("relation employment,"));
         assert!(steps[1].forward.contains("relates employee;"));
         assert!(
             steps[1]
                 .forward
-                .contains("person plays employment:employee;")
+                .contains("person, plays employment:employee;")
         );
         assert!(
             steps[1]
@@ -1313,8 +1370,8 @@ delete $a has email "ops@example.com";"#,
         let steps = &result.to_apply[0].steps;
 
         assert_eq!(steps.len(), 1);
-        assert!(steps[0].forward.contains("entity person sub animal,"));
-        assert_eq!(steps[0].reverse.as_deref(), Some("undefine\nperson;"));
+        assert!(steps[0].forward.contains("entity person, sub animal,"));
+        assert_typeql_eq!(steps[0].reverse.as_deref(), Some("undefine\nperson;"));
     }
 
     #[test]
@@ -1343,18 +1400,18 @@ delete $a has email "ops@example.com";"#,
         let result = plan(&g, &[], None).expect("plan should succeed");
         let steps = &result.to_apply[0].steps;
 
-        assert_eq!(steps[0].forward, "define\nperson owns email @key;");
-        assert_eq!(
+        assert_typeql_eq!(steps[0].forward, "define\nperson owns email @key;");
+        assert_typeql_eq!(
             steps[0].reverse.as_deref(),
             Some("undefine\nowns email from person;")
         );
-        assert_eq!(steps[1].forward, "undefine\nowns legacy-email from person;");
+        assert_typeql_eq!(steps[1].forward, "undefine\nowns legacy-email from person;");
         assert!(steps[1].reverse.is_none());
-        assert_eq!(
+        assert_typeql_eq!(
             steps[2].forward,
             "redefine\nperson owns nickname @card(1..1);"
         );
-        assert_eq!(
+        assert_typeql_eq!(
             steps[2].reverse.as_deref(),
             Some("redefine\nperson owns nickname @card(0..1);")
         );
@@ -1381,16 +1438,16 @@ delete $a has email "ops@example.com";"#,
         let steps = &result.to_apply[0].steps;
 
         assert_eq!(steps.len(), 2);
-        assert_eq!(
+        assert_typeql_eq!(
             steps[0].forward,
             "undefine\n@card from person owns nickname;"
         );
-        assert_eq!(
+        assert_typeql_eq!(
             steps[0].reverse.as_deref(),
             Some("define\nperson owns nickname @card(0..1);")
         );
-        assert_eq!(steps[1].forward, "define\nperson owns nickname @key;");
-        assert_eq!(
+        assert_typeql_eq!(steps[1].forward, "define\nperson owns nickname @key;");
+        assert_typeql_eq!(
             steps[1].reverse.as_deref(),
             Some("undefine\n@key from person owns nickname;")
         );
@@ -1422,8 +1479,8 @@ delete $a has email "ops@example.com";"#,
 
         // The no-op transition contributes zero steps.
         assert_eq!(steps.len(), 1);
-        assert_eq!(steps[0].forward, "define\nperson owns nickname @key;");
-        assert_eq!(
+        assert_typeql_eq!(steps[0].forward, "define\nperson owns nickname @key;");
+        assert_typeql_eq!(
             steps[0].reverse.as_deref(),
             Some("undefine\n@key from person owns nickname;")
         );
@@ -1470,34 +1527,34 @@ delete $a has email "ops@example.com";"#,
         let result = plan(&g, &[], None).expect("plan should succeed");
         let steps = &result.to_apply[0].steps;
 
-        assert_eq!(
+        assert_typeql_eq!(
             steps[0].forward,
             "define\nemployment relates reviewer @card(0..2);\nperson plays employment:reviewer;"
         );
-        assert_eq!(
+        assert_typeql_eq!(
             steps[0].reverse.as_deref(),
             Some(
                 "undefine\nplays employment:reviewer from person;\nrelates reviewer from employment;"
             )
         );
-        assert_eq!(
+        assert_typeql_eq!(
             steps[1].forward,
             "undefine\nrelates legacy from employment;"
         );
         assert!(steps[1].reverse.is_none());
-        assert_eq!(
+        assert_typeql_eq!(
             steps[2].forward,
             "define\ncontractor plays employment:employee;"
         );
-        assert_eq!(
+        assert_typeql_eq!(
             steps[2].reverse.as_deref(),
             Some("undefine\nplays employment:employee from contractor;")
         );
-        assert_eq!(
+        assert_typeql_eq!(
             steps[3].forward,
             "undefine\nplays employment:employee from company;"
         );
-        assert_eq!(
+        assert_typeql_eq!(
             steps[3].reverse.as_deref(),
             Some("define\ncompany plays employment:employee;")
         );
@@ -1718,12 +1775,12 @@ delete $a has email "ops@example.com";"#,
         let step = &result.to_apply[0].steps[0];
         assert_eq!(step.tx_type, TxType::Write);
         assert_eq!(step.kind, StepKind::Backfill);
-        assert_eq!(
+        assert_typeql_eq!(
             step.forward,
             "match\n  $x isa person, has old-name $v;\n  \
              not { $x has new-name $d; };\ninsert\n  $x has new-name == $v;"
         );
-        assert_eq!(
+        assert_typeql_eq!(
             step.reverse.as_deref(),
             Some("match $x isa person, has new-name $v;\ndelete $v of $x;")
         );
@@ -1794,7 +1851,7 @@ delete $a has email "ops@example.com";"#,
             1,
             "granular removals shadowed by RemoveRelation must be dropped"
         );
-        assert_eq!(exec.steps[0].forward, "undefine\nlegacy-link;");
+        assert_typeql_eq!(exec.steps[0].forward, "undefine\nlegacy-link;");
         assert_eq!(exec.steps[0].tx_type, TxType::Schema);
     }
 
@@ -1846,7 +1903,7 @@ delete $a has email "ops@example.com";"#,
             .iter()
             .map(|s| s.forward.as_str())
             .collect();
-        assert_eq!(
+        assert_typeql_eq!(
             forwards,
             vec![
                 "undefine\nlegacy-link;",
@@ -1877,27 +1934,27 @@ delete $a has email "ops@example.com";"#,
 
         // Removals run first: adding @unique while the conflicting @key is
         // still declared would fail schema validation.
-        assert_eq!(
+        assert_typeql_eq!(
             steps[0].forward,
             "undefine\n@key from person owns name;\n@meta(\"x\") from person owns name;"
         );
-        assert_eq!(
+        assert_typeql_eq!(
             steps[0].reverse.as_deref(),
             Some("define\nperson owns name @key;\nperson owns name @meta(\"x\", \"1\");")
         );
-        assert_eq!(
+        assert_typeql_eq!(
             steps[1].forward,
             "redefine\nperson owns name @doc(\"new doc\");"
         );
-        assert_eq!(
+        assert_typeql_eq!(
             steps[1].reverse.as_deref(),
             Some("redefine\nperson owns name @doc(\"old doc\");")
         );
-        assert_eq!(
+        assert_typeql_eq!(
             steps[2].forward,
             "define\nperson owns name @meta(\"y\", \"2\");\nperson owns name @unique;"
         );
-        assert_eq!(
+        assert_typeql_eq!(
             steps[2].reverse.as_deref(),
             Some("undefine\n@meta(\"y\") from person owns name;\n@unique from person owns name;")
         );
@@ -1938,18 +1995,18 @@ delete $a has email "ops@example.com";"#,
         let result = plan(&g, &[], None).expect("plan should succeed");
         let steps = &result.to_apply[0].steps;
         assert_eq!(steps.len(), 3);
-        assert_eq!(steps[0].forward, "undefine\n@meta(\"gone\") from person;");
-        assert_eq!(
+        assert_typeql_eq!(steps[0].forward, "undefine\n@meta(\"gone\") from person;");
+        assert_typeql_eq!(
             steps[0].reverse.as_deref(),
             Some("define\nperson @meta(\"gone\", \"1\");")
         );
-        assert_eq!(steps[1].forward, "redefine\nperson @doc(\"new type doc\");");
-        assert_eq!(
+        assert_typeql_eq!(steps[1].forward, "redefine\nperson @doc(\"new type doc\");");
+        assert_typeql_eq!(
             steps[1].reverse.as_deref(),
             Some("redefine\nperson @doc(\"old type doc\");")
         );
-        assert_eq!(steps[2].forward, "define\nperson @meta(\"added\", \"2\");");
-        assert_eq!(
+        assert_typeql_eq!(steps[2].forward, "define\nperson @meta(\"added\", \"2\");");
+        assert_typeql_eq!(
             steps[2].reverse.as_deref(),
             Some("undefine\n@meta(\"added\") from person;")
         );
@@ -1973,11 +2030,11 @@ delete $a has email "ops@example.com";"#,
         let result = plan(&g, &[], None).expect("plan should succeed");
         let steps = &result.to_apply[0].steps;
         assert_eq!(steps.len(), 1);
-        assert_eq!(
+        assert_typeql_eq!(
             steps[0].forward,
             "define\nemployment relates employee @doc(\"The employed party.\");"
         );
-        assert_eq!(
+        assert_typeql_eq!(
             steps[0].reverse.as_deref(),
             Some("undefine\n@doc from employment relates employee;")
         );

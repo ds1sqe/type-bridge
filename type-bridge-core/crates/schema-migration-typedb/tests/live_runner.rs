@@ -595,7 +595,7 @@ async fn runner_rejects_fresh_list_projection_drift_before_target_or_checkpoint_
     assert!(
         error
             .to_string()
-            .contains("migration_typedb_export_invalid"),
+            .contains("migration_typedb_observation_no_candidate_match"),
         "{error}"
     );
     let rejected_export = managed.schema_text().await.expect("rejected export");

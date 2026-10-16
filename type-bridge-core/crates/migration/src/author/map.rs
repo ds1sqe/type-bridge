@@ -24,14 +24,11 @@
 //! destroys data. A rename replaces those diff-mapped operations with a
 //! staged expansion built from existing primitives.
 
-#![allow(deprecated)] // Released fragment bridges remain until migration AST lowering.
-
 use std::collections::{BTreeMap, BTreeSet};
 
+use type_bridge_core_lib::__internal as tql;
 use type_bridge_orm::_schema::diff::{AttributeTypeChanges, RelationChanges, SchemaDiff};
-use type_bridge_orm::_schema::generator::{
-    attribute_constraint_definition, card_annotation, topological_sort,
-};
+use type_bridge_orm::_schema::generator::{attribute_node, topological_sort};
 use type_bridge_orm::_schema::info::{
     EntitySchemaEntry, OwnedAttributeEntry, RelationSchemaEntry, SchemaInfo,
 };
@@ -118,7 +115,11 @@ pub fn map_schema_diff(
             // collide (DEX16) inside define; annotation changes lower to a
             // dedicated ModifyTypeAnnotations below.
             operations.push(OperationSpec::RunTypeql {
-                forward: format!("{keyword}\n{}", attribute_constraint_definition(attribute)),
+                forward: tql::render(&if keyword == "define" {
+                    tql::schema_define(vec![attribute_node(attribute, false)?])
+                } else {
+                    tql::schema_redefine(vec![attribute_node(attribute, false)?])
+                })?,
                 reverse: None,
             });
         }
@@ -591,7 +592,10 @@ fn expand_attribute_renames(
             }
         }
         expansion.removals.push(OperationSpec::RunTypeql {
-            forward: format!("match\n  $v isa {old_name};\ndelete\n  $v;"),
+            forward: tql::render(&tql::pipeline(vec![
+                tql::match_stage(vec![tql::thing("v", vec![tql::isa(old_name, false)?])?]),
+                tql::delete(vec![tql::delete_thing("v")?]),
+            ]))?,
             reverse: None,
         });
         for owner in &old_owners {
@@ -987,28 +991,46 @@ fn push_header_changes(
     parent_changed: &Option<(Option<String>, Option<String>)>,
 ) -> crate::Result<()> {
     if let Some((old, new)) = abstract_changed {
-        match (old, new) {
-            (false, true) => {
-                operations.push(run_schema_typeql(format!("define\n{type_name} @abstract;")))
-            }
-            (true, false) => operations.push(run_schema_typeql(format!(
-                "undefine\n@abstract from {type_name};"
-            ))),
-            _ => {}
+        let query = match (old, new) {
+            (false, true) => Some(tql::schema_define(vec![tql::schema_type(
+                None,
+                type_name,
+                vec![tql::schema_flag("abstract")?],
+                vec![],
+            )?])),
+            (true, false) => Some(tql::schema_undefine(vec![tql::schema_undefine_annotation(
+                "abstract", None, type_name, None,
+            )?])),
+            _ => None,
+        };
+        if let Some(query) = query {
+            operations.push(run_schema_typeql(tql::render(&query)?));
         }
     }
     if let Some((old, new)) = parent_changed {
-        match (old, new) {
-            (None, Some(new_parent)) => operations.push(run_schema_typeql(format!(
-                "define\n{type_name} sub {new_parent};"
-            ))),
-            (Some(_), Some(new_parent)) => operations.push(run_schema_typeql(format!(
-                "redefine\n{type_name} sub {new_parent};"
-            ))),
-            (Some(old_parent), None) => operations.push(run_schema_typeql(format!(
-                "undefine\nsub {old_parent} from {type_name};"
-            ))),
-            (None, None) => {}
+        let query = match (old, new) {
+            (None, Some(parent)) => Some(tql::schema_define(vec![tql::schema_type(
+                None,
+                type_name,
+                vec![],
+                vec![tql::schema_sub(parent)?],
+            )?])),
+            (Some(_), Some(parent)) => Some(tql::schema_redefine(vec![tql::schema_type(
+                None,
+                type_name,
+                vec![],
+                vec![tql::schema_sub(parent)?],
+            )?])),
+            (Some(parent), None) => {
+                Some(tql::schema_undefine(vec![tql::schema_undefine_capability(
+                    type_name,
+                    tql::schema_sub(parent)?,
+                )?]))
+            }
+            (None, None) => None,
+        };
+        if let Some(query) = query {
+            operations.push(run_schema_typeql(tql::render(&query)?));
         }
     }
     Ok(())
@@ -1021,16 +1043,29 @@ fn role_cardinality_change(
     old_cardinality: Option<(u32, Option<u32>)>,
     new_cardinality: Option<(u32, Option<u32>)>,
 ) -> crate::Result<OperationSpec> {
-    let statement = match (old_cardinality, new_cardinality) {
-        (None, Some((min, max))) => format!(
-            "define\n{relation_name} relates {role_name} {};",
-            card_annotation(min, max)
-        ),
-        (Some(_), Some((min, max))) => format!(
-            "redefine\n{relation_name} relates {role_name} {};",
-            card_annotation(min, max)
-        ),
-        (Some(_), None) => format!("undefine\n@card from {relation_name} relates {role_name};"),
+    let query = match (old_cardinality, new_cardinality) {
+        (old, Some((min, max))) => {
+            let node = tql::schema_type(
+                None,
+                relation_name,
+                vec![],
+                vec![tql::schema_relates_source(
+                    role_name,
+                    vec![tql::schema_card(u64::from(min), max.map(u64::from))?],
+                )?],
+            )?;
+            if old.is_some() {
+                tql::schema_redefine(vec![node])
+            } else {
+                tql::schema_define(vec![node])
+            }
+        }
+        (Some(_), None) => tql::schema_undefine(vec![tql::schema_undefine_annotation(
+            "card",
+            None,
+            relation_name,
+            Some(tql::schema_relates_source(role_name, vec![])?),
+        )?]),
         (None, None) => {
             return Err(MigrationError::AuthoringInput {
                 message: format!(
@@ -1039,6 +1074,7 @@ fn role_cardinality_change(
             });
         }
     };
+    let statement = tql::render(&query)?;
     Ok(run_schema_typeql(statement))
 }
 
@@ -1437,7 +1473,7 @@ mod tests {
         let operations = map_schema_diff(&base, &target, &diff, &[])
             .expect("mapping should recover the declared-player change");
 
-        assert_eq!(
+        assert_typeql_eq!(
             operations,
             vec![
                 OperationSpec::RunTypeql {
@@ -1486,7 +1522,7 @@ mod tests {
         let operations = map_schema_diff(&base, &target, &diff, &[])
             .expect("mapping should recover the declared-player change");
 
-        assert_eq!(
+        assert_typeql_eq!(
             operations,
             vec![
                 OperationSpec::RemoveRolePlayer {
@@ -1536,7 +1572,7 @@ mod tests {
         let operations = map_schema_diff(&base, &target, &diff, &[])
             .expect("mapping should order the declared-player change safely");
 
-        assert_eq!(
+        assert_typeql_eq!(
             operations,
             vec![
                 OperationSpec::RunTypeql {
@@ -1857,7 +1893,7 @@ mod tests {
         match &operations[0] {
             OperationSpec::RunTypeql { forward, .. } => {
                 assert!(
-                    forward.starts_with("define\n"),
+                    forward.starts_with("define "),
                     "additive change defines: {forward}"
                 );
                 assert!(forward.contains("@regex"));
@@ -1874,7 +1910,7 @@ mod tests {
         match &operations[0] {
             OperationSpec::RunTypeql { forward, .. } => {
                 assert!(
-                    forward.starts_with("redefine\n"),
+                    forward.starts_with("redefine "),
                     "mutating change redefines: {forward}"
                 );
             }
@@ -1903,7 +1939,7 @@ mod tests {
                 other => panic!("expected RunTypeql, got {other:?}"),
             })
             .collect();
-        assert_eq!(
+        assert_typeql_eq!(
             forwards,
             vec!["define\nperson @abstract;", "define\nperson sub base;"]
         );
@@ -1930,7 +1966,7 @@ mod tests {
 
         let operations = map(&base, &target);
 
-        assert_eq!(
+        assert_typeql_eq!(
             operations,
             vec![OperationSpec::RunTypeql {
                 forward: "define\nemployment relates employee @card(1..4);".to_string(),
@@ -2026,7 +2062,7 @@ mod tests {
         else {
             panic!("expected backfill");
         };
-        assert_eq!(
+        assert_typeql_eq!(
             forward.as_deref(),
             Some(
                 "match\n  $x isa person, has legacy-name $v;\n  not { $x has display-name $d; };\ninsert\n  $x has display-name == $v;"
@@ -2061,7 +2097,7 @@ mod tests {
         let OperationSpec::RunTypeql { forward, reverse } = &operations[5] else {
             panic!("expected instance cleanup");
         };
-        assert_eq!(forward, "match\n  $v isa legacy-name;\ndelete\n  $v;");
+        assert_typeql_eq!(forward, "match\n  $v isa legacy-name;\ndelete\n  $v;");
         assert!(
             reverse.is_none(),
             "destroying the old values is the \

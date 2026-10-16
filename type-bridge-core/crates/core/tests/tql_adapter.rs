@@ -54,6 +54,7 @@ fn corpus_round_trips_official_asts() {
             "struct-destructuring" => Some(tql::UnsupportedConstruct::StructDestructuring),
             "end" => Some(tql::UnsupportedConstruct::ExplicitEnd),
             "schema-rename" => Some(tql::UnsupportedConstruct::SchemaRename),
+            "schema-redefine-sequence" => Some(tql::UnsupportedConstruct::RedefineSequence),
             _ => None,
         };
         if let Some(construct) = unsupported {
@@ -335,4 +336,149 @@ fn caller_owned_function_body_cannot_add_another_definition() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn schema_undefinitions_and_typed_values_round_trip() {
+    let definitions = vec![
+        tql::schema_undefine_type("person").unwrap(),
+        tql::schema_undefine_function("answer").unwrap(),
+        tql::schema_undefine_struct("record").unwrap(),
+        tql::schema_undefine_capability("person", tql::schema_owns("name", false, vec![]).unwrap())
+            .unwrap(),
+        tql::schema_undefine_specialisation("family", "father", "parent").unwrap(),
+        tql::schema_undefine_annotation("meta", Some("owner"), "person", None).unwrap(),
+        tql::schema_undefine_annotation(
+            "card",
+            None,
+            "person",
+            Some(tql::schema_plays("family", "parent", vec![]).unwrap()),
+        )
+        .unwrap(),
+    ];
+    let source = tql::render(&tql::schema_undefine(definitions)).unwrap();
+    assert!(tql::equivalent(&source, "undefine person; fun answer; struct record; owns name from person; as parent from family relates father; @meta(\"owner\") from person; @card from person plays family:parent;").unwrap());
+    for category in [
+        "abstract",
+        "card",
+        "cascade",
+        "distinct",
+        "doc",
+        "independent",
+        "key",
+        "range",
+        "regex",
+        "subkey",
+        "unique",
+        "values",
+    ] {
+        let source = tql::render(&tql::schema_undefine(vec![
+            tql::schema_undefine_annotation(category, None, "person", None).unwrap(),
+        ]))
+        .unwrap();
+        tql::parse(&source).unwrap();
+    }
+    let values = [CanonicalValue::Long(1), CanonicalValue::Long(2)];
+    let definition = tql::schema_type(
+        Some("attribute"),
+        "number",
+        vec![],
+        vec![tql::schema_value_domain(
+            ValueTypeTag::Long,
+            vec![
+                tql::schema_canonical_values(&values).unwrap(),
+                tql::schema_canonical_range(Some(&values[0]), Some(&values[1])).unwrap(),
+            ],
+        )],
+    )
+    .unwrap();
+    let source = tql::render(&tql::schema_define(vec![definition])).unwrap();
+    assert!(
+        tql::equivalent(
+            &source,
+            "define attribute number, value integer @values(1, 2) @range(1..2);"
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn typed_tuple_function_headers_preserve_body_in_define_and_redefine() {
+    use type_bridge_contract::id::{FunctionId, Label};
+    use type_bridge_contract::schema::{
+        FunctionBody, FunctionFact, FunctionParameter, FunctionReturnElement, FunctionReturnMode,
+        FunctionSignature, TypeReference,
+    };
+    let body =
+        "match\n  # retained tuple comment\n  let $value = $seed;\nreturn first $value, $value;\n";
+    let element = FunctionReturnElement::new(TypeReference::Value(ValueTypeTag::Long), false);
+    let function = FunctionFact::new(
+        FunctionId::new("pair").unwrap(),
+        FunctionSignature::new(
+            vec![FunctionParameter::new(
+                Label::new("seed").unwrap(),
+                TypeReference::Value(ValueTypeTag::Long),
+            )],
+            FunctionReturnMode::tuple(vec![element.clone(), element]).unwrap(),
+        )
+        .unwrap(),
+        FunctionBody::new(body).unwrap(),
+    );
+    for redefine in [false, true] {
+        let definition =
+            tql::schema_function_fact(&function, vec![tql::schema_doc("pair docs").unwrap()])
+                .unwrap();
+        let query = if redefine {
+            tql::schema_redefine(vec![definition])
+        } else {
+            tql::schema_define(vec![definition])
+        };
+        let source = tql::render(&query).unwrap();
+        assert!(
+            source.contains("-> integer, integer @doc(\"pair docs\")"),
+            "{source}"
+        );
+        assert!(source.contains(body), "{source}");
+        tql::parse(&source).unwrap();
+        assert_eq!(function.body().text(), body);
+    }
+}
+
+#[test]
+fn legacy_role_specialisations_keep_matching_ordering() {
+    for (ordered, parent, expected) in [
+        (true, "participant", "reviewer[] as participant[]"),
+        (true, "participant[]", "reviewer[] as participant[]"),
+        (false, "participant", "reviewer as participant"),
+    ] {
+        let capability =
+            tql::schema_relates_with_parent_source("reviewer", ordered, Some(parent), vec![])
+                .unwrap();
+        let source = tql::render(&tql::schema_define(vec![
+            tql::schema_type(None, "review", vec![], vec![capability]).unwrap(),
+        ]))
+        .unwrap();
+        assert!(source.contains(expected), "{source}");
+        tql::parse(&source).unwrap();
+    }
+    assert!(
+        tql::schema_relates_with_parent_source("reviewer", false, Some("participant[]"), vec![],)
+            .is_err()
+    );
+    assert!(tql::parse("define review relates reviewer[] as participant;").is_err());
+}
+
+#[test]
+fn expression_fragments_and_tagged_queries_share_render_guards() {
+    let source = "2024-07-01T12:00:00 Europe/Amsterdam";
+    let expression = tql::literal_source(source).unwrap();
+    assert_eq!(tql::render_expression(&expression), source);
+    assert!(tql::literal_source("1; insert $x isa person;").is_err());
+    let query = tql::pipeline(vec![tql::match_stage(vec![
+        tql::schema_kind_pattern("$t", "entity").unwrap(),
+    ])]);
+    let tagged = tql::render_commented(&query, "internal-probe/v1").unwrap();
+    assert!(tagged.starts_with("# internal-probe/v1\n"));
+    assert!(tql::equivalent(&tagged, "match entity $t;").unwrap());
+    assert!(tql::render_commented(&query, "first\ninsert $x isa person;").is_err());
 }

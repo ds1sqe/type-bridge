@@ -623,6 +623,16 @@ run_live_migration_steps() {
                 -p type-bridge-cli --test e2e_workspace_live
     done
 
+    if [[ "$lane_profile" == typedb-3.13.6/v1 ]]; then
+        run_step "native ordered schema formatter exports and removes collection modes" \
+            run_with_timeout 10m \
+            env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            bash scripts/ci/run_exact_ignored_rust_test.sh \
+                lowering::tests::native_ordered_formatter_exports_and_removes_schema_live \
+                --manifest-path type-bridge-core/Cargo.toml --locked \
+                -p type-bridge-schema-migration --lib
+    fi
+
     printf "${BOLD}━━━ Connected migration recovery (integration) ━━━${RESET}\n\n"
     run_step "connected rollback and reapply lifecycle" \
         run_with_timeout 10m \

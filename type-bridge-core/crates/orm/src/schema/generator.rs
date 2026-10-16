@@ -264,7 +264,8 @@ fn ownership_node(
     tql::schema_owns(&attribute.attr_name, attribute.is_ordered, annotations)
 }
 
-fn attribute_node(
+/// Build checked attribute nodes for schema generation and migration authoring.
+pub fn attribute_node(
     attribute: &AttributeSchemaEntry,
     include_doc_meta: bool,
 ) -> Result<tql::SchemaDefinition, tql::TqlError> {

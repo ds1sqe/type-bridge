@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use type_bridge_core_lib::__internal as tql;
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -1116,7 +1117,7 @@ impl<'a> TypeDbMigrationStore<'a> {
                 let owner = insert_journal_owner_query(
                     self.managed_database.database_name(),
                     &self.managed_scope_id,
-                );
+                )?;
                 if let Err(error) = transaction.query(&owner).await {
                     let primary = map_orm_error(error);
                     return Err(rollback_schema_error(
@@ -1271,7 +1272,7 @@ impl<'a> TypeDbMigrationStore<'a> {
                     fence,
                     current.next_sequence,
                     LEASE_HELD,
-                );
+                )?;
                 (fence, current.next_sequence, query)
             }
             None => {
@@ -1279,7 +1280,7 @@ impl<'a> TypeDbMigrationStore<'a> {
                 (
                     fence,
                     0,
-                    insert_control_query(scope, Some(holder), fence, 0, LEASE_HELD),
+                    insert_control_query(scope, Some(holder), fence, 0, LEASE_HELD)?,
                 )
             }
         };
@@ -1309,9 +1310,9 @@ impl<'a> TypeDbMigrationStore<'a> {
         .map_err(map_orm_error)?;
         let current = load_managed_fence(&mut transaction, lease.scope()).await?;
         let query = match current {
-            None => insert_managed_fence_query(lease),
+            None => insert_managed_fence_query(lease)?,
             Some(current) if current < lease.fence().get() => {
-                replace_managed_fence_query(lease, current)
+                replace_managed_fence_query(lease, current)?
             }
             Some(_) => {
                 let _ = rollback_and_close(&mut transaction).await;
@@ -1342,7 +1343,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         .await
         .map_err(map_orm_error)?;
         let current = load_active_control(&mut transaction, lease).await?;
-        let query = release_control_query(lease, current.next_sequence);
+        let query = release_control_query(lease, current.next_sequence)?;
         transaction.query(&query).await.map_err(map_orm_error)?;
         if !load_free_control(&mut transaction, lease, current.next_sequence).await? {
             let _ = rollback_and_close(&mut transaction).await;
@@ -1361,7 +1362,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         .map_err(map_orm_error)?;
         require_active_managed_fence_impl(&mut transaction, lease).await?;
         transaction
-            .query(&release_managed_fence_query(lease))
+            .query(&release_managed_fence_query(lease)?)
             .await
             .map_err(map_orm_error)?;
         if !load_free_managed_fence(&mut transaction, lease).await? {
@@ -2261,13 +2262,16 @@ async fn require_active_managed_fence_impl<T: MigrationQuery + ?Sized>(
     if snapshot.fence != lease.fence().get() || snapshot.state != LEASE_HELD {
         return Err(stale_fence());
     }
-    let query = format!(
-        "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}; fetch {{ \"exists\": true }};",
-        literal(lease.scope().managed_scope_id().as_str()),
-        literal(lease.holder().as_str()),
-        literal(&lease.fence().get().to_string()),
-        literal(LEASE_HELD),
-    );
+    let query = journal_exists(
+        "control",
+        CONTROL_ENTITY,
+        &[
+            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+            (LEASE_HOLDER, lease.holder().as_str()),
+            (LEASE_FENCE, &lease.fence().get().to_string()),
+            (LEASE_STATE, LEASE_HELD),
+        ],
+    )?;
     if query_documents(transaction, &query).await?.len() == 1 {
         Ok(())
     } else {
@@ -2294,12 +2298,15 @@ async fn load_free_managed_fence(
     }) {
         return Ok(false);
     }
-    let query = format!(
-        "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}; fetch {{ \"exists\": true }};",
-        literal(lease.scope().managed_scope_id().as_str()),
-        literal(&lease.fence().get().to_string()),
-        literal(LEASE_FREE),
-    );
+    let query = journal_exists(
+        "control",
+        CONTROL_ENTITY,
+        &[
+            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+            (LEASE_FENCE, &lease.fence().get().to_string()),
+            (LEASE_STATE, LEASE_FREE),
+        ],
+    )?;
     Ok(query_documents(transaction, &query).await?.len() == 1)
 }
 
@@ -2307,9 +2314,16 @@ async fn load_global_managed_control<T: MigrationQuery + ?Sized>(
     transaction: &mut T,
     scope: &ExecutionScope,
 ) -> Result<Option<ManagedControlSnapshot>, Diagnostic> {
-    let query = format!(
-        "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} $scope, has {LEASE_FENCE} $fence, has {LEASE_STATE} $state; fetch {{ \"scope\": $scope, \"fence\": $fence, \"state\": $state }};"
-    );
+    let query = journal_read(
+        "control",
+        CONTROL_ENTITY,
+        &[],
+        &[
+            (CONTROL_SCOPE, "scope"),
+            (LEASE_FENCE, "fence"),
+            (LEASE_STATE, "state"),
+        ],
+    )?;
     parse_managed_control_documents(
         query_documents(transaction, &query).await?,
         scope.managed_scope_id(),
@@ -2352,10 +2366,12 @@ async fn load_control(
     transaction: &mut Transaction,
     scope: &ExecutionScope,
 ) -> Result<Option<ControlSnapshot>, Diagnostic> {
-    let query = format!(
-        "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} $fence, has {NEXT_SEQUENCE} $next; fetch {{ \"fence\": $fence, \"next\": $next }};",
-        literal(scope.managed_scope_id().as_str())
-    );
+    let query = journal_read(
+        "control",
+        CONTROL_ENTITY,
+        &[(CONTROL_SCOPE, scope.managed_scope_id().as_str())],
+        &[(LEASE_FENCE, "fence"), (NEXT_SEQUENCE, "next")],
+    )?;
     parse_control_documents(query_documents(transaction, &query).await?)
 }
 
@@ -2363,13 +2379,17 @@ async fn load_active_control(
     transaction: &mut Transaction,
     lease: &MigrationLease,
 ) -> Result<ControlSnapshot, Diagnostic> {
-    let query = format!(
-        "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}, has {NEXT_SEQUENCE} $next; fetch {{ \"next\": $next }};",
-        literal(lease.scope().managed_scope_id().as_str()),
-        literal(lease.holder().as_str()),
-        literal(&lease.fence().get().to_string()),
-        literal(LEASE_HELD),
-    );
+    let query = journal_read(
+        "control",
+        CONTROL_ENTITY,
+        &[
+            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+            (LEASE_HOLDER, lease.holder().as_str()),
+            (LEASE_FENCE, &lease.fence().get().to_string()),
+            (LEASE_STATE, LEASE_HELD),
+        ],
+        &[(NEXT_SEQUENCE, "next")],
+    )?;
     let documents = query_documents(transaction, &query).await?;
     if documents.len() != 1 {
         return Err(stale_fence());
@@ -2385,13 +2405,16 @@ async fn load_free_control(
     lease: &MigrationLease,
     next_sequence: u64,
 ) -> Result<bool, Diagnostic> {
-    let query = format!(
-        "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}, has {NEXT_SEQUENCE} {}; fetch {{ \"exists\": true }};",
-        literal(lease.scope().managed_scope_id().as_str()),
-        literal(&lease.fence().get().to_string()),
-        literal(LEASE_FREE),
-        literal(&next_sequence.to_string()),
-    );
+    let query = journal_exists(
+        "control",
+        CONTROL_ENTITY,
+        &[
+            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+            (LEASE_FENCE, &lease.fence().get().to_string()),
+            (LEASE_STATE, LEASE_FREE),
+            (NEXT_SEQUENCE, &next_sequence.to_string()),
+        ],
+    )?;
     Ok(query_documents(transaction, &query).await?.len() == 1)
 }
 
@@ -2440,25 +2463,50 @@ async fn append_record(
         )
     })?;
     let digest = payload_digest(payload.as_bytes());
-    let query = format!(
-        "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}, has {NEXT_SEQUENCE} {}; delete $control; insert $next-control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}, has {NEXT_SEQUENCE} {}; $record isa {JOURNAL_ENTITY}, has {RECORD_KEY} {}, has {CONTROL_SCOPE} {}, has {RECORD_SEQUENCE} {}, has {RECORD_KIND} {}, has {RECORD_PAYLOAD} {}, has {RECORD_PAYLOAD_DIGEST} {};",
-        literal(lease.scope().managed_scope_id().as_str()),
-        literal(lease.holder().as_str()),
-        literal(&lease.fence().get().to_string()),
-        literal(LEASE_HELD),
-        literal(&current.next_sequence.to_string()),
-        literal(lease.scope().managed_scope_id().as_str()),
-        literal(lease.holder().as_str()),
-        literal(&lease.fence().get().to_string()),
-        literal(LEASE_HELD),
-        literal(&next.to_string()),
-        literal(&key),
-        literal(lease.scope().managed_scope_id().as_str()),
-        literal(&next.to_string()),
-        literal(kind),
-        literal(payload),
-        literal(&digest),
-    );
+    let query = journal_query(|| {
+        Ok(tql::pipeline(vec![
+            tql::match_stage(vec![journal_pattern(
+                "control",
+                CONTROL_ENTITY,
+                &[
+                    (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+                    (LEASE_HOLDER, lease.holder().as_str()),
+                    (LEASE_FENCE, &lease.fence().get().to_string()),
+                    (LEASE_STATE, LEASE_HELD),
+                    (NEXT_SEQUENCE, &current.next_sequence.to_string()),
+                ],
+                &[],
+            )?]),
+            tql::delete(vec![tql::delete_thing("control")?]),
+            tql::insert(vec![
+                journal_pattern(
+                    "next-control",
+                    CONTROL_ENTITY,
+                    &[
+                        (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+                        (LEASE_HOLDER, lease.holder().as_str()),
+                        (LEASE_FENCE, &lease.fence().get().to_string()),
+                        (LEASE_STATE, LEASE_HELD),
+                        (NEXT_SEQUENCE, &next.to_string()),
+                    ],
+                    &[],
+                )?,
+                journal_pattern(
+                    "record",
+                    JOURNAL_ENTITY,
+                    &[
+                        (RECORD_KEY, &key),
+                        (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+                        (RECORD_SEQUENCE, &next.to_string()),
+                        (RECORD_KIND, kind),
+                        (RECORD_PAYLOAD, payload),
+                        (RECORD_PAYLOAD_DIGEST, &digest),
+                    ],
+                    &[],
+                )?,
+            ]),
+        ]))
+    })?;
     transaction.query(&query).await.map_err(map_orm_error)?;
     let observed = load_active_control(transaction, lease).await?;
     if observed.next_sequence != next {
@@ -2479,13 +2527,22 @@ async fn load_rows(
     scope: &ExecutionScope,
     kind: Option<&str>,
 ) -> Result<Vec<StoredRow>, Diagnostic> {
-    let kind = kind
-        .map(|kind| format!(", has {RECORD_KIND} {}", literal(kind)))
-        .unwrap_or_default();
-    let query = format!(
-        "match $record isa {JOURNAL_ENTITY}, has {CONTROL_SCOPE} {}{kind}, has {RECORD_KEY} $key, has {RECORD_SEQUENCE} $sequence, has {RECORD_KIND} $kind, has {RECORD_PAYLOAD} $payload, has {RECORD_PAYLOAD_DIGEST} $digest; fetch {{ \"key\": $key, \"sequence\": $sequence, \"kind\": $kind, \"payload\": $payload, \"digest\": $digest }};",
-        literal(scope.managed_scope_id().as_str()),
-    );
+    let mut fixed = vec![(CONTROL_SCOPE, scope.managed_scope_id().as_str())];
+    if let Some(kind) = kind {
+        fixed.push((RECORD_KIND, kind));
+    }
+    let query = journal_read(
+        "record",
+        JOURNAL_ENTITY,
+        &fixed,
+        &[
+            (RECORD_KEY, "key"),
+            (RECORD_SEQUENCE, "sequence"),
+            (RECORD_KIND, "kind"),
+            (RECORD_PAYLOAD, "payload"),
+            (RECORD_PAYLOAD_DIGEST, "digest"),
+        ],
+    )?;
     let mut rows = query_documents(transaction, &query)
         .await?
         .into_iter()
@@ -2508,11 +2565,28 @@ async fn load_row_by_key(
     transaction: &mut Transaction,
     key: &str,
 ) -> Result<StoredRow, Diagnostic> {
-    let query = format!(
-        "match $record isa {JOURNAL_ENTITY}, has {RECORD_KEY} {}, has {RECORD_SEQUENCE} $sequence, has {RECORD_KIND} $kind, has {RECORD_PAYLOAD} $payload, has {RECORD_PAYLOAD_DIGEST} $digest; fetch {{ \"key\": {}, \"sequence\": $sequence, \"kind\": $kind, \"payload\": $payload, \"digest\": $digest }};",
-        literal(key),
-        literal(key),
-    );
+    let query = journal_query(|| {
+        Ok(tql::pipeline(vec![
+            tql::match_stage(vec![journal_pattern(
+                "record",
+                JOURNAL_ENTITY,
+                &[(RECORD_KEY, key)],
+                &[
+                    (RECORD_SEQUENCE, "sequence"),
+                    (RECORD_KIND, "kind"),
+                    (RECORD_PAYLOAD, "payload"),
+                    (RECORD_PAYLOAD_DIGEST, "digest"),
+                ],
+            )?]),
+            tql::fetch(vec![
+                ("key", tql::fetch_expr(tql::string(key)?)),
+                ("sequence", tql::fetch_expr(tql::var("sequence")?)),
+                ("kind", tql::fetch_expr(tql::var("kind")?)),
+                ("payload", tql::fetch_expr(tql::var("payload")?)),
+                ("digest", tql::fetch_expr(tql::var("digest")?)),
+            ])?,
+        ]))
+    })?;
     let documents = query_documents(transaction, &query).await?;
     if documents.len() != 1 {
         return Err(record_identity_mismatch());
@@ -2603,54 +2677,70 @@ fn insert_control_query(
     fence: ExecutionFence,
     next_sequence: u64,
     state: &str,
-) -> String {
-    let holder = holder
-        .map(|holder| format!(", has {LEASE_HOLDER} {}", literal(holder.as_str())))
-        .unwrap_or_default();
-    format!(
-        "insert $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}, has {NEXT_SEQUENCE} {}{holder};",
-        literal(scope.managed_scope_id().as_str()),
-        literal(&fence.get().to_string()),
-        literal(state),
-        literal(&next_sequence.to_string()),
+) -> Result<String, Diagnostic> {
+    let fence = fence.get().to_string();
+    let next = next_sequence.to_string();
+    let mut fields = vec![
+        (CONTROL_SCOPE, scope.managed_scope_id().as_str()),
+        (LEASE_FENCE, &fence),
+        (LEASE_STATE, state),
+        (NEXT_SEQUENCE, &next),
+    ];
+    if let Some(holder) = holder {
+        fields.push((LEASE_HOLDER, holder.as_str()));
+    }
+    journal_insert("control", CONTROL_ENTITY, &fields)
+}
+fn insert_managed_fence_query(lease: &MigrationLease) -> Result<String, Diagnostic> {
+    journal_insert(
+        "control",
+        CONTROL_ENTITY,
+        &[
+            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+            (LEASE_HOLDER, lease.holder().as_str()),
+            (LEASE_FENCE, &lease.fence().get().to_string()),
+            (LEASE_STATE, LEASE_HELD),
+        ],
     )
 }
-
-fn insert_managed_fence_query(lease: &MigrationLease) -> String {
-    format!(
-        "insert $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {};",
-        literal(lease.scope().managed_scope_id().as_str()),
-        literal(lease.holder().as_str()),
-        literal(&lease.fence().get().to_string()),
-        literal(LEASE_HELD),
+fn replace_managed_fence_query(
+    lease: &MigrationLease,
+    old_fence: u64,
+) -> Result<String, Diagnostic> {
+    journal_replace(
+        "control",
+        "next-control",
+        CONTROL_ENTITY,
+        &[
+            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+            (LEASE_FENCE, &old_fence.to_string()),
+        ],
+        &[
+            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+            (LEASE_HOLDER, lease.holder().as_str()),
+            (LEASE_FENCE, &lease.fence().get().to_string()),
+            (LEASE_STATE, LEASE_HELD),
+        ],
     )
 }
-
-fn replace_managed_fence_query(lease: &MigrationLease, old_fence: u64) -> String {
-    format!(
-        "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} {}; delete $control; insert $next-control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {};",
-        literal(lease.scope().managed_scope_id().as_str()),
-        literal(&old_fence.to_string()),
-        literal(lease.scope().managed_scope_id().as_str()),
-        literal(lease.holder().as_str()),
-        literal(&lease.fence().get().to_string()),
-        literal(LEASE_HELD),
+fn release_managed_fence_query(lease: &MigrationLease) -> Result<String, Diagnostic> {
+    journal_replace(
+        "control",
+        "free",
+        CONTROL_ENTITY,
+        &[
+            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+            (LEASE_HOLDER, lease.holder().as_str()),
+            (LEASE_FENCE, &lease.fence().get().to_string()),
+            (LEASE_STATE, LEASE_HELD),
+        ],
+        &[
+            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+            (LEASE_FENCE, &lease.fence().get().to_string()),
+            (LEASE_STATE, LEASE_FREE),
+        ],
     )
 }
-
-fn release_managed_fence_query(lease: &MigrationLease) -> String {
-    format!(
-        "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}; delete $control; insert $free isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {};",
-        literal(lease.scope().managed_scope_id().as_str()),
-        literal(lease.holder().as_str()),
-        literal(&lease.fence().get().to_string()),
-        literal(LEASE_HELD),
-        literal(lease.scope().managed_scope_id().as_str()),
-        literal(&lease.fence().get().to_string()),
-        literal(LEASE_FREE),
-    )
-}
-
 fn replace_control_query(
     scope: &ExecutionScope,
     old_fence: u64,
@@ -2659,32 +2749,43 @@ fn replace_control_query(
     fence: ExecutionFence,
     next_sequence: u64,
     state: &str,
-) -> String {
-    format!(
-        "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} {}, has {NEXT_SEQUENCE} {}; delete $control; insert $next-control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}, has {NEXT_SEQUENCE} {};",
-        literal(scope.managed_scope_id().as_str()),
-        literal(&old_fence.to_string()),
-        literal(&old_next_sequence.to_string()),
-        literal(scope.managed_scope_id().as_str()),
-        literal(holder.as_str()),
-        literal(&fence.get().to_string()),
-        literal(state),
-        literal(&next_sequence.to_string()),
+) -> Result<String, Diagnostic> {
+    journal_replace(
+        "control",
+        "next-control",
+        CONTROL_ENTITY,
+        &[
+            (CONTROL_SCOPE, scope.managed_scope_id().as_str()),
+            (LEASE_FENCE, &old_fence.to_string()),
+            (NEXT_SEQUENCE, &old_next_sequence.to_string()),
+        ],
+        &[
+            (CONTROL_SCOPE, scope.managed_scope_id().as_str()),
+            (LEASE_HOLDER, holder.as_str()),
+            (LEASE_FENCE, &fence.get().to_string()),
+            (LEASE_STATE, state),
+            (NEXT_SEQUENCE, &next_sequence.to_string()),
+        ],
     )
 }
-
-fn release_control_query(lease: &MigrationLease, next_sequence: u64) -> String {
-    format!(
-        "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}, has {NEXT_SEQUENCE} {}; delete $control; insert $free isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}, has {NEXT_SEQUENCE} {};",
-        literal(lease.scope().managed_scope_id().as_str()),
-        literal(lease.holder().as_str()),
-        literal(&lease.fence().get().to_string()),
-        literal(LEASE_HELD),
-        literal(&next_sequence.to_string()),
-        literal(lease.scope().managed_scope_id().as_str()),
-        literal(&lease.fence().get().to_string()),
-        literal(LEASE_FREE),
-        literal(&next_sequence.to_string()),
+fn release_control_query(lease: &MigrationLease, next_sequence: u64) -> Result<String, Diagnostic> {
+    journal_replace(
+        "control",
+        "free",
+        CONTROL_ENTITY,
+        &[
+            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+            (LEASE_HOLDER, lease.holder().as_str()),
+            (LEASE_FENCE, &lease.fence().get().to_string()),
+            (LEASE_STATE, LEASE_HELD),
+            (NEXT_SEQUENCE, &next_sequence.to_string()),
+        ],
+        &[
+            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+            (LEASE_FENCE, &lease.fence().get().to_string()),
+            (LEASE_STATE, LEASE_FREE),
+            (NEXT_SEQUENCE, &next_sequence.to_string()),
+        ],
     )
 }
 
@@ -2697,11 +2798,20 @@ async fn delete_open_plan(
         EVENT_RECORD_KIND,
         BACKFILL_EVENT_RECORD_KIND,
     ] {
-        let query = format!(
-            "match $record isa {JOURNAL_ENTITY}, has {CONTROL_SCOPE} {}, has {RECORD_KIND} {}; delete $record;",
-            literal(scope.managed_scope_id().as_str()),
-            literal(kind),
-        );
+        let query = journal_query(|| {
+            Ok(tql::pipeline(vec![
+                tql::match_stage(vec![journal_pattern(
+                    "record",
+                    JOURNAL_ENTITY,
+                    &[
+                        (CONTROL_SCOPE, scope.managed_scope_id().as_str()),
+                        (RECORD_KIND, kind),
+                    ],
+                    &[],
+                )?]),
+                tql::delete(vec![tql::delete_thing("record")?]),
+            ]))
+        })?;
         transaction.query(&query).await.map_err(map_orm_error)?;
     }
     Ok(())
@@ -2716,11 +2826,20 @@ async fn delete_open_rollback_plan(
         ROLLBACK_EVENT_RECORD_KIND,
         BACKFILL_EVENT_RECORD_KIND,
     ] {
-        let query = format!(
-            "match $record isa {JOURNAL_ENTITY}, has {CONTROL_SCOPE} {}, has {RECORD_KIND} {}; delete $record;",
-            literal(scope.managed_scope_id().as_str()),
-            literal(kind),
-        );
+        let query = journal_query(|| {
+            Ok(tql::pipeline(vec![
+                tql::match_stage(vec![journal_pattern(
+                    "record",
+                    JOURNAL_ENTITY,
+                    &[
+                        (CONTROL_SCOPE, scope.managed_scope_id().as_str()),
+                        (RECORD_KIND, kind),
+                    ],
+                    &[],
+                )?]),
+                tql::delete(vec![tql::delete_thing("record")?]),
+            ]))
+        })?;
         transaction.query(&query).await.map_err(map_orm_error)?;
     }
     Ok(())
@@ -3033,12 +3152,15 @@ fn journal_schema_state(export: &str) -> Result<JournalSchemaState, Diagnostic> 
 fn insert_journal_owner_query(
     managed_database_name: &str,
     managed_scope_id: &ManagedScopeId,
-) -> String {
-    format!(
-        "insert $owner isa {JOURNAL_OWNER_ENTITY}, has {JOURNAL_OWNER_KEY} {}, has {JOURNAL_OWNER_MANAGED_DATABASE} {}, has {JOURNAL_OWNER_MANAGED_SCOPE} {};",
-        literal(JOURNAL_OWNER_SINGLETON_KEY),
-        literal(managed_database_name),
-        literal(managed_scope_id.as_str()),
+) -> Result<String, Diagnostic> {
+    journal_insert(
+        "owner",
+        JOURNAL_OWNER_ENTITY,
+        &[
+            (JOURNAL_OWNER_KEY, JOURNAL_OWNER_SINGLETON_KEY),
+            (JOURNAL_OWNER_MANAGED_DATABASE, managed_database_name),
+            (JOURNAL_OWNER_MANAGED_SCOPE, managed_scope_id.as_str()),
+        ],
     )
 }
 
@@ -3047,9 +3169,16 @@ async fn require_journal_owner(
     managed_database_name: &str,
     managed_scope_id: &ManagedScopeId,
 ) -> Result<(), Diagnostic> {
-    let query = format!(
-        "match $owner isa {JOURNAL_OWNER_ENTITY}, has {JOURNAL_OWNER_KEY} $key, has {JOURNAL_OWNER_MANAGED_DATABASE} $database, has {JOURNAL_OWNER_MANAGED_SCOPE} $scope; fetch {{ \"key\": $key, \"database\": $database, \"scope\": $scope }};"
-    );
+    let query = journal_read(
+        "owner",
+        JOURNAL_OWNER_ENTITY,
+        &[],
+        &[
+            (JOURNAL_OWNER_KEY, "key"),
+            (JOURNAL_OWNER_MANAGED_DATABASE, "database"),
+            (JOURNAL_OWNER_MANAGED_SCOPE, "scope"),
+        ],
+    )?;
     let documents = query_documents(transaction, &query).await?;
     let exact = documents.len() == 1
         && required_scalar(&documents[0], "key")? == JOURNAL_OWNER_SINGLETON_KEY
@@ -3097,8 +3226,92 @@ fn control_schema_matches(
     Ok(true)
 }
 
-fn literal(value: &str) -> String {
-    serde_json::to_string(value).expect("UTF-8 strings are JSON representable")
+fn journal_query(
+    build: impl FnOnce() -> Result<tql::Query, tql::TqlError>,
+) -> Result<String, Diagnostic> {
+    build().and_then(|query| tql::render(&query)).map_err(|_| {
+        failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_typedb_journal_typeql_shape",
+            "journal query cannot be lowered to TypeQL",
+        )
+    })
+}
+fn journal_pattern(
+    variable: &str,
+    kind: &str,
+    fixed: &[(&str, &str)],
+    bound: &[(&str, &str)],
+) -> Result<tql::Pattern, tql::TqlError> {
+    let mut fields = Vec::new();
+    for &(name, value) in fixed {
+        fields.push((name, tql::string(value)?));
+    }
+    for &(name, value) in bound {
+        fields.push((name, tql::var(value)?));
+    }
+    tql::entity(variable, kind, fields)
+}
+fn journal_read(
+    variable: &str,
+    kind: &str,
+    fixed: &[(&str, &str)],
+    bound: &[(&str, &str)],
+) -> Result<String, Diagnostic> {
+    journal_query(|| {
+        let fields = bound
+            .iter()
+            .map(|&(_, name)| Ok((name, tql::fetch_expr(tql::var(name)?))))
+            .collect::<Result<Vec<_>, tql::TqlError>>()?;
+        Ok(tql::pipeline(vec![
+            tql::match_stage(vec![journal_pattern(variable, kind, fixed, bound)?]),
+            tql::fetch(fields)?,
+        ]))
+    })
+}
+fn journal_exists(
+    variable: &str,
+    kind: &str,
+    fixed: &[(&str, &str)],
+) -> Result<String, Diagnostic> {
+    journal_query(|| {
+        Ok(tql::pipeline(vec![
+            tql::match_stage(vec![journal_pattern(variable, kind, fixed, &[])?]),
+            tql::fetch(vec![(
+                "exists",
+                tql::fetch_expr(tql::literal_source("true")?),
+            )])?,
+        ]))
+    })
+}
+fn journal_insert(
+    variable: &str,
+    kind: &str,
+    fixed: &[(&str, &str)],
+) -> Result<String, Diagnostic> {
+    journal_query(|| {
+        Ok(tql::pipeline(vec![tql::insert(vec![journal_pattern(
+            variable,
+            kind,
+            fixed,
+            &[],
+        )?])]))
+    })
+}
+fn journal_replace(
+    old: &str,
+    new: &str,
+    kind: &str,
+    before: &[(&str, &str)],
+    after: &[(&str, &str)],
+) -> Result<String, Diagnostic> {
+    journal_query(|| {
+        Ok(tql::pipeline(vec![
+            tql::match_stage(vec![journal_pattern(old, kind, before, &[])?]),
+            tql::delete(vec![tql::delete_thing(old)?]),
+            tql::insert(vec![journal_pattern(new, kind, after, &[])?]),
+        ]))
+    })
 }
 
 fn payload_digest(payload: &[u8]) -> String {
@@ -3224,6 +3437,151 @@ impl MigrationQuery for type_bridge_orm::OwnedTransaction {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    #[test]
+    fn journal_control_queries_keep_released_asts() {
+        fn literal(value: &str) -> String {
+            serde_json::to_string(value).unwrap()
+        }
+        fn baseline_insert_control_query(
+            scope: &ExecutionScope,
+            holder: Option<&LeaseHolderId>,
+            fence: ExecutionFence,
+            next_sequence: u64,
+            state: &str,
+        ) -> String {
+            let holder = holder
+                .map(|holder| format!(", has {LEASE_HOLDER} {}", literal(holder.as_str())))
+                .unwrap_or_default();
+            format!(
+                "insert $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}, has {NEXT_SEQUENCE} {}{holder};",
+                literal(scope.managed_scope_id().as_str()),
+                literal(&fence.get().to_string()),
+                literal(state),
+                literal(&next_sequence.to_string()),
+            )
+        }
+        fn baseline_insert_managed_fence_query(lease: &MigrationLease) -> String {
+            format!(
+                "insert $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {};",
+                literal(lease.scope().managed_scope_id().as_str()),
+                literal(lease.holder().as_str()),
+                literal(&lease.fence().get().to_string()),
+                literal(LEASE_HELD),
+            )
+        }
+        fn baseline_replace_managed_fence_query(lease: &MigrationLease, old_fence: u64) -> String {
+            format!(
+                "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} {}; delete $control; insert $next-control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {};",
+                literal(lease.scope().managed_scope_id().as_str()),
+                literal(&old_fence.to_string()),
+                literal(lease.scope().managed_scope_id().as_str()),
+                literal(lease.holder().as_str()),
+                literal(&lease.fence().get().to_string()),
+                literal(LEASE_HELD),
+            )
+        }
+        fn baseline_release_managed_fence_query(lease: &MigrationLease) -> String {
+            format!(
+                "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}; delete $control; insert $free isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {};",
+                literal(lease.scope().managed_scope_id().as_str()),
+                literal(lease.holder().as_str()),
+                literal(&lease.fence().get().to_string()),
+                literal(LEASE_HELD),
+                literal(lease.scope().managed_scope_id().as_str()),
+                literal(&lease.fence().get().to_string()),
+                literal(LEASE_FREE),
+            )
+        }
+        fn baseline_replace_control_query(
+            scope: &ExecutionScope,
+            old_fence: u64,
+            old_next_sequence: u64,
+            holder: &LeaseHolderId,
+            fence: ExecutionFence,
+            next_sequence: u64,
+            state: &str,
+        ) -> String {
+            format!(
+                "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} {}, has {NEXT_SEQUENCE} {}; delete $control; insert $next-control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}, has {NEXT_SEQUENCE} {};",
+                literal(scope.managed_scope_id().as_str()),
+                literal(&old_fence.to_string()),
+                literal(&old_next_sequence.to_string()),
+                literal(scope.managed_scope_id().as_str()),
+                literal(holder.as_str()),
+                literal(&fence.get().to_string()),
+                literal(state),
+                literal(&next_sequence.to_string()),
+            )
+        }
+        fn baseline_release_control_query(lease: &MigrationLease, next_sequence: u64) -> String {
+            format!(
+                "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}, has {NEXT_SEQUENCE} {}; delete $control; insert $free isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}, has {NEXT_SEQUENCE} {};",
+                literal(lease.scope().managed_scope_id().as_str()),
+                literal(lease.holder().as_str()),
+                literal(&lease.fence().get().to_string()),
+                literal(LEASE_HELD),
+                literal(&next_sequence.to_string()),
+                literal(lease.scope().managed_scope_id().as_str()),
+                literal(&lease.fence().get().to_string()),
+                literal(LEASE_FREE),
+                literal(&next_sequence.to_string()),
+            )
+        }
+        fn baseline_insert_journal_owner_query(
+            managed_database_name: &str,
+            managed_scope_id: &ManagedScopeId,
+        ) -> String {
+            format!(
+                "insert $owner isa {JOURNAL_OWNER_ENTITY}, has {JOURNAL_OWNER_KEY} {}, has {JOURNAL_OWNER_MANAGED_DATABASE} {}, has {JOURNAL_OWNER_MANAGED_SCOPE} {};",
+                literal(JOURNAL_OWNER_SINGLETON_KEY),
+                literal(managed_database_name),
+                literal(managed_scope_id.as_str()),
+            )
+        }
+        let scope_id = ManagedScopeId::new("parity-scope").unwrap();
+        let scope = ExecutionScope::new(scope_id.clone());
+        let holder = LeaseHolderId::new("parity-holder").unwrap();
+        let fence = ExecutionFence::new(u64::MAX).unwrap();
+        let lease = MigrationLease::new(scope.clone(), holder.clone(), fence);
+        let cases = [
+            (
+                insert_control_query(&scope, Some(&holder), fence, 9, LEASE_HELD).unwrap(),
+                baseline_insert_control_query(&scope, Some(&holder), fence, 9, LEASE_HELD),
+            ),
+            (
+                insert_control_query(&scope, None, fence, 9, LEASE_FREE).unwrap(),
+                baseline_insert_control_query(&scope, None, fence, 9, LEASE_FREE),
+            ),
+            (
+                insert_managed_fence_query(&lease).unwrap(),
+                baseline_insert_managed_fence_query(&lease),
+            ),
+            (
+                replace_managed_fence_query(&lease, 7).unwrap(),
+                baseline_replace_managed_fence_query(&lease, 7),
+            ),
+            (
+                release_managed_fence_query(&lease).unwrap(),
+                baseline_release_managed_fence_query(&lease),
+            ),
+            (
+                replace_control_query(&scope, 7, 8, &holder, fence, 9, LEASE_HELD).unwrap(),
+                baseline_replace_control_query(&scope, 7, 8, &holder, fence, 9, LEASE_HELD),
+            ),
+            (
+                release_control_query(&lease, 9).unwrap(),
+                baseline_release_control_query(&lease, 9),
+            ),
+            (
+                insert_journal_owner_query("managed\"database", &scope_id).unwrap(),
+                baseline_insert_journal_owner_query("managed\"database", &scope_id),
+            ),
+        ];
+        for (new, old) in cases {
+            assert!(tql::equivalent(&new, &old).unwrap(), "{new} != {old}");
+        }
+    }
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use type_bridge_contract::capability::CapabilitySet;
@@ -4068,7 +4426,7 @@ pub(crate) mod tests {
     #[test]
     fn journal_owner_insert_is_literal_escaped_and_binds_both_identities() {
         let scope = ManagedScopeId::new("scope\"with-quote").unwrap();
-        let query = insert_journal_owner_query("managed\"database", &scope);
+        let query = insert_journal_owner_query("managed\"database", &scope).unwrap();
         assert!(query.contains(JOURNAL_OWNER_SINGLETON_KEY));
         assert!(query.contains("managed\\\"database"));
         assert!(query.contains("scope\\\"with-quote"));

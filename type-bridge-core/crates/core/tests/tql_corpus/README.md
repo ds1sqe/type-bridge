@@ -7,7 +7,7 @@ except the listed upstream defects, which fail with a typed error.
 three legacy Raw escape hatches and trailing-comma nicety are excluded.
 Files use the official plain Display format; tests compare the parsed
 upstream AST before and after rendering, including source positions.
-Additional files cover namespaced function calls and schema label renames.
+Additional files cover namespaced calls, schema renames and redefine sequences.
 
 Known upstream gaps (all from the crates.io typeql 3.13.4 source):
 
@@ -16,6 +16,7 @@ Known upstream gaps (all from the crates.io typeql 3.13.4 source):
 | `struct-destructuring.tql` (row 29) | Parses; render returns `Unsupported { StructDestructuring }` before the upstream panic. | `src/statement/mod.rs:151`: `AssignmentPattern::Deconstruct` calls `todo!()`. |
 | `end.tql` (row 4) | Parses; render returns `Unsupported { ExplicitEnd }`. | `src/query/mod.rs:47`: explicit `end` loses its semicolon. |
 | `schema-rename.tql` | Parses; render returns `Unsupported { SchemaRename }`. | `src/schema/definable/mod.rs`: rename emits a semicolon, and `src/query/schema/redefine.rs` appends another. |
+| `schema-redefine-sequence.tql` | Parses; render returns `Unsupported { RedefineSequence }`. | `src/query/schema/redefine.rs` joins semicolon-terminated definables with another semicolon. |
 | `struct-literal.tql` (negative expression case) | Both official and adapter parse reject `let $x = {field: 1}`. | `src/parser/typeql.pest:149–152` omit structs from expressions. The struct rule at line 170 is reachable through `isa_constraint` at line 112; `struct-instance.tql` covers that positive form (row 91). |
 
 Plain Display is intentional: the upstream Pretty implementation renders

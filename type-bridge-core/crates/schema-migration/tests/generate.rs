@@ -859,7 +859,17 @@ fn attribute_type_removal_uses_the_provider_cascade_for_its_value_declaration() 
         preview.contains("owns legacy-name from person;"),
         "{preview}"
     );
-    assert!(preview.contains("undefine\nlegacy-name;"), "{preview}");
+    assert!(
+        preview
+            .trim()
+            .split("\n\n")
+            .any(|query| type_bridge_core_lib::__internal::equivalent(
+                query,
+                "undefine legacy-name;"
+            )
+            .unwrap_or(false)),
+        "{preview}"
+    );
     assert!(
         !preview.contains("value string from legacy-name;"),
         "{preview}"

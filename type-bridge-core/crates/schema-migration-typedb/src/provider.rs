@@ -299,8 +299,13 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
             let observed = async {
                 require_active_managed_fence(&mut transaction, lease).await?;
                 require_no_backfill_conflict(&mut transaction, &lowered).await?;
-                let incomplete =
-                    query_has_answers(&mut transaction, &lowered.incomplete_witness()).await?;
+                let incomplete = query_has_answers(
+                    &mut transaction,
+                    &lowered
+                        .incomplete_witness()
+                        .map_err(backfill_lowering_error)?,
+                )
+                .await?;
                 require_active_managed_fence(&mut transaction, lease).await?;
                 if incomplete {
                     Ok(BackfillRecoveryObservation::Incomplete)
@@ -351,8 +356,11 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
                 let mutation = async {
                     require_active_managed_fence(&mut transaction, lease).await?;
                     require_no_backfill_conflict(&mut transaction, &lowered).await?;
-                    let affected =
-                        query_answer_count(&mut transaction, &lowered.mutation_group()).await?;
+                    let affected = query_answer_count(
+                        &mut transaction,
+                        &lowered.mutation_group().map_err(backfill_lowering_error)?,
+                    )
+                    .await?;
                     if affected > u64::from(plan.partition().batch_rows()) {
                         return Err(failure(
                             DiagnosticCategory::Integrity,
@@ -622,11 +630,22 @@ pub fn execution_capability_vocabulary() -> Result<CapabilitySet, Diagnostic> {
     migration_runtime_capability_vocabulary()
 }
 
+fn backfill_lowering_error(_: type_bridge_core_lib::__internal::TqlError) -> Diagnostic {
+    failure(
+        DiagnosticCategory::InvalidContract,
+        "migration_typedb_backfill_typeql_shape",
+        "validated backfill cannot be lowered to TypeQL",
+    )
+}
+
 async fn require_no_backfill_conflict(
     transaction: &mut Transaction,
     lowered: &LoweredBackfill<'_>,
 ) -> Result<(), Diagnostic> {
-    let Some(query) = lowered.conflict_witness() else {
+    let Some(query) = lowered
+        .conflict_witness()
+        .map_err(backfill_lowering_error)?
+    else {
         return Ok(());
     };
     if query_has_answers(transaction, &query).await? {

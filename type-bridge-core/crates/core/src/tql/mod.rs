@@ -19,6 +19,7 @@ pub enum UnsupportedConstruct {
     StructDestructuring,
     ExplicitEnd,
     SchemaRename,
+    RedefineSequence,
     LegacyProjection,
 }
 

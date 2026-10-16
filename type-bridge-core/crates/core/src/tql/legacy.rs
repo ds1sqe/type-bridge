@@ -217,7 +217,7 @@ pub fn lower_legacy_pattern(value: &old::Pattern) -> Result<Pattern, TqlError> {
             .map(|branch| lower_legacy_patterns(branch))
             .collect::<Result<_, _>>()?)),
         old::Pattern::Raw(source) => {
-            let mut values = raw_patterns(source)?;
+            let mut values = parse_patterns(source)?;
             if values.len() == 1 {
                 Ok(values.remove(0))
             } else {
@@ -266,7 +266,7 @@ pub fn lower_legacy_statement(value: &old::Statement) -> Result<Pattern, TqlErro
             }
         }
         old::Statement::Raw(source) => {
-            let mut values = raw_patterns(source)?;
+            let mut values = parse_patterns(source)?;
             if values.len() == 1 {
                 Ok(values.remove(0))
             } else {
@@ -279,7 +279,7 @@ pub fn lower_legacy_statement(value: &old::Statement) -> Result<Pattern, TqlErro
 
 // Explicit conversion of Raw to AST nodes validates the enclosing match stage.
 // Compatibility compilation preserves caller-owned Raw verbatim below.
-fn raw_patterns(source: &str) -> Result<Vec<Pattern>, TqlError> {
+pub fn parse_patterns(source: &str) -> Result<Vec<Pattern>, TqlError> {
     let source = source.trim().trim_end_matches(';');
     let query = parse(&format!("match {source};"))?;
     if query.inner.has_explicit_end {
@@ -421,7 +421,7 @@ fn lower_legacy_patterns(values: &[old::Pattern]) -> Result<Vec<Pattern>, TqlErr
     let mut patterns = Vec::new();
     for value in values {
         if let old::Pattern::Raw(source) = value {
-            patterns.extend(raw_patterns(source)?);
+            patterns.extend(parse_patterns(source)?);
         } else {
             patterns.push(lower_legacy_pattern(value)?);
         }
@@ -433,7 +433,7 @@ fn lower_legacy_statements(values: &[old::Statement]) -> Result<Vec<Pattern>, Tq
     let mut patterns = Vec::new();
     for value in values {
         if let old::Statement::Raw(source) = value {
-            patterns.extend(raw_patterns(source)?);
+            patterns.extend(parse_patterns(source)?);
         } else {
             patterns.push(lower_legacy_statement(value)?);
         }

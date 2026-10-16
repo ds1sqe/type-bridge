@@ -1658,6 +1658,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "type-bridge-contract",
+ "type-bridge-core-lib",
  "type-bridge-query",
  "type-bridge-schema",
 ]

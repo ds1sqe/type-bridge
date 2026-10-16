@@ -491,13 +491,13 @@ mod tests {
         else {
             panic!("last operation must be the copy_attribute");
         };
-        assert_eq!(
+        assert_typeql_eq!(
             forward.as_deref(),
             Some(
                 "match\n  $x isa person, has legacy-name $v;\n  not { $x has name $d; };\ninsert\n  $x has name == $v;"
             )
         );
-        assert_eq!(
+        assert_typeql_eq!(
             reverse.as_deref(),
             Some("match $x isa person, has name $v;\ndelete $v of $x;")
         );

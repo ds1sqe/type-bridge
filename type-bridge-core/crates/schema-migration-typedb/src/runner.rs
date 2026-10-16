@@ -13,6 +13,7 @@ use std::fmt;
 use std::io::Read as _;
 use std::path::Path;
 use std::sync::Arc;
+use type_bridge_core_lib::__internal as tql;
 
 use serde::Serialize;
 use type_bridge_contract::capability::CapabilitySet;
@@ -2753,8 +2754,17 @@ async fn observe_legacy_cutover_anchor(
     transaction: &mut type_bridge_orm::OwnedTransaction,
     managed_scope: &str,
 ) -> Result<Option<String>, LegacyAnchorObservationError> {
-    let schema_query = "match entity $t; fetch { \"label\": label($t) };";
-    let schema_values = legacy_anchor_query_values(transaction, schema_query)
+    let schema_query = anchor_typeql_query(|| {
+        Ok(tql::pipeline(vec![
+            tql::match_stage(vec![tql::schema_kind_pattern("$t", "entity")?]),
+            tql::fetch(vec![(
+                "label",
+                tql::fetch_expr(tql::function("label", vec![tql::var("t")?])?),
+            )])?,
+        ]))
+    })
+    .map_err(LegacyAnchorObservationError::Infrastructure)?;
+    let schema_values = legacy_anchor_query_values(transaction, &schema_query)
         .await
         .map_err(LegacyAnchorObservationError::Infrastructure)?;
     let mut anchor_type_present = false;
@@ -2774,14 +2784,38 @@ async fn observe_legacy_cutover_anchor(
         return Ok(None);
     }
 
-    let existence_query =
-        format!("match $anchor isa {LEGACY_CUTOVER_ENTITY}; fetch {{ \"exists\": true }};");
+    let existence_query = anchor_typeql_query(|| {
+        Ok(tql::pipeline(vec![
+            tql::match_stage(vec![tql::entity("anchor", LEGACY_CUTOVER_ENTITY, vec![])?]),
+            tql::fetch(vec![(
+                "exists",
+                tql::fetch_expr(tql::literal_source("true")?),
+            )])?,
+        ]))
+    })
+    .map_err(LegacyAnchorObservationError::Infrastructure)?;
     let existence = legacy_anchor_query_values(transaction, &existence_query)
         .await
         .map_err(LegacyAnchorObservationError::Infrastructure)?;
-    let detail_query = format!(
-        "match $anchor isa {LEGACY_CUTOVER_ENTITY}, has {LEGACY_CUTOVER_KEY} $key, has {LEGACY_CUTOVER_SCOPE} $scope, has {LEGACY_CUTOVER_FINGERPRINT} $fingerprint; fetch {{ \"key\": $key, \"scope\": $scope, \"fingerprint\": $fingerprint }};"
-    );
+    let detail_query = anchor_typeql_query(|| {
+        Ok(tql::pipeline(vec![
+            tql::match_stage(vec![tql::entity(
+                "anchor",
+                LEGACY_CUTOVER_ENTITY,
+                vec![
+                    (LEGACY_CUTOVER_KEY, tql::var("key")?),
+                    (LEGACY_CUTOVER_SCOPE, tql::var("scope")?),
+                    (LEGACY_CUTOVER_FINGERPRINT, tql::var("fingerprint")?),
+                ],
+            )?]),
+            tql::fetch(vec![
+                ("key", tql::fetch_expr(tql::var("key")?)),
+                ("scope", tql::fetch_expr(tql::var("scope")?)),
+                ("fingerprint", tql::fetch_expr(tql::var("fingerprint")?)),
+            ])?,
+        ]))
+    })
+    .map_err(LegacyAnchorObservationError::Infrastructure)?;
     let values = legacy_anchor_query_values(transaction, &detail_query)
         .await
         .map_err(LegacyAnchorObservationError::Infrastructure)?;
@@ -2872,12 +2906,20 @@ async fn insert_legacy_cutover_anchor(
     managed_scope: &str,
     fingerprint: &str,
 ) -> Result<(), Diagnostic> {
-    let query = format!(
-        "insert $anchor isa {LEGACY_CUTOVER_ENTITY}, has {LEGACY_CUTOVER_KEY} {}, has {LEGACY_CUTOVER_SCOPE} {}, has {LEGACY_CUTOVER_FINGERPRINT} {};",
-        typeql_string_literal(LEGACY_CUTOVER_SINGLETON_KEY),
-        typeql_string_literal(managed_scope),
-        typeql_string_literal(fingerprint),
-    );
+    let query = anchor_typeql_query(|| {
+        Ok(tql::pipeline(vec![tql::insert(vec![tql::entity(
+            "anchor",
+            LEGACY_CUTOVER_ENTITY,
+            vec![
+                (
+                    LEGACY_CUTOVER_KEY,
+                    tql::string(LEGACY_CUTOVER_SINGLETON_KEY)?,
+                ),
+                (LEGACY_CUTOVER_SCOPE, tql::string(managed_scope)?),
+                (LEGACY_CUTOVER_FINGERPRINT, tql::string(fingerprint)?),
+            ],
+        )?])]))
+    })?;
     transaction.query(&query).await.map_err(|error| {
         legacy_import_failure(
             "migration_legacy_import_anchor_insert_failed",
@@ -2888,8 +2930,15 @@ async fn insert_legacy_cutover_anchor(
     Ok(())
 }
 
-fn typeql_string_literal(value: &str) -> String {
-    serde_json::to_string(value).expect("UTF-8 strings are JSON representable")
+fn anchor_typeql_query(
+    build: impl FnOnce() -> Result<tql::Query, tql::TqlError>,
+) -> Result<String, Diagnostic> {
+    build().and_then(|query| tql::render(&query)).map_err(|_| {
+        legacy_import_failure(
+            "migration_legacy_import_anchor_typeql_shape",
+            "legacy anchor query cannot be lowered to TypeQL",
+        )
+    })
 }
 
 fn expected_managed_internal_schema() -> Result<DeclaredSchema, Diagnostic> {
@@ -3722,7 +3771,8 @@ mod tests {
 
     #[test]
     fn anchor_literals_escape_every_control_character() {
-        let literal = typeql_string_literal("scope\0\u{0008}\u{000c}\n\r\t\"");
+        let literal =
+            tql::render_expression(&tql::string("scope\0\u{0008}\u{000c}\n\r\t\"").unwrap());
         assert_eq!(literal, "\"scope\\u0000\\b\\f\\n\\r\\t\\\"\"");
         assert!(!literal.chars().any(|character| character.is_control()));
     }

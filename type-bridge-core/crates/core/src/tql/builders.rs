@@ -72,6 +72,19 @@ pub fn var(name: &str) -> Result<Expr, TqlError> {
     })
 }
 
+/// Parse a caller-owned literal slot without changing its domain or precision.
+pub fn literal_source(source: &str) -> Result<Expr, TqlError> {
+    let inner = typeql::parse_value(source).map_err(|_| TqlError::InvalidLiteral)?;
+    Ok(Expr {
+        inner: Expression::Value(value::Literal { span: None, inner }),
+    })
+}
+
+/// Build a string literal without imposing a canonical-value payload limit.
+pub fn string(value: &str) -> Result<Expr, TqlError> {
+    literal_source(&serde_json::to_string(value).map_err(|_| TqlError::InvalidLiteral)?)
+}
+
 pub fn literal(value: &CanonicalValue) -> Result<Expr, TqlError> {
     let source = match value {
         CanonicalValue::String(value) => {
@@ -101,6 +114,17 @@ pub fn literal(value: &CanonicalValue) -> Result<Expr, TqlError> {
     Ok(Expr {
         inner: Expression::Value(value::Literal { span: None, inner }),
     })
+}
+
+/// Retain the released assertion emitter's compact spelling for extreme doubles.
+pub fn compact_literal(value: &CanonicalValue) -> Result<Expr, TqlError> {
+    if let CanonicalValue::Double(value) = value {
+        let absolute = value.get().abs();
+        if absolute >= 1e21 || absolute != 0.0 && absolute < 1e-6 {
+            return literal_source(&format!("{:e}", value.get()));
+        }
+    }
+    literal(value)
 }
 
 pub fn function(name: &str, args: Vec<Expr>) -> Result<Expr, TqlError> {
@@ -350,6 +374,18 @@ pub fn delete_thing(name: &str) -> Result<Deletable, TqlError> {
         ),
     })
 }
+pub fn delete_has(owner: &str, attribute: &str) -> Result<Deletable, TqlError> {
+    Ok(Deletable {
+        inner: delete::Deletable::new(
+            None,
+            delete::DeletableKind::Has {
+                owner: variable(owner)?,
+                attribute: variable(attribute)?,
+            },
+        ),
+    })
+}
+
 pub fn delete(items: Vec<Deletable>) -> Stage {
     Stage {
         inner: stage::Stage::Delete(stage::Delete::new(
@@ -423,6 +459,17 @@ pub fn sort(fields: &[(&str, bool)]) -> Result<Stage, TqlError> {
         inner: stage::Stage::Operator(modifier::Operator::Sort(modifier::Sort::new(None, fields))),
     })
 }
+/// Sort using the grammar's implicit ascending order.
+pub fn sort_default(names: &[&str]) -> Result<Stage, TqlError> {
+    let fields = names
+        .iter()
+        .map(|name| Ok(modifier::OrderedVariable::new(None, variable(name)?, None)))
+        .collect::<Result<_, TqlError>>()?;
+    Ok(Stage {
+        inner: stage::Stage::Operator(modifier::Operator::Sort(modifier::Sort::new(None, fields))),
+    })
+}
+
 pub fn offset(value: u64) -> Stage {
     Stage {
         inner: stage::Stage::Operator(modifier::Operator::Offset(modifier::Offset::new(
@@ -773,13 +820,117 @@ pub fn fetch_stream(stages: Vec<Stage>, names: &[&str]) -> Result<FetchValue, Tq
 }
 
 fn builtin_value_type(domain: ValueTypeTag) -> NamedTypeAny {
+    NamedTypeAny::Simple(builtin_named_type(domain))
+}
+
+pub(super) fn builtin_named_type(domain: ValueTypeTag) -> NamedType {
     let spelling = match domain {
         ValueTypeTag::Long => "integer",
         ValueTypeTag::DateTimeTz => "datetime-tz",
         other => other.as_str(),
     };
-    NamedTypeAny::Simple(NamedType::BuiltinValueType(type_::BuiltinValueType::new(
+    NamedType::BuiltinValueType(type_::BuiltinValueType::new(
         None,
         token::ValueType::from(spelling),
-    )))
+    ))
+}
+
+/// Derive read-only count views without modifying a carried copy statement.
+pub fn backfill_count_views(source: &str) -> Result<(Query, Query), TqlError> {
+    let query = super::parse(source)?;
+    if query.inner.has_explicit_end {
+        return Err(TqlError::InvalidLegacyShape);
+    }
+    let QueryStructure::Pipeline(mut pipeline) = query.inner.structure else {
+        return Err(TqlError::InvalidLegacyShape);
+    };
+    if !pipeline.preambles.is_empty() || pipeline.stages.len() != 2 {
+        return Err(TqlError::InvalidLegacyShape);
+    }
+    let stage::Stage::Insert(insert) = pipeline.stages.pop().unwrap() else {
+        return Err(TqlError::InvalidLegacyShape);
+    };
+    let stage::Stage::Match(matched) = pipeline.stages.pop().unwrap() else {
+        return Err(TqlError::InvalidLegacyShape);
+    };
+    let [pattern::Pattern::Statement(statement::Statement::Thing(destination))] =
+        insert.patterns.as_slice()
+    else {
+        return Err(TqlError::InvalidLegacyShape);
+    };
+    let thing::Head::Variable(owner) = &destination.head else {
+        return Err(TqlError::InvalidLegacyShape);
+    };
+    let [thing::Constraint::Has(destination)] = destination.constraints.as_slice() else {
+        return Err(TqlError::InvalidLegacyShape);
+    };
+    let Some(destination_type) = &destination.type_ else {
+        return Err(TqlError::InvalidLegacyShape);
+    };
+    let mut guards = 0;
+    let mut total = Vec::new();
+    for candidate in &matched.patterns {
+        let is_guard = match candidate {
+            pattern::Pattern::Negation(negation) => match negation.patterns.as_slice() {
+                [pattern::Pattern::Statement(statement::Statement::Thing(guard))] => {
+                    match (&guard.head, guard.constraints.as_slice()) {
+                        (thing::Head::Variable(guard_owner), [thing::Constraint::Has(has)]) => {
+                            guard_owner.name() == owner.name()
+                                && owner.name().is_some()
+                                && matches!(has.value, thing::HasValue::Variable(_))
+                                && has.type_.as_ref().is_some_and(|name| {
+                                    name.to_string() == destination_type.to_string()
+                                })
+                        }
+                        _ => false,
+                    }
+                }
+                _ => false,
+            },
+            _ => false,
+        };
+        if is_guard {
+            guards += 1;
+        } else {
+            total.push(Pattern {
+                inner: candidate.clone(),
+            });
+        }
+    }
+    if guards > 1 {
+        return Err(TqlError::InvalidLegacyShape);
+    }
+    let guarded = matched
+        .patterns
+        .into_iter()
+        .map(|inner| Pattern { inner })
+        .collect();
+    Ok((
+        self::pipeline(vec![match_stage(guarded), count("c", None, &[])?]),
+        self::pipeline(vec![match_stage(total), count("c", None, &[])?]),
+    ))
+}
+
+/// Render an opaque expression using the official AST display form.
+pub fn render_expression(value: &Expr) -> String {
+    let mut expression = value.inner.clone();
+    super::render_guard::prepare_expression(&mut expression);
+    expression.to_string()
+}
+
+/// Build an instance pattern with a concrete type and ownership fields.
+pub fn entity(name: &str, kind: &str, fields: Vec<(&str, Expr)>) -> Result<Pattern, TqlError> {
+    let mut constraints = vec![isa(kind, false)?];
+    for (name, value) in fields {
+        constraints.push(has(name, value)?);
+    }
+    thing(name, constraints)
+}
+
+/// Render an internal probe tag without allowing another TypeQL statement.
+pub fn render_commented(query: &Query, comment: &str) -> Result<String, TqlError> {
+    if comment.contains(['\n', '\r']) {
+        return Err(TqlError::InvalidLegacyShape);
+    }
+    Ok(format!("# {comment}\n{}", super::render(query)?))
 }

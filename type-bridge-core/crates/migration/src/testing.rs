@@ -405,7 +405,7 @@ impl TransactionOps for MockMigrationTransaction {
                 .unwrap_or_default();
             return Box::pin(async move { Ok(QueryResult::Documents(values)) });
         }
-        if typeql.contains("fetch { \"label\": label($t) }")
+        if typeql.contains("\"label\": label($t)")
             && let Some(labels) = &self.legacy_state_labels
         {
             let values = state_label_documents(&labels.lock().unwrap(), typeql);

@@ -16,8 +16,21 @@ All notable changes to TypeBridge will be documented in this file.
   credentials and endpoint text are excluded. Locally authored validation and
   application transport errors retain their existing messages.
 - TypeDB transport failures keep a fixed failure kind and the operation name.
+- Ordered ownership and role lists in live schemas are now read through the
+  official AST. List drift reports `migration_typedb_observation_no_candidate_match`
+  instead of `migration_typedb_export_invalid`, while refusing the migration.
 
 ### Fixed
+
+- Native schema migrations preserve ordered ownership and role list markers,
+  including annotations, specialisations and removals, preventing scalar drift.
+
+- Backfill count queries retain unrelated negative filters and accept equivalent
+  compact carried statements, correcting overstated matched/skipped totals.
+
+- Structured migration tuple functions emit comma-separated return types,
+  correcting headers rejected with TQL03. Ordered role specialisations emit
+  matching list markers on the parent, correcting invalid `as` clauses.
 
 - TOML `long`/`int` and `bool` aliases now emit TypeDB builtin `integer`
   and `boolean` domains instead of unresolved type labels (SYR4).

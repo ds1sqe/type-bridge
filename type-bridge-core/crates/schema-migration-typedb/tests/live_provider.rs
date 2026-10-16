@@ -667,3 +667,72 @@ async fn commented_function_body_survives_export_without_toml_drift() {
         result.unwrap();
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn tuple_function_from_native_lowering_defines_returns_and_preserves_body() {
+    use type_bridge_schema_compat::{toml_to_declared, typeql_to_declared};
+    use type_bridge_schema_migration::{SchemaFactCatalog, lower_schema_delta};
+    let body =
+        "match\n  # retained tuple comment\n  let $value = $seed;\nreturn first $value, $value;";
+    let source = declared_facts(vec![]);
+    let input = format!(
+        "[functions.pair]\nsignature = \"fun pair($seed: integer) -> integer, integer\"\nbody = \"\"\"\n{body}\n\"\"\"\n"
+    );
+    let target = toml_to_declared(DocumentId::new("tuple.toml").unwrap(), &input).unwrap();
+    let context = context();
+    let delta = type_bridge_contract::schema_delta::SchemaDelta::new(
+        type_bridge_contract::schema_delta::PatchFormatVersion::V1,
+        managed_schema_state(&source, &context).unwrap(),
+        managed_schema_state(&target, &context).unwrap(),
+        vec![
+            type_bridge_contract::schema::SchemaOperation::define(
+                target.facts().cloned().collect(),
+            )
+            .unwrap(),
+        ],
+    )
+    .unwrap();
+    let lowering = lower_schema_delta(
+        &delta,
+        &SchemaFactCatalog::empty(),
+        &SchemaFactCatalog::new(target.facts().cloned()).unwrap(),
+        &SchemaLoweringBinding::for_context(&context).unwrap(),
+    )
+    .unwrap();
+    let (managed, journal) = databases().await;
+    let test_database = managed.clone();
+    let result = tokio::spawn(async move {
+        let mut transaction = test_database.schema_transaction().await.unwrap();
+        for unit in lowering.units() {
+            for statement in unit.statements() {
+                assert!(statement.query().contains(body));
+                transaction.query(statement.query()).await.unwrap();
+            }
+        }
+        transaction.commit().await.unwrap();
+        let exported = test_database.schema_text().await.unwrap();
+        let actual =
+            typeql_to_declared(DocumentId::new("tuple-export.tql").unwrap(), &exported).unwrap();
+        assert_eq!(
+            actual.declared_identity_fingerprint(),
+            target.declared_identity_fingerprint()
+        );
+        let mut read = test_database.read_transaction().await.unwrap();
+        let result = read
+            .query(
+                "match let $left, $right = pair(7); fetch { \"left\": $left, \"right\": $right };",
+            )
+            .await
+            .unwrap();
+        let type_bridge_orm::session::backend::QueryResult::Documents(rows) = result else {
+            panic!("expected tuple documents")
+        };
+        assert_eq!(rows, vec![serde_json::json!({"left": 7, "right": 7})]);
+        read.close().await.unwrap();
+    })
+    .await;
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
+    result.unwrap();
+}

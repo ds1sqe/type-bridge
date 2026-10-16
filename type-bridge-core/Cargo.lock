@@ -3474,9 +3474,13 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "tokio",
  "type-bridge-contract",
+ "type-bridge-core-lib",
+ "type-bridge-orm",
  "type-bridge-query",
  "type-bridge-schema",
+ "type-bridge-schema-compat",
 ]
 
 [[package]]
