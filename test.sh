@@ -219,10 +219,10 @@ write_sdk_summary() {
 
 log_sdk_evidence_sha256() {
     local validator_python="$1"
-    local v2_summary="$2"
-    shift 2
-    validate_canonical_json_files "$validator_python" "$@"
-    "$validator_python" -c '
+    local summary="${!#}"
+    shift
+    validate_canonical_json_files "$validator_python" "$@" || return
+    if ! "$validator_python" -c '
 import json
 import sys
 from pathlib import Path
@@ -235,7 +235,9 @@ print(
     "sdk-v2 pending_manifest_promotions="
     + json.dumps(pending, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 )
-' "$v2_summary"
+' "$summary"; then
+        return 1
+    fi
     if command -v sha256sum >/dev/null 2>&1; then
         sha256sum -- "$@"
     else
@@ -788,7 +790,6 @@ if [[ "$integration" == 1 ]]; then
         run_step "validate and log sdk report and summary SHA-256 evidence" \
             log_sdk_evidence_sha256 \
                 "$sdk_validator_python" \
-                "$sdk_v2_summary" \
                 "$sdk_report_dir/python.json" \
                 "$sdk_report_dir/node.json" \
                 "$sdk_report_dir/rust.json" \

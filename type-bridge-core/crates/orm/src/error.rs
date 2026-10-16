@@ -44,6 +44,9 @@ impl ClassifiedCommitError {
     }
 
     /// Convert to the released ORM error surface.
+    ///
+    /// This preserves original provider text but discards certainty. The
+    /// resulting transaction error alone cannot justify retrying a write.
     #[must_use]
     pub fn into_orm_error(self) -> OrmError {
         match self {

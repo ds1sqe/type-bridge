@@ -47,6 +47,7 @@ impl From<ExecuteError> for PipelineError {
         match error {
             ExecuteError::Pipeline(error) => error,
             ExecuteError::Commit(error) => {
+                // V1 preserves driver text while discarding durability certainty.
                 Self::QueryExecution(format!("Commit failed: {}", error.message))
             }
         }

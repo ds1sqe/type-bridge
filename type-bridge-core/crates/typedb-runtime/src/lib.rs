@@ -52,7 +52,7 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// How confidently a failed commit can be classified without observing server state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommitFailureCertainty {
-    /// The server rejected the commit and the transaction did not commit.
+    /// A known pre-commit rejection proves that the transaction did not commit.
     DefinitelyAborted,
     /// The client cannot determine whether the transaction committed.
     Unknown,
@@ -115,6 +115,9 @@ pub enum RuntimeCommitError {
 
 impl RuntimeCommitError {
     /// Convert to the released transaction-error surface.
+    ///
+    /// This discards certainty, not the original driver text. A transaction
+    /// error alone never proves that retrying the write is safe.
     #[must_use]
     pub fn into_runtime_error(self) -> RuntimeError {
         match self {
@@ -136,29 +139,178 @@ fn commit_failure(
     }
 }
 
-#[cfg(feature = "band8")]
-fn band8_commit_failure(error: driver_b8::Error) -> RuntimeCommitError {
-    let certainty = if matches!(&error, driver_b8::Error::Server(_)) {
+// Concept finalise and validation errors occur before the snapshot commit.
+// Exact spellings keep new server codes conservative until their phase is known.
+const DEFINITE_COMMIT_REJECTION_CODES: &[&str] = &[
+    "STC2", "STC4", "TSV2", "DCT1", "DCT2", "DCT3", "SCT1", "SCT2", "COW1", "COW2", "COW3", "COW4",
+    "COW5", "COW6", "COW7", "COW8", "COW9", "COW10", "COW11", "COW12", "CNT1", "CNT2", "CNT3",
+    "CNT4", "CNT5", "CNT6", "CNT7", "CNT8", "CNT9", "CNT10", "DVL1", "DVL2", "DVL3", "DVL4",
+    "DVL5", "DVL6", "DVL7", "DVL8", "DVL9", "DVL10", "DVL11", "DVL12", "DVL13", "DVL14", "DVL15",
+    "DVL16", "DVL17", "DVL18", "DVL19", "DVL20", "DVL21", "DVL22", "SVL1", "SVL2", "SVL3", "SVL4",
+    "SVL5", "SVL6", "SVL7", "SVL8", "SVL9", "SVL10", "SVL11", "SVL12", "SVL13", "SVL14", "SVL15",
+    "SVL16", "SVL17", "SVL18", "SVL19", "SVL20", "SVL21", "SVL22", "SVL23", "SVL24", "SVL25",
+    "SVL26", "SVL27", "SVL28", "SVL29", "SVL30", "SVL31", "SVL32", "SVL33", "SVL34", "SVL35",
+    "SVL36", "SVL37", "SVL38", "SVL39", "SVL40", "SVL41", "SVL42", "SVL43", "SVL44", "SVL45",
+    "SVL46", "SVL47", "SVL48", "SVL49", "SVL50", "SVL51", "SVL52", "SVL53", "SVL54", "SVL55",
+    "SVL56", "SVL57", "SVL58", "SVL59", "SVL60", "SVL61",
+];
+
+fn server_commit_certainty(code: &str) -> CommitFailureCertainty {
+    if DEFINITE_COMMIT_REJECTION_CODES.contains(&code) {
         CommitFailureCertainty::DefinitelyAborted
     } else {
         CommitFailureCertainty::Unknown
+    }
+}
+
+#[cfg(feature = "band8")]
+fn band8_commit_failure(error: driver_b8::Error) -> RuntimeCommitError {
+    let message = error.to_string();
+    let certainty = if matches!(&error, driver_b8::Error::Server(_)) {
+        server_commit_certainty(&error.code())
+    } else {
+        CommitFailureCertainty::Unknown
     };
-    commit_failure(certainty, error.to_string())
+    commit_failure(certainty, message)
 }
 
 #[cfg(feature = "band9")]
 fn band9_commit_failure(error: driver_b9::Error) -> RuntimeCommitError {
+    let message = error.to_string();
     let certainty = if matches!(&error, driver_b9::Error::Server(_)) {
-        CommitFailureCertainty::DefinitelyAborted
+        server_commit_certainty(&error.code())
     } else {
         CommitFailureCertainty::Unknown
     };
-    commit_failure(certainty, error.to_string())
+    commit_failure(certainty, message)
 }
 
 #[cfg(test)]
 mod commit_failure_tests {
     use super::*;
+
+    fn fixture_status(code: &str, message: &str) -> tonic::Status {
+        use tonic_types::{ErrorDetails, StatusExt};
+        let mut details = ErrorDetails::new();
+        details.set_error_info(code, "typedb", std::collections::HashMap::new());
+        details.set_debug_info(
+            message
+                .trim_start()
+                .split("\nCaused: ")
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+            "",
+        );
+        tonic::Status::with_error_details(tonic::Code::Internal, "", details)
+    }
+
+    #[test]
+    fn live_error_fixtures_use_structural_root_codes_and_preserve_display() {
+        for fixture in [
+            include_str!("../tests/fixtures/commit-errors-3.12.3.json"),
+            include_str!("../tests/fixtures/commit-errors-3.13.6.json"),
+        ] {
+            let messages: std::collections::BTreeMap<String, String> =
+                serde_json::from_str(fixture).unwrap();
+            for (case, code) in [("stc2", "STC2"), ("cnt5", "CNT5")] {
+                macro_rules! check_band {
+                    ($driver:ident, $classify:ident) => {{
+                        let error = $driver::Error::from(fixture_status(code, &messages[case]));
+                        assert_eq!(error.code(), code);
+                        assert_eq!(error.to_string(), messages[case]);
+                        let failure = $classify(error);
+                        assert!(matches!(
+                            &failure,
+                            RuntimeCommitError::Driver {
+                                certainty: CommitFailureCertainty::DefinitelyAborted,
+                                ..
+                            }
+                        ));
+                        assert_eq!(
+                            failure.into_runtime_error().to_string(),
+                            format!("Transaction error: Commit failed: {}", messages[case])
+                        );
+                    }};
+                }
+                #[cfg(feature = "band8")]
+                check_band!(driver_b8, band8_commit_failure);
+                #[cfg(feature = "band9")]
+                check_band!(driver_b9, band9_commit_failure);
+            }
+            // CNT9 was raised during query execution, not commit. Only its
+            // structural root code is under test here.
+            #[cfg(feature = "band9")]
+            assert_eq!(
+                driver_b9::Error::from(fixture_status("CNT9", &messages["cnt9_query"])).code(),
+                "CNT9"
+            );
+            assert!(messages["paused"].starts_with("[CXN06]"));
+            assert_eq!(
+                server_commit_certainty("CXN06"),
+                CommitFailureCertainty::Unknown
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_or_post_commit_codes_remain_unknown() {
+        for code in [
+            "STC1", "STC3", "STC5", "STC6", "DUC1", "DUC2", "DUC3", "DCT5", "SCT3", "SCT4", "SCT5",
+            "SCT6", "SCT7", "NEW999", "CNT11", "DVL23", "SVL62", "COW13", "STC02", "",
+        ] {
+            assert_eq!(
+                server_commit_certainty(code),
+                CommitFailureCertainty::Unknown,
+                "{code}"
+            );
+        }
+        // A known rejection in Display cannot override the structural code.
+        #[cfg(feature = "band9")]
+        assert!(matches!(
+            band9_commit_failure(driver_b9::Error::from(fixture_status(
+                "NEW999",
+                "[STC2] value"
+            ))),
+            RuntimeCommitError::Driver {
+                certainty: CommitFailureCertainty::Unknown,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn pre_commit_and_validation_roots_are_definite_rejections() {
+        for code in [
+            "STC2", "STC4", "TSV2", "DCT1", "DCT2", "DCT3", "SCT1", "SCT2", "COW1", "COW12",
+            "CNT4", "CNT9", "DVL1", "DVL22", "SVL1", "SVL61",
+        ] {
+            assert_eq!(
+                server_commit_certainty(code),
+                CommitFailureCertainty::DefinitelyAborted,
+                "{code}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_server_driver_errors_remain_unknown_even_with_a_rejection_token() {
+        #[cfg(feature = "band8")]
+        assert!(matches!(
+            band8_commit_failure(driver_b8::Error::Other("[STC2] untrusted text".into())),
+            RuntimeCommitError::Driver {
+                certainty: CommitFailureCertainty::Unknown,
+                ..
+            }
+        ));
+        #[cfg(feature = "band9")]
+        assert!(matches!(
+            band9_commit_failure(driver_b9::Error::Other("[STC2] untrusted text".into())),
+            RuntimeCommitError::Driver {
+                certainty: CommitFailureCertainty::Unknown,
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn typed_commit_failure_preserves_the_legacy_display() {
@@ -3586,22 +3738,36 @@ fn concept_to_json_b8(
 fn given_rows_b9(spec: GivenRowsSpec) -> Result<typedb_driver::given::GivenRows> {
     use typedb_driver::given::GivenRows;
 
-    let mut given = GivenRows::new(spec.variables, spec.rows.len());
+    let mut given = GivenRows::new(spec.variables.clone(), spec.rows.len());
     for row in spec.rows {
-        let entries = row
-            .into_iter()
-            .map(given_entry_b9)
+        if row.len() != spec.variables.len() {
+            return Err(RuntimeError::QueryExecution(
+                "Invalid given row: width does not match the column header".into(),
+            ));
+        }
+        let entries = spec
+            .variables
+            .iter()
+            .zip(row)
+            .map(|(column, value)| given_entry_b9(column, value))
             .collect::<Result<Vec<_>>>()?;
-        given
-            .push_row(entries)
-            .map_err(|e| RuntimeError::QueryExecution(format!("Invalid given row: {e}")))?;
+        given.push_row(entries).map_err(|_| {
+            RuntimeError::QueryExecution(
+                "Invalid given row: the driver rejected the input row shape".into(),
+            )
+        })?;
     }
     Ok(given)
 }
 
+#[cfg(feature = "band9")]
+fn invalid_given_value(column: &str, value_type: &'static str) -> RuntimeError {
+    RuntimeError::QueryExecution(format!("Invalid given {value_type} in column {column:?}"))
+}
+
 /// Convert one portable [`GivenValue`] to a band-9 driver row entry.
 #[cfg(feature = "band9")]
-fn given_entry_b9(value: GivenValue) -> Result<typedb_driver::given::GivenRowEntry> {
+fn given_entry_b9(column: &str, value: GivenValue) -> Result<typedb_driver::given::GivenRowEntry> {
     use chrono::{NaiveDate, NaiveDateTime};
     use typedb_driver::concept::value::TimeZone as B9TimeZone;
     use typedb_driver::concept::value::{Decimal, Duration};
@@ -3614,21 +3780,20 @@ fn given_entry_b9(value: GivenValue) -> Result<typedb_driver::given::GivenRowEnt
         GivenValue::Double(d) => GivenRowEntry::from(d),
         GivenValue::String(s) => GivenRowEntry::from(s),
         GivenValue::Date(s) => {
-            let date = s.parse::<NaiveDate>().map_err(|e| {
-                RuntimeError::QueryExecution(format!("Invalid given date {s:?}: {e}"))
-            })?;
+            let date = s
+                .parse::<NaiveDate>()
+                .map_err(|_| invalid_given_value(column, "date"))?;
             GivenRowEntry::from(date)
         }
         GivenValue::Datetime(s) => {
-            let dt = s.parse::<NaiveDateTime>().map_err(|e| {
-                RuntimeError::QueryExecution(format!("Invalid given datetime {s:?}: {e}"))
-            })?;
+            let dt = s
+                .parse::<NaiveDateTime>()
+                .map_err(|_| invalid_given_value(column, "datetime"))?;
             GivenRowEntry::from(dt)
         }
         GivenValue::DatetimeTz(s) => {
-            let dt = parse_given_datetime_tz(&s).map_err(|e| {
-                RuntimeError::QueryExecution(format!("Invalid given datetime-tz {s:?}: {e}"))
-            })?;
+            let dt = parse_given_datetime_tz(&s)
+                .map_err(|_| invalid_given_value(column, "datetime-tz"))?;
             let offset = *dt.offset();
             GivenRowEntry::from(dt.with_timezone(&B9TimeZone::Fixed(offset)))
         }
@@ -3636,11 +3801,10 @@ fn given_entry_b9(value: GivenValue) -> Result<typedb_driver::given::GivenRowEnt
             local,
             named_zone,
             effective_offset_seconds,
-        } => GivenRowEntry::from(exact_given_datetime_tz_b9(
-            &local,
-            named_zone.as_deref(),
-            effective_offset_seconds,
-        )?),
+        } => GivenRowEntry::from(
+            exact_given_datetime_tz_b9(&local, named_zone.as_deref(), effective_offset_seconds)
+                .map_err(|_| invalid_given_value(column, "datetime-tz"))?,
+        ),
         GivenValue::Decimal(s) => {
             // The upstream parser parses the unsigned magnitude into `i64`,
             // so the otherwise-valid decimal minimum cannot pass through it.
@@ -3649,9 +3813,8 @@ fn given_entry_b9(value: GivenValue) -> Result<typedb_driver::given::GivenRowEnt
             let decimal = if s == "-9223372036854775808" {
                 Decimal::MIN
             } else {
-                s.parse::<Decimal>().map_err(|e| {
-                    RuntimeError::QueryExecution(format!("Invalid given decimal {s:?}: {e}"))
-                })?
+                s.parse::<Decimal>()
+                    .map_err(|_| invalid_given_value(column, "decimal"))?
             };
             GivenRowEntry::from(decimal)
         }
@@ -5959,7 +6122,8 @@ mod tests {
             GivenValue::Boolean(true),
             GivenValue::Double(1.5),
         ] {
-            given_entry_b9(value.clone()).unwrap_or_else(|e| panic!("{value:?} must convert: {e}"));
+            given_entry_b9("test_input", value.clone())
+                .unwrap_or_else(|e| panic!("{value:?} must convert: {e}"));
         }
     }
 
@@ -5970,11 +6134,14 @@ mod tests {
         use typedb_driver::concept::value::TimeZone;
         use typedb_driver::given::GivenRowEntry;
 
-        let named = given_entry_b9(GivenValue::DatetimeTzExact {
-            local: "2024-10-27T01:30:00".into(),
-            named_zone: Some("Europe/London".into()),
-            effective_offset_seconds: 3_600,
-        })
+        let named = given_entry_b9(
+            "test_input",
+            GivenValue::DatetimeTzExact {
+                local: "2024-10-27T01:30:00".into(),
+                named_zone: Some("Europe/London".into()),
+                effective_offset_seconds: 3_600,
+            },
+        )
         .expect("explicit overlap side");
         let GivenRowEntry::Value(Value::DatetimeTZ(named)) = named else {
             panic!("datetime-tz given entry")
@@ -5992,11 +6159,14 @@ mod tests {
             3_600
         );
 
-        let lower_case = given_entry_b9(GivenValue::DatetimeTzExact {
-            local: "2024-07-01T12:00:00".into(),
-            named_zone: Some("europe/amsterdam".into()),
-            effective_offset_seconds: 7_200,
-        })
+        let lower_case = given_entry_b9(
+            "test_input",
+            GivenValue::DatetimeTzExact {
+                local: "2024-07-01T12:00:00".into(),
+                named_zone: Some("europe/amsterdam".into()),
+                effective_offset_seconds: 7_200,
+            },
+        )
         .expect("case-insensitive names admitted by schema also lower");
         let GivenRowEntry::Value(Value::DatetimeTZ(lower_case)) = lower_case else {
             panic!("datetime-tz given entry")
@@ -6010,11 +6180,14 @@ mod tests {
             "the provider canonicalizes accepted authored case"
         );
 
-        let duration = given_entry_b9(GivenValue::Duration {
-            months: u32::MAX,
-            days: u32::MAX,
-            nanos: u64::MAX,
-        })
+        let duration = given_entry_b9(
+            "test_input",
+            GivenValue::Duration {
+                months: u32::MAX,
+                days: u32::MAX,
+                nanos: u64::MAX,
+            },
+        )
         .expect("duration boundary");
         let GivenRowEntry::Value(Value::Duration(duration)) = duration else {
             panic!("duration given entry")
@@ -6044,12 +6217,75 @@ mod tests {
             },
             GivenValue::Decimal("1.00000000000000000000".into()),
         ] {
-            let err = given_entry_b9(value.clone())
+            let err = given_entry_b9("test_input", value.clone())
                 .expect_err("malformed temporal string must be rejected");
             assert!(
                 err.to_string().contains("Invalid given"),
                 "{value:?}: {err}"
             );
+        }
+    }
+
+    #[cfg(feature = "band9")]
+    #[test]
+    fn given_conversion_errors_identify_column_and_type_without_values() {
+        let secret = "private-input-sentinel";
+        for (value, kind) in [
+            (GivenValue::Date(secret.into()), "date"),
+            (GivenValue::Datetime(secret.into()), "datetime"),
+            (GivenValue::DatetimeTz(secret.into()), "datetime-tz"),
+            (GivenValue::Decimal(secret.into()), "decimal"),
+            (
+                GivenValue::DatetimeTzExact {
+                    local: secret.into(),
+                    named_zone: None,
+                    effective_offset_seconds: 0,
+                },
+                "datetime-tz",
+            ),
+            (
+                GivenValue::DatetimeTzExact {
+                    local: "2024-07-01T12:00:00".into(),
+                    named_zone: Some(secret.into()),
+                    effective_offset_seconds: 0,
+                },
+                "datetime-tz",
+            ),
+        ] {
+            let error = given_rows_b9(GivenRowsSpec {
+                variables: vec!["valid_column".into(), "birth_date".into()],
+                rows: vec![vec![GivenValue::Integer(1), value]],
+            })
+            .expect_err("invalid second column");
+            assert_eq!(
+                error.to_string(),
+                format!("Query execution error: Invalid given {kind} in column \"birth_date\"")
+            );
+            assert!(!format!("{error:?}").contains(secret));
+            assert!(std::error::Error::source(&error).is_none());
+        }
+    }
+
+    #[cfg(feature = "band9")]
+    #[test]
+    fn given_row_width_errors_do_not_expose_or_ignore_extra_values() {
+        for row in [
+            vec![],
+            vec![
+                GivenValue::Integer(1),
+                GivenValue::Date("private-input-sentinel".into()),
+            ],
+        ] {
+            let error = given_rows_b9(GivenRowsSpec {
+                variables: vec!["column".into()],
+                rows: vec![row],
+            })
+            .expect_err("row width must match headers");
+            assert_eq!(
+                error.to_string(),
+                "Query execution error: Invalid given row: width does not match the column header"
+            );
+            assert!(!format!("{error:?}").contains("private-input-sentinel"));
         }
     }
 
