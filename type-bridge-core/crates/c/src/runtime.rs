@@ -208,6 +208,47 @@ impl TypeBridgeDatabase {
         self.state.runtime.runtime.handle().clone()
     }
 
+    /// Open one deferred ABI 1.7 transaction. The returned guard keeps the
+    /// database counted as busy until the staged handle is closed.
+    pub(crate) fn staged_transaction(
+        &self,
+        options: type_bridge_orm::session::staged::TransactionOptions,
+    ) -> (
+        type_bridge_orm::session::staged::Transaction,
+        StagedDatabaseGuard,
+    ) {
+        self.state
+            .transaction_children
+            .fetch_add(1, Ordering::AcqRel);
+        (
+            self.state.database.transaction(options),
+            StagedDatabaseGuard {
+                database: Arc::clone(&self.state),
+            },
+        )
+    }
+}
+
+/// Keeps one database counted as busy while a staged handle is alive.
+pub(crate) struct StagedDatabaseGuard {
+    database: Arc<DatabaseState>,
+}
+
+impl StagedDatabaseGuard {
+    pub(crate) fn block_on<F: Future>(&self, future: F) -> F::Output {
+        self.database.runtime.runtime.block_on(future)
+    }
+}
+
+impl Drop for StagedDatabaseGuard {
+    fn drop(&mut self) {
+        self.database
+            .transaction_children
+            .fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+impl TypeBridgeDatabase {
     pub(crate) fn package_state(&self) -> &Arc<SchemaPackageState> {
         &self.state._package
     }
@@ -839,7 +880,7 @@ fn aliases<Input, Output>(input: *const Input, output: *mut Output) -> bool {
     !input.is_null() && !output.is_null() && input.cast::<()>() == output.cast::<()>()
 }
 
-unsafe fn initialize_handle_outputs<T>(
+pub(crate) unsafe fn initialize_handle_outputs<T>(
     out_handle: *mut *mut T,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> Result<(), TypeBridgeStatus> {

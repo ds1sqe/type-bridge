@@ -1144,6 +1144,79 @@ type_bridge_write_transaction_close(
     type_bridge_execution_diagnostics_t **out_diagnostics);
 
 /*
+ * ABI 1.7: deferred transactions. A plan is decoded from canonical
+ * query-plan/v3 bytes under declared schema bytes; C never serializes plans.
+ * Staging sends nothing. Commit sends every staged plan in one provider
+ * transaction and consumes the handle, except when the outcome is unknown
+ * (TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN): then the handle stays live and
+ * commit_retry resends the identical request. Pending answers are readable
+ * after a successful commit.
+ */
+typedef struct type_bridge_plan type_bridge_plan_t;
+typedef struct type_bridge_staged_transaction type_bridge_staged_transaction_t;
+typedef struct type_bridge_pending type_bridge_pending_t;
+
+#define TYPE_BRIDGE_TRANSACTION_READ 1u
+#define TYPE_BRIDGE_TRANSACTION_WRITE 2u
+
+typedef enum type_bridge_plan_answer_kind {
+    TYPE_BRIDGE_PLAN_ANSWER_ROWS = 1,
+    TYPE_BRIDGE_PLAN_ANSWER_COUNT = 2,
+    TYPE_BRIDGE_PLAN_ANSWER_EXISTS = 3,
+    TYPE_BRIDGE_PLAN_ANSWER_MATCHED = 4
+} type_bridge_plan_answer_kind_t;
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_v3_decode(
+    const uint8_t *schema, size_t schema_len,
+    const uint8_t *plan, size_t plan_len,
+    type_bridge_plan_t **out_plan,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+/* Reports the canonical length in out_len; a null or short buffer returns
+ * TYPE_BRIDGE_STATUS_RESOURCE_LIMIT without writing bytes. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_v3_canonical_bytes(
+    const type_bridge_plan_t *plan, uint8_t *buffer, size_t capacity,
+    size_t *out_len);
+TYPE_BRIDGE_API void TYPE_BRIDGE_CALL
+type_bridge_plan_free(type_bridge_plan_t **plan);
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_transaction(
+    const type_bridge_database_t *database, uint32_t kind,
+    type_bridge_staged_transaction_t **out_transaction,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_staged_transaction_stage(
+    type_bridge_staged_transaction_t *transaction,
+    const type_bridge_plan_t *plan,
+    type_bridge_pending_t **out_pending,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_staged_transaction_commit(
+    type_bridge_staged_transaction_t **transaction,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_staged_transaction_commit_retry(
+    type_bridge_staged_transaction_t **transaction,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_staged_transaction_rollback(
+    type_bridge_staged_transaction_t **transaction);
+TYPE_BRIDGE_API void TYPE_BRIDGE_CALL
+type_bridge_staged_transaction_close(
+    type_bridge_staged_transaction_t **transaction);
+
+/* Rows report the row count as the value; exists reports 0 or 1. Before a
+ * successful commit this returns TYPE_BRIDGE_STATUS_IN_USE. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_pending_answer(
+    const type_bridge_pending_t *pending,
+    type_bridge_plan_answer_kind_t *out_kind, uint64_t *out_value);
+TYPE_BRIDGE_API void TYPE_BRIDGE_CALL
+type_bridge_pending_free(type_bridge_pending_t **pending);
+
+/*
  * Immutable typed queries accept generated tokens only and keep all plans
  * opaque. TYPE_BRIDGE_QUERY_TERMINAL_FIRST is an explicit bounded-many
  * fetch with offset zero and limit one; it returns a rows result containing

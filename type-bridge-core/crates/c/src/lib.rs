@@ -28,6 +28,7 @@ mod schema_package;
 #[path = "../../../../tests/support/sdk_profile_matrix.rs"]
 #[allow(dead_code)]
 mod sdk_profile_matrix;
+mod staged;
 mod thing_crud;
 
 pub use abi::{
