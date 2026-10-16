@@ -5,7 +5,7 @@ mod common;
 
 use std::hint::black_box;
 
-use gungraun::{library_benchmark, library_benchmark_group, main};
+use gungraun::{library_benchmark, library_benchmark_group};
 use type_bridge_orm::_codegen::generator::{GeneratedModels, generate_from_typeql};
 use type_bridge_orm::_schema::info::SchemaInfo;
 
@@ -29,7 +29,7 @@ fn codegen(tql: String) -> (String, GeneratedModels) {
 library_benchmark_group!(name = query_schema_generate, benchmarks = [to_typeql]);
 library_benchmark_group!(name = query_codegen, benchmarks = [codegen]);
 
-main!(
+common::gungraun_main!(
     library_benchmark_groups = query_schema_generate,
     query_codegen
 );

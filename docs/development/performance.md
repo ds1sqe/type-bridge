@@ -20,7 +20,8 @@ id.
 
 The micro family is the Criterion wall time and gungraun instruction count
 of the core and ORM bench targets. Instruction counts need valgrind and
-`gungraun-runner` at the version in `perf.yml`.
+`gungraun-runner` at the version in `perf.yml`. Under `cargo test` the
+`*_iai` targets do nothing, so `cargo test --all-targets` needs neither.
 
 ```bash
 cd type-bridge-core

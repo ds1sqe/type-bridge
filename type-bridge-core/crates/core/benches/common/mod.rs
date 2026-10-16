@@ -4,6 +4,10 @@
 #![allow(dead_code)]
 #![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 
+mod gungraun;
+#[allow(unused_imports)] // Only the gungraun bench binaries use it.
+pub(crate) use gungraun::gungraun_main;
+
 use serde_json::json;
 use type_bridge_core_lib::ast::{
     ArithmeticValue, Clause, Constraint, FetchItem, FunctionCallValue, LetAssignment, LiteralValue,

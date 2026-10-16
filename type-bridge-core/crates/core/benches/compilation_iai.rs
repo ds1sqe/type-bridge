@@ -6,7 +6,7 @@ mod common;
 
 use std::hint::black_box;
 
-use gungraun::{library_benchmark, library_benchmark_group, main};
+use gungraun::{library_benchmark, library_benchmark_group};
 use type_bridge_core_lib::ast::Clause;
 use type_bridge_core_lib::compiler::QueryCompiler;
 
@@ -43,4 +43,4 @@ fn clauses(clauses: Vec<Clause>) -> (Vec<Clause>, String) {
 
 library_benchmark_group!(name = compile, benchmarks = [clause, clauses]);
 
-main!(library_benchmark_groups = compile);
+common::gungraun_main!(library_benchmark_groups = compile);

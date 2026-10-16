@@ -8,7 +8,7 @@ mod common;
 
 use std::hint::black_box;
 
-use gungraun::{library_benchmark, library_benchmark_group, main};
+use gungraun::{library_benchmark, library_benchmark_group};
 use type_bridge_core_lib::ast::{Pattern, Statement};
 use type_bridge_core_lib::validation::{ValidationEngine, ValidationError, ValidationResult};
 
@@ -81,7 +81,7 @@ library_benchmark_group!(name = validate_pattern, benchmarks = [pattern]);
 library_benchmark_group!(name = validate_variable_name, benchmarks = [variable_name]);
 library_benchmark_group!(name = validate_statement, benchmarks = [statement]);
 
-main!(
+common::gungraun_main!(
     library_benchmark_groups = validate_type_name,
     validate_pattern,
     validate_variable_name,

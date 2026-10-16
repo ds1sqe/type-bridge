@@ -6,7 +6,7 @@ mod common;
 
 use std::hint::black_box;
 
-use gungraun::{library_benchmark, library_benchmark_group, main};
+use gungraun::{library_benchmark, library_benchmark_group};
 use type_bridge_core_lib::_schema::TypeSchema;
 
 fn medium_schema() -> TypeSchema {
@@ -39,4 +39,4 @@ fn from_json(json: String) -> (String, TypeSchema) {
 
 library_benchmark_group!(name = schema, benchmarks = [parse, to_json, from_json]);
 
-main!(library_benchmark_groups = schema);
+common::gungraun_main!(library_benchmark_groups = schema);

@@ -3,6 +3,11 @@
 // Each bench binary compiles this module but uses only its own fixtures.
 #![allow(dead_code)]
 
+#[path = "../../../core/benches/common/gungraun.rs"]
+mod gungraun;
+#[allow(unused_imports)] // Only the gungraun bench binaries use it.
+pub(crate) use gungraun::gungraun_main;
+
 use type_bridge_orm::_attribute::ValueType;
 use type_bridge_orm::_schema::info::*;
 use type_bridge_orm::expr::{Agg, Expr, SortDir};

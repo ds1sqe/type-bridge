@@ -8,7 +8,7 @@ mod common;
 
 use std::hint::black_box;
 
-use gungraun::{library_benchmark, library_benchmark_group, main};
+use gungraun::{library_benchmark, library_benchmark_group};
 use type_bridge_orm::_attribute::ValueType;
 use type_bridge_orm::_schema::info::SchemaInfo;
 use type_bridge_orm::expr::{Agg, Expr, SortDir};
@@ -94,7 +94,7 @@ library_benchmark_group!(
     benchmarks = [expr_serialize, expr_deserialize, aggs, sort_dirs]
 );
 
-main!(
+common::gungraun_main!(
     library_benchmark_groups = serde_attribute_value,
     serde,
     serde_schema_info,
