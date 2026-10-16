@@ -7,9 +7,13 @@ The data directory is a checkout of the ``perf-data`` branch::
 
 The date is the run's ``started_at`` in UTC. A run is identified by (date,
 commit, trigger), so nightly runs of an unchanged commit are kept as one
-point per day. Storing is idempotent per identity: the same result again
-changes nothing, and a different result with the same identity (a re-run on
-the same day) replaces the earlier file.
+point per day. A result with the identity of a stored run is merged into it,
+so every producer job of one workflow run (micro, pipeline, ...) lands in one
+file: its metrics replace stored metrics with the same id and the others are
+kept, its ``run`` block replaces the stored one except that ``started_at``
+keeps the earlier instant and ``typedb`` and each toolchain keep a known
+version over ``null``. A re-run of a producer on the same day therefore replaces its own
+metrics, and storing the same result again changes nothing.
 
 ``index.json`` (format ``perf-index/v1``) holds, per metric id, its family,
 its unit and a series of ``{commit, version, trigger, at, value, unit}``
@@ -39,7 +43,7 @@ INDEX_FORMAT = "perf-index/v1"
 RUNS = "runs"
 INDEX = "index.json"
 
-type Status = Literal["added", "replaced", "unchanged"]
+type Status = Literal["added", "merged", "unchanged"]
 
 
 class StoreError(ValueError):
@@ -55,7 +59,8 @@ class Stored:
 
 
 def store(data_dir: Path, document: dict[str, Any]) -> Stored:
-    """Write a validated result into ``data_dir``; does not touch the index."""
+    """Write a validated result into ``data_dir``, merging it into a stored run
+    with the same identity; does not touch the index."""
     if errors := check(document).errors:
         raise StoreError("; ".join(errors))
     run = document["run"]
@@ -63,14 +68,45 @@ def store(data_dir: Path, document: dict[str, Any]) -> Stored:
         RUNS, _started_at(run).date().isoformat(), f"{run['commit']}-{run['trigger']}.json"
     )
     target = data_dir / relative
-    text = json.dumps(document, indent=2) + "\n"
 
     existed = target.is_file()
-    if existed and target.read_text(encoding="utf-8") == text:
-        return Stored(relative, "unchanged")
+    if existed:
+        findings = check_file(target)
+        if findings.errors:
+            raise StoreError(f"{target}: stored run is invalid: {'; '.join(findings.errors)}")
+        stored = json.loads(target.read_text(encoding="utf-8"))
+        document = merge(stored, document)
+        if document == stored:
+            return Stored(relative, "unchanged")
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(text, encoding="utf-8")
-    return Stored(relative, "replaced" if existed else "added")
+    target.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    return Stored(relative, "merged" if existed else "added")
+
+
+def merge(stored: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    """``incoming`` merged into ``stored``, two results with the same identity.
+
+    Metrics are united by id: an incoming metric replaces the stored one in
+    place, new ids follow the stored ones. The run block is the incoming one,
+    except that ``started_at`` is the earlier of the two, and ``typedb`` and
+    each toolchain version are the incoming ones unless those are ``null``:
+    a producer that does not use a tool reports it as ``null``.
+    """
+    incoming_by_id = {metric["id"]: metric for metric in incoming["metrics"]}
+    stored_ids = {metric["id"] for metric in stored["metrics"]}
+    metrics = [incoming_by_id.get(metric["id"], metric) for metric in stored["metrics"]]
+    metrics += [metric for metric in incoming["metrics"] if metric["id"] not in stored_ids]
+
+    old_run, new_run = stored["run"], incoming["run"]
+    earlier = min(old_run, new_run, key=_started_at)
+    old_tools, new_tools = old_run["toolchains"], new_run["toolchains"]
+    toolchains = {name: _known(new_tools, old_tools, name) for name in old_tools | new_tools}
+    run = new_run | {
+        "started_at": earlier["started_at"],
+        "typedb": _known(new_run, old_run, "typedb"),
+        "toolchains": toolchains,
+    }
+    return incoming | {"run": run, "metrics": metrics}
 
 
 def build_index(data_dir: Path) -> dict[str, Any]:
@@ -131,6 +167,11 @@ def write_index(data_dir: Path) -> dict[str, Any]:
     text = json.dumps(index, separators=(",", ":")) + "\n"
     (data_dir / INDEX).write_text(text, encoding="utf-8")
     return index
+
+
+def _known(preferred: dict[str, Any], fallback: dict[str, Any], name: str) -> Any:
+    value = preferred.get(name)
+    return value if value is not None else fallback.get(name)
 
 
 def _started_at(run: dict[str, Any]) -> datetime:

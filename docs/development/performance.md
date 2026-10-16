@@ -66,10 +66,15 @@ runs/<YYYY-MM-DD>/<sha>-<trigger>.json   one result per UTC day, commit and trig
 index.json                               per-metric series, rebuilt on store
 ```
 
-A same-day re-run replaces that day's result, so nightly runs of an unchanged
-master add one point per day. The `store` job has no concurrency group (GitHub
-cancels all but one pending job per group): concurrent stores retry the push
-up to 10 times and the job fails if every attempt is rejected.
+Results with the same day, commit and trigger are merged into one file: an
+incoming metric replaces the stored one with its id and other metrics are
+kept, so every producer of a workflow run lands in one file and a same-day
+re-run replaces only its own metrics. Nightly runs of an unchanged master
+therefore add one point per day. Only pull request runs cancel each other;
+every master push, nightly and dispatch run has its own concurrency group, so
+none is dropped while it waits. The `store` job has no concurrency group
+(GitHub cancels all but one pending job per group): concurrent stores retry
+the push up to 10 times and the job fails if every attempt is rejected.
 
 Store into a local checkout of the branch, or any directory, with:
 

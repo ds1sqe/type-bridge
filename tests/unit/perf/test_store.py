@@ -1,4 +1,4 @@
-"""The perf history store: run files, idempotency and ``index.json``."""
+"""The perf history store: run files, merging, idempotency and ``index.json``."""
 
 from __future__ import annotations
 
@@ -89,7 +89,7 @@ def test_restoring_the_same_result_changes_nothing(tmp_path: Path) -> None:
     assert _files(tmp_path) == [f"runs/2026-10-16/{SHA}-push.json"]
 
 
-def test_same_day_rerun_replaces_the_earlier_result(tmp_path: Path) -> None:
+def test_same_day_rerun_replaces_its_own_metrics(tmp_path: Path) -> None:
     store(tmp_path, _micro())
     rerun = _micro()
     rerun["run"]["started_at"] = "2026-10-16T23:55:00Z"
@@ -97,10 +97,66 @@ def test_same_day_rerun_replaces_the_earlier_result(tmp_path: Path) -> None:
 
     stored = store(tmp_path, rerun)
 
-    assert stored.status == "replaced"
+    assert stored.status == "merged"
     assert _files(tmp_path) == [f"runs/2026-10-16/{SHA}-push.json"]
+    run_file = json.loads((tmp_path / stored.path).read_text(encoding="utf-8"))
+    assert [metric["value"] for metric in run_file["metrics"]] == [1850.0, 21544]
+    # The earlier start of the same identity is kept.
+    assert run_file["run"]["started_at"] == "2026-10-16T03:12:45Z"
     [point] = build_index(tmp_path)["metrics"][INSERT]["series"]
     assert point["value"] == 1850.0
+
+
+def _pipeline() -> Document:
+    """A second producer of the micro fixture's run: same commit, day and trigger."""
+    document = json.loads((FIXTURES / "pipeline.json").read_text(encoding="utf-8"))
+    document["run"].update(trigger="push", started_at="2026-10-16T03:40:00Z")
+    document["run"]["toolchains"]["rust"] = None
+    return document
+
+
+def test_two_producers_of_one_run_are_merged_into_one_file(tmp_path: Path) -> None:
+    micro, pipeline = _micro(), _pipeline()
+    store(tmp_path, micro)
+
+    stored = store(tmp_path, pipeline)
+
+    assert stored.status == "merged"
+    assert _files(tmp_path) == [f"runs/2026-10-16/{SHA}-push.json"]
+    run_file = json.loads((tmp_path / stored.path).read_text(encoding="utf-8"))
+    assert run_file["metrics"] == micro["metrics"] + pipeline["metrics"]
+    assert run_file["run"] == pipeline["run"] | {
+        "started_at": micro["run"]["started_at"],
+        # Each producer knows only its own tools; null never wins.
+        "toolchains": {"rust": "1.88.0", "python": "3.13.7", "node": "20.19.5", "cc": "gcc 13.3.0"},
+    }
+    assert store(tmp_path, pipeline).status == "unchanged"
+    assert store(tmp_path, micro).status == "unchanged"
+
+    index = build_index(tmp_path)
+    assert index["runs"] == 1
+    metrics = micro["metrics"] + pipeline["metrics"]
+    assert sorted(index["metrics"]) == sorted(metric["id"] for metric in metrics)
+    for metric in metrics:
+        entry = index["metrics"][metric["id"]]
+        assert entry["family"] == metric["family"]
+        [point] = entry["series"]
+        assert (point["at"], point["value"]) == (micro["run"]["started_at"], metric["value"])
+
+
+def test_rerun_of_one_producer_keeps_the_other_producers_metrics(tmp_path: Path) -> None:
+    store(tmp_path, _micro())
+    store(tmp_path, _pipeline())
+    rerun = _micro()
+    rerun["metrics"][0]["value"] = 1850.0
+
+    store(tmp_path, rerun)
+
+    index = build_index(tmp_path)
+    [point] = index["metrics"][INSERT]["series"]
+    assert point["value"] == 1850.0
+    [pipeline_point] = index["metrics"]["pipeline.python.insert"]["series"]
+    assert pipeline_point["value"] == 912000
 
 
 def _nightly(started_at: str, value: float) -> Document:
@@ -135,9 +191,9 @@ def test_nightly_runs_of_one_commit_on_the_same_day_are_one_point(tmp_path: Path
 
     stored = store(tmp_path, _nightly("2026-10-16T09:00:00Z", 1851.0))
 
-    assert stored.status == "replaced"
+    assert stored.status == "merged"
     [point] = build_index(tmp_path)["metrics"][INSERT]["series"]
-    assert (point["at"], point["value"]) == ("2026-10-16T09:00:00Z", 1851.0)
+    assert (point["at"], point["value"]) == ("2026-10-16T03:17:00Z", 1851.0)
 
 
 def test_another_trigger_of_the_same_commit_is_a_separate_run(tmp_path: Path) -> None:
@@ -187,12 +243,14 @@ def test_invalid_result_is_rejected(tmp_path: Path) -> None:
     assert not (tmp_path / "runs").exists()
 
 
-def test_invalid_stored_run_fails_the_index(tmp_path: Path) -> None:
+def test_invalid_stored_run_fails_the_index_and_a_merge(tmp_path: Path) -> None:
     stored = store(tmp_path, _micro())
     (tmp_path / stored.path).write_text("{}", encoding="utf-8")
 
     with pytest.raises(StoreError, match="stored run is invalid"):
         build_index(tmp_path)
+    with pytest.raises(StoreError, match="stored run is invalid"):
+        store(tmp_path, _micro())
 
 
 def test_cli_stores_and_writes_the_index(
