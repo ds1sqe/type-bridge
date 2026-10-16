@@ -4,6 +4,8 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.6] - 2026-10-16
+
 ### Fixed
 
 - Commit failures report a definite abort only for TypeDB codes that prove the

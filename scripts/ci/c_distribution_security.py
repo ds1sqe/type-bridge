@@ -458,7 +458,7 @@ def signature_policy() -> dict[str, Any]:
         "protected-release": {
             "required": True,
             "issuer": "https://token.actions.githubusercontent.com",
-            "identity-regexp": r"^https://github\.com/ds1sqe/type-bridge/\.github/workflows/c-release\.yml@refs/tags/v2\.2\.5$",
+            "identity-regexp": r"^https://github\.com/ds1sqe/type-bridge/\.github/workflows/c-release\.yml@refs/tags/v2\.2\.6$",
             "cosign-version": "3.0.6",
             "offline-verification-required": True,
         },
