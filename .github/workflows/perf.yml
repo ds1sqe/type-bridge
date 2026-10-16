@@ -220,6 +220,10 @@ jobs:
           args: --release --out dist -i python3.13
           manylinux: auto
           working-directory: type-bridge-core
+      # maturin's manylinux container leaves type-bridge-core/target owned by
+      # root; hand it back so the host Node and cargo builds can use it.
+      - name: Reclaim the Rust target directory
+        run: sudo chown -R "$(id -u):$(id -g)" type-bridge-core/target
       - name: Pack Linux npm package
         working-directory: type-bridge-core/crates/node
         run: |
@@ -229,9 +233,7 @@ jobs:
           npm pack --ignore-scripts --pack-destination "$PERF_DIR/packages"
       - name: Build unstripped CLI and release server binary
         env:
-          # maturin's manylinux container leaves type-bridge-core/target owned
-          # by root, so host builds use their own target directory.
-          CARGO_TARGET_DIR: ${{ runner.temp }}/perf-size-target
+          CARGO_TARGET_DIR: ${{ github.workspace }}/type-bridge-core/target
         run: |
           cargo build --locked --release --manifest-path type-bridge-core/Cargo.toml \
             -p type-bridge-cli --bin type-bridge
