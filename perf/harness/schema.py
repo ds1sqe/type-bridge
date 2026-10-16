@@ -28,6 +28,22 @@ METRIC_ID = re.compile(r"^[a-z0-9_]+(\.[a-z0-9_]+)+$")
 # Span names share the dotted shape, e.g. ``tb.query.compile``.
 STAGE_NAME = METRIC_ID
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
+_NOT_ID_CHAR = re.compile(r"[^a-z0-9_]")
+
+
+def metric_id(*segments: str) -> str:
+    """Join name parts into a metric id, lowercasing them and mapping any
+    character outside ``[a-z0-9_]`` to ``_``.
+
+    ``metric_id("micro", "core", "compile", "simple-match")`` is
+    ``micro.core.compile.simple_match``. Raises ``ValueError`` for fewer than
+    two parts or an empty part.
+    """
+    parts = [_NOT_ID_CHAR.sub("_", segment.lower()) for segment in segments]
+    joined = ".".join(parts)
+    if not METRIC_ID.fullmatch(joined):
+        raise ValueError(f"cannot form a metric id from {segments!r}")
+    return joined
 
 
 @dataclass(frozen=True)

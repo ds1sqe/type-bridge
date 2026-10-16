@@ -1,0 +1,124 @@
+name: Perf
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      data_branch:
+        description: Branch that stores perf history
+        required: false
+        default: perf-data
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_HOME: ${{ github.workspace }}/../.cargo-home
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+  RUST_STABLE_TOOLCHAIN: "1.94.1"
+  # Must equal the exact gungraun dev-dependency of the core and ORM crates.
+  GUNGRAUN_RUNNER_VERSION: "0.20.0"
+  GUNGRAUN_RUNNER_ROOT: ${{ github.workspace }}/../.gungraun-runner
+  PERF_DIR: ${{ github.workspace }}/perf-out
+
+jobs:
+  micro:
+    name: Rust micro benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Install valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y valgrind
+          valgrind --version
+
+      - name: Cache gungraun-runner
+        id: gungraun-runner
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.GUNGRAUN_RUNNER_ROOT }}
+          key: ${{ runner.os }}-gungraun-runner-${{ env.GUNGRAUN_RUNNER_VERSION }}-rust-${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Install gungraun-runner
+        if: steps.gungraun-runner.outputs.cache-hit != 'true'
+        run: |
+          cargo install gungraun-runner --version "$GUNGRAUN_RUNNER_VERSION" --locked \
+            --root "$GUNGRAUN_RUNNER_ROOT"
+
+      - name: Put gungraun-runner on PATH
+        run: |
+          echo "$GUNGRAUN_RUNNER_ROOT/bin" >> "$GITHUB_PATH"
+          test -x "$GUNGRAUN_RUNNER_ROOT/bin/gungraun-runner"
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            type-bridge-core/target
+          key: ${{ runner.os }}-cargo-perf-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+
+      - name: Record the start time
+        run: echo "PERF_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
+      # Each crate writes into its own directory, which names the crate in
+      # the metric ids. New bench targets must be added to these lists.
+      - name: Criterion wall time
+        working-directory: type-bridge-core
+        run: |
+          CRITERION_HOME="$PERF_DIR/criterion/core" cargo bench --locked -p type-bridge-core-lib \
+            --bench validation --bench compilation --bench schema -- --noplot
+          CRITERION_HOME="$PERF_DIR/criterion/orm" cargo bench --locked -p type-bridge-orm \
+            --bench serde --bench query_building -- --noplot
+
+      - name: Instruction counts
+        working-directory: type-bridge-core
+        env:
+          GUNGRAUN_SAVE_SUMMARY: json
+        run: |
+          GUNGRAUN_HOME="$PERF_DIR/iai/core" cargo bench --locked -p type-bridge-core-lib \
+            --bench validation_iai --bench compilation_iai --bench schema_iai
+          GUNGRAUN_HOME="$PERF_DIR/iai/orm" cargo bench --locked -p type-bridge-orm \
+            --bench serde_iai --bench query_building_iai
+
+      - name: Convert to a perf result
+        run: >-
+          python -m perf.harness.micro
+          --criterion-dir "$PERF_DIR/criterion"
+          --iai-dir "$PERF_DIR/iai"
+          --started-at "$PERF_STARTED_AT"
+          --out "$PERF_DIR/micro.json"
+
+      - name: Validate the perf result
+        run: python -m perf.harness.validate "$PERF_DIR/micro.json"
+
+      - name: Upload the perf result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-micro
+          path: perf-out/micro.json
+          if-no-files-found: error

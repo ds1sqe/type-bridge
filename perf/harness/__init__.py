@@ -1,1 +1,1 @@
-"""Perf harness: the ``perf-result/v1`` model and its validator."""
+"""Perf harness: the ``perf-result/v1`` model, its validator and its producers."""

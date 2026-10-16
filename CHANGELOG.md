@@ -385,6 +385,10 @@ differently direct and through a proxy. Each entry says what to do instead.
   needs no order and no unique key. Plans that use it require the new
   `query.operation.complete-rows` capability, which an executor older than
   this release does not advertise.
+- Perf tracking groundwork: the `Perf` workflow runs the core and ORM micro
+  benchmarks on pushes to master, nightly, on dispatch and on pull requests,
+  and uploads Criterion wall times and gungraun instruction counts as one
+  validated `perf-result/v1` file.
 
 ### Fixed
 
