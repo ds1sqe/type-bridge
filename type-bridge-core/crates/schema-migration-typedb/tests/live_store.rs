@@ -1,3 +1,5 @@
+#[path = "../../../../tests/support/commit_gate.rs"]
+mod commit_gate;
 mod support;
 
 use std::collections::BTreeSet;
@@ -5,6 +7,7 @@ use std::env;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use commit_gate::{CommitGate, GatedBackend};
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::id::{TypeId, TypeKind};
@@ -16,7 +19,8 @@ use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
 };
 use type_bridge_orm::session::backend::QueryResult;
-use type_bridge_orm::{ConnectOptions, Database};
+use type_bridge_orm::session::real_driver::RealBackend;
+use type_bridge_orm::{ConnectOptions, Database, DatabaseConnectionAuthority};
 use type_bridge_schema::{ManagedDeltaContext, SafetyClass, diff_managed, inverse_delta};
 use type_bridge_schema_migration::{
     AppliedRecord, ExecutionScope, GroupEventRecord, GroupJournalEventKind, LeaseHolderId,
@@ -786,4 +790,97 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_3() {
         .delete_database()
         .await
         .expect("delete isolated journal database");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn racing_lease_acquirers_serialize_on_the_control_row() {
+    let (managed, journal) = databases().await;
+    // Both racers' lease commits wait for each other, so their transactions
+    // overlap and neither snapshot sees the other's write.
+    let gate = CommitGate::default();
+    let (address, _, username, password, options) = connection();
+    let backend = RealBackend::connect(&address, &username, &password, options)
+        .await
+        .expect("connect the gated provider");
+    let authority = DatabaseConnectionAuthority::isolated();
+    let gated = |name: &str| {
+        Arc::new(Database::with_backend_authority(
+            Box::new(GatedBackend::new(backend.clone(), gate.clone())),
+            name,
+            authority.clone(),
+        ))
+    };
+    let scope_id = ManagedScopeId::new("lease-race-scope").unwrap();
+    let binding = TypeDbExecutionBinding::new(
+        gated(managed.database_name()),
+        gated(journal.database_name()),
+        context_for_scope(scope_id.clone()),
+    )
+    .expect("bind the gated managed/journal pair");
+    let catalog =
+        VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
+            .unwrap();
+    let store = TypeDbMigrationStore::new(&binding, catalog).unwrap();
+    store.ensure_control_schema().await.unwrap();
+    let scope = ExecutionScope::new(scope_id);
+    let seed = store
+        .acquire(&scope, &LeaseHolderId::new("lease-race-seed").unwrap())
+        .await
+        .expect("seed lease");
+    assert_eq!(seed.fence().get(), 1);
+
+    let racer_a = LeaseHolderId::new("lease-racer-a").unwrap();
+    let racer_b = LeaseHolderId::new("lease-racer-b").unwrap();
+    gate.arm(2);
+    let (a, b) = tokio::time::timeout(std::time::Duration::from_secs(120), async {
+        tokio::join!(
+            store.acquire(&scope, &racer_a),
+            store.acquire(&scope, &racer_b)
+        )
+    })
+    .await
+    .expect("both racers finish");
+    let (winner, loser) = match (a, b) {
+        (Ok(winner), Err(loser)) | (Err(loser), Ok(winner)) => (winner, loser),
+        (a, b) => panic!("exactly one racer must acquire: {a:?} / {b:?}"),
+    };
+    println!(
+        "lease race: {} won fence {}; loser {}",
+        winner.holder().as_str(),
+        winner.fence().get(),
+        loser.code().as_str()
+    );
+    assert_eq!(winner.fence().get(), 2);
+    // The later committer is rejected by the fence ownership's exclusive
+    // cardinality lock; the released provider code is unchanged.
+    assert_eq!(loser.code().as_str(), "migration_typedb_provider_error");
+    assert!(
+        format!("{:?}", loser.details()).contains("STC2"),
+        "{loser:?}"
+    );
+
+    // The loser wrote nothing: the winner holds both rows, the seed is stale.
+    assert!(store.load_applied(&winner).await.unwrap().is_empty());
+    let stale = store
+        .load_applied(&seed)
+        .await
+        .expect_err("the seed fence is superseded");
+    assert_eq!(stale.code().as_str(), "migration_execution_stale_fence");
+    let mut managed_schema = managed.schema_transaction().await.unwrap();
+    require_active_managed_fence(&mut managed_schema, &winner)
+        .await
+        .expect("the mirror publishes the winner's fence");
+    managed_schema.close().await.unwrap();
+
+    store.release(&winner).await.expect("release the winner");
+    let next = store
+        .acquire(&scope, &racer_a)
+        .await
+        .expect("acquire after the race");
+    assert_eq!(next.fence().get(), 3);
+    store.release(&next).await.unwrap();
+
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
 }

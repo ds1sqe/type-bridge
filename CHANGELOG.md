@@ -16,6 +16,10 @@ All notable changes to TypeBridge will be documented in this file.
   credentials and endpoint text are excluded. Locally authored validation and
   application transport errors retain their existing messages.
 - TypeDB transport failures keep a fixed failure kind and the operation name.
+- Migration lease acquisition is one conditional write. A concurrent
+  acquirer that commits between this acquirer's read and write now fails it
+  with `migration_execution_stale_fence` instead of letting it silently take
+  the newer fence.
 
 
 ### Tests

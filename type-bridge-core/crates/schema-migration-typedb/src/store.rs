@@ -8,15 +8,19 @@ use type_bridge_core_lib::__internal as tql;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::failure::Failure;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration::MigrationId;
+use type_bridge_contract::query_plan::v3::QueryPlanV3;
 use type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX;
 use type_bridge_contract::schema::{DocumentId, ManagedSchemaState};
 use type_bridge_orm::session::DatabaseCreateOutcome;
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::session::eager::EagerTransaction as Transaction;
-use type_bridge_orm::session::staged::{TransactionKind, TransactionOptions};
-use type_bridge_orm::{Database, OrmError};
+use type_bridge_orm::session::staged::{
+    CommitError, PendingError, PlanAnswer, TransactionKind, TransactionOptions,
+};
+use type_bridge_orm::{CommitFailureCertainty, Database, OrmError};
 use type_bridge_schema::ManagedDeltaContext;
 use type_bridge_schema_compat::typeql_to_declared;
 use type_bridge_schema_migration::{
@@ -40,6 +44,7 @@ use crate::control_schema::{
     RECORD_PAYLOAD, RECORD_PAYLOAD_DIGEST, RECORD_SEQUENCE, ROLLBACK_EVENT_RECORD_KIND,
     ROLLBACK_PLAN_RECORD_KIND, ROLLED_BACK_RECORD_KIND,
 };
+use crate::lease_plan::{LeasePlans, LeaseRow};
 use crate::observation::{partition_typeql_export, partition_typeql_export_lossless};
 use crate::provider::{TypeDbExecutionBinding, require_managed_state_execution_context};
 use crate::wire::{
@@ -843,6 +848,8 @@ pub struct TypeDbMigrationStore<'a> {
     rollback_plan: Option<&'a VerifiedMigrationRollbackPlan>,
     managed_schema_verified: AtomicBool,
     journal_schema_verified: AtomicBool,
+    journal_lease: LeasePlans,
+    managed_lease: LeasePlans,
 }
 
 impl<'a> TypeDbMigrationStore<'a> {
@@ -869,6 +876,8 @@ impl<'a> TypeDbMigrationStore<'a> {
             rollback_plan: None,
             managed_schema_verified: AtomicBool::new(false),
             journal_schema_verified: AtomicBool::new(false),
+            journal_lease: LeasePlans::journal(context.semantic_profile())?,
+            managed_lease: LeasePlans::managed(context.semantic_profile())?,
         })
     }
 
@@ -1248,74 +1257,77 @@ impl<'a> TypeDbMigrationStore<'a> {
         Ok(lease)
     }
 
+    /// Advance the authoritative lease with one conditional write.
+    ///
+    /// The observation, in its own read snapshot, only supplies the
+    /// compare-and-set operands; the write's match is the condition. A
+    /// concurrent acquirer either commits first, so this takeover matches
+    /// nothing, or both write the same fence ownership and the later commit
+    /// is rejected with an isolation conflict.
     async fn acquire_authoritative(
         &self,
         scope: &ExecutionScope,
         holder: &LeaseHolderId,
     ) -> Result<MigrationLease, Diagnostic> {
-        let mut transaction = Transaction::open(
-            &self.journal_database,
-            TransactionKind::Write,
-            TransactionOptions::default(),
-        )
-        .await
-        .map_err(map_orm_error)?;
-        let current = load_control(&mut transaction, scope).await?;
-        let (fence, next_sequence, query) = match current {
+        let observed = {
+            let mut transaction = open_read(&self.journal_database).await?;
+            let observed = load_control(&mut transaction, scope).await;
+            finish_read(&mut transaction, observed).await?
+        };
+        let given = self.journal_database.supports_given_stage();
+        let (fence, plan) = match observed {
             Some(current) => {
                 let fence = ExecutionFence::new(current.fence)?.checked_successor()?;
-                let query = replace_control_query(
+                let row = LeaseRow {
                     scope,
-                    current.fence,
-                    current.next_sequence,
                     holder,
                     fence,
-                    current.next_sequence,
-                    LEASE_HELD,
+                };
+                let plan = self.journal_lease.take_over(
+                    row,
+                    current.fence,
+                    Some(current.next_sequence),
+                    given,
                 )?;
-                (fence, current.next_sequence, query)
+                (fence, plan)
             }
             None => {
                 let fence = ExecutionFence::new(1)?;
-                (
+                let row = LeaseRow {
+                    scope,
+                    holder,
                     fence,
-                    0,
-                    insert_control_query(scope, Some(holder), fence, 0, LEASE_HELD)?,
-                )
+                };
+                (fence, self.journal_lease.insert_held(row, given)?)
             }
         };
-        transaction.query(&query).await.map_err(map_orm_error)?;
         let lease = MigrationLease::new_bound(
             scope.clone(),
             holder.clone(),
             fence,
             self.execution_binding.clone(),
         );
-        let observed = load_active_control(&mut transaction, &lease).await?;
-        if observed.next_sequence != next_sequence {
-            let _ = rollback_and_close(&mut transaction).await;
-            return Err(stale_fence());
+        let settled = lease_state_query(&lease, LEASE_HELD)?;
+        match commit_lease_plan(&self.journal_database, &plan, &settled).await? {
+            LeaseWrite::Applied => Ok(lease),
+            LeaseWrite::Lost => Err(stale_fence()),
         }
-        transaction.commit().await.map_err(map_orm_error)?;
-        Ok(lease)
     }
 
     async fn publish_managed_fence(&self, lease: &MigrationLease) -> Result<(), Diagnostic> {
-        let mut transaction = Transaction::open(
-            &self.managed_database,
-            TransactionKind::Write,
-            TransactionOptions::default(),
-        )
-        .await
-        .map_err(map_orm_error)?;
-        let current = load_managed_fence(&mut transaction, lease.scope()).await?;
-        let query = match current {
-            None => insert_managed_fence_query(lease)?,
+        let current = {
+            let mut transaction = open_read(&self.managed_database).await?;
+            let current = load_managed_fence(&mut transaction, lease.scope()).await;
+            finish_read(&mut transaction, current).await?
+        };
+        let given = self.managed_database.supports_given_stage();
+        let row = LeaseRow::of(lease);
+        let plan = match current {
+            None => self.managed_lease.insert_held(row, given)?,
             Some(current) if current < lease.fence().get() => {
-                replace_managed_fence_query(lease, current)?
+                self.managed_lease.take_over(row, current, None, given)?
             }
             Some(_) => {
-                let _ = rollback_and_close(&mut transaction).await;
                 return Err(failure(
                     DiagnosticCategory::Integrity,
                     "migration_typedb_managed_fence_not_monotonic",
@@ -1323,9 +1335,11 @@ impl<'a> TypeDbMigrationStore<'a> {
                 ));
             }
         };
-        transaction.query(&query).await.map_err(map_orm_error)?;
-        require_active_managed_fence_impl(&mut transaction, lease).await?;
-        transaction.commit().await.map_err(map_orm_error)
+        let settled = lease_state_query(lease, LEASE_HELD)?;
+        match commit_lease_plan(&self.managed_database, &plan, &settled).await? {
+            LeaseWrite::Applied => Ok(()),
+            LeaseWrite::Lost => Err(stale_fence()),
+        }
     }
 
     async fn release_inner(&self, lease: &MigrationLease) -> Result<(), Diagnostic> {
@@ -1335,41 +1349,34 @@ impl<'a> TypeDbMigrationStore<'a> {
     }
 
     async fn release_authoritative(&self, lease: &MigrationLease) -> Result<(), Diagnostic> {
-        let mut transaction = Transaction::open(
-            &self.journal_database,
-            TransactionKind::Write,
-            TransactionOptions::default(),
-        )
-        .await
-        .map_err(map_orm_error)?;
-        let current = load_active_control(&mut transaction, lease).await?;
-        let query = release_control_query(lease, current.next_sequence)?;
-        transaction.query(&query).await.map_err(map_orm_error)?;
-        if !load_free_control(&mut transaction, lease, current.next_sequence).await? {
-            let _ = rollback_and_close(&mut transaction).await;
-            return Err(stale_fence());
+        let plan = self.journal_lease.release(
+            LeaseRow::of(lease),
+            self.journal_database.supports_given_stage(),
+        )?;
+        let settled = lease_state_query(lease, LEASE_FREE)?;
+        match commit_lease_plan(&self.journal_database, &plan, &settled).await? {
+            LeaseWrite::Applied => Ok(()),
+            LeaseWrite::Lost => Err(stale_fence()),
         }
-        transaction.commit().await.map_err(map_orm_error)
     }
 
     async fn release_managed_fence(&self, lease: &MigrationLease) -> Result<(), Diagnostic> {
-        let mut transaction = Transaction::open(
-            &self.managed_database,
-            TransactionKind::Write,
-            TransactionOptions::default(),
-        )
-        .await
-        .map_err(map_orm_error)?;
-        require_active_managed_fence_impl(&mut transaction, lease).await?;
-        transaction
-            .query(&release_managed_fence_query(lease)?)
-            .await
-            .map_err(map_orm_error)?;
-        if !load_free_managed_fence(&mut transaction, lease).await? {
-            let _ = rollback_and_close(&mut transaction).await;
-            return Err(stale_fence());
+        let plan = self.managed_lease.release(
+            LeaseRow::of(lease),
+            self.managed_database.supports_given_stage(),
+        )?;
+        let settled = lease_state_query(lease, LEASE_FREE)?;
+        match commit_lease_plan(&self.managed_database, &plan, &settled).await? {
+            LeaseWrite::Applied => Ok(()),
+            LeaseWrite::Lost => {
+                // Report a foreign or duplicated mirror as the active-fence
+                // check always has; otherwise the lease is stale.
+                let mut transaction = open_read(&self.managed_database).await?;
+                let observed = load_global_managed_control(&mut transaction, lease.scope()).await;
+                finish_read(&mut transaction, observed).await?;
+                Err(stale_fence())
+            }
         }
-        transaction.commit().await.map_err(map_orm_error)
     }
 
     async fn begin_plan_inner(
@@ -2288,28 +2295,6 @@ async fn load_managed_fence(
         .map(|snapshot| snapshot.fence))
 }
 
-async fn load_free_managed_fence(
-    transaction: &mut Transaction,
-    lease: &MigrationLease,
-) -> Result<bool, Diagnostic> {
-    let snapshot = load_global_managed_control(transaction, lease.scope()).await?;
-    if snapshot.as_ref().is_none_or(|snapshot| {
-        snapshot.fence != lease.fence().get() || snapshot.state != LEASE_FREE
-    }) {
-        return Ok(false);
-    }
-    let query = journal_exists(
-        "control",
-        CONTROL_ENTITY,
-        &[
-            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
-            (LEASE_FENCE, &lease.fence().get().to_string()),
-            (LEASE_STATE, LEASE_FREE),
-        ],
-    )?;
-    Ok(query_documents(transaction, &query).await?.len() == 1)
-}
-
 async fn load_global_managed_control<T: MigrationQuery + ?Sized>(
     transaction: &mut T,
     scope: &ExecutionScope,
@@ -2398,24 +2383,6 @@ async fn load_active_control(
         fence: lease.fence().get(),
         next_sequence: canonical_u64(&required_scalar(&documents[0], "next")?)?,
     })
-}
-
-async fn load_free_control(
-    transaction: &mut Transaction,
-    lease: &MigrationLease,
-    next_sequence: u64,
-) -> Result<bool, Diagnostic> {
-    let query = journal_exists(
-        "control",
-        CONTROL_ENTITY,
-        &[
-            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
-            (LEASE_FENCE, &lease.fence().get().to_string()),
-            (LEASE_STATE, LEASE_FREE),
-            (NEXT_SEQUENCE, &next_sequence.to_string()),
-        ],
-    )?;
-    Ok(query_documents(transaction, &query).await?.len() == 1)
 }
 
 fn parse_control_documents(documents: Vec<Value>) -> Result<Option<ControlSnapshot>, Diagnostic> {
@@ -2671,122 +2638,105 @@ fn canonical_u64(value: &str) -> Result<u64, Diagnostic> {
     Ok(parsed)
 }
 
-fn insert_control_query(
-    scope: &ExecutionScope,
-    holder: Option<&LeaseHolderId>,
-    fence: ExecutionFence,
-    next_sequence: u64,
-    state: &str,
-) -> Result<String, Diagnostic> {
-    let fence = fence.get().to_string();
-    let next = next_sequence.to_string();
-    let mut fields = vec![
-        (CONTROL_SCOPE, scope.managed_scope_id().as_str()),
-        (LEASE_FENCE, &fence),
-        (LEASE_STATE, state),
-        (NEXT_SEQUENCE, &next),
-    ];
-    if let Some(holder) = holder {
-        fields.push((LEASE_HOLDER, holder.as_str()));
+/// Whether a lease write changed the control row.
+enum LeaseWrite {
+    /// The condition held and the write committed.
+    Applied,
+    /// The condition no longer held; nothing was written.
+    Lost,
+}
+
+/// Commit one conditional lease plan in its own staged write transaction.
+///
+/// A rejected commit is definite and maps to the released provider error.
+/// When the outcome is unknown, one fresh read of `settled` (the state the
+/// write leaves behind) can prove it applied; otherwise the original error
+/// stands, because an absent row in one snapshot proves nothing.
+async fn commit_lease_plan(
+    database: &Database,
+    plan: &QueryPlanV3,
+    settled: &str,
+) -> Result<LeaseWrite, Diagnostic> {
+    let mut transaction =
+        database.transaction(TransactionOptions::default().with_kind(TransactionKind::Write));
+    let answer = transaction.stage_plan(plan).map_err(pending_failure)?;
+    if let Err(error) = transaction.commit().await {
+        if outcome_unknown(&error) && matches!(settled_exists(database, settled).await, Ok(true)) {
+            return Ok(LeaseWrite::Applied);
+        }
+        return Err(map_orm_error(error.error.into_orm_error()));
     }
-    journal_insert("control", CONTROL_ENTITY, &fields)
+    match *answer.get().map_err(pending_failure)? {
+        PlanAnswer::Matched(1) => Ok(LeaseWrite::Applied),
+        PlanAnswer::Matched(0) => Ok(LeaseWrite::Lost),
+        _ => Err(failure(
+            DiagnosticCategory::Integrity,
+            "migration_typedb_duplicate_control_row",
+            "migration scope has more than one control row",
+        )),
+    }
 }
-fn insert_managed_fence_query(lease: &MigrationLease) -> Result<String, Diagnostic> {
-    journal_insert(
-        "control",
-        CONTROL_ENTITY,
-        &[
-            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
-            (LEASE_HOLDER, lease.holder().as_str()),
-            (LEASE_FENCE, &lease.fence().get().to_string()),
-            (LEASE_STATE, LEASE_HELD),
-        ],
-    )
+
+fn outcome_unknown(error: &CommitError) -> bool {
+    match error.failure.as_deref() {
+        Some(Failure::Rejected { .. }) => false,
+        Some(Failure::Indeterminate { .. }) => true,
+        // Unclassified: only the commit request itself can have applied.
+        _ => {
+            error.op_index.is_none()
+                && error.error.commit_failure_certainty()
+                    != Some(CommitFailureCertainty::DefinitelyAborted)
+        }
+    }
 }
-fn replace_managed_fence_query(
-    lease: &MigrationLease,
-    old_fence: u64,
-) -> Result<String, Diagnostic> {
-    journal_replace(
-        "control",
-        "next-control",
-        CONTROL_ENTITY,
-        &[
-            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
-            (LEASE_FENCE, &old_fence.to_string()),
-        ],
-        &[
-            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
-            (LEASE_HOLDER, lease.holder().as_str()),
-            (LEASE_FENCE, &lease.fence().get().to_string()),
-            (LEASE_STATE, LEASE_HELD),
-        ],
-    )
+
+fn pending_failure(error: PendingError) -> Diagnostic {
+    match error {
+        PendingError::InvalidPlan(diagnostic) | PendingError::NotAllowedInKind(diagnostic) => {
+            *diagnostic
+        }
+        other => map_orm_error(OrmError::Transaction(other.to_string())),
+    }
 }
-fn release_managed_fence_query(lease: &MigrationLease) -> Result<String, Diagnostic> {
-    journal_replace(
-        "control",
-        "free",
-        CONTROL_ENTITY,
-        &[
-            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
-            (LEASE_HOLDER, lease.holder().as_str()),
-            (LEASE_FENCE, &lease.fence().get().to_string()),
-            (LEASE_STATE, LEASE_HELD),
-        ],
-        &[
-            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
-            (LEASE_FENCE, &lease.fence().get().to_string()),
-            (LEASE_STATE, LEASE_FREE),
-        ],
-    )
+
+async fn settled_exists(database: &Database, query: &str) -> Result<bool, Diagnostic> {
+    let mut transaction = open_read(database).await?;
+    let documents = query_documents(&mut transaction, query).await;
+    Ok(finish_read(&mut transaction, documents).await?.len() == 1)
 }
-fn replace_control_query(
-    scope: &ExecutionScope,
-    old_fence: u64,
-    old_next_sequence: u64,
-    holder: &LeaseHolderId,
-    fence: ExecutionFence,
-    next_sequence: u64,
-    state: &str,
-) -> Result<String, Diagnostic> {
-    journal_replace(
-        "control",
-        "next-control",
-        CONTROL_ENTITY,
-        &[
-            (CONTROL_SCOPE, scope.managed_scope_id().as_str()),
-            (LEASE_FENCE, &old_fence.to_string()),
-            (NEXT_SEQUENCE, &old_next_sequence.to_string()),
-        ],
-        &[
-            (CONTROL_SCOPE, scope.managed_scope_id().as_str()),
-            (LEASE_HOLDER, holder.as_str()),
-            (LEASE_FENCE, &fence.get().to_string()),
-            (LEASE_STATE, state),
-            (NEXT_SEQUENCE, &next_sequence.to_string()),
-        ],
-    )
+
+/// The control row a lease write leaves behind: held by this holder and
+/// fence, or free at this fence.
+fn lease_state_query(lease: &MigrationLease, state: &str) -> Result<String, Diagnostic> {
+    let scope = lease.scope().managed_scope_id().as_str();
+    let fence = lease.fence().get().to_string();
+    let mut fields = vec![(CONTROL_SCOPE, scope), (LEASE_FENCE, fence.as_str())];
+    if state == LEASE_HELD {
+        fields.push((LEASE_HOLDER, lease.holder().as_str()));
+    }
+    fields.push((LEASE_STATE, state));
+    journal_exists("control", CONTROL_ENTITY, &fields)
 }
-fn release_control_query(lease: &MigrationLease, next_sequence: u64) -> Result<String, Diagnostic> {
-    journal_replace(
-        "control",
-        "free",
-        CONTROL_ENTITY,
-        &[
-            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
-            (LEASE_HOLDER, lease.holder().as_str()),
-            (LEASE_FENCE, &lease.fence().get().to_string()),
-            (LEASE_STATE, LEASE_HELD),
-            (NEXT_SEQUENCE, &next_sequence.to_string()),
-        ],
-        &[
-            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
-            (LEASE_FENCE, &lease.fence().get().to_string()),
-            (LEASE_STATE, LEASE_FREE),
-            (NEXT_SEQUENCE, &next_sequence.to_string()),
-        ],
+
+async fn open_read(database: &Database) -> Result<Transaction, Diagnostic> {
+    Transaction::open(
+        database,
+        TransactionKind::Read,
+        TransactionOptions::default(),
     )
+    .await
+    .map_err(map_orm_error)
+}
+
+/// Close a read transaction, preferring the read's own failure.
+async fn finish_read<T>(
+    transaction: &mut Transaction,
+    read: Result<T, Diagnostic>,
+) -> Result<T, Diagnostic> {
+    let close = transaction.close().await;
+    let value = read?;
+    close.map_err(map_orm_error)?;
+    Ok(value)
 }
 
 async fn delete_open_plan(
@@ -3298,21 +3248,6 @@ fn journal_insert(
         )?])]))
     })
 }
-fn journal_replace(
-    old: &str,
-    new: &str,
-    kind: &str,
-    before: &[(&str, &str)],
-    after: &[(&str, &str)],
-) -> Result<String, Diagnostic> {
-    journal_query(|| {
-        Ok(tql::pipeline(vec![
-            tql::match_stage(vec![journal_pattern(old, kind, before, &[])?]),
-            tql::delete(vec![tql::delete_thing(old)?]),
-            tql::insert(vec![journal_pattern(new, kind, after, &[])?]),
-        ]))
-    })
-}
 
 fn payload_digest(payload: &[u8]) -> String {
     let digest = Sha256::digest(payload);
@@ -3443,91 +3378,6 @@ pub(crate) mod tests {
         fn literal(value: &str) -> String {
             serde_json::to_string(value).unwrap()
         }
-        fn baseline_insert_control_query(
-            scope: &ExecutionScope,
-            holder: Option<&LeaseHolderId>,
-            fence: ExecutionFence,
-            next_sequence: u64,
-            state: &str,
-        ) -> String {
-            let holder = holder
-                .map(|holder| format!(", has {LEASE_HOLDER} {}", literal(holder.as_str())))
-                .unwrap_or_default();
-            format!(
-                "insert $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}, has {NEXT_SEQUENCE} {}{holder};",
-                literal(scope.managed_scope_id().as_str()),
-                literal(&fence.get().to_string()),
-                literal(state),
-                literal(&next_sequence.to_string()),
-            )
-        }
-        fn baseline_insert_managed_fence_query(lease: &MigrationLease) -> String {
-            format!(
-                "insert $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {};",
-                literal(lease.scope().managed_scope_id().as_str()),
-                literal(lease.holder().as_str()),
-                literal(&lease.fence().get().to_string()),
-                literal(LEASE_HELD),
-            )
-        }
-        fn baseline_replace_managed_fence_query(lease: &MigrationLease, old_fence: u64) -> String {
-            format!(
-                "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} {}; delete $control; insert $next-control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {};",
-                literal(lease.scope().managed_scope_id().as_str()),
-                literal(&old_fence.to_string()),
-                literal(lease.scope().managed_scope_id().as_str()),
-                literal(lease.holder().as_str()),
-                literal(&lease.fence().get().to_string()),
-                literal(LEASE_HELD),
-            )
-        }
-        fn baseline_release_managed_fence_query(lease: &MigrationLease) -> String {
-            format!(
-                "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}; delete $control; insert $free isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {};",
-                literal(lease.scope().managed_scope_id().as_str()),
-                literal(lease.holder().as_str()),
-                literal(&lease.fence().get().to_string()),
-                literal(LEASE_HELD),
-                literal(lease.scope().managed_scope_id().as_str()),
-                literal(&lease.fence().get().to_string()),
-                literal(LEASE_FREE),
-            )
-        }
-        fn baseline_replace_control_query(
-            scope: &ExecutionScope,
-            old_fence: u64,
-            old_next_sequence: u64,
-            holder: &LeaseHolderId,
-            fence: ExecutionFence,
-            next_sequence: u64,
-            state: &str,
-        ) -> String {
-            format!(
-                "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} {}, has {NEXT_SEQUENCE} {}; delete $control; insert $next-control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}, has {NEXT_SEQUENCE} {};",
-                literal(scope.managed_scope_id().as_str()),
-                literal(&old_fence.to_string()),
-                literal(&old_next_sequence.to_string()),
-                literal(scope.managed_scope_id().as_str()),
-                literal(holder.as_str()),
-                literal(&fence.get().to_string()),
-                literal(state),
-                literal(&next_sequence.to_string()),
-            )
-        }
-        fn baseline_release_control_query(lease: &MigrationLease, next_sequence: u64) -> String {
-            format!(
-                "match $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_HOLDER} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}, has {NEXT_SEQUENCE} {}; delete $control; insert $free isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} {}, has {LEASE_FENCE} {}, has {LEASE_STATE} {}, has {NEXT_SEQUENCE} {};",
-                literal(lease.scope().managed_scope_id().as_str()),
-                literal(lease.holder().as_str()),
-                literal(&lease.fence().get().to_string()),
-                literal(LEASE_HELD),
-                literal(&next_sequence.to_string()),
-                literal(lease.scope().managed_scope_id().as_str()),
-                literal(&lease.fence().get().to_string()),
-                literal(LEASE_FREE),
-                literal(&next_sequence.to_string()),
-            )
-        }
         fn baseline_insert_journal_owner_query(
             managed_database_name: &str,
             managed_scope_id: &ManagedScopeId,
@@ -3540,44 +3390,10 @@ pub(crate) mod tests {
             )
         }
         let scope_id = ManagedScopeId::new("parity-scope").unwrap();
-        let scope = ExecutionScope::new(scope_id.clone());
-        let holder = LeaseHolderId::new("parity-holder").unwrap();
-        let fence = ExecutionFence::new(u64::MAX).unwrap();
-        let lease = MigrationLease::new(scope.clone(), holder.clone(), fence);
-        let cases = [
-            (
-                insert_control_query(&scope, Some(&holder), fence, 9, LEASE_HELD).unwrap(),
-                baseline_insert_control_query(&scope, Some(&holder), fence, 9, LEASE_HELD),
-            ),
-            (
-                insert_control_query(&scope, None, fence, 9, LEASE_FREE).unwrap(),
-                baseline_insert_control_query(&scope, None, fence, 9, LEASE_FREE),
-            ),
-            (
-                insert_managed_fence_query(&lease).unwrap(),
-                baseline_insert_managed_fence_query(&lease),
-            ),
-            (
-                replace_managed_fence_query(&lease, 7).unwrap(),
-                baseline_replace_managed_fence_query(&lease, 7),
-            ),
-            (
-                release_managed_fence_query(&lease).unwrap(),
-                baseline_release_managed_fence_query(&lease),
-            ),
-            (
-                replace_control_query(&scope, 7, 8, &holder, fence, 9, LEASE_HELD).unwrap(),
-                baseline_replace_control_query(&scope, 7, 8, &holder, fence, 9, LEASE_HELD),
-            ),
-            (
-                release_control_query(&lease, 9).unwrap(),
-                baseline_release_control_query(&lease, 9),
-            ),
-            (
-                insert_journal_owner_query("managed\"database", &scope_id).unwrap(),
-                baseline_insert_journal_owner_query("managed\"database", &scope_id),
-            ),
-        ];
+        let cases = [(
+            insert_journal_owner_query("managed\"database", &scope_id).unwrap(),
+            baseline_insert_journal_owner_query("managed\"database", &scope_id),
+        )];
         for (new, old) in cases {
             assert!(tql::equivalent(&new, &old).unwrap(), "{new} != {old}");
         }
@@ -4504,5 +4320,351 @@ pub(crate) mod tests {
         let parsed = parse_stored_row(row).expect("backfill journal row parses");
         assert_eq!(parsed.kind, BACKFILL_EVENT_RECORD_KIND);
         assert_eq!(parsed.payload, payload);
+    }
+}
+
+#[cfg(test)]
+mod lease_tests {
+    use std::sync::Mutex;
+
+    use type_bridge_contract::fingerprint::SemanticProfileId;
+    use type_bridge_core_lib::version::Version;
+    use type_bridge_orm::ClassifiedCommitError;
+    use type_bridge_orm::session::backend::{
+        BoxFuture, DriverBackend, GivenRowsSpec, GivenValue, TransactionOps, TxType,
+    };
+
+    use super::*;
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Commit {
+        Ok,
+        Conflict,
+        Unknown,
+    }
+
+    /// A provider that records each statement and answers from a script.
+    struct Script {
+        given: bool,
+        matched: usize,
+        commit: Commit,
+        settled: usize,
+        statements: Vec<(String, Option<GivenRowsSpec>)>,
+    }
+
+    #[derive(Clone)]
+    struct Scripted(Arc<Mutex<Script>>);
+
+    impl Scripted {
+        fn new(given: bool, matched: usize, commit: Commit, settled: usize) -> Self {
+            Self(Arc::new(Mutex::new(Script {
+                given,
+                matched,
+                commit,
+                settled,
+                statements: Vec::new(),
+            })))
+        }
+
+        fn database(&self) -> Database {
+            Database::with_backend(Box::new(self.clone()), "lease-journal")
+        }
+
+        fn statements(&self) -> Vec<(String, Option<GivenRowsSpec>)> {
+            self.0.lock().unwrap().statements.clone()
+        }
+
+        fn answer(&self, typeql: &str, rows: Option<GivenRowsSpec>) -> QueryResult {
+            let mut script = self.0.lock().unwrap();
+            script.statements.push((typeql.to_owned(), rows));
+            if typeql.contains("fetch") {
+                QueryResult::Documents(vec![serde_json::json!({"exists": true}); script.settled])
+            } else {
+                QueryResult::Rows(vec![serde_json::json!({}); script.matched])
+            }
+        }
+    }
+
+    impl DriverBackend for Scripted {
+        fn open_transaction(
+            &self,
+            _database: &str,
+            _tx_type: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+            let transaction = self.clone();
+            Box::pin(async move { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
+        }
+
+        fn is_open(&self) -> bool {
+            true
+        }
+
+        fn server_version(&self) -> Option<Version> {
+            Some(Version::new(3, 13, 6))
+        }
+
+        fn supports_given_rows(&self) -> bool {
+            self.0.lock().unwrap().given
+        }
+    }
+
+    impl TransactionOps for Scripted {
+        fn supports_given_rows(&self) -> bool {
+            self.0.lock().unwrap().given
+        }
+
+        fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            let answer = self.answer(typeql, None);
+            Box::pin(async move { Ok(answer) })
+        }
+
+        fn query_with_rows(
+            &mut self,
+            typeql: &str,
+            rows: GivenRowsSpec,
+        ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            let answer = self.answer(typeql, Some(rows));
+            Box::pin(async move { Ok(answer) })
+        }
+
+        fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn commit_classified(&mut self) -> BoxFuture<'_, Result<(), ClassifiedCommitError>> {
+            let commit = self.0.lock().unwrap().commit;
+            Box::pin(async move {
+                match commit {
+                    Commit::Ok => Ok(()),
+                    Commit::Conflict => Err(ClassifiedCommitError::Driver {
+                        certainty: CommitFailureCertainty::DefinitelyAborted,
+                        message: "[STC2] isolation conflict".to_owned(),
+                    }),
+                    Commit::Unknown => Err(ClassifiedCommitError::Driver {
+                        certainty: CommitFailureCertainty::Unknown,
+                        message: "transport closed".to_owned(),
+                    }),
+                }
+            })
+        }
+
+        fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn profile() -> SemanticProfileId {
+        SemanticProfileId::new("typedb-3.13.6/v1").unwrap()
+    }
+
+    fn same(actual: &str, expected: &str) {
+        assert!(
+            tql::equivalent(actual, expected).unwrap(),
+            "lowered:\n{actual}\nexpected:\n{expected}"
+        );
+    }
+
+    /// `$control has <attribute> $<var>; $<var> isa! <attribute>; $<var> == <value>;`
+    fn condition(attribute: &str, var: &str, value: &str) -> String {
+        format!("$control has {attribute} ${var}; ${var} isa! {attribute}; ${var} == {value};")
+    }
+
+    struct Fixture {
+        scope: ExecutionScope,
+        holder: LeaseHolderId,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            Self {
+                scope: ExecutionScope::new(ManagedScopeId::new("lease-scope").unwrap()),
+                holder: LeaseHolderId::new("holder-a").unwrap(),
+            }
+        }
+
+        fn row(&self) -> LeaseRow<'_> {
+            LeaseRow {
+                scope: &self.scope,
+                holder: &self.holder,
+                fence: ExecutionFence::new(8).unwrap(),
+            }
+        }
+    }
+
+    async fn lowered(given: bool, plan: &QueryPlanV3) -> (String, Option<GivenRowsSpec>) {
+        let script = Scripted::new(given, 1, Commit::Ok, 0);
+        commit_lease_plan(&script.database(), plan, "unused")
+            .await
+            .unwrap();
+        let mut statements = script.statements();
+        assert_eq!(statements.len(), 1);
+        statements.remove(0)
+    }
+
+    fn values(rows: Option<GivenRowsSpec>) -> (Vec<String>, Vec<String>) {
+        let rows = rows.expect("caller values travel as given rows");
+        assert_eq!(rows.rows.len(), 1);
+        let row = rows.rows[0]
+            .iter()
+            .map(|value| match value {
+                GivenValue::String(value) => value.clone(),
+                other => panic!("lease values are strings, got {other:?}"),
+            })
+            .collect();
+        (rows.variables, row)
+    }
+
+    #[tokio::test]
+    async fn journal_lease_plans_are_conditional_writes_over_given_values() {
+        let fixture = Fixture::new();
+        let plans = LeasePlans::journal(&profile()).unwrap();
+        let control = format!("$control isa! {CONTROL_ENTITY};");
+
+        let (takeover, rows) = lowered(
+            true,
+            &plans.take_over(fixture.row(), 7, Some(9), true).unwrap(),
+        )
+        .await;
+        same(
+            &takeover,
+            &format!(
+                "given $expected_scope: string, $expected_fence: string, $expected_sequence: string, $next_fence: string, $holder_id: string; \
+                 match {control} {} {} {} \
+                 update $control has {LEASE_FENCE} == $next_fence; $control has {LEASE_HOLDER} == $holder_id; $control has {LEASE_STATE} \"held\";",
+                condition(CONTROL_SCOPE, "scope", "$expected_scope"),
+                condition(LEASE_FENCE, "fence", "$expected_fence"),
+                condition(NEXT_SEQUENCE, "sequence", "$expected_sequence"),
+            ),
+        );
+        assert_eq!(
+            values(rows),
+            (
+                [
+                    "expected_scope",
+                    "expected_fence",
+                    "expected_sequence",
+                    "next_fence",
+                    "holder_id"
+                ]
+                .map(String::from)
+                .to_vec(),
+                ["lease-scope", "7", "9", "8", "holder-a"]
+                    .map(String::from)
+                    .to_vec(),
+            )
+        );
+
+        let (release, rows) = lowered(true, &plans.release(fixture.row(), true).unwrap()).await;
+        same(
+            &release,
+            &format!(
+                "given $expected_scope: string, $expected_holder: string, $expected_fence: string; \
+                 match {control} {} {} {} {} \
+                 update $control has {LEASE_STATE} \"free\"; \
+                 match try {{ $control has {LEASE_HOLDER} $PlanHas2x0; $PlanHas2x0 isa! {LEASE_HOLDER}; }}; \
+                 delete try {{ has $PlanHas2x0 of $control; }};",
+                condition(CONTROL_SCOPE, "scope", "$expected_scope"),
+                condition(LEASE_HOLDER, "holder", "$expected_holder"),
+                condition(LEASE_FENCE, "fence", "$expected_fence"),
+                condition(LEASE_STATE, "state", "\"held\""),
+            ),
+        );
+        assert_eq!(
+            values(rows).1,
+            ["lease-scope", "holder-a", "8"].map(String::from)
+        );
+
+        let (insert, rows) = lowered(true, &plans.insert_held(fixture.row(), true).unwrap()).await;
+        same(
+            &insert,
+            &format!(
+                "given $scope_id: string, $holder_id: string, $fence: string; \
+                 insert $control isa {CONTROL_ENTITY}, has {CONTROL_SCOPE} == $scope_id, has {LEASE_HOLDER} == $holder_id, \
+                 has {LEASE_FENCE} == $fence, has {LEASE_STATE} \"held\", has {NEXT_SEQUENCE} \"0\";"
+            ),
+        );
+        assert_eq!(
+            values(rows).1,
+            ["lease-scope", "holder-a", "8"].map(String::from)
+        );
+        for text in [takeover, release, insert] {
+            assert!(
+                !text.contains("lease-scope") && !text.contains("holder-a"),
+                "{text}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn mirror_lease_plans_keep_literals_without_the_given_transport() {
+        let fixture = Fixture::new();
+        let plans = LeasePlans::managed(&profile()).unwrap();
+        let (takeover, rows) = lowered(
+            false,
+            &plans.take_over(fixture.row(), 7, None, false).unwrap(),
+        )
+        .await;
+        assert!(rows.is_none());
+        same(
+            &takeover,
+            &format!(
+                "match $control isa! {CONTROL_ENTITY}; {} {} \
+                 update $control has {LEASE_FENCE} \"8\"; $control has {LEASE_HOLDER} \"holder-a\"; $control has {LEASE_STATE} \"held\";",
+                condition(CONTROL_SCOPE, "scope", "\"lease-scope\""),
+                condition(LEASE_FENCE, "fence", "\"7\""),
+            ),
+        );
+        // The mirror has no journal sequence.
+        assert!(plans.insert_held(fixture.row(), false).is_ok());
+        assert!(
+            !format!("{:?}", plans.insert_held(fixture.row(), false).unwrap())
+                .contains(NEXT_SEQUENCE)
+        );
+    }
+
+    #[tokio::test]
+    async fn lease_writes_resolve_matched_conflicts_and_unknown_outcomes() {
+        let fixture = Fixture::new();
+        let plans = LeasePlans::journal(&profile()).unwrap();
+        let plan = plans.take_over(fixture.row(), 7, Some(9), true).unwrap();
+        let settled = "match $control isa! control; fetch { \"exists\": true };";
+
+        let lost = Scripted::new(true, 0, Commit::Ok, 0);
+        assert!(matches!(
+            commit_lease_plan(&lost.database(), &plan, settled)
+                .await
+                .unwrap(),
+            LeaseWrite::Lost
+        ));
+
+        // A rejected commit is definite: no reconciling read.
+        let conflict = Scripted::new(true, 1, Commit::Conflict, 1);
+        let error = commit_lease_plan(&conflict.database(), &plan, settled)
+            .await
+            .err()
+            .expect("conflict fails");
+        assert_eq!(error.code().as_str(), "migration_typedb_provider_error");
+        assert_eq!(conflict.statements().len(), 1);
+
+        // An unknown outcome is applied only when a fresh read proves it.
+        let applied = Scripted::new(true, 1, Commit::Unknown, 1);
+        assert!(matches!(
+            commit_lease_plan(&applied.database(), &plan, settled)
+                .await
+                .unwrap(),
+            LeaseWrite::Applied
+        ));
+        assert_eq!(applied.statements()[1].0, settled);
+        let unknown = Scripted::new(true, 1, Commit::Unknown, 0);
+        let error = commit_lease_plan(&unknown.database(), &plan, settled)
+            .await
+            .err()
+            .expect("unproven outcome stays uncertain");
+        assert_eq!(error.code().as_str(), "migration_typedb_provider_error");
+        assert_eq!(unknown.statements().len(), 2);
     }
 }

@@ -652,6 +652,15 @@ run_live_migration_steps() {
             control_schema_and_fenced_lease_round_trip_on_3_12_3 \
             --manifest-path type-bridge-core/Cargo.toml --locked \
             -p type-bridge-schema-migration-typedb --test live_store
+    run_step "racing lease acquirers serialize on the control row" \
+        run_with_timeout 10m \
+        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE="type_bridge_local_lease_race_${$}" \
+            "${migration_profile_env[@]}" \
+        bash scripts/ci/run_exact_ignored_rust_test.sh \
+            racing_lease_acquirers_serialize_on_the_control_row \
+            --manifest-path type-bridge-core/Cargo.toml --locked \
+            -p type-bridge-schema-migration-typedb --test live_store
 }
 
 # run_live_lane <server>: run every live step against one TypeDB line: a fresh

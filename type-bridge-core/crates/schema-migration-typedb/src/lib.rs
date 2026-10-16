@@ -17,6 +17,7 @@
 pub mod readme_doctests {}
 
 mod control_schema;
+mod lease_plan;
 mod legacy_import;
 mod observation;
 mod provider;
