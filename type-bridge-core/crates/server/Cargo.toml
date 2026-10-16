@@ -103,9 +103,6 @@ required-features = ["typedb", "v2-query"]
 
 [dev-dependencies]
 tempfile = "3"
-# The live staged tests drive the Rust SDK against this server.
-type-bridge = { path = "../rust" }
-type-bridge-schema-codegen = { path = "../schema-codegen" }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 rcgen = "0.13"

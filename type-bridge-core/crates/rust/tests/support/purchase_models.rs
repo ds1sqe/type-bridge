@@ -1,7 +1,6 @@
 //! The one-query purchase schema as a generated-style package: hand-written
 //! models implementing the generated SPI, and the package compiled from
-//! Split-YAML at run time. Shared by the SDK plan tests and the server's
-//! live staged tests.
+//! Split-YAML at run time. Used by the SDK's live plan-builder tests.
 #![allow(dead_code)]
 
 use type_bridge::__codegen::{
