@@ -65,6 +65,10 @@ typedef type_bridge_status_t (TYPE_BRIDGE_CALL *transaction_fn)(
     const type_bridge_database_t *, uint32_t,
     type_bridge_staged_transaction_t **,
     type_bridge_execution_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *proxy_transaction_fn)(
+    const type_bridge_proxy_connection_t *, uint32_t,
+    type_bridge_staged_transaction_t **,
+    type_bridge_execution_diagnostics_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *stage_fn)(
     type_bridge_staged_transaction_t *, const type_bridge_plan_t *,
     type_bridge_pending_t **, type_bridge_execution_diagnostics_t **);
@@ -86,6 +90,7 @@ void staged_prototypes(void) {
   plan_bytes_fn bytes = &type_bridge_plan_v3_canonical_bytes;
   plan_free_fn plan_free = &type_bridge_plan_free;
   transaction_fn transaction = &type_bridge_database_transaction;
+  proxy_transaction_fn proxy_transaction = &type_bridge_proxy_connection_transaction;
   stage_fn stage = &type_bridge_staged_transaction_stage;
   commit_fn commit = &type_bridge_staged_transaction_commit;
   commit_fn commit_retry = &type_bridge_staged_transaction_commit_retry;
@@ -98,6 +103,7 @@ void staged_prototypes(void) {
   (void)bytes;
   (void)plan_free;
   (void)transaction;
+  (void)proxy_transaction;
   (void)stage;
   (void)commit;
   (void)commit_retry;

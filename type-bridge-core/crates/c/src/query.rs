@@ -67,6 +67,7 @@ use crate::runtime::{
 };
 
 mod proxy_connection;
+pub(crate) use proxy_connection::StagedProxyGuard;
 pub use proxy_connection::{
     TypeBridgeProxyConnection, TypeBridgeProxyConnectionOptionsV1, TypeBridgeProxyHeaderV1,
 };

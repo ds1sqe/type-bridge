@@ -295,6 +295,12 @@ direct provider commit cannot retry, so its
 an answer before commit returns `TYPE_BRIDGE_STATUS_IN_USE`; after a failed
 commit, rollback or close it returns `TYPE_BRIDGE_STATUS_EXECUTION_FAILED`.
 
+`type_bridge_proxy_connection_transaction(proxy, kind, &tx, &diagnostics)`
+opens the same transaction on a proxy connection. It fetches the server's
+staged advertisement at open; commit is one signed exchange that carries every
+staged plan. An unknown outcome keeps the handle for `commit_retry`, which
+resends the identical request. The transaction may outlive the connection.
+
 ### Typed failures
 
 `type_bridge_execution_diagnostics_failure_get_v1` reads the typed provider

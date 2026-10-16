@@ -498,3 +498,33 @@ def test_local_full_suite_emits_fragments_then_compares_queries() -> None:
         "c-proof.json",
     ):
         assert f'"$sdk_report_dir/queries/{fragment}"' in source
+
+
+def test_local_3_13_6_lane_runs_the_writes_program_live_in_four_languages() -> None:
+    source = LOCAL.read_text(encoding="utf-8")
+    lane = source[
+        source.index('if [[ "$typedb_server_version" == "3.13.6" ]]; then') : source.index(
+            'run_step "cargo test -p type-bridge-orm --features integration-tests --test integration"'
+        )
+    ]
+    step = lane[lane.index('run_step "SDK writes: one staged program in four languages') :]
+    step = step[: step.index("\n    fi\n")]
+    assert "scripts/ci/run_sdk_conformance.py writes" in step
+    assert '--semantic-profile "$lane_profile"' in step
+    assert '--address "$TYPEDB_ADDRESS" --http-port "$TYPEDB_HTTP_PORT"' in step
+    assert "--offline" not in step
+    assert 'mktemp -d "${TMPDIR:-/tmp}/typebridge-sdk-writes.XXXXXXXXXX"' in lane
+    assert 'rm -rf -- "$writes_output"' in step
+
+
+def test_writes_suite_is_listed_and_its_producers_exist() -> None:
+    readme = (ROOT / "tests/contracts/sdk_conformance/README.md").read_text(encoding="utf-8")
+    assert "| `writes` |" in readme and "`sdk_writes_compare.py`" in readme
+    runner = (ROOT / "scripts/ci/run_sdk_conformance.py").read_text(encoding="utf-8")
+    fixture = "sdk_writes_fixture_serves_until_stopped"
+    assert fixture in runner
+    server = ROOT / "type-bridge-core/crates/server/tests/v3_staged_integration_tests.rs"
+    assert f"async fn {fixture}()" in server.read_text(encoding="utf-8")
+    for program in ("python/program.py", "ts/program.ts", "rust/main.rs", "c/program.c"):
+        assert (ROOT / "examples/purchase" / program).is_file()
+        assert program in runner

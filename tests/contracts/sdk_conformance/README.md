@@ -15,9 +15,10 @@ inventory is supporting evidence; it does not define FULL acceptance.
 | `administration` | Database administration, migration history, rollback and backfill | `sdk_administration_compare.py` |
 | `serialization` | Canonical generated records, archives and lifecycle evidence | `sdk_serialization_compare.py` |
 | `artifacts` | C distribution and terminal cross-slice acceptance, binding the other four suites | `sdk_artifacts_compare.py` |
+| `writes` | One staged program per binding: plan bytes offline, answers and state live, direct and over the proxy | `sdk_writes_compare.py` |
 
-Every suite has `catalog.json`, `journey.json`, `report-schema.json`, and
-`profiles.json`. Additional evidence schemas, proof allowlists and workspaces
+Every suite except `writes` has `catalog.json`, `journey.json`,
+`report-schema.json`, and `profiles.json`. Additional evidence schemas, proof allowlists and workspaces
 live with their suite without numeric filename suffixes. Shared scripts live
 in `scripts/ci/`; `sdk_profile_matrix.py` owns the suite-to-directory table.
 Report formats are `typebridge.sdk-<suite>-report/v1`, and producer variables
@@ -35,6 +36,9 @@ reports under `reports/<suite>/<binding>.json` when composed by
 `run_full_c_artifact.py`. Artifacts predecessors are passed by suite, for
 example `--predecessor queries=reports/queries/python.json`, and must cover
 queries, models, administration and serialization for the same binding.
+
+`writes` is outside the FULL-C fan-in and needs the staged surface of TypeDB
+3.13.6, so it runs on `typedb-3.13.6/v1` only; see [writes](writes/README.md).
 
 ## TypeDB profiles
 

@@ -573,6 +573,140 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// The `writes` SDK conformance program's schema and managed scope.
+const WRITES_SCHEMA: &str = include_str!(
+    "../../../../tests/contracts/sdk_conformance/writes/purchase/schema/fragments/purchase.yaml"
+);
+const WRITES_WORKSPACE: &str =
+    include_str!("../../../../tests/contracts/sdk_conformance/writes/purchase/typebridge.yaml");
+const WRITES_SCOPE: &str = "sdk-writes-purchase";
+const WRITES_BINDINGS: [&str; 4] = ["python", "node", "rust", "c"];
+
+/// The program's state as the provider sees it, one count per check.
+async fn writes_state(db: &type_bridge_orm::session::database::Database) -> serde_json::Value {
+    serde_json::json!({
+        "sold_out": row_count(db, r#"match $i isa item, has item-id "I1", has stock 0; select $i;"#).await,
+        "charged": row_count(db, r#"match $a isa account, has account-id "A1", has balance 60; select $a;"#).await,
+        "orders": row_count(db, "match $p isa purchase; select $p;").await,
+        "on_call": row_count(db, "match $d isa doctor, has on-call true; select $d;").await,
+    })
+}
+
+/// Not a test: the live fixture of the `writes` SDK conformance suite. With
+/// `TB_SDK_WRITES_FIXTURE_DIR` set it creates, per binding, an empty direct
+/// database and an empty database behind a vouching proxy, both holding
+/// the suite schema; the proxy serves the suite's declared schema under its
+/// managed scope, so plans built from the generated packages verify there.
+/// It writes `fixture.json`, serves until a `stop` file appears, then
+/// writes `observed.json` (proxy commits and the state of every database)
+/// and drops the databases.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "SDK writes fixture; requires TB_SDK_WRITES_FIXTURE_DIR and a live TypeDB"]
+async fn sdk_writes_fixture_serves_until_stopped() {
+    let Ok(dir) = std::env::var("TB_SDK_WRITES_FIXTURE_DIR") else {
+        return;
+    };
+    assert!(
+        WRITES_WORKSPACE.contains(&format!("managed-scope: {WRITES_SCOPE}\n")),
+        "the fixture serves the workspace's managed scope"
+    );
+    let dir = std::path::PathBuf::from(dir);
+    let documents = type_bridge_schema::SchemaDocumentSet::parse([(
+        type_bridge_contract::schema::DocumentId::new("purchase.yaml").expect("document id"),
+        WRITES_SCHEMA,
+    )])
+    .expect("suite schema parses");
+    let declared = type_bridge_schema::normalize_documents(&documents).expect("suite schema");
+    // The declared schema has no keys or cardinalities, so neither has the
+    // live one (the live-authority check is exact).
+    let typeql = race::SCHEMA_TYPEQL
+        .replace(" @key", "")
+        .replace(" @card(0..1)", "");
+    let mut bindings = serde_json::Map::new();
+    let mut held = Vec::new();
+    let mut profile = None;
+    for binding in WRITES_BINDINGS {
+        let mut databases = Vec::new();
+        for transport in ["direct", "proxy"] {
+            let name = format!(
+                "tb_sdk_writes_{binding}_{transport}_{}_{}",
+                std::process::id(),
+                SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            );
+            let db = staged_live::connect(&name).await;
+            db.create_database().await.expect("database created");
+            db.execute_raw(&typeql, TxType::Schema)
+                .await
+                .expect("schema");
+            profile.get_or_insert_with(|| {
+                semantic_profile_id(&db.server_version().expect("server version"))
+                    .expect("supported profile")
+            });
+            databases.push((name, db));
+        }
+        let policy = LivePolicy {
+            vouch: true,
+            ..LivePolicy::default()
+        };
+        let proxy = staged_live::proxy_with(
+            &databases[1].0,
+            policy,
+            false,
+            declared.clone(),
+            WRITES_SCOPE,
+        )
+        .await;
+        let port = serve(&proxy).await;
+        bindings.insert(
+            binding.to_owned(),
+            serde_json::json!({
+                "direct_database": databases[0].0,
+                "proxy_database": databases[1].0,
+                "proxy_endpoint": format!("http://127.0.0.1:{port}"),
+            }),
+        );
+        held.push((binding, proxy, databases));
+    }
+    let fixture = serde_json::json!({
+        "profile": profile,
+        "scope": WRITES_SCOPE,
+        "bindings": bindings,
+    });
+    std::fs::write(dir.join("fixture.json"), fixture.to_string()).expect("fixture written");
+    while !dir.join("stop").exists() {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    let mut observed = serde_json::Map::new();
+    for (binding, proxy, databases) in &held {
+        let commits: Vec<_> = proxy
+            .commits
+            .lock()
+            .expect("commits")
+            .iter()
+            .map(|(committed, code, ..)| format!("{committed}:{code}"))
+            .collect();
+        observed.insert(
+            (*binding).to_owned(),
+            serde_json::json!({
+                "proxy_commits": commits,
+                "direct_state": writes_state(&databases[0].1).await,
+                "proxy_state": writes_state(&databases[1].1).await,
+            }),
+        );
+    }
+    std::fs::write(
+        dir.join("observed.json"),
+        serde_json::Value::Object(observed).to_string(),
+    )
+    .expect("observed written");
+    for (_, proxy, databases) in held {
+        drop(proxy);
+        for (_, db) in databases {
+            drop_database(db).await;
+        }
+    }
+}
+
 /// Serve one live proxy over HTTP. A request carrying `x-tb-drop-reply`
 /// loses its first reply after the server handled it, as a dropped
 /// connection would.

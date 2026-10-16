@@ -112,3 +112,36 @@ fn guide_plan_example_compiles_and_matches_the_hand_built_plan() {
     let expected: String = expected.iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
 }
+
+/// The `writes` conformance suite runs the hand-built purchase's schema, and
+/// its expected purchase bytes are the hand-built purchase under the suite's
+/// managed scope, so all four SDK programs are held to the golden plan.
+#[test]
+fn writes_suite_purchase_bytes_are_the_hand_built_purchase() {
+    let suite = repository_root().join("tests/contracts/sdk_conformance/writes/purchase");
+    let source = fs::read_to_string(suite.join("schema/fragments/purchase.yaml"))
+        .expect("suite schema reads");
+    assert_eq!(source, purchase_plan::SOURCE);
+    let workspace = fs::read_to_string(suite.join("typebridge.yaml")).expect("workspace reads");
+    let scope = workspace
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("managed-scope: "))
+        .expect("workspace names its managed scope");
+    assert!(workspace.contains(&format!("semantic-profile: {}", purchase_plan::PROFILE)));
+    let expected: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(suite.join("expected.json")).expect("expected results read"),
+    )
+    .expect("expected results parse");
+    let authority = support::authority_with(&source, scope, purchase_plan::PROFILE);
+    let bytes = purchase_plan::hand_built_purchase(
+        authority.declared_schema(),
+        authority.managed_state().managed_semantic_schema().clone(),
+        "O1",
+        "I1",
+        "A1",
+    )
+    .canonical_bytes()
+    .unwrap();
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(expected["plans"]["purchase"], hex);
+}

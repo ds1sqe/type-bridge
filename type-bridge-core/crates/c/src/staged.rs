@@ -29,6 +29,7 @@ use type_bridge_orm::session::staged::{
 use crate::abi::{TypeBridgeStatus, guarded};
 use crate::execution_diagnostic::{TypeBridgeExecutionDiagnostics, return_execution_error};
 use crate::generated_preflight::{DirectOutputPreflight, direct_output_preflight};
+use crate::query::{StagedProxyGuard, TypeBridgeProxyConnection};
 use crate::runtime::{StagedDatabaseGuard, TypeBridgeDatabase, check_database_borrowed_ranges};
 
 /// Opaque validated `query-plan/v3` plan.
@@ -49,7 +50,33 @@ impl TypeBridgePlan {
 pub struct TypeBridgeStagedTransaction {
     transaction: Transaction,
     // Dropped after the transaction so the database stays busy until then.
-    database: StagedDatabaseGuard,
+    owner: StagedOwner,
+}
+
+/// What a staged transaction runs on: a direct database, or a proxy
+/// connection's I/O runtime.
+enum StagedOwner {
+    Database(StagedDatabaseGuard),
+    Proxy(StagedProxyGuard),
+}
+
+impl StagedOwner {
+    fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+        match self {
+            Self::Database(guard) => guard.block_on(future),
+            Self::Proxy(guard) => guard.block_on(future),
+        }
+    }
+
+    fn check_borrowed_ranges(
+        &self,
+        preflight: &DirectOutputPreflight,
+    ) -> Result<(), TypeBridgeStatus> {
+        match self {
+            Self::Database(guard) => guard.check_borrowed_ranges(preflight),
+            Self::Proxy(guard) => guard.check_borrowed_ranges(preflight),
+        }
+    }
 }
 
 /// Opaque staged answer, readable after a successful commit.
@@ -164,7 +191,7 @@ unsafe fn check_transaction(
     if !transaction.is_null() {
         // SAFETY: the complete live handle was fenced above.
         unsafe { &*transaction }
-            .database
+            .owner
             .check_borrowed_ranges(preflight)?;
     }
     Ok(())
@@ -417,7 +444,60 @@ pub unsafe extern "C" fn type_bridge_database_transaction(
             };
         let handle = Box::new(TypeBridgeStagedTransaction {
             transaction,
-            database,
+            owner: StagedOwner::Database(database),
+        });
+        // SAFETY: the output slot was fenced and initialized above.
+        unsafe { out_transaction.write_unaligned(Box::into_raw(handle)) };
+        TypeBridgeStatus::Ok
+    })
+}
+
+/// Open one deferred transaction on a proxy connection. The server's staged
+/// advertisement is fetched now and must name the connection's executor and
+/// reply key; nothing else is sent until commit, which is one signed
+/// exchange carrying every staged plan. An unknown commit outcome keeps the
+/// handle for `type_bridge_staged_transaction_commit_retry`. The transaction
+/// may outlive the connection.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_proxy_connection_transaction(
+    proxy: *const TypeBridgeProxyConnection,
+    kind: u32,
+    out_transaction: *mut *mut TypeBridgeStagedTransaction,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    let inputs = |outputs: &DirectOutputPreflight| {
+        check_object(outputs, proxy)?;
+        if !proxy.is_null() {
+            // SAFETY: the complete connection handle was fenced above.
+            unsafe { &*proxy }.check_borrowed_ranges(outputs)?;
+        }
+        Ok(())
+    };
+    // SAFETY: the outputs are fenced against the connection and its retained
+    // package bytes first.
+    if let Err(status) = unsafe { prepare_handle_outputs(out_transaction, out_diagnostics, inputs) }
+    {
+        return status;
+    }
+    guarded(|| {
+        let kind = match kind {
+            TYPE_BRIDGE_TRANSACTION_READ => TransactionKind::Read,
+            TYPE_BRIDGE_TRANSACTION_WRITE => TransactionKind::Write,
+            _ => return TypeBridgeStatus::InvalidArgument,
+        };
+        if proxy.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: a non-null connection is a live handle by contract.
+        let proxy = unsafe { &*proxy };
+        let (transaction, guard) =
+            match proxy.staged_transaction(TransactionOptions::default().with_kind(kind)) {
+                Ok(value) => value,
+                Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+            };
+        let handle = Box::new(TypeBridgeStagedTransaction {
+            transaction,
+            owner: StagedOwner::Proxy(guard),
         });
         // SAFETY: the output slot was fenced and initialized above.
         unsafe { out_transaction.write_unaligned(Box::into_raw(handle)) };
@@ -507,7 +587,7 @@ unsafe fn finish_commit(
         unsafe { transaction.write_unaligned(ptr::null_mut()) };
         let outcome = {
             let tx = &mut handle.transaction;
-            handle.database.block_on(async {
+            handle.owner.block_on(async {
                 if retry {
                     tx.commit_retry().await
                 } else {
@@ -823,6 +903,25 @@ mod tests {
             assert!(HEADER.contains(&line), "{line}");
         }
         assert_eq!(size_of::<TypeBridgePlanAnswerKind>(), size_of::<u32>());
+    }
+
+    #[test]
+    fn proxy_transaction_refuses_a_null_connection_and_clears_its_outputs() {
+        let mut transaction = ptr::dangling_mut::<TypeBridgeStagedTransaction>();
+        let mut diagnostics = ptr::dangling_mut::<TypeBridgeExecutionDiagnostics>();
+        for kind in [TYPE_BRIDGE_TRANSACTION_WRITE, 0] {
+            // SAFETY: both output slots are live locals.
+            let status = unsafe {
+                type_bridge_proxy_connection_transaction(
+                    ptr::null(),
+                    kind,
+                    &mut transaction,
+                    &mut diagnostics,
+                )
+            };
+            assert_eq!(status, TypeBridgeStatus::InvalidArgument);
+            assert!(transaction.is_null() && diagnostics.is_null());
+        }
     }
 
     #[test]

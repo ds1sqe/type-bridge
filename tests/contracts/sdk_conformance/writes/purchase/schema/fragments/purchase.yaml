@@ -1,0 +1,28 @@
+format: typebridge.schema/v2
+attributes:
+  item-id: { value: string }
+  stock: { value: integer }
+  price: { value: integer }
+  account-id: { value: string }
+  balance: { value: integer }
+  order-id: { value: string }
+  name: { value: string }
+  on-call: { value: boolean }
+entities:
+  item:
+    owns: { item-id: {}, stock: {}, price: {} }
+  account:
+    owns: { account-id: {}, balance: {} }
+  doctor:
+    owns: { name: {}, on-call: {} }
+relations:
+  purchase:
+    relates: { buyer: {}, item: {} }
+    owns: { order-id: {} }
+plays:
+  item:
+    purchase:
+      item: {}
+  account:
+    purchase:
+      buyer: {}

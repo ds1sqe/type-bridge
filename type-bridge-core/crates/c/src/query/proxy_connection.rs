@@ -59,7 +59,63 @@ pub struct TypeBridgeProxyConnectionOptionsV1 {
 pub struct TypeBridgeProxyConnection {
     package: Arc<SchemaPackageState>,
     connection: ProxyQueryConnection,
-    runtime: tokio::runtime::Runtime,
+    // Shared with the staged transactions opened on this connection, which
+    // may outlive it.
+    runtime: Arc<tokio::runtime::Runtime>,
+}
+
+/// What a staged transaction opened on a proxy connection keeps: the I/O
+/// runtime its commit runs on and the package whose bytes it retains.
+pub(crate) struct StagedProxyGuard {
+    runtime: Arc<tokio::runtime::Runtime>,
+    package: Arc<SchemaPackageState>,
+}
+
+impl StagedProxyGuard {
+    pub(crate) fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+        self.runtime.block_on(future)
+    }
+
+    pub(crate) fn check_borrowed_ranges(
+        &self,
+        preflight: &DirectOutputPreflight,
+    ) -> Result<(), TypeBridgeStatus> {
+        preflight.check_package_borrowed_ranges(&self.package)
+    }
+}
+
+impl TypeBridgeProxyConnection {
+    pub(crate) fn check_borrowed_ranges(
+        &self,
+        preflight: &DirectOutputPreflight,
+    ) -> Result<(), TypeBridgeStatus> {
+        preflight.check_package_borrowed_ranges(&self.package)
+    }
+
+    /// Open a staged transaction whose commit is one signed exchange with
+    /// the server; the staged advertisement is fetched now.
+    pub(crate) fn staged_transaction(
+        &self,
+        options: type_bridge_orm::session::staged::TransactionOptions,
+    ) -> Result<
+        (
+            type_bridge_orm::session::staged::Transaction,
+            StagedProxyGuard,
+        ),
+        SdkExecutionDiagnostic,
+    > {
+        let cancellation = type_bridge_orm::AnswerCancellation::default();
+        let transaction = self
+            .runtime
+            .block_on(self.connection.staged_transaction(options, &cancellation))?;
+        Ok((
+            transaction,
+            StagedProxyGuard {
+                runtime: Arc::clone(&self.runtime),
+                package: Arc::clone(&self.package),
+            },
+        ))
+    }
 }
 
 struct CopiedOptions {
@@ -366,7 +422,7 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_open_v1(
         let handle = reservation.initialize(TypeBridgeProxyConnection {
             package: Arc::clone(package),
             connection,
-            runtime,
+            runtime: Arc::new(runtime),
         });
         // SAFETY: the output slot was preflighted and initialized.
         unsafe { out_connection.write_unaligned(Box::into_raw(handle)) };

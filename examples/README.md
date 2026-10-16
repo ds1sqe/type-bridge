@@ -56,6 +56,16 @@ come from `app_models`, the generated package. Connection primitives come from
 Change Split-YAML, review and apply a V2 migration, then regenerate. Do not edit
 the generated packages or recreate their descriptors in application code.
 
+## One staged program in four languages
+
+[`purchase/`](purchase) holds the same staged-plan program in Python,
+TypeScript, Rust and C: seed, stage a purchase, a touch and a batch of 50
+orders in one transaction, commit, and read the state back, directly and over
+the proxy. It runs on packages generated from
+`tests/contracts/sdk_conformance/writes/purchase`; the SDK `writes`
+conformance suite builds and runs all four and compares their plan bytes and
+results (see that directory's README).
+
 ## Historical TOML
 
 [`advanced/toml_migration`](advanced/toml_migration/) and

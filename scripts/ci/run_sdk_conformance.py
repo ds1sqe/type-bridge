@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run SDK query, model, administration, serialization and artifact acceptance."""
+"""Run SDK query, model, administration, serialization, artifact and writes acceptance."""
 
 from __future__ import annotations
 
@@ -14,7 +14,9 @@ import stat
 import subprocess
 import sys
 import tempfile
-from collections.abc import Mapping
+import time
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,7 @@ import c_artifact_journey as artifact_journey
 import sdk_artifacts_compare as conformance
 import sdk_profile_matrix as profile_matrix
 import sdk_serialization_compare as codec_contract
+import sdk_writes_compare as writes_contract
 import standalone_cli_artifact as cli_artifact
 from persist_binding_reports import PublishError, publish_files
 
@@ -31,6 +34,12 @@ CORE = ROOT / "type-bridge-core"
 NODE = CORE / "crates/node"
 BINDINGS = ("python", "node", "rust", "c")
 SUITES = tuple(profile_matrix.SUITES)
+# Suites outside the FULL-C report fan-in: `writes` runs one staged program in
+# every binding and needs the staged surface of TypeDB 3.13.6.
+STAGED_SUITES = ("writes",)
+WRITES = ROOT / "tests/contracts/sdk_conformance/writes/purchase"
+WRITES_PROGRAMS = ROOT / "examples/purchase"
+WRITES_FIXTURE_TIMEOUT = 600.0
 PYTHON_PROVIDER = ROOT / "tests/integration/schema/test_sdk_serialization_codec.py"
 NODE_PROVIDER = CORE / "crates/schema-codegen/tests/typescript_acceptance/codec_check.py"
 C_PROVIDER = ROOT / "tests/integration/schema/test_sdk_serialization_c_codec.py"
@@ -902,10 +911,295 @@ def artifact_reports(
     )
 
 
+def cargo_target(environment: Mapping[str, str]) -> Path:
+    return Path(environment.get("CARGO_TARGET_DIR", CORE / "target"))
+
+
+def writes_profile() -> str:
+    return json.loads((WRITES / "program.json").read_text(encoding="utf-8"))["semantic_profile"]
+
+
+def writes_packages(directory: Path, environment: dict[str, str]) -> Path:
+    """Generate the four packages from a private copy of the suite workspace."""
+
+    workspace = directory / "workspace"
+    workspace.mkdir()
+    shutil.copy2(WRITES / "typebridge.yaml", workspace / "typebridge.yaml")
+    shutil.copytree(WRITES / "schema", workspace / "schema")
+    run(
+        [
+            "cargo",
+            "build",
+            "--quiet",
+            "--locked",
+            "--manifest-path",
+            str(CORE / "Cargo.toml"),
+            "-p",
+            "type-bridge-cli",
+        ],
+        env=environment,
+    )
+    cli = cargo_target(environment) / "debug/type-bridge"
+    run([str(cli), "schema", "generate"], cwd=workspace, env=environment)
+    return workspace / "generated"
+
+
+def writes_rust_manifest(generated: Path) -> str:
+    rust = CORE / "crates/rust"
+    return (
+        '[package]\nname = "sdk-writes-purchase"\nversion = "0.0.0"\nedition = "2024"\n'
+        "publish = false\n\n[dependencies]\n"
+        f'models = {{ package = "type-bridge-generated-schema", path = "{generated}" }}\n'
+        f'type-bridge = {{ path = "{rust}", features = ["typedb"] }}\n'
+        'serde_json = "1"\n'
+        'tokio = { version = "1", features = ["macros", "rt-multi-thread"] }\n\n'
+        f'[patch.crates-io]\ntype-bridge = {{ path = "{rust}" }}\n\n[workspace]\n'
+    )
+
+
+def writes_programs(
+    directory: Path, generated: Path, environment: dict[str, str]
+) -> dict[str, tuple[list[str], Path, dict[str, str]]]:
+    """Build each binding's program; return its command, directory and environment."""
+
+    python_path = directory / "python"
+    python_path.mkdir()
+    shutil.copytree(generated / "python", python_path / "purchase_models")
+    python = (
+        ["uv", "run", "python", str(WRITES_PROGRAMS / "python/program.py")],
+        ROOT,
+        {"PYTHONPATH": str(python_path)},
+    )
+
+    run(["npm", "run", "build"], cwd=NODE, env=environment)
+    typescript = generated / "typescript"
+    run(
+        [
+            "npm",
+            "install",
+            "--ignore-scripts",
+            "--no-package-lock",
+            "--no-audit",
+            "--no-fund",
+            str(NODE),
+        ],
+        cwd=typescript,
+        env=environment,
+    )
+    shutil.copy2(WRITES_PROGRAMS / "ts/program.ts", typescript / "src/program.ts")
+    run(
+        ["node", str(NODE / "node_modules/typescript/bin/tsc"), "-p", "tsconfig.json"],
+        cwd=typescript,
+        env=environment,
+    )
+    node = (["node", "dist/program.js"], typescript, {})
+
+    # The consumer resolves offline from the workspace lockfile's versions.
+    consumer = directory / "rust"
+    (consumer / "src").mkdir(parents=True)
+    shutil.copy2(WRITES_PROGRAMS / "rust/main.rs", consumer / "src/main.rs")
+    shutil.copy2(CORE / "Cargo.lock", consumer / "Cargo.lock")
+    (consumer / "Cargo.toml").write_text(writes_rust_manifest(generated / "rust"))
+    manifest = ["--quiet", "--offline", "--manifest-path", str(consumer / "Cargo.toml")]
+    run(["cargo", "build", *manifest], env=environment)
+    rust = (["cargo", "run", *manifest], consumer, {})
+
+    run(
+        [
+            "cargo",
+            "build",
+            "--quiet",
+            "--locked",
+            "--manifest-path",
+            str(CORE / "Cargo.toml"),
+            "-p",
+            "type-bridge-c",
+            "--lib",
+        ],
+        env=environment,
+    )
+    library = cargo_target(environment) / "debug"
+    executable = directory / "c-program"
+    run(
+        [
+            "cc",
+            "-std=c17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-I",
+            str(generated / "c/include"),
+            "-I",
+            str(CORE / "crates/c/include"),
+            str(WRITES_PROGRAMS / "c/program.c"),
+            str(generated / "c/src/models.c"),
+            "-L",
+            str(library),
+            "-ltype_bridge_c",
+            f"-Wl,-rpath,{library}",
+            "-o",
+            str(executable),
+        ],
+        env=environment,
+    )
+    c = ([str(executable)], directory, {})
+    return {"python": python, "node": node, "rust": rust, "c": c}
+
+
+@contextmanager
+def writes_fixture(directory: Path, environment: dict[str, str]) -> Iterator[dict[str, Any]]:
+    """Serve the server crate's writes fixture until the block ends.
+
+    Yields ``fixture.json``; on exit the fixture's ``observed.json`` is in the
+    yielded mapping under ``"observed"``.
+    """
+
+    fixture_dir = directory / "fixture"
+    fixture_dir.mkdir()
+    command = [
+        "cargo",
+        "test",
+        "--quiet",
+        "--locked",
+        "--manifest-path",
+        str(CORE / "Cargo.toml"),
+        "-p",
+        "type-bridge-server",
+        "--features",
+        "v2-query",
+        "--test",
+        "v3_staged_integration_tests",
+    ]
+    run([*command, "--no-run"], env=environment)
+    fixture_env = environment | {"TB_SDK_WRITES_FIXTURE_DIR": str(fixture_dir)}
+    process = subprocess.Popen(
+        [*command, "sdk_writes_fixture_serves_until_stopped", "--", "--ignored", "--exact"],
+        cwd=ROOT,
+        env=fixture_env,
+    )
+    try:
+        deadline = time.monotonic() + WRITES_FIXTURE_TIMEOUT
+        while not (fixture_dir / "fixture.json").is_file():
+            if process.poll() is not None:
+                raise RunnerError("the writes fixture exited before serving")
+            if time.monotonic() > deadline:
+                raise RunnerError("the writes fixture did not start in time")
+            time.sleep(0.2)
+        fixture = json.loads((fixture_dir / "fixture.json").read_text(encoding="utf-8"))
+        yield fixture
+        (fixture_dir / "stop").touch()
+        if process.wait(timeout=WRITES_FIXTURE_TIMEOUT) != 0:
+            raise RunnerError("the writes fixture failed while stopping")
+        fixture["observed"] = json.loads(
+            (fixture_dir / "observed.json").read_text(encoding="utf-8")
+        )
+    finally:
+        (fixture_dir / "stop").touch()
+        if process.poll() is None:
+            try:
+                process.wait(timeout=WRITES_FIXTURE_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+
+def writes_run(
+    programs: dict[str, tuple[list[str], Path, dict[str, str]]],
+    environment: dict[str, str],
+    targets: Mapping[str, Mapping[str, str]],
+) -> dict[str, Any]:
+    """Run every program once, against its binding's live target when given."""
+
+    outputs = {}
+    for binding in BINDINGS:
+        command, cwd, extra = programs[binding]
+        target = targets.get(binding, {})
+        program_env = environment | extra
+        for name in (
+            "TYPE_BRIDGE_SDK_WRITES_DIRECT_DATABASE",
+            "TYPE_BRIDGE_SDK_WRITES_PROXY_ENDPOINT",
+        ):
+            program_env.pop(name, None)
+        if target:
+            program_env |= {
+                "TYPE_BRIDGE_SDK_WRITES_DIRECT_DATABASE": target["direct_database"],
+                "TYPE_BRIDGE_SDK_WRITES_PROXY_ENDPOINT": target["proxy_endpoint"],
+            }
+        output = json.loads(run(command, cwd=cwd, env=program_env, capture=True))
+        if type(output) is not dict or output.get("binding") != binding:
+            raise RunnerError(f"{binding} program reported another binding")
+        outputs[binding] = output
+    return outputs
+
+
+def writes_reports(
+    directory: Path,
+    outputs: dict[str, Any],
+    profile: str,
+    observed: Mapping[str, Any] | None,
+) -> tuple[Path, ...]:
+    reports = directory / "reports"
+    reports.mkdir()
+    paths = []
+    for binding in BINDINGS:
+        output = outputs[binding]
+        report = {
+            "format": writes_contract.REPORT_FORMAT,
+            "binding": binding,
+            "program": "purchase",
+            "semantic_profile": profile,
+            "plans": output["plans"],
+            "results": output["results"],
+            "observed": None if observed is None else observed[binding],
+        }
+        path = reports / f"{binding}.json"
+        path.write_bytes(writes_contract.canonical_json_bytes(report))
+        paths.append(path)
+    return tuple(paths)
+
+
+def writes(directory: Path, environment: dict[str, str], *, live: bool) -> dict[str, Path]:
+    """Plan bytes offline; with ``live``, results directly and over the proxy."""
+
+    expected_profile = writes_profile()
+    profile = environment[profile_matrix.SEMANTIC_PROFILE_ENV]
+    if profile != expected_profile:
+        raise RunnerError(f"the writes suite runs on {expected_profile}, not {profile}")
+    generated = writes_packages(directory, environment)
+    programs = writes_programs(directory, generated, environment)
+    observed = None
+    if live:
+        with writes_fixture(directory, environment) as fixture:
+            if fixture["profile"] != profile:
+                raise RunnerError(f"the writes fixture serves {fixture['profile']}")
+            outputs = writes_run(programs, environment, fixture["bindings"])
+        observed = fixture["observed"]
+    else:
+        outputs = writes_run(programs, environment, {})
+    paths = writes_reports(directory, outputs, profile, observed)
+    summary = directory / "comparison.json"
+    summary.write_text(
+        run(
+            python_command(
+                "sdk_writes_compare.py", *(["--live"] if live else []), *map(str, paths)
+            ),
+            env=environment,
+            capture=True,
+        )
+        + "\n"
+    )
+    return {
+        **{f"{binding}.json": path for binding, path in zip(BINDINGS, paths, strict=True)},
+        "comparison.json": summary,
+    }
+
+
 def execute(
     suite: str, directory: Path, environment: dict[str, str], arguments: argparse.Namespace
 ) -> dict[str, Path]:
     """Produce and independently validate a complete report set before publication."""
+    if suite == "writes":
+        return writes(directory, environment, live=not arguments.offline)
     if suite == "queries":
         nonce = secrets.token_hex(32)
         query_proofs(directory, environment, nonce)
@@ -936,7 +1230,7 @@ def execute(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("suite", choices=SUITES)
+    parser.add_argument("suite", choices=(*SUITES, *STAGED_SUITES))
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--address", default="127.0.0.1:1729")
     parser.add_argument("--http-port", default="8000")
@@ -958,7 +1252,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     for name in artifact_inputs:
         parser.add_argument(f"--{name}", type=Path)
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="writes only: compare plan bytes without a TypeDB server",
+    )
     arguments = parser.parse_args(argv)
+    if arguments.offline and arguments.suite != "writes":
+        parser.error("--offline is only valid for the writes suite")
     if arguments.suite == "artifacts":
         missing = [f"--{name}" for name in artifact_inputs if getattr(arguments, name) is None]
         if missing:
@@ -970,7 +1271,7 @@ def main(argv: list[str] | None = None) -> int:
         if output.exists() or output == ROOT or ROOT in output.parents:
             raise RunnerError("output must be a new directory outside the checkout")
         environment = os.environ.copy()
-        if arguments.suite in {"queries", "models", "serialization"}:
+        if arguments.suite in {"queries", "models", "serialization", "writes"}:
             environment.update(
                 {
                     "TYPEDB_ADDRESS": arguments.address,
@@ -981,7 +1282,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         # Producers, fixtures, assemblers and comparers all read one profile and
         # its exact server so a run cannot mix TypeDB lines.
-        identity = lane(arguments.semantic_profile, environment)
+        profile = arguments.semantic_profile
+        if arguments.suite == "writes" and profile is None:
+            # The program has one profile; an unset lane selects it.
+            profile = environment.get(profile_matrix.SEMANTIC_PROFILE_ENV) or writes_profile()
+        identity = lane(profile, environment)
         environment[profile_matrix.SEMANTIC_PROFILE_ENV] = identity.semantic_profile
         environment["TYPEDB_VERSION"] = identity.live_server_version
         with tempfile.TemporaryDirectory(prefix=f"typebridge-sdk-{arguments.suite}-") as value:

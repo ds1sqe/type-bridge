@@ -1,0 +1,234 @@
+{
+  "format": "typebridge.sdk-writes-program/v1",
+  "program": "purchase",
+  "semantic_profile": "typedb-3.13.6/v1",
+  "workspace": "typebridge.yaml",
+  "steps": [
+    {
+      "name": "seed",
+      "kind": "write",
+      "plans": [
+        "seed"
+      ]
+    },
+    {
+      "name": "program",
+      "kind": "write",
+      "plans": [
+        "purchase",
+        "touch",
+        "batch"
+      ]
+    },
+    {
+      "name": "read",
+      "kind": "read",
+      "plans": [
+        "sold_out",
+        "charged",
+        "orders",
+        "on_call"
+      ]
+    }
+  ],
+  "plans": {
+    "seed": {
+      "insert": [
+        "item",
+        "account",
+        "doctor"
+      ],
+      "rows": [
+        {
+          "item_id": "I1",
+          "stock": 1,
+          "price": 40,
+          "account_id": "A1",
+          "balance": 100,
+          "doctor": "D1",
+          "on_call": true
+        }
+      ]
+    },
+    "purchase": {
+      "note": "the one-query purchase: stock > 0 and balance >= price; take one item and the price; insert the purchase",
+      "rows": [
+        {
+          "order_id": "O1",
+          "item_id": "I1",
+          "account_id": "A1"
+        }
+      ]
+    },
+    "touch": {
+      "note": "rewrite every doctor's on-call value with itself"
+    },
+    "batch": {
+      "note": "insert a purchase of I1 by A1 per row",
+      "rows": [
+        {
+          "order_id": "B01"
+        },
+        {
+          "order_id": "B02"
+        },
+        {
+          "order_id": "B03"
+        },
+        {
+          "order_id": "B04"
+        },
+        {
+          "order_id": "B05"
+        },
+        {
+          "order_id": "B06"
+        },
+        {
+          "order_id": "B07"
+        },
+        {
+          "order_id": "B08"
+        },
+        {
+          "order_id": "B09"
+        },
+        {
+          "order_id": "B10"
+        },
+        {
+          "order_id": "B11"
+        },
+        {
+          "order_id": "B12"
+        },
+        {
+          "order_id": "B13"
+        },
+        {
+          "order_id": "B14"
+        },
+        {
+          "order_id": "B15"
+        },
+        {
+          "order_id": "B16"
+        },
+        {
+          "order_id": "B17"
+        },
+        {
+          "order_id": "B18"
+        },
+        {
+          "order_id": "B19"
+        },
+        {
+          "order_id": "B20"
+        },
+        {
+          "order_id": "B21"
+        },
+        {
+          "order_id": "B22"
+        },
+        {
+          "order_id": "B23"
+        },
+        {
+          "order_id": "B24"
+        },
+        {
+          "order_id": "B25"
+        },
+        {
+          "order_id": "B26"
+        },
+        {
+          "order_id": "B27"
+        },
+        {
+          "order_id": "B28"
+        },
+        {
+          "order_id": "B29"
+        },
+        {
+          "order_id": "B30"
+        },
+        {
+          "order_id": "B31"
+        },
+        {
+          "order_id": "B32"
+        },
+        {
+          "order_id": "B33"
+        },
+        {
+          "order_id": "B34"
+        },
+        {
+          "order_id": "B35"
+        },
+        {
+          "order_id": "B36"
+        },
+        {
+          "order_id": "B37"
+        },
+        {
+          "order_id": "B38"
+        },
+        {
+          "order_id": "B39"
+        },
+        {
+          "order_id": "B40"
+        },
+        {
+          "order_id": "B41"
+        },
+        {
+          "order_id": "B42"
+        },
+        {
+          "order_id": "B43"
+        },
+        {
+          "order_id": "B44"
+        },
+        {
+          "order_id": "B45"
+        },
+        {
+          "order_id": "B46"
+        },
+        {
+          "order_id": "B47"
+        },
+        {
+          "order_id": "B48"
+        },
+        {
+          "order_id": "B49"
+        },
+        {
+          "order_id": "B50"
+        }
+      ]
+    },
+    "sold_out": {
+      "count": "item I1 with stock 0"
+    },
+    "charged": {
+      "count": "account A1 with balance 60"
+    },
+    "orders": {
+      "count": "purchases"
+    },
+    "on_call": {
+      "exists": "a doctor on call"
+    }
+  }
+}

@@ -1795,6 +1795,18 @@ type_bridge_proxy_connection_open_v1(
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_proxy_connection_close(type_bridge_proxy_connection_t **connection);
+/* ABI 1.7: a deferred transaction on the proxy. Open fetches the server's
+ * staged advertisement, which must name the connection's executor and reply
+ * key; nothing else is sent until commit, one signed exchange carrying every
+ * staged plan. An unknown commit outcome keeps the handle for
+ * type_bridge_staged_transaction_commit_retry. The transaction may outlive
+ * the connection; stage, commit, rollback and close are those of
+ * type_bridge_database_transaction. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_connection_transaction(
+    const type_bridge_proxy_connection_t *proxy, uint32_t kind,
+    type_bridge_staged_transaction_t **out_transaction,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_proxy_query_execute_v1(const type_bridge_proxy_connection_t *proxy,
     const type_bridge_query_terminal_t *terminal,

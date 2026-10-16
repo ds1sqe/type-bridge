@@ -490,3 +490,59 @@ def test_artifacts_build_once_and_compare_all_bindings(
         assert sum(f"scripts/ci/{script}" in command for command in commands) == 4
     assert commands[-1][1] == "scripts/ci/sdk_artifacts_compare.py"
     assert len(commands[-1][2:]) == 4
+
+
+@pytest.mark.parametrize("offline", [False, True])
+def test_writes_runs_outside_the_full_c_fan_in_and_publishes_its_comparison(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: bool
+) -> None:
+    assert "writes" not in RUNNER.SUITES
+    calls: list[bool] = []
+
+    def writes(directory: Path, environment: dict[str, str], *, live: bool) -> dict[str, Path]:
+        calls.append(live)
+        assert environment["TYPEDB_ADDRESS"] == "127.0.0.1:1729"
+        names = [*(f"{binding}.json" for binding in RUNNER.BINDINGS), "comparison.json"]
+        for name in names:
+            (directory / name).write_text("{}\n")
+        return {name: directory / name for name in names}
+
+    monkeypatch.setattr(RUNNER, "writes", writes)
+    output = tmp_path / "published"
+    argv = ["writes", "--output", str(output), "--semantic-profile", "typedb-3.13.6/v1"]
+    assert RUNNER.main([*argv, *(["--offline"] if offline else [])]) == 0
+    assert calls == [not offline]
+    assert sorted(path.name for path in output.iterdir()) == sorted(
+        [*(f"{binding}.json" for binding in RUNNER.BINDINGS), "comparison.json"]
+    )
+
+
+def test_offline_is_refused_outside_the_writes_suite(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        RUNNER.main(["queries", "--offline", "--output", str(tmp_path / "out")])
+
+
+def test_writes_refuses_a_profile_without_staged_plans(tmp_path: Path) -> None:
+    environment = {RUNNER.profile_matrix.SEMANTIC_PROFILE_ENV: "typedb-3.12.1/v1"}
+    with pytest.raises(RUNNER.RunnerError, match="typedb-3.13.6/v1"):
+        RUNNER.writes(tmp_path, environment, live=False)
+
+
+def test_writes_builds_every_binding_program_from_the_generated_packages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    generated = tmp_path / "generated"
+    for binding in ("python", "typescript/src", "rust", "c"):
+        (generated / binding).mkdir(parents=True)
+    (tmp_path / "run").mkdir()
+    commands = capture(monkeypatch)
+    programs = RUNNER.writes_programs(tmp_path / "run", generated, {})
+    assert set(programs) == set(RUNNER.BINDINGS)
+    assert programs["python"][0][-1].endswith("examples/purchase/python/program.py")
+    assert programs["node"][0] == ["node", "dist/program.js"]
+    assert (generated / "typescript/src/program.ts").is_file()
+    assert (tmp_path / "run/rust/src/main.rs").is_file()
+    assert "--offline" in programs["rust"][0]
+    compile_c = next(command for command in commands if command[0] == "cc")
+    assert "-Werror" in compile_c
+    assert any(item.endswith("examples/purchase/c/program.c") for item in compile_c)
