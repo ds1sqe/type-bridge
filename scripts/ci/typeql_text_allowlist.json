@@ -1,0 +1,9 @@
+{
+  "readers": {
+    "type-bridge-core/crates/core/src/archive_parser.rs": "It is a reader for legacy inputs, not an emitter, so the one-AST rule holds."
+  },
+  "constants": {
+    "type-bridge-core/crates/schema-compat/src/live_authority.rs#MANAGED_FENCE_SCHEMA_TYPEQL": "Released managed-fence schema bytes are immutable input data.",
+    "type-bridge-core/crates/schema-compat/src/adopted_genesis.rs#LEGACY_LEDGER_SCHEMA_TYPEQL": "Released legacy-ledger schema bytes are immutable input data."
+  }
+}

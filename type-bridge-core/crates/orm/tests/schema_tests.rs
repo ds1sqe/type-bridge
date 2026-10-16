@@ -780,11 +780,11 @@ fn generate_schema_with_plays_clauses() {
 
     let typeql = schema.generate_schema().unwrap();
     assert!(
-        typeql.contains("person plays employment:employee;"),
+        typeql.contains("person, plays employment:employee;"),
         "expected plays clause for person, got:\n{typeql}"
     );
     assert!(
-        typeql.contains("company plays employment:employer;"),
+        typeql.contains("company, plays employment:employer;"),
         "expected plays clause for company, got:\n{typeql}"
     );
 }
@@ -1494,7 +1494,7 @@ fn full_schema_roundtrip_registration_and_generation() {
     let typeql = schema.generate_schema().unwrap();
 
     // Verify structure
-    assert!(typeql.starts_with("define\n"));
+    assert!(typeql.starts_with("define "));
 
     // Attributes sorted alphabetically: age, name, position
     let age_pos = typeql.find("attribute age").unwrap();
@@ -1517,13 +1517,13 @@ fn full_schema_roundtrip_registration_and_generation() {
 
     // Relation definition
     assert!(typeql.contains("relation employment,"));
-    assert!(typeql.contains("    relates employee,"));
-    assert!(typeql.contains("    relates employer,"));
-    assert!(typeql.contains("    owns position;"));
+    assert!(typeql.contains("relates employee,"));
+    assert!(typeql.contains("relates employer,"));
+    assert!(typeql.contains("owns position;"));
 
     // Plays clauses
-    assert!(typeql.contains("company plays employment:employer;"));
-    assert!(typeql.contains("person plays employment:employee;"));
+    assert!(typeql.contains("company, plays employment:employer;"));
+    assert!(typeql.contains("person, plays employment:employee;"));
 }
 
 #[test]
@@ -1549,7 +1549,7 @@ async fn introspect_builds_schema_info() {
     let backend = MockBackend::new(vec![
         // 6. employment roles (popped last)
         QueryResult::Documents(vec![
-            serde_json::json!({"role": "employee"}),
+            serde_json::json!({"role": "employment:employee"}),
             serde_json::json!({"role": "employer"}),
         ]),
         // 5. employment owned attributes

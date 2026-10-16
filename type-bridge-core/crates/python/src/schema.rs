@@ -7,7 +7,6 @@ use pyo3::prelude::*;
 use pythonize::{depythonize, pythonize};
 use type_bridge_orm::_schema::SchemaInfo;
 use type_bridge_orm::_schema::diff::{ClassifiedChange, SchemaDiff};
-use type_bridge_orm::_schema::generator;
 
 /// Generate a TypeQL `define` block from a serialized `SchemaInfo` dict.
 #[pyfunction(name = "_archived_generate_define_block")]
@@ -16,7 +15,8 @@ fn generate_define_block(py_info: Bound<'_, PyAny>) -> PyResult<String> {
         .map_err(|error| py_value_error(format!("Invalid SchemaInfo: {error}")))?;
     info.validate()
         .map_err(|error| py_value_error(error.to_string()))?;
-    Ok(generator::generate_define_block(&info))
+    info.to_typeql()
+        .map_err(|error| py_value_error(error.to_string()))
 }
 
 /// Compute a serialized `SchemaDiff` dict from two serialized `SchemaInfo` dicts.

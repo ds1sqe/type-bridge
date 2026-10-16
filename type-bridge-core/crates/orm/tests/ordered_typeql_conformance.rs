@@ -77,7 +77,7 @@ fn canonical_ordered_projection_renders_exact_typeql_3_12_list_interfaces() {
         .to_typeql()
         .unwrap();
     assert!(emitted.contains("owns tag[] @distinct @card(0..3)"));
-    assert!(emitted.contains("entity person sub base,\n    owns tag[] @card(0..3);"));
+    assert!(emitted.contains("entity person, sub base, owns tag[] @card(0..3);"));
     assert!(emitted.contains("relates member[] @distinct @card(0..3)"));
     assert!(emitted.contains("relates curated-member[] as member[] @distinct @card(0..3)"));
     typeql::parse_query(&emitted).expect("TypeQL 3.12 accepts the generated ordered schema");

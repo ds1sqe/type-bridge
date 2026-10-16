@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Frozen released-schema recovery remains available until 3.0.
 mod common;
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};

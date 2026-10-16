@@ -24,13 +24,16 @@ owns = ["name"]
 let typeql = type_bridge_toml_transpiler::toml_to_typeql(toml_source)?;
 assert_eq!(
     typeql,
-    "define\nattribute name, value string;\nentity person, owns name;\n",
+    "define attribute name, value string; entity person, owns name;",
 );
 # Ok::<(), type_bridge_toml_transpiler::TranspileError>(())
 ```
 
 The converter validates the complete TOML document before returning TypeQL and
-performs no filesystem or database I/O. It has no optional features.
+performs no filesystem or database I/O. The shared core adapter owns its
+official TypeQL AST construction and rendering. Function bodies are validated
+by the official parser and retained verbatim, including comments and whitespace,
+so schema exports preserve declared fingerprints. It has no optional features.
 
 The crate is released in lockstep with TypeBridge 2.2.6 and requires Rust
 1.88+. Database-facing TypeBridge components support TypeDB

@@ -24,6 +24,8 @@
 //! destroys data. A rename replaces those diff-mapped operations with a
 //! staged expansion built from existing primitives.
 
+#![allow(deprecated)] // Released fragment bridges remain until migration AST lowering.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use type_bridge_orm::_schema::diff::{AttributeTypeChanges, RelationChanges, SchemaDiff};

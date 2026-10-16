@@ -17,6 +17,34 @@ All notable changes to TypeBridge will be documented in this file.
   application transport errors retain their existing messages.
 - TypeDB transport failures keep a fixed failure kind and the operation name.
 
+### Fixed
+
+- TOML `long`/`int` and `bool` aliases now emit TypeDB builtin `integer`
+  and `boolean` domains instead of unresolved type labels (SYR4).
+- Schema generation omits unchanged inherited plays declarations on subtypes,
+  correcting schemas rejected by TypeDB with SVL42. Introspection stores
+  scoped role labels as local role names.
+
+- TOML structs now use TypeQL 3 `struct name: field value type;` syntax.
+  Schema introspection binds type labels with `label`, correcting the
+  obsolete `type` constraint in ownership and role queries.
+
+### Schema rendering
+
+- Schema generation and TOML conversion use the official TypeQL AST.
+  Whitespace and capability commas follow its plain display form. Active
+  schema readers use the official grammar; unsupported projections fail
+  explicitly. The deprecated archive reader retains released inputs until
+  3.0. Existing snapshots, migration sources, carried queries and checksums
+  retain their original bytes; new artifacts hash their new rendered bytes.
+  Caller-owned function bodies, including TOML bodies, remain verbatim after
+  official AST validation to preserve export fingerprints and avoid false drift.
+
+- Rust String schema-generation and fragment helpers are deprecated since
+  2.3.0 for removal in 3.0. Use checked `SchemaInfo::to_typeql` or adapter
+  builders. Compatibility helpers return empty output for invalid structured
+  inputs; Python schema generation propagates checked errors as `ValueError`.
+
 ### Query rendering
 
 - V2 read plans, local functions, bounded fetch lists and prepared control

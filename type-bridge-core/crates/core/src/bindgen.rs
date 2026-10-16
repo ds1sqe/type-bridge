@@ -4,6 +4,7 @@
 //! decisions from a resolved [`TypeSchema`](crate::_schema::TypeSchema) and
 //! renders Python, TypeScript, or Rust source files from the same policy.
 
+#![allow(deprecated)] // Frozen released-schema recovery remains available until 3.0.
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::{self, Write};
 use std::str::FromStr;

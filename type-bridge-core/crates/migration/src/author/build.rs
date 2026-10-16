@@ -302,6 +302,23 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_2_2_snapshot_authors_no_migration_after_rendering_changes() {
+        let snapshot = include_str!("../../tests/fixtures/schema_snapshot_2_2.tql");
+        #[allow(deprecated)]
+        let archived = type_bridge_core_lib::_schema::TypeSchema::from_typeql(snapshot)
+            .expect("2.2 snapshot reader");
+        let base = SchemaInfo::from_type_schema(&archived);
+        let newly_rendered = base.to_typeql().expect("official schema rendering");
+        assert_ne!(snapshot, newly_rendered);
+        let target = SchemaInfo::from_typeql(&newly_rendered).expect("official schema reader");
+        assert!(
+            author_migration(&request(base, target))
+                .expect("compare typed schemas")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn no_changes_authors_nothing() {
         let schema = person_schema();
         let authored =

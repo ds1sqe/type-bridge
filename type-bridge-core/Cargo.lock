@@ -3539,8 +3539,11 @@ version = "2.2.6"
 dependencies = [
  "indexmap 2.13.1",
  "serde",
+ "serde_json",
  "thiserror",
  "toml",
+ "type-bridge-core-lib",
+ "typeql",
 ]
 
 [[package]]

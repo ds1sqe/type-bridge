@@ -22,6 +22,11 @@ pub enum SchemaError {
         /// 1-based column number where the error was detected.
         column: usize,
     },
+    /// Official schema syntax cannot be represented in the released schema model.
+    UnsupportedProjection {
+        /// The unsupported construct category.
+        construct: String,
+    },
     /// A cycle was detected in the `sub` (inheritance) chain of a type.
     InheritanceCycle {
         /// The name of the type involved in the cycle.
@@ -57,6 +62,9 @@ impl fmt::Display for SchemaError {
                 line,
                 column,
             } => write!(f, "Parse error at {}:{}: {}", line, column, message),
+            SchemaError::UnsupportedProjection { construct } => {
+                write!(f, "Unsupported schema projection: {construct}")
+            }
             SchemaError::InheritanceCycle { type_name } => {
                 write!(f, "Inheritance cycle detected involving '{}'", type_name)
             }
@@ -289,7 +297,7 @@ pub struct StructType {
     pub fields: Vec<StructField>,
 }
 
-/// A single struct field (`value name type [?]`).
+/// A single struct field with a name, value type and optionality.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StructField {
     /// Field name.
@@ -419,11 +427,22 @@ impl TypeSchema {
     }
 
     /// Parse a TypeQL `define` block into a fully-resolved `TypeSchema`.
+    #[deprecated(
+        since = "2.3.0",
+        note = "archive reader; use the checked official schema adapter; removed in 3.0"
+    )]
+    #[allow(deprecated)]
     pub fn from_typeql(input: &str) -> Result<TypeSchema, SchemaError> {
         let mut schema = super::_parser::parse_typeql(input)?;
         schema.validate()?;
         schema.resolve_inheritance()?;
         Ok(schema)
+    }
+
+    pub(crate) fn validate_and_resolve(mut self) -> Result<Self, SchemaError> {
+        self.validate()?;
+        self.resolve_inheritance()?;
+        Ok(self)
     }
 
     /// Deserialize from a JSON string.
@@ -909,6 +928,7 @@ impl TypeSchema {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

@@ -390,7 +390,7 @@ mod tests {
     use crate::_attribute::ValueType;
     use crate::_descriptor::{EntityDescriptor, OwnedAttributeDescriptor};
     use crate::_entity::Annotation;
-    use crate::_schema::{SchemaInfo, generator::generate_define_block};
+    use crate::_schema::SchemaInfo;
     use crate::match_request::{
         BindingId, BoundFieldId, FetchShape, FetchSlot, FieldId, MatchBinding, MatchErrorCategory,
         MatchErrorPathSegment, MatchMode, MatchOperation, MatchOrder, MatchPlan, MatchRequest,
@@ -439,7 +439,7 @@ mod tests {
 
     fn matching_authority(registry: &DescriptorRegistry) -> QueryAuthority {
         let schema = SchemaInfo::from_descriptors(&registry.snapshot());
-        let source = generate_define_block(&schema);
+        let source = schema.to_typeql().expect("fixture schema");
         let declared = released_typeql_to_declared_projection(
             DocumentId::new("remote-model-nullable-order.tql").expect("document"),
             &source,

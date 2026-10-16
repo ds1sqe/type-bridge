@@ -264,7 +264,7 @@ impl SchemaInfo {
             return Ok(Self::default());
         }
 
-        let schema = core_schema::TypeSchema::from_typeql(input).map_err(|error| {
+        let schema = type_bridge_core_lib::__internal::parse_schema(input).map_err(|error| {
             SchemaError::Validation {
                 message: error.to_string(),
             }
@@ -554,7 +554,7 @@ impl SchemaInfo {
     /// Generate a TypeQL `define` block from this schema.
     pub fn to_typeql(&self) -> Result<String, SchemaError> {
         self.validate()?;
-        Ok(generator::generate_define_block(self))
+        generator::try_generate_define_block(self)
     }
 
     /// Compare this schema to another and return the diff.
@@ -1124,7 +1124,7 @@ mod tests {
 define
 
 attribute base-token @abstract, value string;
-attribute email sub base-token, value string @regex("^[a-z]+@[a-z]+\.[a-z]+$");
+attribute email, sub base-token, value string @regex("^[a-z]+@[a-z]+\.[a-z]+$");
 attribute status @independent, value string @values("active", "inactive");
 attribute age, value integer @range(0..150);
 "#;
@@ -1152,7 +1152,7 @@ attribute age, value integer @range(0..150);
 
         let emitted = info.to_typeql().expect("emit failed");
         assert!(emitted.contains(
-            r#"attribute email sub base-token, value string @regex("^[a-z]+@[a-z]+\.[a-z]+$");"#
+            r#"attribute email, sub base-token, value string @regex("^[a-z]+@[a-z]+\.[a-z]+$");"#
         ));
         assert!(emitted.contains(
             r#"attribute status @independent, value string @values("active", "inactive");"#
@@ -1244,7 +1244,7 @@ entity player-b, plays link:member;
     /// Integration smoke: a plays-card authored as inline TypeQL survives the
     /// full parse → IR → emit boundary. The parser reads the inline
     /// `entity X, plays r:role` form (TypeDB's export grammar); the emitter
-    /// renders the standalone `X plays r:role;` form (TypeDB's define grammar).
+    /// renders the standalone `X, plays r:role;` form (TypeDB's define grammar).
     /// This is the realistic introspect-then-re-emit flow, not byte idempotence
     /// — the two grammars are intentionally asymmetric, so
     /// `from_typeql(to_typeql(..))` is not a valid oracle.
@@ -1264,7 +1264,7 @@ entity holder, plays owns-one:slot @card(0..1);
         let info = SchemaInfo::from_typeql(typeql).expect("parse failed");
         let emitted = info.to_typeql().expect("emit failed");
         assert!(
-            emitted.contains("holder plays owns-one:slot @card(0..1);"),
+            emitted.contains("holder, plays owns-one:slot @card(0..1);"),
             "plays-card must survive parse->IR->emit: {emitted}"
         );
     }

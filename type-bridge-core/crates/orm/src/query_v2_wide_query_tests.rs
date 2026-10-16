@@ -25,7 +25,7 @@ use crate::_descriptor::{
 };
 use crate::_entity::Annotation;
 use crate::_registry::DescriptorRegistry;
-use crate::_schema::{SchemaInfo, generator::generate_define_block};
+use crate::_schema::SchemaInfo;
 use crate::AttributeValue;
 use crate::match_request::{
     BindingHandle, ComparisonOp, MissingOrder, PredicateHandle, RowCardinality, SessionHandle,
@@ -228,7 +228,7 @@ fn authority(registry: &DescriptorRegistry) -> QueryAuthority {
     let schema = SchemaInfo::from_descriptors(&registry.snapshot());
     let declared = released_typeql_to_declared_projection(
         DocumentId::new("automotive.tql").expect("document"),
-        &generate_define_block(&schema),
+        &schema.to_typeql().expect("fixture schema"),
     )
     .expect("released descriptor projection");
     QueryAuthority::from_declared_bytes(

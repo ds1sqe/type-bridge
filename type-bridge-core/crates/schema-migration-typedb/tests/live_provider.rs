@@ -607,3 +607,63 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
         .await
         .expect("delete isolated journal database");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn commented_function_body_survives_export_without_toml_drift() {
+    use type_bridge_core_lib::__internal as tql;
+    use type_bridge_schema_compat::{toml_to_declared, typeql_to_declared};
+    let body = "match\n  # retained body comment\n  let $value = $seed;\nreturn first $value;";
+    let signature = "fun keep-body($seed: integer) -> integer";
+    let toml = format!(
+        "[functions.keep-body]\nsignature = \"{signature}\"\nbody = \"\"\"\n{body}\n\"\"\"\n"
+    );
+    let expected = toml_to_declared(DocumentId::new("schema.toml.tql").unwrap(), &toml).unwrap();
+    let emitted = tql::render(&tql::schema_define(vec![
+        tql::schema_function(signature, body).unwrap(),
+    ]))
+    .unwrap();
+    // The second database represents the released 2.2 verbatim emitter.
+    let released = format!("define {signature}:\n{body}\n");
+    for query in [emitted, released] {
+        let (managed, journal) = databases().await;
+        let expected = expected.clone();
+        let body = body.to_owned();
+        let test_database = managed.clone();
+        let result = async move {
+            let managed = test_database;
+            let mut tx = managed.schema_transaction().await.unwrap();
+            tx.query(&query).await.unwrap();
+            tx.commit().await.unwrap();
+            let exported = managed.schema_text().await.unwrap();
+            let actual =
+                typeql_to_declared(DocumentId::new("live-export.tql").unwrap(), &exported).unwrap();
+            let function = actual
+                .facts()
+                .find_map(|fact| match fact {
+                    SchemaFact::Function(function) => Some(function),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(function.body().text(), body, "{exported}");
+            assert_eq!(
+                actual.declared_identity_fingerprint(),
+                expected.declared_identity_fingerprint()
+            );
+            assert_eq!(
+                type_bridge_schema::semantic_schema_fingerprint(&actual, &support::live_profile())
+                    .unwrap(),
+                type_bridge_schema::semantic_schema_fingerprint(
+                    &expected,
+                    &support::live_profile()
+                )
+                .unwrap(),
+            );
+        };
+        // Cleanup even when assertions panic, before propagating the failure.
+        let result = tokio::spawn(result).await;
+        managed.delete_database().await.unwrap();
+        journal.delete_database().await.unwrap();
+        result.unwrap();
+    }
+}

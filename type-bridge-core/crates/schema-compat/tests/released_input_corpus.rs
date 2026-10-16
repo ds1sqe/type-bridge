@@ -5,6 +5,7 @@
 //! panicking, never inventing unsupported constructs, and recording a
 //! deliberate open-world marker only for genuinely unportable syntax.
 
+#![allow(deprecated)] // Frozen released-schema recovery remains available until 3.0.
 use serde_json::Value;
 use type_bridge_contract::schema::DocumentId;
 use type_bridge_core_lib::_bindgen::{BindgenOptions, GeneratedPackage, TargetLanguage};

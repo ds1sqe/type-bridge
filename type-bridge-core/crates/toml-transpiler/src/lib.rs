@@ -1,8 +1,7 @@
 //! TOML schema DSL transpiler for type-bridge.
 //!
 //! Converts a TOML schema document into a canonical TypeQL `define` block.
-//! This crate has no PyO3, no `type-bridge-*` dependencies, and no runtime
-//! dependency beyond `toml`, `serde`, `indexmap`, and `thiserror`.
+//! Schema construction and rendering use the shared Rust core adapter.
 
 #![deny(missing_docs)]
 
@@ -143,14 +142,14 @@ pub enum TranspileError {
         struct_name: String,
     },
 
-    /// A function body has no `return` clause; a function body must reach
-    /// `return ...;`.
+    /// A function body has no `return` clause or does not parse as an official
+    /// TypeQL function together with its signature.
     #[error(
-        "function `{function}` body has no `return` clause; \
-         a function body must reach `return ...;`"
+        "function `{function}` body has no `return` clause or is not valid \
+         TypeQL; a function body must parse and reach `return ...;`"
     )]
     MalformedFunctionBody {
-        /// The function whose body has no return clause.
+        /// The function whose body is malformed.
         function: String,
     },
 
@@ -183,5 +182,11 @@ pub enum TranspileError {
 pub fn toml_to_typeql(toml_text: &str) -> Result<String, TranspileError> {
     let schema: model::TomlSchema = toml::from_str(toml_text)?;
     validate::validate(&schema)?;
-    Ok(emit::emit(&schema))
+    // validate() already rejects function bodies the official parser refuses;
+    // any remaining adaptor refusal is a schema-shape error in the document.
+    emit::emit(&schema).map_err(|error| {
+        TranspileError::Toml(<toml::de::Error as serde::de::Error>::custom(format_args!(
+            "schema cannot lower to official TypeQL: {error}"
+        )))
+    })
 }

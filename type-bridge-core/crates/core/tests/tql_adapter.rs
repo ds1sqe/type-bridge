@@ -299,3 +299,40 @@ fn write_pattern_and_reduce_builders_produce_official_queries() {
     )
     .unwrap();
 }
+
+#[test]
+fn caller_owned_function_bodies_survive_query_and_document_rendering() {
+    let body = "\n# leading comment\nmatch\n  # retained comment\n  let $value = $seed;\nreturn first $value; # trailing comment";
+    let build = || tql::schema_function("fun keep-body($seed: integer) -> integer", body).unwrap();
+    let next = || tql::schema_function("fun next-body($seed: integer) -> integer", body).unwrap();
+    assert!(
+        tql::render_schema_definition(build())
+            .unwrap()
+            .contains(body)
+    );
+    for output in [
+        tql::render(&tql::schema_define(vec![build(), next()])).unwrap(),
+        tql::render_schema_document(vec![
+            (build(), vec!["function metadata".to_owned()]),
+            (next(), vec![]),
+        ])
+        .unwrap(),
+    ] {
+        assert_eq!(output.matches(body).count(), 2, "{output}");
+        let original = format!(
+            "define fun keep-body($seed: integer) -> integer:\n{body}\nfun next-body($seed: integer) -> integer:\n{body}\n"
+        );
+        assert!(tql::equivalent(&original, &output).unwrap());
+    }
+}
+
+#[test]
+fn caller_owned_function_body_cannot_add_another_definition() {
+    assert!(
+        tql::schema_function(
+            "fun keep-body($seed: integer) -> integer",
+            "match let $value = $seed; return first $value; entity injected;",
+        )
+        .is_err()
+    );
+}

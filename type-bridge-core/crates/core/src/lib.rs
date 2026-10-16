@@ -27,7 +27,7 @@ pub mod readme_doctests {}
 pub mod _bindgen;
 /// Frozen released-TypeQL parser retained behind compatibility tooling.
 #[doc(hidden)]
-#[path = "parser.rs"]
+#[path = "archive_parser.rs"]
 pub mod _parser;
 /// Frozen released-TypeQL schema representation retained behind compatibility tooling.
 #[doc(hidden)]
@@ -39,6 +39,7 @@ pub mod ast;
 pub mod compiler;
 /// Canonical TypeDB decimal parsing and semantic comparison.
 pub mod decimal;
+mod parser;
 /// Plaintext or TLS HTTP client for a TypeBridge proxy's `/v2` routes.
 pub mod proxy_http;
 /// Parses a TypeQL query string into the AST.

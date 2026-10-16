@@ -27,7 +27,7 @@ pub struct TomlSchema {
     /// Function declarations, keyed by function name.
     ///
     /// Each entry carries a `signature` (without trailing `:`) and a `body`
-    /// string emitted verbatim.  The emitter appends the `:` between them.
+    /// string parsed through the official AST together with the signature.
     #[serde(default)]
     pub functions: IndexMap<String, TomlFunction>,
     /// Struct type declarations, keyed by struct name.
@@ -270,8 +270,8 @@ pub struct TomlOwnsAnnotated {
 /// `fun f($x: user) -> { book }`.  The emitter appends `:\n` before
 /// the body so that the TOML author never needs to supply the colon.
 ///
-/// `body` is the `match …; return …;` block, emitted verbatim (no parsing
-/// by the transpiler — the downstream `parse_tql_schema` validates it).
+/// `body` is the `match …; return …;` block. The official AST validates it;
+/// rendering preserves its bytes, including comments and whitespace.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TomlFunction {

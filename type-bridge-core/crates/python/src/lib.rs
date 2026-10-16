@@ -291,7 +291,9 @@ pub struct TypeSchema {
 impl TypeSchema {
     /// Parse a TypeQL define-block string and resolve inheritance.
     #[staticmethod]
-    fn from_typeql(input: &str) -> PyResult<Self> {
+    #[allow(deprecated)]
+    fn from_typeql(py: Python<'_>, input: &str) -> PyResult<Self> {
+        PyErr::warn(py, py.get_type::<pyo3::exceptions::PyDeprecationWarning>().as_any(), c"The released schema archive reader is deprecated since 2.3.0 and will be removed in 3.0; use Split-YAML schema authority.", 1)?;
         let schema = core::_schema::TypeSchema::from_typeql(input)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         Ok(TypeSchema { inner: schema })
@@ -693,6 +695,13 @@ fn coerce_value(py: Python<'_>, value: Bound<'_, PyAny>, target_type: &str) -> P
     coerced_value_to_python(py, &coerced)
 }
 
+/// Internal contract comparison without exposing upstream AST types.
+#[pyfunction]
+fn _typeql_queries_equivalent(left: &str, right: &str) -> PyResult<bool> {
+    core::__internal::equivalent(left, right)
+        .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+}
+
 /// Parse a TypeQL query string into a list of clause dicts.
 ///
 /// Standalone function equivalent to `QueryCompiler().parse(input)`.
@@ -760,6 +769,7 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<TypeSchema>()?;
     m.add_class::<ValueCoercer>()?;
     m.add_function(wrap_pyfunction!(parse_typeql_query, m)?)?;
+    m.add_function(wrap_pyfunction!(_typeql_queries_equivalent, m)?)?;
     m.add_function(wrap_pyfunction!(render_models_json, m)?)?;
     m.add_function(wrap_pyfunction!(generated_declared_descriptors_json, m)?)?;
     m.add_function(wrap_pyfunction!(format_value, m)?)?;

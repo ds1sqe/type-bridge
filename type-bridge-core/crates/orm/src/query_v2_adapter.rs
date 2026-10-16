@@ -50,7 +50,7 @@ use crate::_descriptor::{
 };
 use crate::_entity::Annotation;
 use crate::_registry::{DescriptorRegistry, InstalledSchemaAuthority};
-use crate::_schema::{SchemaInfo, generator::generate_define_block};
+use crate::_schema::{SchemaInfo, generator::try_generate_define_block};
 use crate::AttributeValue;
 use crate::match_request::{
     BoundFieldId, Capability, ComparisonOp, FetchShape, FetchSlot, MatchExpr,
@@ -86,7 +86,12 @@ impl MatchRequestAdapterAuthority {
             return Ok(Self(Arc::clone(installed)));
         }
         let schema = SchemaInfo::from_descriptors(&registry.snapshot());
-        let source = generate_define_block(&schema);
+        let source = try_generate_define_block(&schema).map_err(|_| {
+            integrity(
+                "query_v2_adapter_registry_projection",
+                "registered schema cannot render",
+            )
+        })?;
         // The registry, not this generated TypeQL, remains the exact released
         // authority. Use schema-compat's portable projection so released list
         // capability markers and @distinct do not make an otherwise valid V1

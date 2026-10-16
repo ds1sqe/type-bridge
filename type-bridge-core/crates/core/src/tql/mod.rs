@@ -2,6 +2,9 @@
 #![allow(missing_docs)]
 
 mod builders;
+mod schema_builders;
+mod schema_projection;
+pub use schema_builders::*;
 mod legacy;
 mod legacy_projection;
 pub use legacy::*;
@@ -28,6 +31,7 @@ pub enum TqlError {
     InvalidLiteral,
     InvalidOperator,
     InvalidLegacyShape,
+    InvalidSchemaShape,
     Unsupported { construct: UnsupportedConstruct },
 }
 
@@ -40,6 +44,7 @@ impl std::fmt::Display for TqlError {
             Self::InvalidIdentifier => f.write_str("invalid TypeQL identifier"),
             Self::InvalidLiteral => f.write_str("invalid TypeQL literal"),
             Self::InvalidLegacyShape => f.write_str("invalid legacy TypeQL node shape"),
+            Self::InvalidSchemaShape => f.write_str("invalid TypeQL schema node shape"),
             Self::InvalidOperator => f.write_str("invalid TypeQL operator"),
             Self::Unsupported { .. } => f.write_str("unsupported TypeQL construct"),
         }
@@ -51,6 +56,7 @@ impl std::error::Error for TqlError {}
 pub struct Query {
     inner: typeql::Query,
     render_problem: Option<UnsupportedConstruct>,
+    function_bodies: Vec<(usize, String)>,
 }
 
 impl Query {
@@ -59,6 +65,7 @@ impl Query {
         Self {
             inner,
             render_problem,
+            function_bodies: vec![],
         }
     }
 }
@@ -92,5 +99,21 @@ pub fn render(query: &Query) -> Result<String, TqlError> {
         return Err(TqlError::Unsupported { construct });
     }
     // Pretty renders Optional as negation in typeql 3.13.4; plain Display is correct.
-    Ok(query.inner.to_string())
+    let source = query.inner.to_string();
+    schema_builders::restore_function_bodies(source, &query.function_bodies)
+}
+
+pub use crate::parser::parse_schema;
+
+pub(crate) fn project_schema(
+    source: &str,
+) -> Result<crate::_schema::TypeSchema, crate::_schema::SchemaError> {
+    schema_projection::project(source)
+}
+
+/// Compare official ASTs after canonical rendering normalizes source spans.
+pub fn equivalent(left: &str, right: &str) -> Result<bool, TqlError> {
+    let left = render(&parse(left)?)?;
+    let right = render(&parse(right)?)?;
+    Ok(parse(&left)?.inner == parse(&right)?.inner)
 }

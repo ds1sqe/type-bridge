@@ -1083,9 +1083,9 @@ fn production_authority_accepts_released_annotation_and_role_specialization_shap
         })
         .expect("register specialized relation");
 
-    let generated = crate::_schema::generator::generate_define_block(
-        &crate::_schema::SchemaInfo::from_descriptors(&registry.snapshot()),
-    );
+    let generated = crate::_schema::SchemaInfo::from_descriptors(&registry.snapshot())
+        .to_typeql()
+        .expect("fixture schema");
     type_bridge_schema_compat::released_typeql_to_declared_projection(
         DocumentId::new("adapter-rich-authority").expect("document"),
         &generated,

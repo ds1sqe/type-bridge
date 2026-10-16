@@ -12,7 +12,7 @@
 //! 4. missing role players (entity/relation `plays` referencing undefined
 //!    relation or undefined role within that relation)
 //! 5. empty structs
-//! 6. function body has no `return`
+//! 6. function body has no `return` or does not parse as official TypeQL
 //!
 //! Fail-fast: the first error in document order is returned immediately.
 //! [`indexmap::IndexMap`] preserves insertion order, so the same malformed
@@ -22,6 +22,7 @@ use crate::{
     TranspileError, TypeKind,
     model::{TomlOwns, TomlPlays, TomlSchema},
 };
+use type_bridge_core_lib::__internal as tql;
 
 /// Value type keywords accepted by the TypeDB parser.
 ///
@@ -251,14 +252,13 @@ fn check_empty_structs(schema: &TomlSchema) -> Result<(), TranspileError> {
     Ok(())
 }
 
-/// Check 6: each function body must contain `return`.
-///
-/// The `body` string is a verbatim passthrough; deeper grammar validation
-/// belongs to the downstream parser. This check catches the case that produces
-/// a confusing downstream error: a body with no `return` clause at all.
+/// Check 6: each function body must contain `return` and parse, together with
+/// its signature, as an official TypeQL function definition.
 fn check_malformed_function_bodies(schema: &TomlSchema) -> Result<(), TranspileError> {
     for (name, func) in &schema.functions {
-        if !func.body.contains("return") {
+        if !func.body.contains("return")
+            || tql::schema_function(&func.signature, &func.body).is_err()
+        {
             return Err(TranspileError::MalformedFunctionBody {
                 function: name.clone(),
             });
@@ -725,8 +725,8 @@ plays = [{ relation = "review", role = "subject" }]
 roles = [{ name = "reviewer", card = "1..3" }, { name = "subject" }]
 
 [functions.count-books]
-signature = "fun count-books($u: person) -> { integer }"
-body = "  match $u isa person;\n  return { 1 };"
+signature = "fun count-books($u: person) -> { person }"
+body = "  match $u isa person;\n  return { $u };"
 
 [structs.person-name]
 fields = [
@@ -830,7 +830,7 @@ fields = [
             "function must emit; got:\n{result}"
         );
         assert!(
-            result.contains("struct person-name,"),
+            result.contains("struct person-name:"),
             "struct must emit; got:\n{result}"
         );
     }

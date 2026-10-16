@@ -187,3 +187,14 @@ When changing a shared operation:
 
 See [Testing](testing.md), [typed-query contract](typed-query-contract.md), and
 [Rust generated parity](rust-generated-parity.md) for executable evidence.
+
+Active schema emitters and readers use the same adapter. The frozen
+`archive_parser.rs` remains behind `_parser` for released archive recovery
+until 3.0. It is a reader for legacy inputs, not an emitter, so the one-AST
+rule holds. Existing snapshot and migration bytes keep their checksums;
+new artifacts use official-AST rendering. Caller-owned function bodies retain
+their exact bytes after official validation; headers use AST rendering, and
+restored output must reparse to the same AST. This preserves provider-export
+fingerprints for commented TOML functions. Change detection compares typed
+schema structures or managed semantic fingerprints, independently of text
+formatting. Snapshot integrity still hashes the actual stored bytes.

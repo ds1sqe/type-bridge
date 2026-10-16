@@ -1670,6 +1670,7 @@ dependencies = [
  "serde",
  "thiserror",
  "toml",
+ "type-bridge-core-lib",
 ]
 
 [[package]]

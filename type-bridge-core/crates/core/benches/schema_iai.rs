@@ -1,6 +1,7 @@
 //! Instruction counts for `schema.rs`; see `validation_iai.rs` for the
 //! conventions.
 
+#![allow(deprecated)] // Frozen released-schema recovery remains available until 3.0.
 mod common;
 
 use std::hint::black_box;
