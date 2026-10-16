@@ -126,7 +126,9 @@ jobs:
   # Appends this run's results to the history branch. Runs only for master
   # pushes, the nightly schedule and manual dispatch, never for pull
   # requests; it is the only job with write access, and it writes only the
-  # data branch.
+  # data branch. It has no concurrency group: GitHub keeps one pending job
+  # per group and cancels the rest, which would drop their results.
+  # Concurrent stores are serialized by the push retry below instead.
   store:
     name: Store perf history
     if: >-
@@ -138,9 +140,6 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
-    concurrency:
-      group: perf-data
-      cancel-in-progress: false
     env:
       DATA_BRANCH: ${{ inputs.data_branch || 'perf-data' }}
       DATA_DIR: ${{ github.workspace }}/perf-data
@@ -180,9 +179,11 @@ jobs:
           fi
 
       # index.json changes on every store, so a rejected push is never
-      # rebased: the store is idempotent and is redone on the new tip.
+      # rebased: the store is idempotent and is redone on the new tip. The
+      # randomized delay keeps concurrent store jobs from retrying in step.
       - name: Store and push
         run: |
+          attempts=10
           # Exits the step successfully when there is nothing new to push.
           store_and_commit() {
             python -m perf.harness.store --data-dir "$DATA_DIR" "$RESULTS_DIR"/*.json
@@ -195,16 +196,20 @@ jobs:
               -m "perf: store ${GITHUB_SHA::12} (${GITHUB_EVENT_NAME})"
           }
           store_and_commit
-          for attempt in 1 2 3 4 5; do
+          for attempt in $(seq 1 "$attempts"); do
             if git -C "$DATA_DIR" push origin "HEAD:refs/heads/$DATA_BRANCH"; then
               exit 0
             fi
-            echo "Push rejected (attempt $attempt); storing again on the new tip"
-            sleep $((attempt * 2))
+            if [ "$attempt" -eq "$attempts" ]; then
+              break
+            fi
+            delay=$((RANDOM % 5 + 1))
+            echo "Push rejected (attempt $attempt of $attempts); storing again on the new tip in ${delay}s"
+            sleep "$delay"
             git -C "$DATA_DIR" fetch --no-tags --depth=1 origin \
               "+refs/heads/$DATA_BRANCH:refs/remotes/origin/$DATA_BRANCH"
             git -C "$DATA_DIR" reset --hard --quiet "origin/$DATA_BRANCH"
             store_and_commit
           done
-          echo "::error::could not push $DATA_BRANCH after 5 attempts"
+          echo "::error::could not push $DATA_BRANCH after $attempts attempts; these results are not stored"
           exit 1

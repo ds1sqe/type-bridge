@@ -89,19 +89,55 @@ def test_restoring_the_same_result_changes_nothing(tmp_path: Path) -> None:
     assert _files(tmp_path) == [f"runs/2026-10-16/{SHA}-push.json"]
 
 
-def test_rerun_of_a_commit_and_trigger_replaces_the_earlier_result(tmp_path: Path) -> None:
+def test_same_day_rerun_replaces_the_earlier_result(tmp_path: Path) -> None:
     store(tmp_path, _micro())
     rerun = _micro()
-    rerun["run"]["started_at"] = "2026-10-17T00:05:00Z"
+    rerun["run"]["started_at"] = "2026-10-16T23:55:00Z"
     rerun["metrics"][0]["value"] = 1850.0
 
     stored = store(tmp_path, rerun)
 
     assert stored.status == "replaced"
-    assert _files(tmp_path) == [f"runs/2026-10-17/{SHA}-push.json"]
-    assert not (tmp_path / "runs/2026-10-16").exists()
+    assert _files(tmp_path) == [f"runs/2026-10-16/{SHA}-push.json"]
     [point] = build_index(tmp_path)["metrics"][INSERT]["series"]
     assert point["value"] == 1850.0
+
+
+def _nightly(started_at: str, value: float) -> Document:
+    document = _micro()
+    document["run"].update(trigger="schedule", started_at=started_at)
+    document["metrics"][0]["value"] = value
+    return document
+
+
+def test_nightly_runs_of_one_commit_on_different_days_are_kept(tmp_path: Path) -> None:
+    store(tmp_path, _nightly("2026-10-16T03:17:00Z", 1843.2))
+
+    stored = store(tmp_path, _nightly("2026-10-17T03:17:00Z", 1851.0))
+
+    assert stored.status == "added"
+    assert _files(tmp_path) == [
+        f"runs/2026-10-16/{SHA}-schedule.json",
+        f"runs/2026-10-17/{SHA}-schedule.json",
+    ]
+    index = build_index(tmp_path)
+    assert index["runs"] == 2
+    assert index["latest"] == f"runs/2026-10-17/{SHA}-schedule.json"
+    series = index["metrics"][INSERT]["series"]
+    assert [(point["at"], point["value"]) for point in series] == [
+        ("2026-10-16T03:17:00Z", 1843.2),
+        ("2026-10-17T03:17:00Z", 1851.0),
+    ]
+
+
+def test_nightly_runs_of_one_commit_on_the_same_day_are_one_point(tmp_path: Path) -> None:
+    store(tmp_path, _nightly("2026-10-16T03:17:00Z", 1843.2))
+
+    stored = store(tmp_path, _nightly("2026-10-16T09:00:00Z", 1851.0))
+
+    assert stored.status == "replaced"
+    [point] = build_index(tmp_path)["metrics"][INSERT]["series"]
+    assert (point["at"], point["value"]) == ("2026-10-16T09:00:00Z", 1851.0)
 
 
 def test_another_trigger_of_the_same_commit_is_a_separate_run(tmp_path: Path) -> None:
@@ -216,3 +252,5 @@ def test_fixture_data_dir_index_is_current() -> None:
     stored = json.loads((DATA / INDEX).read_text(encoding="utf-8"))
     assert stored == build_index(DATA)
     assert stored["versions"] == ["2.2.6", "2.3.0.dev0"]
+    # Two nightly runs of one commit on different days, then a push.
+    assert stored["runs"] == 3

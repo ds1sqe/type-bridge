@@ -45,9 +45,14 @@ appended to the orphan branch `perf-data` by the workflow's `store` job.
 Pull requests never write history.
 
 ```text
-runs/<YYYY-MM-DD>/<sha>-<trigger>.json   one result per commit and trigger
+runs/<YYYY-MM-DD>/<sha>-<trigger>.json   one result per UTC day, commit and trigger
 index.json                               per-metric series, rebuilt on store
 ```
+
+A same-day re-run replaces that day's result, so nightly runs of an unchanged
+master add one point per day. The `store` job has no concurrency group (GitHub
+cancels all but one pending job per group): concurrent stores retry the push
+up to 10 times and the job fails if every attempt is rejected.
 
 Store into a local checkout of the branch, or any directory, with:
 

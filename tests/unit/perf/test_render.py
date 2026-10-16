@@ -94,4 +94,4 @@ def test_mkdocs_loads_the_hook_by_path(tmp_path: Path, monkeypatch: pytest.Monke
     assert {file.src_uri for file in files} == {DATA_URI, LATEST_URI}
     data = files.get_file_from_path(DATA_URI)
     assert data is not None
-    assert json.loads(data.content_string)["runs"] == 2
+    assert json.loads(data.content_string)["runs"] == 3

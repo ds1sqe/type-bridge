@@ -2,12 +2,14 @@
 
 The data directory is a checkout of the ``perf-data`` branch::
 
-    runs/<YYYY-MM-DD>/<sha>-<trigger>.json   # one result per (commit, trigger)
+    runs/<YYYY-MM-DD>/<sha>-<trigger>.json   # one result per (date, commit, trigger)
     index.json                               # rebuilt from runs/ on every store
 
-The date is the run's ``started_at`` in UTC. Storing is idempotent per
-(commit, trigger): the same result again changes nothing, and a different
-result for the same pair (a re-run) replaces the earlier file.
+The date is the run's ``started_at`` in UTC. A run is identified by (date,
+commit, trigger), so nightly runs of an unchanged commit are kept as one
+point per day. Storing is idempotent per identity: the same result again
+changes nothing, and a different result with the same identity (a re-run on
+the same day) replaces the earlier file.
 
 ``index.json`` (format ``perf-index/v1``) holds, per metric id, its family,
 its unit and a series of ``{commit, version, trigger, at, value, unit}``
@@ -57,21 +59,18 @@ def store(data_dir: Path, document: dict[str, Any]) -> Stored:
     if errors := check(document).errors:
         raise StoreError("; ".join(errors))
     run = document["run"]
-    name = f"{run['commit']}-{run['trigger']}.json"
-    relative = Path(RUNS, _started_at(run).date().isoformat(), name)
+    relative = Path(
+        RUNS, _started_at(run).date().isoformat(), f"{run['commit']}-{run['trigger']}.json"
+    )
     target = data_dir / relative
     text = json.dumps(document, indent=2) + "\n"
 
-    earlier = sorted((data_dir / RUNS).glob(f"*/{name}"))
-    if earlier == [target] and target.read_text(encoding="utf-8") == text:
+    existed = target.is_file()
+    if existed and target.read_text(encoding="utf-8") == text:
         return Stored(relative, "unchanged")
-    for path in earlier:
-        path.unlink()
-        if not any(path.parent.iterdir()):
-            path.parent.rmdir()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8")
-    return Stored(relative, "replaced" if earlier else "added")
+    return Stored(relative, "replaced" if existed else "added")
 
 
 def build_index(data_dir: Path) -> dict[str, Any]:
