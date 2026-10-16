@@ -1,8 +1,11 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::thread;
+use std::time::Duration;
 
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::schema::DocumentId;
@@ -32,20 +35,34 @@ pub struct IsolatedDatabase {
 
 impl IsolatedDatabase {
     fn run(&self, mode: &str) -> Output {
-        let mut command = Command::new(&self.cargo);
-        command
-            .args(["run", "--locked", "--quiet", "--manifest-path"])
-            .arg(&self.manifest)
-            .arg("--")
-            .arg(mode)
-            .env("CARGO_TARGET_DIR", &self.target)
-            .env("TYPE_BRIDGE_TEST_ENV_PREFIX", self.env_prefix);
-        for (name, value) in &self.environment {
-            command.env(name, value);
+        // A test-written launcher can briefly report ETXTBSY while a sibling
+        // test thread's forked child still holds its write descriptor.
+        const EXECUTABLE_BUSY_RETRIES: u32 = 5;
+
+        for retry in 0..=EXECUTABLE_BUSY_RETRIES {
+            let mut command = Command::new(&self.cargo);
+            command
+                .args(["run", "--locked", "--quiet", "--manifest-path"])
+                .arg(&self.manifest)
+                .arg("--")
+                .arg(mode)
+                .env("CARGO_TARGET_DIR", &self.target)
+                .env("TYPE_BRIDGE_TEST_ENV_PREFIX", self.env_prefix);
+            for (name, value) in &self.environment {
+                command.env(name, value);
+            }
+            match command.output() {
+                Ok(output) => return output,
+                Err(error)
+                    if error.kind() == ErrorKind::ExecutableFileBusy
+                        && retry < EXECUTABLE_BUSY_RETRIES =>
+                {
+                    thread::sleep(Duration::from_millis(10 * (1_u64 << retry)));
+                }
+                Err(error) => panic!("C live database {mode} did not launch: {error}"),
+            }
         }
-        command
-            .output()
-            .unwrap_or_else(|error| panic!("C live database {mode} did not launch: {error}"))
+        unreachable!("the executable-busy retry loop always returns or panics")
     }
 
     pub fn setup(&mut self) {
