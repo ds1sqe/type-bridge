@@ -1228,6 +1228,229 @@ TYPE_BRIDGE_API void TYPE_BRIDGE_CALL
 type_bridge_pending_free(type_bridge_pending_t **pending);
 
 /*
+ * ABI 1.7: the plan builder. It forwards to the one core builder every SDK
+ * uses, so a program gives the same canonical query-plan/v3 bytes in C,
+ * Rust, Python and TypeScript:
+ * - Binding ids are dense in creation order. exact, subtypes, field, links,
+ *   compare and let add to the plan's single leading match in call order.
+ * - Write calls append stages in call order; consecutive update, insert, put
+ *   or delete calls share one stage.
+ * - Derived variable names come from labels (item, item_stock) with _2, _3,
+ *   ... on collision. input and let names are explicit and must be fresh.
+ * - A plan with writes answers MATCHED, or ROWS once returning names
+ *   columns. A read answers ROWS, or COUNT / EXISTS.
+ *
+ * Identities (types, owned fields, roles), values and expressions are
+ * registered once and named by dense ids in their own spaces. Operands are
+ * (kind, id) pairs: a binding, an input column, a registered value or, where
+ * an expression is accepted (let, expr_arith, expr_call), a registered
+ * expression. Labels, names and text values are UTF-8 views copied during
+ * the call. Doubles use exact IEEE-754 bits, Booleans exactly zero or one,
+ * and temporal and decimal values their canonical lexical forms.
+ *
+ * Calls never fail on content: an invalid label, constant, value or id still
+ * returns an id, and build reports the first such argument, else the core
+ * builder's first invalid call, else any plan validation failure, through
+ * its diagnostics. A call returns TYPE_BRIDGE_STATUS_INVALID_ARGUMENT only
+ * for a null builder or output slot, a view or array with null data and a
+ * non-zero length, or an output that overlaps the builder handle or an
+ * input. Output slots may be unaligned; a fenced output is cleared first.
+ * build returns a plan handle and leaves the builder usable. Builders are
+ * not thread-safe.
+ */
+typedef struct type_bridge_plan_builder type_bridge_plan_builder_t;
+
+#define TYPE_BRIDGE_PLAN_THING_ENTITY 1u
+#define TYPE_BRIDGE_PLAN_THING_RELATION 2u
+
+#define TYPE_BRIDGE_PLAN_OPERAND_NONE 0u
+#define TYPE_BRIDGE_PLAN_OPERAND_BINDING 1u
+#define TYPE_BRIDGE_PLAN_OPERAND_INPUT 2u
+#define TYPE_BRIDGE_PLAN_OPERAND_VALUE 3u
+#define TYPE_BRIDGE_PLAN_OPERAND_EXPR 4u
+
+#define TYPE_BRIDGE_PLAN_COMPARE_EQUAL 1u
+#define TYPE_BRIDGE_PLAN_COMPARE_NOT_EQUAL 2u
+#define TYPE_BRIDGE_PLAN_COMPARE_LESS 3u
+#define TYPE_BRIDGE_PLAN_COMPARE_LESS_OR_EQUAL 4u
+#define TYPE_BRIDGE_PLAN_COMPARE_GREATER 5u
+#define TYPE_BRIDGE_PLAN_COMPARE_GREATER_OR_EQUAL 6u
+
+#define TYPE_BRIDGE_PLAN_ARITH_ADD 1u
+#define TYPE_BRIDGE_PLAN_ARITH_SUB 2u
+#define TYPE_BRIDGE_PLAN_ARITH_MUL 3u
+#define TYPE_BRIDGE_PLAN_ARITH_DIV 4u
+#define TYPE_BRIDGE_PLAN_ARITH_MOD 5u
+#define TYPE_BRIDGE_PLAN_ARITH_POW 6u
+
+/* min and max take two arguments; the others take one and a second
+ * argument of kind TYPE_BRIDGE_PLAN_OPERAND_NONE. */
+#define TYPE_BRIDGE_PLAN_CALL_ABS 1u
+#define TYPE_BRIDGE_PLAN_CALL_CEIL 2u
+#define TYPE_BRIDGE_PLAN_CALL_FLOOR 3u
+#define TYPE_BRIDGE_PLAN_CALL_ROUND 4u
+#define TYPE_BRIDGE_PLAN_CALL_MIN 5u
+#define TYPE_BRIDGE_PLAN_CALL_MAX 6u
+#define TYPE_BRIDGE_PLAN_CALL_LENGTH 7u
+
+/* A row cell left absent (an optional input column). */
+#define TYPE_BRIDGE_PLAN_VALUE_ABSENT 0xFFFFFFFFu
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_new(type_bridge_plan_builder_t **out_builder);
+TYPE_BRIDGE_API void TYPE_BRIDGE_CALL
+type_bridge_plan_builder_free(type_bridge_plan_builder_t **builder);
+
+/* Identities: kind is TYPE_BRIDGE_PLAN_THING_*; owns and role take a
+ * registered type id (role takes the declaring relation). */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_type(type_bridge_plan_builder_t *builder,
+                              uint32_t kind, type_bridge_byte_view_t label,
+                              uint32_t *out_type);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_owns(type_bridge_plan_builder_t *builder,
+                              uint32_t owner_type,
+                              type_bridge_byte_view_t attribute,
+                              uint32_t *out_field);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_role(type_bridge_plan_builder_t *builder,
+                              uint32_t relation_type,
+                              type_bridge_byte_view_t role,
+                              uint32_t *out_role);
+
+/* Values: ids usable as TYPE_BRIDGE_PLAN_OPERAND_VALUE and as row cells. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_value_string(type_bridge_plan_builder_t *builder,
+                                      type_bridge_byte_view_t input,
+                                      uint32_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_value_long(type_bridge_plan_builder_t *builder,
+                                    int64_t input, uint32_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_value_double(type_bridge_plan_builder_t *builder,
+                                      uint64_t input_bits,
+                                      uint32_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_value_boolean(type_bridge_plan_builder_t *builder,
+                                       uint8_t input, uint32_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_value_date(type_bridge_plan_builder_t *builder,
+                                    type_bridge_byte_view_t input,
+                                    uint32_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_value_datetime(type_bridge_plan_builder_t *builder,
+                                        type_bridge_byte_view_t input,
+                                        uint32_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_value_datetime_tz(type_bridge_plan_builder_t *builder,
+                                           type_bridge_byte_view_t input,
+                                           uint32_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_value_decimal(type_bridge_plan_builder_t *builder,
+                                       type_bridge_byte_view_t input,
+                                       uint32_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_value_duration(type_bridge_plan_builder_t *builder,
+                                        type_bridge_byte_view_t input,
+                                        uint32_t *out_value);
+
+/* Match. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_exact(type_bridge_plan_builder_t *builder,
+                               uint32_t type, uint32_t *out_binding);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_subtypes(type_bridge_plan_builder_t *builder,
+                                  uint32_t type, uint32_t *out_binding);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_field(type_bridge_plan_builder_t *builder,
+                               uint32_t owner, uint32_t field,
+                               uint32_t *out_binding);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_links(type_bridge_plan_builder_t *builder,
+                               uint32_t relation, uint32_t role,
+                               uint32_t player);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_compare(type_bridge_plan_builder_t *builder,
+                                 uint32_t left_kind, uint32_t left,
+                                 uint32_t comparator, uint32_t right_kind,
+                                 uint32_t right);
+/* value_type is a type_bridge_projected_value_kind_t; optional is 0 or 1. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_input(type_bridge_plan_builder_t *builder,
+                               type_bridge_byte_view_t name,
+                               type_bridge_projected_value_kind_t value_type,
+                               uint8_t optional, uint32_t *out_input);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_let(type_bridge_plan_builder_t *builder,
+                             type_bridge_byte_view_t name, uint32_t kind,
+                             uint32_t id, uint32_t *out_binding);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_expr_arith(type_bridge_plan_builder_t *builder,
+                                    uint32_t op, uint32_t left_kind,
+                                    uint32_t left, uint32_t right_kind,
+                                    uint32_t right, uint32_t *out_expr);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_expr_call(type_bridge_plan_builder_t *builder,
+                                   uint32_t function, uint32_t first_kind,
+                                   uint32_t first, uint32_t second_kind,
+                                   uint32_t second, uint32_t *out_expr);
+
+/* Write. Field and player calls on a thing require an insert or put
+ * binding; update and thing_field take a plain operand. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_update(type_bridge_plan_builder_t *builder,
+                                uint32_t owner, uint32_t field,
+                                uint32_t operand_kind, uint32_t operand);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_update_player(type_bridge_plan_builder_t *builder,
+                                       uint32_t relation, uint32_t role,
+                                       uint32_t player);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_insert(type_bridge_plan_builder_t *builder,
+                                uint32_t type, uint32_t *out_binding);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_put(type_bridge_plan_builder_t *builder,
+                             uint32_t type, uint32_t *out_binding);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_thing_field(type_bridge_plan_builder_t *builder,
+                                     uint32_t thing, uint32_t field,
+                                     uint32_t operand_kind, uint32_t operand);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_thing_player(type_bridge_plan_builder_t *builder,
+                                      uint32_t thing, uint32_t role,
+                                      uint32_t player);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_delete(type_bridge_plan_builder_t *builder,
+                                uint32_t thing);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_delete_field(type_bridge_plan_builder_t *builder,
+                                      uint32_t owner, uint32_t field);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_delete_player(type_bridge_plan_builder_t *builder,
+                                       uint32_t relation, uint32_t role,
+                                       uint32_t player);
+
+/* Rows, output and build. A row holds one value id (or
+ * TYPE_BRIDGE_PLAN_VALUE_ABSENT) per input column, in column order. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_row(type_bridge_plan_builder_t *builder,
+                             const uint32_t *values, size_t count);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_returning(type_bridge_plan_builder_t *builder,
+                                   const uint32_t *bindings, size_t count);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_count(type_bridge_plan_builder_t *builder);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_exists(type_bridge_plan_builder_t *builder);
+/* Validates against the package's compiled declared schema and managed
+ * semantics, as the Rust SDK builds against its generated package. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_build(const type_bridge_plan_builder_t *builder,
+                               const type_bridge_schema_package_t *package,
+                               type_bridge_plan_t **out_plan,
+                               type_bridge_execution_diagnostics_t **out_diagnostics);
+
+/*
  * Immutable typed queries accept generated tokens only and keep all plans
  * opaque. TYPE_BRIDGE_QUERY_TERMINAL_FIRST is an explicit bounded-many
  * fetch with offset zero and limit one; it returns a rows result containing

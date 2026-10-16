@@ -39,6 +39,12 @@ pub struct TypeBridgePlan {
     canonical: Vec<u8>,
 }
 
+impl TypeBridgePlan {
+    pub(crate) fn new(plan: QueryPlanV3, canonical: Vec<u8>) -> Self {
+        Self { plan, canonical }
+    }
+}
+
 /// Opaque deferred transaction. Commit, rollback and close consume it.
 pub struct TypeBridgeStagedTransaction {
     transaction: Transaction,
@@ -65,7 +71,7 @@ pub enum TypeBridgePlanAnswerKind {
 pub const TYPE_BRIDGE_TRANSACTION_READ: u32 = 1;
 pub const TYPE_BRIDGE_TRANSACTION_WRITE: u32 = 2;
 
-fn invalid(code: &str, message: &'static str) -> SdkExecutionDiagnostic {
+pub(crate) fn invalid(code: &str, message: &'static str) -> SdkExecutionDiagnostic {
     let code = SdkDiagnosticCode::new(code)
         .or_else(|_| SdkDiagnosticCode::new("invalid_plan"))
         .expect("static diagnostic code is canonical");
@@ -73,7 +79,10 @@ fn invalid(code: &str, message: &'static str) -> SdkExecutionDiagnostic {
     SdkExecutionDiagnostic::invalid_input(code, message)
 }
 
-fn contract_error(diagnostic: &Diagnostic, message: &'static str) -> SdkExecutionDiagnostic {
+pub(crate) fn contract_error(
+    diagnostic: &Diagnostic,
+    message: &'static str,
+) -> SdkExecutionDiagnostic {
     invalid(diagnostic.code().as_str(), message)
 }
 
@@ -166,7 +175,7 @@ unsafe fn check_transaction(
 ///
 /// # Safety
 /// Each non-null output names one writable, possibly unaligned, pointer slot.
-unsafe fn prepare_handle_outputs<T>(
+pub(crate) unsafe fn prepare_handle_outputs<T>(
     out_handle: *mut *mut T,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
     inputs: impl FnOnce(&DirectOutputPreflight) -> Result<(), TypeBridgeStatus>,
@@ -288,7 +297,7 @@ pub unsafe extern "C" fn type_bridge_plan_v3_decode(
                 );
             }
         };
-        let handle = Box::new(TypeBridgePlan { plan, canonical });
+        let handle = Box::new(TypeBridgePlan::new(plan, canonical));
         // SAFETY: the output slot was fenced and initialized above.
         unsafe { out_plan.write_unaligned(Box::into_raw(handle)) };
         TypeBridgeStatus::Ok
@@ -350,7 +359,7 @@ pub unsafe extern "C" fn type_bridge_plan_free(plan: *mut *mut TypeBridgePlan) {
 /// # Safety
 /// A non-null slot is readable and writable (possibly unaligned) and holds
 /// null or a handle this library allocated.
-unsafe fn free_slot<T>(slot: *mut *mut T) {
+pub(crate) unsafe fn free_slot<T>(slot: *mut *mut T) {
     if slot.is_null() {
         return;
     }

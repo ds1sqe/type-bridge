@@ -14,6 +14,7 @@ mod execution_diagnostic;
 mod generated_preflight;
 mod migration_abi;
 mod migration_runtime;
+mod plan_builder;
 mod policy;
 mod projected_batch;
 mod projected_create_builder;
