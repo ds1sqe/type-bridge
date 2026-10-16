@@ -435,6 +435,13 @@ differently direct and through a proxy. Each entry says what to do instead.
   client holds at most `1 / IdempotencyConfig::client_share` (default 4) of
   the retained entries and bytes; past it, a new keyed request is refused
   with `idempotency_client_capacity`.
+- Server interceptors can authorize each staged plan with `on_v3_plan`,
+  which sees a redacted `V3PolicyPlan` (capabilities, touched types,
+  operation, writes; input rows only when `wants_v3_plan_rows` opts in) and
+  refuses the whole request before anything is reserved or opened, and can
+  observe each staged transaction's outcome with `on_v3_commit`
+  (`V3CommitOutcome`: committed, code, commit certainty, typed failure).
+  Both default to no-ops.
 
 ### Fixed
 

@@ -12,8 +12,12 @@ use crate::executor::QueryExecutor;
 use crate::interceptor::crud_interceptor::{CrudInterceptor, CrudInterceptorAdapter};
 use crate::interceptor::{Interceptor, InterceptorChain, RequestContext};
 #[cfg(feature = "v2-query")]
-use crate::interceptor::{V2PolicyOutcome, V2PolicyRequest};
+use crate::interceptor::{V2PolicyOutcome, V2PolicyRequest, V3CommitOutcome, V3PolicyPlan};
 use crate::schema_source::SchemaSource;
+
+/// `client_id` of a request no transport policy has identified. It names no
+/// one, so nothing may be retained or charged under it.
+pub(crate) const UNAUTHENTICATED_CLIENT_ID: &str = "unknown";
 
 /// Input for a structured (AST-based) query.
 pub struct QueryInput {
@@ -124,7 +128,7 @@ impl QueryPipeline {
         self.validate_v2_coverage()?;
         Ok(RequestContext {
             request_id: uuid::Uuid::new_v4().to_string(),
-            client_id: "unknown".to_owned(),
+            client_id: UNAUTHENTICATED_CLIENT_ID.to_owned(),
             database: self.default_database.clone(),
             transaction_type: "read".to_owned(),
             metadata,
@@ -195,6 +199,29 @@ impl QueryPipeline {
             .map_err(|error| PipelineError::Interceptor(error.to_string()))
     }
 
+    /// Run the staged plan policies for plan `index`. An interceptor error
+    /// refuses the request.
+    #[cfg(feature = "v2-query")]
+    pub async fn authorize_v3_plan(
+        &self,
+        index: usize,
+        plan: V3PolicyPlan<'_>,
+        context: &RequestContext,
+    ) -> Result<(), PipelineError> {
+        self.interceptor_chain
+            .execute_v3_plan(index, plan, context)
+            .await
+            .map_err(|error| PipelineError::Interceptor(error.to_string()))
+    }
+
+    /// Let every policy observe a staged transaction's outcome.
+    #[cfg(feature = "v2-query")]
+    pub async fn observe_v3_commit(&self, outcome: &V3CommitOutcome<'_>, context: &RequestContext) {
+        self.interceptor_chain
+            .execute_v3_commit(outcome, context)
+            .await;
+    }
+
     /// Run configured response and audit policies for every V2 outcome.
     #[cfg(feature = "v2-query")]
     pub async fn finish_v2_request(
@@ -218,7 +245,7 @@ impl QueryPipeline {
 
         let mut ctx = RequestContext {
             request_id: request_id.clone(),
-            client_id: "unknown".to_string(),
+            client_id: UNAUTHENTICATED_CLIENT_ID.to_owned(),
             database: database.clone(),
             transaction_type: input.transaction_type.clone(),
             metadata: input.metadata,

@@ -423,8 +423,23 @@ unchanged `/v2/capabilities` one. A write transaction opens only when an
 interceptor vouches for the caller (`Interceptor::on_v3_write_authority`
 answers `StagedWriteAuthority::Authenticated`) or `[v2]` sets
 `allow_unauthenticated_staged_writes = true`; otherwise the signed reply fails
-with `staged_write_not_authorized`. Staged replies do not yet carry fetched
-documents (`query_remote_v3_documents_unsupported`).
+with `staged_write_not_authorized`. Before each plan stages,
+`Interceptor::on_v3_plan` sees its index, required capabilities, touched
+types and operation, but no row values unless the policy returns `true` from
+`wants_v3_plan_rows`; a refusal fails the signed reply with
+`query_remote_policy_rejected`, stages nothing further and commits nothing.
+Once the outcome is known, the observe-only `Interceptor::on_v3_commit` sees
+`committed`, the diagnostic code, the commit certainty and the typed provider
+failure (such as an `STC2` conflict). Staged replies do not yet carry fetched
+documents (`query_remote_v3_documents_unsupported`). Execution enforces the
+advertised answer ceilings, tightened by the request's `max_items`,
+`max_bytes` and deadline, while answers are read. An idempotency key needs the
+same vouched caller a write does and a transport policy that set
+`RequestContext::client_id`, even on a read or under
+`allow_unauthenticated_staged_writes`; otherwise the signed reply fails with
+`staged_idempotency_not_authorized`. Once admitted, a request finishes in a
+detached task: a client that disconnects mid-commit still has its outcome
+observed and retained.
 
 ### Request
 
@@ -590,7 +605,16 @@ One client holds at most `1 / client_share` of the entries and of the bytes
 of retained replies); past its share a new keyed request receives
 `idempotency_client_capacity` while other clients keep theirs.
 The route reserves its largest possible signed success/failure byte allowance
-before executing. Completion releases unused allowance and stores the exact
+before executing: the server's answer byte ceiling, tightened by the request's
+`max_bytes`, and never below 64 KiB. A reply that would not fit is delivered
+and retained as the bounded failure (`commit_outcome_unknown` after a write).
+A reply the response policy withholds is retained as that refusal, so a retry
+never receives the withheld answer. A replay passes the response/audit policy
+again with the retained outcome, so a replayed failure is audited as that
+failure. Retention is clamped to the store's TTL
+when clock skew stretches a request past it; every executed request also holds
+its nonce for its whole lifetime, so a retry after retention lapsed is refused
+(as `commit_outcome_unknown` for a write) instead of executing again. Completion releases unused allowance and stores the exact
 opaque signed bytes. This prevents a transaction that committed from losing
 its reply because another request filled the byte quota during execution.
 Completion must fit the allowance; expiry, duplicate completion or a ticket

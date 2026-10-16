@@ -187,7 +187,7 @@ impl RemoteReplayStore for InMemoryReplayStore {
 pub struct V2QueryState {
     pub(super) advertisement: RemoteCapabilities,
     advertisement_fingerprint: RemoteCapabilitiesFingerprint,
-    ceilings: QueryV2AnswerLimits,
+    pub(super) ceilings: QueryV2AnswerLimits,
     pub(super) database: Database,
     pub(super) declared: DeclaredSchema,
     delta_context: ManagedDeltaContext,
@@ -1583,11 +1583,16 @@ mod tests {
     #[derive(Default)]
     struct BackendMetrics {
         fail_close: AtomicBool,
+        fail_commit: AtomicBool,
         fail_query: AtomicBool,
+        commits: AtomicUsize,
         schema_exports: AtomicUsize,
         transaction_opens: AtomicUsize,
         transaction_closes: AtomicUsize,
         query_executions: AtomicUsize,
+        /// While set, every commit waits for `release_commit`.
+        hold_commit: AtomicBool,
+        release_commit: tokio::sync::Notify,
         /// Rows every query answers with; empty by default.
         rows: Mutex<Vec<serde_json::Value>>,
     }
@@ -1694,6 +1699,29 @@ mod tests {
 
         fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
             Box::pin(async { Ok(()) })
+        }
+
+        /// A failing commit reports the provider's redacted STC2 rendering.
+        fn commit_classified(
+            &mut self,
+        ) -> BoxFuture<'_, Result<(), type_bridge_orm::ClassifiedCommitError>> {
+            if self.metrics.fail_commit.load(Ordering::SeqCst) {
+                return Box::pin(async {
+                    Err(type_bridge_orm::ClassifiedCommitError::Driver {
+                        certainty: type_bridge_orm::CommitFailureCertainty::DefinitelyAborted,
+                        message: "[STC2] TypeDB commit rejected: isolation conflict".into(),
+                    })
+                });
+            }
+            let hold = self.metrics.hold_commit.load(Ordering::SeqCst);
+            let metrics = Arc::clone(&self.metrics);
+            Box::pin(async move {
+                if hold {
+                    metrics.release_commit.notified().await;
+                }
+                metrics.commits.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
         }
 
         fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
