@@ -874,6 +874,26 @@ run_live_lane() {
                 staged_plans_race_like_the_concurrency_guide_on_3_13_6 \
                 --manifest-path type-bridge-core/Cargo.toml --locked \
                 -p type-bridge-orm --test plan_race_live
+        run_step "C ABI 1.7 staged contract plans (TypeDB 3.13.6)" \
+            run_with_timeout 10m \
+            env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+                TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
+                TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE=typedb-3.13.6/v1 \
+                TYPE_BRIDGE_C_INTG_DATABASE="type_bridge_c_staged_live_${$}" \
+            bash scripts/ci/run_exact_ignored_rust_test.sh \
+                live_c17_consumer_stages_and_commits_contract_v3_plans \
+                --manifest-path type-bridge-core/Cargo.toml --locked \
+                -p type-bridge-c --test schema_package_abi
+        run_step "C ABI 1.7 builder purchase race (TypeDB 3.13.6)" \
+            run_with_timeout 10m \
+            env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+                TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
+                TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE=typedb-3.13.6/v1 \
+                TYPE_BRIDGE_C_INTG_DATABASE="type_bridge_c_builder_live_${$}" \
+            bash scripts/ci/run_exact_ignored_rust_test.sh \
+                live_c17_consumer_builds_stages_and_races_the_purchase \
+                --manifest-path type-bridge-core/Cargo.toml --locked \
+                -p type-bridge-c --test schema_package_abi
     fi
 
     run_step "cargo test -p type-bridge-orm --features integration-tests --test integration" \

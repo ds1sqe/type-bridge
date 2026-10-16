@@ -111,7 +111,9 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
         "typedb::client::tests::integration_classified_commit_isolation_conflict",
     ):
         assert workflow.count(selector) == 1
-    assert local.count(gate_call) == 18
+    assert local.count(gate_call) == 20
+    assert local.count("live_c17_consumer_stages_and_commits_contract_v3_plans") == 1
+    assert local.count("live_c17_consumer_builds_stages_and_races_the_purchase") == 1
     assert local.count("racing_lease_acquirers_serialize_on_the_control_row") == 1
     assert local.count("staged_plans_race_like_the_concurrency_guide_on_3_13_6") == 1
     assert local.count("concurrency_guide_snippets_run_on_3_13_6") == 1
