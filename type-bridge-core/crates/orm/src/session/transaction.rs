@@ -27,6 +27,12 @@ impl OwnedTransaction {
         self.inner.query(typeql).await
     }
 
+    /// Hand the provider transaction back to its owner, or `None` when this
+    /// transaction already consumed it by committing or closing.
+    pub(crate) fn into_provider(self) -> Option<Box<dyn TransactionOps>> {
+        self.inner.into_provider()
+    }
+
     /// Borrow the provider boundary without transferring transaction lifecycle ownership.
     pub(crate) fn provider_mut(&mut self) -> Result<&mut (dyn TransactionOps + 'static)> {
         self.inner.provider_mut()

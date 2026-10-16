@@ -90,6 +90,11 @@ impl EagerTransaction {
             .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))
     }
 
+    /// Hand the provider back without closing it; `None` once consumed.
+    pub(crate) fn into_provider(mut self) -> Option<Box<dyn TransactionOps>> {
+        self.inner.take()
+    }
+
     pub(crate) fn provider_ref(&self) -> Result<&dyn TransactionOps> {
         self.inner
             .as_deref()

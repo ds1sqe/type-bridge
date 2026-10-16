@@ -872,13 +872,13 @@ pub trait TransactionOps: Send {
     fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>>;
 }
 
-fn resource_error(code: &'static str, message: &'static str) -> OrmError {
+pub(super) fn resource_error(code: &'static str, message: &'static str) -> OrmError {
     MatchError::new(MatchErrorCategory::ResourceLimit, code, message)
         .at(MatchErrorPathSegment::ProviderEvidence)
         .into()
 }
 
-fn cancelled_error(code: &'static str, message: &'static str) -> OrmError {
+pub(super) fn cancelled_error(code: &'static str, message: &'static str) -> OrmError {
     MatchError::new(MatchErrorCategory::Cancelled, code, message)
         .at(MatchErrorPathSegment::ProviderEvidence)
         .into()

@@ -930,6 +930,99 @@ async fn selected_page_and_total_remain_on_one_read_snapshot_across_a_concurrent
 }
 
 #[tokio::test]
+async fn staged_reads_in_one_write_transaction_see_earlier_writes_with_consistent_pages() {
+    use type_bridge_orm::session::staged::{
+        PendingError, StagedQuery, TransactionKind, TransactionOptions,
+    };
+    let _guard = crate::common::integration_test_guard().await;
+    let (db, schema) = setup_dynamic_database("staged-read-write-read").await;
+    let descriptor = schema.person_descriptor();
+    let manager = DynamicEntityManager::new(&db, descriptor.clone());
+    manager
+        .insert(&person_attrs("StagedBefore", 20))
+        .await
+        .expect("initial entity should commit");
+    let registry = DescriptorRegistry::new();
+    registry
+        .register_entity(descriptor.as_ref().clone())
+        .expect("integration descriptor should register");
+    let root = BindingId::new(0);
+    let page = || {
+        validate_match_request(
+            &registry,
+            MatchRequest::v1(
+                MatchPlan {
+                    bindings: vec![MatchBinding {
+                        id: root,
+                        descriptor: registry.descriptor_id(&schema.person_type).unwrap(),
+                        thing_kind: ThingKind::Entity,
+                        match_mode: MatchMode::Exact,
+                    }],
+                    predicate: None,
+                    allowed_cross_joins: BTreeSet::new(),
+                },
+                MatchOperation::PageBy {
+                    root,
+                    output: FetchShape::Positional {
+                        slots: vec![FetchSlot::One { binding: root }],
+                    },
+                    order: Vec::new(),
+                    window: Window {
+                        offset: 0,
+                        limit: 10,
+                    },
+                    include_total: true,
+                },
+            ),
+        )
+        .expect("page request should validate")
+    };
+    let page_shape = |pending: &type_bridge_orm::session::staged::Pending<ValidatedMatchResult>| {
+        let result = pending
+            .get()
+            .expect("staged page should resolve after commit");
+        let MatchResult::Page { entries, total, .. } = result.result() else {
+            panic!("expected page result")
+        };
+        (entries.len(), *total)
+    };
+
+    let mut tx = db.transaction(TransactionOptions::default().with_kind(TransactionKind::Write));
+    let before = tx.stage_match(&registry, page()).unwrap();
+    tx.stage(StagedQuery::new(
+        format!(
+            "insert $p isa {}, has {} \"StagedAfter\", has {} 31;",
+            schema.person_type, schema.name_attr, schema.age_attr
+        ),
+        true,
+    ))
+    .unwrap();
+    let after = tx.stage_match(&registry, page()).unwrap();
+    assert!(matches!(after.get(), Err(PendingError::NotCommitted)));
+    tx.commit()
+        .await
+        .expect("staged read-write-read should commit");
+    assert_eq!(page_shape(&before), (1, Some(1)));
+    assert_eq!(page_shape(&after), (2, Some(2)));
+    let committed = db
+        .execute_match(&registry, &page())
+        .await
+        .expect("fresh read should execute");
+    let MatchResult::Page { total, .. } = committed.result() else {
+        panic!("expected page result")
+    };
+    assert_eq!(*total, Some(2));
+
+    let mut schema_tx =
+        db.transaction(TransactionOptions::default().with_kind(TransactionKind::Schema));
+    let Err(PendingError::NotAllowedInKind(diagnostic)) = schema_tx.stage_match(&registry, page())
+    else {
+        panic!("schema transactions refuse staged typed reads")
+    };
+    assert_eq!(diagnostic.code().as_str(), "borrowed_target_not_read_only");
+}
+
+#[tokio::test]
 async fn selected_owned_execution_recovers_after_real_resource_failures() {
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("selected-owned-resource").await;

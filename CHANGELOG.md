@@ -411,6 +411,15 @@ differently direct and through a proxy. Each entry says what to do instead.
   suite drops its pure-Python comparison benches and
   `benchmarks/run_benchmarks.py` with its TOML reports, and the `benchmark`
   pytest marker is gone: run `uv run pytest benchmarks --benchmark-only`.
+- Rust staged transactions run `query-plan/v3` programs and typed reads.
+  `Transaction::stage_plan` lowers a plan to one provider query when it is
+  staged and resolves to a `PlanAnswer` (`Rows`, `Count`, `Exists` or
+  `Matched`) only after the commit succeeds; plan inputs need the TypeDB
+  3.12+ `given` stage. `Transaction::stage_match` stages a validated typed
+  read, including in a `Write` transaction, where it sees the writes staged
+  before it. Staged reads honour the transaction's answer limits, deadline
+  and cancellation. A `Schema` transaction refuses both with
+  `borrowed_target_not_read_only`.
 
 ### Fixed
 

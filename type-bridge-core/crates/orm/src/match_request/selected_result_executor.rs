@@ -96,6 +96,20 @@ impl MatchExecutionLimits {
         self
     }
 
+    /// Tighten these limits by an enclosing transaction's bounded answer
+    /// limits: the smaller row and byte caps, and the earlier deadline.
+    /// The enclosing cancellation is raced by that transaction's owner.
+    pub(crate) fn bounded_by(mut self, enclosing: &BoundedAnswerLimits) -> Self {
+        self.policy.items = self.policy.items.min(enclosing.max_items);
+        self.policy.bytes = self.policy.bytes.min(enclosing.max_bytes);
+        let deadline = match (self.deadline(), enclosing.deadline) {
+            (Some(own), Some(enclosing)) => Some(own.min(enclosing)),
+            (own, enclosing) => own.or(enclosing),
+        };
+        self.absolute_deadline = deadline.map(QueryExecutionDeadline::from_instant);
+        self
+    }
+
     fn deadline(&self) -> Option<Instant> {
         self.absolute_deadline
             .map(QueryExecutionDeadline::instant)
@@ -375,6 +389,44 @@ impl<'a> SelectedResultExecutor<'a> {
         database: &Database,
         validated: &ValidatedMatchRequest,
     ) -> Result<ValidatedMatchResult, OrmError> {
+        let adapted = self.adapt_owned(validated, database.supports_given_stage())?;
+        self.execute_adapted_owned(database, validated, &adapted)
+            .await
+    }
+
+    /// Execute one validated request as a staged program on the commit's
+    /// provider transaction.
+    ///
+    /// The registry is the snapshot the program took when it was staged.
+    /// Any transaction kind but `Schema` (refused at staging) is allowed:
+    /// commit is the only executor, so nothing interleaves the program's
+    /// statements and its answer is published only after the commit.
+    pub(crate) async fn execute_compatible_staged(
+        &self,
+        transaction: &mut Transaction,
+        validated: &ValidatedMatchRequest,
+        supports_given_stage: bool,
+    ) -> Result<ValidatedMatchResult, OrmError> {
+        let result = async {
+            let adapted = self.adapt_owned(validated, supports_given_stage)?;
+            self.execute_adapted_transaction(
+                transaction,
+                validated,
+                &adapted,
+                self.limits.deadline(),
+            )
+            .await
+        }
+        .await;
+        result.map_err(|error| self.limits.annotate_refusal(error))
+    }
+
+    /// Check and adapt one request for a transaction this executor owns.
+    fn adapt_owned(
+        &self,
+        validated: &ValidatedMatchRequest,
+        supports_given_stage: bool,
+    ) -> Result<AdaptedMatchRequest, OrmError> {
         self.check_lifecycle_budget()?;
         validated.recheck_schema(self.registry)?;
         if validated
@@ -383,7 +435,7 @@ impl<'a> SelectedResultExecutor<'a> {
             && (!self
                 .available_capabilities
                 .contains(Capability::SchemaFunctionCall)
-                || !database.supports_given_stage())
+                || !supports_given_stage)
         {
             return Err(super::capability::schema_function_given_rows_unsupported().into());
         }
@@ -393,10 +445,8 @@ impl<'a> SelectedResultExecutor<'a> {
         let authority = MatchRequestAdapterAuthority::from_registry(self.registry)
             .map_err(adapter_diagnostic)?;
         self.check_lifecycle_budget()?;
-        let adapted = adapt_match_request(validated, self.registry, &authority.context())
-            .map_err(adapter_diagnostic)?;
-        self.execute_adapted_owned(database, validated, &adapted)
-            .await
+        adapt_match_request(validated, self.registry, &authority.context())
+            .map_err(adapter_diagnostic)
     }
 
     /// Borrowed counterpart of [`Self::execute_compatible_owned`].
@@ -3339,6 +3389,46 @@ mod tests {
         assert_eq!(events.opens, 1);
         assert_eq!(events.root_statements.len(), 1);
         assert_eq!(events.closes, 1);
+    }
+
+    #[tokio::test]
+    async fn staged_reads_run_under_the_transaction_row_cap_and_deadline() {
+        use crate::session::staged::TransactionOptions;
+
+        let registry = person_registry();
+        let count = || {
+            validate_match_request(
+                &registry,
+                person_root_request(&registry, |root| MatchOperation::CountBy { root }),
+            )
+            .unwrap()
+        };
+        let (capped, events) = database(CapabilitySet::all(), vec![Ok(vec![])], vec![]);
+        let mut tx = capped.transaction(TransactionOptions::default().with_answer_limits(
+            BoundedAnswerLimits {
+                max_items: 7,
+                max_bytes: 4096,
+                ..BoundedAnswerLimits::default()
+            },
+        ));
+        let counted = tx.stage_match(&registry, count()).unwrap();
+        tx.commit().await.unwrap();
+        assert!(counted.get().is_ok());
+        assert_eq!(events.lock().unwrap().root_limits, [(7, 4096)]);
+
+        // An expired transaction deadline refuses the read before provider work,
+        // although the read's own default timeout has not elapsed.
+        let (expired, events) = database(CapabilitySet::all(), vec![Ok(vec![])], vec![]);
+        let mut tx =
+            expired.transaction(TransactionOptions::default().with_answer_timeout(Duration::ZERO));
+        let refused = tx.stage_match(&registry, count()).unwrap();
+        let error = tx.commit().await.unwrap_err();
+        let crate::error::ClassifiedCommitError::Orm(OrmError::Match(error)) = *error.error else {
+            panic!("a typed deadline refusal");
+        };
+        assert_eq!(error.code().as_str(), "transaction_deadline_exceeded");
+        assert!(refused.get().is_err());
+        assert!(events.lock().unwrap().root_statements.is_empty());
     }
 
     #[tokio::test]
