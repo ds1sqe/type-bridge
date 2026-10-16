@@ -121,7 +121,12 @@ pub enum WriteReturns {
     Rows,
 }
 
-/// Every capability derivable from closed V3 syntax.
+/// Every capability derivable from closed V3 syntax that a staged
+/// endpoint advertises.
+///
+/// `query.fetch.thing` (a [`Stage::Fetch`]) is derived but not advertised
+/// yet: proxies refuse fetch plans at capability admission until they are
+/// served remotely.
 #[must_use]
 pub fn query_plan_v3_capability_vocabulary() -> CapabilitySet {
     query_plan_v2_capability_vocabulary()
@@ -217,6 +222,49 @@ pub enum DeleteItem {
     },
 }
 
+/// One role whose players a thing document lists.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+pub struct DocumentRole {
+    /// Declared role.
+    pub role: RoleId,
+    /// Whether the role must be filled; an unfilled required role drops
+    /// the row, an unfilled optional one omits its keys.
+    pub required: bool,
+}
+
+impl DocumentRole {
+    /// One listed role.
+    #[must_use]
+    pub const fn new(role: RoleId, required: bool) -> Self {
+        Self { role, required }
+    }
+}
+
+/// The hydration document of one thing: its IID, exact type label, every
+/// owned attribute and, for a relation, the players of the listed roles.
+///
+/// The document keys are fixed: `_iid`, `_type`, `attributes`, and for the
+/// role at position `N` of `roles`: `_role_N_iid`, `_role_N_type` and
+/// `_role_N_attributes`. A role with several players yields one document per
+/// player combination.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+pub struct ThingDocument {
+    /// Entity or relation binding to describe.
+    pub thing: BindingId,
+    /// Listed roles, in key order.
+    pub roles: Vec<DocumentRole>,
+}
+
+impl ThingDocument {
+    /// Describe one thing and the players of `roles`.
+    #[must_use]
+    pub const fn new(thing: BindingId, roles: Vec<DocumentRole>) -> Self {
+        Self { thing, roles }
+    }
+}
+
 /// Ordered V3 pipeline vocabulary. Read tails retain the V2 order.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -280,6 +328,9 @@ pub enum Stage {
         /// Maximum number of rows.
         rows: u64,
     },
+    /// Fetch one thing document per row. Terminal; the plan's output is then
+    /// empty rows and its answer is the documents.
+    Fetch(ThingDocument),
 }
 
 impl From<ReadStage> for Stage {
@@ -496,6 +547,7 @@ impl QueryPlanV3 {
                 Stage::Update { .. } => "query.write.update",
                 Stage::Delete { .. } => "query.write.delete",
                 Stage::Put { .. } => "query.write.put",
+                Stage::Fetch(_) => "query.fetch.thing",
                 _ => continue,
             };
             insert_capability(&mut required_capabilities, capability)?;
@@ -676,6 +728,7 @@ fn validate_stages(
     let mut scalar_types = BTreeMap::new();
     let mut read_tail = Vec::new();
     let mut reading = false;
+    let mut fetched: Option<&ThingDocument> = None;
     if !matches!(
         first,
         Stage::Match { .. } | Stage::Insert { .. } | Stage::Put { .. }
@@ -906,6 +959,41 @@ fn validate_stages(
                     }
                 }
             }
+            Stage::Fetch(document) => {
+                if stage_index + 1 != spec.pipeline.len() {
+                    return Err(invalid(
+                        "query_plan_fetch_not_last",
+                        "a thing fetch is the last stage",
+                    ));
+                }
+                if !matches!(
+                    spec.operation,
+                    Operation::Rows
+                        | Operation::Write {
+                            returns: WriteReturns::Rows
+                        }
+                ) || !matches!(&spec.output, QueryOutput::Rows { columns } if columns.is_empty())
+                {
+                    return Err(invalid(
+                        "query_plan_fetch_output",
+                        "a thing fetch answers rows with an empty declared output",
+                    ));
+                }
+                check_binding(document.thing, spec.bindings.len())?;
+                nonempty(document.roles.len() + 1, limits, nodes)?;
+                for (index, role) in document.roles.iter().enumerate() {
+                    if document.roles[..index]
+                        .iter()
+                        .any(|earlier| earlier.role == role.role)
+                    {
+                        return Err(invalid(
+                            "query_plan_fetch_duplicate_role",
+                            "a thing fetch lists each role once",
+                        ));
+                    }
+                }
+                fetched = Some(document);
+            }
             _ => {
                 reading = true;
                 read_tail.push(stage.read_stage().expect("read stage"));
@@ -930,7 +1018,9 @@ fn validate_stages(
             "offset and limit require explicit sort",
         ));
     }
-    if !matches!(&spec.output, QueryOutput::Rows { columns } if columns.is_empty() && matches!(spec.operation,Operation::Count|Operation::Exists|Operation::Write{returns:WriteReturns::Matched}))
+    if let Some(document) = fetched {
+        index.thing_document(document, &mandatory, &optional, &types)?;
+    } else if !matches!(&spec.output, QueryOutput::Rows { columns } if columns.is_empty() && matches!(spec.operation,Operation::Count|Operation::Exists|Operation::Write{returns:WriteReturns::Matched}))
     {
         validate_output(&spec.output, &mandatory, &optional, limits.structural)?;
     }
@@ -1167,6 +1257,56 @@ impl<'a> SchemaIndex<'a> {
         }
         Ok(())
     }
+    /// The fetched thing is a present entity or relation; every listed role
+    /// is declared by a relation type the thing can be.
+    fn thing_document(
+        &self,
+        document: &ThingDocument,
+        mandatory: &BTreeSet<BindingId>,
+        optional: &BTreeSet<BindingId>,
+        types: &BTreeMap<BindingId, BTreeSet<TypeId>>,
+    ) -> Result<(), Diagnostic> {
+        let candidates = types
+            .get(&document.thing)
+            .filter(|candidates| {
+                mandatory.contains(&document.thing)
+                    && !optional.contains(&document.thing)
+                    && !candidates.is_empty()
+                    && candidates.iter().all(|type_id| {
+                        matches!(type_id.kind(), TypeKind::Entity | TypeKind::Relation)
+                    })
+            })
+            .ok_or_else(|| {
+                invalid(
+                    "query_plan_fetch_untyped_thing",
+                    "a thing fetch requires a present entity or relation binding",
+                )
+            })?;
+        for listed in &document.roles {
+            let owner = TypeId::new(
+                TypeKind::Relation,
+                listed.role.declaring_relation().as_str(),
+            )?;
+            let relates = RelatesFactId::new(owner.clone(), listed.role.clone())?;
+            if self.schema.fact(&SchemaFactId::Relates(relates)).is_none() {
+                return Err(invalid(
+                    "query_plan_undeclared_relates",
+                    "fetched role is not declared",
+                ));
+            }
+            if candidates
+                .iter()
+                .any(|id| !self.ancestors(id).contains(&owner))
+            {
+                return Err(invalid(
+                    "query_plan_wrong_role_owner",
+                    "role does not belong to the relation type",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn role(
         &self,
         relation: BindingId,
@@ -1445,6 +1585,31 @@ fn decode_stage(value: serde_json::Value) -> Result<Stage, Diagnostic> {
         });
     }
 
+    if value.get("kind").and_then(serde_json::Value::as_str) == Some("fetch") {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RoleWire {
+            required: bool,
+            role: RoleIdWire,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct FetchWire {
+            kind: String,
+            roles: Vec<RoleWire>,
+            thing: u16,
+        }
+        let wire: FetchWire = serde_json::from_value(value)
+            .map_err(|_| invalid("invalid_canonical_value", "invalid fetch stage"))?;
+        debug_assert_eq!(wire.kind, "fetch");
+        return Ok(Stage::Fetch(ThingDocument::new(
+            BindingId::new(wire.thing)?,
+            wire.roles
+                .into_iter()
+                .map(|role| Ok(DocumentRole::new(role.role.rebuild()?, role.required)))
+                .collect::<Result<_, Diagnostic>>()?,
+        )));
+    }
     if matches!(
         value.get("kind").and_then(serde_json::Value::as_str),
         Some("insert" | "update" | "delete" | "put")

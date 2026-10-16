@@ -14,7 +14,7 @@ use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId};
 use type_bridge_contract::query_plan::v3::{
     ArithOp, Builtin, DeleteItem, Expr, InsertThing, Operation, Pattern, QueryPlanV3, Set, Stage,
-    WriteReturns,
+    ThingDocument, WriteReturns,
 };
 use type_bridge_contract::query_plan::{
     DocumentSource, InputColumn, OrderDirection, QueryOperand, QueryOutput, QueryPattern,
@@ -258,6 +258,7 @@ pub(crate) fn lower(plan: &QueryPlanV3) -> Result<(tql::Query, Option<GivenRowsS
             }
             Stage::Offset { rows } => stages.push(tql::offset(*rows)),
             Stage::Limit { rows } => stages.push(tql::limit(*rows)),
+            Stage::Fetch(document) => scope.fetch(document, &mut stages)?,
         }
     }
     let projects = matches!(
@@ -529,6 +530,73 @@ impl Scope<'_> {
         }
     }
 
+    /// A thing document binds the exact type and each listed role's player
+    /// (optional roles inside `try`) in one match, then fetches the fixed
+    /// keys. Generated names are uppercase, so they cannot collide with
+    /// validated lowercase plan variables.
+    fn fetch(
+        &self,
+        document: &ThingDocument,
+        stages: &mut Vec<tql::Stage>,
+    ) -> Result<(), Diagnostic> {
+        const TYPE: &str = "PlanFetchType";
+        let thing = self.name(document.thing)?;
+        let mut patterns = vec![ast(tql::thing(
+            thing,
+            vec![ast(tql::isa(&format!("${TYPE}"), true))?],
+        ))?];
+        let mut keys = vec![
+            "_iid".to_owned(),
+            "_type".to_owned(),
+            "attributes".to_owned(),
+        ];
+        let mut values = vec![
+            tql::fetch_expr(ast(tql::function("iid", vec![ast(tql::var(thing))?]))?),
+            tql::fetch_expr(ast(tql::function("label", vec![ast(tql::var(TYPE))?]))?),
+            ast(tql::fetch_attributes(thing))?,
+        ];
+        for (index, listed) in document.roles.iter().enumerate() {
+            let player = format!("PlanFetchRole{index}");
+            let player_type = format!("PlanFetchRole{index}Type");
+            let bound = vec![
+                ast(tql::thing(
+                    thing,
+                    vec![ast(tql::links(vec![(
+                        listed.role.label().as_str(),
+                        player.as_str(),
+                    )]))?],
+                ))?,
+                ast(tql::thing(
+                    &player,
+                    vec![ast(tql::isa(&format!("${player_type}"), true))?],
+                ))?,
+            ];
+            if listed.required {
+                patterns.extend(bound);
+            } else {
+                patterns.push(tql::optional(bound));
+            }
+            keys.extend([
+                format!("_role_{index}_iid"),
+                format!("_role_{index}_type"),
+                format!("_role_{index}_attributes"),
+            ]);
+            values.extend([
+                tql::fetch_expr(ast(tql::function("iid", vec![ast(tql::var(&player))?]))?),
+                tql::fetch_expr(ast(tql::function(
+                    "label",
+                    vec![ast(tql::var(&player_type))?],
+                ))?),
+                ast(tql::fetch_attributes(&player))?,
+            ]);
+        }
+        stages.push(tql::match_stage(patterns));
+        stages.push(ast(tql::fetch(
+            keys.iter().map(String::as_str).zip(values).collect(),
+        ))?);
+        Ok(())
+    }
+
     /// An ownership deletion binds every value of that ownership in a
     /// preceding optional match. Owners without a value keep their row, so
     /// later stages and `Matched` still see them; each additional value of a
@@ -627,6 +695,24 @@ mod tests {
         );
         let count = race::stock_read(Operation::Count);
         assert_same_ast(&typeql(&count).0, race::STOCK_READ_TYPEQL);
+    }
+
+    #[test]
+    fn thing_fetch_lowers_to_the_released_read_back_shape() {
+        assert_same_ast(
+            &typeql(&race::purchase_fetch()).0,
+            race::PURCHASE_FETCH_TYPEQL,
+        );
+        let (touch, _) = typeql(&race::touch_fetch());
+        assert_same_ast(
+            &touch,
+            &format!(
+                "{} match $doctor isa! $PlanFetchType; \
+                 fetch {{ \"_iid\": iid($doctor), \"_type\": label($PlanFetchType), \
+                 \"attributes\": {{ $doctor.* }} }};",
+                race::TOUCH_TYPEQL
+            ),
+        );
     }
 
     #[test]

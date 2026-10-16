@@ -11,8 +11,8 @@ use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
 use type_bridge_contract::query_plan::v3::{
-    ArithOp, DeleteItem, Expr, InsertThing, Operation, Pattern, PlanSpec, QueryPlanV3, Set, Stage,
-    WriteReturns,
+    ArithOp, DeleteItem, DocumentRole, Expr, InsertThing, Operation, Pattern, PlanSpec,
+    QueryPlanV3, Set, Stage, ThingDocument, WriteReturns,
 };
 use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, QueryOperand, QueryOutput, QueryPattern,
@@ -390,6 +390,59 @@ pub fn touch_rows() -> QueryPlanV3 {
     )
     .unwrap()
 }
+
+/// The touch, answering each touched doctor's hydration document.
+pub fn touch_fetch() -> QueryPlanV3 {
+    let mut plan = touch_spec(
+        vec![],
+        Operation::Write {
+            returns: WriteReturns::Rows,
+        },
+    );
+    plan.pipeline
+        .push(Stage::Fetch(ThingDocument::new(id(0), vec![])));
+    QueryPlanV3::new(plan, &schema()).unwrap()
+}
+
+/// Every purchase with its buyer (required) and item (optional) documents.
+pub fn purchase_fetch() -> QueryPlanV3 {
+    QueryPlanV3::new(
+        spec(
+            &["purchase"],
+            vec![
+                Stage::Match {
+                    patterns: vec![isa(0, purchase_type())],
+                },
+                Stage::Fetch(ThingDocument::new(
+                    id(0),
+                    vec![
+                        DocumentRole::new(role("buyer"), true),
+                        DocumentRole::new(role("item"), false),
+                    ],
+                )),
+            ],
+            Operation::Rows,
+            vec![],
+        ),
+        &schema(),
+    )
+    .unwrap()
+}
+
+/// What `purchase_fetch` lowers to: the released read-back shape.
+pub const PURCHASE_FETCH_TYPEQL: &str = r#"match
+  $purchase isa! purchase;
+match
+  $purchase isa! $PlanFetchType;
+  $purchase links (buyer: $PlanFetchRole0); $PlanFetchRole0 isa! $PlanFetchRole0Type;
+  try { $purchase links (item: $PlanFetchRole1); $PlanFetchRole1 isa! $PlanFetchRole1Type; };
+fetch {
+  "_iid": iid($purchase), "_type": label($PlanFetchType), "attributes": { $purchase.* },
+  "_role_0_iid": iid($PlanFetchRole0), "_role_0_type": label($PlanFetchRole0Type),
+  "_role_0_attributes": { $PlanFetchRole0.* },
+  "_role_1_iid": iid($PlanFetchRole1), "_role_1_type": label($PlanFetchRole1Type),
+  "_role_1_attributes": { $PlanFetchRole1.* }
+};"#;
 
 /// Delete the price of item `I1`.
 pub fn drop_price() -> QueryPlanV3 {

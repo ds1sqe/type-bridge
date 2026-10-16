@@ -477,6 +477,10 @@ differently direct and through a proxy. Each entry says what to do instead.
 - `query-plan/v3` match stages accept an `iid` pattern that identifies an
   already typed entity or relation binding by its canonical IID
   (`query.pattern.iid`).
+- `query-plan/v3` gains a terminal `fetch` stage that answers a thing's
+  hydration document (IID, exact type, owned attributes, and the players of
+  listed roles) in the same pipeline (`query.fetch.thing`, not yet
+  advertised by proxies).
 
 ### Fixed
 

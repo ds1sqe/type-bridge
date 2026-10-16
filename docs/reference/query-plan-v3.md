@@ -178,6 +178,7 @@ follow in any order before the read tail. Write stage payloads are nonempty.
 | insert, put | `things:[Thing,...]` |
 | update | `sets:[Set,...]` |
 | delete | `items:[Delete,...]` |
+| fetch | `thing:B`, `roles:[{"role":R,"required":boolean},...]` |
 
 A Thing has `binding`, `type_id`, `fields`, `players`. Fields are ordered pairs
 `[[ownership,operand],...]`; players are ordered pairs `[[role,binding],...]`.
@@ -196,6 +197,18 @@ its binding lifetime after that stage; scalar let/function results are not
 thing deletion targets; later stages/output cannot refer to it.
 Ownership/link deletion leaves the owner/relation alive. All inferred possible
 owner/player types must satisfy the requested fact; inference is conservative.
+
+A fetch is the last stage. It answers one hydration document per row for a
+present entity or relation binding, so the operation is `rows` or
+`write` returning `rows`, and the declared output is `{"kind":"rows",
+"columns":[]}`. Each listed role is declared by a relation type the thing
+can be, and appears once. Document keys are fixed: `_iid`, `_type` (the
+exact type label), `attributes` (every owned attribute), and for the role at
+position `N`: `_role_N_iid`, `_role_N_type`, `_role_N_attributes`. A required
+role must be filled; an optional role's keys are absent when it is unfilled;
+several players of a role give one document per player combination. A fetch
+adds `query.fetch.thing`, which proxies do not advertise yet: a staged
+request carrying a fetch is refused at capability admission.
 
 The read tail is an ordered subsequence of this list, each stage at most once:
 
@@ -324,6 +337,7 @@ are illustrative forms, not a snapshot read followed by a separate mutation.
 | field / role update | `update $x has score == $next;` / `update $r links (member: $new);` |
 | delete thing / ownership / link | `delete $x;` / `delete has $old_score of $x;` / `delete links (member: $old) of $r;` |
 | select / require / distinct | `select $x;` / `require $x;` / `distinct;` |
+| fetch | `match $x isa! $T; $x links (member: $P0); $P0 isa! $P0T;` (optional roles inside `try`), then `fetch { "_iid": iid($x), "_type": label($T), "attributes": { $x.* }, "_role_0_iid": iid($P0), "_role_0_type": label($P0T), "_role_0_attributes": { $P0.* } };` |
 | reduce | `reduce $n = count($x) groupby $group;` |
 | sort / offset / limit | `sort $x asc;` / `offset 10;` / `limit 10;` |
 | output / operation | Resolve the declared rows, documents, count, presence or write result from that pipeline |

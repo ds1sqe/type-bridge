@@ -865,6 +865,11 @@ fn shared_plan_v3_fixtures() {
     );
     let mut plans = stage_plans();
     plans.extend(examples::plans());
+    // Hydration fetches are shared per-file fixtures only: the aggregate
+    // stage and expression goldens stay byte-identical, and the capability
+    // they derive is not advertised by proxies yet.
+    plans.insert("fetch_entity", examples::fetch_written(false));
+    plans.insert("fetch_relation", examples::fetch_written(true));
     let mut manifest = BTreeMap::new();
     for (name, plan) in plans {
         let bytes = plan.canonical_bytes().unwrap();
@@ -1062,6 +1067,103 @@ fn iid_patterns_refuse_attribute_and_optional_or_negated_bindings() {
                 .code()
                 .as_str(),
             "query_plan_iid_untyped_thing"
+        );
+    }
+}
+
+#[test]
+fn thing_fetch_is_terminal_typed_and_lists_declared_roles_once() {
+    use type_bridge_contract::query_plan::v3::{
+        DocumentRole, Operation, ThingDocument, WriteReturns,
+    };
+    let plan = examples::fetch_written(true);
+    let bytes = plan.canonical_bytes().unwrap();
+    let text = std::str::from_utf8(&bytes).unwrap();
+    assert!(text.contains(
+        r#"{"kind":"fetch","roles":[{"required":true,"role":{"declaring_relation":"membership","label":"member"}}],"thing":1}"#
+    ), "{text}");
+    assert!(
+        plan.required_capabilities()
+            .iter()
+            .any(|capability| capability.as_str() == "query.fetch.thing")
+    );
+    assert_eq!(decode_query_plan_v3(&bytes, &schema()).unwrap(), plan);
+
+    let fetch =
+        |thing: u16, roles: Vec<DocumentRole>| Stage::Fetch(ThingDocument::new(id(thing), roles));
+    let rows = Operation::Write {
+        returns: WriteReturns::Rows,
+    };
+    let cases: Vec<(Vec<Stage>, Operation, Vec<u16>, &str)> = vec![
+        // Not last.
+        (
+            vec![matched(), fetch(0, vec![]), Stage::Distinct],
+            Operation::Rows,
+            vec![],
+            "query_plan_fetch_not_last",
+        ),
+        // Declared output beside the documents.
+        (
+            vec![matched(), fetch(0, vec![])],
+            Operation::Rows,
+            vec![0],
+            "query_plan_fetch_output",
+        ),
+        // Count is not a document answer.
+        (
+            vec![matched(), fetch(0, vec![])],
+            Operation::Count,
+            vec![],
+            "query_plan_fetch_output",
+        ),
+        // Deleted thing.
+        (
+            vec![
+                matched(),
+                Stage::Delete {
+                    items: vec![DeleteItem::Thing { binding: id(0) }],
+                },
+                fetch(0, vec![]),
+            ],
+            rows,
+            vec![],
+            "query_plan_fetch_untyped_thing",
+        ),
+        // An entity does not relate the role.
+        (
+            vec![matched(), fetch(0, vec![DocumentRole::new(role(), true)])],
+            Operation::Rows,
+            vec![],
+            "query_plan_wrong_role_owner",
+        ),
+        // Listed twice.
+        (
+            vec![
+                Stage::Match {
+                    patterns: vec![pat(1, relation())],
+                },
+                fetch(
+                    1,
+                    vec![
+                        DocumentRole::new(role(), true),
+                        DocumentRole::new(role(), false),
+                    ],
+                ),
+            ],
+            Operation::Rows,
+            vec![],
+            "query_plan_fetch_duplicate_role",
+        ),
+    ];
+    for (pipeline, operation, output, code) in cases {
+        let mut plan = spec(pipeline, output);
+        plan.operation = operation;
+        assert_eq!(
+            QueryPlanV3::new(plan, &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            code
         );
     }
 }

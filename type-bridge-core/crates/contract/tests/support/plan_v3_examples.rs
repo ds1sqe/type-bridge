@@ -269,6 +269,37 @@ pub fn double() -> QueryOperand {
     }
 }
 
+/// Write a thing and fetch its hydration document in the same pipeline.
+pub fn fetch_written(relation_players: bool) -> QueryPlanV3 {
+    use type_bridge_contract::query_plan::v3::{DocumentRole, ThingDocument};
+    let mut pipeline = Vec::new();
+    let document = if relation_players {
+        pipeline.push(Stage::Match {
+            patterns: vec![pat(0, entity("account"))],
+        });
+        pipeline.push(Stage::Insert {
+            things: vec![InsertThing {
+                binding: id(1),
+                type_id: relation(),
+                fields: vec![],
+                players: vec![(role(), id(0))],
+            }],
+        });
+        ThingDocument::new(id(1), vec![DocumentRole::new(role(), true)])
+    } else {
+        pipeline.push(Stage::Insert {
+            things: vec![thing(0)],
+        });
+        ThingDocument::new(id(0), vec![])
+    };
+    pipeline.push(Stage::Fetch(document));
+    let mut plan = spec(pipeline, vec![]);
+    plan.operation = Operation::Write {
+        returns: WriteReturns::Rows,
+    };
+    QueryPlanV3::new(plan, &schema()).unwrap()
+}
+
 pub fn plans() -> BTreeMap<&'static str, QueryPlanV3> {
     let mut result = BTreeMap::from([
         ("purchase", purchase()),
