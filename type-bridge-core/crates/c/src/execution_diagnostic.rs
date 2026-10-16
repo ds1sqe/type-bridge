@@ -1,5 +1,6 @@
 use std::ptr;
 
+use type_bridge_contract::failure::{AnnotationKind, Failure, LockKind, Phase, Reason};
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCategory, SdkDiagnosticDetailValue, SdkDiagnosticPathSegment,
     SdkExecutionDiagnostic, SdkQueryDiagnosticPathKind,
@@ -186,6 +187,105 @@ pub struct TypeBridgeExecutionDiagnosticDetailViewV1 {
     pub reserved: [u64; 4],
 }
 
+/// ABI 1.7 typed provider failure of one execution diagnostic
+/// (`type_bridge_execution_failure_v1_t`). Every field is zero, apart from
+/// `struct_size`, when the diagnostic carries no typed failure.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TypeBridgeExecutionFailureV1 {
+    /// Exact size of this view.
+    pub struct_size: u32,
+    /// `TYPE_BRIDGE_FAILURE_OUTCOME_*`.
+    pub outcome: u32,
+    /// `TYPE_BRIDGE_FAILURE_PHASE_*`.
+    pub phase: u32,
+    /// `TYPE_BRIDGE_FAILURE_REASON_*`.
+    pub reason: u32,
+    /// `TYPE_BRIDGE_FAILURE_LOCK_*`, for a conflict.
+    pub lock_kind: u32,
+    /// `TYPE_BRIDGE_FAILURE_ANNOTATION_*`, for a constraint.
+    pub annotation: u32,
+    /// One when repeating the whole transaction cannot duplicate a commit.
+    pub retry_safe: u8,
+    /// One when `op_index` names the staged plan that failed.
+    pub has_op_index: u8,
+    /// Reserved zero padding.
+    pub reserved0: [u8; 2],
+    /// Index of the failed staged plan, in staging order.
+    pub op_index: u32,
+    /// Provider code (for example `STC2`); empty when unknown.
+    pub code: TypeBridgeByteView,
+    /// Reserved zero words for compatible growth.
+    pub reserved: [u64; 4],
+}
+
+#[derive(Debug)]
+struct OwnedFailure {
+    outcome: u32,
+    phase: u32,
+    reason: u32,
+    lock_kind: u32,
+    annotation: u32,
+    retry_safe: bool,
+    op_index: Option<u32>,
+    code: Vec<u8>,
+}
+
+impl From<&Failure> for OwnedFailure {
+    fn from(failure: &Failure) -> Self {
+        let mut output = Self {
+            outcome: 2,
+            phase: 2,
+            reason: 0,
+            lock_kind: 0,
+            annotation: 0,
+            retry_safe: failure.retry_safe(),
+            op_index: None,
+            code: failure.code().map(bytes).unwrap_or_default(),
+        };
+        if let Failure::Rejected {
+            phase,
+            reason,
+            op_index,
+        } = failure
+        {
+            output.outcome = 1;
+            output.phase = match phase {
+                Phase::Query => 1,
+                Phase::Commit => 2,
+                _ => 0,
+            };
+            output.op_index = *op_index;
+            output.reason = match reason {
+                Reason::Conflict { lock } => {
+                    output.lock_kind = match lock {
+                        LockKind::Exclusive => 1,
+                        LockKind::RequireDeletedKey => 2,
+                        LockKind::DeletingRequiredKey => 3,
+                        _ => 4,
+                    };
+                    1
+                }
+                Reason::Cardinality => 2,
+                Reason::Unique => 3,
+                Reason::Constraint { annotation } => {
+                    output.annotation = match annotation {
+                        AnnotationKind::Abstract => 1,
+                        AnnotationKind::Regex => 2,
+                        AnnotationKind::Range => 3,
+                        AnnotationKind::Values => 4,
+                        AnnotationKind::Distinct => 5,
+                        _ => 6,
+                    };
+                    4
+                }
+                _ => 5,
+            };
+        }
+        output
+    }
+}
+
 #[derive(Debug)]
 struct OwnedPath {
     kind: TypeBridgeExecutionDiagnosticPathKind,
@@ -212,6 +312,7 @@ struct OwnedDiagnostic {
     message: Vec<u8>,
     path: Vec<OwnedPath>,
     details: Vec<OwnedDetail>,
+    failure: Option<OwnedFailure>,
 }
 
 /// Opaque ordered SDK execution-diagnostic collection owned by Rust.
@@ -244,6 +345,9 @@ impl TypeBridgeExecutionDiagnostics {
                 }
             }
             check_slice(&diagnostic.details, preflight)?;
+            if let Some(failure) = &diagnostic.failure {
+                check_slice(&failure.code, preflight)?;
+            }
             for detail in &diagnostic.details {
                 check_slice(&detail.key, preflight)?;
                 for value in &detail.text {
@@ -516,6 +620,8 @@ impl From<SdkExecutionDiagnostic> for OwnedDiagnostic {
                 .released_details()
                 .map(|(key, detail)| OwnedDetail::from_sdk(key, detail))
                 .collect(),
+            // ABI 1.7 reads the typed failure through its own accessor.
+            failure: value.failure().map(OwnedFailure::from),
         }
     }
 }
@@ -788,6 +894,68 @@ pub unsafe extern "C" fn type_bridge_execution_diagnostics_detail_get_v1(
     })
 }
 
+/// ABI 1.7: report the typed provider failure of one diagnostic: outcome,
+/// phase, reason, lock kind, annotation, `retry_safe`, the staged
+/// `op_index` and the provider code. A diagnostic without a typed failure
+/// reports `TYPE_BRIDGE_FAILURE_OUTCOME_NONE` and zero fields.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_execution_diagnostics_failure_get_v1(
+    diagnostics: *const TypeBridgeExecutionDiagnostics,
+    diagnostic_index: usize,
+    out_failure: *mut TypeBridgeExecutionFailureV1,
+) -> TypeBridgeStatus {
+    // SAFETY: complete diagnostics graph is fenced before any caller output write.
+    if let Err(status) = unsafe { preflight_diagnostics_output(diagnostics, out_failure) } {
+        return status;
+    }
+    guarded(|| {
+        if out_failure.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        let Ok(struct_size) = u32::try_from(size_of::<TypeBridgeExecutionFailureV1>()) else {
+            return TypeBridgeStatus::Panic;
+        };
+        let mut output = TypeBridgeExecutionFailureV1 {
+            struct_size,
+            outcome: 0,
+            phase: 0,
+            reason: 0,
+            lock_kind: 0,
+            annotation: 0,
+            retry_safe: 0,
+            has_op_index: 0,
+            reserved0: [0; 2],
+            op_index: 0,
+            code: empty_view(),
+            reserved: [0; 4],
+        };
+        // SAFETY: caller supplied one writable output view.
+        unsafe { out_failure.write(output) };
+        if diagnostics.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller retains a live immutable handle during this call.
+        let diagnostics = unsafe { &*diagnostics };
+        let Some(diagnostic) = diagnostics.items.get(diagnostic_index) else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
+        if let Some(failure) = &diagnostic.failure {
+            output.outcome = failure.outcome;
+            output.phase = failure.phase;
+            output.reason = failure.reason;
+            output.lock_kind = failure.lock_kind;
+            output.annotation = failure.annotation;
+            output.retry_safe = u8::from(failure.retry_safe);
+            output.has_op_index = u8::from(failure.op_index.is_some());
+            output.op_index = failure.op_index.unwrap_or(0);
+            output.code = view(&failure.code);
+            // SAFETY: output was validated and initialized above.
+            unsafe { out_failure.write(output) };
+        }
+        TypeBridgeStatus::Ok
+    })
+}
+
 /// Read one signed detail without changing the frozen version-1 detail view.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_execution_diagnostics_detail_signed(
@@ -1008,6 +1176,7 @@ mod tests {
                         ],
                     },
                 ],
+                failure: None,
             }],
         }))
     }
@@ -1266,6 +1435,156 @@ mod typed_failure_status_tests {
             )),
             TypeBridgeStatus::ExecutionFailed
         );
+    }
+
+    fn failure_view(diagnostic: SdkExecutionDiagnostic) -> TypeBridgeExecutionFailureV1 {
+        let handle = execution_diagnostics_handle(vec![diagnostic]);
+        let mut view = std::mem::MaybeUninit::<TypeBridgeExecutionFailureV1>::uninit();
+        // SAFETY: a live handle and one writable view.
+        let status = unsafe {
+            type_bridge_execution_diagnostics_failure_get_v1(&handle, 0, view.as_mut_ptr())
+        };
+        assert_eq!(status, TypeBridgeStatus::Ok);
+        // SAFETY: the accessor initialized the view; its code view borrows
+        // `handle`, so it is copied out before the handle drops.
+        let mut view = unsafe { view.assume_init() };
+        if view.code.length != 0 {
+            // SAFETY: the view borrows the live handle.
+            let code = unsafe { std::slice::from_raw_parts(view.code.data, view.code.length) };
+            assert!(code.is_ascii());
+        }
+        view.code = empty_view();
+        view
+    }
+
+    #[test]
+    fn typed_failure_fields_reach_the_1_7_accessor() {
+        use type_bridge_contract::failure::{AnnotationKind, Failure, LockKind, Phase, Reason};
+        let conflict = Failure::Rejected {
+            phase: Phase::Commit,
+            reason: Reason::Conflict {
+                lock: LockKind::RequireDeletedKey,
+            },
+            op_index: Some(3),
+        };
+        let view = failure_view(SdkExecutionDiagnostic::from_failure(
+            &conflict,
+            Default::default(),
+        ));
+        assert_eq!(
+            usize::try_from(view.struct_size).unwrap(),
+            size_of::<TypeBridgeExecutionFailureV1>()
+        );
+        assert_eq!(
+            (view.outcome, view.phase, view.reason, view.lock_kind),
+            (1, 2, 1, 2)
+        );
+        assert_eq!(
+            (view.retry_safe, view.has_op_index, view.op_index),
+            (1, 1, 3)
+        );
+
+        let constraint = Failure::Rejected {
+            phase: Phase::Query,
+            reason: Reason::Constraint {
+                annotation: AnnotationKind::Range,
+            },
+            op_index: None,
+        };
+        let view = failure_view(SdkExecutionDiagnostic::from_failure(
+            &constraint,
+            Default::default(),
+        ));
+        assert_eq!(
+            (view.outcome, view.phase, view.reason, view.annotation),
+            (1, 1, 4, 3)
+        );
+        assert_eq!((view.lock_kind, view.has_op_index), (0, 0));
+
+        let unknown = Failure::Indeterminate { code: None };
+        let view = failure_view(SdkExecutionDiagnostic::from_failure(
+            &unknown,
+            Default::default(),
+        ));
+        assert_eq!((view.outcome, view.phase, view.retry_safe), (2, 2, 0));
+
+        // No typed failure: NONE and zero fields.
+        let view = failure_view(SdkExecutionDiagnostic::internal_failure());
+        assert_eq!(
+            (
+                view.outcome,
+                view.reason,
+                view.retry_safe,
+                view.has_op_index
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn typed_failure_code_and_hostile_outputs() {
+        use type_bridge_contract::failure::{Failure, LockKind, Phase, Reason};
+        let handle = execution_diagnostics_handle(vec![SdkExecutionDiagnostic::from_failure(
+            &Failure::Rejected {
+                phase: Phase::Commit,
+                reason: Reason::Conflict {
+                    lock: LockKind::Exclusive,
+                },
+                op_index: None,
+            },
+            Default::default(),
+        )]);
+        let mut view = std::mem::MaybeUninit::<TypeBridgeExecutionFailureV1>::uninit();
+        // SAFETY: a live handle and one writable view.
+        unsafe {
+            assert_eq!(
+                type_bridge_execution_diagnostics_failure_get_v1(&handle, 0, view.as_mut_ptr()),
+                TypeBridgeStatus::Ok
+            );
+            let view = view.assume_init();
+            let code = std::slice::from_raw_parts(view.code.data, view.code.length);
+            assert_eq!(code, b"STC2");
+            // An out-of-range index and a null handle or output.
+            let mut other = std::mem::MaybeUninit::<TypeBridgeExecutionFailureV1>::uninit();
+            assert_eq!(
+                type_bridge_execution_diagnostics_failure_get_v1(&handle, 1, other.as_mut_ptr()),
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert_eq!(other.assume_init().outcome, 0);
+            assert_eq!(
+                type_bridge_execution_diagnostics_failure_get_v1(
+                    ptr::null(),
+                    0,
+                    other.as_mut_ptr()
+                ),
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert_eq!(
+                type_bridge_execution_diagnostics_failure_get_v1(&handle, 0, ptr::null_mut()),
+                TypeBridgeStatus::InvalidArgument
+            );
+            // An output overlapping the handle is rejected before any write.
+            let alias = (&raw const handle)
+                .cast_mut()
+                .cast::<TypeBridgeExecutionFailureV1>();
+            assert_eq!(
+                type_bridge_execution_diagnostics_failure_get_v1(&handle, 0, alias),
+                TypeBridgeStatus::InvalidArgument
+            );
+        }
+    }
+
+    /// The C header pins this layout with static assertions.
+    #[test]
+    fn typed_failure_view_layout_is_frozen() {
+        use std::mem::{align_of, offset_of};
+        assert_eq!(size_of::<TypeBridgeExecutionFailureV1>(), 80);
+        assert_eq!(align_of::<TypeBridgeExecutionFailureV1>(), 8);
+        assert_eq!(offset_of!(TypeBridgeExecutionFailureV1, retry_safe), 24);
+        assert_eq!(offset_of!(TypeBridgeExecutionFailureV1, has_op_index), 25);
+        assert_eq!(offset_of!(TypeBridgeExecutionFailureV1, op_index), 28);
+        assert_eq!(offset_of!(TypeBridgeExecutionFailureV1, code), 32);
+        assert_eq!(offset_of!(TypeBridgeExecutionFailureV1, reserved), 48);
     }
 
     /// Path count and detail keys as an ABI 1.6 consumer reads them.

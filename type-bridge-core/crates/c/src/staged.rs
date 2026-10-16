@@ -1368,6 +1368,30 @@ mod tests {
             SdkExecutionDiagnostic::commit_failure(SdkCommitFailureOutcome::DefinitelyAborted),
         ])));
         assert_eq!(c_shape(diagnostics), c_shape(released));
+        // ABI 1.7 reads the typed conflict through its own accessor.
+        let mut failure = std::mem::MaybeUninit::uninit();
+        assert_eq!(
+            unsafe {
+                crate::execution_diagnostic::type_bridge_execution_diagnostics_failure_get_v1(
+                    diagnostics,
+                    0,
+                    failure.as_mut_ptr(),
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        let failure: crate::execution_diagnostic::TypeBridgeExecutionFailureV1 =
+            unsafe { failure.assume_init() };
+        assert_eq!(
+            (
+                failure.outcome,
+                failure.phase,
+                failure.reason,
+                failure.retry_safe
+            ),
+            (1, 2, 1, 1)
+        );
+        assert_ne!(failure.lock_kind, 0, "a conflict reports its lock kind");
         close_diagnostics(&mut diagnostics);
         assert_eq!(
             unsafe { type_bridge_execution_diagnostics_close(&mut released) },

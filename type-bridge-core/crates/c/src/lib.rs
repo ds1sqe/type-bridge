@@ -45,7 +45,7 @@ pub use execution_diagnostic::{
     TypeBridgeExecutionDiagnosticCategory, TypeBridgeExecutionDiagnosticDetailKind,
     TypeBridgeExecutionDiagnosticDetailViewV1, TypeBridgeExecutionDiagnosticPathKind,
     TypeBridgeExecutionDiagnosticPathViewV1, TypeBridgeExecutionDiagnosticViewV1,
-    TypeBridgeExecutionDiagnostics,
+    TypeBridgeExecutionDiagnostics, TypeBridgeExecutionFailureV1,
 };
 pub use generated_preflight::{
     GENERATED_CREATE_GRAPH_VERSION, GENERATED_CREATE_HOSTED_OBJECT_BYTES_MAX,

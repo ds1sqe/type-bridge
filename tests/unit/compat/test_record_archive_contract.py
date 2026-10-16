@@ -86,14 +86,14 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
     assert not any(key.startswith("parent_") for key in contract)
     exports = set(re.findall(r"\b(type_bridge_[a-z0-9_]+)\s*\(", header.read_text()))
     assert contract["exports"] == sorted(exports)
-    assert len(exports) == 393
+    assert len(exports) == 394
     previous = ROOT / "type-bridge-core/crates/c/tests/fixtures/abi-1.6/typebridge/type_bridge.h"
     assert hashlib.sha256(previous.read_bytes()).hexdigest() == (
         "4cdc5195b1da40333406ae162d05bd932ed90e3e8d4d30bcebda21c2bea38f2d"
     )
     previous_exports = set(re.findall(r"\b(type_bridge_[a-z0-9_]+)\s*\(", previous.read_text()))
-    # ABI 1.7 is additive: keep-open rollback, the staged transaction surface
-    # and the plan builder.
+    # ABI 1.7 is additive: keep-open rollback, the staged transaction surface,
+    # the plan builder and the typed failure accessor.
     builder = {
         f"type_bridge_plan_builder_{name}"
         for name in (
@@ -117,6 +117,7 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
         "type_bridge_staged_transaction_close",
         "type_bridge_pending_answer",
         "type_bridge_pending_free",
+        "type_bridge_execution_diagnostics_failure_get_v1",
     }
     assert contract["options"]["size_64_bit"] == 72
     assert contract["options"]["alignment_64_bit"] == 8

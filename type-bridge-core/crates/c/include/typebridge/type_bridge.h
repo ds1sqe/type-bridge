@@ -1037,6 +1037,65 @@ type_bridge_execution_diagnostics_close(
     type_bridge_execution_diagnostics_t **diagnostics);
 
 /*
+ * ABI 1.7: the typed provider failure of one diagnostic, such as a staged
+ * commit's. The ABI 1.6 detail set above is unchanged; these fields are read
+ * only here. A diagnostic without a typed failure reports
+ * TYPE_BRIDGE_FAILURE_OUTCOME_NONE with every other field zero. retry_safe is
+ * one when repeating the whole transaction cannot duplicate a commit;
+ * op_index (when has_op_index is one) names the failed staged plan in staging
+ * order. code borrows the diagnostics handle and is empty when unknown.
+ */
+#define TYPE_BRIDGE_FAILURE_OUTCOME_NONE 0u
+#define TYPE_BRIDGE_FAILURE_OUTCOME_REJECTED 1u
+#define TYPE_BRIDGE_FAILURE_OUTCOME_INDETERMINATE 2u
+
+#define TYPE_BRIDGE_FAILURE_PHASE_NONE 0u
+#define TYPE_BRIDGE_FAILURE_PHASE_QUERY 1u
+#define TYPE_BRIDGE_FAILURE_PHASE_COMMIT 2u
+
+#define TYPE_BRIDGE_FAILURE_REASON_NONE 0u
+#define TYPE_BRIDGE_FAILURE_REASON_CONFLICT 1u
+#define TYPE_BRIDGE_FAILURE_REASON_CARDINALITY 2u
+#define TYPE_BRIDGE_FAILURE_REASON_UNIQUE 3u
+#define TYPE_BRIDGE_FAILURE_REASON_CONSTRAINT 4u
+#define TYPE_BRIDGE_FAILURE_REASON_OTHER 5u
+
+#define TYPE_BRIDGE_FAILURE_LOCK_NONE 0u
+#define TYPE_BRIDGE_FAILURE_LOCK_EXCLUSIVE 1u
+#define TYPE_BRIDGE_FAILURE_LOCK_REQUIRE_DELETED_KEY 2u
+#define TYPE_BRIDGE_FAILURE_LOCK_DELETING_REQUIRED_KEY 3u
+#define TYPE_BRIDGE_FAILURE_LOCK_UNKNOWN 4u
+
+#define TYPE_BRIDGE_FAILURE_ANNOTATION_NONE 0u
+#define TYPE_BRIDGE_FAILURE_ANNOTATION_ABSTRACT 1u
+#define TYPE_BRIDGE_FAILURE_ANNOTATION_REGEX 2u
+#define TYPE_BRIDGE_FAILURE_ANNOTATION_RANGE 3u
+#define TYPE_BRIDGE_FAILURE_ANNOTATION_VALUES 4u
+#define TYPE_BRIDGE_FAILURE_ANNOTATION_DISTINCT 5u
+#define TYPE_BRIDGE_FAILURE_ANNOTATION_UNKNOWN 6u
+
+typedef struct type_bridge_execution_failure_v1 {
+  uint32_t struct_size;
+  uint32_t outcome;
+  uint32_t phase;
+  uint32_t reason;
+  uint32_t lock_kind;
+  uint32_t annotation;
+  uint8_t retry_safe;
+  uint8_t has_op_index;
+  uint8_t reserved0[2];
+  uint32_t op_index;
+  type_bridge_byte_view_t code;
+  uint64_t reserved[4];
+} type_bridge_execution_failure_v1_t;
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_execution_diagnostics_failure_get_v1(
+    const type_bridge_execution_diagnostics_t *diagnostics,
+    size_t diagnostic_index,
+    type_bridge_execution_failure_v1_t *out_failure);
+
+/*
  * The synchronous runtime hides a Tokio multi-thread scheduler. A runtime
  * owns database children and a database owns transaction children. Parent
  * close returns TYPE_BRIDGE_STATUS_IN_USE without changing the owner pointer

@@ -29,6 +29,31 @@ STAGED_STATIC_ASSERT(TYPE_BRIDGE_PLAN_ANSWER_EXISTS == 3, "exists answer drifted
 STAGED_STATIC_ASSERT(TYPE_BRIDGE_PLAN_ANSWER_MATCHED == 4, "matched answer drifted");
 STAGED_STATIC_ASSERT(sizeof(type_bridge_plan_answer_kind_t) == sizeof(uint32_t),
                      "answer kind is not 32 bits");
+/* The typed failure view matches the Rust layout on 64-bit targets. */
+STAGED_STATIC_ASSERT(sizeof(void *) != 8 ||
+                         sizeof(type_bridge_execution_failure_v1_t) == 80,
+                     "failure view size drifted");
+STAGED_STATIC_ASSERT(offsetof(type_bridge_execution_failure_v1_t, retry_safe) == 24,
+                     "failure retry_safe offset drifted");
+STAGED_STATIC_ASSERT(offsetof(type_bridge_execution_failure_v1_t, op_index) == 28,
+                     "failure op_index offset drifted");
+STAGED_STATIC_ASSERT(offsetof(type_bridge_execution_failure_v1_t, code) == 32,
+                     "failure code offset drifted");
+STAGED_STATIC_ASSERT(sizeof(void *) != 8 ||
+                         offsetof(type_bridge_execution_failure_v1_t, reserved) == 48,
+                     "failure reserved offset drifted");
+STAGED_STATIC_ASSERT(TYPE_BRIDGE_FAILURE_OUTCOME_REJECTED == 1u &&
+                         TYPE_BRIDGE_FAILURE_OUTCOME_INDETERMINATE == 2u,
+                     "failure outcomes drifted");
+STAGED_STATIC_ASSERT(TYPE_BRIDGE_FAILURE_REASON_CONFLICT == 1u &&
+                         TYPE_BRIDGE_FAILURE_REASON_OTHER == 5u,
+                     "failure reasons drifted");
+STAGED_STATIC_ASSERT(TYPE_BRIDGE_FAILURE_LOCK_EXCLUSIVE == 1u &&
+                         TYPE_BRIDGE_FAILURE_LOCK_UNKNOWN == 4u,
+                     "failure lock kinds drifted");
+STAGED_STATIC_ASSERT(TYPE_BRIDGE_FAILURE_ANNOTATION_DISTINCT == 5u &&
+                         TYPE_BRIDGE_FAILURE_ANNOTATION_UNKNOWN == 6u,
+                     "failure annotations drifted");
 
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *plan_decode_fn)(
     const uint8_t *, size_t, const uint8_t *, size_t, type_bridge_plan_t **,
@@ -51,6 +76,9 @@ typedef void (TYPE_BRIDGE_CALL *close_fn)(type_bridge_staged_transaction_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *answer_fn)(
     const type_bridge_pending_t *, type_bridge_plan_answer_kind_t *, uint64_t *);
 typedef void (TYPE_BRIDGE_CALL *pending_free_fn)(type_bridge_pending_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *failure_get_fn)(
+    const type_bridge_execution_diagnostics_t *, size_t,
+    type_bridge_execution_failure_v1_t *);
 
 void staged_prototypes(void);
 void staged_prototypes(void) {
@@ -65,6 +93,7 @@ void staged_prototypes(void) {
   close_fn close = &type_bridge_staged_transaction_close;
   answer_fn answer = &type_bridge_pending_answer;
   pending_free_fn pending_free = &type_bridge_pending_free;
+  failure_get_fn failure_get = &type_bridge_execution_diagnostics_failure_get_v1;
   (void)decode;
   (void)bytes;
   (void)plan_free;
@@ -76,6 +105,7 @@ void staged_prototypes(void) {
   (void)close;
   (void)answer;
   (void)pending_free;
+  (void)failure_get;
 }
 
 /* Decode, stage, commit (retrying an unknown outcome once) and read. */
