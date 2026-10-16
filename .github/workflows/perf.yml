@@ -122,3 +122,89 @@ jobs:
           name: perf-micro
           path: perf-out/micro.json
           if-no-files-found: error
+
+  # Appends this run's results to the history branch. Runs only for master
+  # pushes, the nightly schedule and manual dispatch, never for pull
+  # requests; it is the only job with write access, and it writes only the
+  # data branch.
+  store:
+    name: Store perf history
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/master')
+      || github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+    needs: micro
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    concurrency:
+      group: perf-data
+      cancel-in-progress: false
+    env:
+      DATA_BRANCH: ${{ inputs.data_branch || 'perf-data' }}
+      DATA_DIR: ${{ github.workspace }}/perf-data
+      RESULTS_DIR: ${{ github.workspace }}/perf-results
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Download the perf results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: perf-*
+          path: perf-results
+          merge-multiple: true
+
+      - name: Validate the perf results
+        run: python -m perf.harness.validate "$RESULTS_DIR"/*.json
+
+      # A worktree of the code checkout shares its fetch credentials. The
+      # branch is created as an orphan on the first run.
+      - name: Check out the data branch
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin "$DATA_BRANCH" >/dev/null; then
+            git fetch --no-tags --depth=1 origin "+refs/heads/$DATA_BRANCH:refs/remotes/origin/$DATA_BRANCH"
+            git worktree add -B "$DATA_BRANCH" "$DATA_DIR" "origin/$DATA_BRANCH"
+          else
+            echo "Creating $DATA_BRANCH as an orphan branch"
+            git worktree add --detach "$DATA_DIR"
+            git -C "$DATA_DIR" switch --orphan "$DATA_BRANCH"
+          fi
+
+      # index.json changes on every store, so a rejected push is never
+      # rebased: the store is idempotent and is redone on the new tip.
+      - name: Store and push
+        run: |
+          # Exits the step successfully when there is nothing new to push.
+          store_and_commit() {
+            python -m perf.harness.store --data-dir "$DATA_DIR" "$RESULTS_DIR"/*.json
+            git -C "$DATA_DIR" add runs index.json
+            if git -C "$DATA_DIR" diff --cached --quiet; then
+              echo "Nothing new to store"
+              exit 0
+            fi
+            git -C "$DATA_DIR" commit --quiet \
+              -m "perf: store ${GITHUB_SHA::12} (${GITHUB_EVENT_NAME})"
+          }
+          store_and_commit
+          for attempt in 1 2 3 4 5; do
+            if git -C "$DATA_DIR" push origin "HEAD:refs/heads/$DATA_BRANCH"; then
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt); storing again on the new tip"
+            sleep $((attempt * 2))
+            git -C "$DATA_DIR" fetch --no-tags --depth=1 origin \
+              "+refs/heads/$DATA_BRANCH:refs/remotes/origin/$DATA_BRANCH"
+            git -C "$DATA_DIR" reset --hard --quiet "origin/$DATA_BRANCH"
+            store_and_commit
+          done
+          echo "::error::could not push $DATA_BRANCH after 5 attempts"
+          exit 1

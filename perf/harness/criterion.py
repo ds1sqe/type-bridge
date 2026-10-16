@@ -13,8 +13,9 @@ with ``_``, so every id has exactly four parts and matches the id the
 instruction-count bench reports (see ``perf.harness.iai``).
 
 Each metric has unit ``ns``, the mean point estimate as ``value``, the median
-as ``p50``, the sample count as ``n``, and the mean's confidence interval
-(Criterion's default is 95%) as ``samples = [lower, upper]``.
+as ``p50``, the sample count as ``n``, and the mean's confidence interval as
+``ci95 = [lower, upper]`` (the bench harness keeps Criterion's default
+confidence level, 0.95).
 """
 
 from __future__ import annotations
@@ -80,7 +81,7 @@ def _metric(crate: str, new: Path) -> Metric:
         unit="ns",
         value=value,
         n=n,
-        samples=[lower, upper],
+        ci95=[lower, upper],
         p50=median,
     )
 

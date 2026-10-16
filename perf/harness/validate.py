@@ -136,8 +136,21 @@ def _check_metrics(value: object, findings: Findings) -> None:
                 findings.errors.append(
                     f"{where}.samples: expected an array of finite numbers >= 0, got {samples!r}"
                 )
+        if "ci95" in metric:
+            _check_ci95(metric["ci95"], where, findings)
         if "stages" in metric:
             _check_stages(metric, where, findings)
+
+
+def _check_ci95(interval: object, where: str, findings: Findings) -> None:
+    if not (isinstance(interval, list) and len(interval) == 2 and all(map(_is_finite, interval))):
+        findings.errors.append(
+            f"{where}.ci95: expected [lower, upper], two finite numbers, got {interval!r}"
+        )
+    elif interval[0] > interval[1]:
+        findings.errors.append(
+            f"{where}.ci95: lower bound {interval[0]} exceeds upper bound {interval[1]}"
+        )
 
 
 def _check_stages(metric: dict[str, Any], where: str, findings: Findings) -> None:
@@ -250,14 +263,14 @@ def _is_int(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _is_finite(value: object) -> TypeGuard[int | float]:
+    """A finite JSON number (``bool`` is not a number here)."""
+    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+
+
 def _is_measure(value: object) -> TypeGuard[int | float]:
-    """A finite, non-negative JSON number (``bool`` is not a number here)."""
-    return (
-        isinstance(value, int | float)
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-        and value >= 0
-    )
+    """A finite, non-negative JSON number."""
+    return _is_finite(value) and value >= 0
 
 
 def _join(where: str, key: str) -> str:

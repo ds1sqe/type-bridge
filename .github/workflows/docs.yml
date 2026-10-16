@@ -8,6 +8,7 @@ on:
       - "type_bridge/**"
       - "mkdocs.yml"
       - "scripts/gen_ref_pages.py"
+      - "perf/harness/render.py"
   pull_request:
     branches: [master]
     paths:
@@ -15,6 +16,12 @@ on:
       - "type_bridge/**"
       - "mkdocs.yml"
       - "scripts/gen_ref_pages.py"
+      - "perf/harness/render.py"
+  # Redeploy after Perf stores a run, so /perf/ shows the new history.
+  workflow_run:
+    workflows: [Perf]
+    types: [completed]
+    branches: [master]
   workflow_dispatch:
 
 # Allow only one concurrent deployment
@@ -36,10 +43,24 @@ env:
 jobs:
   build:
     name: Build docs
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # /perf/ renders the history on the perf-data branch. Pull requests
+      # build without it, and so does a repository that has no history yet.
+      - name: Check out the perf history
+        if: github.event_name != 'pull_request'
+        run: |
+          if git ls-remote --exit-code --heads origin perf-data >/dev/null; then
+            git fetch --no-tags --depth=1 origin perf-data
+            git worktree add --detach perf-data FETCH_HEAD
+            echo "PERF_DATA_DIR=$GITHUB_WORKSPACE/perf-data" >> "$GITHUB_ENV"
+          else
+            echo "No perf-data branch yet; /perf/ shows no data"
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5

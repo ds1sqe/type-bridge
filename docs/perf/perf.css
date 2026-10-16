@@ -1,0 +1,94 @@
+/* Perf dashboard (docs/perf/index.md). Colors come from Material's scheme
+ * variables, so the dashboard follows the light/dark toggle. */
+#perf-dashboard .perf-summary,
+#perf-dashboard .perf-status {
+  color: var(--md-default-fg-color--light);
+}
+
+#perf-dashboard .perf-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  align-items: center;
+  margin: 1rem 0;
+}
+
+#perf-dashboard .perf-families {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+#perf-dashboard .perf-chip {
+  padding: 0.2rem 0.7rem;
+  border: 1px solid var(--md-default-fg-color--lighter);
+  border-radius: 1rem;
+  color: var(--md-default-fg-color--light);
+  background: transparent;
+  font: inherit;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+#perf-dashboard .perf-chip[aria-pressed="true"] {
+  border-color: var(--md-typeset-a-color);
+  color: var(--md-typeset-a-color);
+}
+
+#perf-dashboard input[type="search"] {
+  flex: 1 1 12rem;
+  max-width: 24rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--md-default-fg-color--lighter);
+  border-radius: 0.2rem;
+  color: var(--md-default-fg-color);
+  background: var(--md-default-bg-color);
+  font: inherit;
+  font-size: 0.7rem;
+}
+
+#perf-dashboard .perf-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 26rem), 1fr));
+  gap: 1rem;
+}
+
+#perf-dashboard .perf-card {
+  min-width: 0;
+  padding: 0.6rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.2rem;
+}
+
+#perf-dashboard .perf-card header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.65rem;
+  overflow-wrap: anywhere;
+}
+
+#perf-dashboard .perf-card header span {
+  flex: none;
+  color: var(--md-default-fg-color--light);
+}
+
+/* Reserve the chart and legend height before the chart is built, so lazy
+ * loading does not shift the page. */
+#perf-dashboard .perf-plot {
+  min-height: 232px;
+}
+
+#perf-dashboard .uplot {
+  width: 100%;
+  font-family: inherit;
+}
+
+#perf-dashboard .u-legend {
+  color: var(--md-default-fg-color--light);
+  font-size: 0.65rem;
+}
+
+#perf-dashboard .perf-table {
+  overflow-x: auto;
+}

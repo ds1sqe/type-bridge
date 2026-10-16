@@ -388,7 +388,9 @@ differently direct and through a proxy. Each entry says what to do instead.
 - Perf tracking groundwork: the `Perf` workflow runs the core and ORM micro
   benchmarks on pushes to master, nightly, on dispatch and on pull requests,
   and uploads Criterion wall times and gungraun instruction counts as one
-  validated `perf-result/v1` file.
+  validated `perf-result/v1` file. Master, nightly and dispatch runs are
+  stored on the `perf-data` branch, and the docs site charts that history
+  at `/perf/`.
 
 ### Fixed
 

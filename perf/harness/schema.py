@@ -79,7 +79,12 @@ class Run:
 
 @dataclass(frozen=True)
 class Metric:
-    """One measurement. ``stages`` maps a span name to ns and needs unit ``ns``."""
+    """One measurement.
+
+    ``samples`` holds raw measurements only. ``ci95`` is the 95% confidence
+    interval of ``value`` as ``[lower, upper]``. ``stages`` maps a span name to
+    ns and needs unit ``ns``.
+    """
 
     id: str
     family: Family
@@ -87,6 +92,7 @@ class Metric:
     value: float
     n: int | None = None
     samples: list[float] | None = None
+    ci95: list[float] | None = None
     p50: float | None = None
     p90: float | None = None
     p99: float | None = None

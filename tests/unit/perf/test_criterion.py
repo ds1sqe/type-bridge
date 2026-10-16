@@ -43,7 +43,8 @@ def test_captured_output_converts() -> None:
     assert metric.family == "micro"
     assert metric.unit == "ns"
     assert metric.value == estimates["mean"]["point_estimate"]
-    assert metric.samples == [interval["lower_bound"], interval["upper_bound"]]
+    assert metric.ci95 == [interval["lower_bound"], interval["upper_bound"]]
+    assert metric.samples is None
     assert metric.p50 == estimates["median"]["point_estimate"]
     assert metric.n == 100
 

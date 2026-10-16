@@ -67,6 +67,16 @@ plugins:
       nav_file: SUMMARY.md
   - section-index
 
+# perf/harness/render.py publishes PERF_DATA_DIR's index for /perf/.
+hooks:
+  - perf/harness/render.py
+
+extra_css:
+  - perf/perf.css
+
+extra_javascript:
+  - perf/perf.js
+
 markdown_extensions:
   - admonition
   - pymdownx.details
@@ -145,6 +155,8 @@ nav:
       - Unified Typed Query Contract: development/typed-query-contract.md
       - Generated Rust Parity: development/rust-generated-parity.md
       - Integration Coverage Inventory: development/integration-coverage-inventory.md
+    - Performance Tracking: development/performance.md
+  - Performance: perf/index.md
   - Changelog: changelog.md
 
 extra:

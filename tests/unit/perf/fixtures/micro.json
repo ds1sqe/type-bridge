@@ -24,7 +24,8 @@
       "id": "micro.core.compilation.insert_entity",
       "family": "micro",
       "unit": "ns",
-      "value": 1843.2
+      "value": 1843.2,
+      "ci95": [1838.9, 1848.1]
     },
     {
       "id": "micro.core.compilation.insert_entity.instructions",

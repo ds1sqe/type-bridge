@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ds1sqe.github.io/type-bridge/perf/schema/perf-result-v1.json",
   "title": "perf-result/v1",
-  "description": "One perf run: where it ran and what it measured. Two rules are not expressible here and are enforced by perf.harness.validate: metric ids are unique within a document, and a stage sum larger than the metric value is reported as a warning.",
+  "description": "One perf run: where it ran and what it measured. Two rules are not expressible here and are enforced by perf.harness.validate: metric ids are unique within a document, a ci95 lower bound does not exceed its upper bound, and a stage sum larger than the metric value is reported as a warning.",
   "type": "object",
   "additionalProperties": false,
   "required": ["format", "run", "metrics"],
@@ -88,7 +88,18 @@
         "unit": { "enum": ["ns", "instructions", "bytes", "s", "ops_per_s"] },
         "value": { "$ref": "#/$defs/measure" },
         "n": { "type": "integer", "minimum": 1 },
-        "samples": { "type": "array", "items": { "$ref": "#/$defs/measure" } },
+        "samples": {
+          "description": "Raw measurements, in the metric's unit.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/measure" }
+        },
+        "ci95": {
+          "description": "95% confidence interval of value as [lower, upper].",
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 2
+        },
         "p50": { "$ref": "#/$defs/measure" },
         "p90": { "$ref": "#/$defs/measure" },
         "p99": { "$ref": "#/$defs/measure" },

@@ -1,0 +1,24 @@
+---
+hide:
+  - toc
+---
+
+# Performance
+
+Benchmark history for TypeBridge, recorded on every push to `master`, nightly
+and on manual runs of the `Perf` workflow. Each chart plots one metric over
+the recorded commits; dashed lines mark the first commit of each package
+version. Runs use GitHub-hosted runners: instruction counts are the stable
+signal, and wall times carry runner noise.
+
+<div id="perf-dashboard" markdown="0"
+     data-index="data.json"
+     data-script="assets/uPlot.iife.min.js"
+     data-style="assets/uPlot.min.css"
+     data-repo="https://github.com/ds1sqe/type-bridge">
+  <p class="perf-status">Loading performance data...</p>
+  <noscript><p>The dashboard needs JavaScript.</p></noscript>
+</div>
+
+See [Performance tracking](../development/performance.md) for how the data is
+produced and how to add a metric.

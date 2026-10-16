@@ -15,3 +15,7 @@ type-bridge-core/python/type_bridge_core/THIRD_PARTY_NOTICES.md -text -whitespac
 # sources their fingerprints were computed from. A CRLF checkout
 # (core.autocrlf=true on Windows runners) would corrupt both sides.
 type-bridge-core/crates/*/tests/fixtures/** -text
+
+# Vendored chart library: tests/unit/perf/test_assets.py checks these bytes
+# against docs/perf/assets/CHECKSUMS.
+docs/perf/assets/uPlot* -text -whitespace
