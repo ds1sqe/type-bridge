@@ -15,7 +15,7 @@ use crate::match_request::{
     MatchError, MatchErrorCategory, MatchErrorPathSegment, MatchExecutionLimits,
     ValidatedMatchRequest, ValidatedMatchResult,
 };
-pub use crate::query_plan_exec::PlanAnswer;
+pub use crate::query_plan_exec::{PlanAnswer, staged_documents_unsupported};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::failure::Failure;
 use type_bridge_contract::query_plan::v3::{Operation, QueryPlanV3};

@@ -141,6 +141,20 @@ pub enum InterceptError {
     Internal(String),
 }
 
+/// One policy's write admission for a staged V3 request.
+///
+/// The server has no built-in authentication. A policy that authenticated
+/// the caller in [`Interceptor::on_v2_transport`] vouches for writes here.
+#[cfg(feature = "v2-query")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum StagedWriteAuthority {
+    /// This policy does not vouch for the caller.
+    Abstain,
+    /// This policy authenticated the caller and admits staged writes.
+    Authenticated,
+}
+
 /// The core interceptor trait.
 ///
 /// Interceptors receive the query AST and context, and can:
@@ -169,6 +183,17 @@ pub trait Interceptor: Send + Sync {
         false
     }
 
+    /// Declare that this policy intentionally covers staged V3 requests.
+    ///
+    /// The default is fail-closed: `/v3/staged` never calls
+    /// [`Self::on_v2_request`], so a V2 policy that authorizes typed plans
+    /// there would be bypassed. While any configured policy leaves this
+    /// `false`, every V3 request is refused at transport admission.
+    #[cfg(feature = "v2-query")]
+    fn supports_v3(&self) -> bool {
+        false
+    }
+
     /// Authenticate and rate-limit transport metadata before envelope decode.
     #[cfg(feature = "v2-query")]
     fn on_v2_transport<'a>(
@@ -186,6 +211,20 @@ pub trait Interceptor: Send + Sync {
         _ctx: &'a mut RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
+    }
+
+    /// Vouch for a staged V3 write transaction before anything opens.
+    ///
+    /// Writes are refused unless at least one policy answers
+    /// [`StagedWriteAuthority::Authenticated`] and none fails, or the server
+    /// explicitly allows unauthenticated staged writes.
+    #[cfg(feature = "v2-query")]
+    fn on_v3_write_authority<'a>(
+        &'a self,
+        _ctx: &'a RequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<StagedWriteAuthority, InterceptError>> + Send + 'a>>
+    {
+        Box::pin(async { Ok(StagedWriteAuthority::Abstain) })
     }
 
     /// Observe one redacted success or failure outcome for audit/policy.

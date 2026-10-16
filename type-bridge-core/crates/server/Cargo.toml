@@ -97,6 +97,10 @@ required-features = ["axum-transport"]
 name = "v2_query_integration_tests"
 required-features = ["typedb", "v2-query"]
 
+[[test]]
+name = "v3_staged_integration_tests"
+required-features = ["typedb", "v2-query"]
+
 [dev-dependencies]
 tempfile = "3"
 http-body-util = "0.1"

@@ -45,6 +45,7 @@ use type_bridge_query::MigrationAssertionValidationContext;
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema};
 use type_bridge_schema_compat::{LiveQueryControlPresence, rebuild_live_query_authority};
 
+use crate::idempotency::{IdempotencyConfig, IdempotencyStore};
 use crate::interceptor::{RequestContext, V2PolicyOutcome, V2PolicyRequest};
 use crate::pipeline::QueryPipeline;
 
@@ -58,10 +59,10 @@ fn new_v2_preflight_slots() -> Arc<tokio::sync::Semaphore> {
     Arc::new(tokio::sync::Semaphore::new(V2_PREFLIGHT_CONCURRENCY))
 }
 
-static V2_PREFLIGHT_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
+pub(super) static V2_PREFLIGHT_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
     LazyLock::new(new_v2_preflight_slots);
 
-async fn await_before_deadline<F>(deadline: Instant, future: F) -> Option<F::Output>
+pub(super) async fn await_before_deadline<F>(deadline: Instant, future: F) -> Option<F::Output>
 where
     F: Future,
 {
@@ -70,7 +71,7 @@ where
         .ok()
 }
 
-async fn close_v2_transaction(transaction: &mut Transaction) -> Result<(), ()> {
+pub(super) async fn close_v2_transaction(transaction: &mut Transaction) -> Result<(), ()> {
     match tokio::time::timeout(TRANSACTION_CLOSE_GRACE, transaction.close()).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(_)) | Err(_) => Err(()),
@@ -184,18 +185,20 @@ impl RemoteReplayStore for InMemoryReplayStore {
 
 /// Everything one V2 query executor needs to serve envelopes.
 pub struct V2QueryState {
-    advertisement: RemoteCapabilities,
+    pub(super) advertisement: RemoteCapabilities,
     advertisement_fingerprint: RemoteCapabilitiesFingerprint,
     ceilings: QueryV2AnswerLimits,
-    database: Database,
-    declared: DeclaredSchema,
+    pub(super) database: Database,
+    pub(super) declared: DeclaredSchema,
     delta_context: ManagedDeltaContext,
     managed: ManagedSchemaState,
     resolved: ResolvedSchema,
-    execution_timeout: Duration,
-    replay_store: Arc<dyn RemoteReplayStore>,
-    signer: RemoteReplySigningKey,
+    pub(super) execution_timeout: Duration,
+    pub(super) replay_store: Arc<dyn RemoteReplayStore>,
+    pub(super) signer: RemoteReplySigningKey,
     control_policy: V2QueryControlPolicy,
+    pub(super) idempotency: Arc<IdempotencyStore>,
+    pub(super) allow_unauthenticated_staged_writes: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -291,6 +294,11 @@ impl V2QueryState {
             replay_store: Arc::new(InMemoryReplayStore::new(DEFAULT_REPLAY_CAPACITY)),
             signer,
             control_policy,
+            idempotency: Arc::new(
+                IdempotencyStore::new(IdempotencyConfig::default())
+                    .expect("default idempotency configuration is valid"),
+            ),
+            allow_unauthenticated_staged_writes: false,
         })
     }
 
@@ -373,11 +381,28 @@ impl V2QueryState {
 
     /// Largest HTTP body the collector reads: the advertised request budget
     /// plus framing slack.
-    fn body_limit_bytes(&self) -> usize {
+    pub(super) fn body_limit_bytes(&self) -> usize {
         self.advertisement
             .query_limits()
             .remote_request_bytes
             .saturating_add(V2_BODY_FRAMING_SLACK_BYTES)
+    }
+
+    /// Replace the retained-reply store for keyed `/v3/staged` requests.
+    #[must_use]
+    pub fn with_idempotency_store(mut self, store: Arc<IdempotencyStore>) -> Self {
+        self.idempotency = store;
+        self
+    }
+
+    /// Admit staged write transactions that no interceptor vouches for.
+    ///
+    /// Off by default: a staged write otherwise needs a policy answering
+    /// [`StagedWriteAuthority::Authenticated`](crate::interceptor::StagedWriteAuthority).
+    #[must_use]
+    pub fn with_unauthenticated_staged_writes(mut self, allow: bool) -> Self {
+        self.allow_unauthenticated_staged_writes = allow;
+        self
     }
 
     /// Tighten the mandatory server execution duration.
@@ -396,7 +421,7 @@ impl V2QueryState {
         )
     }
 
-    async fn verify_live_authority(&self) -> Result<(), Diagnostic> {
+    pub(super) async fn verify_live_authority(&self) -> Result<(), Diagnostic> {
         self.verify_database_profile()?;
         let rebuild_permit = acquire_live_authority_rebuild_permit().await.map_err(|_| {
             diagnostic(
@@ -637,9 +662,9 @@ struct V2RouterState {
 }
 
 /// Framing slack the HTTP body collector allows beyond the request budget.
-const V2_BODY_FRAMING_SLACK_BYTES: usize = 64 * 1024;
+pub(super) const V2_BODY_FRAMING_SLACK_BYTES: usize = 64 * 1024;
 
-fn declared_v2_body_oversized(headers: &HeaderMap, limit_bytes: usize) -> bool {
+pub(super) fn declared_v2_body_oversized(headers: &HeaderMap, limit_bytes: usize) -> bool {
     let Ok(limit) = u64::try_from(limit_bytes) else {
         return false;
     };
@@ -652,13 +677,18 @@ fn declared_v2_body_oversized(headers: &HeaderMap, limit_bytes: usize) -> bool {
     })
 }
 
-/// Build the V2 route surface under the same policy pipeline as V1.
+/// Build the V2 route surface under the same policy pipeline as V1, beside
+/// the additive staged V3 routes that share this executor identity.
 pub fn create_v2_router(pipeline: Arc<QueryPipeline>, query: Arc<V2QueryState>) -> Router {
     let state = Arc::new(V2RouterState { pipeline, query });
     Router::new()
         .route("/v2/query", post(handle_v2_query))
         .route("/v2/capabilities", get(handle_v2_capabilities))
-        .with_state(state)
+        .with_state(Arc::clone(&state))
+        .merge(super::v3::create_v3_router(
+            Arc::clone(&state.pipeline),
+            Arc::clone(&state.query),
+        ))
 }
 
 /// Build the complete router: retained V1 routes beside the V2 surface.
@@ -1262,13 +1292,13 @@ async fn finish_v2_failure_after_transaction_close(
     .await
 }
 
-fn response_audit_deadline(request_deadline: Instant) -> Instant {
+pub(super) fn response_audit_deadline(request_deadline: Instant) -> Instant {
     Instant::now()
         .checked_add(RESPONSE_AUDIT_GRACE)
         .unwrap_or(request_deadline)
 }
 
-fn v2_request_metadata(
+pub(super) fn v2_request_metadata(
     headers: &HeaderMap,
     endpoint: &'static str,
 ) -> HashMap<String, serde_json::Value> {
@@ -1413,11 +1443,11 @@ async fn handle_v2_capabilities(
     }
 }
 
-fn envelope_response(bytes: Vec<u8>) -> Response {
+pub(super) fn envelope_response(bytes: Vec<u8>) -> Response {
     ([(CONTENT_TYPE, "application/json")], bytes).into_response()
 }
 
-fn diagnostic(
+pub(super) fn diagnostic(
     category: DiagnosticCategory,
     code: &'static str,
     message: &'static str,
@@ -1429,7 +1459,7 @@ fn diagnostic(
     )
 }
 
-fn unavailable() -> Diagnostic {
+pub(super) fn unavailable() -> Diagnostic {
     diagnostic(
         DiagnosticCategory::Integrity,
         "query_remote_provider_unavailable",
@@ -1437,7 +1467,7 @@ fn unavailable() -> Diagnostic {
     )
 }
 
-fn policy_rejected() -> Diagnostic {
+pub(super) fn policy_rejected() -> Diagnostic {
     diagnostic(
         DiagnosticCategory::Integrity,
         "query_remote_policy_rejected",
@@ -1445,7 +1475,7 @@ fn policy_rejected() -> Diagnostic {
     )
 }
 
-fn replayed() -> Diagnostic {
+pub(super) fn replayed() -> Diagnostic {
     diagnostic(
         DiagnosticCategory::Integrity,
         "query_remote_replay",
@@ -1453,7 +1483,7 @@ fn replayed() -> Diagnostic {
     )
 }
 
-fn replay_capacity() -> Diagnostic {
+pub(super) fn replay_capacity() -> Diagnostic {
     diagnostic(
         DiagnosticCategory::ResourceLimit,
         "query_remote_replay_capacity",
@@ -1461,7 +1491,7 @@ fn replay_capacity() -> Diagnostic {
     )
 }
 
-fn replay_unavailable() -> Diagnostic {
+pub(super) fn replay_unavailable() -> Diagnostic {
     diagnostic(
         DiagnosticCategory::Integrity,
         "query_remote_replay_unavailable",
@@ -1469,7 +1499,7 @@ fn replay_unavailable() -> Diagnostic {
     )
 }
 
-fn deadline_exceeded() -> Diagnostic {
+pub(super) fn deadline_exceeded() -> Diagnostic {
     diagnostic(
         DiagnosticCategory::ResourceLimit,
         "transaction_deadline_exceeded",
@@ -1477,7 +1507,7 @@ fn deadline_exceeded() -> Diagnostic {
     )
 }
 
-fn body_oversized() -> Diagnostic {
+pub(super) fn body_oversized() -> Diagnostic {
     diagnostic(
         DiagnosticCategory::ResourceLimit,
         "query_remote_envelope_oversized",
@@ -1558,6 +1588,8 @@ mod tests {
         transaction_opens: AtomicUsize,
         transaction_closes: AtomicUsize,
         query_executions: AtomicUsize,
+        /// Rows every query answers with; empty by default.
+        rows: Mutex<Vec<serde_json::Value>>,
     }
 
     struct CountingBackend {
@@ -1650,11 +1682,12 @@ mod tests {
         fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
             self.metrics.query_executions.fetch_add(1, Ordering::SeqCst);
             let fail = self.metrics.fail_query.load(Ordering::SeqCst);
+            let rows = self.metrics.rows.lock().expect("rows lock").clone();
             Box::pin(async move {
                 if fail {
                     Err(OrmError::QueryExecution("masked query fixture".into()))
                 } else {
-                    Ok(QueryResult::Rows(Vec::new()))
+                    Ok(QueryResult::Rows(rows))
                 }
             })
         }
@@ -3610,5 +3643,9 @@ mod tests {
             metadata["http_headers"]["authorization"],
             serde_json::json!(["Bearer first", "Bearer second"]),
         );
+    }
+
+    mod v3_staged {
+        include!("v3_tests.rs");
     }
 }

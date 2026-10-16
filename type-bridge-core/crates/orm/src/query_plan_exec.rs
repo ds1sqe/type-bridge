@@ -10,7 +10,7 @@
 use type_bridge_core_lib::__internal as tql;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
-use type_bridge_contract::id::AttributeId;
+use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId};
 use type_bridge_contract::query_plan::v3::{
     ArithOp, Builtin, DeleteItem, Expr, InsertThing, Operation, Pattern, QueryPlanV3, Set, Stage,
@@ -19,6 +19,8 @@ use type_bridge_contract::query_plan::v3::{
 use type_bridge_contract::query_plan::{
     DocumentSource, InputColumn, OrderDirection, QueryOperand, QueryOutput, QueryPattern,
 };
+use type_bridge_contract::query_remote::RemoteValue;
+use type_bridge_contract::query_remote_v3::StagedAnswerV3;
 use type_bridge_contract::sdk_diagnostic::FailureContext;
 
 use crate::query_v2::{
@@ -49,6 +51,83 @@ pub enum PlanAnswer {
     /// producing more rows than the transaction's row or byte cap aborts
     /// the commit, so nothing it wrote is kept.
     Matched(u64),
+}
+
+impl PlanAnswer {
+    /// Project this answer onto the staged V3 wire evidence of `plan`.
+    ///
+    /// Rows carry one provider concept per output binding, keyed by the
+    /// binding's variable. Fetched documents carry untyped scalars, so they
+    /// are refused here rather than guessed.
+    pub fn to_staged_v3(&self, plan: &QueryPlanV3) -> Result<StagedAnswerV3, Diagnostic> {
+        Ok(match self {
+            Self::Count(value) => StagedAnswerV3::Count { value: *value },
+            Self::Exists(value) => StagedAnswerV3::Exists { value: *value },
+            Self::Matched(value) => StagedAnswerV3::Matched { value: *value },
+            Self::Rows(rows) => {
+                let QueryOutput::Rows { columns } = plan.output() else {
+                    return Err(staged_documents_unsupported());
+                };
+                let names = columns
+                    .iter()
+                    .map(|column| local_variable(plan.bindings(), *column))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let rows = rows
+                    .iter()
+                    .map(|row| names.iter().map(|name| remote_value(row, name)).collect())
+                    .collect::<Result<_, _>>()?;
+                StagedAnswerV3::Rows { rows }
+            }
+        })
+    }
+}
+
+/// Staged V3 replies cannot yet carry typed fetched documents.
+pub fn staged_documents_unsupported() -> Diagnostic {
+    failure(
+        DiagnosticCategory::UnsupportedCapability,
+        "query_remote_v3_documents_unsupported",
+        "staged replies do not carry fetched documents",
+    )
+}
+
+fn remote_value(row: &serde_json::Value, variable: &str) -> Result<RemoteValue, Diagnostic> {
+    use crate::migration_assertion::{
+        parse_provider_value, provider_concept_kind, provider_value_type,
+    };
+    let bad = || {
+        failure(
+            DiagnosticCategory::Integrity,
+            "query_remote_v3_answer_concept",
+            "provider row evidence is not a typed concept",
+        )
+    };
+    let concept = match row.get(variable) {
+        Some(serde_json::Value::Null) => return Ok(RemoteValue::Absent),
+        Some(serde_json::Value::Object(concept)) => concept,
+        _ => return Err(bad()),
+    };
+    let field = |name: &str| concept.get(name).and_then(|v| v.as_str()).ok_or_else(bad);
+    let scalar = || {
+        let tag = provider_value_type(field("value_type")?).ok_or_else(bad)?;
+        parse_provider_value(concept.get("value").ok_or_else(bad)?, tag)
+    };
+    let category = field("category")?;
+    if matches!(category, "value" | "Value") {
+        return Ok(RemoteValue::Value { value: scalar()? });
+    }
+    let kind = provider_concept_kind(category).ok_or_else(bad)?;
+    let type_id = TypeId::new(kind, field("label")?).map_err(|_| bad())?;
+    Ok(match kind {
+        TypeKind::Attribute => RemoteValue::Attribute {
+            type_id,
+            value: scalar()?,
+        },
+        _ => RemoteValue::Thing {
+            iid: field("iid")?.to_owned(),
+            type_id,
+        },
+    })
 }
 
 /// Lower one trusted plan into the official AST plus its `given` rows.

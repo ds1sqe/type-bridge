@@ -178,6 +178,13 @@ impl Interceptor for AuditLogInterceptor {
         true
     }
 
+    /// The audit log authorizes nothing; it observes V3 replies through
+    /// [`Interceptor::on_v2_response`], which `/v3/staged` also runs.
+    #[cfg(feature = "v2-query")]
+    fn supports_v3(&self) -> bool {
+        true
+    }
+
     #[cfg(feature = "v2-query")]
     fn on_v2_request<'a>(
         &'a self,

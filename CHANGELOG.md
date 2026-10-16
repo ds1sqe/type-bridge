@@ -424,6 +424,17 @@ differently direct and through a proxy. Each entry says what to do instead.
   before it. Staged reads honour the transaction's answer limits, deadline
   and cancellation. A `Schema` transaction refuses both with
   `borrowed_target_not_read_only`.
+- The TypeBridge server runs staged `query-plan/v3` transactions at
+  `POST /v3/staged` and advertises them at `GET /v3/capabilities`. Every
+  configured interceptor must declare `supports_v3`, or each V3 request is
+  refused with `query_remote_policy_rejected`. A write transaction needs an
+  interceptor to vouch for the caller through `on_v3_write_authority`,
+  unless `[v2] allow_unauthenticated_staged_writes = true` (default
+  `false`); otherwise it is refused with `staged_write_not_authorized`.
+- Keyed staged requests retain their signed reply for retries, and one
+  client holds at most `1 / IdempotencyConfig::client_share` (default 4) of
+  the retained entries and bytes; past it, a new keyed request is refused
+  with `idempotency_client_capacity`.
 
 ### Fixed
 

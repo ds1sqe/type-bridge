@@ -253,6 +253,11 @@ pub struct V2Section {
     /// default.
     #[serde(default)]
     pub answer_limits: std::collections::BTreeMap<String, u64>,
+    /// Admit staged `/v3/staged` write transactions without an interceptor
+    /// vouching for the caller. Defaults to `false`: writes need an
+    /// authenticating policy.
+    #[serde(default)]
+    pub allow_unauthenticated_staged_writes: bool,
 }
 
 impl V2Section {
@@ -664,6 +669,8 @@ struct RuntimeV2SectionWire {
     query_limits: std::collections::BTreeMap<String, u64>,
     #[serde(default)]
     answer_limits: std::collections::BTreeMap<String, u64>,
+    #[serde(default)]
+    allow_unauthenticated_staged_writes: bool,
 }
 
 impl From<RuntimeSchemaSectionWire> for SchemaSection {
@@ -709,6 +716,7 @@ impl From<RuntimeV2SectionWire> for V2Section {
             authority_mode: wire.authority_mode,
             query_limits: wire.query_limits,
             answer_limits: wire.answer_limits,
+            allow_unauthenticated_staged_writes: wire.allow_unauthenticated_staged_writes,
         }
     }
 }

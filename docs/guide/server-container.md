@@ -176,6 +176,15 @@ answer policy too; each request runs under the stricter of the two. Names
 and defaults are listed in the
 [typed-query contract](../development/typed-query-contract.md#answer-limits).
 
+An enabled `[v2]` section also serves staged transactions at `/v3/staged`.
+Staged writes need an interceptor that authenticates the caller; to admit
+them without one, opt in explicitly:
+
+```toml
+[v2]
+allow_unauthenticated_staged_writes = true
+```
+
 Supply `TYPEDB_USERNAME` and `TYPEDB_PASSWORD` at runtime. `managed`
 authority requires the artifact's exact migration-control partition and free
 singleton. Use `query_only` only for a database with neither canonical nor

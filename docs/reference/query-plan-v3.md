@@ -416,8 +416,15 @@ A staged transaction uses `typebridge.query-remote-request/v3`, independently
 of the plan version. Requests remain unsigned. Write execution requires an
 authenticated transport identity or explicit server policy; possessing an
 advertisement or reply-signing public key does not authorize a write. This
-section defines the codec. Route execution and SDK proxy staging are separate
-implementation phases.
+section defines the codec. The standalone server executes it at
+`POST /v3/staged` and advertises the staged capabilities at
+`GET /v3/capabilities`; requests bind to that advertisement, not to the
+unchanged `/v2/capabilities` one. A write transaction opens only when an
+interceptor vouches for the caller (`Interceptor::on_v3_write_authority`
+answers `StagedWriteAuthority::Authenticated`) or `[v2]` sets
+`allow_unauthenticated_staged_writes = true`; otherwise the signed reply fails
+with `staged_write_not_authorized`. Staged replies do not yet carry fetched
+documents (`query_remote_v3_documents_unsupported`).
 
 ### Request
 

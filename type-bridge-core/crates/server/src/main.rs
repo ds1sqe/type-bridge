@@ -172,6 +172,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pipeline
             .validate_v2_coverage()
             .map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) })?;
+        // V3 coverage does not gate startup, so V2-only policies keep
+        // serving V2; the staged routes refuse every request instead.
+        if let Err(error) = pipeline.validate_v3_coverage() {
+            tracing::warn!(%error, "staged V3 routes refuse every request");
+        }
     }
 
     // Build router and serve. The V2 surface is opt-in and fail-closed:
@@ -182,7 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let state = build_v2_state(&config, &outbound_transport).await?;
         tracing::info!(
             schema_authority = config.v2.schema_authority_file.as_str(),
-            "V2 query surface enabled: /v2/query, /v2/capabilities"
+            "V2 query surface enabled: /v2/query, /v2/capabilities, /v3/staged, /v3/capabilities"
         );
         transport::v2::create_router_with_v2(Arc::new(pipeline), Arc::new(state))
     } else {
@@ -310,7 +315,8 @@ async fn build_v2_state(
     .map_err(|error| format!("v2 query limits rejected: {error:?}"))?;
     let state = state
         .with_answer_limits(config.v2.resolved_answer_limits()?)
-        .map_err(|error| format!("v2 answer limits rejected: {error:?}"))?;
+        .map_err(|error| format!("v2 answer limits rejected: {error:?}"))?
+        .with_unauthenticated_staged_writes(config.v2.allow_unauthenticated_staged_writes);
     state
         .verify_startup_authority()
         .await
@@ -430,5 +436,6 @@ mod tests {
         })
         .expect("audit interceptor");
         assert!(interceptor.supports_v2());
+        assert!(interceptor.supports_v3());
     }
 }

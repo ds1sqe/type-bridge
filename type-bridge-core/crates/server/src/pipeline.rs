@@ -133,6 +133,29 @@ impl QueryPipeline {
         })
     }
 
+    /// Prove every configured policy explicitly covers staged V3 requests.
+    ///
+    /// Unlike V2 coverage this does not gate startup: a server whose
+    /// policies predate V3 keeps serving V2 and refuses every V3 request
+    /// through [`Self::v3_request_context`].
+    #[cfg(feature = "v2-query")]
+    pub fn validate_v3_coverage(&self) -> Result<(), PipelineError> {
+        self.interceptor_chain
+            .ensure_v3_coverage()
+            .map_err(|error| PipelineError::Interceptor(error.to_string()))
+    }
+
+    /// Construct one staged V3 policy context after proving every configured
+    /// interceptor explicitly supports both typed V2 and staged V3 requests.
+    #[cfg(feature = "v2-query")]
+    pub fn v3_request_context(
+        &self,
+        metadata: HashMap<String, serde_json::Value>,
+    ) -> Result<RequestContext, PipelineError> {
+        self.validate_v3_coverage()?;
+        self.v2_request_context(metadata)
+    }
+
     /// Authenticate and rate-limit V2 transport metadata before envelope
     /// decoding or other attacker-controlled contract work.
     #[cfg(feature = "v2-query")]
@@ -155,6 +178,19 @@ impl QueryPipeline {
     ) -> Result<(), PipelineError> {
         self.interceptor_chain
             .execute_v2_request(request, context)
+            .await
+            .map_err(|error| PipelineError::Interceptor(error.to_string()))
+    }
+
+    /// Whether the configured policies admit a staged V3 write for this
+    /// caller. An interceptor error refuses.
+    #[cfg(feature = "v2-query")]
+    pub async fn authorize_v3_write(
+        &self,
+        context: &RequestContext,
+    ) -> Result<bool, PipelineError> {
+        self.interceptor_chain
+            .execute_v3_write_authority(context)
             .await
             .map_err(|error| PipelineError::Interceptor(error.to_string()))
     }

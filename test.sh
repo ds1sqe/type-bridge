@@ -911,6 +911,13 @@ run_live_lane() {
             -p type-bridge-server --features v2-query \
             --lib
 
+    run_step "type-bridge-server V3 staged live acceptance" \
+        run_with_timeout 10m \
+        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+        cargo test --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-server --features v2-query \
+            --test v3_staged_integration_tests -- --ignored
+
     # Connects without an HTTP port, so discovery takes the band-8 gRPC
     # fallback and must reach the lane server's own band.
     run_step "runtime gRPC-only fallback discovery" \

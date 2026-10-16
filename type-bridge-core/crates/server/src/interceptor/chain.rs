@@ -5,7 +5,7 @@ use type_bridge_core_lib::ast::Clause;
 
 use super::traits::{InterceptError, Interceptor, RequestContext};
 #[cfg(feature = "v2-query")]
-use super::traits::{V2PolicyOutcome, V2PolicyRequest};
+use super::traits::{StagedWriteAuthority, V2PolicyOutcome, V2PolicyRequest};
 
 /// Ordered request interceptor chain with reverse-order response hooks.
 pub struct InterceptorChain {
@@ -61,6 +61,29 @@ impl InterceptorChain {
         Ok(())
     }
 
+    /// Fail closed if any configured policy has not explicitly declared
+    /// staged V3 coverage.
+    ///
+    /// V3 is served only beside V2, whose admission already requires every
+    /// policy to declare V2 coverage, so this requires every V2-participating
+    /// policy to also cover V3.
+    #[cfg(feature = "v2-query")]
+    pub fn ensure_v3_coverage(&self) -> Result<(), InterceptError> {
+        if let Some(interceptor) = self
+            .interceptors
+            .iter()
+            .find(|interceptor| !interceptor.supports_v3())
+        {
+            return Err(InterceptError::ValidationFailed {
+                reason: format!(
+                    "interceptor {:?} does not declare staged V3 coverage",
+                    interceptor.name(),
+                ),
+            });
+        }
+        Ok(())
+    }
+
     /// Run header/identity policy before decoding an untrusted V2 envelope.
     #[cfg(feature = "v2-query")]
     pub async fn execute_v2_transport(
@@ -84,6 +107,21 @@ impl InterceptorChain {
             interceptor.on_v2_request(request, ctx).await?;
         }
         Ok(())
+    }
+
+    /// Admit a staged V3 write: any error refuses, at least one policy must
+    /// vouch for the caller.
+    #[cfg(feature = "v2-query")]
+    pub async fn execute_v3_write_authority(
+        &self,
+        ctx: &RequestContext,
+    ) -> Result<bool, InterceptError> {
+        let mut admitted = false;
+        for interceptor in &self.interceptors {
+            admitted |= interceptor.on_v3_write_authority(ctx).await?
+                == StagedWriteAuthority::Authenticated;
+        }
+        Ok(admitted)
     }
 
     /// Run every V2 response hook even when one rejects, so audit evidence is
