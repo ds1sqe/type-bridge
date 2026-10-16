@@ -2122,7 +2122,14 @@ async fn grpc_fallback_driver(
     required_server_version: Option<core_version::Version>,
 ) -> SecureResult<(DriverHandle, Option<core_version::Version>)> {
     #[cfg(not(feature = "band8"))]
-    let _ = (address, username, password, tls, meter);
+    let _ = (
+        address,
+        username,
+        password,
+        tls,
+        meter,
+        required_server_version,
+    );
     let mut failures = vec![format!(
         "HTTP version probe failed: {}",
         http_error.redacted_probe_description()
