@@ -4,7 +4,7 @@ use type_bridge_contract::failure::{AnnotationKind, Code, Failure, LockKind, Pha
 use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::sdk_diagnostic::{
-    FailureContext, SdkCommitFailureOutcome, SdkExecutionDiagnostic,
+    FailureContext, SdkCommitFailureOutcome, SdkExecutionDiagnostic, SdkProviderOperation,
 };
 
 fn cases() -> BTreeMap<String, serde_json::Value> {
@@ -78,4 +78,42 @@ fn typed_failure_diagnostic_goldens() {
 fn code_deserialization_cannot_admit_provider_values() {
     assert!(serde_json::from_str::<Code>("\"CNT9/value\"").is_err());
     assert!(serde_json::from_str::<Code>("\"CNT9\"").is_ok());
+}
+#[test]
+fn released_details_omit_only_typed_failure_details() {
+    let unique = Failure::Rejected {
+        phase: Phase::Query,
+        reason: Reason::Unique,
+        op_index: None,
+    };
+    let conflict = Failure::Rejected {
+        phase: Phase::Commit,
+        reason: Reason::Conflict {
+            lock: LockKind::Exclusive,
+        },
+        op_index: None,
+    };
+    let indeterminate = Failure::Indeterminate {
+        code: Code::new("STC5"),
+    };
+    for (failure, released) in [
+        (
+            &unique,
+            SdkExecutionDiagnostic::provider_failure(SdkProviderOperation::Write),
+        ),
+        (
+            &conflict,
+            SdkExecutionDiagnostic::commit_failure(SdkCommitFailureOutcome::DefinitelyAborted),
+        ),
+        (
+            &indeterminate,
+            SdkExecutionDiagnostic::commit_failure(SdkCommitFailureOutcome::Unknown),
+        ),
+    ] {
+        let typed = SdkExecutionDiagnostic::from_failure(failure, Default::default());
+        assert!(typed.details().len() > released.details().len());
+        assert!(typed.released_details().eq(released.details().iter()));
+        // Without a typed failure every detail is released.
+        assert!(released.released_details().eq(released.details().iter()));
+    }
 }

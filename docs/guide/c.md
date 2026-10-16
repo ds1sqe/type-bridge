@@ -161,6 +161,7 @@ Provider commit status is selected from the typed commit outcome. ABI 1.6
 continues to return `TYPE_BRIDGE_STATUS_EXECUTION_FAILED` for proven rejections
 and `TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN` when a commit may have applied.
 Rejection diagnostics keep the released `commit_definitely_aborted` and
-`provider_operation_failed` codes and add a `rejection` detail naming the
-reason. Additional C failure
-detail kinds belong to ABI 1.7, rather than changing the ABI 1.6 layout.
+`provider_operation_failed` codes, paths and details. The typed failure
+details other SDKs expose (`retry_safe`, `code`, `rejection`, `lock_kind`,
+`annotation`) belong to ABI 1.7, rather than changing what ABI 1.6 consumers
+count and read.

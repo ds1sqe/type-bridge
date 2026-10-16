@@ -510,9 +510,10 @@ impl From<SdkExecutionDiagnostic> for OwnedDiagnostic {
             code: bytes(value.code().as_str()),
             message: bytes(value.message().as_str()),
             path: value.path().iter().map(OwnedPath::from).collect(),
+            // ABI 1.6 consumers count and index details, so typed-failure
+            // details stay out until an ABI minor adds them.
             details: value
-                .details()
-                .iter()
+                .released_details()
                 .map(|(key, detail)| OwnedDetail::from_sdk(key, detail))
                 .collect(),
         }
@@ -1264,6 +1265,120 @@ mod typed_failure_status_tests {
                 Default::default()
             )),
             TypeBridgeStatus::ExecutionFailed
+        );
+    }
+
+    /// Path count and detail keys as an ABI 1.6 consumer reads them.
+    fn c_shape(diagnostic: SdkExecutionDiagnostic) -> (usize, Vec<String>) {
+        let mut handle = Box::into_raw(Box::new(execution_diagnostics_handle(vec![diagnostic])));
+        let mut view = empty_diagnostic_view();
+        assert_eq!(
+            unsafe { type_bridge_execution_diagnostics_get_v1(handle, 0, &mut view) },
+            TypeBridgeStatus::Ok
+        );
+        let keys = (0..view.detail_count)
+            .map(|index| {
+                let mut detail = empty_detail_view();
+                assert_eq!(
+                    unsafe {
+                        type_bridge_execution_diagnostics_detail_get_v1(
+                            handle,
+                            0,
+                            index,
+                            &mut detail,
+                        )
+                    },
+                    TypeBridgeStatus::Ok
+                );
+                let key = unsafe { std::slice::from_raw_parts(detail.key.data, detail.key.length) };
+                String::from_utf8(key.to_vec()).unwrap()
+            })
+            .collect();
+        assert_eq!(
+            unsafe { type_bridge_execution_diagnostics_close(&mut handle) },
+            TypeBridgeStatus::Ok
+        );
+        (view.path_count, keys)
+    }
+
+    #[test]
+    fn typed_failures_keep_the_released_abi_1_6_detail_set() {
+        use type_bridge_contract::failure::{
+            AnnotationKind, Code, Failure, LockKind, Phase, Reason,
+        };
+        use type_bridge_contract::sdk_diagnostic::SdkProviderOperation;
+
+        let reasons = || {
+            [
+                Reason::Conflict {
+                    lock: LockKind::Exclusive,
+                },
+                Reason::Cardinality,
+                Reason::Unique,
+                Reason::Constraint {
+                    annotation: AnnotationKind::Range,
+                },
+                Reason::Other {
+                    code: Code::new("DVL1").unwrap(),
+                },
+            ]
+        };
+        let mut cases = Vec::new();
+        for reason in reasons() {
+            // ORM query lowering: the released provider write diagnostic
+            // gains the typed failure.
+            let failure = Failure::Rejected {
+                phase: Phase::Query,
+                reason,
+                op_index: None,
+            };
+            cases.push((
+                SdkExecutionDiagnostic::provider_failure(SdkProviderOperation::Write),
+                SdkExecutionDiagnostic::provider_failure(SdkProviderOperation::Write)
+                    .with_failure(&failure, Default::default()),
+            ));
+        }
+        for reason in reasons() {
+            let failure = Failure::Rejected {
+                phase: Phase::Commit,
+                reason,
+                op_index: None,
+            };
+            cases.push((
+                SdkExecutionDiagnostic::commit_failure(SdkCommitFailureOutcome::DefinitelyAborted),
+                SdkExecutionDiagnostic::from_failure(&failure, Default::default()),
+            ));
+        }
+        cases.push((
+            SdkExecutionDiagnostic::commit_failure(SdkCommitFailureOutcome::Unknown),
+            SdkExecutionDiagnostic::from_failure(
+                &Failure::Indeterminate {
+                    code: Code::new("STC5"),
+                },
+                Default::default(),
+            ),
+        ));
+
+        for (released, typed) in cases {
+            // Other bindings still see the additive typed details.
+            assert!(typed.failure().is_some());
+            assert!(typed.details().len() > released.details().len());
+            let status = status_for(&typed);
+            assert_eq!(status, status_for(&released));
+            assert_eq!(c_shape(typed), c_shape(released));
+        }
+        assert_eq!(
+            c_shape(
+                SdkExecutionDiagnostic::provider_failure(SdkProviderOperation::Write).with_failure(
+                    &Failure::Rejected {
+                        phase: Phase::Query,
+                        reason: Reason::Unique,
+                        op_index: None,
+                    },
+                    Default::default()
+                )
+            ),
+            (0, vec!["operation".to_owned()])
         );
     }
 }

@@ -804,16 +804,11 @@ impl SdkExecutionDiagnostic {
         use crate::failure::Failure;
         self.failure = Some(Box::new(failure.clone()));
         let mut diagnostic = self.with_static_detail(
-            static_name("retry_safe"),
+            static_name(FAILURE_RETRY_SAFE_DETAIL),
             SdkDiagnosticDetailValue::Boolean(failure.retry_safe()),
         );
         let host = failure.host_json();
-        for (key, name) in [
-            ("code", "code"),
-            ("reason", "rejection"),
-            ("lock_kind", "lock_kind"),
-            ("annotation", "annotation"),
-        ] {
+        for (key, name) in FAILURE_IDENTITY_DETAILS {
             if let Some(value) = host[key].as_str() {
                 diagnostic = diagnostic.with_static_detail(
                     static_name(name),
@@ -846,6 +841,26 @@ impl SdkExecutionDiagnostic {
     #[must_use]
     pub fn failure(&self) -> Option<&crate::failure::Failure> {
         self.failure.as_deref()
+    }
+
+    /// Details in lexical key order without those [`Self::with_failure`]
+    /// added: the released detail set.
+    ///
+    /// A binding whose released ABI fixes the detail set, such as C ABI 1.6,
+    /// projects these instead of [`Self::details`]; the typed failure stays
+    /// available through [`Self::failure`].
+    pub fn released_details(
+        &self,
+    ) -> impl Iterator<Item = (&SdkDiagnosticName, &SdkDiagnosticDetailValue)> {
+        let typed = self.failure.is_some();
+        self.details.iter().filter(move |(key, _)| {
+            let key = key.as_str();
+            !(typed
+                && (key == FAILURE_RETRY_SAFE_DETAIL
+                    || FAILURE_IDENTITY_DETAILS
+                        .iter()
+                        .any(|(_, name)| *name == key)))
+        })
     }
 
     /// Typed commit outcome, including the released umbrella constructors.
@@ -1368,6 +1383,18 @@ fn static_code(value: &'static str) -> SdkDiagnosticCode {
 fn static_message(value: &'static str) -> SdkDiagnosticMessage {
     SdkDiagnosticMessage::new(value).expect("static SDK diagnostic message is valid")
 }
+
+/// Boolean detail [`SdkExecutionDiagnostic::with_failure`] always adds.
+const FAILURE_RETRY_SAFE_DETAIL: &str = "retry_safe";
+
+/// Identity details [`SdkExecutionDiagnostic::with_failure`] adds when the
+/// failure has them, as (`Failure::host_json` key, detail name).
+const FAILURE_IDENTITY_DETAILS: [(&str, &str); 4] = [
+    ("code", "code"),
+    ("reason", "rejection"),
+    ("lock_kind", "lock_kind"),
+    ("annotation", "annotation"),
+];
 
 fn static_name(value: &'static str) -> SdkDiagnosticName {
     SdkDiagnosticName::new(value).expect("static SDK diagnostic name is canonical")

@@ -821,8 +821,9 @@ Errors that already lowered to another released code, such as
 Typed diagnostics add `retry_safe` as a boolean, `code` as a validated TypeDB
 identity and `rejection` (`conflict`, `cardinality`, `unique`, `constraint` or
 `other`) for a rejection. Conflict diagnostics include `lock_kind`; annotation
-constraints include `annotation`. These use bounded identity detail values,
-without extending the C ABI 1.6 detail vocabulary. A staged operation index
+constraints include `annotation`. These use bounded identity detail values.
+The C ABI 1.6 projection omits them and keeps the released detail set
+(`SdkExecutionDiagnostic::released_details`). A staged operation index
 is an `Index` path segment; possible owner and attribute sites are `Type` and
 `Field` path segments taken only from plan metadata. They are possible sites,
 not evidence that a particular site or another transaction caused the failure.
