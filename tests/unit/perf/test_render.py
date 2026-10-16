@@ -79,8 +79,9 @@ def test_latest_outside_runs_is_rejected(tmp_path: Path) -> None:
 def test_mkdocs_loads_the_hook_by_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """MkDocs imports the hook file with only its own directory on sys.path."""
     pytest.importorskip("mkdocs")
-    from mkdocs.config import load_config
-    from mkdocs.structure.files import Files
+    # The docs extra is optional; CI type-checks tests without it.
+    from mkdocs.config import load_config  # pyright: ignore[reportMissingImports]
+    from mkdocs.structure.files import Files  # pyright: ignore[reportMissingImports]
 
     (tmp_path / "docs").mkdir()
     (tmp_path / "mkdocs.yml").write_text(
