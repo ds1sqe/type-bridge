@@ -119,6 +119,48 @@ impl ProxyHttpTransport {
         .await
     }
 
+    /// Fetch the executor's staged (`query-remote/v3`) advertisement.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::capabilities`].
+    pub async fn staged_capabilities(
+        &self,
+        deadline: QueryExecutionDeadline,
+        cancellation: &AnswerCancellation,
+    ) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
+        let client = Arc::clone(&self.client);
+        run(
+            deadline,
+            cancellation,
+            SdkProviderOperation::Connect,
+            move |timeout| client.staged_capabilities(timeout, MAX_REMOTE_ENVELOPE_BYTES),
+        )
+        .await
+    }
+
+    /// Send one canonical staged request to `/v3/staged`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::exchange`]; the provider operation is `write`.
+    pub async fn exchange_staged(
+        &self,
+        request: Vec<u8>,
+        max_bytes: usize,
+        deadline: QueryExecutionDeadline,
+        cancellation: &AnswerCancellation,
+    ) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
+        let client = Arc::clone(&self.client);
+        run(
+            deadline,
+            cancellation,
+            SdkProviderOperation::Write,
+            move |timeout| client.exchange_staged(&request, timeout, max_bytes),
+        )
+        .await
+    }
+
     /// Send one canonical request and return the exact reply bytes, at most
     /// `max_bytes` of them.
     ///

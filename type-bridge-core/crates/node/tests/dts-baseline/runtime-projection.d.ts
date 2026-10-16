@@ -1,6 +1,7 @@
 import { QueryV2Authority, type NativeRustDatabase, type NativeRustTransactionContext, type RustDatabase, type RustTransactionContext } from "./index.js";
 import { loadNative } from "./native.js";
 import type { NativeQueryCancellation, NativeQueryExecutionResources, NativeQueryLimits } from "./native.js";
+import { StagedTransaction, type StagedTransactionKind } from "./staged-transaction.js";
 type NativeModule = ReturnType<typeof loadNative>;
 type NativeRuntimeProjection = InstanceType<NativeModule["NodeRuntimeProjection"]>;
 export type RuntimeProjectionMatchSession = ReturnType<NativeRuntimeProjection["matchSessionWithResources"]>;
@@ -337,6 +338,12 @@ export interface ProxyConnectionOptions {
     readonly headers?: readonly (readonly [string, string])[];
     /** Exact advertisement bytes provisioned out of band; fetched when omitted. */
     readonly advertisement?: Uint8Array;
+    /**
+     * Exact staged (`/v3/capabilities`) advertisement bytes provisioned out of
+     * band; fetched on the first staged transaction when omitted. Either way
+     * it must name the same executor and reply key as `advertisement`.
+     */
+    readonly stagedAdvertisement?: Uint8Array;
     /** Bounds connecting, which fetches the advertisement. */
     readonly connectionLimits?: QueryExecutionResourceLimits;
     /** The ceiling every terminal on this connection is constrained by. */
@@ -355,6 +362,15 @@ export declare class ProxyConnection implements RuntimeProjectionRemote {
     private constructor();
     /** Open `endpoint` under `authority`, fetch or pin its advertisement, and verify it. */
     static connect(authority: QueryV2Authority, endpoint: string, options?: ProxyConnectionOptions): Promise<ProxyConnection>;
+    /**
+     * Open a staged transaction whose commit is one signed `query-remote/v3`
+     * exchange to `POST /v3/staged`. The staged advertisement is fetched from
+     * `/v3/capabilities` now; nothing else is sent until commit. An omitted
+     * kind is inferred from the staged writes.
+     */
+    transaction(kind?: StagedTransactionKind, options?: {
+        readonly cancellation?: QueryCancellation;
+    }): Promise<StagedTransaction>;
     /** The ceiling every terminal on this connection is constrained by. */
     get answerLimits(): QueryExecutionResourceLimits;
     rows(query: RuntimeProjectionMatchQuery, orders: RuntimeProjectionMatchOrder[], offset: bigint, limit: bigint, cardinality: "exactly_one" | "bounded_many"): Promise<RuntimeProjectionMatchResult>;

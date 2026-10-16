@@ -22,6 +22,7 @@ mod runtime_projection;
 #[path = "../../../../tests/support/sdk_profile_matrix.rs"]
 #[allow(dead_code)]
 mod sdk_profile_matrix;
+mod staged_transaction_runtime;
 
 #[cfg(feature = "contract-test-adapter")]
 pub use contract_test_adapter::{
@@ -495,6 +496,23 @@ impl NodeRustDatabase {
             runtime: Arc::clone(&self.runtime),
             successor_batch_invoked: Arc::new(AtomicBool::new(false)),
         })
+    }
+}
+
+#[napi]
+impl NodeRustDatabase {
+    /// Create a deferred staged transaction; nothing opens until commit.
+    /// An omitted kind is inferred from the staged writes.
+    #[napi(js_name = "stagedTransaction")]
+    pub fn staged_transaction(
+        &self,
+        kind: Option<String>,
+    ) -> Result<staged_transaction_runtime::NodeStagedTransaction> {
+        let options = staged_transaction_runtime::staged_options(kind.as_deref())?;
+        Ok(staged_transaction_runtime::NodeStagedTransaction::new(
+            self.db.transaction(options),
+            Arc::clone(&self.runtime),
+        ))
     }
 }
 

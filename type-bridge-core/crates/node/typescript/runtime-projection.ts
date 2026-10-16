@@ -15,6 +15,10 @@ import type {
 } from "./native.js";
 import { ownedByteSnapshot } from "./owned-bytes.js";
 import {
+  StagedTransaction,
+  type StagedTransactionKind,
+} from "./staged-transaction.js";
+import {
   queryV2AuthorityHandle,
   queryV2NativeCall,
   queryV2NativePromise,
@@ -1151,6 +1155,12 @@ export interface ProxyConnectionOptions {
   readonly headers?: readonly (readonly [string, string])[];
   /** Exact advertisement bytes provisioned out of band; fetched when omitted. */
   readonly advertisement?: Uint8Array;
+  /**
+   * Exact staged (`/v3/capabilities`) advertisement bytes provisioned out of
+   * band; fetched on the first staged transaction when omitted. Either way
+   * it must name the same executor and reply key as `advertisement`.
+   */
+  readonly stagedAdvertisement?: Uint8Array;
   /** Bounds connecting, which fetches the advertisement. */
   readonly connectionLimits?: QueryExecutionResourceLimits;
   /** The ceiling every terminal on this connection is constrained by. */
@@ -1201,6 +1211,9 @@ export class ProxyConnection implements RuntimeProjectionRemote {
     const advertisement = options.advertisement === undefined
       ? undefined
       : ownedByteSnapshot(options.advertisement, loadNative().MAX_REMOTE_ENVELOPE_BYTES);
+    const stagedAdvertisement = options.stagedAdvertisement === undefined
+      ? undefined
+      : ownedByteSnapshot(options.stagedAdvertisement, loadNative().MAX_REMOTE_ENVELOPE_BYTES);
     const native = await queryV2NativePromise(queryV2NativeCall(() =>
       loadNative().NodeProxyConnection.connect(
         nativeAuthority,
@@ -1213,9 +1226,26 @@ export class ProxyConnection implements RuntimeProjectionRemote {
         options.connectionLimits?.nativeHandle(),
         options.answerLimits?.nativeHandle(),
         options.cancellation?.nativeHandle(),
+        stagedAdvertisement,
       )
     ));
     return new ProxyConnection(native);
+  }
+
+  /**
+   * Open a staged transaction whose commit is one signed `query-remote/v3`
+   * exchange to `POST /v3/staged`. The staged advertisement is fetched from
+   * `/v3/capabilities` now; nothing else is sent until commit. An omitted
+   * kind is inferred from the staged writes.
+   */
+  async transaction(
+    kind?: StagedTransactionKind,
+    options: { readonly cancellation?: QueryCancellation } = {},
+  ): Promise<StagedTransaction> {
+    const native = await queryV2NativePromise(queryV2NativeCall(() =>
+      this.#native.transaction(kind, options.cancellation?.nativeHandle())
+    ));
+    return new StagedTransaction(native);
   }
 
   /** The ceiling every terminal on this connection is constrained by. */

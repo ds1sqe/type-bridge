@@ -1393,3 +1393,259 @@ async fn malformed_staged_requests_are_refused_before_anything_opens() {
     assert_eq!(unbound_code(&fixture, &reply), "query_remote_envelope_oversized");
     assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0);
 }
+
+/// The SDK seam offline: a core `Transaction` over the in-process route.
+/// `garble_first` corrupts the first reply after the server handled it.
+fn sdk_transaction(
+    fixture: &V3Fixture,
+    garble_first: bool,
+) -> (
+    type_bridge_orm::session::staged::Transaction,
+    Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+) {
+    let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = Arc::clone(&sent);
+    let router = fixture.router.clone();
+    let garble = Arc::new(std::sync::atomic::AtomicBool::new(garble_first));
+    let exchange: type_bridge_orm::session::StagedExchangeFn = Arc::new(move |bytes: Vec<u8>| {
+        let router = router.clone();
+        let log = Arc::clone(&log);
+        let garble = Arc::clone(&garble);
+        Box::pin(async move {
+            log.lock().unwrap().push(bytes.clone());
+            let reply = call(&router, "POST", "/v3/staged", bytes).await;
+            Ok(if garble.swap(false, Ordering::SeqCst) {
+                b"{}".to_vec()
+            } else {
+                reply
+            })
+        })
+    });
+    let tx = type_bridge_orm::session::staged::Transaction::over_proxy(
+        fixture.declared.clone(),
+        &fixture.advertisement.encode().unwrap(),
+        exchange,
+        type_bridge_orm::session::staged::TransactionOptions::default(),
+    )
+    .expect("proxy transaction");
+    (tx, sent)
+}
+
+fn sent_key(bytes: &[u8]) -> serde_json::Value {
+    serde_json::from_slice::<serde_json::Value>(bytes).unwrap()["idempotency_key"].clone()
+}
+
+#[tokio::test]
+async fn sdk_proxy_commit_resolves_answers_with_a_fresh_key_per_commit() {
+    use type_bridge_orm::session::staged::PlanAnswer;
+    let fixture = v3_fixture(vouching_pipeline(), false);
+    let (mut tx, sent) = sdk_transaction(&fixture, false);
+    let inserted = tx.stage_plan(&insert_plan(&fixture.declared)).unwrap();
+    let counted = tx.stage_plan(&count_plan(&fixture.declared)).unwrap();
+    assert!(inserted.get().is_err(), "nothing resolves before commit");
+    tx.commit().await.expect("commit");
+    assert_eq!(*inserted.get().unwrap(), PlanAnswer::Matched(0));
+    assert_eq!(*counted.get().unwrap(), PlanAnswer::Count(0));
+    tx.stage_plan(&insert_plan(&fixture.declared)).unwrap();
+    tx.commit().await.expect("second commit");
+    assert!(tx.commit_retry().await.is_err());
+    let sent = sent.lock().unwrap().clone();
+    assert_eq!(sent.len(), 2);
+    assert!(sent_key(&sent[0]).is_string());
+    assert_ne!(sent_key(&sent[0]), sent_key(&sent[1]));
+    // Raw TypeQL and the retry API without an unknown outcome refuse.
+    assert!(
+        tx.stage(type_bridge_orm::session::staged::StagedQuery::new("match $x isa person;", false))
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn sdk_unverifiable_reply_is_unknown_and_commit_retry_resends_the_same_bytes() {
+    use type_bridge_orm::session::staged::PlanAnswer;
+    let fixture = v3_fixture(vouching_pipeline(), false);
+    let (mut tx, sent) = sdk_transaction(&fixture, true);
+    let inserted = tx.stage_plan(&insert_plan(&fixture.declared)).unwrap();
+    let error = tx.commit().await.expect_err("garbled reply");
+    assert_eq!(error.diagnostic().code().as_str(), "commit_outcome_unknown");
+    assert!(inserted.get().is_err());
+    tx.commit_retry().await.expect("the retained reply replays");
+    assert_eq!(*inserted.get().unwrap(), PlanAnswer::Matched(0));
+    let sent = sent.lock().unwrap();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0], sent[1], "the retry resends the exact envelope");
+    // One execution: the second post was a replay.
+    assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn sdk_refused_write_keeps_its_code_and_stays_retryable() {
+    use type_bridge_orm::session::staged::PendingError;
+    let fixture = v3_fixture(default_pipeline(), false);
+    let (mut tx, sent) = sdk_transaction(&fixture, false);
+    let inserted = tx.stage_plan(&insert_plan(&fixture.declared)).unwrap();
+    let error = tx.commit().await.expect_err("refused");
+    // A keyed refusal may answer an attempt that already committed, so it
+    // stays unknown and retryable, under the server's own code.
+    assert_eq!(
+        error.error.commit_failure_certainty(),
+        Some(type_bridge_orm::error::CommitFailureCertainty::Unknown)
+    );
+    assert_eq!(error.diagnostic().code().as_str(), STAGED_WRITE_NOT_AUTHORIZED);
+    let Err(PendingError::Refused { diagnostic, .. }) = inserted.get() else {
+        panic!("the handle keeps the refusal");
+    };
+    assert_eq!(diagnostic.code().as_str(), STAGED_WRITE_NOT_AUTHORIZED);
+    assert!(tx.has_unknown_outcome());
+    // An empty commit cannot abandon the unknown attempt.
+    assert!(tx.commit().await.is_err());
+    let retry = tx.commit_retry().await.expect_err("refused again");
+    assert_eq!(retry.diagnostic().code().as_str(), STAGED_WRITE_NOT_AUTHORIZED);
+    let sent = sent.lock().unwrap();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0], sent[1]);
+    assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0);
+}
+
+/// An exchange whose first request runs detached: the caller sees a lost
+/// reply while the server is still committing it.
+fn sdk_detached_transaction(fixture: &V3Fixture) -> type_bridge_orm::session::staged::Transaction {
+    let router = fixture.router.clone();
+    let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let exchange: type_bridge_orm::session::StagedExchangeFn = Arc::new(move |bytes: Vec<u8>| {
+        let router = router.clone();
+        let first = Arc::clone(&first);
+        Box::pin(async move {
+            if first.swap(false, Ordering::SeqCst) {
+                tokio::spawn(async move { call(&router, "POST", "/v3/staged", bytes).await });
+                return Err(type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::provider_failure(
+                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
+                ));
+            }
+            Ok(call(&router, "POST", "/v3/staged", bytes).await)
+        })
+    });
+    type_bridge_orm::session::staged::Transaction::over_proxy(
+        fixture.declared.clone(),
+        &fixture.advertisement.encode().unwrap(),
+        exchange,
+        type_bridge_orm::session::staged::TransactionOptions::default(),
+    )
+    .expect("proxy transaction")
+}
+
+#[tokio::test]
+async fn sdk_retry_inside_the_in_flight_window_stays_unknown_and_retryable() {
+    use type_bridge_orm::session::staged::PlanAnswer;
+    let fixture = v3_fixture(vouching_pipeline(), false);
+    fixture.metrics.hold_commit.store(true, Ordering::SeqCst);
+    let mut tx = sdk_detached_transaction(&fixture);
+    let inserted = tx.stage_plan(&insert_plan(&fixture.declared)).unwrap();
+    let lost = tx.commit().await.expect_err("lost reply");
+    assert_eq!(lost.diagnostic().code().as_str(), "commit_outcome_unknown");
+    let metrics = Arc::clone(&fixture.metrics);
+    eventually(|| metrics.query_executions.load(Ordering::SeqCst) == 1).await;
+
+    // The first attempt is still committing: the server says retry later,
+    // which proves nothing about the writes.
+    let busy = tx.commit_retry().await.expect_err("in flight");
+    assert_eq!(busy.diagnostic().code().as_str(), "retry_later");
+    assert_eq!(
+        busy.error.commit_failure_certainty(),
+        Some(type_bridge_orm::error::CommitFailureCertainty::Unknown)
+    );
+    assert!(tx.has_unknown_outcome());
+
+    fixture.metrics.release_commit.notify_one();
+    let mut replayed = false;
+    for _ in 0..500 {
+        match tx.commit_retry().await {
+            Ok(()) => {
+                replayed = true;
+                break;
+            }
+            Err(error) => {
+                assert_eq!(error.diagnostic().code().as_str(), "retry_later");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    }
+    assert!(replayed, "the committed reply replays");
+    assert_eq!(*inserted.get().unwrap(), PlanAnswer::Matched(0));
+    assert!(!tx.has_unknown_outcome());
+    assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn sdk_cancelled_commit_keeps_the_attempt_retryable() {
+    use type_bridge_orm::session::staged::PlanAnswer;
+    let fixture = v3_fixture(vouching_pipeline(), false);
+    fixture.metrics.hold_commit.store(true, Ordering::SeqCst);
+    let (mut tx, sent) = sdk_transaction(&fixture, false);
+    let inserted = tx.stage_plan(&insert_plan(&fixture.declared)).unwrap();
+    let cancelled = tokio::time::timeout(Duration::from_millis(200), tx.commit()).await;
+    assert!(cancelled.is_err(), "the commit is cancelled mid-send");
+    assert!(tx.has_unknown_outcome());
+    assert!(inserted.get().is_err());
+
+    fixture.metrics.release_commit.notify_one();
+    let mut replayed = false;
+    for _ in 0..500 {
+        if tx.commit_retry().await.is_ok() {
+            replayed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(replayed, "the detached commit's reply replays");
+    assert_eq!(*inserted.get().unwrap(), PlanAnswer::Matched(0));
+    assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 1);
+    let sent = sent.lock().unwrap();
+    assert!(sent.iter().all(|bytes| *bytes == sent[0]));
+}
+
+#[test]
+fn sdk_staged_advertisement_must_match_the_connection_signer() {
+    use type_bridge_orm::{AnswerTransport, ProxyQueryConnection, QueryExecutionResourceLimits};
+    let fixture = v3_fixture(vouching_pipeline(), false);
+    let other = v3_fixture(vouching_pipeline(), false);
+    let connection = || {
+        let authority = type_bridge_orm::query_v2_prepared::QueryAuthority::from_declared_bytes(
+            &type_bridge_contract::schema::encode_declared_schema(&fixture.declared).unwrap(),
+            "sdk-scope",
+            "typedb-3.13.6/v1",
+        )
+        .expect("authority");
+        ProxyQueryConnection::with_exchange(
+            fixture.query.advertisement.encode().unwrap(),
+            Arc::new(authority),
+            QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy),
+        )
+        .expect("connection")
+    };
+    let foreign = other.advertisement.encode().unwrap();
+    assert_ne!(
+        fixture.advertisement.reply_key(),
+        other.advertisement.reply_key(),
+        "fixtures sign with distinct keys"
+    );
+    let refused = connection()
+        .with_staged_advertisement(foreign.clone())
+        .expect_err("a foreign signer is refused");
+    assert_eq!(refused.code().as_str(), "query_remote_v3_advertisement_mismatch");
+
+    let exchange: type_bridge_orm::session::StagedExchangeFn =
+        Arc::new(|_| Box::pin(async { Ok(Vec::new()) }));
+    let pinned = connection()
+        .with_staged_advertisement(fixture.advertisement.encode().unwrap())
+        .expect("the connection's own signer is accepted");
+    assert!(pinned.staged_advertisement().is_some());
+    let refused = pinned
+        .staged_transaction_with_exchange(
+            &foreign,
+            exchange,
+            type_bridge_orm::session::staged::TransactionOptions::default(),
+        )
+        .expect_err("a fetched foreign advertisement is refused");
+    assert_eq!(refused.code().as_str(), "query_remote_v3_advertisement_mismatch");
+}

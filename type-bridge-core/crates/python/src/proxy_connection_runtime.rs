@@ -22,12 +22,16 @@ use crate::match_runtime::{
 use crate::orm_runtime::provider_block_on;
 use crate::query_v2_runtime::{PyQueryV2Authority, PythonBytes};
 use crate::runtime_projection::direct_tls_from_python;
+use crate::staged_transaction_runtime::{PyStagedTransaction, parse_kind};
+use type_bridge_orm::query_v2_prepared::QueryAuthority;
+use type_bridge_orm::session::staged::TransactionOptions;
 
 /// One connection to a TypeBridge server reached over its HTTP routes.
 #[pyclass(name = "ProxyConnection", frozen)]
 pub(crate) struct PyProxyConnection {
     connection: ProxyQueryConnection,
     runtime: Arc<ProviderRuntimeOwner>,
+    authority: Arc<QueryAuthority>,
 }
 
 impl PyProxyConnection {
@@ -43,7 +47,8 @@ impl PyProxyConnection {
 #[pymethods]
 impl PyProxyConnection {
     /// Open `endpoint` and fetch its capability advertisement, or validate
-    /// the pinned `advertisement` without fetching. `connection_limits`
+    /// the pinned `advertisement` without fetching; `staged_advertisement`
+    /// likewise pins the `/v3/capabilities` body. `connection_limits`
     /// bounds the fetch; `answer_limits` is the ceiling every terminal on
     /// this connection runs under.
     #[staticmethod]
@@ -58,6 +63,7 @@ impl PyProxyConnection {
         connection_limits=None,
         answer_limits=None,
         cancellation=None,
+        staged_advertisement=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn connect(
@@ -71,6 +77,7 @@ impl PyProxyConnection {
         connection_limits: Option<PyRef<'_, PyQueryExecutionResourceLimits>>,
         answer_limits: Option<PyRef<'_, PyQueryExecutionResourceLimits>>,
         cancellation: Option<PyRef<'_, PyQueryCancellation>>,
+        staged_advertisement: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let tls = direct_tls_from_python(tls_mode, tls_root_ca)?;
         let endpoint = headers.into_iter().flatten().fold(
@@ -80,6 +87,13 @@ impl PyProxyConnection {
         let advertisement = advertisement
             .map(|value| {
                 PythonBytes::extract(value, "advertisement").map(|bytes| {
+                    bytes.bounded_snapshot(MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1))
+                })
+            })
+            .transpose()?;
+        let staged_advertisement = staged_advertisement
+            .map(|value| {
+                PythonBytes::extract(value, "staged_advertisement").map(|bytes| {
                     bytes.bounded_snapshot(MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1))
                 })
             })
@@ -114,10 +128,49 @@ impl PyProxyConnection {
             ),
         )
         .map_err(py_sdk_diagnostic)?;
+        // A pinned staged advertisement must name the same executor and
+        // reply key as the connection's advertisement.
+        let connection = match staged_advertisement {
+            Some(staged) => connection
+                .with_staged_advertisement(staged)
+                .map_err(py_sdk_diagnostic)?,
+            None => connection,
+        };
         Ok(Self {
             connection,
             runtime,
+            authority: authority.authority(),
         })
+    }
+
+    /// Open a staged transaction over this connection. Nothing is sent
+    /// until commit, which posts the staged plans as one signed
+    /// `query-remote/v3` request with a fresh idempotency key. The
+    /// `/v3/capabilities` advertisement is fetched now.
+    #[pyo3(signature = (kind=None, *, cancellation=None))]
+    fn transaction(
+        &self,
+        py: Python<'_>,
+        kind: Option<&str>,
+        cancellation: Option<PyRef<'_, PyQueryCancellation>>,
+    ) -> PyResult<PyStagedTransaction> {
+        let mut options = TransactionOptions::default();
+        if let Some(kind) = kind {
+            options = options.with_kind(parse_kind(kind)?);
+        }
+        let cancellation: AnswerCancellation =
+            cancellation.map(|value| value.inner()).unwrap_or_default();
+        let transaction = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            self.connection.staged_transaction(options, &cancellation),
+        )
+        .map_err(py_sdk_diagnostic)?;
+        Ok(PyStagedTransaction::new(
+            transaction,
+            Arc::clone(&self.runtime),
+            Arc::clone(&self.authority),
+        ))
     }
 
     /// The ceiling every terminal on this connection is constrained by.

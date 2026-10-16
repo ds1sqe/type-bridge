@@ -379,9 +379,25 @@ interface NativePendingRemoteModelQuery {
   decodeReply(response: Uint8Array): Promise<NativeValidatedMatchResultHandle>;
 }
 
+export interface NativePendingPlanAnswer {
+  getJson(): string;
+}
+
+export interface NativeStagedTransaction {
+  stagePlan(planBytes: Buffer, schemaBytes: Buffer): NativePendingPlanAnswer;
+  commit(): Promise<void>;
+  commitRetry(): Promise<void>;
+  rollback(): void;
+  close(): void;
+}
+
 /** Native proxy connection over the built-in HTTP route. */
 export interface NativeProxyConnection {
   readonly answerLimits: NativeQueryExecutionResources;
+  transaction(
+    kind?: string,
+    cancellation?: NativeQueryCancellation,
+  ): Promise<NativeStagedTransaction>;
   rows(
     query: NativeMatchQueryHandle,
     orders: NativeMatchOrderHandle[],
@@ -441,6 +457,7 @@ interface NativeProxyConnectionModule {
       connectionLimits?: NativeQueryExecutionResources,
       answerLimits?: NativeQueryExecutionResources,
       cancellation?: NativeQueryCancellation,
+      stagedAdvertisement?: Uint8Array,
     ): Promise<NativeProxyConnection>;
   };
 }

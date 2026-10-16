@@ -64,6 +64,13 @@ pub use query::{
 };
 pub use relation_manager::{RelationManager, RelationSubtypeManager};
 pub use remote::{ProxyConnectionPolicy, ProxyDatabase, ProxyExchange};
+/// The staged transaction [`ProxyDatabase::transaction`] returns.
+pub mod staged {
+    pub use type_bridge_orm::session::staged::{
+        CommitError, Pending, PendingError, PlanAnswer, Transaction, TransactionKind,
+        TransactionOptions,
+    };
+}
 #[allow(deprecated)]
 pub use remote::{
     RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits, RemoteQueryTransport,

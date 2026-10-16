@@ -56,6 +56,7 @@ impl NodeProxyConnection {
         connection_limits: Option<&NodeQueryExecutionResources>,
         answer_limits: Option<&NodeQueryExecutionResources>,
         cancellation: Option<&NodeQueryCancellation>,
+        staged_advertisement: Option<Unknown>,
     ) -> napi::Result<Object<'static>> {
         if header_names.len() != header_values.len() {
             return Err(napi::Error::new(
@@ -68,6 +69,9 @@ impl NodeProxyConnection {
             |endpoint, (name, value)| endpoint.header(name, value),
         );
         let advertisement = advertisement
+            .map(|advertisement| owned_advertisement(&env, advertisement))
+            .transpose()?;
+        let staged_advertisement = staged_advertisement
             .map(|advertisement| owned_advertisement(&env, advertisement))
             .transpose()?;
         let authority = authority.authority();
@@ -96,10 +100,44 @@ impl NodeProxyConnection {
             )
             .await
             .map_err(napi_sdk_diagnostic)?;
+            // A pinned staged advertisement must name the connection's
+            // executor and reply key.
+            let connection = match staged_advertisement {
+                Some(staged) => connection
+                    .with_staged_advertisement(staged)
+                    .map_err(napi_sdk_diagnostic)?,
+                None => connection,
+            };
             Ok(Self {
                 connection: Arc::new(connection),
                 runtime: owner,
             })
+        })
+    }
+
+    /// Open a staged transaction whose commit is one signed
+    /// `query-remote/v3` exchange. The staged advertisement is fetched from
+    /// `/v3/capabilities` now; nothing else is sent until commit. An omitted
+    /// kind is inferred from the staged writes.
+    #[napi(ts_return_type = "Promise<NodeStagedTransaction>")]
+    pub fn transaction(
+        &self,
+        env: Env,
+        kind: Option<String>,
+        cancellation: Option<&NodeQueryCancellation>,
+    ) -> napi::Result<Object<'static>> {
+        let options = crate::staged_transaction_runtime::staged_options(kind.as_deref())?;
+        let cancellation = cancellation
+            .map(NodeQueryCancellation::inner)
+            .unwrap_or_default();
+        let connection = Arc::clone(&self.connection);
+        let owner = Arc::clone(&self.runtime);
+        settle(&env, &self.runtime, async move {
+            let transaction = connection
+                .staged_transaction(options, &cancellation)
+                .await
+                .map_err(napi_sdk_diagnostic)?;
+            Ok(crate::staged_transaction_runtime::NodeStagedTransaction::new(transaction, owner))
         })
     }
 

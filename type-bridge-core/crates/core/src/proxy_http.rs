@@ -194,6 +194,40 @@ impl ProxyHttpClient {
         read_response(ROUTE, call.send_bytes(request), max_bytes)
     }
 
+    /// Fetch the exact staged (`/v3/capabilities`) advertisement bytes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::capabilities`].
+    pub fn staged_capabilities(
+        &self,
+        timeout: Duration,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, ProxyHttpError> {
+        const ROUTE: &str = "/v3/capabilities";
+        let request = self.request("GET", ROUTE, timeout);
+        read_response(ROUTE, request.call(), max_bytes)
+    }
+
+    /// Send one canonical staged request to `/v3/staged` and return the
+    /// exact reply bytes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::exchange`].
+    pub fn exchange_staged(
+        &self,
+        request: &[u8],
+        timeout: Duration,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, ProxyHttpError> {
+        const ROUTE: &str = "/v3/staged";
+        let call = self
+            .request("POST", ROUTE, timeout)
+            .set("content-type", "application/json");
+        read_response(ROUTE, call.send_bytes(request), max_bytes)
+    }
+
     fn request(&self, method: &str, route: &str, timeout: Duration) -> ureq::Request {
         let mut request = self
             .agent

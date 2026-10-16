@@ -202,6 +202,19 @@ is awaited, and the program is the same on each. Both proxy connections derive
 authority from private package evidence; never read an authority file or
 construct a low-level `QueryV2Authority` for this normal path.
 
+Write over the proxy with a staged transaction: `transaction(kind)` on a
+proxy connection returns the core staged transaction, and `commit()` sends the
+stack as one `/v3/staged` envelope with a fresh random idempotency key and
+verifies the signed reply. Answers and typed failures match direct execution.
+After an unknown outcome (`commit_outcome_unknown`, a dropped reply), call
+`commit_retry()` (`commitRetry()` in TypeScript) to resend under the same key;
+never re-stage the work as a new commit. Any refusal other than
+`commit_definitely_aborted` is also unknown and retryable, and so is a
+cancelled commit; check `has_unknown_outcome()` before abandoning one. Raw TypeQL and typed match reads are
+not staged over the proxy. Writes need a caller the server's interceptor vouches for
+(`on_v3_write_authority`); SDK commits always carry an idempotency key, which
+the server accepts only from such a caller.
+
 ## TypeScript and Node workflow
 
 ```bash

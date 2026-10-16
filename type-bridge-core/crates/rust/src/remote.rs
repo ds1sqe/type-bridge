@@ -10,6 +10,8 @@ use std::sync::Arc;
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::query_v2_prepared::QueryAuthority;
+use type_bridge_orm::session::StagedExchangeFn;
+use type_bridge_orm::session::staged::{Transaction, TransactionOptions};
 use type_bridge_orm::{
     AnswerCancellation, AnswerTransport, InstalledRuntimeProjection, ProxyEndpoint,
     ProxyHttpTransport, ProxyQueryConnection, QueryExecutionDeadline, QueryExecutionResourceLimits,
@@ -43,6 +45,30 @@ pub trait ProxyExchange: Send + Sync + 'static {
         &'a self,
         request: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>>;
+
+    /// Fetch the executor's staged (`GET /v3/capabilities`) advertisement.
+    /// The default refuses: an exchange that predates staged transactions
+    /// cannot open one.
+    fn staged_capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
+        Box::pin(async { Err(staged_unsupported()) })
+    }
+
+    /// Exchange one exact staged request (`POST /v3/staged`) for its exact
+    /// signed reply. The default refuses.
+    fn exchange_staged<'a>(
+        &'a self,
+        _request: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+        Box::pin(async { Err(staged_unsupported()) })
+    }
+}
+
+fn staged_unsupported() -> Error {
+    connect_error(
+        type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::provider_failure(
+            type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Connect,
+        ),
+    )
 }
 
 enum ProxyRoute {
@@ -64,6 +90,7 @@ pub struct ProxyConnectionPolicy {
     answer_limits: QueryExecutionResourceLimits,
     route: ProxyRoute,
     advertisement: Option<Vec<u8>>,
+    staged_advertisement: Option<Vec<u8>>,
 }
 
 impl std::fmt::Debug for ProxyConnectionPolicy {
@@ -93,7 +120,17 @@ impl ProxyConnectionPolicy {
             answer_limits: QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy),
             route,
             advertisement: None,
+            staged_advertisement: None,
         }
+    }
+
+    /// Pin the staged (`GET /v3/capabilities`) advertisement, provisioned
+    /// out of band. It must name the same executor and reply key as the
+    /// connection's advertisement; staged transactions then never fetch it.
+    #[must_use]
+    pub fn staged_advertisement(mut self, staged_advertisement: Vec<u8>) -> Self {
+        self.staged_advertisement = Some(staged_advertisement);
+        self
     }
 
     /// Set the deadline for connecting, which fetches the advertisement.
@@ -138,8 +175,9 @@ struct RemoteRuntime {
     exchange: Option<Arc<dyn ProxyExchange>>,
 }
 
-/// A proxy connection branded by schema `S`: generated queries only, each
-/// terminal one exchange with the server.
+/// A proxy connection branded by schema `S`. Each generated query terminal
+/// is one exchange with the server; a staged [`ProxyDatabase::transaction`]
+/// sends its whole stack as one signed `query-remote/v3` exchange at commit.
 pub struct ProxyDatabase<S: Schema = Unbound> {
     options: Option<ProxyConnectionPolicy>,
     runtime: Option<Arc<RemoteRuntime>>,
@@ -282,6 +320,12 @@ impl ProxyDatabase<Unbound> {
             options.answer_limits,
         )
         .map_err(connect_error)?;
+        let connection = match options.staged_advertisement {
+            Some(staged) => connection
+                .with_staged_advertisement(staged)
+                .map_err(connect_error)?,
+            None => connection,
+        };
         let runtime = Arc::new(RemoteRuntime {
             connection,
             exchange,
@@ -297,6 +341,61 @@ impl ProxyDatabase<Unbound> {
 }
 
 impl<S: Schema> ProxyDatabase<S> {
+    /// Open a staged transaction over this proxy.
+    ///
+    /// It has the core transaction API: `stage_plan` queues validated
+    /// plans (raw TypeQL and typed match programs are refused at stage
+    /// time), `commit` sends the stack as one signed `query-remote/v3`
+    /// envelope with a fresh random 16-byte idempotency key and verifies
+    /// the signed reply. After an unknown outcome (`commit_outcome_unknown`,
+    /// such as a lost reply), `commit_retry` resends the same envelope and
+    /// key, so the stack applies at most once. The staged advertisement is
+    /// pinned on the policy, or fetched on first use and verified against
+    /// the connection's executor and reply key, then reused; nothing else is
+    /// sent until commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error before [`ProxyDatabase::with_schema`], or when the
+    /// staged advertisement cannot be fetched or decoded.
+    pub async fn transaction(&self, options: TransactionOptions) -> Result<Transaction> {
+        let runtime = self.runtime.as_ref().ok_or_else(remote_not_bound)?;
+        let cancellation = AnswerCancellation::default();
+        let Some(exchange) = &runtime.exchange else {
+            return runtime
+                .connection
+                .staged_transaction(options, &cancellation)
+                .await
+                .map_err(connect_error);
+        };
+        // A fetched staged advertisement is checked against the connection's
+        // executor and reply key before it is trusted, then reused.
+        let advertisement = match runtime.connection.staged_advertisement() {
+            Some(advertisement) => advertisement.to_vec(),
+            None => {
+                let deadline =
+                    QueryExecutionDeadline::for_limits(runtime.connection.answer_limits());
+                await_proxy(exchange.staged_capabilities(), &cancellation, deadline).await?
+            }
+        };
+        let exchange = Arc::clone(exchange);
+        let send: StagedExchangeFn = Arc::new(move |bytes| {
+            let exchange = Arc::clone(&exchange);
+            Box::pin(async move {
+                // Any exchange error leaves the outcome unknown.
+                exchange.exchange_staged(&bytes).await.map_err(|_| {
+                    type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::provider_failure(
+                        type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
+                    )
+                })
+            })
+        });
+        runtime
+            .connection
+            .staged_transaction_with_exchange(&advertisement, send, options)
+            .map_err(connect_error)
+    }
+
     /// Start one owner-branded query session over this proxy connection.
     pub fn query(&self) -> Result<QuerySession<'_, S>> {
         let runtime = self.runtime.as_ref().ok_or_else(remote_not_bound)?;

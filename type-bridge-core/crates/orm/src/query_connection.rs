@@ -5,7 +5,9 @@
 //! [`QueryTarget::execute`], so the connection's answer-limit ceiling and the
 //! choice of transport are decided here once.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 
 use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
 use type_bridge_contract::query_remote::RemoteCapabilities;
@@ -21,7 +23,12 @@ use crate::query_v2_model_remote::{
 };
 use crate::query_v2_prepared::QueryAuthority;
 use crate::session::backend::AnswerCancellation;
-use crate::session::{Database, ProxyEndpoint, ProxyHttpTransport, TransactionContext};
+use crate::session::staged::{Transaction, TransactionOptions};
+use crate::session::staged_proxy::ProxyStaging;
+use crate::session::{
+    Database, ProxyEndpoint, ProxyHttpTransport, StagedExchangeFn, TransactionContext,
+};
+use type_bridge_contract::sdk_diagnostic::SdkProviderOperation;
 
 /// Why a terminal failed on its target.
 #[derive(Debug, thiserror::Error)]
@@ -55,6 +62,9 @@ pub struct ProxyQueryConnection {
     advertisement: Arc<[u8]>,
     authority: Arc<QueryAuthority>,
     answer_limits: QueryExecutionResourceLimits,
+    /// The staged (`/v3/capabilities`) advertisement, pinned or verified
+    /// on first use against `advertisement`, then reused.
+    staged_advertisement: Mutex<Option<Arc<[u8]>>>,
 }
 
 impl std::fmt::Debug for ProxyQueryConnection {
@@ -128,13 +138,134 @@ impl ProxyQueryConnection {
             advertisement: advertisement.into(),
             authority,
             answer_limits: answer_limits.effective(),
+            staged_advertisement: Mutex::new(None),
         })
+    }
+
+    /// Pin the staged (`GET /v3/capabilities`) advertisement, provisioned
+    /// out of band, so staged transactions never fetch it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the decode failure, or
+    /// `query_remote_v3_advertisement_mismatch` when its executor binding
+    /// or reply key differs from this connection's advertisement.
+    pub fn with_staged_advertisement(
+        self,
+        staged_advertisement: Vec<u8>,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        self.check_staged(&staged_advertisement)?;
+        *self.staged_cache() = Some(staged_advertisement.into());
+        Ok(self)
+    }
+
+    /// The staged advertisement pinned or verified on this connection.
+    #[must_use]
+    pub fn staged_advertisement(&self) -> Option<Arc<[u8]>> {
+        self.staged_cache().clone()
+    }
+
+    fn staged_cache(&self) -> std::sync::MutexGuard<'_, Option<Arc<[u8]>>> {
+        self.staged_advertisement
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// A staged reply is trusted only under the signer and executor this
+    /// connection already trusts: a fetched staged advertisement cannot
+    /// substitute its own reply key.
+    fn check_staged(&self, staged: &[u8]) -> Result<(), SdkExecutionDiagnostic> {
+        let pinned = RemoteCapabilities::decode(&self.advertisement)
+            .map_err(lower_remote_query_diagnostic)?;
+        let staged = RemoteCapabilities::decode(staged).map_err(lower_remote_query_diagnostic)?;
+        if staged.executor() != pinned.executor()
+            || staged.reply_key() != pinned.reply_key()
+            || staged.reply_key_id() != pinned.reply_key_id()
+        {
+            return Err(lower_remote_query_diagnostic(Diagnostic::new(
+                DiagnosticCategory::InvalidContract,
+                DiagnosticCode::new("query_remote_v3_advertisement_mismatch")
+                    .expect("the static mismatch code is canonical"),
+                "the staged advertisement's executor or reply key differs from the connection's",
+            )));
+        }
+        Ok(())
     }
 
     /// The ceiling every terminal on this connection is constrained by.
     #[must_use]
     pub const fn answer_limits(&self) -> QueryExecutionResourceLimits {
         self.answer_limits
+    }
+
+    /// Open a staged transaction whose commit is one signed
+    /// `query-remote/v3` exchange through the built-in route. The staged
+    /// advertisement is fetched from `/v3/capabilities` now; nothing else
+    /// is sent until commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns the provider failure when the connection has no built-in
+    /// route or the advertisement cannot be fetched or decoded.
+    pub async fn staged_transaction(
+        &self,
+        options: TransactionOptions,
+        cancellation: &AnswerCancellation,
+    ) -> Result<Transaction, SdkExecutionDiagnostic> {
+        let http = self.http.clone().ok_or_else(|| {
+            SdkExecutionDiagnostic::provider_failure(SdkProviderOperation::Connect)
+        })?;
+        let advertisement = match self.staged_advertisement() {
+            Some(advertisement) => advertisement,
+            None => {
+                let deadline = QueryExecutionDeadline::for_limits(self.answer_limits);
+                let fetched = http.staged_capabilities(deadline, cancellation).await?;
+                self.check_staged(&fetched)?;
+                let fetched: Arc<[u8]> = fetched.into();
+                *self.staged_cache() = Some(Arc::clone(&fetched));
+                fetched
+            }
+        };
+        self.staged(Some(http), None, &advertisement, options)
+    }
+
+    /// Open a staged transaction over a caller-owned exchange: `exchange`
+    /// sends the exact request bytes to `/v3/staged` and returns the exact
+    /// reply bytes. `staged_advertisement` is the `/v3/capabilities` body;
+    /// it must name this connection's executor and reply key.
+    ///
+    /// # Errors
+    ///
+    /// Returns the decode failure of the advertisement, or
+    /// `query_remote_v3_advertisement_mismatch`.
+    pub fn staged_transaction_with_exchange(
+        &self,
+        staged_advertisement: &[u8],
+        exchange: StagedExchangeFn,
+        options: TransactionOptions,
+    ) -> Result<Transaction, SdkExecutionDiagnostic> {
+        self.check_staged(staged_advertisement)?;
+        self.staged_cache()
+            .get_or_insert_with(|| staged_advertisement.into());
+        self.staged(None, Some(exchange), staged_advertisement, options)
+    }
+
+    fn staged(
+        &self,
+        http: Option<ProxyHttpTransport>,
+        exchange: Option<StagedExchangeFn>,
+        advertisement: &[u8],
+        options: TransactionOptions,
+    ) -> Result<Transaction, SdkExecutionDiagnostic> {
+        let proxy = ProxyStaging::new(
+            http,
+            exchange,
+            advertisement,
+            self.authority.declared().clone(),
+            self.answer_limits,
+        )
+        .map_err(lower_remote_query_diagnostic)?;
+        Ok(Transaction::new_proxy(proxy, options))
     }
 
     /// Whether terminals reach the server through the built-in HTTP route.

@@ -17,6 +17,7 @@ pub(crate) mod eager;
 pub mod legacy_writer;
 mod proxy_connection;
 pub mod staged;
+pub(crate) mod staged_proxy;
 mod tls_policy;
 pub mod transaction;
 
@@ -34,6 +35,7 @@ pub use database::{
 pub use direct_connection::DirectConnectionPolicy;
 pub use legacy_writer::{require_legacy_writer_open, require_legacy_writer_open_in_transaction};
 pub use proxy_connection::{ProxyEndpoint, ProxyHttpTransport};
+pub use staged_proxy::StagedExchangeFn;
 #[allow(deprecated)]
 pub use tls_policy::DirectTls;
 pub use tls_policy::TlsPolicy;

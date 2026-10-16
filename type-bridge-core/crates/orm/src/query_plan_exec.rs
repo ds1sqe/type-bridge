@@ -80,6 +80,54 @@ impl PlanAnswer {
             }
         })
     }
+
+    /// Resolve one answer of a verified staged V3 reply. Rows become
+    /// objects keyed by the projected variable, holding the typed remote
+    /// value; fetched documents are refused like on the server.
+    pub fn from_staged_v3(answer: &StagedAnswerV3, plan: &QueryPlanV3) -> Result<Self, Diagnostic> {
+        Ok(match answer {
+            StagedAnswerV3::Count { value } => Self::Count(*value),
+            StagedAnswerV3::Exists { value } => Self::Exists(*value),
+            StagedAnswerV3::Matched { value } => Self::Matched(*value),
+            StagedAnswerV3::Documents { .. } => return Err(staged_documents_unsupported()),
+            StagedAnswerV3::Rows { rows } => {
+                let QueryOutput::Rows { columns } = plan.output() else {
+                    return Err(staged_documents_unsupported());
+                };
+                let names = columns
+                    .iter()
+                    .map(|column| local_variable(plan.bindings(), *column))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Self::Rows(
+                    rows.iter()
+                        .map(|row| {
+                            names
+                                .iter()
+                                .zip(row)
+                                .map(|(name, value)| {
+                                    // A value that cannot serialize is a malformed
+                                    // answer, never a silent null.
+                                    serde_json::to_value(value)
+                                        .map(|value| (name.to_string(), value))
+                                        .map_err(|_| staged_value_unserializable())
+                                })
+                                .collect::<Result<serde_json::Map<_, _>, _>>()
+                                .map(serde_json::Value::Object)
+                        })
+                        .collect::<Result<_, _>>()?,
+                )
+            }
+        })
+    }
+}
+
+/// A staged V3 row value that does not serialize as JSON.
+fn staged_value_unserializable() -> Diagnostic {
+    failure(
+        DiagnosticCategory::InvalidContract,
+        "query_remote_v3_answer_invalid",
+        "a staged reply row value cannot be represented",
+    )
 }
 
 /// Staged V3 replies cannot yet carry typed fetched documents.

@@ -37,6 +37,10 @@ export {
   queryV2PrepareRemote,
   queryV2RemoteCapabilities,
   string,
+  PendingPlanAnswer,
+  StagedTransaction,
+  type PlanAnswer,
+  type StagedTransactionKind,
 } from "./index.js";
 
 export type {

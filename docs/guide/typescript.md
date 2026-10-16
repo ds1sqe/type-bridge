@@ -260,8 +260,28 @@ HTTP client, credentials, and retry policy. Either takes `answerLimits`, the
 ceiling every session on the connection runs under.
 
 Each terminal performs one exchange and hydrates the same generated classes
-and scalar groups as direct execution. Generated remote mutation APIs are not
-advertised.
+and scalar groups as direct execution.
+
+Writes cross the proxy as staged transactions.
+`await ProxyConnection.transaction(kind)` returns a `StagedTransaction`, the
+class `RustDatabase.stagedTransaction(kind)` returns for direct staging.
+`tx.stagePlan(plan, declaredSchema)` queues canonical plan bytes, and
+`await tx.commit()` sends the staged stack as one
+`typebridge.query-remote-request/v3` envelope to `POST /v3/staged`. The reply
+is signed and verified before any answer resolves; answers and typed failures
+match direct execution, and `commit_outcome_unknown` stays unknown. Each commit
+attempt carries a fresh random 16-byte idempotency key. After an unknown
+outcome, such as a dropped reply, `await tx.commitRetry()` resends the same
+request with the same key and the server replays its stored reply, so the
+writes apply at most once. Any refusal other than a verified
+`commit_definitely_aborted` (for example `retry_later` while the first attempt
+is still committing) keeps its code but stays unknown, so `commitRetry()`
+stays available. The `/v3/capabilities` advertisement must name the same
+executor and reply key as the connection's advertisement
+(`query_remote_v3_advertisement_mismatch` otherwise); pin it with the
+`stagedAdvertisement` connect option. Writes need a caller the server's interceptor vouches for; otherwise the commit
+fails with `staged_write_not_authorized`. See the
+[staged remote envelope](../reference/query-plan-v3.md#staged-remote-envelope-v3).
 
 ## Runtime boundary
 

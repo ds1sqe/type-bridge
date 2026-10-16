@@ -167,3 +167,29 @@ test("proxy connect rejects JavaScript type confusion before native work", async
     /string pairs/,
   );
 });
+
+test("a staged proxy transaction fetches the staged advertisement at open", async () => {
+  const endpoint = await closedEndpoint();
+  const connection = await ProxyConnection.connect(authority(), endpoint, {
+    advertisement: advertisement(),
+    answerLimits: new QueryExecutionResourceLimits({ timeoutMilliseconds: 5_000n }),
+  });
+  // The pinned V2 advertisement does not cover `/v3/capabilities`, so an
+  // unreachable server fails the open as a redacted provider operation.
+  const failure = await connection.transaction("write").then(
+    () => assert.fail("staged transaction unexpectedly opened"),
+    (error: unknown) => error,
+  );
+  assert.equal((failure as { code: string }).code, "provider_operation_failed");
+  assert.ok(!`${String(failure)}`.includes(new URL(endpoint).port));
+});
+
+test("a staged proxy transaction refuses an unknown kind before any exchange", async () => {
+  const connection = await ProxyConnection.connect(authority(), await closedEndpoint(), {
+    advertisement: advertisement(),
+  });
+  await assert.rejects(
+    connection.transaction("bogus" as "read"),
+    /unknown transaction kind 'bogus'/,
+  );
+});

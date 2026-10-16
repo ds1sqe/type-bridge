@@ -281,7 +281,46 @@ shapes, all reducers, and binding/field/tuple-field grouping. Reduction replies
 echo the exact root, grouping, and reducer contract and are authenticated before
 materialization through the same projection as direct execution.
 
-Remote mutations are not advertised by generated sessions.
+### Staged transactions over the proxy
+
+Writes cross the proxy as staged transactions. `transaction(kind)` on a proxy
+connection (Rust `ProxyDatabase::transaction(options)`, Python and TypeScript
+`ProxyConnection.transaction(kind)`) returns the core staged transaction: stage
+plans (Rust `stage_plan`; canonical `query-plan/v3` bytes through Python
+`stage` and TypeScript `stagePlan`), then `commit()`. The commit sends the whole stack as one
+`typebridge.query-remote-request/v3` envelope to `POST /v3/staged`; the server
+runs it on one TypeDB transaction and returns a signed reply that the SDK
+verifies before resolving any answer. Answers and typed failures are the same
+as direct execution, and `commit_outcome_unknown` stays an unknown outcome.
+
+Each commit attempt carries a fresh random 16-byte idempotency key. After an
+unknown outcome, such as a dropped reply, `tx.commit_retry()` resends the same
+request with the same key before it expires; the server replays the stored
+reply instead of running it again, so the writes apply at most once. A plain
+`commit()` never reuses a key. Because every attempt is keyed, any refusal
+other than a verified definite outcome (`commit_definitely_aborted`) may answer
+an attempt that already committed: it keeps the server's code but stays
+unknown, and `commit_retry()` stays available. A cancelled commit is likewise
+retryable. `has_unknown_outcome()` reports whether a retry is pending, and an
+empty `commit()` refuses while one is. In Python, a `with` block whose commit
+outcome is unknown raises and leaves the transaction open for
+`commit_retry()`. Raw TypeQL and typed match reads are not staged over the
+proxy; they are refused at stage time.
+
+The SDK verifies staged replies only under the signer it already trusts: the
+`/v3/capabilities` advertisement must name the same executor and reply key as
+the connection's advertisement, or the transaction fails with
+`query_remote_v3_advertisement_mismatch`. It is fetched once per connection,
+or pinned out of band (Rust `ProxyConnectionPolicy::staged_advertisement`,
+Python `staged_advertisement=`, TypeScript `stagedAdvertisement`).
+
+The server admits a staged write only from a caller an interceptor vouches for
+(`on_v3_write_authority`); otherwise the commit fails with the typed
+`staged_write_not_authorized` failure. Every SDK commit carries an idempotency
+key, and the server accepts keys only from a vouched caller, so
+`[v2] allow_unauthenticated_staged_writes` alone does not admit SDK commits
+(they fail with `staged_idempotency_not_authorized`). The [staged remote envelope](../reference/query-plan-v3.md#staged-remote-envelope-v3)
+defines the wire format and idempotency retention.
 
 ## Query limits
 

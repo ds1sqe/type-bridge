@@ -7,6 +7,7 @@ use super::backend::{
     BoundedAnswerLimits, BoxFuture, DriverBackend, GivenRowsSpec, QueryResult, TxType,
 };
 use super::eager::EagerTransaction;
+use super::staged_proxy::ProxyStaging;
 use super::transaction::OwnedTransaction;
 use crate::_registry::DescriptorRegistry;
 use crate::error::{ClassifiedCommitError, OrmError};
@@ -19,6 +20,9 @@ pub use crate::query_plan_exec::{PlanAnswer, staged_documents_unsupported};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::failure::Failure;
 use type_bridge_contract::query_plan::v3::{Operation, QueryPlanV3};
+use type_bridge_contract::query_remote_v3::{
+    SdkDiagnosticProjectionV3, StagedPlanV3, StagedRequestV3,
+};
 use type_bridge_contract::sdk_diagnostic::{
     FailureContext, SdkExecutionDiagnostic, SdkProviderOperation,
 };
@@ -182,6 +186,16 @@ pub enum PendingError {
         /// Schema identities from the staged item.
         context: Box<FailureContext>,
     },
+    /// A proxy commit the server refused under its own stable code. The
+    /// refusal may have followed an earlier attempt that committed, so
+    /// its outcome stays unknown until a retry replays a verified reply.
+    #[error("Transaction execution failed{index}: the server refused the staged transaction ({code})", index = format_op_index(*op_index), code = .diagnostic.code())]
+    Refused {
+        /// Failing statement index, or none for the whole request.
+        op_index: Option<usize>,
+        /// The server's refusal, under its stable code.
+        diagnostic: Box<SdkExecutionDiagnostic>,
+    },
 }
 
 fn format_op_index(index: Option<usize>) -> String {
@@ -204,6 +218,8 @@ pub struct CommitError {
     pub failure: Option<Box<Failure>>,
     /// Schema identities from the executing staged item.
     pub context: Box<FailureContext>,
+    /// The signed server refusal of a proxy commit, kept under its own code.
+    remote: Option<Box<SdkExecutionDiagnostic>>,
 }
 impl CommitError {
     fn new(error: ClassifiedCommitError, op_index: Option<usize>, context: FailureContext) -> Self {
@@ -218,6 +234,7 @@ impl CommitError {
             error: Box::new(error),
             failure: failure.map(Box::new),
             context: Box::new(context),
+            remote: None,
         }
     }
     fn lifecycle(error: PendingError) -> Self {
@@ -227,9 +244,26 @@ impl CommitError {
             Default::default(),
         )
     }
+    fn pending(&self) -> PendingError {
+        if let Some(remote) = &self.remote {
+            return PendingError::Refused {
+                op_index: self.op_index,
+                diagnostic: remote.clone(),
+            };
+        }
+        PendingError::Failed {
+            op_index: self.op_index,
+            message: self.to_string(),
+            failure: self.failure.clone(),
+            context: self.context.clone(),
+        }
+    }
     /// Canonical diagnostic retaining structural staged index and schema context.
     #[must_use]
     pub fn diagnostic(&self) -> SdkExecutionDiagnostic {
+        if let Some(remote) = &self.remote {
+            return remote.as_ref().clone();
+        }
         match &self.failure {
             Some(failure) => {
                 SdkExecutionDiagnostic::from_failure(failure, self.context.as_ref().clone())
@@ -256,6 +290,10 @@ impl PendingError {
 
 type AnswerState<T> = Arc<Mutex<Result<Arc<T>, PendingError>>>;
 /// An answer made visible only after its whole execution succeeds.
+///
+/// On a proxy transaction a handle can read `Failed` with an unknown
+/// outcome (or `Refused`) after `commit`, then resolve `Ok` after a
+/// [`Transaction::commit_retry`] replays the committed reply.
 pub struct Pending<T> {
     state: AnswerState<T>,
 }
@@ -411,6 +449,8 @@ impl Slot {
 /// provider transaction itself.
 struct Item {
     query: Option<StagedQuery>,
+    /// The validated plan a proxy commit sends instead of `query`.
+    remote: Option<StagedPlanV3>,
     slot: Slot,
 }
 impl Item {
@@ -488,6 +528,76 @@ async fn bounded<T>(
     }
 }
 
+/// Refusal of work the proxy route cannot carry.
+pub(crate) fn proxy_refusal(message: &'static str) -> Diagnostic {
+    Diagnostic::new(
+        DiagnosticCategory::UnsupportedCapability,
+        DiagnosticCode::new("staged_proxy_unsupported")
+            .expect("the static proxy code is canonical"),
+        message,
+    )
+}
+
+/// Type a signed staged failure like the direct commit would: the released
+/// commit codes keep their certainty and the provider code (`STC2`) its
+/// typed failure; any other code stays a transaction failure under its code.
+fn proxy_failure(projection: &SdkDiagnosticProjectionV3) -> CommitError {
+    let json = projection.host_json().unwrap_or_default();
+    let field = |key: &str| json.get(key).and_then(serde_json::Value::as_str);
+    let message = field("message").unwrap_or_default();
+    let provider = json
+        .get("details")
+        .and_then(|details| details.get("code"))
+        .and_then(serde_json::Value::as_str);
+    let rendered = match provider {
+        Some(code) => format!("[{code}] {message}"),
+        None => message.to_owned(),
+    };
+    // Every attempt carries a key, so a refusal may answer a retry of an
+    // attempt that already committed (an in-flight window, a lost
+    // reservation): only a definite commit outcome proves nothing applied.
+    let definite = projection.code() == "commit_definitely_aborted";
+    let error = ClassifiedCommitError::Driver {
+        certainty: if definite {
+            crate::error::CommitFailureCertainty::DefinitelyAborted
+        } else {
+            crate::error::CommitFailureCertainty::Unknown
+        },
+        message: if definite || projection.code() == "commit_outcome_unknown" {
+            rendered
+        } else {
+            format!("[{}] {rendered}", projection.code())
+        },
+    };
+    let op_index = json
+        .get("path")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|path| path.iter().find_map(serde_json::Value::as_u64))
+        .and_then(|index| usize::try_from(index).ok());
+    let mut commit = CommitError::new(error, op_index, Default::default());
+    if !definite && projection.code() != "commit_outcome_unknown" {
+        commit.remote = remote_refusal(projection.code(), field("sdk_category")).map(Box::new);
+    }
+    commit
+}
+
+/// Keep a server refusal's stable code in the SDK diagnostic. Server text
+/// stays out: SDK messages are implementation-owned static text.
+fn remote_refusal(code: &str, sdk_category: Option<&str>) -> Option<SdkExecutionDiagnostic> {
+    use type_bridge_contract::sdk_diagnostic::{SdkDiagnosticCode, SdkDiagnosticMessage};
+    let code = SdkDiagnosticCode::new(code).ok()?;
+    let message = SdkDiagnosticMessage::new("The server refused the staged transaction").ok()?;
+    Some(match sdk_category {
+        Some("invalid_input") => SdkExecutionDiagnostic::invalid_input(code, message),
+        Some("unsupported_capability") => {
+            SdkExecutionDiagnostic::unsupported_capability(code, message)
+        }
+        Some("resource_limit") => SdkExecutionDiagnostic::resource_limit(code, message),
+        Some("integrity") => SdkExecutionDiagnostic::integrity(code, message),
+        _ => SdkExecutionDiagnostic::transaction_failure(code, message),
+    })
+}
+
 fn provider_consumed() -> OrmError {
     OrmError::Transaction("Staged program consumed the provider transaction".into())
 }
@@ -495,11 +605,23 @@ fn provider_consumed() -> OrmError {
 /// A reusable logical transaction. Each commit is one atomic provider transaction.
 /// Nothing opens until commit; drop discards staged work without committing.
 pub struct Transaction {
-    backend: Arc<dyn DriverBackend>,
+    backend: Backend,
     database: String,
     options: TransactionOptions,
     stack: Execution,
     closed: bool,
+    /// The last proxy attempt whose outcome is unknown, kept for
+    /// [`Self::commit_retry`].
+    retry: Option<RetryAttempt>,
+}
+enum Backend {
+    Local(Arc<dyn DriverBackend>),
+    Proxy(Arc<ProxyStaging>),
+}
+struct RetryAttempt {
+    request: StagedRequestV3,
+    bytes: Vec<u8>,
+    execution: Execution,
 }
 impl std::fmt::Debug for Transaction {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -515,8 +637,38 @@ impl Transaction {
     pub(crate) fn new(
         backend: Arc<dyn DriverBackend>,
         database: String,
-        mut options: TransactionOptions,
+        options: TransactionOptions,
     ) -> Self {
+        Self::with_backend(Backend::Local(backend), database, options)
+    }
+    /// A transaction whose commit is one signed `query-remote/v3` exchange.
+    pub(crate) fn new_proxy(proxy: ProxyStaging, options: TransactionOptions) -> Self {
+        Self::with_backend(Backend::Proxy(Arc::new(proxy)), String::new(), options)
+    }
+    /// A transaction over a caller-owned proxy exchange: `exchange` sends
+    /// the exact request bytes to `/v3/staged` and returns the exact reply
+    /// bytes; `staged_advertisement` is the `/v3/capabilities` body and
+    /// `declared` the schema the plans validate under.
+    ///
+    /// Only [`Self::stage_plan`] stages on it. Each [`Self::commit`] sends
+    /// one envelope with a fresh random 16-byte idempotency key;
+    /// [`Self::commit_retry`] is the only way to resend a key.
+    ///
+    /// # Errors
+    ///
+    /// Returns the decode failure of the advertisement.
+    pub fn over_proxy(
+        declared: type_bridge_contract::schema::DeclaredSchema,
+        staged_advertisement: &[u8],
+        exchange: super::StagedExchangeFn,
+        options: TransactionOptions,
+    ) -> Result<Self, Diagnostic> {
+        let limits = crate::query_execution_limits::QueryExecutionResourceLimits::default();
+        let proxy =
+            ProxyStaging::new(None, Some(exchange), staged_advertisement, declared, limits)?;
+        Ok(Self::new_proxy(proxy, options))
+    }
+    fn with_backend(backend: Backend, database: String, mut options: TransactionOptions) -> Self {
         if let Some(deadline) = options.answer_limits.deadline.take() {
             let timeout = deadline.saturating_duration_since(Instant::now());
             options.answer_timeout = Some(
@@ -531,14 +683,27 @@ impl Transaction {
             options,
             stack: Execution(Vec::new()),
             closed: false,
+            retry: None,
+        }
+    }
+    fn local(&self) -> Result<&Arc<dyn DriverBackend>, PendingError> {
+        match &self.backend {
+            Backend::Local(backend) => Ok(backend),
+            Backend::Proxy(_) => Err(PendingError::InvalidPlan(Box::new(proxy_refusal(
+                "only plans stage on a proxy transaction",
+            )))),
         }
     }
     /// Queue one query without opening a provider transaction.
+    ///
+    /// A proxy transaction refuses raw queries: only plans travel.
     pub fn stage(&mut self, query: StagedQuery) -> Result<Pending<QueryResult>, PendingError> {
         self.admit(query.writes)?;
+        self.local()?;
         let state = Arc::new(Mutex::new(Err(PendingError::NotCommitted)));
         self.stack.0.push(Item {
             query: Some(query),
+            remote: None,
             slot: Slot::Query(Arc::clone(&state)),
         });
         Ok(Pending { state })
@@ -556,14 +721,30 @@ impl Transaction {
     pub fn stage_plan(&mut self, plan: &QueryPlanV3) -> Result<Pending<PlanAnswer>, PendingError> {
         self.admit(plan.writes())?;
         self.admit_typed()?;
-        let query = crate::query_plan_exec::staged_query(
-            plan,
-            super::database::backend_supports_given_stage(self.backend.as_ref()),
-        )
-        .map_err(|diagnostic| PendingError::InvalidPlan(Box::new(diagnostic)))?;
+        let invalid = |diagnostic| PendingError::InvalidPlan(Box::new(diagnostic));
+        let (query, remote) = match &self.backend {
+            Backend::Local(backend) => (
+                Some(
+                    crate::query_plan_exec::staged_query(
+                        plan,
+                        super::database::backend_supports_given_stage(backend.as_ref()),
+                    )
+                    .map_err(invalid)?,
+                ),
+                None,
+            ),
+            Backend::Proxy(proxy) => {
+                let rows = plan.given_rows().unwrap_or_default().to_vec();
+                (
+                    None,
+                    Some(StagedPlanV3::new(plan, rows, proxy.declared()).map_err(invalid)?),
+                )
+            }
+        };
         let state = Arc::new(Mutex::new(Err(PendingError::NotCommitted)));
         self.stack.0.push(Item {
-            query: Some(query),
+            query,
+            remote,
             slot: Slot::Plan {
                 state: Arc::clone(&state),
                 operation: plan.operation(),
@@ -596,10 +777,10 @@ impl Transaction {
     ) -> Result<Pending<ValidatedMatchResult>, PendingError> {
         // A snapshot failure surfaces at commit with its typed error, so
         // staging keeps one lifecycle error type.
+        let backend = self.local()?;
         let registry = registry.owned_registry_snapshot();
-        let capabilities = self.backend.match_capabilities();
-        let supports_given_stage =
-            super::database::backend_supports_given_stage(self.backend.as_ref());
+        let capabilities = backend.match_capabilities();
+        let supports_given_stage = super::database::backend_supports_given_stage(backend.as_ref());
         self.stage_program(Box::new(move |transaction, bounds| {
             Box::pin(async move {
                 let registry = registry?;
@@ -620,6 +801,7 @@ impl Transaction {
         let state = Arc::new(Mutex::new(Err(PendingError::NotCommitted)));
         self.stack.0.push(Item {
             query: None,
+            remote: None,
             slot: Slot::Program(Box::new(ProgramSlot {
                 state: Arc::clone(&state),
                 program: Mutex::new(Some(program)),
@@ -655,10 +837,20 @@ impl Transaction {
         if self.closed {
             return Err(CommitError::lifecycle(PendingError::Closed));
         }
+        if self.stack.0.is_empty() && self.retry.is_some() {
+            return Err(CommitError::lifecycle(PendingError::InvalidPlan(Box::new(
+                proxy_refusal("a commit with an unknown outcome is pending; call commit_retry"),
+            ))));
+        }
         let mut execution = std::mem::replace(&mut self.stack, Execution(Vec::new()));
         if execution.0.is_empty() {
             return Ok(());
         }
+        self.retry = None;
+        let backend = match &self.backend {
+            Backend::Local(backend) => Arc::clone(backend),
+            Backend::Proxy(proxy) => return self.commit_proxy(Arc::clone(proxy), execution).await,
+        };
         let kind = self.options.kind.unwrap_or_else(|| {
             if execution.0.iter().any(Item::writes) {
                 TransactionKind::Write
@@ -684,15 +876,14 @@ impl Transaction {
                     })
                 })
                 .transpose()?;
-            let opened = self
-                .backend
+            let opened = backend
                 .open_with_options(&self.database, kind.into(), &self.options)
                 .await
                 .map_err(|error| CommitError::new(error.into(), None, Default::default()))?;
             // A program borrows the provider as an owned transaction and
             // hands it back; `None` means it was consumed.
             let mut provider = Some(opened);
-            let server_version = self.backend.server_version();
+            let server_version = backend.server_version();
             let mut answers = Vec::with_capacity(execution.0.len());
             for (index, item) in execution.0.iter_mut().enumerate() {
                 let resolved = match (&item.query, provider.as_mut()) {
@@ -777,12 +968,165 @@ impl Transaction {
                 Ok(())
             }
             Err(error) => {
-                execution.fail(PendingError::Failed {
-                    op_index: error.op_index,
-                    message: error.to_string(),
-                    failure: error.failure.clone(),
-                    context: error.context.clone(),
-                });
+                execution.fail(error.pending());
+                Err(error)
+            }
+        }
+    }
+    /// Resend the last proxy commit with the same request bytes and
+    /// idempotency key.
+    ///
+    /// Allowed only after a proxy commit whose outcome is unknown (a
+    /// dropped reply, an unverifiable reply, or `commit_outcome_unknown`).
+    /// The server replays its retained reply when the first attempt
+    /// committed, so the stack applies at most once; the original pending
+    /// answers resolve from that reply. Every other state, and a local
+    /// transaction, refuses with a lifecycle error.
+    pub async fn commit_retry(&mut self) -> Result<(), CommitError> {
+        if self.closed {
+            return Err(CommitError::lifecycle(PendingError::Closed));
+        }
+        let (Backend::Proxy(proxy), Some(attempt)) = (&self.backend, self.retry.take()) else {
+            return Err(CommitError::lifecycle(PendingError::InvalidPlan(Box::new(
+                proxy_refusal("no proxy commit with an unknown outcome to retry"),
+            ))));
+        };
+        let proxy = Arc::clone(proxy);
+        let timeout = self.commit_timeout();
+        self.attempt(&proxy, attempt, timeout).await
+    }
+    /// Whether a proxy commit with an unknown outcome awaits
+    /// [`Self::commit_retry`]: its writes may have applied, and only a
+    /// retry with the same key can tell.
+    #[must_use]
+    pub fn has_unknown_outcome(&self) -> bool {
+        self.retry.is_some()
+    }
+    async fn commit_proxy(
+        &mut self,
+        proxy: Arc<ProxyStaging>,
+        execution: Execution,
+    ) -> Result<(), CommitError> {
+        let kind = self.options.kind.unwrap_or_else(|| {
+            if execution.0.iter().any(|item| {
+                item.remote
+                    .as_ref()
+                    .is_some_and(|plan| plan.plan().writes())
+            }) {
+                TransactionKind::Write
+            } else {
+                TransactionKind::Read
+            }
+        });
+        let timeout = self.commit_timeout();
+        let deadline_ms =
+            timeout.map(|timeout| u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX));
+        let plans = execution
+            .0
+            .iter()
+            .filter_map(|item| item.remote.clone())
+            .collect();
+        let built = proxy
+            .request(plans, kind, deadline_ms)
+            .and_then(|request| request.encode().map(|bytes| (request, bytes)));
+        let (request, bytes) = match built {
+            Ok(built) => built,
+            Err(diagnostic) => {
+                let error = CommitError::lifecycle(PendingError::InvalidPlan(Box::new(diagnostic)));
+                execution.fail(error.pending());
+                return Err(error);
+            }
+        };
+        self.attempt(
+            &proxy,
+            RetryAttempt {
+                request,
+                bytes,
+                execution,
+            },
+            timeout,
+        )
+        .await
+    }
+    fn commit_timeout(&self) -> Option<Duration> {
+        match (self.options.deadline, self.options.answer_timeout) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (left, right) => left.or(right),
+        }
+    }
+    async fn attempt(
+        &mut self,
+        proxy: &ProxyStaging,
+        attempt: RetryAttempt,
+        timeout: Option<Duration>,
+    ) -> Result<(), CommitError> {
+        // Anything short of a verified definite outcome may have committed.
+        let unknown = |message: &str| {
+            CommitError::new(
+                ClassifiedCommitError::Driver {
+                    certainty: crate::error::CommitFailureCertainty::Unknown,
+                    message: message.to_owned(),
+                },
+                None,
+                Default::default(),
+            )
+        };
+        // The attempt is retryable from before the first byte is sent: a
+        // cancelled commit leaves its handles unknown and `commit_retry`
+        // available.
+        attempt
+            .execution
+            .fail(unknown("the proxy commit outcome is not known").pending());
+        let bytes = attempt.bytes.clone();
+        self.retry = Some(attempt);
+        let sent = proxy.send(bytes, timeout).await;
+        let attempt = self
+            .retry
+            .as_mut()
+            .unwrap_or_else(|| unreachable!("held across send"));
+        let outcome = match sent {
+            Err(_) => Err(unknown("the proxy reply was not received")),
+            Ok(reply) => match proxy.verify(&reply, &attempt.request) {
+                Err(_) => Err(unknown("the proxy reply could not be verified")),
+                Ok(verified) => match verified.diagnostic() {
+                    Some(projection) => Err(proxy_failure(projection)),
+                    None => attempt
+                        .execution
+                        .0
+                        .iter()
+                        .zip(verified.answers())
+                        .enumerate()
+                        .map(|(index, (item, answer))| {
+                            let plan = item.remote.as_ref().expect("proxy items carry plans");
+                            PlanAnswer::from_staged_v3(answer, plan.plan())
+                                .map(Resolved::Plan)
+                                .map_err(|diagnostic| {
+                                    CommitError::new(
+                                        plan_answer_error(diagnostic).into(),
+                                        Some(index),
+                                        Default::default(),
+                                    )
+                                })
+                        })
+                        .collect::<Result<Vec<_>, _>>(),
+                },
+            },
+        };
+        match outcome {
+            Ok(answers) => {
+                let mut attempt = self.retry.take().expect("held across send");
+                for (item, answer) in attempt.execution.0.iter_mut().zip(answers) {
+                    item.slot.publish(answer);
+                }
+                Ok(())
+            }
+            Err(error) => {
+                attempt.execution.fail(error.pending());
+                if error.error.commit_failure_certainty()
+                    != Some(crate::error::CommitFailureCertainty::Unknown)
+                {
+                    self.retry = None;
+                }
                 Err(error)
             }
         }
@@ -794,6 +1138,7 @@ impl Transaction {
         }
         self.stack.fail(PendingError::RolledBack);
         self.stack.0.clear();
+        self.retry = None;
         Ok(())
     }
     /// Discard queued work and make this logical transaction terminal.
@@ -803,6 +1148,7 @@ impl Transaction {
         }
         self.stack.fail(PendingError::Closed);
         self.stack.0.clear();
+        self.retry = None;
         self.closed = true;
         Ok(())
     }

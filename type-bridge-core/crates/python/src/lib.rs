@@ -33,6 +33,7 @@ pub mod schema;
 #[path = "../../../../tests/support/sdk_profile_matrix.rs"]
 #[allow(dead_code)]
 mod sdk_profile_matrix;
+mod staged_transaction_runtime;
 #[cfg(test)]
 mod test_isolation;
 pub mod transpiler;
@@ -970,6 +971,7 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     query_v2_builder_runtime::register(m)?;
     query_v2_model_remote_runtime::register(m)?;
     proxy_connection_runtime::register(m)?;
+    staged_transaction_runtime::register(m)?;
     schema::register(m)?;
     version::register(m)?;
 

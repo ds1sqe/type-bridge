@@ -1,5 +1,10 @@
 import { loadNative } from "./native.js";
 import type { QueryLimits } from "./runtime-projection.js";
+import type { NativeStagedTransaction } from "./native.js";
+import {
+  StagedTransaction,
+  type StagedTransactionKind,
+} from "./staged-transaction.js";
 import {
   queryV2AuthorityHandle,
   queryV2NativeCall,
@@ -219,6 +224,7 @@ export interface NativeRustDatabase {
   planDatabaseDeleteControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): NativeManagedDatabaseDeletionPlan;
   resetDatabase(): void;
   transaction(transactionType?: TransactionType): NativeRustTransactionContext;
+  stagedTransaction(kind?: string): NativeStagedTransaction;
 }
 
 export interface NativeManagedDatabaseDeletionPlan {
@@ -951,6 +957,16 @@ export class RustDatabase {
       this.#native.transaction(transactionType),
     );
   }
+
+  /**
+   * Create a deferred staged transaction; nothing opens until commit. An
+   * omitted kind is inferred from the staged writes.
+   */
+  stagedTransaction(kind?: StagedTransactionKind): StagedTransaction {
+    return new StagedTransaction(
+      queryV2NativeCall(() => this.#native.stagedTransaction(kind)),
+    );
+  }
 }
 
 export class ManagedDatabaseDeletionPlan {
@@ -1077,3 +1093,10 @@ function validateConnectionTransport(
     }
   }
 }
+
+export {
+  PendingPlanAnswer,
+  StagedTransaction,
+  type PlanAnswer,
+  type StagedTransactionKind,
+} from "./staged-transaction.js";

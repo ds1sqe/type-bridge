@@ -1,4 +1,6 @@
 import type { QueryLimits } from "./runtime-projection.js";
+import type { NativeStagedTransaction } from "./native.js";
+import { StagedTransaction, type StagedTransactionKind } from "./staged-transaction.js";
 import { type NativeQueryV2Authority, type NativeQueryV2BuilderRuntime } from "./query-v2-internals.js";
 export { QueryV2Error } from "./query-v2-internals.js";
 export type { ProviderFailure, QueryV2ErrorCategory, QueryV2ErrorDetail, QueryV2ErrorPathSegment, } from "./query-v2-internals.js";
@@ -150,6 +152,7 @@ export interface NativeRustDatabase {
     planDatabaseDeleteControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): NativeManagedDatabaseDeletionPlan;
     resetDatabase(): void;
     transaction(transactionType?: TransactionType): NativeRustTransactionContext;
+    stagedTransaction(kind?: string): NativeStagedTransaction;
 }
 export interface NativeManagedDatabaseDeletionPlan {
     inspectedState(): ManagedDatabasePairState;
@@ -410,6 +413,11 @@ export declare class RustDatabase {
     planDatabaseDeleteControlled(options?: AdministrationExecutionOptions): ManagedDatabaseDeletionPlan;
     resetDatabase(): void;
     transaction(transactionType?: TransactionType): RustTransactionContext;
+    /**
+     * Create a deferred staged transaction; nothing opens until commit. An
+     * omitted kind is inferred from the staged writes.
+     */
+    stagedTransaction(kind?: StagedTransactionKind): StagedTransaction;
 }
 export declare class ManagedDatabaseDeletionPlan {
     #private;
@@ -432,3 +440,4 @@ export declare class RustTransactionContext {
     close(): void;
     transactionType(): TransactionType;
 }
+export { PendingPlanAnswer, StagedTransaction, type PlanAnswer, type StagedTransactionKind, } from "./staged-transaction.js";

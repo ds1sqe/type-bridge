@@ -1292,9 +1292,45 @@ class ProxyConnection:
         connection_limits: QueryExecutionResourceLimits | None = ...,
         answer_limits: QueryExecutionResourceLimits | None = ...,
         cancellation: QueryCancellation | None = ...,
+        staged_advertisement: bytes | bytearray | None = ...,
     ) -> ProxyConnection: ...
     @property
     def answer_limits(self) -> QueryExecutionResourceLimits: ...
+    def transaction(
+        self,
+        kind: Literal["read", "write", "schema"] | None = None,
+        *,
+        cancellation: QueryCancellation | None = None,
+    ) -> Transaction: ...
+
+@final
+class Transaction:
+    """Staged transaction; over a proxy, commit is one signed v3 exchange."""
+
+    def __new__(cls) -> Never: ...
+    def stage(self, plan: bytes | bytearray) -> Pending: ...
+    def commit(self) -> None: ...
+    def commit_retry(self) -> None: ...
+    def rollback(self) -> None: ...
+    def close(self) -> None: ...
+    def __enter__(self) -> Transaction: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: object,
+    ) -> bool: ...
+
+@final
+class Pending:
+    def __new__(cls) -> Never: ...
+    def result(
+        self,
+    ) -> (
+        tuple[Literal["rows"], list[Any]]
+        | tuple[Literal["count", "matched"], int]
+        | tuple[Literal["exists"], bool]
+    ): ...
 
 @final
 class RemoteModelQueryContext:

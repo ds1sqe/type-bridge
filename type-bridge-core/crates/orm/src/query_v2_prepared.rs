@@ -115,6 +115,14 @@ enum QueryAuthorityControlPolicy {
 }
 
 impl QueryAuthority {
+    /// The declared schema plans are decoded and validated against.
+    #[must_use]
+    pub fn declared(&self) -> &DeclaredSchema {
+        &self.declared
+    }
+}
+
+impl QueryAuthority {
     /// Build one authority from canonical declared-schema bytes.
     ///
     /// The caller supplied the schema artifact, so its declared required

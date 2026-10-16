@@ -691,3 +691,299 @@ async fn commit_hook_observes_an_stc2_conflict_between_racing_staged_purchases()
     }
     panic!("no racing round produced an STC2 conflict");
 }
+
+// The SDK seam: the core `Transaction` over the proxy route.
+
+/// A staged transaction whose exchange posts to the in-process router.
+/// `drop_first` loses the first reply after the server handled it.
+fn sdk_transaction(
+    proxy: &Proxy,
+    drop_first: bool,
+) -> (
+    type_bridge_orm::session::staged::Transaction,
+    Arc<AtomicU64>,
+) {
+    let sent = Arc::new(AtomicU64::new(0));
+    let counter = Arc::clone(&sent);
+    let router = proxy.router.clone();
+    let dropped = Arc::new(AtomicBool::new(!drop_first));
+    let exchange: type_bridge_orm::session::StagedExchangeFn = Arc::new(move |bytes| {
+        let router = router.clone();
+        let counter = Arc::clone(&counter);
+        let dropped = Arc::clone(&dropped);
+        Box::pin(async move {
+            counter.fetch_add(1, Ordering::SeqCst);
+            let reply = call(&router, "POST", "/v3/staged", bytes).await;
+            if dropped.swap(true, Ordering::SeqCst) {
+                Ok(reply)
+            } else {
+                Err(
+                    type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::provider_failure(
+                        type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
+                    ),
+                )
+            }
+        })
+    });
+    let advertisement = call_blocking_free(&proxy.advertisement);
+    let tx = type_bridge_orm::session::staged::Transaction::over_proxy(
+        proxy.declared.clone(),
+        &advertisement,
+        exchange,
+        TransactionOptions::default(),
+    )
+    .expect("proxy transaction");
+    (tx, sent)
+}
+
+fn call_blocking_free(advertisement: &RemoteCapabilities) -> Vec<u8> {
+    advertisement.encode().expect("advertisement bytes")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
+async fn sdk_staged_purchase_over_the_proxy_matches_direct() {
+    use type_bridge_orm::session::staged::PlanAnswer;
+    let (_, direct) = seeded("sdk-direct").await;
+    let (name, proxied) = seeded("sdk-proxy").await;
+    let policy = LivePolicy {
+        vouch: true,
+        ..LivePolicy::default()
+    };
+    let proxy = proxy(&name, policy, false).await;
+    let plans = [
+        race::purchase("O1", "I1", "A1"),
+        race::stock_read(Operation::Count),
+        race::stock_read(Operation::Exists),
+    ];
+    let mut tx = direct.transaction(TransactionOptions::default());
+    let direct_pending: Vec<_> = plans
+        .iter()
+        .map(|plan| tx.stage_plan(plan).expect("stage"))
+        .collect();
+    tx.commit().await.expect("direct commit");
+    let (mut remote, sent) = sdk_transaction(&proxy, false);
+    let remote_pending: Vec<_> = plans
+        .iter()
+        .map(|plan| remote.stage_plan(plan).expect("stage"))
+        .collect();
+    remote.commit().await.expect("proxy commit");
+    let answers = |pending: &[type_bridge_orm::session::staged::Pending<PlanAnswer>]| {
+        pending
+            .iter()
+            .map(|answer| (*answer.get().expect("answer")).clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(answers(&direct_pending), answers(&remote_pending));
+    assert_eq!(answers(&remote_pending)[0], PlanAnswer::Matched(1));
+    assert_eq!(state(&direct).await, state(&proxied).await);
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
+    // A raw query never travels over the proxy.
+    assert!(
+        remote
+            .stage(type_bridge_orm::session::staged::StagedQuery::new(
+                "match $x isa item;",
+                false
+            ))
+            .is_err()
+    );
+    drop(proxy);
+    drop_database(direct).await;
+    drop_database(proxied).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
+async fn sdk_dropped_reply_then_commit_retry_applies_once() {
+    use type_bridge_orm::session::staged::PlanAnswer;
+    let (name, db) = seeded("sdk-retry").await;
+    let policy = LivePolicy {
+        vouch: true,
+        ..LivePolicy::default()
+    };
+    let proxy = proxy(&name, policy, false).await;
+    db.execute_raw(
+        r#"match $i isa item, has item-id "I1", has stock $s; update $i has stock 5;"#,
+        TxType::Write,
+    )
+    .await
+    .expect("restock");
+    let (mut tx, sent) = sdk_transaction(&proxy, true);
+    let bought = tx
+        .stage_plan(&race::purchase("O1", "I1", "A1"))
+        .expect("stage");
+    let error = tx.commit().await.expect_err("the reply was dropped");
+    assert_eq!(error.diagnostic().code().as_str(), "commit_outcome_unknown");
+    assert!(
+        bought.get().is_err(),
+        "an unknown outcome publishes nothing"
+    );
+    tx.commit_retry()
+        .await
+        .expect("retry replays the committed reply");
+    assert_eq!(*bought.get().expect("answer"), PlanAnswer::Matched(1));
+    assert_eq!(sent.load(Ordering::SeqCst), 2);
+    assert_eq!(row_count(&db, "match $p isa purchase; select $p;").await, 1);
+    assert_eq!(
+        row_count(
+            &db,
+            r#"match $i isa item, has item-id "I1", has stock 4; select $i;"#
+        )
+        .await,
+        1
+    );
+    assert_eq!(proxy.commits.lock().expect("commits").len(), 1);
+    // Nothing is left to retry.
+    assert!(tx.commit_retry().await.is_err());
+    drop(proxy);
+    drop_database(db).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
+async fn sdk_unauthenticated_write_is_refused_with_a_typed_error() {
+    let (name, db) = seeded("sdk-unauthenticated").await;
+    let proxy = proxy(&name, LivePolicy::default(), false).await;
+    let (mut tx, _) = sdk_transaction(&proxy, false);
+    let bought = tx
+        .stage_plan(&race::purchase("O1", "I1", "A1"))
+        .expect("stage");
+    let error = tx.commit().await.expect_err("refused");
+    // A keyed refusal keeps its code but proves nothing about an earlier
+    // attempt, so it stays unknown and retryable; the retry is refused too.
+    assert_eq!(
+        error.error.commit_failure_certainty(),
+        Some(type_bridge_orm::error::CommitFailureCertainty::Unknown)
+    );
+    assert_eq!(
+        error.diagnostic().code().as_str(),
+        "staged_write_not_authorized"
+    );
+    assert!(bought.get().is_err());
+    let retry = tx.commit_retry().await.expect_err("refused again");
+    assert_eq!(
+        retry.diagnostic().code().as_str(),
+        "staged_write_not_authorized"
+    );
+    assert_eq!(state(&db).await, (0, 0, 0, 1));
+    drop(proxy);
+    drop_database(db).await;
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Serve one live proxy over HTTP. A request carrying `x-tb-drop-reply`
+/// loses its first reply after the server handled it, as a dropped
+/// connection would.
+async fn serve(proxy: &Proxy) -> u16 {
+    let dropped = Arc::new(AtomicBool::new(false));
+    let router = proxy.router.clone().layer(axum::middleware::from_fn(
+        move |request: Request<Body>, next: axum::middleware::Next| {
+            let dropped = Arc::clone(&dropped);
+            async move {
+                let drop_reply = request.headers().contains_key("x-tb-drop-reply")
+                    && request.uri().path() == "/v3/staged";
+                let response = next.run(request).await;
+                if drop_reply && !dropped.swap(true, Ordering::SeqCst) {
+                    let _ = response.into_body().collect().await;
+                    return axum::response::Response::builder()
+                        .status(StatusCode::BAD_GATEWAY)
+                        .body(Body::from("reply lost"))
+                        .expect("lost reply");
+                }
+                response
+            }
+        },
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let port = listener.local_addr().expect("address").port();
+    tokio::spawn(async move { axum::serve(listener, router).await });
+    port
+}
+
+/// Not a test: the live fixture the Node and Python SDK suites stage
+/// against. With `TB_STAGED_FIXTURE_DIR` set it seeds four databases,
+/// serves a vouching proxy (purchase), a vouching proxy that loses one
+/// reply on request (retry) and a non-vouching proxy (refusal), writes
+/// `fixture.json` there and serves until a `stop` file appears.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "SDK live fixture; requires TB_STAGED_FIXTURE_DIR and a live TypeDB"]
+async fn sdk_staged_fixture_serves_until_stopped() {
+    let Ok(dir) = std::env::var("TB_STAGED_FIXTURE_DIR") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let (direct_name, direct) = seeded("fixture-direct").await;
+    let mut proxies = serde_json::Map::new();
+    let mut held = Vec::new();
+    for (role, vouch) in [("purchase", true), ("retry", true), ("refused", false)] {
+        let (name, db) = seeded(&format!("fixture-{role}")).await;
+        let policy = LivePolicy {
+            vouch,
+            ..LivePolicy::default()
+        };
+        let proxy = proxy(&name, policy, false).await;
+        let port = serve(&proxy).await;
+        let commits = Arc::clone(&proxy.commits);
+        proxies.insert(
+            role.to_owned(),
+            serde_json::json!({
+                "database": name,
+                "endpoint": format!("http://127.0.0.1:{port}"),
+                "scope": format!("server-v3-live-{name}"),
+            }),
+        );
+        held.push((proxy, db, commits));
+    }
+    let profile = semantic_profile_id(&direct.server_version().expect("server version"))
+        .expect("supported profile");
+    let plan = |plan: QueryPlanV3| hex(&plan.canonical_bytes().expect("plan bytes"));
+    let fixture = serde_json::json!({
+        "direct_database": direct_name,
+        "profile": profile,
+        "declared_hex": hex(
+            &type_bridge_contract::schema::encode_declared_schema(&race::schema())
+                .expect("declared bytes"),
+        ),
+        "plans_hex": {
+            "purchase": plan(race::purchase("O1", "I1", "A1")),
+            "count": plan(race::stock_read(Operation::Count)),
+            "exists": plan(race::stock_read(Operation::Exists)),
+        },
+        "proxies": proxies,
+    });
+    std::fs::write(dir.join("fixture.json"), fixture.to_string()).expect("fixture written");
+    while !dir.join("stop").exists() {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    // Commits the proxies observed, one line per proxy, for the caller to check.
+    let observed: Vec<_> = held
+        .iter()
+        .map(|(_, _, commits)| {
+            commits
+                .lock()
+                .expect("commits")
+                .iter()
+                .map(|(committed, code, ..)| format!("{committed}:{code}"))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let mut states = Vec::new();
+    for (_, db, _) in &held {
+        states.push(format!("{:?}", state(db).await));
+    }
+    std::fs::write(
+        dir.join("observed.json"),
+        serde_json::json!({ "commits": observed, "states": states, "direct": format!("{:?}", state(&direct).await) }).to_string(),
+    )
+    .expect("observed written");
+    for (proxy, db, _) in held {
+        drop(proxy);
+        drop_database(db).await;
+    }
+    drop_database(direct).await;
+}

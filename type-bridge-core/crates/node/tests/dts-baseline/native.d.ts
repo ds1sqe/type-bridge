@@ -176,9 +176,20 @@ interface NativePendingRemoteModelQuery {
     requestBytes(): Uint8Array;
     decodeReply(response: Uint8Array): Promise<NativeValidatedMatchResultHandle>;
 }
+export interface NativePendingPlanAnswer {
+    getJson(): string;
+}
+export interface NativeStagedTransaction {
+    stagePlan(planBytes: Buffer, schemaBytes: Buffer): NativePendingPlanAnswer;
+    commit(): Promise<void>;
+    commitRetry(): Promise<void>;
+    rollback(): void;
+    close(): void;
+}
 /** Native proxy connection over the built-in HTTP route. */
 export interface NativeProxyConnection {
     readonly answerLimits: NativeQueryExecutionResources;
+    transaction(kind?: string, cancellation?: NativeQueryCancellation): Promise<NativeStagedTransaction>;
     rows(query: NativeMatchQueryHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): Promise<NativeValidatedMatchResultHandle>;
     page(query: NativeMatchQueryHandle, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): Promise<NativeValidatedMatchResultHandle>;
     count(query: NativeMatchQueryHandle, root: NativeMatchBindingHandle): Promise<NativeValidatedMatchResultHandle>;
@@ -189,7 +200,7 @@ export interface NativeProxyConnection {
 }
 interface NativeProxyConnectionModule {
     NodeProxyConnection: {
-        connect(authority: ReturnType<NativeModule["queryV2Authority"]>, endpoint: string, tlsMode: string, tlsRootCa: string | undefined, headerNames: string[], headerValues: string[], advertisement?: Uint8Array, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation): Promise<NativeProxyConnection>;
+        connect(authority: ReturnType<NativeModule["queryV2Authority"]>, endpoint: string, tlsMode: string, tlsRootCa: string | undefined, headerNames: string[], headerValues: string[], advertisement?: Uint8Array, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation, stagedAdvertisement?: Uint8Array): Promise<NativeProxyConnection>;
     };
 }
 /** Core limits the addon exports, so the package holds no copies. */
