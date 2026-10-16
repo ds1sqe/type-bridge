@@ -14,7 +14,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from type_bridge_core import Pending, ProxyConnection, Transaction, query_v2_authority
+from type_bridge_core import (
+    Count,
+    Exists,
+    Matched,
+    Pending,
+    ProxyConnection,
+    Transaction,
+    query_v2_authority,
+)
 
 FIXTURE_DIR = os.environ.get("TB_STAGED_FIXTURE_DIR")
 
@@ -57,7 +65,7 @@ def test_staged_purchase_over_the_proxy_answers_like_direct(live: dict[str, Any]
     answers = [answer.result() for answer in pending]
     # The values direct execution gives for the same program (the Rust and TS
     # live suites compare direct and proxy answers on the same fixture).
-    assert answers == [("matched", 1), ("count", 1), ("exists", True)]
+    assert answers == [Matched(1), Count(1), Exists(True)]
 
 
 def test_a_lost_reply_stays_unknown_and_commit_retry_applies_once(live: dict[str, Any]) -> None:
@@ -67,7 +75,7 @@ def test_a_lost_reply_stays_unknown_and_commit_retry_applies_once(live: dict[str
         tx.commit()
     assert getattr(unknown.value, "code", None) == "commit_outcome_unknown"
     tx.commit_retry()
-    assert purchase.result() == ("matched", 1)
+    assert purchase.result() == Matched(1)
     with pytest.raises(Exception):
         tx.commit_retry()
 

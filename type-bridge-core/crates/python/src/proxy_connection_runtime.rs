@@ -147,12 +147,13 @@ impl PyProxyConnection {
     /// until commit, which posts the staged plans as one signed
     /// `query-remote/v3` request with a fresh idempotency key. The
     /// `/v3/capabilities` advertisement is fetched now.
-    #[pyo3(signature = (kind=None, *, cancellation=None))]
+    #[pyo3(signature = (kind=None, *, cancellation=None, commit_on_exit=true))]
     fn transaction(
         &self,
         py: Python<'_>,
         kind: Option<&str>,
         cancellation: Option<PyRef<'_, PyQueryCancellation>>,
+        commit_on_exit: bool,
     ) -> PyResult<PyStagedTransaction> {
         let mut options = TransactionOptions::default();
         if let Some(kind) = kind {
@@ -169,7 +170,8 @@ impl PyProxyConnection {
         Ok(PyStagedTransaction::new(
             transaction,
             Arc::clone(&self.runtime),
-            Arc::clone(&self.authority),
+            Some(Arc::clone(&self.authority)),
+            commit_on_exit,
         ))
     }
 

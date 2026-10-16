@@ -461,6 +461,15 @@ differently direct and through a proxy. Each entry says what to do instead.
   pending-answer errors convert into `type_bridge::Error`. The rules that
   number handles, order terms and name variables live in the contract's
   `query_plan::v3::PlanBuilder`, so a program has one canonical encoding.
+- Python builds the same plans with `type_bridge.plan.Plan.builder()`
+  (`where_`, `let_`, and otherwise the Rust names in snake_case) from
+  generated model, field and role tokens; `build(schema_authority())`
+  validates it, and generated Python packages export `schema_authority()`.
+  `Database.staged_transaction(kind=None, *, commit_on_exit=True)` and
+  `RustDatabase.staged_transaction` open a direct staged transaction beside
+  the released `transaction()`; it and `ProxyConnection.transaction` stage
+  built plans, report `has_unknown_outcome()`, and answer typed
+  `Rows`, `Count`, `Exists` or `Matched` values from `Pending.result()`.
 - The TypeBridge server runs staged `query-plan/v3` transactions at
   `POST /v3/staged` and advertises them at `GET /v3/capabilities`. Every
   configured interceptor must declare `supports_v3`, or each V3 request is

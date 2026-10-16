@@ -2005,4 +2005,23 @@ finally:
     generated_query_module.Query.materialize_page = saved_page_materializer
     generated_query_module.Query.materialize_reduction = saved_reduction_materializer
 
+
+# A generated package exposes its embedded authority for the plan builder,
+# in both runtime resource variants; the package's own tokens build a plan.
+from generated_ordered import schema_authority as ordered_schema_authority  # noqa: E402
+from generated_v2 import Person as PlanPerson  # noqa: E402
+from generated_v2 import schema_authority  # noqa: E402
+
+from type_bridge.plan import Plan  # noqa: E402
+
+assert schema_authority() is schema_authority()
+assert ordered_schema_authority() is ordered_schema_authority()
+_plan = Plan.builder()
+_planned = _plan.exact(PlanPerson)
+_score = _plan.field(_planned, PlanPerson.score)
+_plan.where_(_score.ge(20)).update(_planned, PlanPerson.score, _plan.let_("next_score", _score + 1))
+_built = _plan.build(schema_authority())
+assert _built.writes()
+assert json.loads(_built.canonical_bytes())["bindings"][0]["variable"] == "person"
+
 _emit_sdk_models_package_proof_fragment()

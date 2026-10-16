@@ -80,7 +80,10 @@ define_python_host_string!(PythonVariableString, MAX_OUTPUT_NAME_BYTES);
 define_python_host_string!(PythonLabelString, MAX_LABEL_BYTES);
 define_python_host_string!(PythonVocabularyString, MAX_OUTPUT_NAME_BYTES);
 
-fn python_scalar(value_type: ValueTypeTag, value: &Bound<'_, PyAny>) -> PyResult<CanonicalValue> {
+pub(crate) fn python_scalar(
+    value_type: ValueTypeTag,
+    value: &Bound<'_, PyAny>,
+) -> PyResult<CanonicalValue> {
     let input = match value_type {
         ValueTypeTag::String
         | ValueTypeTag::Date

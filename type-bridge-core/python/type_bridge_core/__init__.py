@@ -19,6 +19,9 @@ _typeql_queries_equivalent = type_bridge_core._typeql_queries_equivalent
 _generated_declared_descriptors_json = type_bridge_core._generated_declared_descriptors_json
 _query_build_has_lookup_query = type_bridge_core._query_build_has_lookup_query
 _render_models_json = type_bridge_core._render_models_json
+# The plan builder's native seam; `type_bridge.plan` is its public surface.
+_PlanBuilderCore = type_bridge_core._PlanBuilderCore
+_Plan = type_bridge_core._Plan
 
 __doc__ = type_bridge_core.__doc__
 if hasattr(type_bridge_core, "__all__"):

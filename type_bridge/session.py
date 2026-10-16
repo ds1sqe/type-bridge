@@ -21,6 +21,7 @@ from type_bridge.typedb_driver import (
 )
 
 if TYPE_CHECKING:
+    from type_bridge_core import Transaction as StagedTransaction
     from typedb.driver import Driver
     from typedb.driver import Transaction as TypeDBTransaction
 
@@ -782,6 +783,27 @@ class Database:
             f"Creating {_tx_type_name(tx_type)} transaction for database: {self.database_name}"
         )
         return TransactionContext(self, tx_type)
+
+    def staged_transaction(
+        self,
+        kind: Literal["read", "write", "schema"] | None = None,
+        *,
+        commit_on_exit: bool = True,
+    ) -> StagedTransaction:
+        """Create a staged transaction for typed plans.
+
+        Plans staged with ``tx.stage(plan)`` reach TypeDB only at
+        ``tx.commit()``, as one transaction; each ``Pending.result()`` then
+        answers ``Rows``, ``Count``, ``Exists`` or ``Matched``. As a context
+        manager it commits on a clean exit (unless ``commit_on_exit=False``),
+        discards on an exception, and closes; a commit whose outcome is
+        unknown raises and stays open for ``tx.commit_retry()``. An omitted
+        ``kind`` is inferred from the staged plans. ``transaction()`` keeps
+        its eager context.
+        """
+        from type_bridge._rust_runtime import rust_database_for
+
+        return rust_database_for(self).staged_transaction(kind, commit_on_exit=commit_on_exit)
 
     def execute_query(self, query: str, transaction_type: str = "read") -> list[dict[str, Any]]:
         """Execute a query and return results.

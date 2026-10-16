@@ -1042,6 +1042,27 @@ impl PyRustDatabase {
             successor_batch_invoked: Arc::new(AtomicBool::new(false)),
         })
     }
+
+    /// Create a deferred staged transaction; nothing opens until commit.
+    /// An omitted kind is inferred from the staged writes. The released
+    /// `transaction()` keeps its eager context.
+    #[pyo3(signature = (kind=None, *, commit_on_exit=true))]
+    fn staged_transaction(
+        &self,
+        kind: Option<&str>,
+        commit_on_exit: bool,
+    ) -> PyResult<crate::staged_transaction_runtime::PyStagedTransaction> {
+        let mut options = type_bridge_orm::session::staged::TransactionOptions::default();
+        if let Some(kind) = kind {
+            options = options.with_kind(crate::staged_transaction_runtime::parse_kind(kind)?);
+        }
+        Ok(crate::staged_transaction_runtime::PyStagedTransaction::new(
+            self.db.transaction(options),
+            Arc::clone(&self.runtime),
+            None,
+            commit_on_exit,
+        ))
+    }
 }
 
 /// Python-facing Rust transaction context.

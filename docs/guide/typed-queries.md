@@ -281,13 +281,80 @@ shapes, all reducers, and binding/field/tuple-field grouping. Reduction replies
 echo the exact root, grouping, and reducer contract and are authenticated before
 materialization through the same projection as direct execution.
 
+### Staged transactions and plans in Python
+
+A plan is one typed `query-plan/v3` pipeline: a match with comparisons and
+`let_` values, then updates, inserts, puts and deletes. `Plan.builder()`
+(`type_bridge.plan`) takes the generated model, field and role tokens and
+forwards every call to the shared Rust builder, so the bytes equal the same
+plan built in Rust, TypeScript or C. `where_` and `let_` carry a trailing
+underscore because `where` and `let` read as keywords; comparisons are
+`eq`, `ne`, `lt`, `le`, `gt` and `ge`, and `+ - * / %` and
+`PlanExpr.{pow,abs,ceil,floor,round,min,max,length}` build expressions.
+`bool`, `int`, `float`, `str`, `Decimal`, `date` and `datetime` literals are
+typed automatically; `literal("duration", "P1D")` types the rest.
+
+```python
+from type_bridge.plan import Matched, Plan
+
+from generated.python import Account, Item, Purchase, schema_authority
+
+
+def purchase(order: str, item_id: str, account_id: str) -> Plan:
+    plan = Plan.builder()
+    item = plan.exact(Item)
+    buyer = plan.exact(Account)
+    order_input = plan.input("order_id", "string")
+    item_input = plan.input("item_id", "string")
+    account_input = plan.input("account_id", "string")
+    stock = plan.field(item, Item.stock)
+    price = plan.field(item, Item.price)
+    balance = plan.field(buyer, Account.balance)
+    plan.where_(plan.field(item, Item.item_id).eq(item_input))
+    plan.where_(plan.field(buyer, Account.account_id).eq(account_input))
+    plan.where_(stock.gt(0)).where_(balance.ge(price))
+    plan.update(item, Item.stock, plan.let_("next_stock", stock - 1))
+    plan.update(buyer, Account.balance, plan.let_("next_balance", balance - price))
+    (
+        plan.insert(Purchase)
+        .field(Purchase.order_id, order_input)
+        .player(Purchase.buyer, buyer)
+        .player(Purchase.item, item)
+    )
+    plan.row([order_input.value(order), item_input.value(item_id), account_input.value(account_id)])
+    return plan.build(schema_authority())
+
+
+with db.staged_transaction() as tx:  # db: type_bridge.Database
+    bought = tx.stage(purchase("O1", "I1", "A1"))
+assert bought.result() in (Matched(1), Matched(0))
+```
+
+Calls never fail on content; `build` raises the first invalid call as a
+`QueryV2Error` with `.code` (for example `query_plan_builder_duplicate_name`).
+A handle from another builder raises `TypeError` at once. A generated
+package's `schema_authority()` is its embedded, verified authority.
+
+`Database.staged_transaction(kind=None, *, commit_on_exit=True)` (and
+`RustDatabase.staged_transaction`) returns the core staged transaction:
+`stage(plan)`, `commit()`, `commit_retry()`, `has_unknown_outcome()`,
+`rollback()` and `close()`. Nothing opens before `commit()`; an omitted kind
+is inferred from the staged plans. `Pending.result()` answers `Rows(rows)`,
+`Count(count)`, `Exists(exists)` or `Matched(count)`, raises the commit's
+typed failure (`.code`, `.failure`), or raises `RuntimeError` before commit.
+A `with` block commits on a clean exit unless `commit_on_exit=False`,
+discards on an exception, and always closes, except that a commit whose
+outcome is unknown raises and stays open for `commit_retry()`.
+`Database.transaction()` keeps its released eager context.
+
 ### Staged transactions over the proxy
 
 Writes cross the proxy as staged transactions. `transaction(kind)` on a proxy
 connection (Rust `ProxyDatabase::transaction(options)`, Python and TypeScript
 `ProxyConnection.transaction(kind)`) returns the core staged transaction: stage
-plans (Rust `stage` of a built `Plan`; canonical `query-plan/v3` bytes through Python
-`stage` and TypeScript `stagePlan`), then `commit()`. The commit sends the whole stack as one
+plans (Rust and TypeScript `stage` and Python `stage` of a built `Plan`;
+canonical `query-plan/v3` bytes also through Python `stage` and TypeScript
+`stagePlan`), then `commit()`. The commit sends the whole stack as one
 `typebridge.query-remote-request/v3` envelope to `POST /v3/staged`; the server
 runs it on one TypeDB transaction and returns a signed reply that the SDK
 verifies before resolving any answer. Answers and typed failures are the same
