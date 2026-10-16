@@ -384,7 +384,7 @@ export interface NativePendingPlanAnswer {
 }
 
 export interface NativeStagedTransaction {
-  stagePlan(planBytes: Buffer, schemaBytes: Buffer): NativePendingPlanAnswer;
+  stagePlan(planBytes: Uint8Array, schemaBytes: Uint8Array): NativePendingPlanAnswer;
   commit(): Promise<void>;
   commitRetry(): Promise<void>;
   rollback(): void;

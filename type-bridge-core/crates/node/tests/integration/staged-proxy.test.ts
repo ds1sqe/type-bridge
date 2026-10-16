@@ -7,9 +7,14 @@ import type { PlanAnswer, StagedTransaction } from "../../typescript/index.js";
 import { createRequire } from "node:module";
 
 // Load the built package like the shared helpers do, so classes are shared.
-const { ProxyConnection } = createRequire(import.meta.url)(
-  path.join(process.env["TYPE_BRIDGE_NODE_PACKAGE_ROOT"] ?? process.cwd(), "dist/runtime-projection.js"),
+const packageRoot = process.env["TYPE_BRIDGE_NODE_PACKAGE_ROOT"] ?? process.cwd();
+const requirePackage = createRequire(import.meta.url);
+const { ProxyConnection } = requirePackage(
+  path.join(packageRoot, "dist/runtime-projection.js"),
 ) as typeof import("../../typescript/runtime-projection.js");
+const { loadNative } = requirePackage(
+  path.join(packageRoot, "dist/native.js"),
+) as typeof import("../../typescript/native.js");
 
 // The live fixture is `sdk_staged_fixture_serves_until_stopped` in
 // crates/server/tests/v3_staged_integration_tests.rs; it writes
@@ -109,4 +114,29 @@ test("an unauthenticated staged write is refused with the typed failure", { skip
   assert.equal(refused.code, "staged_write_not_authorized");
   assert.throws(() => purchase?.());
   await assert.rejects(tx.commitRetry());
+});
+
+test("the native staged transaction takes Uint8Array bytes and refuses shared storage", { skip }, () => {
+  const live = fixture();
+  // The raw handle bypasses the facade's owned snapshot: the addon itself
+  // must accept plain views and refuse storage another Worker can mutate.
+  const db = loadNative().connectRustDatabase(
+    process.env["TYPEDB_ADDRESS"] ?? "localhost:1730",
+    live.direct_database,
+    null,
+    null,
+    Number(process.env["TYPEDB_HTTP_PORT"] ?? "8000"),
+  );
+  const tx = db.stagedTransaction();
+  const plan = Buffer.from(live.plans_hex.count, "hex");
+  const declared = Buffer.from(live.declared_hex, "hex");
+  tx.stagePlan(new Uint8Array(plan), new Uint8Array(declared));
+  const shared = new Uint8Array(new SharedArrayBuffer(plan.byteLength));
+  shared.set(plan);
+  assert.throws(
+    () => tx.stagePlan(shared, new Uint8Array(declared)),
+    /query_v2_shared_buffer_unsupported/,
+  );
+  tx.close();
+  db.close();
 });

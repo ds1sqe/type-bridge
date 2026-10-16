@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use napi::bindgen_prelude::{Buffer, Env, Object};
+use napi::bindgen_prelude::{Env, Object, Unknown};
 use napi_derive::napi;
 use type_bridge_contract::query_plan::v3::decode_query_plan_v3;
 use type_bridge_contract::schema::decode_declared_schema;
@@ -17,6 +17,7 @@ use type_bridge_orm::session::staged::{
 };
 
 use crate::proxy_connection_runtime::settle;
+use crate::query_v2_runtime::non_shared_buffer;
 
 /// Parse the optional JavaScript transaction kind; omitted infers from writes.
 pub(crate) fn staged_options(kind: Option<&str>) -> napi::Result<TransactionOptions> {
@@ -134,13 +135,18 @@ impl NodeStagedTransaction {
 #[napi]
 impl NodeStagedTransaction {
     /// Stage one canonical `query-plan/v3` program validated under the
-    /// declared schema bytes. Nothing is sent until commit.
+    /// declared schema bytes. Nothing is sent until commit. Both inputs are
+    /// `Uint8Array` views; shared backing storage is refused before Rust
+    /// borrows it, like every other raw native byte input.
     #[napi(js_name = "stagePlan")]
     pub fn stage_plan(
         &self,
-        plan_bytes: Buffer,
-        schema_bytes: Buffer,
+        env: Env,
+        plan_bytes: Unknown,
+        schema_bytes: Unknown,
     ) -> napi::Result<NodePendingPlanAnswer> {
+        let plan_bytes = non_shared_buffer(&env, plan_bytes)?;
+        let schema_bytes = non_shared_buffer(&env, schema_bytes)?;
         let schema = decode_declared_schema(&schema_bytes)
             .map_err(|error| crate::query_v2_runtime::napi_error(&error))?;
         let plan = decode_query_plan_v3(&plan_bytes, &schema)
