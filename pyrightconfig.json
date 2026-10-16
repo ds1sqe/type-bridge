@@ -1,6 +1,7 @@
 {
   "include": [
     "type_bridge",
+    "perf",
     "tests",
     "examples"
   ],
