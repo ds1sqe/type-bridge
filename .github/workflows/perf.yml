@@ -174,6 +174,115 @@ jobs:
           path: perf-out/build.json
           if-no-files-found: error
 
+  size:
+    name: Linux x86_64 artifact sizes
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+      - name: Build Linux wheel as in release
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          maturin-version: v1.14.1
+          rust-toolchain: "1.94.1"
+          target: x86_64-unknown-linux-gnu
+          args: --release --out dist -i python3.13
+          manylinux: auto
+          working-directory: type-bridge-core
+      - name: Pack Linux npm package
+        working-directory: type-bridge-core/crates/node
+        run: |
+          npm ci
+          npm run build
+          mkdir -p "$PERF_DIR/packages"
+          npm pack --ignore-scripts --pack-destination "$PERF_DIR/packages"
+      - name: Build unstripped CLI and release server binary
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/type-bridge-core/target
+        run: |
+          cargo build --locked --release --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-cli --bin type-bridge
+          cp "$CARGO_TARGET_DIR/release/type-bridge" "$PERF_DIR/cli-unstripped"
+          cargo build --locked --release --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-server --no-default-features --features band8,band9,v2-query
+          strip -o "$PERF_DIR/server" "$CARGO_TARGET_DIR/release/type-bridge-server"
+      - name: Build canonical stripped CLI
+        run: >-
+          python scripts/ci/standalone_cli_artifact.py build
+          --output "$GITHUB_WORKSPACE/tmp/perf-cli"
+      # The release C helper remains frozen to 1.6 until 2.3 release prep.
+      - name: Archive current CMake runtime install with release Cargo flags
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts/ci")
+          from standalone_cli_artifact import artifact_build_environment
+          root = Path.cwd()
+          target = root / "tmp/perf-c-build"
+          prefix = root / "tmp/perf-c-install"
+          environment = artifact_build_environment(target)
+          subprocess.run(["cargo", "build", "--locked", "--release", "--target",
+              "x86_64-unknown-linux-gnu", "--manifest-path", "type-bridge-core/Cargo.toml",
+              "-p", "type-bridge-c", "--lib"], env=environment, check=True)
+          library = target / "x86_64-unknown-linux-gnu/release/libtype_bridge_c.so"
+          subprocess.run(["cmake", "-S", "type-bridge-core/crates/c", "-B", "tmp/perf-c-cmake",
+              f"-DTYPE_BRIDGE_C_LIBRARY={library}", f"-DCMAKE_INSTALL_PREFIX={prefix}",
+              "-DCMAKE_INSTALL_LIBDIR=lib"], check=True)
+          subprocess.run(["cmake", "--install", "tmp/perf-c-cmake"], check=True)
+          subprocess.run(["tar", "--sort=name", "--mtime=@0", "--owner=0", "--group=0",
+              "--numeric-owner", "-C", str(prefix), "-czf",
+              os.environ["PERF_DIR"] + "/c-runtime.tar.gz", "."], check=True)
+          PY
+      - name: Measure release artifacts
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+          out = Path(os.environ["PERF_DIR"])
+          def single(pattern):
+              matches = list(Path.cwd().glob(pattern))
+              if len(matches) != 1:
+                  raise ValueError(f"expected one {pattern}, got {matches}")
+              return matches[0]
+          artifacts = {
+              "wheel": single("type-bridge-core/dist/*.whl"),
+              "npm": single("perf-out/packages/*.tgz"),
+              "cli_unstripped": out / "cli-unstripped",
+              "cli_stripped": Path("tmp/perf-cli/build/x86_64-unknown-linux-gnu/release/type-bridge"),
+              "server": out / "server",
+              "c_runtime": out / "c-runtime.tar.gz",
+              "c_runtime_lib": Path("tmp/perf-c-install/lib/libtype_bridge_c.so"),
+          }
+          command = [sys.executable, "-m", "perf.harness.size", "--out", str(out / "size.json")]
+          for name, path in artifacts.items():
+              command += ["--artifact", f"{name}={path}"]
+          subprocess.run(command, check=True)
+          PY
+      - name: Upload size metrics
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-size
+          path: perf-out/size.json
+          if-no-files-found: error
+
   # Appends this run's results to the history branch. Runs only for master
   # pushes, the nightly schedule and manual dispatch, never for pull
   # requests; it is the only job with write access, and it writes only the
@@ -186,7 +295,7 @@ jobs:
       (github.event_name == 'push' && github.ref == 'refs/heads/master')
       || github.event_name == 'schedule'
       || github.event_name == 'workflow_dispatch'
-    needs: [micro, build]
+    needs: [micro, build, size]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

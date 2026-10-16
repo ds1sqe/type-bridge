@@ -133,3 +133,29 @@ python -m perf.harness.build --group public --package type-bridge-toml-transpile
 Install maturin 1.14.1 before selecting the Python group. Existing group target
 directories are rejected, never deleted. Logs are retained beside the result;
 a failed build produces no result.
+
+## Artifact sizes
+
+The size job builds Linux x86_64 artifacts with the release workflow's wheel,
+Node, CLI and server commands, then records their actual byte lengths. It
+reports `size.wheel.bytes`, `size.npm.bytes`, `size.cli_unstripped.bytes`,
+`size.cli_stripped.bytes`, `size.server.bytes`, `size.c_runtime.bytes` and
+`size.c_runtime_lib.bytes`. The server and canonical CLI are stripped as in
+release; the unstripped CLI provides a separate baseline.
+
+The C metric is a perf-only archive of the current CMake install tree: ABI 1.7
+and release package metadata are reconciled separately in 2.3.0 release prep.
+It uses the release Cargo flags and normalized tar metadata; it is not a
+published C release candidate. Release helpers and policy are unchanged.
+
+Measure existing artifacts without rebuilding or modifying them:
+
+```bash
+python -m perf.harness.size --artifact wheel=dist/package.whl \
+  --artifact npm=dist/package.tgz --out tmp/perf/size.json
+```
+
+Repeat `--artifact NAME=FILE` for each input. Missing, empty or directory inputs,
+duplicate metric identities, and output paths that overwrite an artifact fail
+without publishing a result. The converter test fixture is an actual tiny
+`npm pack --ignore-scripts --json` archive (npm 12.2.0), renamed `package.npm`.
