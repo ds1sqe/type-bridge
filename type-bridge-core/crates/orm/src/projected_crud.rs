@@ -8,9 +8,10 @@ use std::sync::{Arc, Mutex};
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind, is_canonical_thing_iid};
 use type_bridge_contract::projection::{
-    ModelProjection, ProjectedModelForm, ProjectedModelUse, ReadRoleProjection, RoleTokenProjection,
+    ModelProjection, ProjectedContainer, ProjectedModelForm, ProjectedModelUse, ReadRoleProjection,
+    RoleTokenProjection,
 };
-use type_bridge_contract::schema::{AnnotationKindId, OwnsFactId};
+use type_bridge_contract::schema::{AnnotationKindId, CollectionMode, OwnsFactId};
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCategory, SdkDiagnosticCode, SdkDiagnosticDetailValue, SdkDiagnosticMessage,
     SdkDiagnosticName, SdkDiagnosticPathSegment, SdkExecutionDiagnostic, SdkProviderOperation,
@@ -30,6 +31,7 @@ use crate::execution_diagnostic::{lower_commit_error, lower_orm_error};
 use crate::match_request::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
 use crate::plan_builders::authority::PlanAuthority;
 use crate::plan_builders::insert::relation_insert;
+use crate::plan_builders::put::{KeyedPut, PUT_THING, keyed_entity_put};
 use crate::plan_builders::reference::{Reference, ReferenceIdentity};
 use crate::plan_builders::{LITERAL_CONTROL_CHARACTER, ValueTransport};
 use crate::projected_batch::{
@@ -2739,6 +2741,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             type_id: prepared.type_id,
             descriptor: prepared.descriptor,
             attributes: self.lower_create_fields(input)?,
+            keyed_put: self.lower_keyed_put(input)?,
         })
     }
 
@@ -2899,6 +2902,71 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             );
         }
         Ok(fields)
+    }
+
+    /// Split a create into the keyed put plan's keys, single-valued fields
+    /// and omitted ownerships to clear.
+    ///
+    /// `None` keeps the released path: a create without a key value is an
+    /// insert (no read either), and multi-valued or ordered fields have no
+    /// v3 term that adds ownerships to an existing thing yet.
+    fn lower_keyed_put(
+        &self,
+        input: &ProjectedCreate,
+    ) -> Result<Option<PreparedKeyedPut>, SdkExecutionDiagnostic> {
+        let model = self.model_integrity(input.type_id())?;
+        let tokens = model.query_tokens().fields();
+        let mut put = PreparedKeyedPut {
+            keys: Vec::new(),
+            fields: Vec::new(),
+            cleared: Vec::new(),
+        };
+        for (field_id, values) in input.fields() {
+            let token = tokens.get(field_id).ok_or_else(|| {
+                integrity_at_field(
+                    "projected_field_token_missing",
+                    "The create facet refers to an absent projected ownership token",
+                    input.type_id(),
+                    field_id,
+                )
+            })?;
+            let multiplicity = token.multiplicity();
+            if values.is_empty() && !token.is_key() {
+                if multiplicity.collection_mode() != CollectionMode::Unordered {
+                    return Ok(None);
+                }
+                put.cleared.push(token.declaring_id().clone());
+                continue;
+            }
+            let target = if token.is_key() {
+                &mut put.keys
+            } else if multiplicity.container() == ProjectedContainer::Scalar
+                && multiplicity.collection_mode() == CollectionMode::Unordered
+                && values.len() <= 1
+            {
+                &mut put.fields
+            } else {
+                return Ok(None);
+            };
+            target.extend(
+                values
+                    .iter()
+                    .map(|value| (token.declaring_id().clone(), value.value().clone())),
+            );
+        }
+        if put.keys.is_empty() {
+            return Ok(None);
+        }
+        for (field_id, token) in tokens {
+            if token.is_key() || input.fields().contains_key(field_id) {
+                continue;
+            }
+            if token.multiplicity().collection_mode() != CollectionMode::Unordered {
+                return Ok(None);
+            }
+            put.cleared.push(token.declaring_id().clone());
+        }
+        Ok(Some(put))
     }
 
     fn lower_create_roles(
@@ -3091,26 +3159,45 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             transaction.clone(),
             Arc::clone(&prepared.descriptor),
         );
+        // Without a plan authority the released path runs unchanged.
+        let authority = prepared
+            .keyed_put
+            .as_ref()
+            .and_then(|put| Some((put, self.installed.plan_authority().ok()?)));
+        if let Some((put, authority)) = authority {
+            let iid = self
+                .put_entity_by_plan(transaction, &prepared.type_id, put, &authority, mode)
+                .await?;
+            // The write ran: a failed read-back poisons a borrowed transaction.
+            let hydrated = self
+                .rehydrate_entity(&manager, transaction, &prepared.type_id, &iid, mode)
+                .await;
+            return after_write(transaction, hydrated).await;
+        }
         let iid = manager
             .put_exact(&prepared.attributes)
             .await
             .map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
-        let row = manager
-            .get_by_iid_exact(&iid)
+        self.rehydrate_entity(&manager, transaction, &prepared.type_id, &iid, mode)
             .await
-            .map_err(|error| {
-                mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
-            })?
-            .ok_or_else(|| mutation_rehydration_missing(&prepared.type_id))?;
-        self.hydrate_entity(
-            row,
-            &prepared.type_id,
-            &iid,
-            transaction.execution_identity(),
-            mode,
-        )
+    }
+
+    async fn rehydrate_entity(
+        &self,
+        manager: &DynamicEntityManager<'_>,
+        transaction: &TransactionContext,
+        type_id: &TypeId,
+        iid: &str,
+        mode: ExecutionMode<'_>,
+    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        let row = manager
+            .get_by_iid_exact(iid)
+            .await
+            .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Read, type_id))?
+            .ok_or_else(|| mutation_rehydration_missing(type_id))?;
+        self.hydrate_entity(row, type_id, iid, transaction.execution_identity(), mode)
     }
 
     async fn get_entity_prepared(
@@ -3350,6 +3437,31 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             Ok(iid)
         };
         after_write(transaction, read()).await
+    }
+
+    /// Put one keyed entity as one write plan: no key lookup precedes it.
+    async fn put_entity_by_plan(
+        &self,
+        transaction: &TransactionContext,
+        type_id: &TypeId,
+        put: &PreparedKeyedPut,
+        authority: &PlanAuthority,
+        mode: ExecutionMode<'_>,
+    ) -> Result<String, SdkExecutionDiagnostic> {
+        let transport = plan_transport(transaction, type_id, mode).await?;
+        let plan = keyed_entity_put(
+            authority,
+            transport,
+            &KeyedPut {
+                type_id,
+                keys: &put.keys,
+                fields: &put.fields,
+                cleared: &put.cleared,
+            },
+        )
+        .map_err(|diagnostic| plan_build_failure(&diagnostic, type_id))?;
+        let rows = execute_write_rows(transaction, plan.local(), type_id, mode).await?;
+        after_write(transaction, single_thing_iid(&rows, PUT_THING, type_id)).await
     }
 
     async fn resolve_relation_players_exact(
@@ -4481,6 +4593,15 @@ struct PreparedEntityCreate {
     type_id: TypeId,
     descriptor: Arc<EntityDescriptor>,
     attributes: DynamicAttributeMap,
+    /// The create as a keyed put plan input, when one can express it.
+    keyed_put: Option<PreparedKeyedPut>,
+}
+
+/// Declaring ownerships and values of one keyed put.
+struct PreparedKeyedPut {
+    keys: Vec<(OwnsFactId, CanonicalValue)>,
+    fields: Vec<(OwnsFactId, CanonicalValue)>,
+    cleared: Vec<OwnsFactId>,
 }
 
 struct PreparedRelationType {

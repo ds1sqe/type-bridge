@@ -1665,8 +1665,7 @@ functions:
     fn remaining_put_update_get_and_delete_exports_share_exact_lifecycles() {
         let put_fixture = fixture(
             vec![
-                documents(vec![]),
-                insert_iid("0x20"),
+                plan_row("thing0", "0x20"),
                 documents(vec![person_document("0x20")]),
             ],
             COMMIT_SUCCESS,
@@ -1687,7 +1686,10 @@ functions:
             },
             TypeBridgeStatus::Ok
         );
-        assert_eq!(put_fixture.state.query_count(), 3);
+        // One put plan and the read-back; no key lookup.
+        assert_eq!(put_fixture.state.query_count(), 2);
+        // The put matches exactly the declared type, as the released lookup did.
+        assert!(put_fixture.state.queries.lock().unwrap()[0].contains("put $thing0 isa! person"));
         assert_eq!(put_fixture.state.commits.load(Ordering::Acquire), 1);
         close_thing(&mut thing);
 
@@ -1759,8 +1761,7 @@ functions:
 
         let write_fixture = fixture(
             vec![
-                documents(vec![]),
-                insert_iid("0x30"),
+                plan_row("thing0", "0x30"),
                 documents(vec![person_document("0x30")]),
                 documents(vec![person_document("0x30")]),
                 Response::Result(QueryResult::Ok),
@@ -1841,7 +1842,7 @@ functions:
             },
             TypeBridgeStatus::Ok
         );
-        assert_eq!(write_fixture.state.query_count(), 7);
+        assert_eq!(write_fixture.state.query_count(), 6);
         assert_eq!(write_fixture.state.commits.load(Ordering::Acquire), 0);
         assert_eq!(write_fixture.state.rollbacks.load(Ordering::Acquire), 0);
         assert_eq!(

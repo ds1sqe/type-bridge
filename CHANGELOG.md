@@ -28,13 +28,18 @@ All notable changes to TypeBridge will be documented in this file.
   reference that matches several things, and two references of one role
   that resolve to one player (`duplicate_resolved_role_player`), are now
   refused after the write instead of before it.
-- When such a relation insert fails after its write ran (including a
-  failed read-back), a borrowed transaction is now rollback-only.
-- On connections without the TypeDB 3.12+ `given` stage, such a relation
-  insert whose text values contain control characters is refused with
-  `literal_control_character_unsupported` instead of being inlined into the
-  query.
-
+- A projected entity `put` with a key value is one write: it puts the key
+  on exactly the declared type, clears the non-key fields the input omits
+  and updates the given ones in the same pipeline, so no key lookup runs
+  first. A put that gives a multi-valued or ordered field, or omits an
+  ordered one, and every relation put still look the key up first.
+- When a projected relation insert or keyed entity put fails after its
+  write ran (including a failed read-back), a borrowed transaction is now
+  rollback-only.
+- On connections without the TypeDB 3.12+ `given` stage, a projected
+  relation insert or keyed entity put whose text values contain control
+  characters is refused with `literal_control_character_unsupported`
+  instead of being inlined into the query.
 
 ### Tests
 

@@ -8,6 +8,7 @@
 
 pub(crate) mod authority;
 pub(crate) mod insert;
+pub(crate) mod put;
 pub(crate) mod reference;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
@@ -179,6 +180,7 @@ mod tests {
     use super::ValueTransport;
     use super::authority::PlanAuthority;
     use super::insert::relation_insert;
+    use super::put::{KeyedPut, keyed_entity_put};
     use super::reference::{Reference, ReferenceIdentity};
     use crate::query_plan_exec::{lower, race};
 
@@ -285,6 +287,48 @@ select $relation0, $player1, $player3;";
             "lowered:\n{typeql}\nexpected:\n{expected}"
         );
         assert!(variables.is_none());
+    }
+
+    fn doctor_put(fields: bool) -> String {
+        let doctor = TypeId::new(TypeKind::Entity, "doctor").unwrap();
+        let owns =
+            |name: &str| OwnsFactId::new(doctor.clone(), AttributeId::new(name).unwrap()).unwrap();
+        let keys = [(owns("name"), text("alice"))];
+        let on_call = [(owns("on-call"), CanonicalValue::Boolean(true))];
+        let cleared = [owns("on-call")];
+        let put = KeyedPut {
+            type_id: &doctor,
+            keys: &keys,
+            fields: if fields { &on_call } else { &[] },
+            cleared: if fields { &[] } else { &cleared },
+        };
+        let plan = keyed_entity_put(&authority(), ValueTransport::Given, &put).unwrap();
+        let (query, given) = lower(plan.local()).unwrap();
+        assert!(given.is_some());
+        tql::render(&query).unwrap()
+    }
+
+    #[test]
+    fn keyed_put_puts_the_key_then_replaces_the_other_fields() {
+        let updated = doctor_put(true);
+        let expected = "given $in0: string, $in1: boolean;
+put $thing0 isa! doctor, has name == $in0;
+update $thing0 has on-call == $in1;
+select $thing0; distinct; select $thing0;";
+        assert!(
+            tql::equivalent(&updated, expected).unwrap(),
+            "lowered:\n{updated}\nexpected:\n{expected}"
+        );
+        let cleared = doctor_put(false);
+        let expected = "given $in0: string;
+put $thing0 isa! doctor, has name == $in0;
+match try { $thing0 has on-call $PlanHas1x0; $PlanHas1x0 isa! on-call; };
+delete try { has $PlanHas1x0 of $thing0; };
+select $thing0; distinct; select $thing0;";
+        assert!(
+            tql::equivalent(&cleared, expected).unwrap(),
+            "lowered:\n{cleared}\nexpected:\n{expected}"
+        );
     }
 
     #[test]

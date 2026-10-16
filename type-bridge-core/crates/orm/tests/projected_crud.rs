@@ -1086,10 +1086,12 @@ async fn borrowed_write_transaction_is_never_implicitly_finished() {
 async fn owned_entity_put_rehydrates_before_one_classified_commit() {
     let installed = installed();
     let create = person_create(&installed);
+    let row =
+        serde_json::json!({"thing0": {"category": "entity", "label": "person", "iid": "0x30"}});
     let (backend, state) = RecordingBackend::new(
         vec![
-            documents(vec![]),
-            insert_iid("0x30"),
+            // An ownership deletion repeats the row once per deleted value.
+            RecordingResponse::Result(QueryResult::Rows(vec![row.clone(), row])),
             documents(vec![person_document("0x30")]),
         ],
         CommitBehavior::Success,
@@ -1104,11 +1106,24 @@ async fn owned_entity_put_rehydrates_before_one_classified_commit() {
     assert_eq!(thing.iid(), "0x30");
     let state = state.lock().unwrap();
     assert_eq!(state.opens, [TxType::Write]);
-    assert_eq!(state.queries.len(), 3);
-    assert!(state.queries[0].contains("isa! person"));
-    assert!(state.queries[1].starts_with("insert"));
-    assert!(state.queries[2].contains("iid 0x30"));
-    assert_eq!(state.query_modes, ["canonical"; 3]);
+    // One put plan, no key lookup: put the key, clear the omitted
+    // nickname, update the given email; then the read-back.
+    assert_eq!(state.queries.len(), 2);
+    let put = &state.queries[0];
+    assert!(
+        put.starts_with("put $thing0 isa! person, has identifier \"ada\""),
+        "{put}"
+    );
+    assert!(
+        put.contains("has nickname") && put.contains("delete"),
+        "{put}"
+    );
+    assert!(
+        put.contains("update $thing0 has email \"ada@example.test\""),
+        "{put}"
+    );
+    assert!(state.queries[1].contains("iid 0x30"));
+    assert_eq!(state.query_modes, ["canonical"; 2]);
     assert_eq!(state.commits, 1);
     assert_eq!(state.rollbacks, 0);
     assert_eq!(state.closes, 0);
@@ -1553,6 +1568,35 @@ async fn two_references_resolving_to_one_player_are_refused_and_poison_the_trans
         queries[0].contains("select $relation0, $player1, $player2"),
         "{}",
         queries[0]
+    );
+    transaction.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_failed_read_back_after_a_put_poisons_the_borrowed_transaction() {
+    let installed = installed();
+    let create = person_create(&installed);
+    let (backend, _state) = RecordingBackend::new(
+        vec![
+            RecordingResponse::Result(QueryResult::Rows(vec![serde_json::json!({
+                "thing0": {"iid": "0x30"}
+            })])),
+            documents(vec![]),
+        ],
+        CommitBehavior::Success,
+    );
+    let database = Database::with_backend(Box::new(backend), "test");
+    let transaction = database.transaction_context(TxType::Write).await.unwrap();
+
+    let diagnostic = ProjectedCrudExecutor::new(&installed)
+        .put_entity_in_transaction(&transaction, &create)
+        .await
+        .unwrap_err();
+
+    assert_eq!(diagnostic.code().as_str(), "mutation_rehydration_missing");
+    assert_eq!(
+        transaction.lifecycle_state().await,
+        type_bridge_orm::session::TransactionContextState::RollbackOnly
     );
     transaction.rollback().await.unwrap();
 }

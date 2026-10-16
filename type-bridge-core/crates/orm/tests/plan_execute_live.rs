@@ -370,3 +370,191 @@ async fn helper_relation_inserts_resolve_references_inside_the_write() {
     db.delete_database().await.unwrap();
     db.close().unwrap();
 }
+
+const PERSON_SCHEMA_YAML: &str = r#"format: typebridge.schema/v2
+attributes:
+  identifier: { value: string }
+  email: { value: string }
+  nickname: { value: string }
+entities:
+  person:
+    owns:
+      identifier: { key: true }
+      email: { card: { min: 0, max: 1 } }
+      nickname: { card: { min: 0 } }
+  employee:
+    sub: person
+"#;
+
+const PERSON_SCHEMA_TYPEQL: &str = "define
+attribute identifier, value string; attribute email, value string;
+attribute nickname, value string;
+entity person, owns identifier @key, owns email @card(0..1), owns nickname @card(0..);
+entity employee sub person;";
+
+fn person_projection() -> InstalledRuntimeProjection {
+    let documents = SchemaDocumentSet::parse([(
+        DocumentId::new("plan-execute-live-person.yaml").unwrap(),
+        PERSON_SCHEMA_YAML,
+    )])
+    .unwrap();
+    let resolved = resolve(
+        &normalize_documents(&documents).unwrap(),
+        &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+    )
+    .unwrap();
+    InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Python,
+            &ProjectionConfig::python(),
+            &[ProjectionHandler::python_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+fn person_field(name: &str) -> OwnsFactId {
+    OwnsFactId::new(
+        party_type(TypeKind::Entity, "person"),
+        type_bridge_contract::id::AttributeId::new(name).unwrap(),
+    )
+    .unwrap()
+}
+
+fn person(
+    installed: &InstalledRuntimeProjection,
+    key: &str,
+    email: Option<&str>,
+) -> ProjectedCreate {
+    let mut fields = vec![(
+        person_field("identifier"),
+        vec![party_text(installed, "identifier", key)],
+    )];
+    if let Some(email) = email {
+        fields.push((
+            person_field("email"),
+            vec![party_text(installed, "email", email)],
+        ));
+    }
+    ProjectedCreate::try_new(
+        installed,
+        party_type(TypeKind::Entity, "person"),
+        fields,
+        vec![],
+    )
+    .unwrap()
+}
+
+fn texts(thing: &type_bridge_orm::ProjectedThing, field: &str) -> Vec<String> {
+    thing
+        .fields()
+        .get(&person_field(field))
+        .map(|values| {
+            values
+                .iter()
+                .map(|value| match value.value() {
+                    CanonicalValue::String(text) => text.as_str().to_owned(),
+                    other => panic!("expected text, got {other:?}"),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A put is one plan: it creates a new key, replaces every non-key field of
+/// an existing one (omitted fields are cleared, as the helper always did),
+/// and two puts racing on one new key serialize on its `@key` lock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn helper_put_is_one_plan_with_replace_semantics_and_key_races() {
+    let Some(db) = live_database("tb_w11f_put").await else {
+        return;
+    };
+    db.execute_raw(PERSON_SCHEMA_TYPEQL, TxType::Schema)
+        .await
+        .unwrap();
+    let installed = person_projection();
+    let crud = ProjectedCrudExecutor::new(&installed);
+    let person_type = party_type(TypeKind::Entity, "person");
+
+    // New key: inserted.
+    let created = crud
+        .put_entity(&db, &person(&installed, "ada", Some("a@example.test")))
+        .await
+        .unwrap();
+    assert_eq!(texts(&created, "email"), ["a@example.test"]);
+    db.execute_raw(
+        r#"match $p isa person, has identifier "ada"; insert $p has nickname "A", has nickname "Ad";"#,
+        TxType::Write,
+    )
+    .await
+    .unwrap();
+
+    // Existing key, different fields: updated in place; the omitted
+    // multi-valued nickname is cleared.
+    let updated = crud
+        .put_entity(&db, &person(&installed, "ada", Some("b@example.test")))
+        .await
+        .unwrap();
+    assert_eq!(updated.iid(), created.iid());
+    assert_eq!(texts(&updated, "email"), ["b@example.test"]);
+    assert!(texts(&updated, "nickname").is_empty());
+
+    // Partial attribute set (key only): the stored email is cleared, not kept.
+    let partial = crud
+        .put_entity(&db, &person(&installed, "ada", None))
+        .await
+        .unwrap();
+    assert_eq!(partial.iid(), created.iid());
+    assert!(texts(&partial, "email").is_empty());
+    assert_eq!(crud.count_entities(&db, &person_type).await.unwrap(), 1);
+
+    // Two puts of one new key in overlapping transactions: the first commit
+    // wins, the second is rejected and stores nothing.
+    let first = db.transaction_context(TxType::Write).await.unwrap();
+    let second = db.transaction_context(TxType::Write).await.unwrap();
+    crud.put_entity_in_transaction(&first, &person(&installed, "bob", Some("1@example.test")))
+        .await
+        .unwrap();
+    crud.put_entity_in_transaction(&second, &person(&installed, "bob", Some("2@example.test")))
+        .await
+        .unwrap();
+    first.commit_classified().await.unwrap();
+    assert!(second.commit_classified().await.is_err());
+    assert_eq!(crud.count_entities(&db, &person_type).await.unwrap(), 2);
+    let bob = db
+        .execute_raw(
+            r#"match $p isa person, has identifier "bob", has email "1@example.test"; select $p;"#,
+            TxType::Read,
+        )
+        .await
+        .unwrap();
+    assert_eq!(rows(&bob), 1);
+
+    // A subtype instance holding the key is not a match for the exact
+    // type: the put inserts, collides on the key, and leaves it untouched.
+    db.execute_raw(
+        r#"insert $e isa employee, has identifier "emp", has email "e@example.test";"#,
+        TxType::Write,
+    )
+    .await
+    .unwrap();
+    assert!(
+        crud.put_entity(&db, &person(&installed, "emp", Some("x@example.test")))
+            .await
+            .is_err()
+    );
+    let employee = db
+        .execute_raw(
+            r#"match $e isa! employee, has identifier "emp", has email "e@example.test"; select $e;"#,
+            TxType::Read,
+        )
+        .await
+        .unwrap();
+    assert_eq!(rows(&employee), 1);
+
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}

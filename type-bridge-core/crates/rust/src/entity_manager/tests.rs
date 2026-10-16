@@ -1796,10 +1796,9 @@ async fn public_empty_batches_perform_no_provider_operations() {
 #[tokio::test]
 async fn public_put_update_delete_success_lifecycles() {
     let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"iid":"0x2"}),
-        ])),
-        Response::Result(QueryResult::Ok),
+        Response::Result(QueryResult::Rows(vec![serde_json::json!({
+            "thing0": {"category": "entity", "label": "record", "iid": "0x2"}
+        })])),
         fetch("0x2", "n2", "new"),
     ]);
     let result = db
@@ -1818,9 +1817,9 @@ async fn public_put_update_delete_success_lifecycles() {
         let s = state.lock().unwrap();
         assert_queries(
             &s.events,
+            // One put plan (key, then the other fields), no key lookup.
             &[
-                &["isa! record", "name", "n2"],
-                &["isa! record", "iid 0x2", "new"],
+                &["put $thing0 isa! record", "name", "n2", "update", "new"],
                 &["isa! record", "iid 0x2", "fetch"],
             ],
         );

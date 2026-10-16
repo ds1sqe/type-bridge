@@ -320,7 +320,7 @@ are illustrative forms, not a snapshot read followed by a separate mutation.
 | iid | `$x iid 0x1e00000000000000000001;` |
 | arithmetic | Parenthesized `+`, `-`, `*`, `/`, `%`, `^` expressions |
 | builtins | Same names except length becomes `len($text)` |
-| insert / put | `insert $o isa order, has order-id $id;` / corresponding put stage |
+| insert / put | `insert $o isa order, has order-id $id;` / `put $o isa! order, has order-id $id;` (put matches the exact declared type) |
 | field / role update | `update $x has score == $next;` / `update $r links (member: $new);` |
 | delete thing / ownership / link | `delete $x;` / `delete has $old_score of $x;` / `delete links (member: $old) of $r;` |
 | select / require / distinct | `select $x;` / `require $x;` / `distinct;` |

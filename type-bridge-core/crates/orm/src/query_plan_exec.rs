@@ -208,8 +208,10 @@ pub(crate) fn lower(plan: &QueryPlanV3) -> Result<(tql::Query, Option<GivenRowsS
     for (index, stage) in plan.pipeline().iter().enumerate() {
         match stage {
             Stage::Match { patterns } => stages.push(tql::match_stage(scope.patterns(patterns)?)),
-            Stage::Insert { things } => stages.push(tql::insert(scope.things(things)?)),
-            Stage::Put { things } => stages.push(tql::put(scope.things(things)?)),
+            Stage::Insert { things } => stages.push(tql::insert(scope.things(things, false)?)),
+            // A put matches before it inserts: `isa!` keeps the match to the
+            // declared concrete type, so a subtype instance is never taken.
+            Stage::Put { things } => stages.push(tql::put(scope.things(things, true)?)),
             Stage::Update { sets } => stages.push(tql::update(
                 sets.iter()
                     .map(|set| scope.set(set))
@@ -481,11 +483,11 @@ impl Scope<'_> {
         }
     }
 
-    fn things(&self, things: &[InsertThing]) -> Result<Vec<tql::Pattern>, Diagnostic> {
+    fn things(&self, things: &[InsertThing], exact: bool) -> Result<Vec<tql::Pattern>, Diagnostic> {
         things
             .iter()
             .map(|thing| {
-                let mut constraints = vec![ast(tql::isa(thing.type_id.label().as_str(), false))?];
+                let mut constraints = vec![ast(tql::isa(thing.type_id.label().as_str(), exact))?];
                 if !thing.players.is_empty() {
                     constraints.push(ast(tql::links(
                         thing
