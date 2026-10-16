@@ -962,3 +962,106 @@ fn delete_thing_rejects_let_and_function_scalar_bindings() {
         );
     }
 }
+
+#[test]
+fn iid_patterns_identify_typed_things_and_round_trip() {
+    use type_bridge_contract::query_plan::v3::Pattern;
+    let iid = |binding: u16, iid: &str| Pattern::Iid {
+        binding: id(binding),
+        iid: iid.to_owned(),
+    };
+    let delete = |patterns: Vec<Pattern>| {
+        spec(
+            vec![
+                Stage::Match { patterns },
+                Stage::Delete {
+                    items: vec![DeleteItem::Thing { binding: id(0) }],
+                },
+            ],
+            vec![],
+        )
+    };
+    let plan = QueryPlanV3::new(
+        delete(vec![
+            pat(0, entity("account")),
+            iid(0, "0x1e00000000000000000001"),
+        ]),
+        &schema(),
+    )
+    .unwrap();
+    assert!(
+        plan.required_capabilities()
+            .iter()
+            .any(|capability| capability.as_str() == "query.pattern.iid")
+    );
+    let bytes = plan.canonical_bytes().unwrap();
+    let text = std::str::from_utf8(&bytes).unwrap();
+    assert!(text.contains(r#"{"binding":0,"iid":"0x1e00000000000000000001","kind":"iid"}"#));
+    assert_eq!(decode_query_plan_v3(&bytes, &schema()).unwrap(), plan);
+    for (patterns, code) in [
+        (
+            vec![pat(0, entity("account")), iid(0, "1e00")],
+            "query_plan_invalid_iid",
+        ),
+        (
+            vec![pat(1, entity("account")), iid(0, "0x1e00")],
+            "query_plan_iid_untyped_thing",
+        ),
+    ] {
+        let mut plan = delete(patterns);
+        plan.pipeline[1] = Stage::Delete {
+            items: vec![DeleteItem::Thing { binding: id(1) }],
+        };
+        assert_eq!(
+            QueryPlanV3::new(plan, &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            code
+        );
+    }
+}
+
+#[test]
+fn iid_patterns_refuse_attribute_and_optional_or_negated_bindings() {
+    use type_bridge_contract::id::AttributeId;
+    use type_bridge_contract::query_plan::QueryPattern;
+    use type_bridge_contract::query_plan::v3::Pattern;
+    let iid = Pattern::Iid {
+        binding: id(1),
+        iid: "0x1e00".to_owned(),
+    };
+    for typed in [
+        // An attribute binding has an IID in TypeDB, but it is not a thing.
+        QueryPattern::Has {
+            attribute: id(1),
+            attribute_id: AttributeId::new("score").unwrap(),
+            owner: id(0),
+        },
+        QueryPattern::Try {
+            patterns: vec![isa(1, entity("account"))],
+        },
+        QueryPattern::Not {
+            patterns: vec![isa(1, entity("account"))],
+        },
+    ] {
+        let plan = spec(
+            vec![
+                Stage::Match {
+                    patterns: vec![pat(0, entity("account")), typed.into(), iid.clone()],
+                },
+                Stage::Delete {
+                    items: vec![DeleteItem::Thing { binding: id(0) }],
+                },
+            ],
+            vec![],
+        );
+        assert_eq!(
+            QueryPlanV3::new(plan, &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_plan_iid_untyped_thing"
+        );
+    }
+}

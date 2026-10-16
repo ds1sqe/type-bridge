@@ -431,6 +431,16 @@ fn retained_reference_facade(
     .unwrap()
 }
 
+/// The row a relation insert plan returns: its relation, keyed by binding.
+/// The row a relation insert plan returns: the new relation and its one
+/// resolved player.
+fn plan_insert(iid: &str) -> RecordingResponse {
+    RecordingResponse::Result(QueryResult::Rows(vec![serde_json::json!({
+        "relation0": {"category": "relation", "label": "membership", "iid": iid},
+        "player1": {"category": "entity", "label": "person", "iid": "0x10"}
+    })]))
+}
+
 fn insert_iid(iid: &str) -> RecordingResponse {
     RecordingResponse::Result(QueryResult::Documents(vec![
         serde_json::json!({"iid": iid}),
@@ -604,7 +614,7 @@ async fn ordered_role_order_survives_write_lowering_and_hydration() {
     let create = ordered_collaboration_create(&installed).unwrap();
     let (backend, state) = RecordingBackend::new(
         vec![
-            insert_iid("0x20"),
+            plan_insert("0x20"),
             documents(vec![ordered_collaboration_document(&["0x10", "0x11"])]),
         ],
         CommitBehavior::Success,
@@ -741,7 +751,7 @@ async fn relation_iid_ambiguity_is_rejected_before_commit() {
     let create = membership_create(&installed);
     let (backend, state) = RecordingBackend::new(
         vec![
-            insert_iid("0x20"),
+            plan_insert("0x20"),
             documents(vec![
                 membership_document("0x20"),
                 membership_document("0x21"),
@@ -770,7 +780,7 @@ async fn abstract_nominal_role_reference_resolves_one_exact_concrete_player() {
     let create = membership_create_for_player(&installed, "actor");
     let (backend, state) = RecordingBackend::new(
         vec![
-            insert_iid("0x20"),
+            plan_insert("0x20"),
             documents(vec![membership_document("0x20")]),
         ],
         CommitBehavior::Success,
@@ -801,13 +811,12 @@ async fn abstract_nominal_role_reference_resolves_one_exact_concrete_player() {
 }
 
 #[tokio::test]
-async fn relation_role_player_uses_a_strict_relation_identity_lookup() {
+async fn relation_role_player_resolves_inside_the_write_by_strict_identity() {
     let installed = installed();
     let create = membership_create_for_relation_player(&installed);
     let (backend, state) = RecordingBackend::new(
         vec![
-            documents(vec![serde_json::json!({"iid": "0x11"})]),
-            insert_iid("0x20"),
+            plan_insert("0x20"),
             documents(vec![membership_with_relation_player_document("0x20")]),
         ],
         CommitBehavior::Success,
@@ -831,13 +840,12 @@ async fn relation_role_player_uses_a_strict_relation_identity_lookup() {
     );
     assert!(player.reference().origin_carrier().is_some());
     let state = state.lock().unwrap();
-    assert_eq!(state.queries.len(), 3);
-    assert!(state.queries[0].contains("$p isa! event"));
-    assert!(state.queries[0].contains("$p iid 0x11"));
-    assert!(!state.queries[0].contains("$p isa event"));
-    assert!(state.queries[1].contains("$p0 isa! event"));
-    assert!(state.queries[1].contains("$p0 iid 0x11"));
-    assert!(!state.queries[1].contains("$p0 isa event"));
+    // The reference resolves inside the write: no lookup precedes it.
+    assert_eq!(state.queries.len(), 2);
+    assert!(state.queries[0].contains("$player1 isa! event"));
+    assert!(state.queries[0].contains("$player1 iid 0x11"));
+    assert!(!state.queries[0].contains("$player1 isa event"));
+    assert!(state.queries[0].contains("insert"));
     assert_eq!(state.commits, 1);
     assert_eq!(state.rollbacks, 0);
 }
@@ -907,7 +915,7 @@ async fn retained_complete_entity_origin_accepts_same_database_and_fences_foreig
 
     let (same_backend, same_state) = RecordingBackend::new(
         vec![
-            insert_iid("0x20"),
+            plan_insert("0x20"),
             documents(vec![membership_document("0x20")]),
         ],
         CommitBehavior::Success,
@@ -1025,7 +1033,7 @@ async fn borrowed_origin_is_preserved_and_a_value_equal_lookalike_remains_unboun
     let lookalike_create = membership_create_with_reference(&installed, visible_lookalike);
     let (foreign_backend, foreign_state) = RecordingBackend::new(
         vec![
-            insert_iid("0x20"),
+            plan_insert("0x20"),
             documents(vec![membership_document("0x20")]),
         ],
         CommitBehavior::Success,
@@ -1341,4 +1349,210 @@ async fn provider_query_text_is_never_copied_into_execution_diagnostics() {
     assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Provider);
     assert!(!format!("{diagnostic:?} {diagnostic}").contains(SECRET));
     assert_eq!(state.lock().unwrap().rollbacks, 1);
+}
+
+const POLYMORPHIC_SCHEMA: &str = r#"format: typebridge.schema/v2
+attributes:
+  identifier: { value: string }
+entities:
+  party:
+    abstract: true
+    owns:
+      identifier: { key: true }
+  person:
+    sub: party
+  company:
+    sub: party
+relations:
+  membership:
+    relates:
+      member: { card: { min: 1 } }
+plays:
+  party:
+    membership: [member]
+"#;
+
+fn installed_polymorphic() -> InstalledRuntimeProjection {
+    let documents = SchemaDocumentSet::parse([(
+        DocumentId::new("projected-crud-polymorphic.yaml").unwrap(),
+        POLYMORPHIC_SCHEMA,
+    )])
+    .unwrap();
+    let resolved = resolve(
+        &normalize_documents(&documents).unwrap(),
+        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+    )
+    .unwrap();
+    let projection = project(
+        &resolved,
+        BindingTarget::Python,
+        &ProjectionConfig::python(),
+        &[ProjectionHandler::python_v1()],
+        &[],
+    )
+    .unwrap();
+    InstalledRuntimeProjection::try_new(projection).unwrap()
+}
+
+/// A membership whose member is the abstract `party` named by its key.
+fn party_key_membership(installed: &InstalledRuntimeProjection, key: &str) -> ProjectedCreate {
+    let party = type_id(TypeKind::Entity, "party");
+    let reference = ProjectedReference::try_new(
+        installed,
+        party.clone(),
+        None,
+        vec![(
+            field(&party, "identifier"),
+            string_value(installed, "identifier", key),
+        )],
+    )
+    .unwrap();
+    membership_create_with_reference(installed, reference)
+}
+
+#[tokio::test]
+async fn polymorphic_key_reference_is_one_disjunctive_write_without_a_lookup() {
+    let installed = installed_polymorphic();
+    let create = party_key_membership(&installed, "acme");
+    let (backend, state) = RecordingBackend::new(
+        vec![
+            plan_insert("0x20"),
+            RecordingResponse::Error("stop after the write"),
+        ],
+        CommitBehavior::Success,
+    );
+    let database = Database::with_backend(Box::new(backend), "test");
+
+    let _ = ProjectedCrudExecutor::new(&installed)
+        .insert_relation(&database, &create)
+        .await;
+
+    let state = state.lock().unwrap();
+    // The write comes first; the only other query is the read-back by IID.
+    let write = &state.queries[0];
+    assert_eq!(state.queries.len(), 2, "{:?}", state.queries);
+    assert!(write.starts_with("match"), "{write}");
+    assert!(write.contains("$player1 isa! company") && write.contains("$player1 isa! person"));
+    assert!(write.contains(" or "), "{write}");
+    assert!(write.contains("insert $relation0 isa membership, links (member: $player1)"));
+    assert!(!state.queries[1].contains("insert") && state.queries[1].contains("0x20"));
+}
+
+#[tokio::test]
+async fn missing_reference_writes_nothing_and_keeps_the_released_diagnostic() {
+    let installed = installed_polymorphic();
+    let create = party_key_membership(&installed, "absent");
+    let (backend, state) = RecordingBackend::new(
+        vec![RecordingResponse::Result(QueryResult::Rows(vec![]))],
+        CommitBehavior::Success,
+    );
+    let database = Database::with_backend(Box::new(backend), "test");
+
+    let diagnostic = ProjectedCrudExecutor::new(&installed)
+        .insert_relation(&database, &create)
+        .await
+        .unwrap_err();
+
+    assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
+    assert_eq!(
+        diagnostic.code().as_str(),
+        "provider_identity_cardinality_invalid"
+    );
+    let state = state.lock().unwrap();
+    assert_eq!(state.queries.len(), 1);
+    assert!(state.queries[0].contains("insert"));
+    assert_eq!(state.commits, 0);
+    assert_eq!(state.rollbacks, 1);
+}
+
+#[tokio::test]
+async fn a_reference_matching_several_things_poisons_the_borrowed_transaction() {
+    let installed = installed_polymorphic();
+    let create = party_key_membership(&installed, "shared");
+    let row = |iid: &str| serde_json::json!({"relation0": {"category": "relation", "label": "membership", "iid": iid}});
+    let (backend, state) = RecordingBackend::new(
+        vec![RecordingResponse::Result(QueryResult::Rows(vec![
+            row("0x20"),
+            row("0x21"),
+        ]))],
+        CommitBehavior::Success,
+    );
+    let database = Database::with_backend(Box::new(backend), "test");
+    let transaction = database.transaction_context(TxType::Write).await.unwrap();
+
+    let diagnostic = ProjectedCrudExecutor::new(&installed)
+        .insert_relation_in_transaction(&transaction, &create)
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        diagnostic.code().as_str(),
+        "provider_identity_cardinality_invalid"
+    );
+    assert_eq!(
+        transaction.lifecycle_state().await,
+        type_bridge_orm::session::TransactionContextState::RollbackOnly
+    );
+    assert_eq!(state.lock().unwrap().queries.len(), 1);
+    transaction.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn two_references_resolving_to_one_player_are_refused_and_poison_the_transaction() {
+    let installed = installed_polymorphic();
+    let party = type_id(TypeKind::Entity, "party");
+    let by_iid =
+        ProjectedReference::try_new(&installed, party.clone(), Some("0x10".into()), vec![])
+            .unwrap();
+    let by_key = ProjectedReference::try_new(
+        &installed,
+        party.clone(),
+        None,
+        vec![(
+            field(&party, "identifier"),
+            string_value(&installed, "identifier", "acme"),
+        )],
+    )
+    .unwrap();
+    let create = ProjectedCreate::try_new(
+        &installed,
+        type_id(TypeKind::Relation, "membership"),
+        vec![],
+        vec![(
+            RoleId::new("membership", "member").unwrap(),
+            vec![by_iid, by_key],
+        )],
+    )
+    .unwrap();
+    let (backend, state) = RecordingBackend::new(
+        vec![RecordingResponse::Result(QueryResult::Rows(vec![
+            serde_json::json!({
+                "relation0": {"iid": "0x20"},
+                "player1": {"iid": "0x10"},
+                "player2": {"iid": "0x10"}
+            }),
+        ]))],
+        CommitBehavior::Success,
+    );
+    let database = Database::with_backend(Box::new(backend), "test");
+    let transaction = database.transaction_context(TxType::Write).await.unwrap();
+
+    let diagnostic = ProjectedCrudExecutor::new(&installed)
+        .insert_relation_in_transaction(&transaction, &create)
+        .await
+        .unwrap_err();
+
+    assert_eq!(diagnostic.code().as_str(), "duplicate_resolved_role_player");
+    assert_eq!(
+        transaction.lifecycle_state().await,
+        type_bridge_orm::session::TransactionContextState::RollbackOnly
+    );
+    let queries = state.lock().unwrap().queries.clone();
+    assert_eq!(queries.len(), 1);
+    assert!(
+        queries[0].contains("select $relation0, $player1, $player2"),
+        "{}",
+        queries[0]
+    );
+    transaction.rollback().await.unwrap();
 }

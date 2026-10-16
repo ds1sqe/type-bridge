@@ -514,6 +514,13 @@ functions:
         })
     }
 
+    /// The row a single-thing write plan answers with, keyed by its binding.
+    pub(crate) fn plan_row(binding: &str, iid: &str) -> Response {
+        Response::Result(QueryResult::Rows(vec![
+            serde_json::json!({ binding: {"iid": iid} }),
+        ]))
+    }
+
     pub(crate) fn insert_iid(iid: &str) -> Response {
         Response::Result(QueryResult::Documents(vec![
             serde_json::json!({"iid": iid}),
@@ -1849,7 +1856,7 @@ functions:
     fn relation_database_owned_mutations_rehydrate_before_one_commit() {
         let insert = relation_fixture(
             vec![
-                insert_iid("0x20"),
+                plan_row("relation0", "0x20"),
                 documents(vec![membership_document("0x20")]),
             ],
             COMMIT_SUCCESS,
@@ -2044,7 +2051,7 @@ functions:
 
         let write_fixture = relation_fixture(
             vec![
-                insert_iid("0x30"),
+                plan_row("relation0", "0x30"),
                 documents(vec![membership_document("0x30")]),
                 documents(vec![serde_json::json!({"iid": "0x10"})]),
                 insert_iid("0x31"),
@@ -2165,8 +2172,10 @@ functions:
     fn relation_player_resolution_is_exact_and_ambiguous_hydration_rolls_back() {
         let fixture = relation_fixture(
             vec![
-                documents(vec![serde_json::json!({"iid": "0x11"})]),
-                insert_iid("0x20"),
+                Response::Result(QueryResult::Rows(vec![serde_json::json!({
+                    "relation0": {"iid": "0x20"},
+                    "player1": {"iid": "0x11"}
+                })])),
                 documents(vec![membership_with_relation_player_document("0x20")]),
             ],
             COMMIT_SUCCESS,
@@ -2193,16 +2202,17 @@ functions:
         let player = &unsafe { &*thing }.value.roles()[&role][0];
         assert_eq!(player.reference().type_id().kind(), TypeKind::Relation);
         let queries = fixture.state.queries.lock().unwrap();
-        assert_eq!(queries.len(), 3);
-        assert!(queries[0].contains("$p isa! event"));
-        assert!(queries[0].contains("$p iid 0x11"));
-        assert!(!queries[0].contains("$p isa event"));
+        // The relation-as-player reference resolves inside the write.
+        assert_eq!(queries.len(), 2);
+        assert!(queries[0].contains("$player1 isa! event"));
+        assert!(queries[0].contains("$player1 iid 0x11"));
+        assert!(!queries[0].contains("$player1 isa event"));
         drop(queries);
         close_thing(&mut thing);
 
         let ambiguous = relation_fixture(
             vec![
-                insert_iid("0x20"),
+                plan_row("relation0", "0x20"),
                 documents(vec![
                     membership_document("0x20"),
                     membership_document("0x21"),
@@ -2418,7 +2428,7 @@ functions:
         ] {
             let fixture = relation_fixture(
                 vec![
-                    insert_iid("0x20"),
+                    plan_row("relation0", "0x20"),
                     documents(vec![membership_document("0x20")]),
                 ],
                 behavior,

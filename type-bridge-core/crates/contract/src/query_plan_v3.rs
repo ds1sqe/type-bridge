@@ -40,6 +40,14 @@ pub enum Pattern {
         /// Typed expression over present bindings, literals and inputs.
         expr: Expr,
     },
+    /// Identify a thing binding, typed by a positive pattern of the same
+    /// match, by its canonical provider IID. Root-match only.
+    Iid {
+        /// Entity or relation binding established by this match.
+        binding: BindingId,
+        /// Canonical TypeDB thing IID.
+        iid: String,
+    },
 }
 impl From<QueryPattern> for Pattern {
     fn from(pattern: QueryPattern) -> Self {
@@ -61,6 +69,20 @@ impl Serialize for Pattern {
                     kind: "let",
                     binding: *binding,
                     expr,
+                }
+                .serialize(serializer)
+            }
+            Self::Iid { binding, iid } => {
+                #[derive(Serialize)]
+                struct View<'a> {
+                    kind: &'static str,
+                    binding: BindingId,
+                    iid: &'a str,
+                }
+                View {
+                    kind: "iid",
+                    binding: *binding,
+                    iid,
                 }
                 .serialize(serializer)
             }
@@ -296,7 +318,7 @@ impl Stage {
                     .iter()
                     .filter_map(|pattern| match pattern {
                         Pattern::Read(pattern) => Some(pattern.clone()),
-                        Pattern::Let { .. } => None,
+                        Pattern::Let { .. } | Pattern::Iid { .. } => None,
                     })
                     .collect(),
             },
@@ -429,9 +451,15 @@ impl QueryPlanV3 {
         for stage in &spec.pipeline {
             if let Stage::Match { patterns } = stage {
                 for pattern in patterns {
-                    if let Pattern::Let { expr, .. } = pattern {
-                        insert_capability(&mut required_capabilities, "query.let")?;
-                        expr.capabilities(&mut required_capabilities)?;
+                    match pattern {
+                        Pattern::Let { expr, .. } => {
+                            insert_capability(&mut required_capabilities, "query.let")?;
+                            expr.capabilities(&mut required_capabilities)?;
+                        }
+                        Pattern::Iid { .. } => {
+                            insert_capability(&mut required_capabilities, v2::CAP_IID)?;
+                        }
+                        Pattern::Read(_) => {}
                     }
                 }
             }
@@ -722,6 +750,33 @@ fn validate_stages(
                         mandatory.insert(*binding);
                         referenced.insert(*binding);
                         scalar_types.insert(*binding, domain);
+                    }
+                }
+                for pattern in patterns {
+                    if let Pattern::Iid { binding, iid } = pattern {
+                        check_binding(*binding, spec.bindings.len())?;
+                        if !crate::id::is_canonical_thing_iid(iid) {
+                            return Err(invalid(
+                                "query_plan_invalid_iid",
+                                "IID patterns require a canonical TypeDB thing IID",
+                            ));
+                        }
+                        let thing = mandatory.contains(binding)
+                            && types.get(binding).is_some_and(|types| {
+                                !types.is_empty()
+                                    && types.iter().all(|type_id| {
+                                        matches!(
+                                            type_id.kind(),
+                                            TypeKind::Entity | TypeKind::Relation
+                                        )
+                                    })
+                            });
+                        if !thing {
+                            return Err(invalid(
+                                "query_plan_iid_untyped_thing",
+                                "IID patterns require a positively typed thing binding",
+                            ));
+                        }
                     }
                 }
             }
@@ -1345,6 +1400,13 @@ fn decode_stage(value: serde_json::Value) -> Result<Stage, Diagnostic> {
             binding: u16,
             expr: ExprWire,
         }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct IidWire {
+            kind: String,
+            binding: u16,
+            iid: String,
+        }
         let wire: MatchWire = serde_json::from_value(value)
             .map_err(|_| invalid("invalid_canonical_value", "invalid match stage"))?;
         debug_assert_eq!(wire.kind, "match");
@@ -1361,6 +1423,15 @@ fn decode_stage(value: serde_json::Value) -> Result<Stage, Diagnostic> {
                         Ok(Pattern::Let {
                             binding: BindingId::new(wire.binding)?,
                             expr: wire.expr.rebuild()?,
+                        })
+                    } else if value.get("kind").and_then(serde_json::Value::as_str) == Some("iid") {
+                        let wire: IidWire = serde_json::from_value(value).map_err(|_| {
+                            invalid("invalid_canonical_value", "invalid iid pattern")
+                        })?;
+                        debug_assert_eq!(wire.kind, "iid");
+                        Ok(Pattern::Iid {
+                            binding: BindingId::new(wire.binding)?,
+                            iid: wire.iid,
                         })
                     } else {
                         Ok(Pattern::Read(rebuild_pattern_v2(value)?))

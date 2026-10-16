@@ -400,17 +400,26 @@ impl Scope<'_> {
     }
 
     /// Read patterns keep their relative order and lower in one scope, so
-    /// generated witness names stay unique. `let` assignments follow in
-    /// source order; the validator resolves them after every read pattern.
+    /// generated witness names stay unique. IID constraints follow, then
+    /// `let` assignments in source order; the validator resolves them after
+    /// every read pattern.
     fn patterns(&self, patterns: &[Pattern]) -> Result<Vec<tql::Pattern>, Diagnostic> {
         let reads: Vec<QueryPattern> = patterns
             .iter()
             .filter_map(|pattern| match pattern {
                 Pattern::Read(pattern) => Some(pattern.clone()),
-                Pattern::Let { .. } => None,
+                Pattern::Let { .. } | Pattern::Iid { .. } => None,
             })
             .collect();
         let mut output = lower_scoped_patterns(self.inputs, self.bindings, &reads, None, None)?;
+        for pattern in patterns {
+            if let Pattern::Iid { binding, iid } = pattern {
+                output.push(ast(tql::thing(
+                    self.name(*binding)?,
+                    vec![ast(tql::iid(iid))?],
+                ))?);
+            }
+        }
         for pattern in patterns {
             if let Pattern::Let { binding, expr } = pattern {
                 output.push(ast(tql::let_value(

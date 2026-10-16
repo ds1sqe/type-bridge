@@ -12961,7 +12961,7 @@ def public_state(value):
             );
 
             let (same_backend, same_state) = OriginRecordingBackend::new(vec![
-                QueryResult::Documents(vec![serde_json::json!({"iid": "0xb1"})]),
+                QueryResult::Rows(vec![serde_json::json!({"relation0": {"iid": "0xb1"}})]),
                 QueryResult::Documents(vec![origin_gathering_document("0xb1", "0xa1")]),
             ]);
             let same = Arc::new(Database::with_backend_authority(
@@ -13069,7 +13069,7 @@ def public_state(value):
                 .expect("borrowed transaction hydration should succeed");
 
             let (same_backend, same_state) = OriginRecordingBackend::new(vec![
-                QueryResult::Documents(vec![serde_json::json!({"iid": "0xb2"})]),
+                QueryResult::Rows(vec![serde_json::json!({"relation0": {"iid": "0xb2"}})]),
                 QueryResult::Documents(vec![origin_gathering_document("0xb2", "0xa2")]),
             ]);
             let same = Arc::new(Database::with_backend_authority(
@@ -13215,7 +13215,7 @@ def public_state(value):
             .unwrap();
             let borrowed = hydrate_first_query_thing(py, package.as_ref(), borrowed_handle);
             let (same_backend, same_state) = OriginRecordingBackend::new(vec![
-                QueryResult::Documents(vec![serde_json::json!({"iid": "0xb4"})]),
+                QueryResult::Rows(vec![serde_json::json!({"relation0": {"iid": "0xb4"}})]),
                 QueryResult::Documents(vec![origin_gathering_document("0xb4", "0xa4")]),
             ]);
             let same_database = Arc::new(Database::with_backend_authority(
@@ -13278,7 +13278,7 @@ def public_state(value):
             assert!(remote_reference().origin_carrier().is_none());
 
             let (target_backend, target_state) = OriginRecordingBackend::new(vec![
-                QueryResult::Documents(vec![serde_json::json!({"iid": "0xb5"})]),
+                QueryResult::Rows(vec![serde_json::json!({"relation0": {"iid": "0xb5"}})]),
                 QueryResult::Documents(vec![origin_gathering_document("0xb5", "0xa5")]),
             ]);
             let target = Arc::new(Database::with_backend(
@@ -13428,8 +13428,9 @@ def public_state(value):
                 .expect("manager relation hydration should succeed");
 
             let (manager_same_backend, manager_same_state) = OriginRecordingBackend::new(vec![
-                QueryResult::Documents(vec![serde_json::json!({"iid": "0xb6"})]),
-                QueryResult::Documents(vec![serde_json::json!({"iid": "0xc6"})]),
+                QueryResult::Rows(vec![
+                    serde_json::json!({"relation0": {"iid": "0xc6"}, "player1": {"iid": "0xb6"}}),
+                ]),
                 QueryResult::Documents(vec![origin_container_document("0xc6", "0xb6")]),
             ]);
             let manager_same = Arc::new(Database::with_backend_authority(
@@ -13457,7 +13458,8 @@ def public_state(value):
             {
                 let state = manager_same_state.lock().unwrap();
                 assert_eq!(state.opens, [TxType::Write]);
-                assert_eq!(state.queries.len(), 3);
+                // The relation-as-player reference resolves inside the write.
+                assert_eq!(state.queries.len(), 2);
                 assert_eq!(state.commits, 1);
                 assert_eq!(state.rollbacks, 0);
             }

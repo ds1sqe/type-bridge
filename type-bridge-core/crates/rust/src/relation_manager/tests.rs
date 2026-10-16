@@ -430,6 +430,13 @@ fn test_db(responses: Vec<Response>) -> (crate::session::Database<TestSchema>, A
     )
 }
 
+/// The row a relation insert plan answers with: the new relation.
+fn plan_relation_row(iid: &str) -> Response {
+    Response::Result(QueryResult::Rows(vec![serde_json::json!({
+        "relation0": {"category": "relation", "label": "assignment", "iid": iid}
+    })]))
+}
+
 fn iid_doc(iid: &str) -> Response {
     Response::Result(QueryResult::Documents(vec![serde_json::json!({
         "iid": iid
@@ -642,7 +649,7 @@ async fn public_relation_managers_report_schema_not_bound_before_io() {
 #[tokio::test]
 async fn public_relation_insert_runs_canonical_insert_fetch_commit() {
     let (db, state) = test_db(vec![
-        iid_doc("0x1"),
+        plan_relation_row("0x1"),
         fetch("0x1", "captain", "0x9", "alice"),
     ]);
     let value = db
@@ -674,7 +681,7 @@ async fn public_relation_insert_runs_canonical_insert_fetch_commit() {
 async fn hydrated_generated_reference_preserves_database_origin_before_relation_io() {
     let (source, source_state) = test_db(vec![
         person_fetch("0x9", "alice"),
-        iid_doc("0x1"),
+        plan_relation_row("0x1"),
         fetch("0x1", "captain", "0x9", "alice"),
     ]);
     let person = source
@@ -786,7 +793,7 @@ async fn public_relation_insert_provider_error_rolls_back() {
 #[tokio::test]
 async fn public_relation_insert_missing_post_write_row_rolls_back() {
     let (db, state) = test_db(vec![
-        iid_doc("0x1"),
+        plan_relation_row("0x1"),
         Response::Result(QueryResult::Documents(Vec::new())),
     ]);
     let error = db
@@ -807,7 +814,7 @@ async fn public_relation_insert_missing_post_write_row_rolls_back() {
 #[tokio::test]
 async fn public_relation_hydration_failure_rolls_back() {
     let (db, state) = test_db(vec![
-        iid_doc("0x1"),
+        plan_relation_row("0x1"),
         Response::Result(QueryResult::Documents(vec![serde_json::json!({
             "_iid": "0x1",
             "_type": "assignment",
@@ -835,7 +842,7 @@ async fn public_relation_hydration_failure_rolls_back() {
 #[tokio::test]
 async fn public_relation_materializer_failure_rolls_back() {
     let (db, state) = test_db(vec![
-        iid_doc("0x1"),
+        plan_relation_row("0x1"),
         fetch("0x1", "reject-materialize", "0x9", "alice"),
     ]);
     let error = db

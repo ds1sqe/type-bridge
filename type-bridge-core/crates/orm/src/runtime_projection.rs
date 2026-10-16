@@ -1,8 +1,9 @@
 //! Provider descriptors derived one-way from a trusted runtime projection.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
+use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::projection::{ModelProjection, ProjectedAnnotation, RuntimeProjection};
 use type_bridge_contract::schema::{
@@ -27,6 +28,7 @@ use crate::_dynamic::DynamicAttributeMap;
 use crate::_entity::Annotation;
 use crate::_registry::{DescriptorRegistry, InstalledSchemaAuthority};
 use crate::error::{OrmError, Result};
+use crate::plan_builders::authority::PlanAuthority;
 use crate::value::AttributeValue;
 use type_bridge_schema::VerifiedSchemaAuthority;
 
@@ -36,6 +38,9 @@ pub struct InstalledRuntimeProjection {
     declared_schema_identity: Option<DeclaredIdentityFingerprint>,
     descriptors: BTreeMap<TypeId, TypeDescriptor>,
     schema_authority: Option<Arc<InstalledSchemaAuthority>>,
+    /// The authority helper write plans validate against, from the verified
+    /// package authority or built once from the projection.
+    plan_authority: OnceLock<Arc<PlanAuthority>>,
 }
 
 impl InstalledRuntimeProjection {
@@ -57,6 +62,7 @@ impl InstalledRuntimeProjection {
             declared_schema_identity: None,
             schema_authority: None,
             descriptors,
+            plan_authority: OnceLock::new(),
         })
     }
 
@@ -89,6 +95,7 @@ impl InstalledRuntimeProjection {
                 .clone(),
         );
         self.schema_authority = Some(Arc::new(InstalledSchemaAuthority::from_verified(authority)));
+        self.plan_authority = OnceLock::from(Arc::new(PlanAuthority::from_verified(authority)));
         self
     }
 
@@ -117,6 +124,18 @@ impl InstalledRuntimeProjection {
             });
         }
         Self::try_new(runtime)
+    }
+
+    /// Return the schema authority helper write plans are validated against.
+    ///
+    /// A package's verified authority is used as is; otherwise the
+    /// declarations are rebuilt from the projection once.
+    pub(crate) fn plan_authority(&self) -> std::result::Result<Arc<PlanAuthority>, Diagnostic> {
+        if let Some(authority) = self.plan_authority.get() {
+            return Ok(Arc::clone(authority));
+        }
+        let built = Arc::new(PlanAuthority::from_projection(&self.projection)?);
+        Ok(Arc::clone(self.plan_authority.get_or_init(|| built)))
     }
 
     /// Return the trusted source projection.

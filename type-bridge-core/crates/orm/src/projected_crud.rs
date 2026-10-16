@@ -5,7 +5,8 @@ use std::fmt;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 
-use type_bridge_contract::id::{RoleId, TypeId, TypeKind, is_canonical_thing_iid};
+use type_bridge_contract::diagnostic::Diagnostic;
+use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind, is_canonical_thing_iid};
 use type_bridge_contract::projection::{
     ModelProjection, ProjectedModelForm, ProjectedModelUse, ReadRoleProjection, RoleTokenProjection,
 };
@@ -27,6 +28,10 @@ use crate::_manager::hydration::{
 use crate::_manager::{DynamicEntityManager, DynamicRelationManager, query_builder};
 use crate::execution_diagnostic::{lower_commit_error, lower_orm_error};
 use crate::match_request::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
+use crate::plan_builders::authority::PlanAuthority;
+use crate::plan_builders::insert::relation_insert;
+use crate::plan_builders::reference::{Reference, ReferenceIdentity};
+use crate::plan_builders::{LITERAL_CONTROL_CHARACTER, ValueTransport};
 use crate::projected_batch::{
     ProjectedBatch, ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchRow,
 };
@@ -36,6 +41,7 @@ use crate::projected_model::{
     ProjectedThing,
 };
 use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
+use crate::query_plan_exec::PlanAnswer;
 use crate::runtime_projection::InstalledRuntimeProjection;
 use crate::session::backend::{
     AnswerCancellation, AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits,
@@ -2746,6 +2752,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             type_id: prepared.type_id,
             descriptor: prepared.descriptor,
             attributes: self.lower_create_fields(input)?,
+            plan_fields: self.lower_create_plan_fields(input)?,
             role_players: self.lower_create_roles(input)?,
         })
     }
@@ -2868,6 +2875,32 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         Ok(attributes)
     }
 
+    /// The create's field values keyed by their declaring ownership, which
+    /// is the identity a write plan validates.
+    fn lower_create_plan_fields(
+        &self,
+        input: &ProjectedCreate,
+    ) -> Result<Vec<(OwnsFactId, CanonicalValue)>, SdkExecutionDiagnostic> {
+        let model = self.model_integrity(input.type_id())?;
+        let mut fields = Vec::new();
+        for (field_id, values) in input.fields() {
+            let token = model.query_tokens().fields().get(field_id).ok_or_else(|| {
+                integrity_at_field(
+                    "projected_field_token_missing",
+                    "The create facet refers to an absent projected ownership token",
+                    input.type_id(),
+                    field_id,
+                )
+            })?;
+            fields.extend(
+                values
+                    .iter()
+                    .map(|value| (token.declaring_id().clone(), value.value().clone())),
+            );
+        }
+        Ok(fields)
+    }
+
     fn lower_create_roles(
         &self,
         input: &ProjectedCreate,
@@ -2926,6 +2959,13 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                         role_id,
                     ));
                 }
+                let plan_key = if reference.iid().is_some() {
+                    None
+                } else {
+                    reference.keys().iter().next().map(|(field_id, value)| {
+                        (field_id.attribute().clone(), value.value().clone())
+                    })
+                };
                 let key = if reference.iid().is_some() {
                     None
                 } else {
@@ -2957,6 +2997,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                     candidate_types,
                     iid: reference.iid().map(str::to_owned),
                     key,
+                    plan_key,
                     database_identity: reference.database_identity().cloned(),
                 });
             }
@@ -3176,6 +3217,23 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             transaction.clone(),
             Arc::clone(&prepared.descriptor),
         );
+        // A relation without players has nothing to resolve, and without a
+        // plan authority the released path runs unchanged.
+        let authority = if prepared.role_players.is_empty() {
+            None
+        } else {
+            self.installed.plan_authority().ok()
+        };
+        if let Some(authority) = authority {
+            let iid = self
+                .insert_relation_by_plan(transaction, prepared, &authority, mode)
+                .await?;
+            // The write ran: a failed read-back poisons a borrowed transaction.
+            let hydrated = self
+                .rehydrate_relation(&manager, transaction, &prepared.type_id, &iid, mode)
+                .await;
+            return after_write(transaction, hydrated).await;
+        }
         let iid = if let Some(role_players) = direct_entity_role_player_inputs(prepared) {
             // Preserve the released one-query path for exact concrete entity
             // references. Abstract domains and relation-as-player references
@@ -3209,17 +3267,89 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             })?;
             extract_one_provider_iid(answer, &prepared.type_id, None)?
         };
-        let rows = manager.get_by_iid_exact(&iid).await.map_err(|error| {
-            mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
-        })?;
-        let row = require_mutation_relation_row(rows, &prepared.type_id)?;
-        self.hydrate_relation(
-            row,
-            &prepared.type_id,
-            &iid,
-            transaction.execution_identity(),
-            mode,
+        self.rehydrate_relation(&manager, transaction, &prepared.type_id, &iid, mode)
+            .await
+    }
+
+    async fn rehydrate_relation(
+        &self,
+        manager: &DynamicRelationManager<'_>,
+        transaction: &TransactionContext,
+        type_id: &TypeId,
+        iid: &str,
+        mode: ExecutionMode<'_>,
+    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        let rows = manager
+            .get_by_iid_exact(iid)
+            .await
+            .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Read, type_id))?;
+        let row = require_mutation_relation_row(rows, type_id)?;
+        self.hydrate_relation(row, type_id, iid, transaction.execution_identity(), mode)
+    }
+
+    /// Insert one relation as one write plan whose match resolves every
+    /// role-player reference, so no reference is read before the write.
+    ///
+    /// Zero rows mean a reference matched nothing and nothing was written;
+    /// that keeps the released missing-reference diagnostic. Every failure
+    /// after that is raised after writes, so it poisons a borrowed
+    /// transaction: several relations (a polymorphic reference matched
+    /// several things), or two references of one role resolving to one
+    /// player, which the released resolver refused before writing.
+    async fn insert_relation_by_plan(
+        &self,
+        transaction: &TransactionContext,
+        prepared: &PreparedRelationCreate,
+        authority: &PlanAuthority,
+        mode: ExecutionMode<'_>,
+    ) -> Result<String, SdkExecutionDiagnostic> {
+        let type_id = &prepared.type_id;
+        let resolved_path = direct_entity_role_player_inputs(prepared).is_none();
+        if resolved_path {
+            reject_duplicate_references(prepared)?;
+        }
+        let transport = plan_transport(transaction, type_id, mode).await?;
+        let players = prepared
+            .role_players
+            .iter()
+            .map(|player| {
+                let identity = match (&player.iid, &player.plan_key) {
+                    (Some(iid), _) => ReferenceIdentity::Iid(iid),
+                    (None, Some((attribute, value))) => ReferenceIdentity::Key {
+                        attribute,
+                        value: value.clone(),
+                    },
+                    (None, None) => return Err(write_plan_invalid(type_id)),
+                };
+                Ok((
+                    player.role_id.clone(),
+                    Reference {
+                        candidates: &player.candidate_types,
+                        identity,
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>, SdkExecutionDiagnostic>>()?;
+        let insert = relation_insert(
+            authority,
+            transport,
+            type_id,
+            &prepared.plan_fields,
+            &players,
         )
+        .map_err(|diagnostic| plan_build_failure(&diagnostic, type_id))?;
+        let rows = execute_write_rows(transaction, insert.plan.local(), type_id, mode).await?;
+        if rows.is_empty() {
+            return Err(identity_cardinality(type_id));
+        }
+        let read = || {
+            let iid = single_thing_iid(&rows, &insert.relation, type_id)?;
+            if resolved_path {
+                reject_resolved_duplicates(&rows[0], &insert.players, type_id)?;
+            }
+            Ok(iid)
+        };
+        after_write(transaction, read()).await
     }
 
     async fn resolve_relation_players_exact(
@@ -4368,6 +4498,8 @@ struct PreparedRelationCreate {
     type_id: TypeId,
     descriptor: Arc<RelationDescriptor>,
     attributes: DynamicAttributeMap,
+    /// The same field values in plan form.
+    plan_fields: Vec<(OwnsFactId, CanonicalValue)>,
     role_players: Vec<PreparedRolePlayerInput>,
 }
 
@@ -4377,6 +4509,8 @@ struct PreparedRolePlayerInput {
     candidate_types: Vec<TypeId>,
     iid: Option<String>,
     key: Option<(String, AttributeValue)>,
+    /// The key in plan form; present exactly when `key` is.
+    plan_key: Option<(AttributeId, CanonicalValue)>,
     database_identity: Option<DatabaseExecutionIdentity>,
 }
 
@@ -4688,6 +4822,180 @@ fn extract_optional_provider_iid(
             type_id,
         )),
     }
+}
+
+/// Values travel as `given` rows when the transaction supports them.
+async fn plan_transport(
+    transaction: &TransactionContext,
+    type_id: &TypeId,
+    mode: ExecutionMode<'_>,
+) -> Result<ValueTransport, SdkExecutionDiagnostic> {
+    let given = transaction
+        .supports_given_stage()
+        .await
+        .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Write, type_id))?;
+    Ok(if given {
+        ValueTransport::Given
+    } else {
+        ValueTransport::Literal
+    })
+}
+
+/// Execute a write plan and return its rows. A failure here may follow
+/// writes, so it poisons a borrowed transaction.
+async fn execute_write_rows(
+    transaction: &TransactionContext,
+    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    type_id: &TypeId,
+    mode: ExecutionMode<'_>,
+) -> Result<Vec<serde_json::Value>, SdkExecutionDiagnostic> {
+    let answer = transaction
+        .execute_plan(plan)
+        .await
+        .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Write, type_id));
+    let rows = answer.and_then(|answer| match answer {
+        PlanAnswer::Rows(rows) => Ok(rows),
+        _ => Err(integrity_at_type(
+            "provider_identity_answer_invalid",
+            "The provider identity query returned an unexpected answer kind",
+            type_id,
+        )),
+    });
+    after_write(transaction, rows).await
+}
+
+/// Latch a borrowed transaction rollback-only when a failure follows a
+/// dispatched write. An owned transaction is rolled back by its caller.
+async fn after_write<T>(
+    transaction: &TransactionContext,
+    result: Result<T, SdkExecutionDiagnostic>,
+) -> Result<T, SdkExecutionDiagnostic> {
+    if let Err(diagnostic) = &result {
+        transaction.latch_rollback_only(diagnostic).await;
+    }
+    result
+}
+
+fn identity_cardinality(type_id: &TypeId) -> SdkExecutionDiagnostic {
+    integrity_at_type(
+        "provider_identity_cardinality_invalid",
+        "The provider identity query did not resolve exactly one thing",
+        type_id,
+    )
+}
+
+/// The one thing every row names under `column`.
+fn single_thing_iid(
+    rows: &[serde_json::Value],
+    column: &str,
+    type_id: &TypeId,
+) -> Result<String, SdkExecutionDiagnostic> {
+    let mut iids = rows
+        .iter()
+        .map(|row| row_iid(row, column, type_id))
+        .collect::<Result<Vec<_>, _>>()?;
+    iids.sort_unstable();
+    iids.dedup();
+    match iids.as_slice() {
+        [_] => Ok(iids.remove(0)),
+        _ => Err(identity_cardinality(type_id)),
+    }
+}
+
+/// Two references of one role that resolved to the same player.
+fn reject_resolved_duplicates(
+    row: &serde_json::Value,
+    players: &[(RoleId, String)],
+    type_id: &TypeId,
+) -> Result<(), SdkExecutionDiagnostic> {
+    let mut seen = BTreeSet::new();
+    for (role, column) in players {
+        if !seen.insert((role, row_iid(row, column, type_id)?)) {
+            return Err(integrity_at_type(
+                "duplicate_resolved_role_player",
+                "Exact relation references resolved to a duplicate role player",
+                type_id,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Read a thing's IID from a plan row keyed by its binding name.
+fn row_iid(
+    row: &serde_json::Value,
+    column: &str,
+    type_id: &TypeId,
+) -> Result<String, SdkExecutionDiagnostic> {
+    let iid = row
+        .as_object()
+        .and_then(|row| row.get(column).or_else(|| row.get(&format!("${column}"))))
+        .and_then(|concept| concept.get("iid"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            integrity_at_type(
+                "provider_identity_answer_invalid",
+                "The provider identity query omitted its canonical IID",
+                type_id,
+            )
+        })?;
+    if !is_canonical_thing_iid(iid) {
+        return Err(integrity_at_type(
+            "provider_identity_mismatch",
+            "The provider identity query returned a different or noncanonical IID",
+            type_id,
+        ));
+    }
+    Ok(iid.to_owned())
+}
+
+/// Two references to one thing in one role were refused after resolution;
+/// resolution now happens inside the write, so equal references are refused
+/// before it.
+fn reject_duplicate_references(
+    prepared: &PreparedRelationCreate,
+) -> Result<(), SdkExecutionDiagnostic> {
+    for (index, player) in prepared.role_players.iter().enumerate() {
+        let duplicate = prepared.role_players[..index].iter().any(|earlier| {
+            earlier.role_name == player.role_name
+                && earlier.iid == player.iid
+                && earlier.plan_key == player.plan_key
+                && earlier
+                    .candidate_types
+                    .iter()
+                    .any(|candidate| player.candidate_types.contains(candidate))
+        });
+        if duplicate {
+            return Err(integrity_at_type(
+                "duplicate_resolved_role_player",
+                "Exact relation references resolved to a duplicate role player",
+                &prepared.type_id,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A plan that cannot be built: a literal the band-8 transport cannot carry
+/// is caller input; anything else is a bridge defect.
+fn plan_build_failure(diagnostic: &Diagnostic, type_id: &TypeId) -> SdkExecutionDiagnostic {
+    if diagnostic.code().as_str() == LITERAL_CONTROL_CHARACTER {
+        invalid_input_at_type(
+            "literal_control_character_unsupported",
+            "A connection without the given stage cannot carry text with control characters",
+            type_id,
+        )
+    } else {
+        write_plan_invalid(type_id)
+    }
+}
+
+fn write_plan_invalid(type_id: &TypeId) -> SdkExecutionDiagnostic {
+    integrity_at_type(
+        "write_plan_invalid",
+        "The projected write cannot be built as a validated plan",
+        type_id,
+    )
 }
 
 fn direct_entity_role_player_inputs(

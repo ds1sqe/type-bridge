@@ -303,6 +303,33 @@ impl TransactionContext {
         tx.query_v2_bounded(typeql, limits, consumer).await
     }
 
+    /// Execute one trusted v3 plan now and resolve its answer.
+    ///
+    /// Helpers that still run inside an eager transaction use this until they
+    /// stage plans. The plan lowers through the TypeQL adaptor; its inputs
+    /// travel as `given` rows, so the caller builds literal-only plans for
+    /// connections without the `given` stage.
+    pub(crate) async fn execute_plan(
+        &self,
+        plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    ) -> Result<crate::query_plan_exec::PlanAnswer> {
+        let supports_given = self.supports_given_stage().await?;
+        let query = crate::query_plan_exec::staged_query(plan, supports_given)
+            .map_err(plan_diagnostic_error)?;
+        self.check_schema_annotation_support(&query.typeql)?;
+        let mut guard = self.inner.lock().await;
+        let tx = active_transaction(&mut guard)?;
+        let answer = tx
+            .query_materialized_bounded(
+                &query.typeql,
+                query.rows,
+                BoundedAnswerLimits::default(),
+                query.canonical,
+            )
+            .await?;
+        crate::query_plan_exec::resolve(plan.operation(), answer).map_err(plan_diagnostic_error)
+    }
+
     /// Export the schema under this transaction's provider-side schema fence,
     /// when supported by the backend.
     pub(crate) async fn schema_snapshot(&self) -> Result<Option<String>> {
@@ -642,6 +669,17 @@ impl Clone for TransactionContext {
             answer_limits: self.answer_limits,
         }
     }
+}
+
+/// A plan that cannot lower or answer is a contract failure, never provider
+/// prose; it keeps its diagnostic code.
+fn plan_diagnostic_error(diagnostic: type_bridge_contract::diagnostic::Diagnostic) -> OrmError {
+    crate::match_request::MatchError::new(
+        crate::match_request::MatchErrorCategory::ResultDecode,
+        diagnostic.code().as_str(),
+        diagnostic.message(),
+    )
+    .into()
 }
 
 #[cfg(test)]

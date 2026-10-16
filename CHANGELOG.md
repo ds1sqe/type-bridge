@@ -20,6 +20,20 @@ All notable changes to TypeBridge will be documented in this file.
   acquirer that commits between this acquirer's read and write now fails it
   with `migration_execution_stale_fence` instead of letting it silently take
   the newer fence.
+- A projected relation insert resolves its role-player references inside
+  the write: each reference is an exact `isa!` match, or a disjunction over
+  the concrete candidate types, in the insert's own pipeline, so no lookup
+  query runs first. A reference that matches nothing still fails with
+  `provider_identity_cardinality_invalid` and writes nothing. A polymorphic
+  reference that matches several things, and two references of one role
+  that resolve to one player (`duplicate_resolved_role_player`), are now
+  refused after the write instead of before it.
+- When such a relation insert fails after its write ran (including a
+  failed read-back), a borrowed transaction is now rollback-only.
+- On connections without the TypeDB 3.12+ `given` stage, such a relation
+  insert whose text values contain control characters is refused with
+  `literal_control_character_unsupported` instead of being inlined into the
+  query.
 
 
 ### Tests
@@ -442,6 +456,9 @@ differently direct and through a proxy. Each entry says what to do instead.
   observe each staged transaction's outcome with `on_v3_commit`
   (`V3CommitOutcome`: committed, code, commit certainty, typed failure).
   Both default to no-ops.
+- `query-plan/v3` match stages accept an `iid` pattern that identifies an
+  already typed entity or relation binding by its canonical IID
+  (`query.pattern.iid`).
 
 ### Fixed
 

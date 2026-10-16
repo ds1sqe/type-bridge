@@ -140,13 +140,17 @@ Member names are literal wire names, and each listed member is required.
 | reachable | `source:B`, `target:B`, `relation:T`, `role_from:R`, `role_to:R`, `min_depth:integer`, `max_depth:integer` |
 | function_call | `assigned:B`, `function:string`, `arguments:[O,...]` |
 | let | `binding:B`, `expr:expression` |
+| iid | `binding:B`, `iid:string` |
 
 Comparators are `equal`, `not_equal`, `less`, `less_or_equal`, `greater`,
 `greater_or_equal`. Boolean branches are nonempty. Reachability bounds satisfy
 `0 <= min_depth <= max_depth <= 64` (the receiver's predicate-depth limit),
 with root-only reachability and expanded-hop node-budget checks. Functions use checked declarations and
 argument/return types. Nested boolean bodies and local functions retain the
-released read-pattern vocabulary: let is a V3 root-match pattern.
+released read-pattern vocabulary: let and iid are V3 root-match patterns.
+An iid pattern names a canonical `0x` hexadecimal thing IID and constrains an
+entity or relation binding that a positive pattern of the same match types;
+it adds `query.pattern.iid`.
 
 Let assigns a fresh declared scalar binding in source order. It cannot overwrite
 an earlier let, concept, attribute or function result, including one produced
@@ -313,6 +317,7 @@ are illustrative forms, not a snapshot read followed by a separate mutation.
 | value | `$s >= $minimum;` and corresponding comparator symbols |
 | or / not / try | `{ ... } or { ... };` / `not { ... };` / `try { ... };` |
 | let | `let $next = $stock - $one;` |
+| iid | `$x iid 0x1e00000000000000000001;` |
 | arithmetic | Parenthesized `+`, `-`, `*`, `/`, `%`, `^` expressions |
 | builtins | Same names except length becomes `len($text)` |
 | insert / put | `insert $o isa order, has order-id $id;` / corresponding put stage |
