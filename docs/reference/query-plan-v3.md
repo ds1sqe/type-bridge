@@ -505,8 +505,9 @@ execution does not try to commit a TypeDB read transaction.
 The public authoring outcome is non-exhaustive and uses the existing
 `SdkExecutionDiagnostic`, not a second failure model. Failure details follow the
 SDK diagnostic vocabulary: version, category, sdk_category, query_category,
-code, message, path and typed details. The additive phase-B `commit_rejected_*`
-and `query_rejected_*` codes and details join this same vocabulary when present.
+code, message, path and typed details. Typed failure details (`retry_safe`,
+`rejection`, `lock_kind`, `annotation`) join this same vocabulary when present;
+the released codes stay as they are.
 `commit_outcome_unknown` remains indeterminate; a failed outcome alone never
 implies a safe retry. SDK messages stay implementation-owned static text during
 authoring. Authentication precedes interpretation of their bounded host-JSON
