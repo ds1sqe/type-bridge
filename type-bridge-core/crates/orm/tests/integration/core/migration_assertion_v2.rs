@@ -272,7 +272,7 @@ async fn validated_assertions_execute_on_one_borrowed_real_transaction() {
             "missing lowered syntax {syntax:?}"
         );
     }
-    assert!(lowered.typeql().ends_with("limit 1;\n"));
+    assert!(lowered.typeql().trim_end().ends_with("limit 1;"));
 
     let available = violating.plan().required_capabilities().clone();
     let missing = CapabilitySet::new();
