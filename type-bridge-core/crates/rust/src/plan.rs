@@ -22,6 +22,10 @@
 //!
 //! Handles belong to the builder that created them.
 //!
+//! This example is ignored because `Item`, `ItemType` and `models::SCHEMA`
+//! come from an application's generated schema package, which this crate
+//! does not ship.
+//!
 //! ```ignore
 //! let mut plan = Plan::builder();
 //! let item = plan.exact::<Item>();
