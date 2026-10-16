@@ -1,19 +1,31 @@
 //! Ignored exact TypeDB 3.12.1 journey for the common projected batch executor.
 
+use std::sync::{Arc, Mutex};
+
 use crate::common::rust_binding::{server_supports_v2_conformance, setup_db, unique_label};
+use crate::common::typedb::connect_options_from_env;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, ProjectionHandler};
 use type_bridge_contract::schema::{DocumentId, OwnsFactId};
 use type_bridge_contract::temporal::{CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration};
 use type_bridge_contract::value::{CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue};
-use type_bridge_orm::session::backend::QueryResult;
+use type_bridge_core_lib::ast::{
+    TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
+};
+use type_bridge_orm::session::backend::{
+    AnswerConsumer, BoundedAnswerLimits, BoundedAnswerStats, BoxFuture, DriverBackend,
+    GivenRowsSpec, QueryResult, QueryV2AnswerLimits, SchemaFencedReadTransaction, TransactionOps,
+};
+use type_bridge_orm::session::real_driver::RealBackend;
+use type_bridge_orm::session::staged::TransactionOptions;
 use type_bridge_orm::{
     AnswerCancellation, InstalledRuntimeProjection, ProjectedAttributeValue, ProjectedBatch,
     ProjectedBatchExecutor, ProjectedBatchInvocationControl, ProjectedBatchOperation,
     ProjectedBatchResult, ProjectedBatchRow, ProjectedCreate, ProjectedReference, ProjectedThing,
     QueryExecutionResourceLimits, TxType,
 };
+use type_bridge_orm::{CapabilitySet, ClassifiedCommitError, Database, OrmError};
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 
 struct LiveIds {
@@ -344,18 +356,9 @@ plays:
     (installed, ids)
 }
 
-#[tokio::test]
-#[ignore = "requires the exact TypeDB CE 3.12.1 live fixture"]
-async fn projected_batch_all_operations_domains_roles_and_mixed_players_live() {
-    let _guard = crate::common::integration_test_guard().await;
-    let database = setup_db().await;
-    if !server_supports_v2_conformance(&database) {
-        database.delete_database().await.unwrap();
-        return;
-    }
-    let prefix = unique_label("projected-batch-live");
-    let (installed, ids) = installed(&prefix);
-    let schema = format!(
+/// The TypeQL schema for the live fixture labels.
+fn schema_text(ids: &LiveIds) -> String {
+    format!(
         r#"define
 attribute {key}, value string;
 attribute {string}, value string;
@@ -401,7 +404,21 @@ relation {container},
         person = ids.person.label(),
         membership = ids.membership.label(),
         container = ids.container.label(),
-    );
+    )
+}
+
+#[tokio::test]
+#[ignore = "requires the exact TypeDB CE 3.12.1 live fixture"]
+async fn projected_batch_all_operations_domains_roles_and_mixed_players_live() {
+    let _guard = crate::common::integration_test_guard().await;
+    let database = setup_db().await;
+    if !server_supports_v2_conformance(&database) {
+        database.delete_database().await.unwrap();
+        return;
+    }
+    let prefix = unique_label("projected-batch-live");
+    let (installed, ids) = installed(&prefix);
+    let schema = schema_text(&ids);
     database.execute_raw(&schema, TxType::Schema).await.unwrap();
     let executor = ProjectedBatchExecutor::new(&installed);
 
@@ -781,4 +798,463 @@ relation {container},
     .expect("projected batch fixture cleanup timed out")
     .expect("projected batch fixture database should be deleted");
     assert!(!database.database_exists().await.unwrap());
+}
+
+// ── Split-batch live journeys ─────────────────────────────────────────
+
+/// Provider calls one counted connection observed.
+#[derive(Debug, Default)]
+struct DispatchLog {
+    /// `(query source, given rows)` per `given` query, in order.
+    given_queries: Vec<(String, usize)>,
+    opened: Vec<TxType>,
+    commits: usize,
+}
+
+impl DispatchLog {
+    /// Calls per distinct source, in first-seen order: `(source, rows per call)`.
+    fn by_source(&self) -> Vec<(String, Vec<usize>)> {
+        let mut grouped: Vec<(String, Vec<usize>)> = Vec::new();
+        for (source, rows) in &self.given_queries {
+            match grouped.iter_mut().find(|(seen, _)| seen == source) {
+                Some((_, calls)) => calls.push(*rows),
+                None => grouped.push((source.clone(), vec![*rows])),
+            }
+        }
+        grouped
+    }
+}
+
+/// Forwards every provider call to the real backend and records each one.
+struct CountingBackend {
+    inner: RealBackend,
+    log: Arc<Mutex<DispatchLog>>,
+}
+
+struct CountingTransaction {
+    inner: Box<dyn TransactionOps>,
+    log: Arc<Mutex<DispatchLog>>,
+}
+
+impl CountingBackend {
+    fn counted<'a>(
+        &'a self,
+        tx_type: TxType,
+        opened: BoxFuture<'a, Result<Box<dyn TransactionOps>, OrmError>>,
+    ) -> BoxFuture<'a, Result<Box<dyn TransactionOps>, OrmError>> {
+        let log = Arc::clone(&self.log);
+        Box::pin(async move {
+            let inner = opened.await?;
+            log.lock().unwrap().opened.push(tx_type);
+            Ok(Box::new(CountingTransaction { inner, log }) as Box<dyn TransactionOps>)
+        })
+    }
+}
+
+impl DriverBackend for CountingBackend {
+    fn match_capabilities(&self) -> CapabilitySet {
+        self.inner.match_capabilities()
+    }
+    fn open_transaction(
+        &self,
+        database: &str,
+        tx_type: TxType,
+    ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+        self.counted(tx_type, self.inner.open_transaction(database, tx_type))
+    }
+    fn open_with_options(
+        &self,
+        database: &str,
+        tx_type: TxType,
+        options: &TransactionOptions,
+    ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+        self.counted(
+            tx_type,
+            self.inner.open_with_options(database, tx_type, options),
+        )
+    }
+    #[allow(deprecated)]
+    fn open_schema_fenced_read_transaction(
+        &self,
+        database: &str,
+        timeout: std::time::Duration,
+    ) -> BoxFuture<'_, Result<SchemaFencedReadTransaction, OrmError>> {
+        self.inner
+            .open_schema_fenced_read_transaction(database, timeout)
+    }
+    fn is_open(&self) -> bool {
+        self.inner.is_open()
+    }
+    fn close_connection(&self) -> Result<(), OrmError> {
+        self.inner.close_connection()
+    }
+    fn server_version(&self) -> Option<type_bridge_core_lib::version::Version> {
+        self.inner.server_version()
+    }
+    fn supports_given_rows(&self) -> bool {
+        DriverBackend::supports_given_rows(&self.inner)
+    }
+    fn database_exists(&self, database: &str) -> BoxFuture<'_, Result<bool, OrmError>> {
+        self.inner.database_exists(database)
+    }
+    fn create_database(&self, database: &str) -> BoxFuture<'_, Result<(), OrmError>> {
+        self.inner.create_database(database)
+    }
+    fn delete_database(&self, database: &str) -> BoxFuture<'_, Result<(), OrmError>> {
+        self.inner.delete_database(database)
+    }
+    fn schema_text(&self, database: &str) -> BoxFuture<'_, Result<String, OrmError>> {
+        self.inner.schema_text(database)
+    }
+}
+
+impl TransactionOps for CountingTransaction {
+    fn supports_given_rows(&self) -> bool {
+        self.inner.supports_given_rows()
+    }
+    fn schema_snapshot(&mut self) -> BoxFuture<'_, Result<Option<String>, OrmError>> {
+        self.inner.schema_snapshot()
+    }
+    fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+        self.inner.query(typeql)
+    }
+    fn query_canonical<'a>(
+        &'a mut self,
+        typeql: &str,
+    ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
+        self.inner.query_canonical(typeql)
+    }
+    fn query_with_rows(
+        &mut self,
+        typeql: &str,
+        rows: GivenRowsSpec,
+    ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+        self.record(typeql, &rows);
+        self.inner.query_with_rows(typeql, rows)
+    }
+    fn query_with_rows_bounded<'a>(
+        &'a mut self,
+        typeql: &'a str,
+        rows: GivenRowsSpec,
+        limits: BoundedAnswerLimits,
+        consumer: &'a mut dyn AnswerConsumer,
+    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+        self.record(typeql, &rows);
+        self.inner
+            .query_with_rows_bounded(typeql, rows, limits, consumer)
+    }
+    fn query_materialized_bounded<'a>(
+        &'a mut self,
+        typeql: &'a str,
+        rows: Option<GivenRowsSpec>,
+        limits: BoundedAnswerLimits,
+        canonical: bool,
+    ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
+        if let Some(rows) = &rows {
+            self.record(typeql, rows);
+        }
+        self.inner
+            .query_materialized_bounded(typeql, rows, limits, canonical)
+    }
+    fn query_bounded<'a>(
+        &'a mut self,
+        typeql: &'a str,
+        limits: BoundedAnswerLimits,
+        consumer: &'a mut dyn AnswerConsumer,
+    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+        self.inner.query_bounded(typeql, limits, consumer)
+    }
+    fn query_v2_bounded<'a>(
+        &'a mut self,
+        typeql: &'a str,
+        limits: QueryV2AnswerLimits,
+        consumer: &'a mut dyn AnswerConsumer,
+    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+        self.inner.query_v2_bounded(typeql, limits, consumer)
+    }
+    fn query_v2_with_rows_bounded<'a>(
+        &'a mut self,
+        typeql: &'a str,
+        rows: GivenRowsSpec,
+        limits: QueryV2AnswerLimits,
+        consumer: &'a mut dyn AnswerConsumer,
+    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+        self.record(typeql, &rows);
+        self.inner
+            .query_v2_with_rows_bounded(typeql, rows, limits, consumer)
+    }
+    fn query_typed_bounded<'a>(
+        &'a mut self,
+        query: &'a TypedFetchRows,
+        limits: BoundedAnswerLimits,
+        consumer: &'a mut dyn AnswerConsumer,
+    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+        self.inner.query_typed_bounded(query, limits, consumer)
+    }
+    fn supports_exactly_one_tuple_proof(&self) -> bool {
+        self.inner.supports_exactly_one_tuple_proof()
+    }
+    fn query_tuple_typed_bounded<'a>(
+        &'a mut self,
+        query: &'a TypedFetchRows,
+        limits: BoundedAnswerLimits,
+        consumer: &'a mut dyn AnswerConsumer,
+    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+        self.inner
+            .query_tuple_typed_bounded(query, limits, consumer)
+    }
+    fn query_root_typed_bounded<'a>(
+        &'a mut self,
+        query: &'a TypedRootScan,
+        limits: BoundedAnswerLimits,
+        consumer: &'a mut dyn AnswerConsumer,
+    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+        self.inner.query_root_typed_bounded(query, limits, consumer)
+    }
+    fn rematch_page_typed_bounded<'a>(
+        &'a mut self,
+        query: &'a TypedPageRematch,
+        limits: BoundedAnswerLimits,
+        consumer: &'a mut dyn AnswerConsumer,
+    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+        self.inner
+            .rematch_page_typed_bounded(query, limits, consumer)
+    }
+    fn hydrate_typed_bounded<'a>(
+        &'a mut self,
+        query: &'a TypedHydrateThings,
+        limits: BoundedAnswerLimits,
+        consumer: &'a mut dyn AnswerConsumer,
+    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+        self.inner.hydrate_typed_bounded(query, limits, consumer)
+    }
+    fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+        self.log.lock().unwrap().commits += 1;
+        self.inner.commit()
+    }
+    fn commit_classified(&mut self) -> BoxFuture<'_, Result<(), ClassifiedCommitError>> {
+        self.log.lock().unwrap().commits += 1;
+        self.inner.commit_classified()
+    }
+    fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+        self.inner.rollback()
+    }
+    fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+        self.inner.close()
+    }
+}
+
+impl CountingTransaction {
+    fn record(&self, typeql: &str, rows: &GivenRowsSpec) {
+        self.log
+            .lock()
+            .unwrap()
+            .given_queries
+            .push((typeql.to_owned(), rows.rows.len()));
+    }
+}
+
+/// A fresh fixture database whose connection counts provider calls.
+async fn counted_fixture(
+    tag: &str,
+) -> Option<(
+    Database,
+    Database,
+    InstalledRuntimeProjection,
+    LiveIds,
+    Arc<Mutex<DispatchLog>>,
+)> {
+    let database = setup_db().await;
+    if !server_supports_v2_conformance(&database) {
+        database.delete_database().await.unwrap();
+        return None;
+    }
+    let (installed, ids) = installed(&unique_label(tag));
+    database
+        .execute_raw(&schema_text(&ids), TxType::Schema)
+        .await
+        .unwrap();
+    let address = std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into());
+    let username = std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into());
+    let password = std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
+    let inner = RealBackend::connect(&address, &username, &password, connect_options_from_env())
+        .await
+        .unwrap();
+    let log = Arc::new(Mutex::new(DispatchLog::default()));
+    let counted = Database::with_backend(
+        Box::new(CountingBackend {
+            inner,
+            log: Arc::clone(&log),
+        }),
+        database.database_name(),
+    );
+    Some((database, counted, installed, ids, log))
+}
+
+fn person_rows(
+    installed: &InstalledRuntimeProjection,
+    ids: &LiveIds,
+    count: usize,
+    key: impl Fn(usize) -> String,
+) -> ProjectedBatch {
+    ProjectedBatch::try_new(
+        installed,
+        ids.person.clone(),
+        ProjectedBatchOperation::Insert,
+        (0..count)
+            .map(|row| ProjectedBatchRow::Create(person_create(installed, ids, &key(row), false)))
+            .collect(),
+    )
+    .unwrap()
+}
+
+/// The default control with a deadline that fits a split debug-build batch.
+fn split_control() -> ProjectedBatchInvocationControl {
+    ProjectedBatchInvocationControl::capture(
+        QueryExecutionResourceLimits {
+            timeout_milliseconds: 600_000,
+            ..QueryExecutionResourceLimits::default()
+        },
+        AnswerCancellation::default(),
+    )
+}
+
+async fn person_count(database: &Database, ids: &LiveIds) -> usize {
+    let rows = database
+        .execute_raw(
+            &format!("match $p isa {};\nselect $p;", ids.person.label()),
+            TxType::Read,
+        )
+        .await
+        .unwrap();
+    match rows {
+        QueryResult::Rows(rows) => rows.len(),
+        other => panic!("person probe returned {other:?}"),
+    }
+}
+
+/// A batch under every limit is one mutation and one attach query.
+#[tokio::test]
+#[ignore = "requires the exact TypeDB CE 3.12.1 live fixture"]
+async fn projected_batch_thousand_rows_fire_one_mutation_live() {
+    let _guard = crate::common::integration_test_guard().await;
+    let Some((database, counted, installed, ids, log)) = counted_fixture("batch-1k").await else {
+        return;
+    };
+    let batch = person_rows(&installed, &ids, 1_000, |row| format!("p-{row}"));
+    let inserted = things(
+        ProjectedBatchExecutor::new(&installed)
+            .execute(&counted, &batch, control())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(inserted.len(), 1_000);
+    let log = std::mem::take(&mut *log.lock().unwrap());
+    let calls = log.by_source();
+    eprintln!(
+        "1k: opened={:?} commits={} calls={:?}",
+        log.opened,
+        log.commits,
+        calls.iter().map(|(_, rows)| rows).collect::<Vec<_>>()
+    );
+    assert_eq!(log.opened, vec![TxType::Write]);
+    assert_eq!(log.commits, 1);
+    assert_eq!(calls.len(), 2, "one mutation stage and one attach stage");
+    assert_eq!(calls[0].1.len(), 1, "the mutation fires once");
+    assert_eq!(calls[1].1.len(), 1, "the attach fires once");
+    assert_eq!(person_count(&database, &ids).await, 1_000);
+    database.delete_database().await.unwrap();
+}
+
+/// Rows past 4,096 split into same-shape chunks on one Write with one commit.
+///
+/// 5,000 rows, not 10,000: the attach stage costs grow with rows times
+/// stored instances, and a 10,000-row batch passes the provider's
+/// transaction timeout on the attach stage alone.
+#[tokio::test]
+#[ignore = "requires the exact TypeDB CE 3.12.1 live fixture"]
+async fn projected_batch_past_row_limit_splits_in_one_transaction_live() {
+    let _guard = crate::common::integration_test_guard().await;
+    let Some((database, counted, installed, ids, log)) = counted_fixture("batch-split").await
+    else {
+        return;
+    };
+    let batch = person_rows(&installed, &ids, 5_000, |row| format!("p-{row}"));
+    let inserted = things(
+        ProjectedBatchExecutor::new(&installed)
+            .execute(&counted, &batch, split_control())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(inserted.len(), 5_000);
+    let log = std::mem::take(&mut *log.lock().unwrap());
+    let calls = log.by_source();
+    eprintln!(
+        "split: opened={:?} commits={} calls={:?}",
+        log.opened,
+        log.commits,
+        calls.iter().map(|(_, rows)| rows).collect::<Vec<_>>()
+    );
+    assert_eq!(log.opened, vec![TxType::Write]);
+    assert_eq!(log.commits, 1);
+    assert_eq!(calls.len(), 2, "one mutation stage and one attach stage");
+    for (_, chunks) in &calls {
+        assert_eq!(chunks, &vec![4_096, 904]);
+    }
+    assert_eq!(person_count(&database, &ids).await, 5_000);
+    database.delete_database().await.unwrap();
+}
+
+/// A key clash in the last chunk rolls back the chunks before it.
+#[tokio::test]
+#[ignore = "requires the exact TypeDB CE 3.12.1 live fixture"]
+async fn projected_batch_split_key_clash_in_last_chunk_stores_nothing_live() {
+    let _guard = crate::common::integration_test_guard().await;
+    let Some((database, counted, installed, ids, log)) = counted_fixture("batch-split-clash").await
+    else {
+        return;
+    };
+    let executor = ProjectedBatchExecutor::new(&installed);
+    executor
+        .execute(
+            &database,
+            &person_rows(&installed, &ids, 1, |_| "taken".to_owned()),
+            control(),
+        )
+        .await
+        .unwrap();
+    let batch = person_rows(&installed, &ids, 5_000, |row| {
+        if row == 4_500 {
+            "taken".to_owned()
+        } else {
+            format!("p-{row}")
+        }
+    });
+    let error = executor
+        .execute(&counted, &batch, split_control())
+        .await
+        .expect_err("a key clash must fail the whole batch");
+    let log = std::mem::take(&mut *log.lock().unwrap());
+    let calls = log.by_source();
+    eprintln!(
+        "clash: code={} opened={:?} commits={} calls={:?}",
+        error.code().as_str(),
+        log.opened,
+        log.commits,
+        calls.iter().map(|(_, rows)| rows).collect::<Vec<_>>()
+    );
+    assert_eq!(error.code().as_str(), "provider_operation_failed");
+    assert_eq!(log.opened, vec![TxType::Write]);
+    assert_eq!(log.commits, 0);
+    assert_eq!(
+        calls[0].1,
+        vec![4_096, 904],
+        "the clash is in the last mutation chunk"
+    );
+    assert_eq!(
+        person_count(&database, &ids).await,
+        1,
+        "only the earlier person remains"
+    );
+    database.delete_database().await.unwrap();
 }

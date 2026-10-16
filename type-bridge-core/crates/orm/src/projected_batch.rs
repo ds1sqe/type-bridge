@@ -1405,7 +1405,7 @@ fn conflict(
     .expect("batch conflict detail is bounded")
 }
 
-fn limit_failure(
+pub(crate) fn limit_failure(
     code: &'static str,
     dimension: &'static str,
     actual: u64,

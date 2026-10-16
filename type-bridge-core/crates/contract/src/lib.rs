@@ -66,6 +66,8 @@ pub mod schema_lowering;
 pub mod sdk_diagnostic;
 /// Versioned server-semantic defaults shared by resolution and fingerprints.
 pub mod semantic_profile;
+/// The core batch split rule shared by every binding and the proxy.
+pub mod split;
 /// Canonical temporal component values.
 pub mod temporal;
 /// Domain-tagged canonical scalar, cardinality, and annotation values.

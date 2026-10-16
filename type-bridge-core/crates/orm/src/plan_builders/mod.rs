@@ -7,6 +7,7 @@
 //! adaptor renders them in both cases.
 
 pub(crate) mod authority;
+pub(crate) mod batch;
 pub(crate) mod insert;
 pub(crate) mod put;
 pub(crate) mod reference;
