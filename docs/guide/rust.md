@@ -253,6 +253,96 @@ drop(session);
 read.close().await?;
 ```
 
+## Staged transactions and plans
+
+A plan is one typed `query-plan/v3` pipeline: a match with comparisons and
+`let` values, then updates, inserts, puts and deletes. A staged transaction
+queues plans and runs them all at commit, in order, as one TypeDB
+transaction. Nothing opens before `commit`, and a plan that matches no row
+writes nothing, so one plan is a complete conditional write.
+
+The one-query purchase checks the stock and the balance, takes the item and
+the price, and records the purchase:
+
+<!-- rust-plan-example:begin -->
+```rust
+use models::{Account, AccountType, AppSchema, Item, ItemType, Purchase, PurchaseType};
+use type_bridge::plan::Plan;
+use type_bridge::staged::{PlanAnswer, TransactionOptions};
+use type_bridge::Database;
+
+fn purchase(order: &str, item_id: &str, account_id: &str) -> type_bridge::Result<Plan<AppSchema>> {
+    let mut plan = Plan::builder();
+    let item = plan.exact::<Item>();
+    let buyer = plan.exact::<Account>();
+    let order_input = plan.input::<String>("order_id");
+    let item_input = plan.input::<String>("item_id");
+    let account_input = plan.input::<String>("account_id");
+    let item_key = plan.field(item, ItemType::item_id);
+    let buyer_key = plan.field(buyer, AccountType::account_id);
+    let stock = plan.field(item, ItemType::stock);
+    let price = plan.field(item, ItemType::price);
+    let balance = plan.field(buyer, AccountType::balance);
+    plan.where_(item_key.eq(item_input))
+        .where_(buyer_key.eq(account_input))
+        .where_(stock.gt(0_i64))
+        .where_(balance.ge(price));
+    let next_stock = plan.let_("next_stock", stock - 1_i64);
+    let next_balance = plan.let_("next_balance", balance - price);
+    plan.update(item, ItemType::stock, next_stock)
+        .update(buyer, AccountType::balance, next_balance);
+    plan.insert::<Purchase>()
+        .field(PurchaseType::order_id, order_input)
+        .player(PurchaseType::buyer, buyer)
+        .player(PurchaseType::item, item);
+    plan.row([
+        order_input.value(order.to_owned()),
+        item_input.value(item_id.to_owned()),
+        account_input.value(account_id.to_owned()),
+    ]);
+    plan.build(&models::SCHEMA)
+}
+
+async fn buy(db: &Database<AppSchema>) -> type_bridge::Result<bool> {
+    let mut tx = db.transaction(TransactionOptions::default());
+    let bought = tx.stage(&purchase("O1", "I1", "A1")?)?;
+    tx.commit().await?;
+    // `Matched(0)`: out of stock or short of funds; nothing was written.
+    Ok(*bought.get()? == PlanAnswer::Matched(1))
+}
+```
+<!-- rust-plan-example:end -->
+
+The builder's handles (`item`, `stock`, `order_input`) come from generated
+model and field tokens, so a field another model owns does not compile.
+`build` validates the plan against the generated schema and returns the
+first invalid call; nothing is checked against TypeDB until commit.
+
+- **Reads.** A plan without writes answers rows of the columns passed to
+  `returning`, or `count()` / `exists()`.
+- **Writes.** A write plan answers `Matched(n)`, the number of rows its
+  pipeline wrote, or with `returning(..)` the rows from the same pipeline.
+- **Batches.** Each `row` binds the inputs once; many rows run the one plan
+  over all of them.
+- **Answers.** Each `stage` returns a `Pending` answer that resolves after a
+  successful commit. A failed commit stores nothing and reports the failing
+  plan's index and its typed failure; see
+  [Classified errors](#classified-errors).
+- **Kinds.** `TransactionOptions::default().with_kind(..)` makes the
+  transaction `Read`, `Write` or `Schema`; without one, a staged write makes
+  it `Write`. `Read` refuses write plans and `Schema` refuses every plan.
+- **Reuse.** `rollback` discards the queued plans and keeps the transaction;
+  `close` ends it. Dropping it never commits.
+
+`ProxyDatabase::transaction` returns the same `Transaction`. Its commit is
+one signed request with a fresh idempotency key; after an unknown outcome,
+`commit_retry` resends the same request so the plans apply at most once.
+
+Building is deterministic: handles are numbered in creation order, match
+terms keep their call order, consecutive writes of one kind share a stage,
+and names come from labels (`item`, `item_stock`). The same program always
+has the same canonical plan bytes (`Plan::canonical_bytes`).
+
 ## Direct or proxy
 
 A program that queries through a `Connection` runs unchanged against TypeDB

@@ -1,7 +1,8 @@
 //! Public Rust client library for TypeBridge.
 //!
 //! Provides top-level [`Database`], [`ConnectionOptions`], [`SchemaPackage`],
-//! and owner-branded schema/model primitives.
+//! and owner-branded schema/model primitives. [`plan`] builds typed
+//! `query-plan/v3` programs and [`staged`] runs them in staged transactions.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -21,6 +22,7 @@ pub use type_bridge_contract::failure;
 pub mod hooks;
 pub mod migration;
 pub mod model;
+pub mod plan;
 mod projected_batch;
 mod projected_codec;
 mod projected_filter;
@@ -35,6 +37,7 @@ pub mod schema;
 #[allow(dead_code)]
 mod sdk_profile_matrix;
 pub mod session;
+pub mod staged;
 mod transaction;
 pub mod value;
 
@@ -64,13 +67,6 @@ pub use query::{
 };
 pub use relation_manager::{RelationManager, RelationSubtypeManager};
 pub use remote::{ProxyConnectionPolicy, ProxyDatabase, ProxyExchange};
-/// The staged transaction [`ProxyDatabase::transaction`] returns.
-pub mod staged {
-    pub use type_bridge_orm::session::staged::{
-        CommitError, Pending, PendingError, PlanAnswer, Transaction, TransactionKind,
-        TransactionOptions,
-    };
-}
 #[allow(deprecated)]
 pub use remote::{
     RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits, RemoteQueryTransport,

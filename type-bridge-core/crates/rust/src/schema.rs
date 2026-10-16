@@ -800,6 +800,23 @@ impl<S: Schema> SchemaPackage<S> {
         self.runtime_projection_json
     }
 
+    /// The declared schema and managed semantics plans of this package are
+    /// built under.
+    pub(crate) fn plan_authority(
+        &self,
+    ) -> Result<(
+        type_bridge_contract::schema::DeclaredSchema,
+        type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint,
+    )> {
+        let authority = self.verify_embedded_authority()?.ok_or_else(|| {
+            authority_error("plans require a generated schema package with compiled authority")
+        })?;
+        Ok((
+            authority.declared_schema().clone(),
+            authority.managed_state().managed_semantic_schema().clone(),
+        ))
+    }
+
     pub(crate) const fn declared_schema_json(&self) -> Option<&'static str> {
         self.declared_schema_json
     }

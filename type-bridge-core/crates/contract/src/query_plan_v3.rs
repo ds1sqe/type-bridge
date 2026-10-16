@@ -28,6 +28,10 @@ mod expression;
 pub use expression::{ArithOp, Builtin, Expr};
 use expression::{ExprWire, operand_type};
 
+#[path = "query_plan_v3_builder.rs"]
+mod builder;
+pub use builder::PlanBuilder;
+
 /// A closed match pattern, including a fresh scalar expression assignment.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Pattern {

@@ -286,7 +286,7 @@ materialization through the same projection as direct execution.
 Writes cross the proxy as staged transactions. `transaction(kind)` on a proxy
 connection (Rust `ProxyDatabase::transaction(options)`, Python and TypeScript
 `ProxyConnection.transaction(kind)`) returns the core staged transaction: stage
-plans (Rust `stage_plan`; canonical `query-plan/v3` bytes through Python
+plans (Rust `stage` of a built `Plan`; canonical `query-plan/v3` bytes through Python
 `stage` and TypeScript `stagePlan`), then `commit()`. The commit sends the whole stack as one
 `typebridge.query-remote-request/v3` envelope to `POST /v3/staged`; the server
 runs it on one TypeDB transaction and returns a signed reply that the SDK

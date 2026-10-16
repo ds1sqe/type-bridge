@@ -443,6 +443,19 @@ differently direct and through a proxy. Each entry says what to do instead.
   before it. Staged reads honour the transaction's answer limits, deadline
   and cancellation. A `Schema` transaction refuses both with
   `borrowed_target_not_read_only`.
+- The Rust SDK builds typed `query-plan/v3` programs and stages them.
+  `type_bridge::plan::Plan::builder()` declares things (`exact`,
+  `subtypes`), field values (`field`), inputs and input rows (`input`,
+  `row`), comparisons (`where_`), role links (`links`) and `let` values
+  from generated model, field and role tokens, then `update`, `insert`,
+  `put` and `delete` writes; `build(&SCHEMA)` validates it against the
+  generated package. `Database::transaction(TransactionOptions)` returns
+  `type_bridge::staged::Transaction` with `stage`, `commit`,
+  `commit_retry`, `rollback` and `close`; nothing opens before `commit`.
+  `ProxyDatabase::transaction` returns the same type, and commit and
+  pending-answer errors convert into `type_bridge::Error`. The rules that
+  number handles, order terms and name variables live in the contract's
+  `query_plan::v3::PlanBuilder`, so a program has one canonical encoding.
 - The TypeBridge server runs staged `query-plan/v3` transactions at
   `POST /v3/staged` and advertises them at `GET /v3/capabilities`. Every
   configured interceptor must declare `supports_v3`, or each V3 request is

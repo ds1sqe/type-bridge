@@ -11,7 +11,7 @@ use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::query_v2_prepared::QueryAuthority;
 use type_bridge_orm::session::StagedExchangeFn;
-use type_bridge_orm::session::staged::{Transaction, TransactionOptions};
+use type_bridge_orm::session::staged::TransactionOptions;
 use type_bridge_orm::{
     AnswerCancellation, AnswerTransport, InstalledRuntimeProjection, ProxyEndpoint,
     ProxyHttpTransport, ProxyQueryConnection, QueryExecutionDeadline, QueryExecutionResourceLimits,
@@ -23,6 +23,7 @@ use crate::Result;
 use crate::error::Error;
 use crate::query::QuerySession;
 use crate::schema::{Schema, SchemaPackage, Unbound};
+use crate::staged::Transaction;
 
 mod deprecated;
 #[allow(deprecated)]
@@ -343,11 +344,11 @@ impl ProxyDatabase<Unbound> {
 impl<S: Schema> ProxyDatabase<S> {
     /// Open a staged transaction over this proxy.
     ///
-    /// It has the core transaction API: `stage_plan` queues validated
-    /// plans (raw TypeQL and typed match programs are refused at stage
-    /// time), `commit` sends the stack as one signed `query-remote/v3`
-    /// envelope with a fresh random 16-byte idempotency key and verifies
-    /// the signed reply. After an unknown outcome (`commit_outcome_unknown`,
+    /// It has the same API as a direct
+    /// [`Database::transaction`](crate::Database::transaction): `stage`
+    /// queues [`Plan`](crate::plan::Plan)s, and `commit` sends them as one
+    /// signed `query-remote/v3` envelope with a fresh random 16-byte
+    /// idempotency key and verifies the signed reply. After an unknown outcome (`commit_outcome_unknown`,
     /// such as a lost reply), `commit_retry` resends the same envelope and
     /// key, so the stack applies at most once. The staged advertisement is
     /// pinned on the policy, or fetched on first use and verified against
@@ -358,7 +359,7 @@ impl<S: Schema> ProxyDatabase<S> {
     ///
     /// Returns an error before [`ProxyDatabase::with_schema`], or when the
     /// staged advertisement cannot be fetched or decoded.
-    pub async fn transaction(&self, options: TransactionOptions) -> Result<Transaction> {
+    pub async fn transaction(&self, options: TransactionOptions) -> Result<Transaction<S>> {
         let runtime = self.runtime.as_ref().ok_or_else(remote_not_bound)?;
         let cancellation = AnswerCancellation::default();
         let Some(exchange) = &runtime.exchange else {
@@ -366,6 +367,7 @@ impl<S: Schema> ProxyDatabase<S> {
                 .connection
                 .staged_transaction(options, &cancellation)
                 .await
+                .map(Transaction::new)
                 .map_err(connect_error);
         };
         // A fetched staged advertisement is checked against the connection's
@@ -393,6 +395,7 @@ impl<S: Schema> ProxyDatabase<S> {
         runtime
             .connection
             .staged_transaction_with_exchange(&advertisement, send, options)
+            .map(Transaction::new)
             .map_err(connect_error)
     }
 

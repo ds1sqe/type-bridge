@@ -314,6 +314,20 @@ impl<S: Schema> Database<S> {
     {
         crate::relation_manager::RelationManager::new(self)
     }
+    /// Create a staged transaction. Nothing opens until
+    /// [`commit`](crate::staged::Transaction::commit), which runs every
+    /// staged plan in order as one provider transaction.
+    ///
+    /// The kind is [`TransactionOptions::kind`](crate::staged::TransactionOptions),
+    /// or `Write` when a staged plan writes. A `Schema` transaction stages
+    /// no plans; schema changes go through migrations.
+    #[must_use]
+    pub fn transaction(
+        &self,
+        options: crate::staged::TransactionOptions,
+    ) -> crate::staged::Transaction<S> {
+        crate::staged::Transaction::new(self.inner.transaction(options))
+    }
     /// Open one client-owned write transaction over this schema-bound
     /// database. Operations on its borrowed managers never auto-commit;
     /// the caller terminally commits or rolls back, and dropping the open
