@@ -141,7 +141,8 @@ Node, CLI and server commands, then records their actual byte lengths. It
 reports `size.wheel.bytes`, `size.npm.bytes`, `size.cli_unstripped.bytes`,
 `size.cli_stripped.bytes`, `size.server.bytes`, `size.c_runtime.bytes` and
 `size.c_runtime_lib.bytes`. The server and canonical CLI are stripped as in
-release; the unstripped CLI provides a separate baseline.
+release; the unstripped CLI provides a separate baseline. Available Python, Node and C
+compiler versions are recorded for the wheel, npm and C measurements.
 
 The C metric is a perf-only archive of the current CMake install tree: ABI 1.7
 and release package metadata are reconciled separately in 2.3.0 release prep.
@@ -159,3 +160,37 @@ Repeat `--artifact NAME=FILE` for each input. Missing, empty or directory inputs
 duplicate metric identities, and output paths that overwrite an artifact fail
 without publishing a result. The converter test fixture is an actual tiny
 `npm pack --ignore-scripts --json` archive (npm 12.2.0), renamed `package.npm`.
+
+## Test-suite durations
+
+The suite job runs on master pushes, schedule and dispatch; pull requests run
+build and size producers without this additional full-suite run. Prepare native
+Python/Node dependencies and fetch Cargo dependencies before measuring:
+
+```bash
+uv sync --extra dev
+npm ci --prefix type-bridge-core/crates/node
+npm run build --prefix type-bridge-core/crates/node
+cargo fetch --locked --manifest-path type-bridge-core/Cargo.toml
+uv run python -m perf.harness.suite --out tmp/perf/suite.json
+# A short local smoke of the same producer:
+uv run python -m perf.harness.suite --suite python \
+  --pytest-target tests/unit/perf --out tmp/perf/suite-smoke.json
+```
+
+The existing commands are `cargo test --workspace --locked --offline`,
+`pytest tests/unit`, and `npm run test:unit`. Each complete successful command
+becomes `suite.<rust|python|node>.wall` in seconds, including compilation done by
+that test command. Native dependency preparation is outside those timings.
+No TypeDB server is configured. Failed suites retain logs and publish no result.
+
+Pytest's `--durations=0` call observations and Node's TAP `duration_ms` produce
+the ten slowest `suite.<python|node>.slow.<id>` metrics. Setup/teardown and Node
+suite totals are excluded. Node names include their parent suites. Slow ids
+retain a readable prefix plus a stable hash so parameter punctuation cannot
+merge distinct tests. Stable Rust does not support libtest `--report-time`, so
+Rust per-test metrics are omitted rather than enabling nightly-only flags.
+The test fixtures are captured pytest and Node TAP output from small real runs.
+
+The workflow shares one UTC start timestamp across every producer, so jobs
+that finish on different days still merge into the same history run.

@@ -14,7 +14,7 @@ def test_captured_cargo_units() -> None:
     units = build.convert(FIXTURE)
     assert units
     assert all(duration >= 0 for duration in units.values())
-    assert "type-bridge-toml-transpiler" in units
+    assert units == {"proc-macro2": 0.18, "quote": 0.14, "type-bridge-toml-transpiler": 4.37}
 
 
 def test_only_twenty_slowest_units_are_reported() -> None:
@@ -75,3 +75,46 @@ def test_command_failure_does_not_publish(tmp_path: Path, monkeypatch: pytest.Mo
         == 1
     )
     assert not out.exists()
+
+
+def test_python_build_uses_core_pyproject_and_one_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+    import sys
+
+    calls = []
+
+    def command(
+        argv: list[str], log: Path, *, env: dict[str, str], cwd: Path | None = None
+    ) -> float:
+        calls.append(argv[0])
+        assert env["PYO3_PYTHON"] == sys.executable
+        if argv[0] == "cargo":
+            timing = Path(env["CARGO_TARGET_DIR"]) / "cargo-timings/cargo-timing.html"
+            timing.parent.mkdir()
+            timing.write_bytes(FIXTURE.read_bytes())
+        else:
+            assert cwd == build.MANIFEST.parent  # Select core/pyproject, not facade metadata.
+            assert argv[argv.index("-i") + 1] == sys.executable
+            assert "--offline" in argv
+        return 1.0
+
+    monkeypatch.setattr(build, "timed", command)
+    out = tmp_path / "python.json"
+    assert (
+        build.main(
+            [
+                "--group",
+                "python",
+                "--offline",
+                "--target-dir",
+                str(tmp_path / "target"),
+                "--out",
+                str(out),
+            ]
+        )
+        == 0
+    )
+    assert calls == ["cargo", "maturin"]
+    assert json.loads(out.read_text())["metrics"][0]["value"] == 2

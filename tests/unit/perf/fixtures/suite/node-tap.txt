@@ -1,0 +1,42 @@
+TAP version 13
+# Subtest: alpha
+    # Subtest: same name
+    ok 1 - same name
+      ---
+      duration_ms: 0.970456
+      type: 'test'
+      ...
+    # Subtest: other test
+    ok 2 - other test
+      ---
+      duration_ms: 0.317725
+      type: 'test'
+      ...
+    1..2
+ok 1 - alpha
+  ---
+  duration_ms: 73.420269
+  type: 'suite'
+  ...
+# Subtest: beta
+    # Subtest: same name
+    ok 1 - same name
+      ---
+      duration_ms: 0.247288
+      type: 'test'
+      ...
+    1..1
+ok 2 - beta
+  ---
+  duration_ms: 0.528751
+  type: 'suite'
+  ...
+1..2
+# tests 3
+# suites 2
+# pass 3
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 192.821569

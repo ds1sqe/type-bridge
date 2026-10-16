@@ -87,6 +87,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             # Never delete a user's target or silently measure a warm build.
             target.mkdir(parents=True, exist_ok=False)
             environment = dict(os.environ, CARGO_TARGET_DIR=str(target))
+            if group == "python":
+                environment["PYO3_PYTHON"] = sys.executable
             packages = {
                 "public": args.package or public_packages(),
                 "python": ["type-bridge-core"],
@@ -127,6 +129,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ],
                     args.out.parent / "build-python-wheel.log",
                     env=environment,
+                    cwd=MANIFEST.parent,
                 )
             for name, duration in convert(target / "cargo-timings/cargo-timing.html").items():
                 units[name] += duration

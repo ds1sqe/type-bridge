@@ -156,3 +156,13 @@ def test_cli_needs_an_input_directory(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as raised:
         micro.main(["--out", str(tmp_path / "result.json")])
     assert raised.value.code == 2
+
+
+def test_producers_share_the_workflow_timestamp_across_midnight() -> None:
+    stamp = "2026-10-16T23:59:59Z"
+    environment = GITHUB | {"PERF_STARTED_AT": stamp}
+    assert micro.collect_run(environment).started_at == stamp
+    assert (
+        micro.collect_run(environment, started_at="2026-10-17T01:00:00Z").started_at
+        == "2026-10-17T01:00:00Z"
+    )

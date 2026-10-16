@@ -37,7 +37,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def collect_run(env: Mapping[str, str], *, started_at: str | None = None) -> Run:
-    """The ``run`` block for a micro run on this host."""
+    """The ``run`` block shared by producers on this host."""
     return Run(
         commit=env.get("GITHUB_SHA") or _git("rev-parse", "HEAD"),
         # GITHUB_HEAD_REF is set only on pull requests, where GITHUB_REF_NAME
@@ -50,7 +50,9 @@ def collect_run(env: Mapping[str, str], *, started_at: str | None = None) -> Run
         runner=Runner(image=_image(env), cpu=_cpu(), cores=os.cpu_count() or 1),
         toolchains=Toolchains(rust=_rustc_version(), python=None, node=None, cc=None),
         typedb=None,
-        started_at=started_at or datetime.now(UTC).isoformat(timespec="seconds"),
+        started_at=started_at
+        or env.get("PERF_STARTED_AT")
+        or datetime.now(UTC).isoformat(timespec="seconds"),
     )
 
 

@@ -20,10 +20,18 @@ def write_result(run: Run, metrics: list[Metric], out: Path) -> None:
     out.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
 
-def timed(command: list[str], log: Path, *, env: dict[str, str] | None = None) -> float:
+def timed(
+    command: list[str],
+    log: Path,
+    *,
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+) -> float:
     """Time the complete successful command, retaining its combined output."""
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("w", encoding="utf-8") as output:
         started = time.perf_counter()
-        subprocess.run(command, env=env, stdout=output, stderr=subprocess.STDOUT, check=True)
+        subprocess.run(
+            command, env=env, cwd=cwd, stdout=output, stderr=subprocess.STDOUT, check=True
+        )
         return time.perf_counter() - started

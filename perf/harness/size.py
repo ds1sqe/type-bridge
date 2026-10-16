@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
+import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from perf.harness.micro import collect_run
@@ -26,6 +29,13 @@ def convert(artifacts: dict[str, Path]) -> list[Metric]:
     return result
 
 
+def tool_version(tool: str) -> str | None:
+    executable = shutil.which(tool)
+    if executable is None:
+        return None
+    return subprocess.check_output([executable, "--version"], text=True).splitlines()[0]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact", action="append", required=True, metavar="NAME=FILE")
@@ -42,9 +52,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             if path.resolve() == args.out.resolve():
                 raise ValueError("result output must not overwrite an artifact")
             artifacts[name] = path
-        write_result(
-            collect_run(os.environ, started_at=args.started_at), convert(artifacts), args.out
+        run = collect_run(os.environ, started_at=args.started_at)
+        run = replace(
+            run,
+            toolchains=replace(
+                run.toolchains,
+                python=platform.python_version() if "wheel" in artifacts else None,
+                node=tool_version("node") if "npm" in artifacts else None,
+                cc=tool_version("cc")
+                if any(name.startswith("c_runtime") for name in artifacts)
+                else None,
+            ),
         )
+        write_result(run, convert(artifacts), args.out)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
