@@ -122,6 +122,36 @@ def test_cli_fails_when_a_directory_is_empty(
     assert not out.exists()
 
 
+def test_cli_adds_python_binding_metrics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for name, value in GITHUB.items():
+        monkeypatch.setenv(name, value)
+    out = tmp_path / "result.json"
+
+    code = micro.main(
+        [
+            "--iai-dir",
+            str(FIXTURES / "iai"),
+            "--pytest-benchmark",
+            str(FIXTURES / "pytest-benchmark" / "benchmarks.json"),
+            "--out",
+            str(out),
+        ]
+    )
+
+    assert code == 0, capsys.readouterr().err
+    assert check_file(out).errors == []
+    document = json.loads(out.read_text(encoding="utf-8"))
+    assert document["run"]["toolchains"]["python"] == "3.13.11"
+    assert [(metric["id"], metric["family"]) for metric in document["metrics"]] == [
+        ("micro.core.validate_type_name.simple.instructions", "micro"),
+        ("micro.orm.serde_attribute_value.string_roundtrip.instructions", "micro"),
+        ("binding.python.compilation.compile_simple_match", "binding"),
+        ("binding.python.validation.validate_single_name", "binding"),
+    ]
+
+
 def test_cli_needs_an_input_directory(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as raised:
         micro.main(["--out", str(tmp_path / "result.json")])

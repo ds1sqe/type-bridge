@@ -38,6 +38,23 @@ Each directory under `--criterion-dir` and `--iai-dir` names the crate in the
 metric ids; the ORM crate (`type-bridge-orm`, benches `serde` and
 `query_building`) goes under `orm/`. Either directory may be omitted.
 
+## Run the Python binding benchmarks locally
+
+`benchmarks/` is a pytest-benchmark suite over the Python binding: native
+query compilation, clause-to-dict marshalling and validation through
+`type_bridge_core`. Build the native module in release mode first (as
+`uv sync` does), then:
+
+```bash
+uv run pytest benchmarks --benchmark-only --benchmark-json tmp/perf/pytest-benchmark.json
+uv run python -m perf.harness.micro \
+  --pytest-benchmark tmp/perf/pytest-benchmark.json --out tmp/perf/micro.json
+```
+
+A bench `test_<name>` in `benchmarks/test_<group>_bench.py` becomes the
+metric `binding.python.<group>.<name>`. The micro job passes all three inputs
+to one `perf.harness.micro` call, so they share one result file.
+
 ## Where history lives
 
 Results from master pushes, the nightly schedule and manual dispatch are
@@ -78,6 +95,8 @@ the Documentation workflow rebuilds the site from `perf-data`.
 - **A Criterion or gungraun bench** in an existing target needs no harness
   change: its id follows from the bench id. A new bench target must be added
   to both bench lists in `perf.yml`.
+- **A Python binding bench** is a `test_*` function in
+  `benchmarks/test_<group>_bench.py`; a new module needs only that name.
 - **A new producer** writes a `perf-result/v1` file, validates it, and
   uploads it as an artifact named `perf-<family>`; the `store` job stores
   every `perf-*` artifact. Add its job to the `store` job's `needs`.

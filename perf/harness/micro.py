@@ -1,11 +1,14 @@
-"""Write one ``perf-result/v1`` file for the Rust micro benchmarks.
+"""Write one ``perf-result/v1`` file for the micro and Python binding benchmarks.
 
 Usage::
 
-    python -m perf.harness.micro --criterion-dir DIR --iai-dir DIR --out FILE
+    python -m perf.harness.micro --criterion-dir DIR --iai-dir DIR \
+        --pytest-benchmark FILE --out FILE
 
 Each directory holds one subdirectory per crate (see ``perf.harness.criterion``
-and ``perf.harness.iai``); either may be omitted, not both. The ``run`` block
+and ``perf.harness.iai``). ``--pytest-benchmark`` is the JSON of the Python
+binding benches in ``benchmarks/`` (see ``perf.harness.pytest_bench``). Any
+input may be omitted, but at least one is required. The ``run`` block
 comes from the GitHub Actions environment when present and from git and the
 host otherwise. The result is validated before it is written; the exit code
 is 1 when conversion or validation fails.
@@ -21,11 +24,12 @@ import subprocess
 import sys
 import tomllib
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-from perf.harness import criterion, iai
+from perf.harness import criterion, iai, pytest_bench
 from perf.harness.schema import TRIGGERS, Metric, PerfResult, Run, Runner, Toolchains, Trigger
 from perf.harness.validate import check
 
@@ -51,13 +55,22 @@ def collect_run(env: Mapping[str, str], *, started_at: str | None = None) -> Run
 
 
 def build(
-    run: Run, *, criterion_dir: Path | None = None, iai_dir: Path | None = None
+    run: Run,
+    *,
+    criterion_dir: Path | None = None,
+    iai_dir: Path | None = None,
+    pytest_benchmark: Path | None = None,
 ) -> PerfResult:
     metrics: list[Metric] = []
     if criterion_dir is not None:
         metrics += criterion.convert(criterion_dir)
     if iai_dir is not None:
         metrics += iai.convert(iai_dir)
+    if pytest_benchmark is not None:
+        bench = pytest_bench.convert(pytest_benchmark)
+        metrics += bench.metrics
+        # The binding benches ran on that interpreter, not on this one.
+        run = replace(run, toolchains=replace(run.toolchains, python=bench.python))
     return PerfResult(run=run, metrics=metrics)
 
 
@@ -107,21 +120,31 @@ def _run(*command: str) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m perf.harness.micro",
-        description="Convert Criterion and gungraun output into one perf-result/v1 file.",
+        description=(
+            "Convert Criterion, gungraun and pytest-benchmark output into one perf-result/v1 file."
+        ),
     )
     parser.add_argument("--criterion-dir", type=Path, help="CRITERION_HOME per crate")
     parser.add_argument("--iai-dir", type=Path, help="GUNGRAUN_HOME per crate")
+    parser.add_argument(
+        "--pytest-benchmark", type=Path, help="--benchmark-json output of benchmarks/"
+    )
     parser.add_argument("--out", type=Path, required=True, help="result file to write")
     parser.add_argument("--started-at", help="RFC 3339 run start; defaults to now")
     arguments = parser.parse_args(argv)
-    if arguments.criterion_dir is None and arguments.iai_dir is None:
-        parser.error("give --criterion-dir, --iai-dir or both")
+    if (
+        arguments.criterion_dir is None
+        and arguments.iai_dir is None
+        and arguments.pytest_benchmark is None
+    ):
+        parser.error("give at least one of --criterion-dir, --iai-dir, --pytest-benchmark")
 
     try:
         result = build(
             collect_run(os.environ, started_at=arguments.started_at),
             criterion_dir=arguments.criterion_dir,
             iai_dir=arguments.iai_dir,
+            pytest_benchmark=arguments.pytest_benchmark,
         )
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         print(f"error: {error}", file=sys.stderr)

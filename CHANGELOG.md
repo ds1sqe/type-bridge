@@ -391,6 +391,12 @@ differently direct and through a proxy. Each entry says what to do instead.
   validated `perf-result/v1` file. Master, nightly and dispatch runs are
   stored on the `perf-data` branch, and the docs site charts that history
   at `/perf/`.
+- The same `Perf` run records the Python binding benchmarks in
+  `benchmarks/` (native query compilation, clause marshalling and
+  validation through `type_bridge_core`) as `binding.python.*` metrics. The
+  suite drops its pure-Python comparison benches and
+  `benchmarks/run_benchmarks.py` with its TOML reports, and the `benchmark`
+  pytest marker is gone: run `uv run pytest benchmarks --benchmark-only`.
 
 ### Fixed
 

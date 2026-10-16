@@ -136,10 +136,9 @@ markers = [
     "integration: marks tests as integration tests (require running TypeDB)",
     "proxy: marks tests as proxy integration tests (require proxy server + TypeDB)",
     "unit: marks tests as unit tests (fast, no external dependencies)",
-    "benchmark: marks tests as benchmarks (run with --benchmark-only)",
 ]
-# By default, run only unit tests (exclude integration, proxy, and benchmark tests)
-addopts = "-m 'not integration and not benchmark and not proxy'"
+# By default, run only unit tests (exclude integration and proxy tests)
+addopts = "-m 'not integration and not proxy'"
 
 [tool.coverage.run]
 source = ["type_bridge"]

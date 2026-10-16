@@ -32,7 +32,7 @@ env:
 
 jobs:
   micro:
-    name: Rust micro benchmarks
+    name: Micro and Python binding benchmarks
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -105,11 +105,27 @@ jobs:
           GUNGRAUN_HOME="$PERF_DIR/iai/orm" cargo bench --locked -p type-bridge-orm \
             --bench serde_iai --bench query_building_iai
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      # uv builds the native module through maturin's PEP 517 backend, which
+      # uses the release profile, as the published wheel does.
+      - name: Install the Python package
+        run: uv sync --extra dev
+
+      - name: Python binding benchmarks
+        run: >-
+          uv run pytest benchmarks --benchmark-only -q -p no:cacheprovider
+          --benchmark-json "$PERF_DIR/pytest-benchmark.json"
+
       - name: Convert to a perf result
         run: >-
           python -m perf.harness.micro
           --criterion-dir "$PERF_DIR/criterion"
           --iai-dir "$PERF_DIR/iai"
+          --pytest-benchmark "$PERF_DIR/pytest-benchmark.json"
           --started-at "$PERF_STARTED_AT"
           --out "$PERF_DIR/micro.json"
 
