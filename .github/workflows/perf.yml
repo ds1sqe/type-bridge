@@ -344,6 +344,107 @@ jobs:
           path: perf-out/suite.json
           if-no-files-found: error
 
+  compare:
+    name: Base versus head micro benchmarks
+    if: github.event_name == 'pull_request'
+    needs: metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    env:
+      PERF_STARTED_AT: ${{ needs.metadata.outputs.started_at }}
+    steps:
+      - name: Checkout base
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+      - name: Checkout head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: head
+          persist-credentials: false
+      - name: Check for a base harness
+        id: harness
+        run: |
+          if [ -f base/perf/harness/micro.py ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Base predates the perf micro harness; comparison skipped"
+            echo "Base predates the perf micro harness; comparison skipped." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Set up Python
+        if: steps.harness.outputs.available == 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+      - name: Install Rust toolchain
+        if: steps.harness.outputs.available == 'true'
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+      - name: Install instruction-count tools
+        if: steps.harness.outputs.available == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y valgrind
+          cargo install gungraun-runner --version "$GUNGRAUN_RUNNER_VERSION" --locked \
+            --root "$GUNGRAUN_RUNNER_ROOT"
+          echo "$GUNGRAUN_RUNNER_ROOT/bin" >> "$GITHUB_PATH"
+      - name: Measure both revisions on this runner
+        if: steps.harness.outputs.available == 'true'
+        env:
+          GUNGRAUN_SAVE_SUMMARY: json
+        run: |
+          mkdir -p "$PERF_DIR"
+          for side in base head; do
+            (
+              cd "$GITHUB_WORKSPACE/$side"
+              export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/tmp/compare-$side"
+              export GITHUB_SHA
+              GITHUB_SHA=$(git rev-parse HEAD)
+              export GITHUB_HEAD_REF="$side"
+              for spec in 'core:type-bridge-core-lib:validation compilation schema' 'orm:type-bridge-orm:serde query_building'; do
+                IFS=: read -r group package benches <<< "$spec"
+                wall=()
+                instructions=()
+                for bench in $benches; do
+                  wall+=(--bench "$bench")
+                  instructions+=(--bench "${bench}_iai")
+                done
+                CRITERION_HOME="$PERF_DIR/$side/criterion/$group" \
+                  cargo bench --locked --manifest-path type-bridge-core/Cargo.toml \
+                  -p "$package" "${wall[@]}" -- --noplot
+                GUNGRAUN_HOME="$PERF_DIR/$side/iai/$group" \
+                  cargo bench --locked --manifest-path type-bridge-core/Cargo.toml \
+                  -p "$package" "${instructions[@]}"
+              done
+              python -m perf.harness.micro --criterion-dir "$PERF_DIR/$side/criterion" \
+                --iai-dir "$PERF_DIR/$side/iai" --started-at "$PERF_STARTED_AT" \
+                --out "$PERF_DIR/$side.json"
+            )
+          done
+      - name: Write advisory comparison
+        if: steps.harness.outputs.available == 'true'
+        working-directory: head
+        run: |
+          python -m perf.harness.compare "$PERF_DIR/base.json" "$PERF_DIR/head.json" \
+            --out "$PERF_DIR/comparison.md"
+          cat "$PERF_DIR/comparison.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload comparison evidence
+        if: steps.harness.outputs.available == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr-perf-comparison
+          path: |
+            perf-out/base.json
+            perf-out/head.json
+            perf-out/comparison.md
+          if-no-files-found: error
+
   # Appends this run's results to the history branch. Runs only for master
   # pushes, the nightly schedule and manual dispatch, never for pull
   # requests; it is the only job with write access, and it writes only the

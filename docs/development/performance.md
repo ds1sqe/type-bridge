@@ -194,3 +194,23 @@ The test fixtures are captured pytest and Node TAP output from small real runs.
 
 The workflow shares one UTC start timestamp across every producer, so jobs
 that finish on different days still merge into the same history run.
+
+## Reading a PR comparison
+
+The PR-only comparison job runs base and head Rust micro benchmarks sequentially
+on the same runner, with separate build targets. Instruction counts are the
+primary signal; Criterion wall times are noisier. The advisory job-summary table
+lists regressions first and uploads both raw result files. It never comments on
+the PR or writes history, and uses a read-only token without checkout credentials.
+A base predating the perf harness is skipped with a notice.
+
+Markers apply only beyond these noise thresholds: instructions and bytes 1%,
+nanoseconds 10%, seconds 15%, and throughput (`ops_per_s`, higher is better) 10%.
+Changes exactly at the threshold are unchanged. New/removed ids have separate
+sections; changed units are not compared. A zero baseline is unchanged at zero,
+otherwise an infinite increase. At most 200 metric rows are shown, with an
+omitted-row count. Regressions and unavailable comparisons never fail the gate.
+
+```bash
+python -m perf.harness.compare base.json head.json --out tmp/perf/comparison.md
+```
