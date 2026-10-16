@@ -88,6 +88,7 @@ pub(super) const PUBLIC_SCHEMA_NAMES: &[&str] = &[
     "RUNTIME_PROJECTION_JSON",
     "SEMANTIC_SCHEMA_FINGERPRINT",
     "SEMANTIC_SCHEMA_FINGERPRINT_JSON",
+    "schemaAuthority",
 ];
 
 /// Complete TypeScript-v1 strict-mode and contextual keyword set.

@@ -11,7 +11,7 @@ import {
   writeSync,
 } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { QueryV2Error } from "@type-bridge/node";
+import { Plan, QueryV2Error } from "@type-bridge/node";
 import { installRuntimeProjection } from "@type-bridge/node/runtime-projection";
 import { loadNative } from "../../crates/node/dist/native.js";
 
@@ -52,6 +52,7 @@ import {
   ValDuration,
   integerInput,
   qualifyingScore,
+  schemaAuthority,
 } from "./generated_v2/dist/index.js";
 import {
   Identifier as ForeignIdentifier,
@@ -165,6 +166,29 @@ assert.equal(Person.identifier.key, true);
 assert.equal(Person.identifier.unique, true);
 assert.equal(Person.identifier.multiplicity.cardinality.min, "1");
 assert.equal(Person.identifier.multiplicity.cardinality.max, "1");
+
+// Generated tokens and the embedded authority build staged plans: an
+// inherited field resolves to its declaring ownership, and the same program
+// gives the same bytes.
+function scorePlan() {
+  const plan = Plan.builder();
+  const person = plan.exact(Person);
+  const score = plan.field(person, Person.score);
+  const nickname = plan.field(person, Person.nickname);
+  plan.where(score.ge(1n)).where(nickname.ne("anonymous"));
+  plan.update(person, Person.score, plan.let("next_score", score.add(1n)));
+  return plan.build(schemaAuthority());
+}
+assert.equal(schemaAuthority(), schemaAuthority());
+assert.equal(scorePlan().writes(), true);
+assert.deepEqual(scorePlan().canonicalBytes(), scorePlan().canonicalBytes());
+{
+  const plan = Plan.builder();
+  const robot = plan.exact(Robot);
+  plan.update(robot, Robot.robotId, 1n);
+  // A key field is immutable; build reports it.
+  assert.throws(() => plan.build(schemaAuthority()), QueryV2Error);
+}
 
 const event = Event.create({ subject: person });
 assert.equal(event.subject, person);

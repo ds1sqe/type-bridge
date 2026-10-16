@@ -12,7 +12,11 @@ mod contract_test_adapter;
 pub mod limits;
 mod match_runtime;
 mod migration_catalog_runtime;
+mod plan_builder_runtime;
 mod proxy_connection_runtime;
+#[cfg(test)]
+#[path = "../../rust/tests/support/purchase_plan.rs"]
+mod purchase_plan;
 mod query_plan_v3_codec;
 mod query_v2_builder_runtime;
 mod query_v2_model_remote_runtime;
@@ -44,6 +48,7 @@ pub use migration_catalog_runtime::{
     NodeMigrationPlan, NodeMigrationPreview, NodeMigrationPreviewEntry,
     NodeMigrationVerificationFinding, NodeMigrationVerificationReport, open_migration_catalog,
 };
+pub use plan_builder_runtime::{NodePlan, NodePlanBuilder, NodePlanOperand};
 pub use proxy_connection_runtime::NodeProxyConnection;
 pub use query_plan_v3_codec::{_query_plan_v3_round_trip, QueryPlanV3Encoding};
 pub use query_v2_model_remote_runtime::{

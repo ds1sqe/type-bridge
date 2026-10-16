@@ -115,7 +115,7 @@ fn oversized_scalar(value_type: ValueTypeTag) -> Diagnostic {
     .expect_err("oversized text marker cannot be canonical")
 }
 
-fn node_scalar(
+pub(crate) fn node_scalar(
     env: &Env,
     value_type: ValueTypeTag,
     value: Unknown,

@@ -3,6 +3,7 @@ import type {
   NativeStagedTransaction,
 } from "./native.js";
 import { ownedByteSnapshot } from "./owned-bytes.js";
+import { nativePlan, type Plan } from "./plan.js";
 import { queryV2NativeCall, queryV2NativePromise } from "./query-v2-internals.js";
 
 /** Provider transaction kind; an omitted kind is inferred from staged writes. */
@@ -37,10 +38,23 @@ export class PendingPlanAnswer {
   }
 }
 
+// `Symbol.asyncDispose` exists in the type only where the consumer's lib
+// declares it (TypeScript 5.2+ `esnext.disposable`, or `@types/node`), so
+// older consumers still compile these declarations.
+type AsyncDisposeSymbol = SymbolConstructor extends { readonly asyncDispose: infer Key extends symbol }
+  ? Key
+  : never;
+type AsyncDisposable = { readonly [Key in AsyncDisposeSymbol]: () => Promise<void> };
+
+export interface StagedTransaction extends AsyncDisposable {}
+
 /**
  * A logical transaction, direct or over the proxy. Nothing opens until
  * `commit`; each commit is one atomic provider transaction, and over the
  * proxy one signed `query-remote/v3` exchange with a fresh idempotency key.
+ *
+ * TypeScript never commits implicitly: `await using tx = ...` closes the
+ * transaction at scope exit without committing.
  */
 export class StagedTransaction {
   readonly #native: NativeStagedTransaction;
@@ -49,6 +63,16 @@ export class StagedTransaction {
   constructor(native: NativeStagedTransaction) {
     this.#native = native;
     Object.freeze(this);
+  }
+
+  /**
+   * Stage one plan from `PlanBuilder.build`; its answer resolves at commit.
+   * A `read` transaction refuses write plans and a `schema` transaction
+   * refuses every plan.
+   */
+  stage(plan: Plan): PendingPlanAnswer {
+    const native = nativePlan(plan);
+    return new PendingPlanAnswer(queryV2NativeCall(() => this.#native.stage(native)));
   }
 
   /** Stage one canonical `query-plan/v3` program validated under `declaredSchema`. */
@@ -75,6 +99,14 @@ export class StagedTransaction {
     return queryV2NativePromise(queryV2NativeCall(() => this.#native.commitRetry()));
   }
 
+  /**
+   * Whether a proxy commit's outcome is unknown, so its writes may have
+   * applied and only {@link commitRetry} can tell.
+   */
+  hasUnknownOutcome(): boolean {
+    return queryV2NativeCall(() => this.#native.hasUnknownOutcome());
+  }
+
   /** Discard staged work and keep the transaction for reuse. */
   rollback(): void {
     queryV2NativeCall(() => this.#native.rollback());
@@ -83,5 +115,22 @@ export class StagedTransaction {
   /** Discard staged work and make the transaction terminal. */
   close(): void {
     queryV2NativeCall(() => this.#native.close());
+  }
+
+  // `await using` closes without committing once a running commit settles;
+  // an already closed transaction stays closed. Installed only where the
+  // runtime has `Symbol.asyncDispose` (Node 18.18+).
+  static {
+    const key = (Symbol as { readonly asyncDispose?: symbol }).asyncDispose;
+    if (key !== undefined) {
+      Object.defineProperty(this.prototype, key, {
+        configurable: true,
+        writable: true,
+        value(this: StagedTransaction): Promise<void> {
+          const native = this.#native;
+          return queryV2NativePromise(queryV2NativeCall(() => native.dispose()));
+        },
+      });
+    }
   }
 }

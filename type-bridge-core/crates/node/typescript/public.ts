@@ -41,6 +41,21 @@ export {
   StagedTransaction,
   type PlanAnswer,
   type StagedTransactionKind,
+  Plan,
+  PlanBuilder,
+  PlanCondition,
+  PlanExpr,
+  PlanInput,
+  PlanInputValue,
+  PlanNewThing,
+  PlanThing,
+  PlanValue,
+  type PlanFieldToken,
+  type PlanLiteral,
+  type PlanModelToken,
+  type PlanOperand,
+  type PlanRoleToken,
+  type PlanValueType,
 } from "./index.js";
 
 export type {

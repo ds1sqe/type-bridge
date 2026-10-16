@@ -1,4 +1,5 @@
 import type { NativeModule, NativeRustDatabase, NativeRustTransactionContext } from "./index.js";
+import type { NativeQueryV2Authority } from "./query-v2-internals.js";
 import type { NativeProjectedFacadeProof, NativeProjectedManager, NativeProjectedValueEnvelope, RuntimeProjectionInstall } from "./runtime-projection.js";
 type NativeProjectedBatchAuthority = Parameters<NonNullable<RuntimeProjectionInstall["projectedBatchMaterializer"]>>[3];
 type NativeMatchComparison = "equal" | "not_equal" | "less_than" | "less_than_or_equal" | "greater_than" | "greater_than_or_equal" | "contains" | "starts_with" | "ends_with" | "regex";
@@ -181,10 +182,55 @@ export interface NativePendingPlanAnswer {
 }
 export interface NativeStagedTransaction {
     stagePlan(planBytes: Uint8Array, schemaBytes: Uint8Array): NativePendingPlanAnswer;
+    stage(plan: NativePlan): NativePendingPlanAnswer;
+    hasUnknownOutcome(): boolean;
     commit(): Promise<void>;
     commitRetry(): Promise<void>;
     rollback(): void;
     close(): void;
+    dispose(): Promise<void>;
+}
+/** One operand: a binding, an input column, or a registered literal. */
+export interface NativePlanOperand {
+    readonly kind: "binding" | "input" | "literal";
+    readonly index: number;
+}
+/** One validated `query-plan/v3` program. */
+export interface NativePlan {
+    canonicalBytes(): Uint8Array;
+    fingerprint(): string;
+    writes(): boolean;
+}
+/** The shared core plan builder; handles are dense indexes. */
+export interface NativePlanBuilder {
+    exact(typeJson: string): number;
+    subtypes(typeJson: string): number;
+    field(owner: number, ownsJson: string): number;
+    links(relation: number, roleJson: string, player: number): void;
+    compare(left: NativePlanOperand, comparator: string, right: NativePlanOperand): void;
+    input(name: string, valueType: string, optional: boolean): number;
+    literal(valueType: string, value: unknown): number;
+    exprOperand(operand: NativePlanOperand): number;
+    exprArith(op: string, lhs: number, rhs: number): number;
+    exprCall(func: string, args: number[]): number;
+    let(name: string, expr: number): number;
+    update(owner: number, ownsJson: string, value: NativePlanOperand): void;
+    updatePlayer(relation: number, roleJson: string, player: number): void;
+    insert(typeJson: string): number;
+    put(typeJson: string): number;
+    thingField(thing: number, ownsJson: string, value: NativePlanOperand): void;
+    thingPlayer(thing: number, roleJson: string, player: number): void;
+    delete(thing: number): void;
+    deleteField(owner: number, ownsJson: string): void;
+    deletePlayer(relation: number, roleJson: string, player: number): void;
+    row(columns: number[], literals: (number | null)[]): void;
+    returning(columns: number[]): void;
+    count(): void;
+    exists(): void;
+    build(authority: NativeQueryV2Authority): NativePlan;
+}
+interface NativePlanBuilderModule {
+    NodePlanBuilder: new () => NativePlanBuilder;
 }
 /** Native proxy connection over the built-in HTTP route. */
 export interface NativeProxyConnection {
@@ -284,7 +330,7 @@ interface NativeRuntimeProjectionHandle {
 interface NativeRuntimeProjectionModule {
     NodeRuntimeProjection: new (projectionJson: string, semanticFingerprintJson: string, projectionFingerprintJson: string, registrationsJson: string, schemaAuthorityJson?: string, projectedBatchMaterializer?: (typeKey: string, ordinal: number, json: string, authority: NativeProjectedBatchAuthority) => object) => NativeRuntimeProjectionHandle;
 }
-type LoadedNativeModule = NativeModule & NativeLimitsModule & NativeEnumSpellingModule & NativeRemoteModelQueryModule & NativeProxyConnectionModule & NativeRuntimeProjectionModule;
+type LoadedNativeModule = NativeModule & NativeLimitsModule & NativeEnumSpellingModule & NativeRemoteModelQueryModule & NativeProxyConnectionModule & NativePlanBuilderModule & NativeRuntimeProjectionModule;
 /**
  * Loads and returns the native .node module. The result is cached after the
  * first successful load; subsequent calls return the same object.

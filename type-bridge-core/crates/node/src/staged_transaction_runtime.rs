@@ -16,6 +16,7 @@ use type_bridge_orm::session::staged::{
     Pending, PendingError, PlanAnswer, Transaction, TransactionKind, TransactionOptions,
 };
 
+use crate::plan_builder_runtime::NodePlan;
 use crate::proxy_connection_runtime::settle;
 use crate::query_v2_runtime::non_shared_buffer;
 
@@ -156,6 +157,36 @@ impl NodeStagedTransaction {
             .stage_plan(&plan)
             .map_err(|error| pending_error(&error))?;
         Ok(NodePendingPlanAnswer { inner })
+    }
+
+    /// Stage one plan built by the plan builder. Nothing is sent until
+    /// commit.
+    #[napi]
+    pub fn stage(&self, plan: &NodePlan) -> napi::Result<NodePendingPlanAnswer> {
+        let inner = self
+            .lock()?
+            .stage_plan(plan.inner())
+            .map_err(|error| pending_error(&error))?;
+        Ok(NodePendingPlanAnswer { inner })
+    }
+
+    /// Whether a proxy commit with an unknown outcome awaits `commitRetry`.
+    #[napi(js_name = "hasUnknownOutcome")]
+    pub fn has_unknown_outcome(&self) -> napi::Result<bool> {
+        Ok(self.lock()?.has_unknown_outcome())
+    }
+
+    /// Close without committing once any running commit settles; a closed
+    /// transaction stays closed.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn dispose(&self, env: Env) -> napi::Result<Object<'static>> {
+        let inner = Arc::clone(&self.inner);
+        settle(&env, &self.runtime, async move {
+            match inner.lock().await.close() {
+                Ok(()) | Err(PendingError::Closed) => Ok(()),
+                Err(error) => Err(pending_error(&error)),
+            }
+        })
     }
 
     /// Fire the staged stack; answers become visible only on success.

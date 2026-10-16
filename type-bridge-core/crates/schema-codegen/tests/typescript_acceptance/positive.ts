@@ -48,8 +48,9 @@ import {
   type QueryConnection,
   QueryExecutionResourceLimits,
   connectProxy,
+  schemaAuthority,
 } from "./generated_v2/src/index.js";
-import type { RustDatabase } from "@type-bridge/node";
+import { Plan, type PendingPlanAnswer, type RustDatabase } from "@type-bridge/node";
 
 const identifier = Identifier.create("person-1");
 const identifierBytes: Uint8Array = Identifier.encodeAttribute(identifier);
@@ -338,3 +339,22 @@ void Event.subject;
 void Person.identifier;
 void legacyRows;
 void legacySession;
+
+// Staged plans take generated model, field and role tokens.
+async function stagedScore(db: RustDatabase): Promise<PendingPlanAnswer> {
+  const plan = Plan.builder();
+  const planPerson = plan.exact(Person);
+  const planEmployment = plan.subtypes(Employment);
+  const planScore = plan.field(planPerson, Person.score);
+  plan.links(planEmployment, Employment.employee, planPerson).where(planScore.lt(10n));
+  plan.update(planPerson, Person.score, plan.let("next_score", planScore.add(1n)));
+  const tx = db.stagedTransaction();
+  try {
+    const answer = tx.stage(plan.build(schemaAuthority()));
+    await tx.commit();
+    return answer;
+  } finally {
+    tx.close();
+  }
+}
+void stagedScore;

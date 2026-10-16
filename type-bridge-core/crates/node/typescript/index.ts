@@ -960,7 +960,8 @@ export class RustDatabase {
 
   /**
    * Create a deferred staged transaction; nothing opens until commit. An
-   * omitted kind is inferred from the staged writes.
+   * omitted kind is inferred from the staged writes. Stage plans from
+   * `PlanBuilder`; TypeScript never commits implicitly.
    */
   stagedTransaction(kind?: StagedTransactionKind): StagedTransaction {
     return new StagedTransaction(
@@ -1100,3 +1101,20 @@ export {
   type PlanAnswer,
   type StagedTransactionKind,
 } from "./staged-transaction.js";
+export {
+  Plan,
+  PlanBuilder,
+  PlanCondition,
+  PlanExpr,
+  PlanInput,
+  PlanInputValue,
+  PlanNewThing,
+  PlanThing,
+  PlanValue,
+  type PlanFieldToken,
+  type PlanLiteral,
+  type PlanModelToken,
+  type PlanOperand,
+  type PlanRoleToken,
+  type PlanValueType,
+} from "./plan.js";

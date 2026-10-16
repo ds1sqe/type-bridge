@@ -6,6 +6,7 @@ import type {
   NativeRustTransactionContext,
 } from "./index.js";
 import { ownedByteSnapshot } from "./owned-bytes.js";
+import type { NativeQueryV2Authority } from "./query-v2-internals.js";
 import type {
   NativeProjectedFacadeProof,
   NativeProjectedManager,
@@ -385,10 +386,59 @@ export interface NativePendingPlanAnswer {
 
 export interface NativeStagedTransaction {
   stagePlan(planBytes: Uint8Array, schemaBytes: Uint8Array): NativePendingPlanAnswer;
+  stage(plan: NativePlan): NativePendingPlanAnswer;
+  hasUnknownOutcome(): boolean;
   commit(): Promise<void>;
   commitRetry(): Promise<void>;
   rollback(): void;
   close(): void;
+  dispose(): Promise<void>;
+}
+
+/** One operand: a binding, an input column, or a registered literal. */
+export interface NativePlanOperand {
+  readonly kind: "binding" | "input" | "literal";
+  readonly index: number;
+}
+
+/** One validated `query-plan/v3` program. */
+export interface NativePlan {
+  canonicalBytes(): Uint8Array;
+  fingerprint(): string;
+  writes(): boolean;
+}
+
+/** The shared core plan builder; handles are dense indexes. */
+export interface NativePlanBuilder {
+  exact(typeJson: string): number;
+  subtypes(typeJson: string): number;
+  field(owner: number, ownsJson: string): number;
+  links(relation: number, roleJson: string, player: number): void;
+  compare(left: NativePlanOperand, comparator: string, right: NativePlanOperand): void;
+  input(name: string, valueType: string, optional: boolean): number;
+  literal(valueType: string, value: unknown): number;
+  exprOperand(operand: NativePlanOperand): number;
+  exprArith(op: string, lhs: number, rhs: number): number;
+  exprCall(func: string, args: number[]): number;
+  let(name: string, expr: number): number;
+  update(owner: number, ownsJson: string, value: NativePlanOperand): void;
+  updatePlayer(relation: number, roleJson: string, player: number): void;
+  insert(typeJson: string): number;
+  put(typeJson: string): number;
+  thingField(thing: number, ownsJson: string, value: NativePlanOperand): void;
+  thingPlayer(thing: number, roleJson: string, player: number): void;
+  delete(thing: number): void;
+  deleteField(owner: number, ownsJson: string): void;
+  deletePlayer(relation: number, roleJson: string, player: number): void;
+  row(columns: number[], literals: (number | null)[]): void;
+  returning(columns: number[]): void;
+  count(): void;
+  exists(): void;
+  build(authority: NativeQueryV2Authority): NativePlan;
+}
+
+interface NativePlanBuilderModule {
+  NodePlanBuilder: new () => NativePlanBuilder;
 }
 
 /** Native proxy connection over the built-in HTTP route. */
@@ -680,6 +730,7 @@ type LoadedNativeModule =
   & NativeEnumSpellingModule
   & NativeRemoteModelQueryModule
   & NativeProxyConnectionModule
+  & NativePlanBuilderModule
   & NativeRuntimeProjectionModule;
 type LoadedNativePendingQueryV2Remote = ReturnType<
   LoadedNativeModule["queryV2PrepareRemote"]

@@ -1,4 +1,5 @@
 import type { NativePendingPlanAnswer, NativeStagedTransaction } from "./native.js";
+import { type Plan } from "./plan.js";
 /** Provider transaction kind; an omitted kind is inferred from staged writes. */
 export type StagedTransactionKind = "read" | "write" | "schema";
 /** The answer a committed `query-plan/v3` program resolves to. */
@@ -26,15 +27,32 @@ export declare class PendingPlanAnswer {
      */
     get(): PlanAnswer;
 }
+type AsyncDisposeSymbol = SymbolConstructor extends {
+    readonly asyncDispose: infer Key extends symbol;
+} ? Key : never;
+type AsyncDisposable = {
+    readonly [Key in AsyncDisposeSymbol]: () => Promise<void>;
+};
+export interface StagedTransaction extends AsyncDisposable {
+}
 /**
  * A logical transaction, direct or over the proxy. Nothing opens until
  * `commit`; each commit is one atomic provider transaction, and over the
  * proxy one signed `query-remote/v3` exchange with a fresh idempotency key.
+ *
+ * TypeScript never commits implicitly: `await using tx = ...` closes the
+ * transaction at scope exit without committing.
  */
 export declare class StagedTransaction {
     #private;
     /** @internal */
     constructor(native: NativeStagedTransaction);
+    /**
+     * Stage one plan from `PlanBuilder.build`; its answer resolves at commit.
+     * A `read` transaction refuses write plans and a `schema` transaction
+     * refuses every plan.
+     */
+    stage(plan: Plan): PendingPlanAnswer;
     /** Stage one canonical `query-plan/v3` program validated under `declaredSchema`. */
     stagePlan(plan: Uint8Array, declaredSchema: Uint8Array): PendingPlanAnswer;
     /** Fire the staged stack; answers become visible only on success. */
@@ -46,8 +64,14 @@ export declare class StagedTransaction {
      * state, and every direct transaction, rejects with a lifecycle error.
      */
     commitRetry(): Promise<void>;
+    /**
+     * Whether a proxy commit's outcome is unknown, so its writes may have
+     * applied and only {@link commitRetry} can tell.
+     */
+    hasUnknownOutcome(): boolean;
     /** Discard staged work and keep the transaction for reuse. */
     rollback(): void;
     /** Discard staged work and make the transaction terminal. */
     close(): void;
 }
+export {};
