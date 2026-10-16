@@ -775,7 +775,7 @@ and fails the byte-for-byte CI freshness check.
 - C root: `crates/c/Cargo.toml` with default features
 - Release targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`
 - Excluded from this package inventory: build-only and development-only dependencies, plus private TypeBridge-authored crates covered by the MIT section
-- Closure fingerprint: `sha256:5888363973e32643807c20dc96b35aa5bed83edd4decc2f77a2acaf88d533d52`
+- Closure fingerprint: `sha256:2358ecbabdb9d8b1fd02ca096d5e8b0486fa418af46ef7456f635126b9ca4141`
 
 Every evaluated package's complete cargo-about-resolved SPDX expression is retained
 below. The
