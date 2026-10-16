@@ -12,8 +12,8 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, Diagnosti
 use type_bridge_contract::limits::MAX_CANONICAL_COLLECTION_LEN;
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::{
-    InputRow, QueryInvocation, QueryOperand, QueryOperation, QueryOutput, QueryPattern, QueryPlan,
-    ReadStage,
+    InputColumn, InputRow, LocalFunction, QueryInvocation, QueryOperand, QueryOperation,
+    QueryOutput, QueryPattern, QueryPlan, ReadStage,
 };
 use type_bridge_query::{
     DocumentColumnShape, DocumentSchema, OutputSchema, RowSchema, ValidatedQuery,
@@ -106,41 +106,10 @@ fn lower_validated_query_with_execution_limits(
     let (row, given) = match invocation.inputs() {
         [] => (None, None),
         [row] if !invocation_requires_given(invocation) => (Some(row), None),
-        rows => (None, Some(given_rows_spec(plan, rows)?)),
+        rows => (None, Some(given_rows_spec(plan.inputs(), rows)?)),
     };
 
-    let mut functions = Vec::new();
-    for function in plan.functions() {
-        let arguments = function
-            .parameters()
-            .iter()
-            .enumerate()
-            .map(|(index, label)| {
-                Ok((
-                    local_variable(
-                        function.bindings(),
-                        BindingId::new(u16::try_from(index).expect("dense parameter ordinal"))?,
-                    )?,
-                    label.as_str(),
-                ))
-            })
-            .collect::<Result<Vec<_>, Diagnostic>>()?;
-        let body = lower_scoped_patterns(plan, function.bindings(), function.body(), None, None)?;
-        let reducer = ast(tql::reducer(
-            reducer_keyword(function.returns().reducer()),
-            Some(local_variable(
-                function.bindings(),
-                function.returns().input(),
-            )?),
-        ))?;
-        functions.push(ast(tql::function_definition(
-            function.name().label().as_str(),
-            &arguments,
-            function.returns().value_type(),
-            vec![tql::match_stage(body)],
-            reducer,
-        ))?);
-    }
+    let functions = lower_functions(plan.inputs(), plan.functions())?;
     let mut stages = Vec::new();
     if let Some(spec) = &given {
         stages.push(ast(tql::given(
@@ -160,7 +129,7 @@ fn lower_validated_query_with_execution_limits(
         ));
     };
     stages.push(tql::match_stage(lower_scoped_patterns(
-        plan,
+        plan.inputs(),
         plan.bindings(),
         patterns,
         row,
@@ -316,6 +285,46 @@ fn lower_validated_query_with_execution_limits(
     })
 }
 
+/// Lower plan-local read functions into the pipeline preamble.
+pub(crate) fn lower_functions(
+    inputs: &[InputColumn],
+    functions: &[LocalFunction],
+) -> Result<Vec<tql::FunctionDefinition>, Diagnostic> {
+    let mut output = Vec::new();
+    for function in functions {
+        let arguments = function
+            .parameters()
+            .iter()
+            .enumerate()
+            .map(|(index, label)| {
+                Ok((
+                    local_variable(
+                        function.bindings(),
+                        BindingId::new(u16::try_from(index).expect("dense parameter ordinal"))?,
+                    )?,
+                    label.as_str(),
+                ))
+            })
+            .collect::<Result<Vec<_>, Diagnostic>>()?;
+        let body = lower_scoped_patterns(inputs, function.bindings(), function.body(), None, None)?;
+        let reducer = ast(tql::reducer(
+            reducer_keyword(function.returns().reducer()),
+            Some(local_variable(
+                function.bindings(),
+                function.returns().input(),
+            )?),
+        ))?;
+        output.push(ast(tql::function_definition(
+            function.name().label().as_str(),
+            &arguments,
+            function.returns().value_type(),
+            vec![tql::match_stage(body)],
+            reducer,
+        ))?);
+    }
+    Ok(output)
+}
+
 /// Charge schema-refined reachability lowering against the validated plan's
 /// aggregate predicate-node budget before any provider call.
 ///
@@ -436,12 +445,11 @@ fn reachability_expansion_limit() -> Diagnostic {
 /// the active driver can carry without narrowing. Provider-domain durations
 /// use exact unsigned components after preflight rejects negative or wider
 /// contract values.
-fn given_rows_spec(
-    plan: &QueryPlan,
+pub(crate) fn given_rows_spec(
+    inputs: &[InputColumn],
     rows: &[type_bridge_contract::query_plan::InputRow],
 ) -> Result<crate::session::backend::GivenRowsSpec, Diagnostic> {
-    let variables = plan
-        .inputs()
+    let variables = inputs
         .iter()
         .map(|column| {
             if given_type_keyword(column.value_type()).is_none() {
@@ -556,7 +564,7 @@ pub(crate) fn preflight_invocation_transport(
         type_bridge_schema::validate_provider_temporal_value(value)?;
     }
     if invocation_requires_given(invocation) {
-        given_rows_spec(plan, invocation.inputs())?;
+        given_rows_spec(plan.inputs(), invocation.inputs())?;
     }
     Ok(())
 }
@@ -584,7 +592,7 @@ pub(crate) fn ast<T>(result: Result<T, tql::TqlError>) -> Result<T, Diagnostic> 
     })
 }
 
-fn reducer_keyword(reducer: type_bridge_contract::query_plan::Reducer) -> &'static str {
+pub(crate) fn reducer_keyword(reducer: type_bridge_contract::query_plan::Reducer) -> &'static str {
     use type_bridge_contract::query_plan::Reducer;
     match reducer {
         Reducer::Count => "count",
@@ -607,8 +615,8 @@ fn variable_names<'a>(
         .collect()
 }
 
-fn lower_scoped_patterns(
-    plan: &QueryPlan,
+pub(crate) fn lower_scoped_patterns(
+    inputs: &[InputColumn],
     bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
     patterns: &[QueryPattern],
     row: Option<&InputRow>,
@@ -670,21 +678,21 @@ fn lower_scoped_patterns(
                 left,
                 right,
             } => output.push(ast(tql::compare(
-                lower_operand(plan, bindings, left, row)?,
+                lower_operand(inputs, bindings, left, row)?,
                 render_comparator(*comparator),
-                lower_operand(plan, bindings, right, row)?,
+                lower_operand(inputs, bindings, right, row)?,
             ))?),
             QueryPattern::Or { branches } => output.push(tql::or(
                 branches
                     .iter()
-                    .map(|branch| lower_scoped_patterns(plan, bindings, branch, row, validated))
+                    .map(|branch| lower_scoped_patterns(inputs, bindings, branch, row, validated))
                     .collect::<Result<_, _>>()?,
             )),
             QueryPattern::Not { patterns } => output.push(tql::not(lower_scoped_patterns(
-                plan, bindings, patterns, row, validated,
+                inputs, bindings, patterns, row, validated,
             )?)),
             QueryPattern::Try { patterns } => output.push(tql::optional(lower_scoped_patterns(
-                plan, bindings, patterns, row, validated,
+                inputs, bindings, patterns, row, validated,
             )?)),
             QueryPattern::Reachable {
                 min_depth,
@@ -763,7 +771,7 @@ fn lower_scoped_patterns(
             } => {
                 let arguments = arguments
                     .iter()
-                    .map(|argument| lower_operand(plan, bindings, argument, row))
+                    .map(|argument| lower_operand(inputs, bindings, argument, row))
                     .collect::<Result<_, _>>()?;
                 output.push(ast(tql::let_value(
                     &[local_variable(bindings, *assigned)?],
@@ -776,8 +784,8 @@ fn lower_scoped_patterns(
     Ok(output)
 }
 
-fn lower_operand(
-    plan: &QueryPlan,
+pub(crate) fn lower_operand(
+    inputs: &[InputColumn],
     bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
     operand: &QueryOperand,
     row: Option<&InputRow>,
@@ -799,7 +807,7 @@ fn lower_operand(
                     })?,
             )),
             None => ast(tql::var(
-                plan.inputs()
+                inputs
                     .get(usize::from(column.get()))
                     .ok_or_else(|| {
                         failure(
@@ -834,7 +842,7 @@ fn variable(plan: &QueryPlan, binding: BindingId) -> Result<&str, Diagnostic> {
     local_variable(plan.bindings(), binding)
 }
 
-fn local_variable(
+pub(crate) fn local_variable(
     bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
     binding: BindingId,
 ) -> Result<&str, Diagnostic> {

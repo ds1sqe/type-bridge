@@ -837,6 +837,15 @@ run_live_lane() {
             --test transaction_options_live --test staged_transaction_live
 
     if [[ "$typedb_server_version" == "3.13.6" ]]; then
+        run_step "staged query-plan/v3 programs resolve at commit (TypeDB 3.13.6)" \
+            run_with_timeout 10m \
+            env TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS="$TYPEDB_ADDRESS" \
+                TYPE_BRIDGE_TRANSACTION_LIVE_VERSION="$typedb_server_version" \
+                TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+                TYPEDB_USERNAME="${TYPEDB_USERNAME-admin}" \
+                TYPEDB_PASSWORD="${TYPEDB_PASSWORD-password}" \
+            cargo test --manifest-path type-bridge-core/Cargo.toml --locked \
+                -p type-bridge-orm --test plan_execute_live
         run_step "concurrency guide TypeQL snippets (TypeDB 3.13.6)" \
             run_with_timeout 5m \
             env TYPE_BRIDGE_CONCURRENCY_LIVE_ADDRESS="$TYPEDB_ADDRESS" \

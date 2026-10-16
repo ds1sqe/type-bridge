@@ -386,6 +386,22 @@ pub fn delete_has(owner: &str, attribute: &str) -> Result<Deletable, TqlError> {
     })
 }
 
+/// Build `links ($role: $player, ...) of $relation`, which removes only the
+/// listed role players from the relation bound to `relation`; the relation
+/// and the players remain. `players` pairs a role label with a player
+/// variable name, both without sigils.
+pub fn delete_links(relation: &str, players: Vec<(&str, &str)>) -> Result<Deletable, TqlError> {
+    Ok(Deletable {
+        inner: delete::Deletable::new(
+            None,
+            delete::DeletableKind::Links {
+                players: self::relation(players)?,
+                relation: variable(relation)?,
+            },
+        ),
+    })
+}
+
 pub fn delete_optional(items: Vec<Deletable>) -> Deletable {
     Deletable {
         inner: delete::Deletable::new(

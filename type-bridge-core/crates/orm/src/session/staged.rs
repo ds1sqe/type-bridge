@@ -5,7 +5,11 @@ use std::time::{Duration, Instant};
 
 use super::backend::{BoundedAnswerLimits, DriverBackend, GivenRowsSpec, QueryResult, TxType};
 use crate::error::{ClassifiedCommitError, OrmError};
+use crate::match_request::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
+pub use crate::query_plan_exec::PlanAnswer;
+use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::failure::Failure;
+use type_bridge_contract::query_plan::v3::{Operation, QueryPlanV3};
 use type_bridge_contract::sdk_diagnostic::{
     FailureContext, SdkExecutionDiagnostic, SdkProviderOperation,
 };
@@ -150,6 +154,9 @@ pub enum PendingError {
     /// An explicit read transaction refuses writes.
     #[error("Read transaction cannot stage a write")]
     ReadOnly,
+    /// The plan cannot lower to one provider query; nothing was staged.
+    #[error("Plan cannot be staged: {}", .0.message())]
+    InvalidPlan(Box<Diagnostic>),
     /// Every pending answer observes the same failed execution.
     #[error("Transaction execution failed{index}: {message}", index = format_op_index(*op_index))]
     Failed {
@@ -266,15 +273,79 @@ impl<T> Pending<T> {
         self.state.lock().unwrap().clone()
     }
 }
+/// Keep a malformed plan answer's structured code in the commit error.
+fn plan_answer_error(diagnostic: Diagnostic) -> OrmError {
+    MatchError::new(
+        MatchErrorCategory::ResultDecode,
+        diagnostic.code().as_str(),
+        diagnostic.message(),
+    )
+    .at(MatchErrorPathSegment::Result)
+    .into()
+}
+
+fn close_if_pending<T>(state: &AnswerState<T>) {
+    let mut state = state.lock().unwrap();
+    if matches!(*state, Err(PendingError::NotCommitted)) {
+        *state = Err(PendingError::Closed);
+    }
+}
+
+/// Where one staged item's answer goes, and how it resolves.
+enum Slot {
+    Query(AnswerState<QueryResult>),
+    Plan {
+        state: AnswerState<PlanAnswer>,
+        operation: Operation,
+    },
+}
+/// An answer resolved during commit, published only after commit succeeds.
+enum Resolved {
+    Query(QueryResult),
+    Plan(PlanAnswer),
+}
+impl Slot {
+    fn fail(&self, error: PendingError) {
+        match self {
+            Self::Query(state) => *state.lock().unwrap() = Err(error),
+            Self::Plan { state, .. } => *state.lock().unwrap() = Err(error),
+        }
+    }
+    fn close_if_pending(&self) {
+        match self {
+            Self::Query(state) => close_if_pending(state),
+            Self::Plan { state, .. } => close_if_pending(state),
+        }
+    }
+    fn resolve(&self, answer: QueryResult) -> Result<Resolved, Diagnostic> {
+        match self {
+            Self::Query(_) => Ok(Resolved::Query(answer)),
+            Self::Plan { operation, .. } => {
+                crate::query_plan_exec::resolve(*operation, answer).map(Resolved::Plan)
+            }
+        }
+    }
+    fn publish(&self, answer: Resolved) {
+        match (self, answer) {
+            (Self::Query(state), Resolved::Query(answer)) => {
+                *state.lock().unwrap() = Ok(Arc::new(answer));
+            }
+            (Self::Plan { state, .. }, Resolved::Plan(answer)) => {
+                *state.lock().unwrap() = Ok(Arc::new(answer));
+            }
+            _ => unreachable!("answers resolve through their own slot"),
+        }
+    }
+}
 struct Item {
     query: StagedQuery,
-    state: AnswerState<QueryResult>,
+    slot: Slot,
 }
 struct Execution(Vec<Item>);
 impl Execution {
     fn fail(&self, error: PendingError) {
         for item in &self.0 {
-            *item.state.lock().unwrap() = Err(error.clone());
+            item.slot.fail(error.clone());
         }
     }
 }
@@ -282,10 +353,7 @@ impl Drop for Execution {
     fn drop(&mut self) {
         // Also resolves handles when a commit future is cancelled.
         for item in &self.0 {
-            let mut state = item.state.lock().unwrap();
-            if matches!(*state, Err(PendingError::NotCommitted)) {
-                *state = Err(PendingError::Closed);
-            }
+            item.slot.close_if_pending();
         }
     }
 }
@@ -333,18 +401,46 @@ impl Transaction {
     }
     /// Queue one query without opening a provider transaction.
     pub fn stage(&mut self, query: StagedQuery) -> Result<Pending<QueryResult>, PendingError> {
-        if self.closed {
-            return Err(PendingError::Closed);
-        }
-        if query.writes && self.options.kind == Some(TransactionKind::Read) {
-            return Err(PendingError::ReadOnly);
-        }
+        self.admit(query.writes)?;
         let state = Arc::new(Mutex::new(Err(PendingError::NotCommitted)));
         self.stack.0.push(Item {
             query,
-            state: Arc::clone(&state),
+            slot: Slot::Query(Arc::clone(&state)),
         });
         Ok(Pending { state })
+    }
+    /// Queue one validated `query-plan/v3` program as one provider query.
+    ///
+    /// The plan lowers now, so an unrepresentable plan fails here and stages
+    /// nothing. Its answer resolves at commit from the pipeline's own answer
+    /// stream: `Matched` counts the rows a write produced, `Rows` carries
+    /// the projection appended to the same pipeline. A plan that writes
+    /// makes an inferred kind `Write`.
+    pub fn stage_plan(&mut self, plan: &QueryPlanV3) -> Result<Pending<PlanAnswer>, PendingError> {
+        self.admit(plan.writes())?;
+        let query = crate::query_plan_exec::staged_query(
+            plan,
+            super::database::backend_supports_given_stage(self.backend.as_ref()),
+        )
+        .map_err(|diagnostic| PendingError::InvalidPlan(Box::new(diagnostic)))?;
+        let state = Arc::new(Mutex::new(Err(PendingError::NotCommitted)));
+        self.stack.0.push(Item {
+            query,
+            slot: Slot::Plan {
+                state: Arc::clone(&state),
+                operation: plan.operation(),
+            },
+        });
+        Ok(Pending { state })
+    }
+    fn admit(&self, writes: bool) -> Result<(), PendingError> {
+        if self.closed {
+            return Err(PendingError::Closed);
+        }
+        if writes && self.options.kind == Some(TransactionKind::Read) {
+            return Err(PendingError::ReadOnly);
+        }
+        Ok(())
     }
     /// Fire queued queries in order and expose their answers after success only.
     pub async fn commit(&mut self) -> Result<(), CommitError> {
@@ -395,7 +491,11 @@ impl Transaction {
                         item.query.canonical,
                     )
                     .await;
-                match result {
+                // Plan answers resolve before the provider commit, so a
+                // malformed answer aborts instead of surfacing after writes.
+                let resolved =
+                    result.and_then(|answer| item.slot.resolve(answer).map_err(plan_answer_error));
+                match resolved {
                     Ok(answer) => answers.push(answer),
                     Err(error) => {
                         if kind != TransactionKind::Read {
@@ -429,7 +529,7 @@ impl Transaction {
         match result {
             Ok(answers) => {
                 for (item, answer) in execution.0.iter().zip(answers) {
-                    *item.state.lock().unwrap() = Ok(Arc::new(answer));
+                    item.slot.publish(answer);
                 }
                 Ok(())
             }
@@ -475,6 +575,9 @@ mod tests {
         events: Vec<String>,
         kinds: Vec<TxType>,
         fail_close: bool,
+        given: bool,
+        rows: usize,
+        answer_ok: bool,
     }
     struct Fake(Arc<Mutex<State>>);
     impl DriverBackend for Fake {
@@ -489,12 +592,29 @@ mod tests {
         fn is_open(&self) -> bool {
             true
         }
+        fn supports_given_rows(&self) -> bool {
+            self.0.lock().unwrap().given
+        }
+        fn server_version(&self) -> Option<type_bridge_core_lib::version::Version> {
+            "3.13.6".parse().ok()
+        }
+    }
+    impl Fake {
+        fn answer(&self) -> QueryResult {
+            let state = self.0.lock().unwrap();
+            if state.answer_ok {
+                QueryResult::Ok
+            } else {
+                QueryResult::Rows(vec![serde_json::json!({}); state.rows])
+            }
+        }
     }
     impl TransactionOps for Fake {
         fn query(&mut self, query: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
             self.0.lock().unwrap().events.push(query.to_owned());
             let fail = query == "fail";
             let typed = query == "typed-fail";
+            let answer = self.answer();
             Box::pin(async move {
                 if typed {
                     Err(OrmError::QueryExecution(
@@ -503,9 +623,22 @@ mod tests {
                 } else if fail {
                     Err(OrmError::QueryExecution("failure".into()))
                 } else {
-                    Ok(QueryResult::Rows(Vec::new()))
+                    Ok(answer)
                 }
             })
+        }
+        fn query_with_rows(
+            &mut self,
+            _: &str,
+            rows: GivenRowsSpec,
+        ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            self.0
+                .lock()
+                .unwrap()
+                .events
+                .push(format!("given:{}", rows.rows.len()));
+            let answer = self.answer();
+            Box::pin(async move { Ok(answer) })
         }
         fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
             self.0.lock().unwrap().events.push("commit".into());
@@ -535,6 +668,72 @@ mod tests {
             state,
         )
     }
+    #[tokio::test]
+    async fn staged_plans_resolve_matched_and_rows_from_their_own_stream() {
+        use crate::query_plan_exec::race;
+        let (mut tx, state) = fixture(TransactionOptions::default());
+        {
+            let mut state = state.lock().unwrap();
+            state.given = true;
+            state.rows = 1;
+        }
+        let purchase = tx.stage_plan(&race::purchase("O1", "I1", "A1")).unwrap();
+        let touched = tx.stage_plan(&race::touch_rows()).unwrap();
+        let count = tx.stage_plan(&race::stock_read(Operation::Count)).unwrap();
+        assert!(matches!(purchase.get(), Err(PendingError::NotCommitted)));
+        tx.commit().await.unwrap();
+        assert_eq!(*purchase.get().unwrap(), PlanAnswer::Matched(1));
+        assert!(matches!(&*touched.get().unwrap(), PlanAnswer::Rows(rows) if rows.len() == 1));
+        assert_eq!(*count.get().unwrap(), PlanAnswer::Count(1));
+        let state = state.lock().unwrap();
+        assert_eq!(state.kinds, [TxType::Write]);
+        assert_eq!(state.events[0], "given:1");
+        assert_eq!(state.events[3..], ["commit", "close"]);
+    }
+
+    #[tokio::test]
+    async fn read_only_templates_and_unsupported_given_refuse_plans_at_stage() {
+        use crate::query_plan_exec::race;
+        let (mut read, _) = fixture(TransactionOptions::default().with_kind(TransactionKind::Read));
+        assert!(matches!(
+            read.stage_plan(&race::touch()),
+            Err(PendingError::ReadOnly)
+        ));
+        read.stage_plan(&race::stock_read(Operation::Exists))
+            .unwrap();
+        let (mut tx, state) = fixture(TransactionOptions::default());
+        let plan = race::purchase("O1", "I1", "A1");
+        let Err(PendingError::InvalidPlan(diagnostic)) = tx.stage_plan(&plan) else {
+            panic!("given transport is required");
+        };
+        assert_eq!(
+            diagnostic.code().as_str(),
+            "query_plan_given_transport_unsupported"
+        );
+        state.lock().unwrap().given = true;
+        assert!(matches!(
+            tx.stage_plan(&race::purchase_template()),
+            Err(PendingError::InvalidPlan(_))
+        ));
+        assert!(format!("{:?}", tx.stage_plan(&plan).unwrap()).contains("pending"));
+    }
+
+    #[tokio::test]
+    async fn a_malformed_plan_answer_aborts_before_commit() {
+        use crate::query_plan_exec::race;
+        let (mut tx, state) = fixture(TransactionOptions::default());
+        state.lock().unwrap().answer_ok = true;
+        let pending = tx.stage_plan(&race::touch()).unwrap();
+        let error = tx.commit().await.unwrap_err();
+        assert_eq!(error.op_index, Some(0));
+        assert_eq!(
+            error.diagnostic().code().to_string(),
+            "query_plan_answer_shape"
+        );
+        assert!(matches!(pending.get(), Err(PendingError::Failed { .. })));
+        assert_eq!(state.lock().unwrap().events[1..], ["rollback", "close"]);
+    }
+
     #[tokio::test]
     async fn successful_commit_resolves_answers_even_when_close_fails() {
         let (mut tx, state) = fixture(TransactionOptions::default());

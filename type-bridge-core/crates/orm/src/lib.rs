@@ -56,6 +56,7 @@ pub mod provider_runtime;
 pub mod query;
 mod query_connection;
 mod query_execution_limits;
+mod query_plan_exec;
 pub mod query_v2;
 mod query_v2_adapter;
 #[cfg(test)]

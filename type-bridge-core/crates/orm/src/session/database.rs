@@ -654,12 +654,7 @@ impl Database {
     /// `false` when the server predates 3.12 or its version is unknown. Callers
     /// with a per-row fallback should use it in both cases.
     pub fn supports_given_stage(&self) -> bool {
-        use type_bridge_core_lib::version::{Feature, check_feature_supported};
-
-        self.backend.supports_given_rows()
-            && self
-                .server_version()
-                .is_some_and(|server| check_feature_supported(Feature::GivenStage, &server).is_ok())
+        backend_supports_given_stage(self.backend.as_ref())
     }
 
     /// Version-gate a `given`-stage query.
@@ -826,6 +821,16 @@ impl Database {
         )
         .await
     }
+}
+
+/// Whether the backend's transport and server both carry the `given` stage.
+pub(crate) fn backend_supports_given_stage(backend: &dyn DriverBackend) -> bool {
+    use type_bridge_core_lib::version::{Feature, check_feature_supported};
+
+    backend.supports_given_rows()
+        && backend
+            .server_version()
+            .is_some_and(|server| check_feature_supported(Feature::GivenStage, &server).is_ok())
 }
 
 #[cfg(test)]

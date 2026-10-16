@@ -552,6 +552,11 @@ impl QueryPlanV3 {
     pub const fn operation(&self) -> Operation {
         self.operation
     }
+    /// Whether the plan writes, and therefore needs a write transaction.
+    #[must_use]
+    pub const fn writes(&self) -> bool {
+        matches!(self.operation, Operation::Write { .. })
+    }
     /// Bind values to a reusable plan; rows participate in its V3 fingerprint.
     pub fn with_given_rows(
         &self,
