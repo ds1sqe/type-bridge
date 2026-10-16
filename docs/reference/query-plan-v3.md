@@ -562,7 +562,8 @@ The server's standalone `IdempotencyStore` is an in-memory map keyed by the
 **authenticated client identity and opaque key**. Client identity comes from
 transport/policy, never from this unsigned request body. Each entry keeps the
 exact request fingerprint, fixed expiry and either an in-flight reservation or
-the complete signed reply bytes, including failed or indeterminate replies.
+the complete signed reply bytes, including failed or indeterminate replies,
+with a value-free summary of their outcome (success flag and diagnostic code).
 
 | Live client/key state | Same fingerprint | Different fingerprint |
 | --- | --- | --- |
@@ -577,6 +578,10 @@ reply is evicted under pressure: a new keyed request receives
 `IdempotencyConfig` defaults to 100,000 live entries, 256 MiB of retained plus
 reserved reply bytes, and a maximum remaining TTL of five minutes. Capacity and
 byte quota must be positive; TTL may be tightened but never exceed five minutes.
+One client holds at most `1 / client_share` of the entries and of the bytes
+(default 1/4: one full 32 MiB envelope allowance in flight beside up to 32 MiB
+of retained replies); past its share a new keyed request receives
+`idempotency_client_capacity` while other clients keep theirs.
 The route reserves its largest possible signed success/failure byte allowance
 before executing. Completion releases unused allowance and stores the exact
 opaque signed bytes. This prevents a transaction that committed from losing
