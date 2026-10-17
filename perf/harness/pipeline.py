@@ -2,21 +2,27 @@
 
 Usage::
 
-    python -m perf.harness.pipeline --report FILE --typedb VERSION --out FILE
+    python -m perf.harness.pipeline --report FILE [--report FILE]...
+        [--sdk NAME]... --typedb VERSION --out FILE
 
-The report is the JSON that ``type-bridge-perf-pipelines`` (the
-``type-bridge-perf`` crate) writes: per pipeline, the wall time of every
-measured iteration and the exclusive time of each stage span inside it. Each
-pipeline becomes two metrics:
+A report is the ``type-bridge-perf-pipelines/v1`` JSON one SDK driver
+writes: ``type-bridge-perf-pipelines`` (the ``type-bridge-perf`` crate) for
+Rust, ``perf/drivers/{python,node,c}`` for the others. It holds, per
+pipeline, the wall time of every measured iteration and the exclusive time
+of each stage span inside it. Its ``binding`` names the SDK; ``--sdk``
+lists the SDKs the reports must cover, exactly. Each pipeline becomes two
+metrics:
 
-- ``pipeline.<binding>.<pipeline>`` in ns: ``value`` and ``p50`` are the
+- ``pipeline.<sdk>.<pipeline>`` in ns: ``value`` and ``p50`` are the
   median iteration, with ``p90``, ``p99``, ``n``, the raw ``samples``, and
   ``stages`` mapping each span name to its median;
-- ``pipeline.<binding>.<pipeline>.throughput`` in ``ops_per_s``: logical
+- ``pipeline.<sdk>.<pipeline>.throughput`` in ``ops_per_s``: logical
   operations (rows for a batch) over the summed iteration time.
 
-Time inside no stage span is SDK-side work; it is not a stage, so the stages
-sum to at most about the median. For each pipeline the converter prints the
+Time inside no stage span is host-language SDK work (Python, JS or C before
+the native entry; the Rust SDK around the core); it is not a stage, so the
+stages sum to at most about the median. ``tb.sdk.entry`` is the bindings'
+own native marshalling. For each pipeline the converter prints the
 attributed share and the stage-sum gap: how far the stage medians plus the
 median unattributed time are from the median iteration. A gap above 5% means
 the stage medians do not describe a typical iteration.
@@ -40,6 +46,7 @@ from perf.harness.producer import write_result
 from perf.harness.schema import STAGE_NAME, Metric, metric_id
 
 REPORT_FORMAT = "type-bridge-perf-pipelines/v1"
+SDKS = ("rust", "python", "node", "c")
 # The acceptance bound on the stage-sum gap.
 STAGE_GAP_LIMIT = 0.05
 
@@ -87,8 +94,8 @@ def read_report(path: Path) -> tuple[str, list[Pipeline]]:
     if not isinstance(data, dict) or data.get("format") != REPORT_FORMAT:
         raise ValueError(f"{path}: expected format {REPORT_FORMAT!r}")
     binding = data.get("binding")
-    if not isinstance(binding, str) or not binding:
-        raise ValueError(f"{path}: binding must be a non-empty string")
+    if binding not in SDKS:
+        raise ValueError(f"{path}: binding must be one of {', '.join(SDKS)}")
     raw = data.get("pipelines")
     if not isinstance(raw, list) or not raw:
         raise ValueError(f"{path}: pipelines must be a non-empty list")
@@ -187,14 +194,29 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] = os.environ)
         prog="python -m perf.harness.pipeline",
         description="Convert a live pipeline report into one perf-result/v1 file.",
     )
-    parser.add_argument("--report", type=Path, required=True, help="pipeline driver output")
+    parser.add_argument(
+        "--report", type=Path, action="append", required=True, help="one SDK driver's output"
+    )
+    parser.add_argument(
+        "--sdk", action="append", choices=SDKS, help="an SDK the reports must cover"
+    )
     parser.add_argument("--typedb", required=True, help="TypeDB server version measured")
     parser.add_argument("--out", type=Path, required=True, help="result file to write")
     parser.add_argument("--started-at", help="RFC 3339 run start; defaults to now")
     arguments = parser.parse_args(argv)
     try:
-        binding, pipelines = read_report(arguments.report)
-        metrics, summaries = convert(binding, pipelines)
+        metrics, summaries = [], []
+        seen: list[str] = []
+        for report in arguments.report:
+            binding, pipelines = read_report(report)
+            if binding in seen:
+                raise ValueError(f"{report}: a second report for {binding}")
+            seen.append(binding)
+            converted, summarized = convert(binding, pipelines)
+            metrics += converted
+            summaries += summarized
+        if arguments.sdk and sorted(seen) != sorted(set(arguments.sdk)):
+            raise ValueError(f"reports cover {sorted(seen)}, expected {sorted(set(arguments.sdk))}")
         run = replace(collect_run(env, started_at=arguments.started_at), typedb=arguments.typedb)
         write_result(run, metrics, arguments.out)
     except (ValueError, OSError) as error:

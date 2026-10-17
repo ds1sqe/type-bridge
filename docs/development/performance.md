@@ -52,6 +52,7 @@ owns it:
 | `tb.runtime.execute` | a driver round trip: open, query, rollback, close | TypeDB runtime |
 | `tb.decode` | converting one provider answer to JSON | TypeDB runtime |
 | `tb.commit` | the provider commit | TypeDB runtime |
+| `tb.sdk.entry` | a Python, Node or C binding entry: plan build, stage, commit, answer, migration execute | SDK bindings |
 
 The spans carry no fields, so no query text or value is recorded. They are
 always compiled in. With no subscriber they cost a callsite check each: the
@@ -115,6 +116,40 @@ docker rm -f -v perf-typedb
 `--warmup` or `--migration-iterations` to change the counts. The work
 directory must not exist yet; the databases are deleted when their
 pipeline ends.
+
+### Through Python and Node
+
+`perf/drivers/python` and `perf/drivers/node` run the same data pipelines,
+seeds and plans through the Python and Node SDKs, on the same schema
+(`perf/drivers/workspace`, applied with the `type-bridge` CLI), and write the
+same report format. `migration_apply` is a CLI operation with no SDK entry,
+so only the Rust report has it. Each iteration is timed in the host language;
+stage times come from a private recorder in the native module, which exists
+only when the binding is built with its `perf-stages` feature
+(`type_bridge_core._perf_stages()`, Node `_perfStages()`). Shipped wheels and
+packages never enable it, and no shipped crate depends on `type-bridge-perf`.
+Time outside every stage is then host-language work before the native entry.
+
+```bash
+cargo build --release --manifest-path type-bridge-core/Cargo.toml \
+  -p type-bridge-cli --bin type-bridge
+(cd type-bridge-core && uvx --from maturin==1.14.1 maturin build --release \
+  --features pyo3/extension-module,perf-stages -o ../tmp/perf/wheels)
+python3 -m zipfile -e tmp/perf/wheels/type_bridge_core-*.whl tmp/perf/site
+TYPEDB_USERNAME=admin TYPEDB_PASSWORD=password PYTHONPATH=tmp/perf/site \
+  .venv/bin/python -m perf.drivers.python.pipelines \
+  --cli type-bridge-core/target/release/type-bridge \
+  --out tmp/perf/python-report.json --work-dir tmp/perf/python
+```
+
+The Node driver takes the built package (`npm run build:types` in
+`type-bridge-core/crates/node`), a native module built with
+`cargo build --release -p type-bridge-node --features perf-stages` and copied
+to a `.node` file, and a workspace made by
+`python -m perf.drivers.workspace --root DIR --cli CLI create`; see the
+header of `perf/drivers/node/pipelines.cjs`. `perf.harness.pipeline` takes
+one `--report` per SDK and, with `--sdk` (repeatable), checks that the
+reports cover exactly those SDKs; ids are `pipeline.<sdk>.<pipeline>`.
 
 ## Run the Python binding benchmarks locally
 

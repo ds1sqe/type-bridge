@@ -216,3 +216,57 @@ def test_workflow_runs_the_pipelines_on_a_tmpfs_typedb_outside_pull_requests() -
     assert "-p type-bridge-perf --bin type-bridge-perf-pipelines" in commands
     assert "python -m perf.harness.pipeline" in commands
     assert '--typedb "${{ steps.typedb.outputs.version }}"' in commands
+
+
+def _report_as(tmp_path: Path, binding: str) -> Path:
+    document = json.loads(REPORT.read_text(encoding="utf-8")) | {"binding": binding}
+    path = tmp_path / f"{binding}.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
+def test_cli_merges_one_report_per_sdk(tmp_path: Path) -> None:
+    out = tmp_path / "pipeline.json"
+    reports = [_report_as(tmp_path, sdk) for sdk in ("rust", "python", "node", "c")]
+    arguments = [part for report in reports for part in ("--report", str(report))]
+    sdks = [part for sdk in pipeline.SDKS for part in ("--sdk", sdk)]
+
+    code = pipeline.main([*arguments, *sdks, "--typedb", "3.13.6", "--out", str(out)], env=GITHUB)
+
+    assert code == 0
+    assert check_file(out).errors == []
+    ids = {metric["id"] for metric in json.loads(out.read_text(encoding="utf-8"))["metrics"]}
+    assert {f"pipeline.{sdk}.insert_one" for sdk in pipeline.SDKS} <= ids
+
+
+@pytest.mark.parametrize(
+    ("bindings", "sdks", "message"),
+    [
+        (["rust", "rust"], [], "a second report for rust"),
+        (["rust"], ["rust", "python"], "expected"),
+        (["ruby"], [], "binding must be one of"),
+    ],
+)
+def test_cli_rejects_reports_that_do_not_cover_the_sdks(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    bindings: list[str],
+    sdks: list[str],
+    message: str,
+) -> None:
+    out = tmp_path / "pipeline.json"
+    arguments: list[str] = []
+    for index, binding in enumerate(bindings):
+        directory = tmp_path / str(index)
+        directory.mkdir()
+        path = _report_as(directory, binding)
+        arguments += ["--report", str(path)]
+    sdk_arguments = [part for sdk in sdks for part in ("--sdk", sdk)]
+
+    code = pipeline.main(
+        [*arguments, *sdk_arguments, "--typedb", "3.13.6", "--out", str(out)], env=GITHUB
+    )
+
+    assert code == 1
+    assert message in capsys.readouterr().err
+    assert not out.exists()
