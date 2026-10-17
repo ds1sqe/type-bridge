@@ -3000,12 +3000,13 @@ def test_generated_package_preserves_application_operation_outcomes_live(
         person_manager.delete_many([batch_people[0], strict_missing], strict=True)
     assert person_manager.get_by_iid(batch_people[0].iid) is not None
 
-    updated = person_manager.filter(
-        identifier__in=[
-            generated.Identifier("parity-batch-a"),
-            generated.Identifier("parity-batch-b"),
-        ]
-    ).update_with(lambda value: setattr(value, "nickname", generated.Nickname("filtered")))
+    with pytest.warns(DeprecationWarning, match="let_\\(\\) in an update plan"):
+        updated = person_manager.filter(
+            identifier__in=[
+                generated.Identifier("parity-batch-a"),
+                generated.Identifier("parity-batch-b"),
+            ]
+        ).update_with(lambda value: setattr(value, "nickname", generated.Nickname("filtered")))
     assert {value.iid for value in updated} == {value.iid for value in batch_people}
     assert {
         value.nickname.value
@@ -3032,7 +3033,10 @@ def test_generated_package_preserves_application_operation_outcomes_live(
         if value.identifier.value == "parity-batch-b":
             raise RuntimeError("callback failure sentinel")
 
-    with pytest.raises(RuntimeError, match="callback failure sentinel"):
+    with (
+        pytest.raises(RuntimeError, match="callback failure sentinel"),
+        pytest.warns(DeprecationWarning, match="let_\\(\\) in an update plan"),
+    ):
         person_manager.filter(
             identifier__in=[
                 generated.Identifier("parity-batch-a"),
@@ -3212,12 +3216,15 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     assert detached_network.iid == networks[0].iid
     assert network_manager.get_by_iid(networks[0].iid).nickname.value == "detached-relation"
 
-    updated_networks = network_manager.filter(
-        identifier__in=[
-            generated.Identifier("parity-network-a"),
-            generated.Identifier("parity-network-b"),
-        ]
-    ).update_with(lambda value: setattr(value, "nickname", generated.Nickname("filtered-relation")))
+    with pytest.warns(DeprecationWarning, match="let_\\(\\) in an update plan"):
+        updated_networks = network_manager.filter(
+            identifier__in=[
+                generated.Identifier("parity-network-a"),
+                generated.Identifier("parity-network-b"),
+            ]
+        ).update_with(
+            lambda value: setattr(value, "nickname", generated.Nickname("filtered-relation"))
+        )
     assert {value.iid for value in updated_networks} == {value.iid for value in networks}
     assert {
         value.nickname.value

@@ -658,6 +658,11 @@ differently direct and through a proxy. Each entry says what to do instead.
 Each name below builds its replacement and is removed in 3.0. 2.2 remote
 terminals were already awaited, so 2.2 remote-session code runs unchanged.
 
+- Python `update_with(func)` on filtered queries and generated managers is
+  deprecated since 2.3.0 for removal in 3.0 and emits a
+  `DeprecationWarning`. It runs a host callback over rows it read; compute
+  the new value with `let_()` in an update plan and stage it in a
+  transaction instead (see the typed-queries guide).
 - Rust String schema-generation and fragment helpers are deprecated since
   2.3.0 for removal in 3.0. Use checked `SchemaInfo::to_typeql` or adapter
   builders. Python schema generation propagates checked errors as `ValueError`.

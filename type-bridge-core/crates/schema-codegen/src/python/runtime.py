@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import warnings
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -516,6 +517,19 @@ class ProjectedModelManager[ModelT: ModelBase]:
         return resolved
 
     def update_with(self, function: Callable[[ModelT], None]) -> list[ModelT]:
+        """Apply ``function`` to every filtered instance and update each one.
+
+        .. deprecated:: 2.3.0
+            Removed in 3.0. Build an update plan that computes the new value
+            with ``let_()`` and stage it in a transaction.
+        """
+        warnings.warn(
+            "update_with() is deprecated since 2.3.0 and is removed in 3.0; compute "
+            "the new value with let_() in an update plan (type_bridge.plan."
+            "PlanBuilder) and stage it in a transaction",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if not self._filtered:
             raise TypeError("generated manager update_with() requires filter()")
         instances = cast(list[ModelT], self._native.legacy_all())

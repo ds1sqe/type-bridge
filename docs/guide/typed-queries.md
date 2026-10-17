@@ -347,6 +347,31 @@ discards on an exception, and always closes, except that a commit whose
 outcome is unknown raises and stays open for `commit_retry()`.
 `Database.transaction()` keeps its released eager context.
 
+### Replacing `update_with`
+
+`update_with(func)` reads every match, runs `func` in Python and writes each
+instance back. It is deprecated since 2.3.0, warns with a
+`DeprecationWarning`, and is removed in 3.0. Compute the new value in the
+plan with `let_` instead, so the read and the write are one query:
+
+```python
+from type_bridge.plan import Plan
+
+from generated.python import Account, schema_authority
+
+# Before: accounts.filter(tier=Tier("gold")).update_with(add_bonus)
+plan = Plan.builder()
+account = plan.exact(Account)
+tier = plan.input("tier", "string")
+balance = plan.field(account, Account.balance)
+plan.where_(plan.field(account, Account.tier).eq(tier))
+plan.update(account, Account.balance, plan.let_("next_balance", balance + 10))
+plan.row([tier.value("gold")])
+
+with db.staged_transaction() as tx:
+    updated = tx.stage(plan.build(schema_authority()))
+```
+
 ### Staged transactions over the proxy
 
 Writes cross the proxy as staged transactions. `transaction(kind)` on a proxy

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 from typing import TYPE_CHECKING, Any, Never, Protocol, Self, cast
 
 from type_bridge._rust_runtime import (
@@ -24,6 +25,13 @@ from type_bridge.models.relation import _QueryRelation as Relation
 if TYPE_CHECKING:
     from type_bridge.models.base import _QueryTypeDBType as TypeDBType
     from type_bridge.session import Connection
+
+
+UPDATE_WITH_DEPRECATION = (
+    "update_with() is deprecated since 2.3.0 and is removed in 3.0; compute "
+    "the new value with let_() in an update plan (type_bridge.plan."
+    "PlanBuilder) and stage it in a transaction"
+)
 
 
 class RustTypeDBManager[T: "TypeDBType"]:
@@ -561,6 +569,17 @@ class RustTypeDBQuery[T: "TypeDBType"]:
         return self.count() > 0
 
     def update_with(self, func: Any) -> list[T]:
+        """Apply ``func`` to every matched instance and update each one.
+
+        .. deprecated:: 2.3.0
+            Removed in 3.0. Build an update plan that computes the new value
+            with ``let_()`` and stage it in a transaction.
+        """
+        warnings.warn(
+            UPDATE_WITH_DEPRECATION,
+            DeprecationWarning,
+            stacklevel=2,
+        )
         instances = self.execute()
         if not instances:
             return []
