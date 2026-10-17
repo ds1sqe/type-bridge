@@ -251,4 +251,80 @@ impl Failure {
         serde_json::json!({"phase":phase,"reason":reason,"lock_kind":lock,"annotation":annotation,
             "op_index":index,"retry_safe":self.retry_safe(),"code":self.code()})
     }
+
+    /// The inverse of [`Self::host_json`]: the failure a host form names.
+    ///
+    /// `None` unless `retry_safe` and `phase` are present and every value is
+    /// in the closed vocabulary and consistent with the others (a reason's
+    /// fixed provider code, a lock only on a conflict), so a remote reply
+    /// cannot name a failure this side would not classify the same way.
+    #[must_use]
+    pub fn from_host_json(value: &serde_json::Value) -> Option<Self> {
+        let text = |key: &str| value.get(key).and_then(serde_json::Value::as_str);
+        let retry_safe = value.get("retry_safe")?.as_bool()?;
+        let phase = match text("phase")? {
+            "query" => Phase::Query,
+            "commit" => Phase::Commit,
+            _ => return None,
+        };
+        let failure = if retry_safe {
+            let reason = match text("reason")? {
+                "conflict" => Reason::Conflict {
+                    lock: match text("lock_kind")? {
+                        "exclusive" => LockKind::Exclusive,
+                        "require_deleted_key" => LockKind::RequireDeletedKey,
+                        "deleting_required_key" => LockKind::DeletingRequiredKey,
+                        "unknown" => LockKind::Unknown,
+                        _ => return None,
+                    },
+                },
+                "cardinality" => Reason::Cardinality,
+                "unique" => Reason::Unique,
+                "constraint" => Reason::Constraint {
+                    annotation: match text("annotation")? {
+                        "abstract" => AnnotationKind::Abstract,
+                        "regex" => AnnotationKind::Regex,
+                        "range" => AnnotationKind::Range,
+                        "values" => AnnotationKind::Values,
+                        "distinct" => AnnotationKind::Distinct,
+                        "unknown" => AnnotationKind::Unknown,
+                        _ => return None,
+                    },
+                },
+                "other" => Reason::Other {
+                    code: Code::new(text("code")?)?,
+                },
+                _ => return None,
+            };
+            let op_index = match value.get("op_index") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(index) => Some(u32::try_from(index.as_u64()?).ok()?),
+            };
+            Self::Rejected {
+                phase,
+                reason,
+                op_index,
+            }
+        } else {
+            Self::Indeterminate {
+                code: match text("code") {
+                    None => None,
+                    Some(code) => Some(Code::new(code)?),
+                },
+            }
+        };
+        // Every field the host form names must be the one this failure renders.
+        let rendered = failure.host_json();
+        [
+            "phase",
+            "reason",
+            "lock_kind",
+            "annotation",
+            "op_index",
+            "code",
+        ]
+        .iter()
+        .all(|key| value.get(*key).unwrap_or(&serde_json::Value::Null) == &rendered[*key])
+        .then_some(failure)
+    }
 }

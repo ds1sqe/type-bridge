@@ -658,8 +658,12 @@ The public authoring outcome is non-exhaustive and uses the existing
 `SdkExecutionDiagnostic`, not a second failure model. Failure details follow the
 SDK diagnostic vocabulary: version, category, sdk_category, query_category,
 code, message, path and typed details. Typed failure details (`retry_safe`,
-`rejection`, `lock_kind`, `annotation`) join this same vocabulary when present;
-the released codes stay as they are.
+`phase`, `code`, `rejection`, `lock_kind`, `annotation`, and the staged index in
+the path) join this same vocabulary when present; the released codes stay as
+they are, and bindings whose released ABI fixes the detail set (C ABI 1.6) do
+not see them. The client rebuilds the typed failure from these signed details
+only when they name a complete, consistent failure in the closed vocabulary, so
+a refusal over the proxy is typed exactly as the same direct commit would be.
 `commit_outcome_unknown` remains indeterminate; a failed outcome alone never
 implies a safe retry. SDK messages stay implementation-owned static text during
 authoring. Authentication precedes interpretation of their bounded host-JSON

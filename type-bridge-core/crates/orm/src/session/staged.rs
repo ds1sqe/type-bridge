@@ -283,6 +283,7 @@ impl PendingError {
     pub fn failure(&self) -> Option<&Failure> {
         match self {
             Self::Failed { failure, .. } => failure.as_deref(),
+            Self::Refused { diagnostic, .. } => diagnostic.failure(),
             _ => None,
         }
     }
@@ -577,6 +578,15 @@ fn proxy_failure(projection: &SdkDiagnosticProjectionV3) -> CommitError {
     let mut commit = CommitError::new(error, op_index, Default::default());
     if !definite && projection.code() != "commit_outcome_unknown" {
         commit.remote = remote_refusal(projection.code(), field("sdk_category")).map(Box::new);
+    }
+    // The signed details carry the failure the server classified, so a
+    // refusal is typed exactly as the direct commit would be; the refusal
+    // keeps its own code and category.
+    if let Some(failure) = projection.failure() {
+        if let Some(remote) = commit.remote.take() {
+            commit.remote = Some(Box::new(remote.with_failure(&failure, Default::default())));
+        }
+        commit.failure = Some(Box::new(failure));
     }
     commit
 }
@@ -1159,6 +1169,50 @@ impl Transaction {
 mod tests {
     use super::super::backend::{BoxFuture, TransactionOps};
     use super::*;
+
+    fn signed(diagnostic: &SdkExecutionDiagnostic) -> SdkDiagnosticProjectionV3 {
+        let host = serde_json::to_value(diagnostic.host_json()).expect("host json");
+        serde_json::from_value(host).expect("a valid projection")
+    }
+
+    #[test]
+    fn proxy_refusals_keep_the_typed_failure_the_server_signed() {
+        use type_bridge_contract::failure::{Phase, Reason};
+        for failure in [
+            Failure::Rejected {
+                phase: Phase::Query,
+                reason: Reason::Unique,
+                op_index: Some(0),
+            },
+            Failure::Rejected {
+                phase: Phase::Commit,
+                reason: Reason::Cardinality,
+                op_index: None,
+            },
+        ] {
+            let projection = signed(&SdkExecutionDiagnostic::from_failure(
+                &failure,
+                Default::default(),
+            ));
+            let commit = proxy_failure(&projection);
+            assert_eq!(commit.failure.as_deref(), Some(&failure));
+            let diagnostic = commit.diagnostic();
+            assert_eq!(diagnostic.failure(), Some(&failure));
+            assert_eq!(diagnostic.code().as_str(), projection.code());
+            assert_eq!(commit.pending().failure(), Some(&failure));
+        }
+        // A refusal whose details name no failure stays code-only.
+        let plain = signed(&SdkExecutionDiagnostic::provider_failure(
+            SdkProviderOperation::Write,
+        ));
+        let commit = proxy_failure(&plain);
+        assert!(commit.failure.is_none());
+        assert!(commit.diagnostic().failure().is_none());
+        assert_eq!(
+            commit.diagnostic().code().as_str(),
+            "provider_operation_failed"
+        );
+    }
 
     #[derive(Default)]
     struct State {

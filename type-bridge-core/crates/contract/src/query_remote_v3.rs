@@ -648,6 +648,12 @@ impl SdkDiagnosticProjectionV3 {
     pub fn code(&self) -> &str {
         &self.code
     }
+    /// The typed failure the signed details carry, as the server classified
+    /// it ([`SdkExecutionDiagnostic::failure_from_host_json`]).
+    #[must_use]
+    pub fn failure(&self) -> Option<crate::failure::Failure> {
+        SdkExecutionDiagnostic::failure_from_host_json(&self.host_json().ok()?)
+    }
     fn validate(&self) -> Result<(), Diagnostic> {
         use crate::sdk_diagnostic::*;
         if self.version != 1

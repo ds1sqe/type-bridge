@@ -11,6 +11,10 @@
         "kind": "text",
         "value": "definitely_aborted"
       },
+      "phase": {
+        "kind": "query_identity",
+        "value": "commit"
+      },
       "rejection": {
         "kind": "query_identity",
         "value": "cardinality"
@@ -64,6 +68,10 @@
         "kind": "text",
         "value": "definitely_aborted"
       },
+      "phase": {
+        "kind": "query_identity",
+        "value": "commit"
+      },
       "rejection": {
         "kind": "query_identity",
         "value": "constraint"
@@ -113,6 +121,10 @@
         "kind": "text",
         "value": "definitely_aborted"
       },
+      "phase": {
+        "kind": "query_identity",
+        "value": "commit"
+      },
       "rejection": {
         "kind": "query_identity",
         "value": "unique"
@@ -161,6 +173,10 @@
       "commit_outcome": {
         "kind": "text",
         "value": "definitely_aborted"
+      },
+      "phase": {
+        "kind": "query_identity",
+        "value": "commit"
       },
       "rejection": {
         "kind": "query_identity",
@@ -215,6 +231,10 @@
         "kind": "query_identity",
         "value": "exclusive"
       },
+      "phase": {
+        "kind": "query_identity",
+        "value": "commit"
+      },
       "rejection": {
         "kind": "query_identity",
         "value": "conflict"
@@ -264,6 +284,10 @@
         "kind": "text",
         "value": "unknown"
       },
+      "phase": {
+        "kind": "query_identity",
+        "value": "commit"
+      },
       "retry_safe": {
         "kind": "boolean",
         "value": false
@@ -286,6 +310,10 @@
       "operation": {
         "kind": "text",
         "value": "write"
+      },
+      "phase": {
+        "kind": "query_identity",
+        "value": "query"
       },
       "rejection": {
         "kind": "query_identity",
@@ -340,6 +368,10 @@
         "kind": "text",
         "value": "write"
       },
+      "phase": {
+        "kind": "query_identity",
+        "value": "query"
+      },
       "rejection": {
         "kind": "query_identity",
         "value": "constraint"
@@ -389,6 +421,10 @@
         "kind": "text",
         "value": "write"
       },
+      "phase": {
+        "kind": "query_identity",
+        "value": "query"
+      },
       "rejection": {
         "kind": "query_identity",
         "value": "unique"
@@ -437,6 +473,10 @@
       "operation": {
         "kind": "text",
         "value": "write"
+      },
+      "phase": {
+        "kind": "query_identity",
+        "value": "query"
       },
       "rejection": {
         "kind": "query_identity",
@@ -490,6 +530,10 @@
       "operation": {
         "kind": "text",
         "value": "write"
+      },
+      "phase": {
+        "kind": "query_identity",
+        "value": "query"
       },
       "rejection": {
         "kind": "query_identity",

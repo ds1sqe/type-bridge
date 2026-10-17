@@ -792,9 +792,10 @@ impl SdkExecutionDiagnostic {
     /// Attach a typed provider failure to a released diagnostic.
     ///
     /// Code, category, message and existing details are kept. The additive
-    /// details are `retry_safe`, `code` (provider code), `rejection` (reason),
-    /// `lock_kind` and `annotation`; the staged index and schema context
-    /// extend the path.
+    /// details are `retry_safe`, `phase`, `code` (provider code), `rejection`
+    /// (reason), `lock_kind` and `annotation`; the staged index and schema
+    /// context extend the path. [`Self::failure_from_host_json`] reads them
+    /// back.
     #[must_use]
     pub fn with_failure(
         mut self,
@@ -835,6 +836,46 @@ impl SdkExecutionDiagnostic {
             diagnostic.path.push(SdkDiagnosticPathSegment::Field(field));
         }
         diagnostic
+    }
+
+    /// The typed failure a diagnostic's host form carries in the details
+    /// [`Self::with_failure`] adds, with the staged index from its path.
+    ///
+    /// This is how a signed remote reply keeps the failure the server
+    /// classified: `None` unless the details name a complete, consistent
+    /// failure ([`crate::failure::Failure::from_host_json`]).
+    #[must_use]
+    pub fn failure_from_host_json(
+        diagnostic: &serde_json::Value,
+    ) -> Option<crate::failure::Failure> {
+        let details = diagnostic.get("details")?;
+        let detail = |name: &str, kind: &str| {
+            let value = details.get(name)?;
+            (value.get("kind")?.as_str()? == kind).then(|| value.get("value").cloned())?
+        };
+        let mut host = serde_json::Map::new();
+        host.insert(
+            "retry_safe".into(),
+            detail(FAILURE_RETRY_SAFE_DETAIL, "boolean")?,
+        );
+        for (key, name) in FAILURE_IDENTITY_DETAILS {
+            if details.get(name).is_some() {
+                host.insert(key.into(), detail(name, "query_identity")?);
+            }
+        }
+        let index = diagnostic
+            .get("path")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|path| {
+                path.iter().find_map(|segment| {
+                    (segment.get("kind")?.as_str()? == "index")
+                        .then(|| segment.get("value").cloned())?
+                })
+            });
+        if let Some(index) = index {
+            host.insert("op_index".into(), index);
+        }
+        crate::failure::Failure::from_host_json(&serde_json::Value::Object(host))
     }
 
     /// Typed provider failure when constructed from the runtime's classification.
@@ -1389,7 +1430,8 @@ const FAILURE_RETRY_SAFE_DETAIL: &str = "retry_safe";
 
 /// Identity details [`SdkExecutionDiagnostic::with_failure`] adds when the
 /// failure has them, as (`Failure::host_json` key, detail name).
-const FAILURE_IDENTITY_DETAILS: [(&str, &str); 4] = [
+const FAILURE_IDENTITY_DETAILS: [(&str, &str); 5] = [
+    ("phase", "phase"),
     ("code", "code"),
     ("reason", "rejection"),
     ("lock_kind", "lock_kind"),
@@ -1403,6 +1445,111 @@ fn static_name(value: &'static str) -> SdkDiagnosticName {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signed_failure_details_round_trip_every_phase_and_reason() {
+        use crate::failure::{AnnotationKind, Code, Failure, LockKind, Phase, Reason};
+        let reasons = [
+            Reason::Conflict {
+                lock: LockKind::Exclusive,
+            },
+            Reason::Conflict {
+                lock: LockKind::RequireDeletedKey,
+            },
+            Reason::Conflict {
+                lock: LockKind::DeletingRequiredKey,
+            },
+            Reason::Conflict {
+                lock: LockKind::Unknown,
+            },
+            Reason::Cardinality,
+            Reason::Unique,
+            Reason::Constraint {
+                annotation: AnnotationKind::Abstract,
+            },
+            Reason::Constraint {
+                annotation: AnnotationKind::Regex,
+            },
+            Reason::Constraint {
+                annotation: AnnotationKind::Range,
+            },
+            Reason::Constraint {
+                annotation: AnnotationKind::Values,
+            },
+            Reason::Constraint {
+                annotation: AnnotationKind::Distinct,
+            },
+            Reason::Constraint {
+                annotation: AnnotationKind::Unknown,
+            },
+            Reason::Other {
+                code: Code::new("TSV7").expect("code"),
+            },
+        ];
+        let mut failures = vec![
+            Failure::Indeterminate { code: None },
+            Failure::Indeterminate {
+                code: Code::new("SRV9"),
+            },
+        ];
+        for phase in [Phase::Query, Phase::Commit] {
+            for reason in &reasons {
+                for op_index in [None, Some(3)] {
+                    failures.push(Failure::Rejected {
+                        phase,
+                        reason: reason.clone(),
+                        op_index,
+                    });
+                }
+            }
+        }
+        for failure in failures {
+            let diagnostic =
+                SdkExecutionDiagnostic::from_failure(&failure, FailureContext::default());
+            let host = serde_json::to_value(diagnostic.host_json()).expect("host json");
+            assert_eq!(
+                SdkExecutionDiagnostic::failure_from_host_json(&host),
+                Some(failure.clone()),
+                "{host}"
+            );
+            assert_eq!(Failure::from_host_json(&failure.host_json()), Some(failure));
+            // The released detail set never shows the additive failure details.
+            assert!(
+                diagnostic
+                    .released_details()
+                    .all(|(name, _)| name.as_str() != "phase" && name.as_str() != "retry_safe")
+            );
+        }
+    }
+
+    #[test]
+    fn signed_failure_details_refuse_an_incomplete_or_inconsistent_failure() {
+        use crate::failure::Failure;
+        let unique = Failure::Rejected {
+            phase: crate::failure::Phase::Query,
+            reason: crate::failure::Reason::Unique,
+            op_index: Some(0),
+        };
+        let host = unique.host_json();
+        for (key, value) in [
+            ("phase", serde_json::Value::Null),
+            ("phase", "staging".into()),
+            ("retry_safe", serde_json::Value::Null),
+            ("code", "CNT5".into()),
+            ("lock_kind", "exclusive".into()),
+            ("reason", "duplicate".into()),
+        ] {
+            let mut changed = host.clone();
+            changed[key] = value;
+            assert_eq!(Failure::from_host_json(&changed), None, "{changed}");
+        }
+        // A diagnostic without the additive details carries no failure.
+        let plain = serde_json::to_value(
+            SdkExecutionDiagnostic::provider_failure(SdkProviderOperation::Write).host_json(),
+        )
+        .expect("host json");
+        assert_eq!(SdkExecutionDiagnostic::failure_from_host_json(&plain), None);
+    }
 
     #[test]
     fn generated_package_diagnostics_have_fixed_binding_neutral_vocabulary() {
