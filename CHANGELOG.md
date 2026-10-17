@@ -510,6 +510,10 @@ differently direct and through a proxy. Each entry says what to do instead.
 
 ### Fixed
 
+- `Transaction::stage_plan` refuses a `query-plan/v3` program lifted from a
+  V2 plan that keeps its filter or model terminal as compatibility evidence
+  (`query_plan_compatibility_unsupported`), instead of running it without
+  the filter and answering unfiltered rows.
 - Legacy query compilation no longer emits TypeQL that the TypeQL 3 parser
   rejects: attribute values render as one `isa` constraint instead of
   `$a isa T; $a "v"`, keyed wildcards as fetch objects, zero-argument `count`

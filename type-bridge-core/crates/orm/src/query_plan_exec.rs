@@ -185,6 +185,20 @@ fn remote_value(row: &serde_json::Value, variable: &str) -> Result<RemoteValue, 
 
 /// Lower one trusted plan into the official AST plus its `given` rows.
 pub(crate) fn lower(plan: &QueryPlanV3) -> Result<(tql::Query, Option<GivenRowsSpec>), Diagnostic> {
+    // A lifted V2 plan keeps its released predicate and model terminal as
+    // frozen compatibility evidence beside the pipeline. Only the pipeline
+    // lowers here, so running such a plan would drop its filter and its
+    // hydration; refuse it instead of answering unfiltered rows.
+    if plan
+        .compatibility()
+        .is_some_and(|evidence| evidence.predicate().is_some() || evidence.model_query().is_some())
+    {
+        return Err(failure(
+            DiagnosticCategory::UnsupportedCapability,
+            "query_plan_compatibility_unsupported",
+            "this executor cannot run a plan's frozen V2 predicate or model terminal",
+        ));
+    }
     let bindings = plan.bindings();
     let inputs = plan.inputs();
     let mut stages = Vec::new();
@@ -861,6 +875,84 @@ mod tests {
                 .code()
                 .as_str(),
             "query_plan_answer_shape"
+        );
+    }
+
+    /// A filter adapted from a match request carries its predicate and its
+    /// model terminal as frozen V2 evidence, not as pipeline stages. Only
+    /// the pipeline lowers here, so the executor refuses the lifted plan
+    /// instead of answering every person unfiltered.
+    #[test]
+    fn a_lifted_filter_plan_is_refused() {
+        use type_bridge_contract::fingerprint::SemanticProfileId;
+        use type_bridge_contract::managed_scope::ManagedScopeId;
+        use type_bridge_contract::projection::{
+            BindingTarget, ProjectionConfig, ProjectionHandler,
+        };
+        use type_bridge_contract::schema::DocumentId;
+        use type_bridge_schema::{
+            ManagedDeltaContext, SchemaDocumentSet, build_schema_authority, normalize_documents,
+            project, resolve, schema_authority_capability_vocabulary,
+        };
+
+        let documents = SchemaDocumentSet::parse([(
+            DocumentId::new("lifted-filter.yaml").unwrap(),
+            "format: typebridge.schema/v2\nattributes:\n  score: { value: integer }\nentities:\n  person:\n    owns:\n      score: { key: true }\n",
+        )])
+        .unwrap();
+        let declared = normalize_documents(&documents).unwrap();
+        let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+        let resolved = resolve(&declared, &profile).unwrap();
+        let context = ManagedDeltaContext::new(
+            ManagedScopeId::new("lifted-filter").unwrap(),
+            profile,
+            schema_authority_capability_vocabulary(),
+        );
+        let verified =
+            build_schema_authority(&declared, declared.required_capabilities(), &context).unwrap();
+        let installed = crate::InstalledRuntimeProjection::try_new(
+            project(
+                &resolved,
+                BindingTarget::Python,
+                &ProjectionConfig::python(),
+                &[ProjectionHandler::python_v1()],
+                &[],
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .with_schema_authority(&verified);
+        let authority = installed.plan_authority().unwrap();
+        let registry = std::sync::Arc::new(installed.match_registry().unwrap());
+
+        let session = crate::match_request::SessionHandle::new(std::sync::Arc::clone(&registry));
+        let person = session.exact("person").unwrap();
+        let query = session
+            .query(session.positional([person.one()]).unwrap())
+            .unwrap()
+            .where_predicate(person.field("score").unwrap().compare_value(
+                crate::ComparisonOp::GreaterThanOrEqual,
+                crate::AttributeValue::Long(1),
+            ))
+            .unwrap();
+        let adapter =
+            crate::query_v2_adapter::MatchRequestAdapterAuthority::from_registry(&registry)
+                .unwrap();
+        let validated = query.validate_count_by(&person).unwrap();
+        let adapted =
+            crate::query_v2_adapter::adapt_match_request(&validated, &registry, &adapter.context())
+                .unwrap();
+        let lifted = adapted
+            .validated()
+            .plan()
+            .to_v3(authority.declared())
+            .unwrap();
+        assert!(lifted.compatibility().is_some_and(|evidence| {
+            evidence.predicate().is_some() && evidence.model_query().is_some()
+        }));
+        assert_eq!(
+            lower(&lifted).unwrap_err().code().as_str(),
+            "query_plan_compatibility_unsupported"
         );
     }
 }
