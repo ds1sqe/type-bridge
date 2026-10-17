@@ -87,7 +87,9 @@ def test_manifest_generates_typescript_at_the_shared_profile() -> None:
 
 def test_read_report_takes_only_the_ops_the_version_has(tmp_path: Path) -> None:
     path = write(tmp_path, report("2.0.2"))
-    assert [op["name"] for op in released_node.read_report(path, "2.0.2")["ops"]] == ["insert_one"]
+    ops = released_node.read_report(path, "2.0.2")["ops"]
+    assert isinstance(ops, list)
+    assert [op["name"] for op in ops] == ["insert_one"]
     # A gap must stay a gap, and a present op must not go missing.
     with pytest.raises(ValueError, match="ops must be"):
         released_node.read_report(path, "2.1.0")
