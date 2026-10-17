@@ -2288,24 +2288,31 @@ pub(crate) fn py_orm_error(error: OrmError) -> PyErr {
     }
 }
 
+/// The `type_bridge.failure` class a commit-phase failure raises, or `None`
+/// for a failure before commit.
+pub(crate) fn commit_outcome_class(
+    failure: &type_bridge_contract::failure::Failure,
+) -> Option<&'static str> {
+    use type_bridge_contract::failure::{Failure, Phase, Reason};
+    match failure {
+        Failure::Indeterminate { .. } => Some("CommitOutcomeUnknown"),
+        Failure::Rejected {
+            phase: Phase::Commit,
+            reason,
+            ..
+        } => Some(match reason {
+            Reason::Conflict { .. } => "CommitConflict",
+            _ => "CommitRejected",
+        }),
+        _ => None,
+    }
+}
+
 pub(crate) fn py_provider_diagnostic(
     diagnostic: type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic,
 ) -> PyErr {
     Python::attach(|py| {
-        let kind = diagnostic.failure().map(|failure| failure.host_json());
-        let class = kind.as_ref().and_then(|failure| {
-            if failure["phase"] != "commit" {
-                return None;
-            }
-            Some(if failure["retry_safe"] == false {
-                "CommitOutcomeUnknown"
-            } else if failure["reason"] == "conflict" {
-                "CommitConflict"
-            } else {
-                "CommitRejected"
-            })
-        });
-        let error = match class {
+        let error = match diagnostic.failure().and_then(commit_outcome_class) {
             Some(class) => match py
                 .import("type_bridge.failure")
                 .and_then(|module| module.getattr(class))
@@ -2808,5 +2815,44 @@ mod given_rows_tests {
             assert!(type_error.to_string().contains("row 0"));
             assert!(type_error.to_string().contains("exact Python int"));
         });
+    }
+}
+
+#[cfg(test)]
+mod commit_outcome_tests {
+    use type_bridge_contract::failure::{Failure, LockKind, Phase, Reason};
+
+    use super::commit_outcome_class;
+
+    fn rejected(phase: Phase, reason: Reason) -> Failure {
+        Failure::Rejected {
+            phase,
+            reason,
+            op_index: Some(1),
+        }
+    }
+
+    #[test]
+    fn commit_failures_pick_the_shared_commit_classes() {
+        let conflict = Reason::Conflict {
+            lock: LockKind::Exclusive,
+        };
+        assert_eq!(
+            commit_outcome_class(&rejected(Phase::Commit, conflict)),
+            Some("CommitConflict")
+        );
+        assert_eq!(
+            commit_outcome_class(&rejected(Phase::Commit, Reason::Cardinality)),
+            Some("CommitRejected")
+        );
+        assert_eq!(
+            commit_outcome_class(&Failure::Indeterminate { code: None }),
+            Some("CommitOutcomeUnknown")
+        );
+        // A rejected query is not a commit outcome; it keeps its own class.
+        assert_eq!(
+            commit_outcome_class(&rejected(Phase::Query, Reason::Unique)),
+            None
+        );
     }
 }

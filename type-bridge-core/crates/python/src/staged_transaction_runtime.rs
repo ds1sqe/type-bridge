@@ -24,7 +24,7 @@ use type_bridge_orm::session::staged::{
 };
 
 use crate::match_runtime::py_sdk_diagnostic;
-use crate::orm_runtime::provider_block_on;
+use crate::orm_runtime::{commit_outcome_class, provider_block_on, py_provider_diagnostic};
 use crate::plan_builder_runtime::PyPlan;
 use crate::query_v2_runtime::{PythonBytes, value_error};
 
@@ -39,8 +39,22 @@ pub(crate) fn parse_kind(kind: &str) -> PyResult<TransactionKind> {
     }
 }
 
+// Commit outcomes raise the `type_bridge.failure` classes released writes
+// raise, so `except CommitConflict` catches a losing staged commit.
+fn staged_diagnostic(diagnostic: SdkExecutionDiagnostic) -> PyErr {
+    if diagnostic
+        .failure()
+        .and_then(commit_outcome_class)
+        .is_some()
+    {
+        py_provider_diagnostic(diagnostic)
+    } else {
+        py_sdk_diagnostic(diagnostic)
+    }
+}
+
 fn commit_error(error: &CommitError) -> PyErr {
-    py_sdk_diagnostic(error.diagnostic())
+    staged_diagnostic(error.diagnostic())
 }
 
 fn pending_error(error: &PendingError) -> PyErr {
@@ -52,7 +66,7 @@ fn pending_error(error: &PendingError) -> PyErr {
             failure: Some(failure),
             context,
             ..
-        } => py_sdk_diagnostic(SdkExecutionDiagnostic::from_failure(
+        } => staged_diagnostic(SdkExecutionDiagnostic::from_failure(
             failure,
             context.as_ref().clone(),
         )),
