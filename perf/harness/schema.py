@@ -14,10 +14,13 @@ from typing import Any, Literal, get_args
 
 FORMAT = "perf-result/v1"
 
-type Family = Literal["micro", "binding", "pipeline", "build", "size", "suite"]
+type Family = Literal["micro", "binding", "pipeline", "release", "build", "size", "suite"]
 type Unit = Literal["ns", "instructions", "bytes", "s", "ops_per_s"]
-# GitHub event names, plus ``local`` for hand-run measurements.
-type Trigger = Literal["push", "pull_request", "schedule", "workflow_dispatch", "release", "local"]
+# GitHub event names, ``local`` for hand-run measurements, and
+# ``release-matrix`` for released versions run through one workload.
+type Trigger = Literal[
+    "push", "pull_request", "schedule", "workflow_dispatch", "release", "local", "release-matrix"
+]
 
 FAMILIES: tuple[str, ...] = get_args(Family.__value__)
 UNITS: tuple[str, ...] = get_args(Unit.__value__)

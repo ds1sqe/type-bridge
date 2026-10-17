@@ -43,7 +43,15 @@
         "branch": { "$ref": "#/$defs/text" },
         "version": { "$ref": "#/$defs/text" },
         "trigger": {
-          "enum": ["push", "pull_request", "schedule", "workflow_dispatch", "release", "local"]
+          "enum": [
+            "push",
+            "pull_request",
+            "schedule",
+            "workflow_dispatch",
+            "release",
+            "local",
+            "release-matrix"
+          ]
         },
         "runner": {
           "type": "object",
@@ -84,7 +92,9 @@
       "required": ["id", "family", "unit", "value"],
       "properties": {
         "id": { "$ref": "#/$defs/dottedName" },
-        "family": { "enum": ["micro", "binding", "pipeline", "build", "size", "suite"] },
+        "family": {
+          "enum": ["micro", "binding", "pipeline", "release", "build", "size", "suite"]
+        },
         "unit": { "enum": ["ns", "instructions", "bytes", "s", "ops_per_s"] },
         "value": { "$ref": "#/$defs/measure" },
         "n": { "type": "integer", "minimum": 1 },

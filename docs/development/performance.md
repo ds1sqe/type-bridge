@@ -212,6 +212,57 @@ each host SDK also gets `binding.<sdk>.<op>.overhead`: its median minus
 Rust's. A result holds only non-negative measures, so a host path cheaper
 than Rust's records 0 overhead; the converter prints the signed difference.
 
+## Released versions
+
+`python -m perf.harness.released` runs one Python release through the same
+six CRUD ops as every other compared version: `insert_one`, `fetch_by_key`
+(one of 1,000 seeded items), `fetch_filtered` (stock of at least 900, 100
+items), `update`, `delete` and `batch_insert_1k`. The compared versions are
+2.0.2, 2.1.0, 2.2.5 and `head`, on one TypeDB 3.12.3 at semantic profile
+`typedb-3.12.1/v1`, which all of them accept. A release is installed from
+PyPI into its own venv under the run's temp directory; `head` installs this
+tree with a plain (no `perf-stages`) `type-bridge-core` wheel.
+
+The workload, `perf/released/python/workload.py`, is the model manager API
+an application uses: `Item.manager(db)` on a `type_bridge.Database`, with
+`insert`, `filter(...).first()`, `filter(stock__gte=...).all()`, `update`,
+`delete` and `insert_many`, in 2.0.2's spelling. Only the model's origin
+differs, in the workload's `SHIMS` table:
+
+| Version | `Item` model | Schema |
+| --- | --- | --- |
+| 2.0.2 | hand-written `Entity` subclass | `SchemaManager(db).register(Item)`, `sync_schema()` |
+| 2.1.0 | generated with its CLI | its `migration make` TypeQL, run in one schema transaction |
+| 2.2.5, head | generated with its CLI | its `migration make` and `migration apply` |
+
+2.1.0 removed the hand-written model classes from the public package, and
+2.0.2's generated manager has only `insert`, `all` and `get_by_iid`, so no
+one model source covers every version. 2.1.0's `migration apply` requires
+a TypeDB server of exactly 3.12.1, hence its TypeQL shim. From 2.1.0 on,
+the timed calls are the generated managers'; 2.0.2's are the hand-written
+managers' own paths. The comparison is of the API an application of each
+version calls, not of one internal code path.
+
+```bash
+docker run -d --name perf-typedb --tmpfs /var/lib/typedb/data:rw \
+  -p 1729:1729 -p 8000:8000 typedb/typedb:3.12.3
+(cd type-bridge-core && uvx --from maturin==1.14.1 maturin build --release \
+  -o ../tmp/perf/core-wheel)
+for version in 2.0.2 2.1.0 2.2.5 head; do
+  TYPEDB_USERNAME=admin TYPEDB_PASSWORD=password uv run python -m perf.harness.released \
+    --version $version --typedb 3.12.3 --core-wheel tmp/perf/core-wheel/type_bridge_core-*.whl \
+    --out tmp/perf/release-python-$version.json
+done
+docker rm -f -v perf-typedb
+```
+
+Each op becomes `release.python.<op>` (family `release`, ns: the median
+call with p90, p99 and samples, after 5 warmup and 30 measured calls). The
+run block records the measured version (`head` records the project
+version), trigger `release-matrix`, and the venv's Python. Only the manager
+call is timed; fetching the instance that `update` and `delete` take is
+not.
+
 ## Run the Python binding benchmarks locally
 
 `benchmarks/` is a pytest-benchmark suite over the Python binding: native
