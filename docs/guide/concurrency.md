@@ -330,4 +330,115 @@ winner requires changes to the server, protocol and driver.
 
 ## Using TypeBridge transactions
 
-TypeBridge transaction examples are coming in 2.3.
+A TypeBridge staged transaction runs these recipes from typed plans. Staging
+sends nothing; `commit` opens one TypeDB transaction, runs every staged plan
+in order and commits. A failing plan stops the commit and nothing is stored.
+Each staged plan's answer resolves only after the commit succeeds.
+TypeBridge adds no locks of its own: the rules above apply unchanged, and a
+lost race is still `STC2`, reported as a typed failure.
+
+### The purchase as one plan
+
+This is the [one-query purchase](#purchase-in-one-query), built from a
+generated package's tokens (`Item`, `Item.stock`, `Purchase.buyer`). It is
+the program of the [`writes` conformance suite][writes], whose workspace
+names the order key `order-id`:
+
+```python title="Python"
+--8<-- "examples/purchase/python/program.py:purchase"
+```
+
+The `where_` conditions and the two `let_` values are the `match` stage, the
+two updates one `update` stage, and the insert the purchase. Each `input`
+column takes one value per given `row`. Python spells `where_` and `let_` to
+avoid its keywords.
+
+The other SDKs build the same plan bytes; the conformance suite compares
+them byte for byte, directly and over the proxy:
+
+=== "TypeScript"
+
+    ```ts
+    --8<-- "examples/purchase/ts/program.ts:purchase"
+    ```
+
+=== "Rust"
+
+    ```rust
+    --8<-- "examples/purchase/rust/main.rs:purchase"
+    ```
+
+=== "C (ABI 1.7)"
+
+    ```c
+    --8<-- "examples/purchase/c/program.c:purchase"
+    ```
+
+### Commit, and retry a conflict
+
+```python title="Python"
+--8<-- "examples/purchase/python/recovery.py:direct"
+```
+
+As a `with` block, `db.staged_transaction("write")` commits on a clean exit,
+discards on an exception, and closes. `Matched(0)` is the failed condition
+described above: the commit succeeded and wrote nothing.
+
+### Typed failures
+
+A failed commit raises one of three classes from `type_bridge`. Each carries
+`.failure`, a value-free `Failure`: `phase`, `reason`, `lock_kind`,
+`annotation`, `op_index` (the failing staged plan), `retry_safe` and the
+provider `code`. Values and the conflicting winner are
+[never included](#why-the-conflicting-winner-is-not-reported).
+
+| Class | `failure` | What to do |
+| --- | --- | --- |
+| `CommitConflict` | `reason` `conflict`, code `STC2`, with `lock_kind` | Nothing was stored. Run the whole transaction again on a fresh snapshot. |
+| `CommitRejected` (the base of `CommitConflict`) | `reason` `cardinality` (`CNT5`), `unique` (`CNT9`), `constraint` or `other` | Nothing was stored. Re-check the rule; the same write fails again. |
+| `CommitOutcomeUnknown` | `code` such as `STC1`, `DCT5` or none; `retry_safe` false | The writes may have applied. Reconcile by the operation key before repeating them. |
+
+`failure.retry_safe` is true for every proven rejection: repeating the whole
+transaction cannot apply it twice. It does not promise that a repeat
+succeeds; only a conflict can change on a new snapshot. A rejection while a
+plan runs, before commit (`phase` `query`, such as `CNT9` for an already
+visible key), is not one of these classes, but it carries the same
+`.failure`.
+
+### An unknown outcome over the proxy
+
+A direct transaction cannot learn an unknown outcome; reconcile by the order
+key. Over the TypeBridge proxy, each commit is one signed `query-remote/v3`
+request with a fresh random idempotency key. The server keeps its signed
+reply until the request expires, within its store's TTL. `commit_retry()`
+resends the same request and key, so the purchase applies at most once, and
+the original pending answers resolve from the reply:
+
+```python title="Python"
+--8<-- "examples/purchase/python/recovery.py:proxy"
+```
+
+`has_unknown_outcome()` is true only after a proxy commit whose reply was
+lost or unverifiable, or whose server answered `commit_outcome_unknown`;
+test it rather than the exception class. `commit_retry()` refuses in every
+other state, and always on a direct transaction. A `with` block leaves such
+a transaction open, so the retry stays possible after it. The proxy accepts
+idempotency keys only from an authenticated, write-authorized caller;
+others are refused with `staged_idempotency_not_authorized`.
+
+### The same names in each SDK
+
+| | Python | TypeScript | Rust | C (ABI 1.7) |
+| --- | --- | --- | --- | --- |
+| Plan builder | `type_bridge.plan.Plan.builder()` | `Plan.builder()` | `type_bridge::plan::Plan::builder()` | `type_bridge_plan_builder_new`, `type_bridge_plan_builder_*` |
+| Direct transaction | `db.staged_transaction("write")` | `db.stagedTransaction("write")` | `db.transaction(TransactionOptions::default().with_kind(TransactionKind::Write))` | `type_bridge_database_transaction(db, TYPE_BRIDGE_TRANSACTION_WRITE, ...)` |
+| Proxy transaction | `proxy.transaction("write")`, `proxy` from `ProxyConnection.connect` | `await proxy.transaction("write")`, `proxy` from `ProxyConnection.connect` | `proxy.transaction(options).await`, `proxy` from `ProxyDatabase::connect` | `type_bridge_proxy_connection_transaction` |
+| Stage, commit | `tx.stage(plan)`, `tx.commit()` | `tx.stage(plan)`, `await tx.commit()` | `tx.stage(&plan)`, `tx.commit().await` | `type_bridge_staged_transaction_stage`, `type_bridge_staged_transaction_commit` |
+| Answer | `pending.result()` | `pending.get()` | `pending.get()` | `type_bridge_pending_answer` |
+| Typed failure | `error.failure` | `QueryV2Error.failure` (`ProviderFailure`) | `CommitError.failure` (`type_bridge::failure::Failure`) | `type_bridge_execution_diagnostics_failure_get_v1` |
+| Conflict | `CommitConflict` | `failure.reason === "conflict"` | `Failure::Rejected { reason: Reason::Conflict { .. }, .. }` | `reason == TYPE_BRIDGE_FAILURE_REASON_CONFLICT` |
+| Retry safe | `failure.retry_safe` | `failure.retry_safe` | `failure.retry_safe()` | `failure.retry_safe` |
+| Unknown outcome | `CommitOutcomeUnknown`, `tx.has_unknown_outcome()` | `error.code === "commit_outcome_unknown"`, `tx.hasUnknownOutcome()` | `Failure::Indeterminate { .. }`, `tx.has_unknown_outcome()` | `outcome == TYPE_BRIDGE_FAILURE_OUTCOME_INDETERMINATE`; the commit keeps the handle |
+| Resend | `tx.commit_retry()` | `await tx.commitRetry()` | `tx.commit_retry().await` | `type_bridge_staged_transaction_commit_retry` |
+
+[writes]: https://github.com/ds1sqe/type-bridge/tree/master/tests/contracts/sdk_conformance/writes

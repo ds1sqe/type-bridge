@@ -51,6 +51,7 @@ fn seed() -> Result<Built> {
     plan.build(&models::SCHEMA)
 }
 
+// --8<-- [start:purchase]
 /// The one-query purchase: take one item and its price, record the order.
 fn purchase() -> Result<Built> {
     let mut plan = Plan::builder();
@@ -86,6 +87,7 @@ fn purchase() -> Result<Built> {
     ]);
     plan.build(&models::SCHEMA)
 }
+// --8<-- [end:purchase]
 
 /// Rewrite every doctor's on-call value with itself, taking its lock.
 fn touch() -> Result<Built> {

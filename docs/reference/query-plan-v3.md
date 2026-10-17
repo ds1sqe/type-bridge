@@ -2,8 +2,9 @@
 
 V3 is an ordered, schema-checked read/write program encoded as canonical UTF-8
 JSON. A producer can construct these bytes without Rust. SDKs delegate encoding
-and validation to Rust. This document specifies the format and intended TypeQL
-lowering; execution and lowering are separate implementation phases.
+and validation to Rust. This document specifies the format, its TypeQL
+lowering, the shared builder and batch-split rules, and the staged remote
+envelope that carries ordered stacks of plans.
 
 ## Root object
 
@@ -148,9 +149,10 @@ Comparators are `equal`, `not_equal`, `less`, `less_or_equal`, `greater`,
 with root-only reachability and expanded-hop node-budget checks. Functions use checked declarations and
 argument/return types. Nested boolean bodies and local functions retain the
 released read-pattern vocabulary: let and iid are V3 root-match patterns.
-An iid pattern names a canonical `0x` hexadecimal thing IID and constrains an
-entity or relation binding that a positive pattern of the same match types;
-it adds `query.pattern.iid`.
+An iid pattern names a canonical thing IID (`0x` followed by 1..256
+hexadecimal digits) and constrains a mandatory binding that positive patterns
+of the same match type only as entities or relations; it adds
+`query.pattern.iid`.
 
 Let assigns a fresh declared scalar binding in source order. It cannot overwrite
 an earlier let, concept, attribute or function result, including one produced
@@ -194,32 +196,46 @@ be updated, including keys declared on any descendant of a subtype-inclusive
 match. Descendants are enumerated from the declared subtype facts. A Delete is `{"kind":"thing","binding":B}`,
 `{"kind":"has","owner":B,"field":ownership}`, or
 `{"kind":"links","relation":B,"role":R,"player":B}`, or
-`{"kind":"players","relation":B,"role":R}` (every player of the role, like an
-ownership deletion removes every value). Thing deletion ends
-its binding lifetime after that stage; scalar let/function results are not
-thing deletion targets; later stages/output cannot refer to it.
-Ownership/link deletion leaves the owner/relation alive. All inferred possible
+`{"kind":"players","relation":B,"role":R}`. A players deletion removes every
+player of one declared role, as an ownership deletion removes every value;
+every possible type of the relation binding must descend from the role's
+declaring relation. Followed by an attach, it replaces a multi-player role.
+Thing deletion ends its binding lifetime after that stage (all thing
+deletions of a stage end together at its boundary, not in item order);
+scalar let/function results are not thing deletion targets; later
+stages/output cannot refer to it.
+Ownership/link/players deletion leaves the owner/relation alive. All inferred possible
 owner/player types must satisfy the requested fact; inference is conservative.
 
 An Attach is `{"kind":"has","owner":B,"field":ownership,"operand":O}` or
 `{"kind":"links","relation":B,"role":R,"player":B}`. It adds a value or a
 player to a bound thing and keeps the existing ones, which `update` (a
 replacement, valid only up to one value) cannot do for multi-valued
-ownerships and roles. Key ownerships cannot be attached. An attach adds
-`query.write.attach`, which proxies do not advertise yet: a staged request
-carrying one is refused at capability admission.
+ownerships and roles. Key ownerships cannot be attached. Targets, operands
+and roles are checked as for update. An attach adds `query.write.attach`.
 
-A fetch is the last stage. It answers one hydration document per row for a
-present entity or relation binding, so the operation is `rows` or
-`write` returning `rows`, and the declared output is `{"kind":"rows",
-"columns":[]}`. Each listed role is declared by a relation type the thing
-can be, and appears once. Document keys are fixed: `_iid`, `_type` (the
-exact type label), `attributes` (every owned attribute), and for the role at
-position `N`: `_role_N_iid`, `_role_N_type`, `_role_N_attributes`. A required
-role must be filled; an optional role's keys are absent when it is unfilled;
-several players of a role give one document per player combination. A fetch
-adds `query.fetch.thing`, which proxies do not advertise yet: a staged
-request carrying a fetch is refused at capability admission.
+A fetch is `{"kind":"fetch","thing":B,"roles":[{"required":true,"role":R},...]}`
+and must be the last stage. It answers one hydration document per row for a
+present (mandatory, not optional) binding typed only as entities or
+relations, so the operation is `rows` or `write` returning `rows`, and the
+declared output is `{"kind":"rows","columns":[]}`. Each listed role must be
+declared, every possible type of the thing must descend from the role's
+declaring relation, and a role is listed once. Document keys are fixed:
+`_iid`, `_type` (the exact type label), `attributes` (every owned attribute),
+and for the role at position `N`: `_role_N_iid`, `_role_N_type`,
+`_role_N_attributes`. A required role must be filled (an unfilled one drops
+the row); an optional role's keys are absent when it is unfilled; several
+players of a role give one document per player combination. A fetch adds
+`query.fetch.thing`.
+
+`query.write.attach` and `query.fetch.thing` are derived from the plan but
+not advertised yet: they are absent from the V3 capability vocabulary that
+the staged advertisement publishes (see [Capabilities](#capabilities)), so a
+staged request carrying an attach or a fetch fails capability admission with
+`unsupported_required_capability`. The fixtures `attach.json`,
+`replace_players.json` (players deletion then attach), `fetch_entity.json`
+and `fetch_relation.json` in `tests/contracts/plan_v3` show their canonical
+bytes.
 
 The read tail is an ordered subsequence of this list, each stage at most once:
 
@@ -262,6 +278,28 @@ bytes. Bound rows participate in the plan fingerprint.
 Omission preserves a reusable template. A template with inputs must be bound
 before execution. User values, including literals, become typed given
 parameters; they are never interpolated into TypeQL text.
+
+## Batch splitting
+
+A batch is one plan over all of its rows as `given` and fires once. It is
+split only when its rows would pass a limit, into same-shape plans that run
+in the same transaction, so the batch stays all-or-nothing. Every language
+binding and the proxy call the one pure function
+`type_bridge_contract::split::split`, so they split identically.
+
+The input is the encoded plan size and an ordered list of units. A unit is
+the `given` rows one input row produces, with their encoded bytes; it is
+never divided. `SplitLimits::CANONICAL` is 4,096 rows and the 32 MiB
+envelope; `SplitLimits::new` lets a caller tighten them. Each chunk holds at most
+`max_rows` rows and at most `max_bytes` minus the plan bytes of row bytes.
+
+Chunks are contiguous, order-preserving ranges of unit indexes, filled
+greedily: a batch within the limits is exactly one range, the result depends
+only on its inputs, and an empty batch yields no ranges. For example, 10,000
+one-row units give `0..4096`, `4096..8192`, `8192..10000`. The split is
+refused with `PlanTooLarge` when the plan leaves no byte budget for rows, and
+with `UnitTooLarge` (naming the first such unit) when one unit alone exceeds
+the row or byte budget.
 
 ## Canonicalization and fingerprint
 
@@ -313,9 +351,10 @@ produce a different plan digest.
 
 Recompute the sorted union from syntax. V3 includes `query.plan.v3`; released
 read syntax also derives `query.plan`. New stages add `query.write.insert`,
-`query.write.put`, `query.write.update`, `query.write.delete`. Let adds
-`query.let`; expression operators/builtins add `query.expr.` plus their exact
-wire name, including `query.expr.length`.
+`query.write.put`, `query.write.update`, `query.write.delete`,
+`query.write.attach` and `query.fetch.thing`. Let adds `query.let`; an iid
+pattern adds `query.pattern.iid`; expression operators/builtins add
+`query.expr.` plus their exact wire name, including `query.expr.length`.
 
 The retained read vocabulary is `query.pattern.isa`, `query.pattern.isa-subtypes`,
 `query.pattern.has`, `query.pattern.links`, `query.pattern.value`,
@@ -328,6 +367,55 @@ The retained read vocabulary is `query.pattern.isa`, `query.pattern.isa-subtypes
 Inputs or any literal/input operand add `query.input.given-rows`. Lifted
 compatibility syntax additionally retains its V2 capability derivation.
 Providers must advertise every required feature.
+
+Derivation and advertisement are separate. `query_plan_v3_capability_vocabulary()`
+is the V2 vocabulary (which includes `query.pattern.iid`) plus
+`query.plan.v3`, the insert/update/delete/put write capabilities, `query.let`
+and every `query.expr.*` name. The staged advertisement at
+`GET /v3/capabilities` is the V2 advertisement's capabilities, that
+vocabulary, `query.remote.envelope-v3`, `query.remote.write` and
+`query.remote.idempotency`. `query.write.attach` and `query.fetch.thing` are
+derived but not advertised yet, so staged requests refuse plans that need
+them.
+
+## Plan builder
+
+`query_plan::v3::PlanBuilder` is the one rule set every SDK builder calls, so
+the same program gives the same canonical bytes in every language:
+
+- Binding IDs are dense and follow creation order; input column IDs follow
+  `input` call order.
+- `exact`, `subtypes`, `field`, `links`, `compare` and `let_` add to the
+  plan's single leading `match`, in call order. A plan with no such call has
+  no match stage.
+- Write calls append stages in call order. Consecutive calls of the same kind
+  share one stage: `update`/`update_player` one update, `insert` one insert,
+  `put` one put, and `delete`/`delete_field`/`delete_player` one delete.
+  `thing_field` and `thing_player` extend an inserted or put thing.
+- `row` appends a given row; with no rows the plan is a template.
+
+Derived variable names come from labels. `exact`, `subtypes`, `insert` and
+`put` use the type label's stem: ASCII letters are lowercased, digits and `_`
+are kept, every other character becomes `_`, and a stem not starting with a
+lowercase letter gains a `v` prefix (`purchase-id` gives `purchase_id`).
+`field` uses `{owner variable}_{attribute stem}` (`item_stock`). A stem is cut
+to 120 bytes; if it is taken, `_2`, `_3`, ... is appended, using the first
+unused suffix (a second `item` is `item_2`). Explicit names (`input`, `let_`)
+are used as given and must be fresh; bindings and inputs share one
+namespace.
+
+`build` chooses the operation. A plan with write stages answers
+`{"kind":"write","returns":"matched"}`, or `"rows"` when `returning` named
+columns; a read answers `rows`, or `count`/`exists` with empty output
+columns. Every method is infallible: the first invalid call is kept and
+returned by `build`, which then runs full plan validation. Builder codes are
+`query_plan_builder_duplicate_name`, `query_plan_builder_binding_limit`,
+`query_plan_builder_untyped_relation` (`links` needs a relation bound by
+`exact`/`subtypes`), `query_plan_builder_not_created` (fields and players on
+a thing that was not inserted or put) and `query_plan_builder_write_operation`
+(a write plan that asked for count or exists). The builder has no attach,
+players-deletion, iid or fetch call; such plans are constructed as a
+`PlanSpec` and validated by `QueryPlanV3::new`.
 
 ## TypeQL lowering
 
@@ -348,23 +436,31 @@ are illustrative forms, not a snapshot read followed by a separate mutation.
 | field / role update | `update $x has score == $next;` / `update $r links (member: $new);` |
 | attach | `insert $x has tag == $value;` / `insert $r links (member: $p);` over bound variables |
 | delete thing / ownership / link | `delete $x;` / `delete has $old_score of $x;` / `delete links (member: $old) of $r;` |
+| delete players | `try { $r links (member: $p); };` then `delete try { links (member: $p) of $r; };` |
 | select / require / distinct | `select $x;` / `require $x;` / `distinct;` |
 | fetch | `match $x isa! $T; $x links (member: $P0); $P0 isa! $P0T;` (optional roles inside `try`), then `fetch { "_iid": iid($x), "_type": label($T), "attributes": { $x.* }, "_role_0_iid": iid($P0), "_role_0_type": label($P0T), "_role_0_attributes": { $P0.* } };` |
 | reduce | `reduce $n = count($x) groupby $group;` |
 | sort / offset / limit | `sort $x asc;` / `offset 10;` / `limit 10;` |
 | output / operation | Resolve the declared rows, documents, count, presence or write result from that pipeline |
 
-Ownership deletion first binds the owned attribute (for example,
-`$x has score $old_score`) in that same pipeline, then deletes that ownership
-using the attribute variable. It does not render a field label as a deletable.
+Ownership deletion first binds every value of the ownership (for example,
+`$x has score $old_score`) in a preceding optional (`try`) match of that same
+pipeline, then deletes that ownership using the attribute variable inside an
+optional delete. It does not render a field label as a deletable. Owners
+without a value keep their row, so later stages and `matched` still see them;
+each additional value of a multi-valued ownership adds one row. A players
+deletion binds and deletes every player of the role the same way.
 
 Bounded reachability uses a checked local function over declared roles; function
 calls use checked let assignments and definitions. Given rows seed that same
 pipeline. A touch assigns the matched value back to its field, retaining a
 write conflict edge. Relation reassignment deletes the old role link before
 assigning the new player. Write-row projection follows mutation in that same
-pipeline. These lowering rules are documentation here; V3 lowering code belongs
-to the subsequent execution phase.
+pipeline. The ORM executor (`type-bridge-core/crates/orm/src/query_plan_exec.rs`)
+implements this lowering. Its deletion and fetch helper variables
+(`PlanHas{stage}x{index}`, `PlanPlayers{stage}x{index}`, `PlanFetchType`,
+`PlanFetchRole{N}`) start uppercase, so they cannot collide with validated
+lowercase plan variables.
 
 ## Versioning
 
@@ -461,8 +557,11 @@ types and operation, but no row values unless the policy returns `true` from
 `query_remote_policy_rejected`, stages nothing further and commits nothing.
 Once the outcome is known, the observe-only `Interceptor::on_v3_commit` sees
 `committed`, the diagnostic code, the commit certainty and the typed provider
-failure (such as an `STC2` conflict). Staged replies do not yet carry fetched
-documents (`query_remote_v3_documents_unsupported`). Execution enforces the
+failure (such as an `STC2` conflict). Staged replies carry no documents: a
+plan whose `rows` or write-`rows` operation projects documents output is
+refused with `query_remote_v3_documents_unsupported`, and a fetch plan fails
+capability admission earlier because `query.fetch.thing` is not advertised
+yet. Execution enforces the
 advertised answer ceilings, tightened by the request's `max_items`,
 `max_bytes` and deadline, while answers are read. An idempotency key needs the
 same vouched caller a write does and a transport policy that set
@@ -652,10 +751,12 @@ Completion must fit the allowance; expiry, duplicate completion or a ticket
 from another store cannot overwrite a newer reservation. Dropping a ticket
 leaves it in flight until expiry because the execution might have committed.
 
-This store installs no route and opens no transaction. Staged-route integration
-must authenticate, validate freshness/advertisement, reserve, execute once, sign
-and complete; a keyed retry must consult the store before ordinary nonce replay
-rejection. The live dropped-reply/apply-once smoke belongs to that integration.
+The store itself installs no route and opens no transaction. `POST /v3/staged`
+drives it in this order: authenticate the transport, decode against the
+advertisement, check freshness, authorize the write and the key, run plan
+policy, then `begin` the retention entry. A keyed retry legitimately repeats
+the nonce, so retention answers it before the nonce store is consulted; only
+then does the route reserve the nonce, execute once, sign and complete.
 
 Retention is **not durable**. A server restart loses the store, and its executor
 epoch/advertisement must change. A retry may return an indeterminate outcome;

@@ -63,6 +63,7 @@ def seed(authority: Any) -> Plan:
     return plan.build(authority)
 
 
+# --8<-- [start:purchase]
 def purchase(authority: Any) -> Plan:
     """The one-query purchase: take one item and its price, record the order."""
     plan = Plan.builder()
@@ -88,6 +89,9 @@ def purchase(authority: Any) -> Plan:
     )
     plan.row([order_input.value("O1"), item_input.value("I1"), account_input.value("A1")])
     return plan.build(authority)
+
+
+# --8<-- [end:purchase]
 
 
 def touch(authority: Any) -> Plan:

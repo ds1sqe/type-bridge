@@ -55,6 +55,7 @@ function seed(authority: QueryV2Authority): Built {
   return plan.build(authority);
 }
 
+// --8<-- [start:purchase]
 /** The one-query purchase: take one item and its price, record the order. */
 function purchase(authority: QueryV2Authority): Built {
   const plan = Plan.builder();
@@ -83,6 +84,7 @@ function purchase(authority: QueryV2Authority): Built {
   plan.row([orderInput.value("O1"), itemInput.value("I1"), accountInput.value("A1")]);
   return plan.build(authority);
 }
+// --8<-- [end:purchase]
 
 /** Rewrite every doctor's on-call value with itself, taking its lock. */
 function touch(authority: QueryV2Authority): Built {

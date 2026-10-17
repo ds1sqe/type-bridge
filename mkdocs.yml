@@ -87,7 +87,8 @@ markdown_extensions:
   - pymdownx.emoji:
       emoji_index: !!python/name:material.extensions.emoji.twemoji
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
-  - pymdownx.snippets
+  - pymdownx.snippets:
+      check_paths: true
   - pymdownx.tabbed:
       alternate_style: true
   - toc:
@@ -136,6 +137,7 @@ nav:
       - Overview: guide/operations.md
       - Server Container: guide/server-container.md
       - Logging: guide/logging.md
+      - Upgrading to 2.3: guide/upgrade-2.3.md
       - Upgrading to 2.0: guide/upgrade-v2.md
       - V2 Deprecations: guide/v2-deprecations.md
       - 2.0.2 Expanded Notice: guide/v2.0.2-notice.md

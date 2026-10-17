@@ -93,17 +93,16 @@ async fn expect_rows(runtime: &TypeDBRuntime, database: &str, query: &str, expec
     tx.close().await.unwrap();
 }
 
+/// The TypeBridge section's examples are included files, tested by
+/// `tests/unit/docs/test_docs_concurrency_guide.py`; only TypeQL is inline.
 #[test]
-fn guide_snippets_are_named_and_transaction_api_section_is_only_a_placeholder() {
+fn guide_snippets_are_named_and_typebridge_examples_are_included_files() {
     snippets();
-    assert_eq!(
-        GUIDE
-            .split_once("## Using TypeBridge transactions\n")
-            .unwrap()
-            .1
-            .trim(),
-        "TypeBridge transaction examples are coming in 2.3."
-    );
+    let (_, typebridge) = GUIDE
+        .split_once("## Using TypeBridge transactions\n")
+        .expect("TypeBridge section");
+    assert!(!typebridge.contains("```typeql"));
+    assert!(typebridge.contains("--8<-- \"examples/purchase/python/recovery.py:direct\""));
 }
 
 /// Explicit invocation requires an isolated TypeDB 3.13.6 endpoint; it never

@@ -121,6 +121,7 @@ done:
   return status;
 }
 
+/* --8<-- [start:purchase] */
 /* The one-query purchase: take one item and its price, record the order. */
 static type_bridge_status_t purchase(type_bridge_plan_builder_t *plan, const identities_t *id) {
   type_bridge_status_t status;
@@ -179,6 +180,7 @@ static type_bridge_status_t purchase(type_bridge_plan_builder_t *plan, const ide
 done:
   return status;
 }
+/* --8<-- [end:purchase] */
 
 /* Rewrite every doctor's on-call value with itself, taking its lock. */
 static type_bridge_status_t touch(type_bridge_plan_builder_t *plan, const identities_t *id) {
