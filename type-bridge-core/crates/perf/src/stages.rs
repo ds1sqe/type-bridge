@@ -9,9 +9,12 @@
 //!
 //! The totals are global to the process. Measure one operation at a time:
 //! [`StageTimes::take`] before and after it.
+//!
+//! The SDK bindings' private recorders (built with their `perf-stages`
+//! feature) share one process-wide layer through [`recorder`].
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use tracing::span::{Attributes, Id};
@@ -30,6 +33,14 @@ impl StageTimes {
     /// Return the totals recorded since the last call and reset them.
     pub fn take(&self) -> BTreeMap<&'static str, u64> {
         std::mem::take(&mut *self.0.lock().unwrap_or_else(|error| error.into_inner()))
+    }
+
+    /// Add `totals` back, for a reader that took them but could not
+    /// deliver them.
+    pub fn restore(&self, totals: BTreeMap<&'static str, u64>) {
+        for (stage, nanos) in totals {
+            self.add(stage, nanos);
+        }
     }
 
     fn add(&self, stage: &'static str, nanos: u64) {
@@ -150,6 +161,37 @@ pub fn install() -> Result<StageTimes, tracing::subscriber::SetGlobalDefaultErro
     Ok(times)
 }
 
+/// The process-wide stage totals, installing the layer as the global
+/// default subscriber on first use.
+///
+/// Every later call returns the same totals. A binding's recorder calls
+/// this, then [`StageTimes::take`] around each operation it measures.
+///
+/// # Errors
+///
+/// Fails, now and on every later call, when another global subscriber was
+/// set first.
+pub fn recorder() -> Result<&'static StageTimes, RecorderUnavailable> {
+    static GLOBAL: OnceLock<Option<StageTimes>> = OnceLock::new();
+    GLOBAL
+        .get_or_init(|| install().ok())
+        .as_ref()
+        .ok_or(RecorderUnavailable)
+}
+
+/// Another global subscriber owns the process, so [`recorder`] cannot
+/// install the stage layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecorderUnavailable;
+
+impl std::fmt::Display for RecorderUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("another global tracing subscriber is installed")
+    }
+}
+
+impl std::error::Error for RecorderUnavailable {}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -225,6 +267,25 @@ mod tests {
         assert!(execute >= 5_000_000, "{stages:?}");
         assert!(decode >= 1_000_000, "{stages:?}");
         assert!(execute + decode <= wall, "{stages:?} > {wall}");
+    }
+
+    #[test]
+    fn the_recorder_is_installed_once_and_records_one_operation() {
+        let times = super::recorder().expect("no other global subscriber in this test binary");
+        assert!(
+            std::ptr::eq(times, super::recorder().unwrap()),
+            "one shared recorder"
+        );
+        times.take();
+        {
+            let _entry = tracing::info_span!("tb.sdk.entry").entered();
+            let _commit = tracing::info_span!("tb.commit").entered();
+        }
+        let stages = times.take();
+        assert_eq!(
+            stages.keys().copied().collect::<Vec<_>>(),
+            ["tb.commit", "tb.sdk.entry"]
+        );
     }
 
     #[test]

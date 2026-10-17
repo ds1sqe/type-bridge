@@ -26,6 +26,9 @@ EXPECTED_PRIVATE_BINDINGS = frozenset(
 )
 # Repository tooling that measures the product; never a dependency of it.
 EXPECTED_PRIVATE_TOOLING = frozenset({"type-bridge-perf"})
+# The one way a package may link tooling: a private binding's optional
+# dependency enabled only by this off-by-default feature.
+PERF_STAGES_FEATURE = "perf-stages"
 
 
 class InventoryError(RuntimeError):
@@ -239,6 +242,87 @@ def load_inventory(path: Path = INVENTORY_PATH) -> CargoReleaseInventory:
             f"found {sorted(private_tooling)!r}"
         )
     return inventory
+
+
+def _dependency_tables(manifest: dict[str, object]) -> list[tuple[str, dict[str, object]]]:
+    tables: list[tuple[str, dict[str, object]]] = []
+    for kind in ("dependencies", "dev-dependencies", "build-dependencies"):
+        table = manifest.get(kind)
+        if isinstance(table, dict):
+            tables.append((kind, table))
+    targets = manifest.get("target")
+    if isinstance(targets, dict):
+        for target, entry in targets.items():
+            if isinstance(entry, dict):
+                for kind, table in _dependency_tables(entry):
+                    tables.append((f"target.{target}.{kind}", table))
+    return tables
+
+
+def _names(dependency: str, specification: object) -> set[str]:
+    package = specification.get("package") if isinstance(specification, dict) else None
+    return {dependency, package} if isinstance(package, str) else {dependency}
+
+
+def tooling_dependency_violations(inventory: CargoReleaseInventory, workspace: Path) -> list[str]:
+    """Return every manifest dependency on private tooling the product forbids.
+
+    ``workspace`` is the directory the inventory's manifest paths are relative
+    to. Only a private binding may depend on tooling, and only as an optional
+    normal dependency without default features that the binding's
+    ``perf-stages`` feature alone enables; ``default`` must not enable it.
+    """
+    tooling = {package.name for package in inventory.tooling_packages}
+    violations: list[str] = []
+    for package in inventory.packages:
+        if package.classification == PRIVATE_TOOLING:
+            continue
+        try:
+            manifest = tomllib.loads((workspace / package.manifest).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+            violations.append(f"{package.manifest}: cannot read: {error}")
+            continue
+        features = manifest.get("features")
+        features = features if isinstance(features, dict) else {}
+        for kind, table in _dependency_tables(manifest):
+            for dependency, specification in table.items():
+                linked = _names(dependency, specification) & tooling
+                if not linked:
+                    continue
+                where = f"{package.manifest}: {kind}.{dependency}"
+                if package.classification != PRIVATE_BINDING:
+                    violations.append(f"{where}: only a private binding may link tooling")
+                    continue
+                if (
+                    kind != "dependencies"
+                    or not isinstance(specification, dict)
+                    or specification.get("optional") is not True
+                    or specification.get("default-features") is not False
+                ):
+                    violations.append(
+                        f"{where}: must be an optional normal dependency with "
+                        "default-features = false"
+                    )
+                enabling = sorted(
+                    feature
+                    for feature, members in features.items()
+                    if isinstance(members, list)
+                    and any(
+                        isinstance(member, str)
+                        and member.removeprefix("dep:").split("/")[0].removesuffix("?")
+                        == dependency
+                        for member in members
+                    )
+                )
+                if enabling != [PERF_STAGES_FEATURE]:
+                    violations.append(
+                        f"{where}: must be enabled by {PERF_STAGES_FEATURE!r} alone, "
+                        f"found {enabling!r}"
+                    )
+                default = features.get("default", [])
+                if isinstance(default, list) and PERF_STAGES_FEATURE in default:
+                    violations.append(f"{where}: {PERF_STAGES_FEATURE!r} must be off by default")
+    return violations
 
 
 def main() -> int:

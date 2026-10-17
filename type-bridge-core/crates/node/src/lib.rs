@@ -12,6 +12,9 @@ mod contract_test_adapter;
 pub mod limits;
 mod match_runtime;
 mod migration_catalog_runtime;
+mod perf_stages;
+#[cfg(feature = "perf-stages")]
+pub use perf_stages::perf_stages;
 mod plan_builder_runtime;
 mod proxy_connection_runtime;
 #[cfg(test)]

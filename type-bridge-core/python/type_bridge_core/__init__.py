@@ -22,6 +22,10 @@ _render_models_json = type_bridge_core._render_models_json
 # The plan builder's native seam; `type_bridge.plan` is its public surface.
 _PlanBuilderCore = type_bridge_core._PlanBuilderCore
 _Plan = type_bridge_core._Plan
+# The perf drivers' stage recorder; only `--features perf-stages` builds,
+# never a shipped wheel, have it.
+if hasattr(type_bridge_core, "_perf_stages"):
+    _perf_stages = type_bridge_core._perf_stages
 
 __doc__ = type_bridge_core.__doc__
 if hasattr(type_bridge_core, "__all__"):

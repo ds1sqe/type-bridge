@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -106,18 +108,28 @@ def test_core_crates_do_not_depend_upward_on_the_public_rust_client() -> None:
     assert not offenders
 
 
-def test_no_crate_depends_on_the_private_perf_harness() -> None:
-    offenders = [
-        f"{manifest.relative_to(ROOT)}:{name}"
-        for manifest in sorted((ROOT / "type-bridge-core/crates").glob("*/Cargo.toml"))
-        for name in _depends_on(
-            tomllib.loads(manifest.read_text(encoding="utf-8")), "type-bridge-perf"
-        )
-    ]
-    assert not offenders
-    perf = tomllib.loads(
-        (ROOT / "type-bridge-core/crates/perf/Cargo.toml").read_text(encoding="utf-8")
+def _inventory_module() -> Any:
+    path = ROOT / "scripts/ci/cargo_release_inventory.py"
+    spec = importlib.util.spec_from_file_location("cargo_release_inventory", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules.setdefault("cargo_release_inventory", module)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_only_binding_perf_stages_features_depend_on_the_private_perf_harness() -> None:
+    cargo_release_inventory = _inventory_module()
+    inventory = cargo_release_inventory.load_inventory()
+    workspace = ROOT / "type-bridge-core"
+    assert cargo_release_inventory.tooling_dependency_violations(inventory, workspace) == []
+    dependents = sorted(
+        manifest.parent.name
+        for manifest in (workspace / "crates").glob("*/Cargo.toml")
+        if _depends_on(tomllib.loads(manifest.read_text(encoding="utf-8")), "type-bridge-perf")
     )
+    assert dependents == ["c", "node", "python"]
+    perf = tomllib.loads((workspace / "crates/perf/Cargo.toml").read_text(encoding="utf-8"))
     assert perf["package"]["publish"] is False
 
 

@@ -15,6 +15,7 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use pythonize::pythonize;
+use tracing::Instrument as _;
 use type_bridge_contract::query_plan::v3::decode_query_plan_v3;
 use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
 use type_bridge_orm::ProviderRuntimeOwner;
@@ -112,6 +113,8 @@ impl PyStagedTransaction {
     }
 
     fn drive(&self, py: Python<'_>, retry: bool) -> PyResult<()> {
+        let entry = crate::perf_stages::entry();
+        let _entered = entry.enter();
         let mut transaction = self
             .inner
             .lock()
@@ -120,14 +123,20 @@ impl PyStagedTransaction {
             .ok_or_else(|| {
                 PyRuntimeError::new_err("Transaction is committing on another thread")
             })?;
-        let result = provider_block_on(py, self.runtime.as_ref(), async {
-            let result = if retry {
-                transaction.commit_retry().await
-            } else {
-                transaction.commit().await
-            };
-            (transaction, result)
-        });
+        let result = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            async {
+                let result = if retry {
+                    transaction.commit_retry().await
+                } else {
+                    transaction.commit().await
+                };
+                (transaction, result)
+            }
+            // The provider may poll on another thread; the span follows it.
+            .instrument(entry.clone()),
+        );
         let (transaction, result) = result;
         *self.inner.lock().expect("transaction lock poisoned") = Some(transaction);
         result.map_err(|error| commit_error(&error))
@@ -140,6 +149,7 @@ impl PyStagedTransaction {
     /// `query-plan/v3` bytes; its answer resolves at commit. A plan the
     /// transaction cannot carry fails here.
     fn stage(&self, plan: &Bound<'_, PyAny>) -> PyResult<PyPending> {
+        let _entry = crate::perf_stages::entry().entered();
         let decoded;
         let plan = if let Ok(built) = plan.cast::<PyPlan>() {
             built.get().inner()
@@ -240,6 +250,7 @@ impl PyPending {
     /// The resolved answer: `Rows`, `Count`, `Exists` or `Matched`. Raises
     /// the commit's typed failure, or a lifecycle error before commit.
     fn result(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let _entry = crate::perf_stages::entry().entered();
         let answer = self.pending.get().map_err(|error| pending_error(&error))?;
         let base = PyClassInitializer::from(PyPlanAnswer);
         let object = match answer.as_ref() {

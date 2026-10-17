@@ -15,6 +15,7 @@
 use std::mem::size_of;
 use std::ptr;
 use std::sync::Arc;
+use tracing::Instrument as _;
 
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::query_plan::v3::{QueryPlanV3, decode_query_plan_v3};
@@ -513,6 +514,7 @@ pub unsafe extern "C" fn type_bridge_staged_transaction_stage(
     out_pending: *mut *mut TypeBridgePending,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    let _entry = crate::perf_stages::entry().entered();
     let inputs = |outputs: &DirectOutputPreflight| {
         // SAFETY: non-null handles are live by contract.
         unsafe {
@@ -570,6 +572,8 @@ unsafe fn finish_commit(
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
     retry: bool,
 ) -> TypeBridgeStatus {
+    let entry = crate::perf_stages::entry();
+    let _entered = entry.enter();
     // SAFETY: forwarded owner and diagnostics slot contract.
     let value = match unsafe { prepare_terminal_outputs(transaction, out_diagnostics) } {
         Ok(value) => value,
@@ -587,13 +591,17 @@ unsafe fn finish_commit(
         unsafe { transaction.write_unaligned(ptr::null_mut()) };
         let outcome = {
             let tx = &mut handle.transaction;
-            handle.owner.block_on(async {
-                if retry {
-                    tx.commit_retry().await
-                } else {
-                    tx.commit().await
+            handle.owner.block_on(
+                async {
+                    if retry {
+                        tx.commit_retry().await
+                    } else {
+                        tx.commit().await
+                    }
                 }
-            })
+                // The provider may poll on another thread; the span follows it.
+                .instrument(entry.clone()),
+            )
         };
         if handle.transaction.has_unknown_outcome() {
             // SAFETY: as above; the same owner returns for commit_retry.
@@ -677,6 +685,7 @@ pub unsafe extern "C" fn type_bridge_pending_answer(
     out_kind: *mut u32,
     out_value: *mut u64,
 ) -> TypeBridgeStatus {
+    let _entry = crate::perf_stages::entry().entered();
     let outputs = match direct_output_preflight(&[
         (out_kind.cast(), size_of::<u32>()),
         (out_value.cast(), size_of::<u64>()),

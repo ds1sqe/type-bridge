@@ -22,6 +22,7 @@ mod migration_catalog_runtime;
 pub mod migration_runtime;
 pub mod orm;
 pub mod orm_runtime;
+mod perf_stages;
 mod plan_builder_runtime;
 mod proxy_connection_runtime;
 #[cfg(test)]
@@ -977,6 +978,7 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     proxy_connection_runtime::register(m)?;
     staged_transaction_runtime::register(m)?;
     plan_builder_runtime::register(m)?;
+    perf_stages::register(m)?;
     schema::register(m)?;
     version::register(m)?;
 

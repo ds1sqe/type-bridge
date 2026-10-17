@@ -441,6 +441,7 @@ impl NodePlanBuilder {
     /// semantics; the first invalid call, if any, is the error.
     #[napi]
     pub fn build(&self, authority: &NodeQueryV2Authority) -> napi::Result<NodePlan> {
+        let _entry = crate::perf_stages::entry().entered();
         if let Some((status, reason)) = &self.error {
             return Err(napi::Error::new(*status, reason.clone()));
         }

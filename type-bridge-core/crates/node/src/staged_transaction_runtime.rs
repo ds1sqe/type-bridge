@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use napi::bindgen_prelude::{Env, Object, Unknown};
 use napi_derive::napi;
+use tracing::Instrument as _;
 use type_bridge_contract::query_plan::v3::decode_query_plan_v3;
 use type_bridge_contract::schema::decode_declared_schema;
 use type_bridge_orm::ProviderRuntimeOwner;
@@ -88,6 +89,7 @@ impl NodePendingPlanAnswer {
     /// the lifecycle or execution failure every answer of the stack shares.
     #[napi(js_name = "getJson")]
     pub fn get_json(&self) -> napi::Result<String> {
+        let _entry = crate::perf_stages::entry().entered();
         let answer = self.inner.get().map_err(|error| pending_error(&error))?;
         answer_json(&answer)
     }
@@ -120,8 +122,10 @@ impl NodeStagedTransaction {
     }
 
     fn settle_commit(&self, env: &Env, retry: bool) -> napi::Result<Object<'static>> {
+        let entry = crate::perf_stages::entry();
+        let _entered = entry.enter();
         let inner = Arc::clone(&self.inner);
-        settle(env, &self.runtime, async move {
+        let work = async move {
             let mut transaction = inner.lock().await;
             let result = if retry {
                 transaction.commit_retry().await
@@ -129,7 +133,9 @@ impl NodeStagedTransaction {
                 transaction.commit().await
             };
             result.map_err(|error| crate::match_runtime::napi_sdk_diagnostic(error.diagnostic()))
-        })
+        };
+        // The span closes when the provider runtime finishes the commit.
+        settle(env, &self.runtime, work.instrument(entry.clone()))
     }
 }
 
@@ -146,6 +152,7 @@ impl NodeStagedTransaction {
         plan_bytes: Unknown,
         schema_bytes: Unknown,
     ) -> napi::Result<NodePendingPlanAnswer> {
+        let _entry = crate::perf_stages::entry().entered();
         let plan_bytes = non_shared_buffer(&env, plan_bytes)?;
         let schema_bytes = non_shared_buffer(&env, schema_bytes)?;
         let schema = decode_declared_schema(&schema_bytes)
@@ -163,6 +170,7 @@ impl NodeStagedTransaction {
     /// commit.
     #[napi]
     pub fn stage(&self, plan: &NodePlan) -> napi::Result<NodePendingPlanAnswer> {
+        let _entry = crate::perf_stages::entry().entered();
         let inner = self
             .lock()?
             .stage_plan(plan.inner())

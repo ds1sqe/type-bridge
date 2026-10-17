@@ -199,3 +199,74 @@ def test_inventory_rejects_identity_and_order_drift(
 
     with pytest.raises(inventory_module.InventoryError, match=message):
         inventory_module.load_inventory(path)
+
+
+def _workspace_copy(tmp_path: Path, manifest: str, old: str, new: str) -> Path:
+    """Copy every inventoried manifest, mutating one of them."""
+    inventory = inventory_module.load_inventory()
+    workspace = tmp_path / "type-bridge-core"
+    for package in inventory.packages:
+        target = workspace / package.manifest
+        target.parent.mkdir(parents=True, exist_ok=True)
+        text = (ROOT / "type-bridge-core" / package.manifest).read_text(encoding="utf-8")
+        if package.manifest == manifest:
+            assert old in text
+            text = text.replace(old, new)
+        target.write_text(text, encoding="utf-8")
+    return workspace
+
+
+def test_tooling_dependency_rule_accepts_the_checked_in_manifests() -> None:
+    inventory = inventory_module.load_inventory()
+    workspace = ROOT / "type-bridge-core"
+    assert inventory_module.tooling_dependency_violations(inventory, workspace) == []
+
+
+PYTHON_PERF_DEPENDENCY = (
+    'type-bridge-perf = { path = "../perf", default-features = false, optional = true }'
+)
+
+
+@pytest.mark.parametrize(
+    ("manifest", "old", "new", "message"),
+    [
+        (
+            "crates/orm/Cargo.toml",
+            "[dependencies]\n",
+            '[dependencies]\ntype-bridge-perf = { path = "../perf", optional = true }\n',
+            "only a private binding may link tooling",
+        ),
+        (
+            "crates/python/Cargo.toml",
+            PYTHON_PERF_DEPENDENCY,
+            'type-bridge-perf = { path = "../perf", default-features = false }',
+            "must be an optional normal dependency",
+        ),
+        (
+            "crates/python/Cargo.toml",
+            PYTHON_PERF_DEPENDENCY,
+            'type-bridge-perf = { path = "../perf", optional = true }',
+            "must be an optional normal dependency",
+        ),
+        (
+            "crates/python/Cargo.toml",
+            "default = []",
+            'default = ["perf-stages"]',
+            "must be off by default",
+        ),
+        (
+            "crates/python/Cargo.toml",
+            "default = []",
+            'default = []\nprofiling = ["type-bridge-perf/pipelines"]',
+            "must be enabled by 'perf-stages' alone",
+        ),
+    ],
+)
+def test_tooling_dependency_rule_rejects_other_links(
+    tmp_path: Path, manifest: str, old: str, new: str, message: str
+) -> None:
+    workspace = _workspace_copy(tmp_path, manifest, old, new)
+    violations = inventory_module.tooling_dependency_violations(
+        inventory_module.load_inventory(), workspace
+    )
+    assert any(message in violation for violation in violations), violations

@@ -399,6 +399,7 @@ impl PyPlanBuilderCore {
     /// Validate the program under `authority`'s declared schema and managed
     /// semantics; the first invalid call, if any, is the error.
     fn build(&self, py: Python<'_>, authority: PyRef<'_, PyQueryV2Authority>) -> PyResult<PyPlan> {
+        let _entry = crate::perf_stages::entry().entered();
         if let Some(error) = &self.error {
             return Err(error.clone_ref(py));
         }

@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tracing::Instrument as _;
 
 use napi::bindgen_prelude::{Buffer, Error, Result};
 use napi_derive::napi;
@@ -427,6 +428,8 @@ impl NodeMigrationPlan {
         resources: Option<&NodeMigrationExecutionResources>,
         cancellation: Option<&NodeMigrationCancellation>,
     ) -> Result<NodeMigrationExecutionReport> {
+        let entry = crate::perf_stages::entry();
+        let _entered = entry.enter();
         let timeout_milliseconds = timeout_milliseconds
             .map(u64::try_from)
             .transpose()
@@ -457,7 +460,8 @@ impl NodeMigrationPlan {
                         &holder,
                         plan,
                         &control,
-                    ),
+                    )
+                    .instrument(entry.clone()),
                 )
                 .map(type_bridge_schema_migration::MigrationExecutionReport::from_apply)
                 .map(node_execution_report)
@@ -470,7 +474,8 @@ impl NodeMigrationPlan {
                         &holder,
                         plan,
                         &control,
-                    ),
+                    )
+                    .instrument(entry.clone()),
                 )
                 .map(type_bridge_schema_migration::MigrationExecutionReport::from_rollback)
                 .map(node_execution_report)

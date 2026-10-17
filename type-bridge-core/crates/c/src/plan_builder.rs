@@ -1163,6 +1163,7 @@ pub unsafe extern "C" fn type_bridge_plan_builder_build(
     out_plan: *mut *mut TypeBridgePlan,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    let _entry = crate::perf_stages::entry().entered();
     let inputs = |outputs: &DirectOutputPreflight| {
         if !builder.is_null() {
             outputs.check_bytes(builder.cast(), size_of::<TypeBridgePlanBuilder>())?;
