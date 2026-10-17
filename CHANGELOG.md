@@ -4,6 +4,12 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Generated entity models' `insert_many` (Python, Node) sends one batched
+  insert again on TypeDB 3.12+, instead of one query per row (regression
+  since 2.1.0).
+
 ## [2.2.6] - 2026-10-16
 
 ### Fixed

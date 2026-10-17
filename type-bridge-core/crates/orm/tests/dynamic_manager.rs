@@ -6526,3 +6526,107 @@ async fn dynamic_entity_manager_ends_with_get_with_query_executes() {
     assert!(recorded[0].contains("like"));
     assert!(recorded[0].contains(".*ice$"));
 }
+
+/// Records which query path a batch insert takes on a server that supports
+/// given rows.
+struct GivenRowsBackend {
+    calls: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl DriverBackend for GivenRowsBackend {
+    fn open_transaction(
+        &self,
+        _database: &str,
+        _tx_type: TxType,
+    ) -> BoxFuture<'_, std::result::Result<Box<dyn TransactionOps>, OrmError>> {
+        let calls = Arc::clone(&self.calls);
+        Box::pin(
+            async move { Ok(Box::new(GivenRowsTransaction { calls }) as Box<dyn TransactionOps>) },
+        )
+    }
+
+    fn is_open(&self) -> bool {
+        true
+    }
+
+    fn server_version(&self) -> Option<type_bridge_core_lib::version::Version> {
+        Some(type_bridge_core_lib::version::Version::new(3, 12, 3))
+    }
+
+    fn supports_given_rows(&self) -> bool {
+        true
+    }
+}
+
+struct GivenRowsTransaction {
+    calls: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl TransactionOps for GivenRowsTransaction {
+    fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult>> {
+        self.calls.lock().unwrap().push("query");
+        Box::pin(async {
+            Ok(QueryResult::Documents(vec![
+                serde_json::json!({"iid": "0x9"}),
+            ]))
+        })
+    }
+
+    fn query_canonical(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult>> {
+        self.calls.lock().unwrap().push("query_canonical");
+        Box::pin(async {
+            Ok(QueryResult::Documents(vec![
+                serde_json::json!({"iid": "0x9"}),
+            ]))
+        })
+    }
+
+    fn query_with_rows(
+        &mut self,
+        _typeql: &str,
+        _rows: type_bridge_orm::session::backend::GivenRowsSpec,
+    ) -> BoxFuture<'_, Result<QueryResult>> {
+        self.calls.lock().unwrap().push("query_with_rows");
+        // Answers arrive out of row order; the manager maps them back.
+        Box::pin(async {
+            Ok(QueryResult::Documents(vec![
+                serde_json::json!({"iid": "0xb", "row": 1}),
+                serde_json::json!({"iid": "0xa", "row": 0}),
+            ]))
+        })
+    }
+
+    fn commit(&mut self) -> BoxFuture<'_, Result<()>> {
+        self.calls.lock().unwrap().push("commit");
+        Box::pin(async { Ok(()) })
+    }
+
+    fn rollback(&mut self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn close(&mut self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test]
+async fn canonical_insert_many_sends_one_given_rows_query() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let db = Database::with_backend(
+        Box::new(GivenRowsBackend {
+            calls: Arc::clone(&calls),
+        }),
+        "testdb",
+    );
+    let manager = DynamicEntityManager::new_canonical(&db, Arc::new(person_descriptor()));
+    let bob = vec![
+        ("name".into(), AttributeValue::String("Bob".into())),
+        ("age".into(), AttributeValue::Long(31)),
+    ];
+    let iids = manager.insert_many(&[person_attrs(), bob]).await.unwrap();
+    assert_eq!(iids, vec!["0xa", "0xb"]);
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.iter().filter(|c| **c == "query_with_rows").count(), 1);
+    assert!(!calls.contains(&"query") && !calls.contains(&"query_canonical"));
+}
