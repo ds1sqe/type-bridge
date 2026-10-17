@@ -53,6 +53,40 @@ fn builder_reports_invalid_calls_and_unbuildable_packages() {
 }
 
 #[test]
+fn builds_verify_a_package_authority_once_and_a_tampered_one_every_time() {
+    let verifications = || crate::schema::AUTHORITY_VERIFICATIONS.with(std::cell::Cell::get);
+    let item_plan = || {
+        let mut plan = Plan::<Shop>::builder();
+        let item = plan.exact::<Item>();
+        plan.returning([item]);
+        plan
+    };
+
+    // `package()` leaks fresh evidence, so no other test has verified it.
+    let package = package();
+    let start = verifications();
+    item_plan().build(&package).unwrap();
+    item_plan().build(&package).unwrap();
+    // Copies of a package share its evidence and its verification.
+    let copy = package;
+    item_plan().build(&copy).unwrap();
+    assert_eq!(verifications() - start, 1);
+
+    let tampered = tampered_package();
+    let start = verifications();
+    let first = item_plan().build(&tampered).unwrap_err();
+    let second = item_plan().build(&tampered).unwrap_err();
+    assert_eq!(verifications() - start, 2);
+    assert_eq!(first.to_string(), second.to_string());
+    assert!(
+        first
+            .to_string()
+            .contains("disagrees with its extracted query evidence"),
+        "{first}"
+    );
+}
+
+#[test]
 fn reads_choose_rows_count_and_exists() {
     let read = |terminal: fn(&mut crate::plan::PlanBuilder<Shop>)| {
         let mut plan = Plan::<Shop>::builder();

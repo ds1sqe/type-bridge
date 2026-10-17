@@ -216,6 +216,15 @@ fn compile() -> (
 
 /// The generated package for [`SOURCE`].
 pub fn package() -> SchemaPackage<Shop> {
+    package_claiming(SCOPE)
+}
+
+/// [`package`] tampered to claim a managed scope its authority does not have.
+pub fn tampered_package() -> SchemaPackage<Shop> {
+    package_claiming("tampered-scope")
+}
+
+fn package_claiming(scope: &'static str) -> SchemaPackage<Shop> {
     let (declared, authority, resolved) = compile();
     let emitter = RustEmitter::new();
     let projection = project(
@@ -232,7 +241,7 @@ pub fn package() -> SchemaPackage<Shop> {
         leak(to_canonical_json(&projection).unwrap()),
         leak(encode_schema_authority(&authority)),
         leak(encode_declared_schema(&declared).unwrap()),
-        SCOPE,
+        scope,
         PROFILE,
     )
 }

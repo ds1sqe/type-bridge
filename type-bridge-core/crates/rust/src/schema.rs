@@ -1,7 +1,8 @@
 //! Schema package markers and type-branded installation handshake.
 
 use core::marker::PhantomData;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, PoisonError, RwLock};
 
 use type_bridge_contract::projection::{ProjectionConfig, RuntimeProjection};
 use type_bridge_contract::schema::encode_declared_schema;
@@ -109,6 +110,22 @@ fn generated_validation_path(segments: &[String]) -> String {
         }
     }
     path
+}
+
+/// Address and length of each embedded authority evidence string.
+type AuthorityEvidenceKey = [Option<(usize, usize)>; 4];
+
+/// Verified compiled authority of every package used so far. Embedded
+/// evidence is immutable, so verifying it once per package suffices.
+static VERIFIED_AUTHORITIES: LazyLock<
+    RwLock<HashMap<AuthorityEvidenceKey, Arc<VerifiedSchemaAuthority>>>,
+> = LazyLock::new(RwLock::default);
+
+#[cfg(test)]
+thread_local! {
+    /// Full authority verifications run on this thread.
+    pub(crate) static AUTHORITY_VERIFICATIONS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// A generated schema package marker carrying fingerprint evidence branded by `S: Schema`.
@@ -800,21 +817,11 @@ impl<S: Schema> SchemaPackage<S> {
         self.runtime_projection_json
     }
 
-    /// The declared schema and managed semantics plans of this package are
-    /// built under.
-    pub(crate) fn plan_authority(
-        &self,
-    ) -> Result<(
-        type_bridge_contract::schema::DeclaredSchema,
-        type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint,
-    )> {
-        let authority = self.verify_embedded_authority()?.ok_or_else(|| {
+    /// The verified compiled authority plans of this package are built under.
+    pub(crate) fn plan_authority(&self) -> Result<Arc<VerifiedSchemaAuthority>> {
+        self.verify_embedded_authority()?.ok_or_else(|| {
             authority_error("plans require a generated schema package with compiled authority")
-        })?;
-        Ok((
-            authority.declared_schema().clone(),
-            authority.managed_state().managed_semantic_schema().clone(),
-        ))
+        })
     }
 
     pub(crate) const fn declared_schema_json(&self) -> Option<&'static str> {
@@ -834,7 +841,7 @@ impl<S: Schema> SchemaPackage<S> {
         &self,
     ) -> Result<(
         Arc<type_bridge_orm::InstalledRuntimeProjection>,
-        Option<VerifiedSchemaAuthority>,
+        Option<Arc<VerifiedSchemaAuthority>>,
     )> {
         let authority_backed = self.schema_authority_json.is_some();
         // The detached semantic-fingerprint string is canonical evidence slot
@@ -881,13 +888,58 @@ impl<S: Schema> SchemaPackage<S> {
                 ),
             ));
         }
-        verify_rust_projection_evidence(&projection, authority.as_ref()).map_err(|error| {
+        verify_rust_projection_evidence(&projection, authority.as_deref()).map_err(|error| {
             classify_admission_error(successor, semantic_fingerprint_presence, error)
         })?;
         Ok((Arc::new(projection), authority))
     }
 
-    fn verify_embedded_authority(&self) -> Result<Option<VerifiedSchemaAuthority>> {
+    /// The package's verified compiled authority, verified once per package.
+    ///
+    /// Only a successful verification is cached. A package whose evidence
+    /// fails verification re-verifies on every call and so fails every call
+    /// with the same error.
+    fn verify_embedded_authority(&self) -> Result<Option<Arc<VerifiedSchemaAuthority>>> {
+        let key = self.authority_evidence_key();
+        let cached = VERIFIED_AUTHORITIES
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+            .cloned();
+        if let Some(authority) = cached {
+            return Ok(Some(authority));
+        }
+        // Verify outside the lock; a concurrent first use verifies twice and
+        // keeps whichever result lands first, both being identical.
+        let Some(authority) = self.verify_embedded_authority_uncached()? else {
+            return Ok(None);
+        };
+        let authority = VERIFIED_AUTHORITIES
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(key)
+            .or_insert_with(|| Arc::new(authority))
+            .clone();
+        Ok(Some(authority))
+    }
+
+    /// Identity of the evidence `verify_embedded_authority_uncached` reads.
+    ///
+    /// The evidence is immutable `'static` text, so equal addresses and
+    /// lengths mean equal bytes and an equal verification result. A
+    /// byte-identical copy at another address only verifies once more.
+    fn authority_evidence_key(&self) -> AuthorityEvidenceKey {
+        let identity =
+            |text: Option<&'static str>| text.map(|text| (text.as_ptr() as usize, text.len()));
+        [
+            identity(self.schema_authority_json),
+            identity(self.declared_schema_json),
+            identity(self.managed_scope_id),
+            identity(self.semantic_profile_id),
+        ]
+    }
+
+    fn verify_embedded_authority_uncached(&self) -> Result<Option<VerifiedSchemaAuthority>> {
         let parts = (
             self.schema_authority_json,
             self.declared_schema_json,
@@ -902,6 +954,8 @@ impl<S: Schema> SchemaPackage<S> {
                 "generated schema package contains incomplete compiled authority evidence",
             ));
         };
+        #[cfg(test)]
+        AUTHORITY_VERIFICATIONS.with(|count| count.set(count.get() + 1));
         if envelope.len() > MAX_SCHEMA_AUTHORITY_BYTES {
             return Err(authority_error(
                 "generated schema authority exceeds the canonical byte ceiling",

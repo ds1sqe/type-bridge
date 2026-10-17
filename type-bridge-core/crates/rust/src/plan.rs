@@ -783,10 +783,13 @@ impl<S: Schema> PlanBuilder<S> {
         if let Some(error) = self.error {
             return Err(error);
         }
-        let (declared, semantics) = schema.plan_authority()?;
+        let authority = schema.plan_authority()?;
         let plan = self
             .core
-            .build(&declared, semantics)
+            .build(
+                authority.declared_schema(),
+                authority.managed_state().managed_semantic_schema().clone(),
+            )
             .map_err(Error::from_contract_diagnostic)?;
         Ok(Plan {
             plan,
