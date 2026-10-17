@@ -124,6 +124,21 @@ let db = match SCHEMA.connect(direct_policy).await? {
   structured error with `category` and `code` instead of `RangeError` or
   `TypeError`; switch on `code`.
 
+### Rust remote hosts use the V2 envelope
+
+Only `typebridge.query-remote-request/v2` is accepted. Code that hosted the
+proxy route itself with the V1 or version-dispatching items moves to the
+`*_v2` items:
+
+```rust
+// 2.2: AdmittedRemoteRequestEnvelope / RemoteRejectionEnvelope
+let admitted = preflight_remote_request_versioned(bytes, &context, &advertisement, ceilings)?;
+let reply = execute_admitted_remote_request_versioned(admitted, &mut tx, &signer).await;
+// 2.3: AdmittedRemoteRequestV2 / RemoteRejectionV2, same arguments
+let admitted = preflight_remote_request_v2(bytes, &context, &advertisement, ceilings)?;
+let reply = execute_admitted_remote_request_v2(admitted, &mut tx, &signer).await;
+```
+
 The changelog's "Breaking changes" section lists every renamed constant,
 removed item, and changed refusal code.
 

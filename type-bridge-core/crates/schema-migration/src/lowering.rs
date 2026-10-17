@@ -205,6 +205,22 @@ impl SchemaLoweringBinding {
         )
     }
 
+    /// Bind capabilities to the TypeDB 3.12.1 lowering profile, the only
+    /// profile 2.2 compiled.
+    #[deprecated(
+        since = "2.3.0",
+        note = "binds the 3.12.1 profile only; use for_semantic_profile or for_context; removed in 3.0"
+    )]
+    pub fn current(
+        available_capabilities: CapabilitySet,
+    ) -> Result<Self, SchemaLoweringDiagnostic> {
+        Self::new(
+            crate::profile::typedb_3_12_1_profile().id.clone(),
+            crate::profile::profile_fingerprint(),
+            available_capabilities,
+        )
+    }
+
     /// Bind a delta context's capabilities to its semantic profile's registry.
     pub fn for_context(context: &ManagedDeltaContext) -> Result<Self, SchemaLoweringDiagnostic> {
         Self::for_semantic_profile(
@@ -1021,6 +1037,17 @@ mod tests {
         FunctionFact, FunctionReturnElement, FunctionReturnMode, TypeReference,
     };
     use type_bridge_contract::value::{CanonicalString, Cardinality, ValueTypeTag};
+
+    #[test]
+    #[allow(deprecated)]
+    fn deprecated_current_binds_the_3_12_1_registry() {
+        let capabilities = CapabilitySet::default();
+        let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+        assert_eq!(
+            SchemaLoweringBinding::current(capabilities.clone()).unwrap(),
+            SchemaLoweringBinding::for_semantic_profile(&profile, capabilities).unwrap()
+        );
+    }
 
     fn type_id(kind: TypeKind, label: &str) -> TypeId {
         TypeId::new(kind, label).unwrap()

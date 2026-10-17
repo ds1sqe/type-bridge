@@ -55,12 +55,32 @@ differently direct and through a proxy. Each entry says what to do instead.
   `-response/v1`, `-failure/v1`). Authored low-level plans now travel in the
   `typebridge.query-remote-request/v2` envelope that model queries already
   used; their binding API keeps its shape, and a failure carries the
-  complete structured diagnostic. Removed Rust API: `RemoteQueryRequest`,
-  `RemoteQueryResponse`, `RemoteQueryFailure`, `RemoteLimits`,
-  `RemoteReplyDecodeLimits`, `decode_remote_reply`, and the orm's
-  `prepare_remote_query`, `preflight_remote_request`, and
-  `execute_admitted_remote_request`; use the `*_v2` items. The capability
-  advertisement and the signed outer reply are unchanged.
+  complete structured diagnostic. The capability advertisement and the
+  signed outer reply are unchanged. Removed Rust API, with the `*_v2` item
+  to use instead where one exists:
+  - contract: `RemoteQueryRequest`, `RemoteQueryResponse`,
+    `RemoteQueryFailure`, `RemoteLimits`, `RemoteReplyDecodeLimits`,
+    `RemoteOutcome`, `RemoteReply`, `RemoteRequestFingerprint`,
+    `decode_remote_reply`, `decode_signed_remote_failure`, and the constants
+    `QUERY_REMOTE_REQUEST_FORMAT_V1`, `QUERY_REMOTE_RESPONSE_FORMAT_V1`,
+    `QUERY_REMOTE_FAILURE_FORMAT_V1` and
+    `QUERY_REMOTE_REQUEST_CANONICALIZATION`. `RemoteOutcomeShape` has no
+    replacement.
+  - orm: `prepare_remote_query`, `preflight_remote_request`,
+    `preflight_remote_request_at`, `execute_admitted_remote_request`,
+    `encode_remote_request`, `encode_remote_request_at`,
+    `check_advertised_capabilities`, `decode_remote_outcome`,
+    `AdmittedRemoteRequest`, `RemoteRejection`, `PendingRemoteQuery` and
+    `ClaimedRemoteReply`.
+  - orm, the V1-or-V2 dispatch: `AdmittedRemoteRequestEnvelope`,
+    `RemoteRejectionEnvelope`, `preflight_remote_request_versioned` and
+    `execute_admitted_remote_request_versioned` become
+    `AdmittedRemoteRequestV2`, `RemoteRejectionV2`,
+    `preflight_remote_request_v2` and `execute_admitted_remote_request_v2`;
+    `RemoteRequestFormat` and `remote_request_format` are removed, since
+    only V2 is accepted.
+  - orm `RemoteReplyExpectation` is a struct instead of an enum with one
+    variant per envelope version.
 - Rust connections: `SchemaPackage::connect(policy)` takes a
   `DirectConnectionPolicy` or a `ProxyConnectionPolicy` and returns
   `Connection<S>` (`Direct(Database<S>)` or `Proxy(ProxyDatabase<S>)`)
@@ -770,6 +790,10 @@ carry managers or typed queries.
   - `RemoteQuery` is `Query`, `RemoteGroupedQuery` is `GroupedQuery`, and
     `RemoteQueryExchange` is the `ExchangeConnection` exchange callback type.
 - Rust (`#[deprecated]`):
+  - `SchemaLoweringBinding::current(capabilities)` binds the TypeDB 3.12.1
+    lowering profile, as in 2.2. Use
+    `SchemaLoweringBinding::for_semantic_profile` or `for_context`, which
+    select the registry of the profile in use.
   - `RemoteDatabase<S>` is `ProxyDatabase<S>`.
   - `RemoteQueryTransport` is the 2.2 trait; every implementation is a
     `ProxyExchange`. Implement `ProxyExchange`.
