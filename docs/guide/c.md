@@ -282,20 +282,25 @@ uint64_t matched = 0;
 
 type_bridge_database_transaction(database, TYPE_BRIDGE_TRANSACTION_WRITE, &tx, &diagnostics);
 type_bridge_staged_transaction_stage(tx, plan, &pending, &diagnostics);
-status = type_bridge_staged_transaction_commit(&tx, &diagnostics);
+status = type_bridge_staged_transaction_commit(tx, &diagnostics);
 if (status == TYPE_BRIDGE_STATUS_OK)
     type_bridge_pending_answer(pending, &kind, &matched); /* MATCHED, 1 or 0 */
+type_bridge_staged_transaction_close(&tx); /* the only release */
 type_bridge_pending_free(&pending);
 type_bridge_plan_free(&plan);
 ```
 
-Commit consumes the transaction handle. The exception is a transaction that can
-retry an unknown outcome: its handle stays live and
+The handle is a reusable logical transaction, as in the other SDKs: commit and
+`type_bridge_staged_transaction_rollback(tx)` keep it usable, and
+`type_bridge_staged_transaction_close(&tx)` is the only release. After a
+commit, successful or a typed failure, the handle stages new work; rollback
+discards the staged plans. After an unknown proxy outcome
 `type_bridge_staged_transaction_commit_retry` resends the identical request. A
-direct provider commit cannot retry, so its
-`TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN` still consumes the handle. Reading
-an answer before commit returns `TYPE_BRIDGE_STATUS_IN_USE`; after a failed
-commit, rollback or close it returns `TYPE_BRIDGE_STATUS_EXECUTION_FAILED`.
+direct provider commit cannot retry: its
+`TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN` leaves the handle ready for new
+work. The open handle keeps its database busy until close. Reading an answer
+before commit returns `TYPE_BRIDGE_STATUS_IN_USE`; after a failed commit,
+rollback or close it returns `TYPE_BRIDGE_STATUS_EXECUTION_FAILED`.
 
 `type_bridge_proxy_connection_transaction(proxy, kind, &tx, &diagnostics)`
 opens the same transaction on a proxy connection. It fetches the server's

@@ -6826,7 +6826,7 @@ int main(void) {
 /// fixture, stages both on one deferred transaction, commits them in one
 /// provider transaction and reads the ROWS and MATCHED answers. A read
 /// transaction then counts the result, and a repeated purchase key is a
-/// typed failure that consumes the handle.
+/// typed failure that leaves the handle usable until close.
 ///
 /// ```text
 /// TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
@@ -7064,11 +7064,13 @@ int main(void) {
     CHECK(type_bridge_execution_diagnostics_close(&diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
   }
-  CHECK(type_bridge_staged_transaction_commit(&transaction, &diagnostics) ==
+  CHECK(type_bridge_staged_transaction_commit(transaction, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(transaction == NULL && diagnostics == NULL);
+  CHECK(transaction != NULL && diagnostics == NULL);
   CHECK(answer(purchased, TYPE_BRIDGE_PLAN_ANSWER_ROWS, 1u));
   CHECK(answer(inserted, TYPE_BRIDGE_PLAN_ANSWER_MATCHED, 2u));
+  type_bridge_staged_transaction_close(&transaction);
+  CHECK(transaction == NULL);
   printf("write commit: purchase rows=1 batch matched=2\n");
 
   /* A read transaction observes the committed accounts. */
@@ -7081,16 +7083,17 @@ int main(void) {
                                              &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(type_bridge_staged_transaction_stage(transaction, rows, &listed,
                                              &diagnostics) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(type_bridge_staged_transaction_commit(&transaction, &diagnostics) ==
+  CHECK(type_bridge_staged_transaction_commit(transaction, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(transaction == NULL && diagnostics == NULL);
+  CHECK(transaction != NULL && diagnostics == NULL);
+  type_bridge_staged_transaction_close(&transaction);
   CHECK(answer(counted, TYPE_BRIDGE_PLAN_ANSWER_COUNT, 3u));
   CHECK(answer(existing, TYPE_BRIDGE_PLAN_ANSWER_EXISTS, 1u));
   CHECK(answer(listed, TYPE_BRIDGE_PLAN_ANSWER_ROWS, 3u));
   printf("read commit: count=3 exists=1 rows=3\n");
 
-  /* The same purchase key again fails, consumes the handle and leaves the
-   * staged answer failed. */
+  /* The same purchase key again fails and leaves the staged answer failed;
+   * the handle stays usable until close. */
   CHECK(type_bridge_database_transaction(database, TYPE_BRIDGE_TRANSACTION_WRITE,
                                          &transaction, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
@@ -7098,15 +7101,19 @@ int main(void) {
                                              &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   {
     const type_bridge_status_t status =
-        type_bridge_staged_transaction_commit(&transaction, &diagnostics);
+        type_bridge_staged_transaction_commit(transaction, &diagnostics);
     CHECK(status == TYPE_BRIDGE_STATUS_EXECUTION_FAILED);
-    CHECK(transaction == NULL && diagnostics != NULL);
+    CHECK(transaction != NULL && diagnostics != NULL);
     CHECK(type_bridge_execution_diagnostics_close(&diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
   }
   CHECK(type_bridge_pending_answer(repeated, &kind, &value) ==
         TYPE_BRIDGE_STATUS_EXECUTION_FAILED);
-  printf("repeated purchase: EXECUTION_FAILED, handle consumed\n");
+  CHECK(type_bridge_staged_transaction_rollback(transaction) ==
+        TYPE_BRIDGE_STATUS_OK);
+  type_bridge_staged_transaction_close(&transaction);
+  CHECK(transaction == NULL);
+  printf("repeated purchase: EXECUTION_FAILED, handle kept until close\n");
 
   type_bridge_pending_free(&purchased);
   type_bridge_pending_free(&inserted);
@@ -7394,7 +7401,7 @@ static type_bridge_status_t purchase_once(const type_bridge_database_t *database
   if (status == TYPE_BRIDGE_STATUS_OK)
     status = type_bridge_staged_transaction_stage(transaction, plan, &pending, failure);
   if (status == TYPE_BRIDGE_STATUS_OK)
-    status = type_bridge_staged_transaction_commit(&transaction, failure);
+    status = type_bridge_staged_transaction_commit(transaction, failure);
   if (status == TYPE_BRIDGE_STATUS_OK &&
       (type_bridge_pending_answer(pending, &kind, matched) != TYPE_BRIDGE_STATUS_OK ||
        kind != TYPE_BRIDGE_PLAN_ANSWER_MATCHED))
@@ -7424,7 +7431,7 @@ static void *race(void *argument) {{
   racer_t *racer = (racer_t *)argument;
   type_bridge_plan_answer_kind_t kind = TYPE_BRIDGE_PLAN_ANSWER_ROWS;
   pthread_barrier_wait(racer->barrier);
-  racer->status = type_bridge_staged_transaction_commit(&racer->transaction, &racer->diagnostics);
+  racer->status = type_bridge_staged_transaction_commit(racer->transaction, &racer->diagnostics);
   if (racer->status == TYPE_BRIDGE_STATUS_OK &&
       type_bridge_pending_answer(racer->pending, &kind, &racer->matched) != TYPE_BRIDGE_STATUS_OK)
     racer->status = TYPE_BRIDGE_STATUS_PANIC;
@@ -7516,7 +7523,7 @@ int main(void) {{
         size_t count = 0u, index;
         int typed = 0;
         CHECK(racers[side].status == TYPE_BRIDGE_STATUS_EXECUTION_FAILED);
-        CHECK(racers[side].transaction == NULL);
+        CHECK(racers[side].transaction != NULL); /* the loser keeps its handle */
         CHECK(type_bridge_execution_diagnostics_count(racers[side].diagnostics, &count) ==
               TYPE_BRIDGE_STATUS_OK);
         for (index = 0u; index < count; ++index) {{

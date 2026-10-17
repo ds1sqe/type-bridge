@@ -403,8 +403,10 @@ differently direct and through a proxy. Each entry says what to do instead.
     schema bytes), `type_bridge_database_transaction`,
     `type_bridge_proxy_connection_transaction`,
     `type_bridge_staged_transaction_{stage,commit,commit_retry,rollback,close}`
-    and `type_bridge_pending_answer`; an unknown commit outcome keeps the
-    transaction for `commit_retry`;
+    and `type_bridge_pending_answer`. As in the other SDKs, the handle is a
+    reusable logical transaction: commit and rollback take it by pointer
+    and keep it usable (after an unknown proxy outcome `commit_retry`
+    resends the same request), and `close` is the only release;
   - the plan builder (`type_bridge_plan_builder_*`), which forwards to the
     core builder, so a C program has the same plan bytes as any other SDK;
   - `type_bridge_execution_diagnostics_failure_get_v1`, which reads a typed

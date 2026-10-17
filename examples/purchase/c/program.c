@@ -495,7 +495,7 @@ static type_bridge_status_t run_program(const target_t *target, type_bridge_plan
       status = type_bridge_staged_transaction_stage(transaction, plans[STEP_FIRST[step] + index],
                                                     &pending[index], &diagnostics);
     if (status == TYPE_BRIDGE_STATUS_OK)
-      status = type_bridge_staged_transaction_commit(&transaction, &diagnostics);
+      status = type_bridge_staged_transaction_commit(transaction, &diagnostics);
     if (status == TYPE_BRIDGE_STATUS_OK) {
       printf("%s\"%s\":{", step == 0u ? "" : ",", STEPS[step]);
       for (index = 0u; status == TYPE_BRIDGE_STATUS_OK && index < STEP_COUNT[step]; ++index) {

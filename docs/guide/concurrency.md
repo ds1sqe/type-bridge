@@ -438,7 +438,9 @@ others are refused with `staged_idempotency_not_authorized`.
 | Typed failure | `error.failure` | `QueryV2Error.failure` (`ProviderFailure`) | `CommitError.failure` (`type_bridge::failure::Failure`) | `type_bridge_execution_diagnostics_failure_get_v1` |
 | Conflict | `CommitConflict` | `failure.reason === "conflict"` | `Failure::Rejected { reason: Reason::Conflict { .. }, .. }` | `reason == TYPE_BRIDGE_FAILURE_REASON_CONFLICT` |
 | Retry safe | `failure.retry_safe` | `failure.retry_safe` | `failure.retry_safe()` | `failure.retry_safe` |
-| Unknown outcome | `CommitOutcomeUnknown`, `tx.has_unknown_outcome()` | `error.code === "commit_outcome_unknown"`, `tx.hasUnknownOutcome()` | `Failure::Indeterminate { .. }`, `tx.has_unknown_outcome()` | `outcome == TYPE_BRIDGE_FAILURE_OUTCOME_INDETERMINATE`; the commit keeps the handle |
+| Unknown outcome | `CommitOutcomeUnknown`, `tx.has_unknown_outcome()` | `error.code === "commit_outcome_unknown"`, `tx.hasUnknownOutcome()` | `Failure::Indeterminate { .. }`, `tx.has_unknown_outcome()` | `outcome == TYPE_BRIDGE_FAILURE_OUTCOME_INDETERMINATE` (`TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN`) |
 | Resend | `tx.commit_retry()` | `await tx.commitRetry()` | `tx.commit_retry().await` | `type_bridge_staged_transaction_commit_retry` |
+| Discard, keep the transaction | `tx.rollback()` | `tx.rollback()` | `tx.rollback()` | `type_bridge_staged_transaction_rollback(tx)` |
+| Release | `tx.close()` | `tx.close()` | `tx.close()` | `type_bridge_staged_transaction_close(&tx)` |
 
 [writes]: https://github.com/ds1sqe/type-bridge/tree/master/tests/contracts/sdk_conformance/writes

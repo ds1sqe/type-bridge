@@ -2,7 +2,7 @@
   "format": "typebridge.c-abi/v1",
   "version": "1.7.0",
   "header": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-  "header_sha256": "7f478b4984db69e960852c11f52242797c3d69faf8c08379dcfe498e6b10c8e5",
+  "header_sha256": "6eb11158fbb5ad8f2fe7e016e490f1c20f3952e0bec5b6d916c38c8965e4f82b",
   "handles": [
     "type_bridge_canonical_bytes_t",
     "type_bridge_canonical_archive_builder_t",

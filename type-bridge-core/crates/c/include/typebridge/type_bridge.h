@@ -1206,15 +1206,24 @@ type_bridge_write_transaction_close(
 /*
  * ABI 1.7: deferred transactions. A plan is decoded from canonical
  * query-plan/v3 bytes under declared schema bytes; C never serializes plans.
- * Staging sends nothing. Commit sends every staged plan in one provider
- * transaction and consumes the handle, except when the transaction can retry
- * an unknown outcome: then the handle stays live and commit_retry resends the
- * identical request. A direct provider commit cannot retry, so its
- * TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN still consumes the handle.
- * Commit and commit_retry on a consumed (null) owner return
- * TYPE_BRIDGE_STATUS_INVALID_ARGUMENT; rollback, close and the frees accept a
- * null owner and clear every owner they consume. Pending answers and plans
- * outlive the transaction that staged them.
+ * Staging sends nothing. A staged transaction is a reusable logical
+ * transaction: commit sends every staged plan in one provider transaction,
+ * and commit and rollback keep the handle usable until close, the only
+ * release. After a definite commit outcome (success or a typed failure) the
+ * handle stages new work; committing with nothing staged is a no-op success.
+ * After an unknown proxy outcome commit_retry resends the identical request,
+ * and commit with nothing newly staged is refused until a retry or rollback.
+ * A direct provider commit cannot retry: its
+ * TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN leaves the handle ready for new
+ * work, and commit_retry is refused. Rollback discards staged plans and any
+ * unknown outcome. Stage, commit, commit_retry and rollback on a null handle
+ * return TYPE_BRIDGE_STATUS_INVALID_ARGUMENT; close and the frees accept a
+ * null owner and clear the owner they release. The open handle keeps its
+ * database busy (TYPE_BRIDGE_STATUS_IN_USE on database close) until close.
+ * A contained panic during commit poisons the handle: stage, commit and
+ * commit_retry then return TYPE_BRIDGE_STATUS_EXECUTION_FAILED with
+ * c_transaction_poisoned; rollback recovers it and close releases it.
+ * Pending answers and plans outlive the transaction that staged them.
  *
  * Output slots may be unaligned. Outputs that overlap each other, an input
  * buffer, an input handle or bytes it retains return
@@ -1263,15 +1272,15 @@ type_bridge_staged_transaction_stage(
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_staged_transaction_commit(
-    type_bridge_staged_transaction_t **transaction,
+    type_bridge_staged_transaction_t *transaction,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_staged_transaction_commit_retry(
-    type_bridge_staged_transaction_t **transaction,
+    type_bridge_staged_transaction_t *transaction,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_staged_transaction_rollback(
-    type_bridge_staged_transaction_t **transaction);
+    type_bridge_staged_transaction_t *transaction);
 TYPE_BRIDGE_API void TYPE_BRIDGE_CALL
 type_bridge_staged_transaction_close(
     type_bridge_staged_transaction_t **transaction);

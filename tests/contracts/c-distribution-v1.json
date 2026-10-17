@@ -15,7 +15,7 @@
     "package_metadata_version": "1.6.0",
     "package_metadata_description": "pkg-config type-bridge keeps Version 1.6.0 for exact pins and provides type-bridge-abi 1.7.0; CMake reports 1.7.0 and accepts 1.6 and 1.7 requests, EXACT included.",
     "contract_path": "tests/contracts/c-abi.json",
-    "contract_sha256": "c039ee053dfbdb15332b9060d380de7fab661d4a3276f3cf7710791a6a15dcfb",
+    "contract_sha256": "6d6a738ac18f7b4e4a05cde8d46d5c3312b6fd41aafac25ec65a436e4afdafff",
     "static_linkage": "unsupported",
     "shared_linkage": "artifact",
     "accepted_descriptor_minors": [
@@ -261,7 +261,7 @@
     },
     {
       "path": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-      "sha256": "7f478b4984db69e960852c11f52242797c3d69faf8c08379dcfe498e6b10c8e5"
+      "sha256": "6eb11158fbb5ad8f2fe7e016e490f1c20f3952e0bec5b6d916c38c8965e4f82b"
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/CMakeLists.txt.in",

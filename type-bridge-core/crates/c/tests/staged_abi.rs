@@ -7,7 +7,9 @@ mod temp;
 use temp::TempDirectory;
 
 /// A strict C17 and C++17 consumer of the ABI 1.7 staged surface: exact
-/// prototypes through typed function pointers, and one call sequence.
+/// prototypes through typed function pointers, and the call sequences of a
+/// reusable transaction (commit with retry, rollback then commit, commit then
+/// stage again). The fake-provider unit tests in `src/staged.rs` run them.
 const STAGED_CONSUMER: &str = r#"#include <stddef.h>
 #include <stdint.h>
 
@@ -73,9 +75,9 @@ typedef type_bridge_status_t (TYPE_BRIDGE_CALL *stage_fn)(
     type_bridge_staged_transaction_t *, const type_bridge_plan_t *,
     type_bridge_pending_t **, type_bridge_execution_diagnostics_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *commit_fn)(
-    type_bridge_staged_transaction_t **, type_bridge_execution_diagnostics_t **);
+    type_bridge_staged_transaction_t *, type_bridge_execution_diagnostics_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *rollback_fn)(
-    type_bridge_staged_transaction_t **);
+    type_bridge_staged_transaction_t *);
 typedef void (TYPE_BRIDGE_CALL *close_fn)(type_bridge_staged_transaction_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *answer_fn)(
     const type_bridge_pending_t *, type_bridge_plan_answer_kind_t *, uint64_t *);
@@ -152,10 +154,10 @@ int staged_consume(const type_bridge_database_t *database,
                                            &diagnostics) != TYPE_BRIDGE_STATUS_OK) {
     goto done;
   }
-  status = type_bridge_staged_transaction_commit(&transaction, &diagnostics);
-  if (status == TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN && transaction != NULL) {
+  status = type_bridge_staged_transaction_commit(transaction, &diagnostics);
+  if (status == TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN) {
     (void)type_bridge_execution_diagnostics_close(&diagnostics);
-    status = type_bridge_staged_transaction_commit_retry(&transaction, &diagnostics);
+    status = type_bridge_staged_transaction_commit_retry(transaction, &diagnostics);
   }
   if (status != TYPE_BRIDGE_STATUS_OK) {
     goto done;
@@ -167,10 +169,73 @@ int staged_consume(const type_bridge_database_t *database,
   }
 
 done:
-  (void)type_bridge_staged_transaction_rollback(&transaction);
   type_bridge_staged_transaction_close(&transaction);
   type_bridge_pending_free(&pending);
   type_bridge_plan_free(&plan);
+  (void)type_bridge_execution_diagnostics_close(&diagnostics);
+  return result;
+}
+
+/* One handle across a rollback: stage, roll back, stage again and commit. */
+int staged_rollback_then_commit(type_bridge_staged_transaction_t *transaction,
+                                const type_bridge_plan_t *ghost,
+                                const type_bridge_plan_t *kept,
+                                uint64_t *out_value);
+int staged_rollback_then_commit(type_bridge_staged_transaction_t *transaction,
+                                const type_bridge_plan_t *ghost,
+                                const type_bridge_plan_t *kept,
+                                uint64_t *out_value) {
+  type_bridge_pending_t *discarded = NULL;
+  type_bridge_pending_t *pending = NULL;
+  type_bridge_execution_diagnostics_t *diagnostics = NULL;
+  type_bridge_plan_answer_kind_t kind = TYPE_BRIDGE_PLAN_ANSWER_ROWS;
+  uint64_t ignored = 0u;
+  int result = 1;
+
+  if (type_bridge_staged_transaction_stage(transaction, ghost, &discarded,
+                                           &diagnostics) != TYPE_BRIDGE_STATUS_OK ||
+      type_bridge_staged_transaction_rollback(transaction) != TYPE_BRIDGE_STATUS_OK ||
+      type_bridge_pending_answer(discarded, &kind, &ignored) !=
+          TYPE_BRIDGE_STATUS_EXECUTION_FAILED ||
+      type_bridge_staged_transaction_stage(transaction, kept, &pending,
+                                           &diagnostics) != TYPE_BRIDGE_STATUS_OK ||
+      type_bridge_staged_transaction_commit(transaction, &diagnostics) !=
+          TYPE_BRIDGE_STATUS_OK) {
+    goto done;
+  }
+  if (type_bridge_pending_answer(pending, &kind, out_value) == TYPE_BRIDGE_STATUS_OK) {
+    result = 0;
+  }
+
+done:
+  type_bridge_pending_free(&discarded);
+  type_bridge_pending_free(&pending);
+  (void)type_bridge_execution_diagnostics_close(&diagnostics);
+  return result;
+}
+
+/* One handle across two commits: the second stages after the first commits. */
+int staged_commit_then_stage_again(type_bridge_staged_transaction_t *transaction,
+                                   const type_bridge_plan_t *plan);
+int staged_commit_then_stage_again(type_bridge_staged_transaction_t *transaction,
+                                   const type_bridge_plan_t *plan) {
+  type_bridge_pending_t *first = NULL;
+  type_bridge_pending_t *second = NULL;
+  type_bridge_execution_diagnostics_t *diagnostics = NULL;
+  int result = 1;
+
+  if (type_bridge_staged_transaction_stage(transaction, plan, &first,
+                                           &diagnostics) == TYPE_BRIDGE_STATUS_OK &&
+      type_bridge_staged_transaction_commit(transaction, &diagnostics) ==
+          TYPE_BRIDGE_STATUS_OK &&
+      type_bridge_staged_transaction_stage(transaction, plan, &second,
+                                           &diagnostics) == TYPE_BRIDGE_STATUS_OK &&
+      type_bridge_staged_transaction_commit(transaction, &diagnostics) ==
+          TYPE_BRIDGE_STATUS_OK) {
+    result = 0;
+  }
+  type_bridge_pending_free(&first);
+  type_bridge_pending_free(&second);
   (void)type_bridge_execution_diagnostics_close(&diagnostics);
   return result;
 }
