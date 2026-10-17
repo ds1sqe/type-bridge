@@ -213,9 +213,28 @@ def test_workflow_runs_the_pipelines_on_a_tmpfs_typedb_outside_pull_requests() -
     assert service["image"] == "typedb/typedb:3.13.6"
     assert service["options"] == "--tmpfs /var/lib/typedb/data:rw"
     commands = "\n".join(step.get("run", "") for step in job["steps"])
-    assert "-p type-bridge-perf --bin type-bridge-perf-pipelines" in commands
+    assert "python -m perf.drivers.build" in commands
     assert "python -m perf.harness.pipeline" in commands
     assert '--typedb "${{ steps.typedb.outputs.version }}"' in commands
+    assert "--sdk rust --sdk python --sdk node --sdk c" in commands
+    for sdk in pipeline.SDKS:
+        assert f'--report "$PERF_DIR/pipelines-{sdk}.json"' in commands, sdk
+
+
+def test_workflow_measures_binding_overhead_offline_outside_pull_requests() -> None:
+    import yaml
+
+    workflow = yaml.safe_load((micro.REPO_ROOT / ".github/workflows/perf.yml").read_text())
+    job = workflow["jobs"]["binding"]
+
+    assert job["if"] == "github.event_name != 'pull_request'"
+    assert "services" not in job
+    assert not any(name.startswith("TYPEDB_") for name in job["env"])
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "python -m perf.drivers.build" in commands
+    assert "python -m perf.harness.binding" in commands
+    assert commands.count("--binding") == 4
+    assert "--sdk rust --sdk python --sdk node --sdk c" in commands
 
 
 def _report_as(tmp_path: Path, binding: str) -> Path:

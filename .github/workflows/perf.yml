@@ -348,13 +348,15 @@ jobs:
           path: perf-out/suite.json
           if-no-files-found: error
 
-  # Live Rust pipelines against a TypeDB 3.13.6 service on tmpfs. Pull
+  # Live pipelines through every SDK against a TypeDB 3.13.6 service on
+  # tmpfs. The bindings are built with perf-stages for their private stage
+  # recorders (perf/drivers/build.py); shipped builds never enable it. Pull
   # requests skip them: a base-versus-head comparison needs two release
   # builds and its wall times on shared runners sit above the comparison
   # noise threshold.
   pipeline:
     needs: metadata
-    name: Live Rust pipelines
+    name: Live SDK pipelines
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -371,6 +373,8 @@ jobs:
       TYPEDB_HTTP_PORT: "8000"
       TYPEDB_USERNAME: admin
       TYPEDB_PASSWORD: password
+      PERF_SDK: ${{ github.workspace }}/../perf-sdk
+      PERF_CLI: ${{ github.workspace }}/type-bridge-core/target/release/type-bridge
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -392,12 +396,25 @@ jobs:
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
             type-bridge-core/target
-          key: ${{ runner.os }}-cargo-perf-pipeline-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-perf-sdk-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
-      - name: Build the pipeline driver
-        run: >-
-          cargo build --locked --release --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-perf --bin type-bridge-perf-pipelines
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      # The Python driver imports the facade from this checkout; its native
+      # module comes from the perf-stages build on PYTHONPATH instead.
+      - name: Install the Python facade dependencies
+        run: uv sync --no-dev --no-install-package type-bridge-core
+
+      - name: Build the SDK drivers with perf-stages
+        run: .venv/bin/python -m perf.drivers.build --out "$PERF_SDK"
 
       # Ready when the gRPC port is open and the HTTP API reports the
       # version, which the result records.
@@ -422,16 +439,48 @@ jobs:
           docker logs ${{ job.services.typedb.id }} 2>&1 || true
           exit 1
 
-      - name: Run the pipelines
+      - name: Run the Rust pipelines
         run: >-
           type-bridge-core/target/release/type-bridge-perf-pipelines
-          --out "$PERF_DIR/pipelines-report.json"
-          --work-dir "$RUNNER_TEMP/perf-pipelines"
+          --out "$PERF_DIR/pipelines-rust.json"
+          --work-dir "$RUNNER_TEMP/perf-pipelines-rust"
+
+      - name: Run the Python pipelines
+        env:
+          PYTHONPATH: ${{ env.PERF_SDK }}/site
+        run: >-
+          .venv/bin/python -m perf.drivers.python.pipelines --cli "$PERF_CLI"
+          --out "$PERF_DIR/pipelines-python.json"
+          --work-dir "$RUNNER_TEMP/perf-pipelines-python"
+
+      # The Node and C drivers create and drop each pipeline's database
+      # through TB_PERF_SETUP, a command line taking `apply|drop DATABASE`.
+      - name: Run the Node pipelines
+        env:
+          PYTHONPATH: ${{ env.PERF_SDK }}/site
+          TYPE_BRIDGE_NODE_PACKAGE_ROOT: ${{ github.workspace }}/type-bridge-core/crates/node
+          TYPE_BRIDGE_NODE_NATIVE_PATH: ${{ env.PERF_SDK }}/type_bridge_node.node
+        run: |
+          export TB_PERF_SETUP="[\"$PWD/.venv/bin/python\",\"-m\",\"perf.drivers.workspace\",\"--root\",\"$PERF_SDK\",\"--cli\",\"$PERF_CLI\"]"
+          node perf/drivers/node/pipelines.cjs --workspace "$PERF_SDK/workspace" \
+            --out "$PERF_DIR/pipelines-node.json"
+
+      - name: Run the C pipelines
+        env:
+          PYTHONPATH: ${{ env.PERF_SDK }}/site
+        run: |
+          export TB_PERF_SETUP="[\"$PWD/.venv/bin/python\",\"-m\",\"perf.drivers.workspace\",\"--root\",\"$PERF_SDK\",\"--cli\",\"$PERF_CLI\"]"
+          "$PERF_SDK/c-pipelines" --workspace "$PERF_SDK/workspace" \
+            --out "$PERF_DIR/pipelines-c.json"
 
       - name: Convert to a perf result
         run: >-
           python -m perf.harness.pipeline
-          --report "$PERF_DIR/pipelines-report.json"
+          --report "$PERF_DIR/pipelines-rust.json"
+          --report "$PERF_DIR/pipelines-python.json"
+          --report "$PERF_DIR/pipelines-node.json"
+          --report "$PERF_DIR/pipelines-c.json"
+          --sdk rust --sdk python --sdk node --sdk c
           --typedb "${{ steps.typedb.outputs.version }}"
           --started-at "$PERF_STARTED_AT"
           --out "$PERF_DIR/pipeline.json"
@@ -444,6 +493,94 @@ jobs:
         with:
           name: perf-pipeline
           path: perf-out/pipeline.json
+          if-no-files-found: error
+
+  # Offline binding overhead: the same plan work through every SDK, timed
+  # in the host language, minus the Rust baseline. No TypeDB.
+  binding:
+    needs: metadata
+    name: Offline SDK binding overhead
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PERF_STARTED_AT: ${{ needs.metadata.outputs.started_at }}
+      PERF_SDK: ${{ github.workspace }}/../perf-sdk
+      PERF_CLI: ${{ github.workspace }}/type-bridge-core/target/release/type-bridge
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            type-bridge-core/target
+          key: ${{ runner.os }}-cargo-perf-sdk-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      # The Python driver imports the facade from this checkout; its native
+      # module comes from the perf-stages build on PYTHONPATH instead.
+      - name: Install the Python facade dependencies
+        run: uv sync --no-dev --no-install-package type-bridge-core
+
+      - name: Build the SDK drivers with perf-stages
+        run: .venv/bin/python -m perf.drivers.build --out "$PERF_SDK"
+
+      - name: Run the binding ops
+        env:
+          PYTHONPATH: ${{ env.PERF_SDK }}/site
+          TYPE_BRIDGE_NODE_PACKAGE_ROOT: ${{ github.workspace }}/type-bridge-core/crates/node
+          TYPE_BRIDGE_NODE_NATIVE_PATH: ${{ env.PERF_SDK }}/type_bridge_node.node
+        run: |
+          type-bridge-core/target/release/type-bridge-perf-pipelines --binding \
+            --out "$PERF_DIR/binding-rust.json"
+          .venv/bin/python -m perf.drivers.python.pipelines --binding --cli "$PERF_CLI" \
+            --out "$PERF_DIR/binding-python.json" --work-dir "$RUNNER_TEMP/perf-binding-python"
+          node perf/drivers/node/pipelines.cjs --binding --workspace "$PERF_SDK/workspace" \
+            --out "$PERF_DIR/binding-node.json"
+          "$PERF_SDK/c-pipelines" --binding --out "$PERF_DIR/binding-c.json"
+
+      - name: Convert to a perf result
+        run: >-
+          python -m perf.harness.binding
+          --report "$PERF_DIR/binding-rust.json"
+          --report "$PERF_DIR/binding-python.json"
+          --report "$PERF_DIR/binding-node.json"
+          --report "$PERF_DIR/binding-c.json"
+          --sdk rust --sdk python --sdk node --sdk c
+          --started-at "$PERF_STARTED_AT"
+          --out "$PERF_DIR/binding.json"
+
+      - name: Validate the perf result
+        run: python -m perf.harness.validate "$PERF_DIR/binding.json"
+
+      - name: Upload the perf result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-binding
+          path: perf-out/binding.json
           if-no-files-found: error
 
   compare:
@@ -563,7 +700,7 @@ jobs:
       (github.event_name == 'push' && github.ref == 'refs/heads/master')
       || github.event_name == 'schedule'
       || github.event_name == 'workflow_dispatch'
-    needs: [micro, build, size, suite, pipeline]
+    needs: [micro, build, size, suite, pipeline, binding]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

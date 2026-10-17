@@ -19,6 +19,10 @@
   gap: 0.4rem;
 }
 
+#perf-dashboard .perf-sdks {
+  margin-bottom: 0.6rem;
+}
+
 #perf-dashboard .perf-chip {
   padding: 0.2rem 0.7rem;
   border: 1px solid var(--md-default-fg-color--lighter);

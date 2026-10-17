@@ -235,6 +235,11 @@
     return known.concat([...names].filter((name) => !STAGE_ORDER.includes(name)).sort());
   }
 
+  // The SDK of a `pipeline.<sdk>.<pipeline>` id.
+  function sdkOf(id) {
+    return id.split(".")[1] || "";
+  }
+
   // One stacked bar per staged metric of the latest run. Time in no stage
   // is SDK-side work and closes the bar.
   function waterfallSection(latest) {
@@ -281,16 +286,40 @@
       row.dataset.id = metric.id;
       return row;
     });
+    // One group per SDK (`pipeline.<sdk>.<pipeline>`); the selector shows
+    // one group, Rust first. Search and family chips still hide rows.
+    const groups = new Map();
+    for (const row of rows) {
+      const sdk = sdkOf(row.dataset.id);
+      if (!groups.has(sdk)) groups.set(sdk, el("div", { class: "perf-stage-group" }));
+      groups.get(sdk).append(row);
+    }
+    const sdks = [...groups.keys()].sort((a, b) => (a === "rust" ? -1 : b === "rust" ? 1 : a.localeCompare(b)));
+    const selector = el("div", { class: "perf-families perf-sdks", role: "group", "aria-label": "SDK" });
+    const select = function (chosen) {
+      for (const [sdk, group] of groups) group.hidden = sdk !== chosen;
+      for (const chip of selector.children) chip.setAttribute("aria-pressed", String(chip.dataset.sdk === chosen));
+    };
+    for (const sdk of sdks) {
+      const chip = el("button", { type: "button", class: "perf-chip", text: sdk });
+      chip.dataset.sdk = sdk;
+      chip.addEventListener("click", function () {
+        select(sdk);
+      });
+      selector.append(chip);
+    }
+    select(sdks[0]);
     const section = el(
       "section",
       { class: "perf-waterfall" },
       el("h2", { text: "Stage breakdown" }),
       el("p", {
         text:
-          "Median time per stage of each pipeline in the latest run. tb.runtime.execute is the network round trip plus TypeDB, against a local container.",
+          "Median time per stage of each pipeline in the latest run, per SDK. tb.runtime.execute is the network round trip plus TypeDB, against a local container; time outside every stage is SDK-side work.",
       }),
+      selector,
       legend,
-      ...rows,
+      ...groups.values(),
     );
     return { section: section, rows: rows };
   }

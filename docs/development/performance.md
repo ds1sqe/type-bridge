@@ -62,9 +62,16 @@ subscriber at `INFO` sees them as ordinary spans.
 
 ## Live pipelines
 
-The `pipeline` job times the major pipelines through the public Rust SDK
-against a TypeDB 3.13.6 service container whose data lives on tmpfs. It runs
-on master pushes, schedule and dispatch; pull requests skip it, since a
+The `pipeline` job times the major pipelines through the Rust, Python, Node
+and C SDKs against a TypeDB 3.13.6 service container whose data lives on
+tmpfs, and the `binding` job times the offline binding ops of every SDK
+(see [Binding overhead](#binding-overhead)). Both build their drivers with
+`python -m perf.drivers.build --out DIR` (Linux), which builds each binding
+with `perf-stages` and copies its artifact into `DIR` right after its build,
+so a later default build in the same target directory cannot replace what a
+driver loads. The /perf/ stage breakdown shows one SDK at a time, Rust
+first. Both jobs run
+on master pushes, schedule and dispatch; pull requests skip them, since a
 base-versus-head run needs two release builds and wall times on shared
 runners sit above the comparison noise threshold.
 
