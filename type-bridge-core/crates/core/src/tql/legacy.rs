@@ -13,7 +13,7 @@ use typeql::{
 };
 
 fn invalid<T>() -> Result<T, TqlError> {
-    Err(TqlError::InvalidLegacyShape)
+    Err(TqlError::InvalidShape)
 }
 
 // Released Python callers also use Value::Variable for expression strings.

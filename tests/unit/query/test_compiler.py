@@ -395,7 +395,7 @@ def test_native_legacy_compiler_warns_and_rejects_dropped_relation_attributes() 
         ],
     }
     with pytest.warns(DeprecationWarning, match="deprecated since 2.3.0"):
-        with pytest.raises(ValueError, match="invalid legacy TypeQL node shape"):
+        with pytest.raises(ValueError, match="invalid TypeQL shape"):
             NativeCompiler().compile_dicts([clause])
 
 

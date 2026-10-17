@@ -21,7 +21,7 @@ type EnumSpellingCase = Readonly<{
 
 const repositoryRoot = path.resolve(process.cwd(), "../../..");
 const corpus = JSON.parse(
-  fs.readFileSync(path.join(repositoryRoot, "tests/contracts/enum-spellings-v1.json"), "utf8"),
+  fs.readFileSync(path.join(repositoryRoot, "tests/contracts/enum-spellings.json"), "utf8"),
 ) as Readonly<{ cases: readonly EnumSpellingCase[] }>;
 
 for (const entry of corpus.cases) {

@@ -23,14 +23,14 @@ pub(crate) fn lower_orm_error(
     error: &OrmError,
     provider_operation: SdkProviderOperation,
 ) -> SdkExecutionDiagnostic {
-    let released = lower_released_orm_error(error, provider_operation);
+    let base = lower_orm_error_base(error, provider_operation);
     match error.failure() {
-        Some(failure) => released.with_failure(&failure, Default::default()),
-        None => released,
+        Some(failure) => base.with_failure(&failure, Default::default()),
+        None => base,
     }
 }
 
-fn lower_released_orm_error(
+fn lower_orm_error_base(
     error: &OrmError,
     provider_operation: SdkProviderOperation,
 ) -> SdkExecutionDiagnostic {

@@ -837,11 +837,11 @@ fn handle_refusal_error(case_id: &str) -> type_bridge_orm::MatchError {
     error
 }
 
-/// The Rust half of the binding cases in `tests/contracts/diagnostic-json-v1.json`.
+/// The Rust half of the binding cases in `tests/contracts/diagnostic-json.json`.
 #[test]
 fn binding_refusals_have_the_golden_host_json() {
     let golden: Value = serde_json::from_str(include_str!(
-        "../../../../tests/contracts/diagnostic-json-v1.json"
+        "../../../../tests/contracts/diagnostic-json.json"
     ))
     .unwrap();
     let expected = |id: &str| {

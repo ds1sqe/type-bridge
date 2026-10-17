@@ -1620,12 +1620,12 @@ fn assert_rejected(
 }
 
 /// The C half of the contract-form case in
-/// `tests/contracts/diagnostic-json-v1.json`: Python, Node, and C report the
+/// `tests/contracts/diagnostic-json.json`: Python, Node, and C report the
 /// same malformed schema authority as the same diagnostic JSON.
 #[test]
 fn malformed_authority_diagnostic_json_matches_the_golden() {
     let golden: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../tests/contracts/diagnostic-json-v1.json"
+        "../../../../tests/contracts/diagnostic-json.json"
     ))
     .unwrap();
     let expected = golden["cases"]

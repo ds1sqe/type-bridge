@@ -1,4 +1,4 @@
-//! The Rust half of `tests/contracts/enum-spellings-v1.json`: every case is
+//! The Rust half of `tests/contracts/enum-spellings.json`: every case is
 //! produced by the core parser, and every enum kind has an unknown-spelling
 //! case.
 
@@ -11,7 +11,7 @@ use type_bridge_orm::{EnumKind, canonical_enum_spelling};
 
 fn corpus() -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../tests/contracts/enum-spellings-v1.json");
+        .join("../../../tests/contracts/enum-spellings.json");
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 

@@ -31,7 +31,7 @@ pub enum TqlError {
     InvalidIdentifier,
     InvalidLiteral,
     InvalidOperator,
-    InvalidLegacyShape,
+    InvalidShape,
     InvalidSchemaShape,
     Unsupported { construct: UnsupportedConstruct },
 }
@@ -44,7 +44,7 @@ impl std::fmt::Display for TqlError {
             }
             Self::InvalidIdentifier => f.write_str("invalid TypeQL identifier"),
             Self::InvalidLiteral => f.write_str("invalid TypeQL literal"),
-            Self::InvalidLegacyShape => f.write_str("invalid legacy TypeQL node shape"),
+            Self::InvalidShape => f.write_str("invalid TypeQL shape"),
             Self::InvalidSchemaShape => f.write_str("invalid TypeQL schema node shape"),
             Self::InvalidOperator => f.write_str("invalid TypeQL operator"),
             Self::Unsupported { .. } => f.write_str("unsupported TypeQL construct"),

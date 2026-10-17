@@ -3783,7 +3783,7 @@ plays:
     #[test]
     fn binding_calls_raise_the_enum_spelling_corpus_diagnostic() {
         let corpus: Value = serde_json::from_str(include_str!(
-            "../../../../tests/contracts/enum-spellings-v1.json"
+            "../../../../tests/contracts/enum-spellings.json"
         ))
         .unwrap();
         let expected = |id: &str| {

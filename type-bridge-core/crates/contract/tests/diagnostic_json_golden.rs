@@ -1,4 +1,4 @@
-//! The Rust half of `tests/contracts/diagnostic-json-v1.json`: the contract
+//! The Rust half of `tests/contracts/diagnostic-json.json`: the contract
 //! serializers produce each case Rust can build on its own.
 
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ use type_bridge_contract::sdk_diagnostic::{
 
 fn golden(id: &str) -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../tests/contracts/diagnostic-json-v1.json");
+        .join("../../../tests/contracts/diagnostic-json.json");
     let corpus: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     corpus["cases"]
         .as_array()

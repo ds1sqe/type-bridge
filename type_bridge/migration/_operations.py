@@ -123,7 +123,7 @@ def _rendered_operation(operation: Operation) -> dict[str, Any]:
             }
     else:
         spec = _operation_spec(operation)
-    return _rust_runtime.rust_core()._render_legacy_migration_operation(spec)
+    return _rust_runtime.rust_core()._render_migration_operation(spec)
 
 
 @dataclass

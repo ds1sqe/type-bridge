@@ -5,7 +5,7 @@ import test = require("node:test");
 
 import { loadNative } from "../../typescript/native.js";
 
-// Node half of tests/contracts/diagnostic-json-v1.json: a native error's
+// Node half of tests/contracts/diagnostic-json.json: a native error's
 // message is the core's diagnostic JSON, byte-for-byte the form Python
 // exposes as exception attributes. (The group-key case needs a generated
 // package; the projection-integration tier checks it.)
@@ -13,7 +13,7 @@ type GoldenCase = Readonly<{ id: string; diagnostic: unknown }>;
 
 const repositoryRoot = path.resolve(process.cwd(), "../../..");
 const golden = JSON.parse(
-  fs.readFileSync(path.join(repositoryRoot, "tests/contracts/diagnostic-json-v1.json"), "utf8"),
+  fs.readFileSync(path.join(repositoryRoot, "tests/contracts/diagnostic-json.json"), "utf8"),
 ) as Readonly<{ cases: readonly GoldenCase[] }>;
 
 function expected(id: string): unknown {

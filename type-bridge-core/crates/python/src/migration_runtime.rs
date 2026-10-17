@@ -429,11 +429,8 @@ fn py_value_error(message: impl Into<String>) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(message.into())
 }
 
-#[pyfunction(name = "_render_legacy_migration_operation")]
-fn render_legacy_migration_operation(
-    py: Python<'_>,
-    operation: Bound<'_, PyAny>,
-) -> PyResult<Py<PyAny>> {
+#[pyfunction(name = "_render_migration_operation")]
+fn render_migration_operation(py: Python<'_>, operation: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     use type_bridge_core_lib::__internal as tql;
     use type_bridge_migration::spec::OperationSpec;
     let operation: OperationSpec =
@@ -441,7 +438,7 @@ fn render_legacy_migration_operation(
     let operation = operation
         .normalized()
         .map_err(|error| py_value_error(error.to_string()))?;
-    let steps = type_bridge_migration::plan::render_legacy_operation_steps(&operation)
+    let steps = type_bridge_migration::plan::render_operation_typeql_steps(&operation)
         .map_err(|error| py_value_error(error.to_string()))?;
     let forward_steps = steps
         .iter()
@@ -466,7 +463,7 @@ fn render_legacy_migration_operation(
 /// Register migration-runtime facade functions on the Python module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(normalize_migration_spec, m)?)?;
-    m.add_function(wrap_pyfunction!(render_legacy_migration_operation, m)?)?;
+    m.add_function(wrap_pyfunction!(render_migration_operation, m)?)?;
     m.add_function(wrap_pyfunction!(normalize_migration_graph, m)?)?;
     m.add_function(wrap_pyfunction!(migration_spec_to_json, m)?)?;
     m.add_function(wrap_pyfunction!(migration_spec_from_json, m)?)?;

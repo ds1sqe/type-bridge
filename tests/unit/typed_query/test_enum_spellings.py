@@ -19,7 +19,7 @@ from type_bridge_core import (
 )
 
 _CORPUS = json.loads(
-    (Path(__file__).parents[2] / "contracts" / "enum-spellings-v1.json").read_text(encoding="utf-8")
+    (Path(__file__).parents[2] / "contracts" / "enum-spellings.json").read_text(encoding="utf-8")
 )
 _CASES = {case["id"]: case for case in _CORPUS["cases"]}
 

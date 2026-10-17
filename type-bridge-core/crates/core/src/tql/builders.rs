@@ -826,7 +826,7 @@ pub fn pipeline_with_functions(functions: Vec<FunctionDefinition>, stages: Vec<S
 pub fn fetch_stream(stages: Vec<Stage>, names: &[&str]) -> Result<FetchValue, TqlError> {
     use typeql::schema::definable::function as f;
     if names.is_empty() {
-        return Err(TqlError::InvalidLegacyShape);
+        return Err(TqlError::InvalidShape);
     }
     Ok(FetchValue {
         inner: fetch::FetchSome::List(fetch::FetchList::new(
@@ -866,33 +866,33 @@ pub(super) fn builtin_named_type(domain: ValueTypeTag) -> NamedType {
 pub fn backfill_count_views(source: &str) -> Result<(Query, Query), TqlError> {
     let query = super::parse(source)?;
     if query.inner.has_explicit_end {
-        return Err(TqlError::InvalidLegacyShape);
+        return Err(TqlError::InvalidShape);
     }
     let QueryStructure::Pipeline(mut pipeline) = query.inner.structure else {
-        return Err(TqlError::InvalidLegacyShape);
+        return Err(TqlError::InvalidShape);
     };
     if !pipeline.preambles.is_empty() || pipeline.stages.len() != 2 {
-        return Err(TqlError::InvalidLegacyShape);
+        return Err(TqlError::InvalidShape);
     }
     let stage::Stage::Insert(insert) = pipeline.stages.pop().unwrap() else {
-        return Err(TqlError::InvalidLegacyShape);
+        return Err(TqlError::InvalidShape);
     };
     let stage::Stage::Match(matched) = pipeline.stages.pop().unwrap() else {
-        return Err(TqlError::InvalidLegacyShape);
+        return Err(TqlError::InvalidShape);
     };
     let [pattern::Pattern::Statement(statement::Statement::Thing(destination))] =
         insert.patterns.as_slice()
     else {
-        return Err(TqlError::InvalidLegacyShape);
+        return Err(TqlError::InvalidShape);
     };
     let thing::Head::Variable(owner) = &destination.head else {
-        return Err(TqlError::InvalidLegacyShape);
+        return Err(TqlError::InvalidShape);
     };
     let [thing::Constraint::Has(destination)] = destination.constraints.as_slice() else {
-        return Err(TqlError::InvalidLegacyShape);
+        return Err(TqlError::InvalidShape);
     };
     let Some(destination_type) = &destination.type_ else {
-        return Err(TqlError::InvalidLegacyShape);
+        return Err(TqlError::InvalidShape);
     };
     let mut guards = 0;
     let mut total = Vec::new();
@@ -925,7 +925,7 @@ pub fn backfill_count_views(source: &str) -> Result<(Query, Query), TqlError> {
         }
     }
     if guards > 1 {
-        return Err(TqlError::InvalidLegacyShape);
+        return Err(TqlError::InvalidShape);
     }
     let guarded = matched
         .patterns
@@ -957,7 +957,7 @@ pub fn entity(name: &str, kind: &str, fields: Vec<(&str, Expr)>) -> Result<Patte
 /// Render an internal probe tag without allowing another TypeQL statement.
 pub fn render_commented(query: &Query, comment: &str) -> Result<String, TqlError> {
     if comment.contains(['\n', '\r']) {
-        return Err(TqlError::InvalidLegacyShape);
+        return Err(TqlError::InvalidShape);
     }
     Ok(format!("# {comment}\n{}", super::render(query)?))
 }

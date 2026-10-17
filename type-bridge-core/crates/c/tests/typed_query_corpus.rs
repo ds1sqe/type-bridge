@@ -2,8 +2,8 @@
 //!
 //! Runs, through the public C ABI, every case of
 //! `tests/contracts/typed_query/corpus-v1.json`,
-//! `tests/contracts/enum-spellings-v1.json`, and
-//! `tests/contracts/diagnostic-json-v1.json` that C can express, and asserts
+//! `tests/contracts/enum-spellings.json`, and
+//! `tests/contracts/diagnostic-json.json` that C can express, and asserts
 //! the same code and details Python, Node, and Rust report. C reports the SDK
 //! category plus the query category as a `query_category` detail; the
 //! corpus's `invalid_plan` query category is SDK `invalid_input`. Cases C
@@ -46,8 +46,8 @@ use type_bridge_schema_codegen::CEmitter;
 
 const TYPED_QUERY_CORPUS: &str =
     include_str!("../../../../tests/contracts/typed_query/corpus-v1.json");
-const ENUM_SPELLINGS: &str = include_str!("../../../../tests/contracts/enum-spellings-v1.json");
-const DIAGNOSTIC_JSON: &str = include_str!("../../../../tests/contracts/diagnostic-json-v1.json");
+const ENUM_SPELLINGS: &str = include_str!("../../../../tests/contracts/enum-spellings.json");
+const DIAGNOSTIC_JSON: &str = include_str!("../../../../tests/contracts/diagnostic-json.json");
 const HEADER: &str = include_str!("../include/typebridge/type_bridge.h");
 
 const SCHEMA: &str = r#"format: typebridge.schema/v2
@@ -943,7 +943,7 @@ fn window_cap_and_depth_cases_have_the_corpus_codes() {
     }
 }
 
-/// The C half of `group_keys.seventeen` in `diagnostic-json-v1.json`: C
+/// The C half of `group_keys.seventeen` in `diagnostic-json.json`: C
 /// reports the same code, path, and details as the host JSON.
 #[test]
 fn group_key_refusal_matches_the_diagnostic_golden() {

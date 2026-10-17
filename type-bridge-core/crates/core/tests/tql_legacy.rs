@@ -131,7 +131,7 @@ fn relation_attributes_are_never_discarded() {
     }]);
     assert_eq!(
         tql::compile_legacy(&[clause]),
-        Err(tql::TqlError::InvalidLegacyShape)
+        Err(tql::TqlError::InvalidShape)
     );
 }
 #[test]
@@ -214,7 +214,7 @@ fn released_string_wrappers_keep_compatibility_without_panicking() {
     };
     assert_eq!(
         compiler.try_compile(&[Clause::Insert(vec![relation.clone()])]),
-        Err(tql::TqlError::InvalidLegacyShape)
+        Err(tql::TqlError::InvalidShape)
     );
     let released = compiler.compile(&[Clause::Insert(vec![relation])]);
     assert!(!released.contains("other"));
@@ -237,7 +237,7 @@ fn legacy_ownership_deletion_cannot_discard_its_attribute_type() {
     }])];
     assert_eq!(
         tql::compile_legacy(&clauses),
-        Err(tql::TqlError::InvalidLegacyShape)
+        Err(tql::TqlError::InvalidShape)
     );
     assert_eq!(
         type_bridge_core_lib::compiler::QueryCompiler::new().compile(&clauses),

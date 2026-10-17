@@ -35,7 +35,7 @@ fn builder_reports_invalid_calls_and_unbuildable_packages() {
 
     // A package without compiled schema authority cannot build plans.
     let full = package();
-    let legacy = crate::SchemaPackage::<Shop>::new(
+    let without_authority = crate::SchemaPackage::<Shop>::new(
         full.semantic_fingerprint_json(),
         full.projection_fingerprint_json(),
         full.runtime_projection_json(),
@@ -43,7 +43,7 @@ fn builder_reports_invalid_calls_and_unbuildable_packages() {
     let mut plan = Plan::<Shop>::builder();
     let item = plan.exact::<Item>();
     plan.returning([item]);
-    assert!(plan.build(&legacy).is_err());
+    assert!(plan.build(&without_authority).is_err());
 
     // Plan validation runs at build: a text value cannot replace stock.
     let mut plan = Plan::<Shop>::builder();

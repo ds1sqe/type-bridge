@@ -228,7 +228,7 @@ differently direct and through a proxy. Each entry says what to do instead.
   - Rust and C are unchanged: the C ABI keeps its typed accessors, and its
     contract diagnostic JSON is the same serde form Python and Node give a
     `QueryV2Error`.
-  The cases in `tests/contracts/diagnostic-json-v1.json` are checked to be
+  The cases in `tests/contracts/diagnostic-json.json` are checked to be
   identical in Rust, Python, Node, and C (for the cases C can produce).
 - Generated Python and TypeScript packages no longer check a model member's
   cardinality themselves; the Rust core checks it at the same call (Python
@@ -520,7 +520,7 @@ differently direct and through a proxy. Each entry says what to do instead.
   core enum named by `kind` and return its canonical spelling (`exact`
   becomes `eq`). Generated Python owner lookups (`has()`, `owners()`) use
   it instead of their own list. The cases in
-  `tests/contracts/enum-spellings-v1.json` are checked in Rust, Python, and
+  `tests/contracts/enum-spellings.json` are checked in Rust, Python, and
   Node; C checks that its integer constants spell the same enums.
 - The core's TypeQL compiler renders any single node:
   `QueryCompiler::compile_node` over the new `ast::QueryNode`, with

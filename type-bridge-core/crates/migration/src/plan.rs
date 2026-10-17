@@ -419,13 +419,12 @@ fn shadowed_by_remove_relation(op: &OperationSpec, removed: &BTreeSet<&str>) -> 
     }
 }
 
-/// Lower a slice of [`OperationSpec`] into [`ExecutionStep`]s.
 /// Render the retained Python operation String API without changing its AST.
 ///
 /// These helpers historically rely on provider cascades and declaration order;
 /// execution planning keeps its explicit cleanup and canonical ordering.
 #[doc(hidden)]
-pub fn render_legacy_operation_steps(
+pub fn render_operation_typeql_steps(
     operation: &OperationSpec,
 ) -> crate::Result<Vec<ExecutionStep>> {
     let mut steps = assemble_steps(std::slice::from_ref(operation), true)?;
@@ -467,6 +466,7 @@ pub fn render_legacy_operation_steps(
     Ok(steps)
 }
 
+/// Lower a slice of [`OperationSpec`] into [`ExecutionStep`]s.
 fn assemble_steps(
     operations: &[OperationSpec],
     migration_reversible: bool,

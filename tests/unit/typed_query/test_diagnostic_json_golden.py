@@ -1,4 +1,4 @@
-"""Python half of ``tests/contracts/diagnostic-json-v1.json``.
+"""Python half of ``tests/contracts/diagnostic-json.json``.
 
 A native exception carries one attribute per key of the core's diagnostic
 JSON form, so the attributes rebuild that JSON exactly as Node's native
@@ -22,7 +22,7 @@ from type_bridge_core import (
 from tests.unit.typed_query.test_diagnostic_golden import _registry
 
 GOLDEN = json.loads(
-    (Path(__file__).parents[3] / "tests" / "contracts" / "diagnostic-json-v1.json").read_text()
+    (Path(__file__).parents[3] / "tests" / "contracts" / "diagnostic-json.json").read_text()
 )
 SDK_KEYS = (
     "version",
