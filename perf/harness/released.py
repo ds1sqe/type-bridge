@@ -23,7 +23,9 @@ accepts.
 Each op becomes ``release.python.<op>`` in ns: ``value`` and ``p50`` are the
 median call, with ``p90``, ``p99``, ``n`` and the raw ``samples``. The run
 block names the measured version (``head`` records the source tree's
-project version) and trigger ``release-matrix``. TypeDB comes from
+project version), trigger ``release-matrix`` and ``source``: ``registry``
+for a release, ``tree`` for ``head``, which is how the store and the page
+tell the head apart without a fake version. TypeDB comes from
 ``TYPEDB_ADDRESS``, ``TYPEDB_HTTP_PORT``, ``TYPEDB_USERNAME`` and
 ``TYPEDB_PASSWORD``. A work directory the harness creates is removed at the
 end; one passed with ``--work-dir`` must not exist yet and is kept.
@@ -189,6 +191,7 @@ def assemble(run: Run, requested: str, report: Mapping[str, object], typedb: str
         version=str(report["version"]),
         trigger=TRIGGER,
         typedb=typedb,
+        source="tree" if requested == HEAD else "registry",
         # The measured package was not built in this run.
         toolchains=replace(run.toolchains, rust=None, python=str(report["python"])),
     )

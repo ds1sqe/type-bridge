@@ -259,9 +259,19 @@ docker rm -f -v perf-typedb
 Each op becomes `release.python.<op>` (family `release`, ns: the median
 call with p90, p99 and samples, after 5 warmup and 30 measured calls). The
 run block records the measured version (`head` records the project
-version), trigger `release-matrix`, and the venv's Python. Only the manager
-call is timed; fetching the instance that `update` and `delete` take is
-not.
+version), trigger `release-matrix`, `source` (`registry` for a release,
+`tree` for `head`) and the venv's Python. Only the manager call is timed;
+fetching the instance that `update` and `delete` take is not.
+`python -m perf.harness.released_node` does the same for
+`@type-bridge/node` (`release.node.<op>`, generated managers only); ops a
+version has no call for get no metric.
+
+The workflow's `released` job runs every SDK and version (Python and Node,
+2.0.2, 2.1.0, 2.2.5 and `head`) nightly, on manual runs and on release
+tags, against a TypeDB 3.12.3 service on tmpfs, and hands the results to
+the `store` job. The perf page draws one bar chart per `release.<sdk>.<op>`
+metric, a bar per version beside the head, and a gap where a version has
+no call for the op.
 
 ## Run the Python binding benchmarks locally
 
@@ -288,8 +298,17 @@ Pull requests never write history.
 
 ```text
 runs/<YYYY-MM-DD>/<sha>-<trigger>.json   one result per UTC day, commit and trigger
+runs/<YYYY-MM-DD>/<sha>-release-matrix-<sdk>-<series>.json
 index.json                               per-metric series, rebuilt on store
 ```
+
+A `release-matrix` result measures one package, and one workflow run
+measures eight, so its identity adds the SDK of its `release.<sdk>.` ids
+and the series: `head` when `run.source` is `tree`, otherwise
+`run.version`. The head keeps the project version as `run.version`, so it
+never merges with a release of the same number. Its index points carry
+that `series`, and release runs never become the page's latest run or add
+to its version list.
 
 Results with the same day, commit and trigger are merged into one file: an
 incoming metric replaces the stored one with its id and other metrics are

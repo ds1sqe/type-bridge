@@ -24,7 +24,12 @@ type Trigger = Literal[
 
 FAMILIES: tuple[str, ...] = get_args(Family.__value__)
 UNITS: tuple[str, ...] = get_args(Unit.__value__)
+# Where a ``release-matrix`` run's measured package came from: a public
+# registry release of ``run.version``, or built from ``run.commit`` (the head).
+type Source = Literal["registry", "tree"]
+
 TRIGGERS: tuple[str, ...] = get_args(Trigger.__value__)
+SOURCES: tuple[str, ...] = get_args(Source.__value__)
 
 # Stable dotted name, e.g. ``pipeline.python.insert.stage.compile``.
 METRIC_ID = re.compile(r"^[a-z0-9_]+(\.[a-z0-9_]+)+$")
@@ -78,6 +83,8 @@ class Run:
     typedb: str | None
     # RFC 3339 with an explicit offset.
     started_at: str
+    # Set exactly when ``trigger`` is ``release-matrix``.
+    source: Source | None = None
 
 
 @dataclass(frozen=True)
@@ -111,7 +118,11 @@ class PerfResult:
         """JSON-ready form; absent optional metric fields are omitted."""
         return {
             "format": FORMAT,
-            "run": asdict(self.run),
+            "run": {
+                key: value
+                for key, value in asdict(self.run).items()
+                if not (key == "source" and value is None)
+            },
             "metrics": [
                 {key: value for key, value in asdict(metric).items() if value is not None}
                 for metric in self.metrics
@@ -132,6 +143,7 @@ class PerfResult:
                 toolchains=Toolchains(**run["toolchains"]),
                 typedb=run["typedb"],
                 started_at=run["started_at"],
+                source=run.get("source"),
             ),
             metrics=[Metric(**metric) for metric in data["metrics"]],
         )

@@ -154,3 +154,51 @@
   min-width: 1px;
   height: 100%;
 }
+
+#perf-dashboard .perf-compare-group {
+  margin-top: 0.75rem;
+}
+/* .perf-grid's display would override the SDK selector's hidden. */
+#perf-dashboard .perf-compare-group[hidden] {
+  display: none;
+}
+#perf-dashboard .perf-bar-row {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(3rem, 1fr) 4rem;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+  font-size: 0.65rem;
+}
+#perf-dashboard .perf-bar-label,
+#perf-dashboard .perf-bar-value {
+  overflow-wrap: anywhere;
+  color: var(--md-default-fg-color--light);
+}
+#perf-dashboard .perf-bar-value {
+  text-align: right;
+}
+#perf-dashboard .perf-bar-head .perf-bar-label {
+  font-weight: 700;
+  color: var(--md-default-fg-color);
+}
+#perf-dashboard .perf-bar-track {
+  display: block;
+  height: 0.8rem;
+  border-radius: 0.2rem;
+  background: var(--md-default-fg-color--lightest);
+}
+#perf-dashboard .perf-bar-fill {
+  display: block;
+  min-width: 1px;
+  height: 100%;
+  border-radius: 0.2rem;
+  background: var(--md-typeset-a-color);
+}
+#perf-dashboard .perf-bar-gap {
+  background: repeating-linear-gradient(
+    135deg,
+    transparent 0 0.25rem,
+    var(--md-default-fg-color--lightest) 0.25rem 0.5rem
+  );
+}

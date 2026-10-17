@@ -312,3 +312,80 @@ def test_fixture_data_dir_index_is_current() -> None:
     assert stored["versions"] == ["2.2.6", "2.3.0.dev0"]
     # Two nightly runs of one commit on different days, then a push.
     assert stored["runs"] == 3
+
+
+def _release(sdk: str, version: str, *, head: bool = False, value: float = 3.2e6) -> Document:
+    """One ``release-matrix`` result of the micro fixture's commit."""
+    document = _micro()
+    document["run"].update(
+        version=version,
+        trigger="release-matrix",
+        source="tree" if head else "registry",
+        typedb="3.12.3",
+        started_at="2026-10-16T04:00:00Z",
+    )
+    document["metrics"] = [
+        {"id": f"release.{sdk}.{op}", "family": "release", "unit": "ns", "value": value}
+        for op in ("insert_one", "update")
+    ]
+    return document
+
+
+def test_release_matrix_keeps_every_sdk_and_version_of_one_run(tmp_path: Path) -> None:
+    # One workflow run: shared commit, trigger and day, two SDKs, three series.
+    matrix = [
+        _release(sdk, version, head=version == "2.2.6")
+        for sdk in ("python", "node")
+        for version in ("2.0.2", "2.2.5", "2.2.6")
+    ]
+    paths = [store(tmp_path, document).path.as_posix() for document in matrix]
+    store(tmp_path, _micro())
+
+    day = f"runs/2026-10-16/{SHA}"
+    assert paths == [
+        f"{day}-release-matrix-{sdk}-{series}.json"
+        for sdk in ("python", "node")
+        for series in ("2.0.2", "2.2.5", "head")
+    ]
+    index = build_index(tmp_path)
+    assert index["runs"] == 7
+    # The tree's own runs name the versions and the latest run.
+    assert index["versions"] == ["2.3.0.dev0"]
+    assert index["latest"] == f"{day}-push.json"
+    for sdk in ("python", "node"):
+        series = index["metrics"][f"release.{sdk}.update"]["series"]
+        assert [(point["series"], point["version"]) for point in series] == [
+            ("2.0.2", "2.0.2"),
+            ("2.2.5", "2.2.5"),
+            ("head", "2.2.6"),
+        ]
+    assert all("series" not in point for point in index["metrics"][INSERT]["series"])
+
+
+def test_release_matrix_rerun_merges_only_its_own_series(tmp_path: Path) -> None:
+    store(tmp_path, _release("python", "2.2.5"))
+    store(tmp_path, _release("python", "2.2.5", head=True))
+
+    stored = store(tmp_path, _release("python", "2.2.5", value=4.0e6))
+
+    assert stored.status == "merged"
+    series = build_index(tmp_path)["metrics"]["release.python.update"]["series"]
+    # Head built at 2.2.5 stays apart from the 2.2.5 release.
+    assert [(point["series"], point["value"]) for point in series] == [
+        ("2.2.5", 4.0e6),
+        ("head", 3.2e6),
+    ]
+
+
+@pytest.mark.parametrize(
+    "ids",
+    [["release.python.update", "release.node.update"], ["release.python.update", "micro.x.y"]],
+)
+def test_release_matrix_result_must_name_one_sdk(tmp_path: Path, ids: list[str]) -> None:
+    document = _release("python", "2.2.5")
+    for metric, metric_id in zip(document["metrics"], ids, strict=True):
+        metric["id"] = metric_id
+
+    with pytest.raises(StoreError, match="release.<sdk>.<op> of one SDK"):
+        store(tmp_path, document)
+    assert _files(tmp_path) == []

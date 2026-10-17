@@ -16,6 +16,7 @@ import pytest
 from perf.harness.schema import (
     FAMILIES,
     METRIC_ID,
+    SOURCES,
     TRIGGERS,
     UNITS,
     Metric,
@@ -108,6 +109,16 @@ VIOLATIONS: list[tuple[str, Callable[[Document], None], str]] = [
     ("started_at", _set("run.started_at", "yesterday"), "run.started_at:"),
     ("started_at offset", _set("run.started_at", "2026-10-16T02:00:11"), "run.started_at:"),
     ("unknown run field", _set("run.host", "x"), "run.host: unknown field"),
+    ("source outside release-matrix", _set("run.source", "registry"), "run.source:"),
+    ("release-matrix without source", _set("run.trigger", "release-matrix"), "run.source:"),
+    (
+        "source value",
+        lambda document: [
+            _set("run.trigger", "release-matrix")(document),
+            _set("run.source", "pypi")(document),
+        ][0],
+        "run.source:",
+    ),
     ("metrics empty", _set("metrics", []), "metrics:"),
     ("metric not object", _set("metrics.0", "x"), "metrics[0]:"),
     ("id single segment", _set("metrics.0.id", "insert"), "metrics[0].id:"),
@@ -229,7 +240,11 @@ def test_python_model_matches_the_json_schema() -> None:
         return {field.name for field in dataclasses.fields(model)}
 
     run = defs["run"]
-    assert set(run["required"]) == set(run["properties"]) == names(Run)
+    assert set(run["properties"]) == names(Run)
+    assert set(run["required"]) == {
+        f.name for f in dataclasses.fields(Run) if f.default is dataclasses.MISSING
+    }
+    assert tuple(run["properties"]["source"]["enum"]) == SOURCES
     for model, node in ((Runner, "runner"), (Toolchains, "toolchains")):
         sub = run["properties"][node]
         assert set(sub["required"]) == set(sub["properties"]) == names(model)

@@ -23,7 +23,8 @@ page shows a gap, never a value.
 
 Each op present becomes ``release.node.<op>`` in ns, like
 ``release.python.<op>``, with trigger ``release-matrix`` and the measured
-package version as ``run.version``. TypeDB comes from ``TYPEDB_ADDRESS``,
+package version as ``run.version`` and ``source`` as in
+``perf.harness.released``. TypeDB comes from ``TYPEDB_ADDRESS``,
 ``TYPEDB_HTTP_PORT``, ``TYPEDB_USERNAME`` and ``TYPEDB_PASSWORD``.
 """
 
@@ -156,6 +157,7 @@ def assemble(run: Run, requested: str, report: Mapping[str, object], typedb: str
         version=str(report["version"]),
         trigger=released.TRIGGER,
         typedb=typedb,
+        source="tree" if requested == HEAD else "registry",
         toolchains=replace(run.toolchains, rust=None, node=str(report["node"])),
     )
 

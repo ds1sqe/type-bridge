@@ -3,6 +3,8 @@ name: Perf
 on:
   push:
     branches: [master]
+    # Release tags also run the released-versions matrix.
+    tags: ["v*"]
   pull_request:
   schedule:
     - cron: "17 3 * * *"
@@ -583,6 +585,144 @@ jobs:
           path: perf-out/binding.json
           if-no-files-found: error
 
+  # Released packages beside the head on the same CRUD ops, one SDK and
+  # version per job (release.<sdk>.<op>, trigger release-matrix). Releases
+  # come from PyPI and npm; the head is built from this commit.
+  released:
+    needs: metadata
+    name: Released ${{ matrix.sdk }} ${{ matrix.version }}
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [python, node]
+        version: ["2.0.2", "2.1.0", "2.2.5", head]
+    services:
+      typedb:
+        # Every compared version accepts semantic profile typedb-3.12.1/v1.
+        image: typedb/typedb:3.12.3
+        ports:
+          - 1729:1729
+          - 8000:8000
+        options: --tmpfs /var/lib/typedb/data:rw
+    env:
+      PERF_STARTED_AT: ${{ needs.metadata.outputs.started_at }}
+      TYPEDB_ADDRESS: localhost:1729
+      TYPEDB_HTTP_PORT: "8000"
+      TYPEDB_USERNAME: admin
+      TYPEDB_PASSWORD: password
+      HEAD_BUILD: ${{ github.workspace }}/../perf-head
+      RESULT: perf-out/release-${{ matrix.sdk }}-${{ matrix.version }}.json
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Set up Node
+        if: matrix.sdk == 'node'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Install Rust toolchain
+        if: matrix.version == 'head'
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Cache cargo registry and build
+        if: matrix.version == 'head'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            type-bridge-core/target
+          key: ${{ runner.os }}-cargo-perf-released-${{ matrix.sdk }}-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+
+      # A plain release wheel of the workspace root package: it carries the
+      # Python module and the type-bridge CLI (a `-m crates/core` build has
+      # no PyInit). Node's head generates its package with this CLI too.
+      - name: Build the head core wheel
+        if: matrix.version == 'head'
+        working-directory: type-bridge-core
+        run: >-
+          uvx --from maturin==1.14.1 maturin build --release
+          --interpreter python3.13 --out "$HEAD_BUILD/wheel"
+
+      - name: Pack the head Node package
+        if: matrix.version == 'head' && matrix.sdk == 'node'
+        working-directory: type-bridge-core/crates/node
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+          npm pack --pack-destination "$HEAD_BUILD"
+
+      # Ready when the gRPC port is open and the HTTP API reports the
+      # version, which the result records.
+      - name: Wait for TypeDB
+        id: typedb
+        run: |
+          for i in {1..30}; do
+            body="$(curl --fail --silent --max-time 3 http://localhost:8000/v1/version || true)"
+            version="$(python3 -c '
+          import json, sys
+          try:
+              print(json.loads(sys.argv[1])["version"])
+          except (ValueError, KeyError, TypeError):
+              pass
+          ' "$body")"
+            if nc -z localhost 1729 2>/dev/null && [ -n "$version" ]; then
+              echo "version=$version" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs ${{ job.services.typedb.id }} 2>&1 || true
+          exit 1
+
+      - name: Run the release workload
+        env:
+          SDK: ${{ matrix.sdk }}
+          VERSION: ${{ matrix.version }}
+          TYPEDB_VERSION: ${{ steps.typedb.outputs.version }}
+        run: |
+          module=perf.harness.released
+          [ "$SDK" = node ] && module=perf.harness.released_node
+          args=(--version "$VERSION" --typedb "$TYPEDB_VERSION" --out "$RESULT"
+            --started-at "$PERF_STARTED_AT")
+          if [ "$VERSION" = head ]; then
+            wheels=("$HEAD_BUILD"/wheel/type_bridge_core-*.whl)
+            args+=(--core-wheel "${wheels[0]}")
+            if [ "$SDK" = node ]; then
+              packages=("$HEAD_BUILD"/*.tgz)
+              args+=(--node-package "${packages[0]}")
+            fi
+          fi
+          python -m "$module" "${args[@]}"
+
+      - name: Validate the perf result
+        run: python -m perf.harness.validate "$RESULT"
+
+      - name: Upload the perf result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-release-${{ matrix.sdk }}-${{ matrix.version }}
+          path: ${{ env.RESULT }}
+          if-no-files-found: error
+
   compare:
     name: Base versus head micro benchmarks
     if: github.event_name == 'pull_request'
@@ -696,11 +836,17 @@ jobs:
   # Concurrent stores are serialized by the push retry below instead.
   store:
     name: Store perf history
+    # released is skipped on master pushes; any failed or cancelled producer
+    # still stores nothing.
     if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/master')
-      || github.event_name == 'schedule'
-      || github.event_name == 'workflow_dispatch'
-    needs: [micro, build, size, suite, pipeline, binding]
+      !cancelled()
+      && !contains(needs.*.result, 'failure')
+      && !contains(needs.*.result, 'cancelled')
+      && ((github.event_name == 'push'
+          && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')))
+        || github.event_name == 'schedule'
+        || github.event_name == 'workflow_dispatch')
+    needs: [micro, build, size, suite, pipeline, binding, released]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

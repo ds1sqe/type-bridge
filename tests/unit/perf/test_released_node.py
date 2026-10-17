@@ -109,6 +109,7 @@ def test_main_writes_a_valid_result_without_gap_metrics(
     document = json.loads(out.read_text(encoding="utf-8"))
     assert document["run"]["version"] == "2.0.2"
     assert document["run"]["trigger"] == "release-matrix"
+    assert document["run"]["source"] == "registry"
     assert document["run"]["toolchains"]["node"] == "22.12.0"
     assert [metric["id"] for metric in document["metrics"]] == ["release.node.insert_one"]
     printed = capsys.readouterr().out

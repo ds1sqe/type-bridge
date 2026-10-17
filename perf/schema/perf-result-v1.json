@@ -83,6 +83,10 @@
           "description": "RFC 3339 timestamp with an explicit UTC offset.",
           "type": "string",
           "format": "date-time"
+        },
+        "source": {
+          "description": "Where the measured package came from; present exactly when trigger is release-matrix. registry: the public release named by version. tree: built from commit (the head).",
+          "enum": ["registry", "tree"]
         }
       }
     },

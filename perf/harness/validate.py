@@ -25,6 +25,7 @@ from perf.harness.schema import (
     FAMILIES,
     FORMAT,
     METRIC_ID,
+    SOURCES,
     STAGE_NAME,
     TRIGGERS,
     UNITS,
@@ -85,6 +86,9 @@ def _check_run(value: object, findings: Findings) -> None:
     _string(run, "typedb", "run", findings, nullable=True)
     if _string(run, "started_at", "run", findings):
         _timestamp(run["started_at"], "run.started_at", findings)
+    _choice(run, "source", "run", SOURCES, findings)
+    if ("source" in run) != (run.get("trigger") == "release-matrix"):
+        findings.errors.append("run.source: required exactly when run.trigger is 'release-matrix'")
 
     if "runner" in run and (runner := _object(run["runner"], "run.runner", findings)) is not None:
         _keys(runner, "run.runner", *_field_names(Runner), findings)

@@ -20,5 +20,13 @@ signal, and wall times carry runner noise.
   <noscript><p>The dashboard needs JavaScript.</p></noscript>
 </div>
 
+**Released versions** compares `type-bridge` and `@type-bridge/node` 2.0.2,
+2.1.0 and 2.2.5, installed from PyPI and npm, with the head built from the
+commit, on the same six CRUD ops against TypeDB 3.12.3 (nightly, on manual
+runs and on release tags). Each bar is the newest run of one version. A gap
+means the version has no call for the op: the generated Node manager of
+2.0.2 has only `insert`, `getByIid` and `all`, so Node 2.0.2 shows only
+`insert_one`.
+
 See [Performance tracking](../development/performance.md) for how the data is
 produced and how to add a metric.

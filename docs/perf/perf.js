@@ -235,9 +235,103 @@
     return known.concat([...names].filter((name) => !STAGE_ORDER.includes(name)).sort());
   }
 
-  // The SDK of a `pipeline.<sdk>.<pipeline>` id.
+  // The SDK of a `pipeline.<sdk>.<pipeline>` or `release.<sdk>.<op>` id.
   function sdkOf(id) {
     return id.split(".")[1] || "";
+  }
+
+  // Released versions in numeric order, the head (built from the commit) last.
+  function bySeries(a, b) {
+    const key = (label) => (label === "head" ? [Infinity] : label.split(".").map(Number));
+    const left = key(a);
+    const right = key(b);
+    for (let i = 0; i < Math.max(left.length, right.length); i++) {
+      const difference = (left[i] || 0) - (right[i] || 0);
+      if (difference) return difference;
+    }
+    return a.localeCompare(b);
+  }
+
+  // Selector chips that show one group of `groups` (a Map), `first` first.
+  function sdkSelector(groups, first) {
+    const sdks = [...groups.keys()].sort((a, b) => (a === first ? -1 : b === first ? 1 : a.localeCompare(b)));
+    const selector = el("div", { class: "perf-families perf-sdks", role: "group", "aria-label": "SDK" });
+    const select = function (chosen) {
+      for (const [sdk, group] of groups) group.hidden = sdk !== chosen;
+      for (const chip of selector.children) chip.setAttribute("aria-pressed", String(chip.dataset.sdk === chosen));
+    };
+    for (const sdk of sdks) {
+      const chip = el("button", { type: "button", class: "perf-chip", text: sdk });
+      chip.dataset.sdk = sdk;
+      chip.addEventListener("click", function () {
+        select(sdk);
+      });
+      selector.append(chip);
+    }
+    select(sdks[0]);
+    return selector;
+  }
+
+  // One bar chart per `release.<sdk>.<op>` metric: the newest point of each
+  // series (a released version, or the head), every series of the SDK in
+  // every chart. A version without the op has no point and shows as a gap.
+  function comparisonSection(data) {
+    const ids = Object.keys(data.metrics).filter((id) => data.metrics[id].family === "release");
+    if (ids.length === 0) return { section: null, rows: [] };
+    const labels = new Map();
+    for (const id of ids) {
+      const sdk = sdkOf(id);
+      if (!labels.has(sdk)) labels.set(sdk, new Set());
+      for (const point of data.metrics[id].series) if (point.series) labels.get(sdk).add(point.series);
+    }
+    const groups = new Map();
+    const rows = ids.map(function (id) {
+      const metric = data.metrics[id];
+      const newest = new Map();
+      // Series points are ordered by time, so the last one wins.
+      for (const point of metric.series) if (point.series) newest.set(point.series, point);
+      const order = [...labels.get(sdkOf(id))].sort(bySeries);
+      const top = Math.max(...[...newest.values()].map((point) => point.value));
+      const bars = order.map(function (label) {
+        const point = newest.get(label);
+        const name = label === "head" ? "head" + (point ? " (" + point.version + ")" : "") : label;
+        const track = el("span", { class: "perf-bar-track" });
+        if (!point) {
+          track.classList.add("perf-bar-gap");
+          return el("div", { class: "perf-bar-row", title: label + " has no call for this op" }, el("span", { class: "perf-bar-label", text: name }), track, el("span", { class: "perf-bar-value", text: "gap" }));
+        }
+        const fill = el("span", { class: "perf-bar-fill" });
+        fill.style.width = (top > 0 ? (100 * point.value) / top : 0) + "%";
+        track.append(fill);
+        const row = el(
+          "div",
+          { class: "perf-bar-row" + (label === "head" ? " perf-bar-head" : ""), title: name + ": " + format(point.value, point.unit) + " · " + short(point.commit) + " · " + point.at.slice(0, 10) },
+          el("span", { class: "perf-bar-label", text: name }),
+          track,
+          el("span", { class: "perf-bar-value", text: format(point.value, point.unit) }),
+        );
+        return row;
+      });
+      const card = el("article", { class: "perf-card perf-compare", role: "img", "aria-label": id + " by version" }, el("header", {}, el("code", { text: id }), el("span", { text: "p50, newest run per version" })), ...bars);
+      card.dataset.family = metric.family;
+      card.dataset.id = id;
+      const sdk = sdkOf(id);
+      if (!groups.has(sdk)) groups.set(sdk, el("div", { class: "perf-grid perf-compare-group" }));
+      groups.get(sdk).append(card);
+      return card;
+    });
+    const section = el(
+      "section",
+      { class: "perf-versions" },
+      el("h2", { text: "Released versions" }),
+      el("p", {
+        text:
+          "The same CRUD ops through each released package and the head, built from the commit, on one TypeDB 3.12.3. Each bar is the median call of the newest run of that version; shorter is faster. A gap means that version has no call for the op.",
+      }),
+      sdkSelector(groups, "python"),
+      ...groups.values(),
+    );
+    return { section: section, rows: rows };
   }
 
   // One stacked bar per staged metric of the latest run. Time in no stage
@@ -294,21 +388,7 @@
       if (!groups.has(sdk)) groups.set(sdk, el("div", { class: "perf-stage-group" }));
       groups.get(sdk).append(row);
     }
-    const sdks = [...groups.keys()].sort((a, b) => (a === "rust" ? -1 : b === "rust" ? 1 : a.localeCompare(b)));
-    const selector = el("div", { class: "perf-families perf-sdks", role: "group", "aria-label": "SDK" });
-    const select = function (chosen) {
-      for (const [sdk, group] of groups) group.hidden = sdk !== chosen;
-      for (const chip of selector.children) chip.setAttribute("aria-pressed", String(chip.dataset.sdk === chosen));
-    };
-    for (const sdk of sdks) {
-      const chip = el("button", { type: "button", class: "perf-chip", text: sdk });
-      chip.dataset.sdk = sdk;
-      chip.addEventListener("click", function () {
-        select(sdk);
-      });
-      selector.append(chip);
-    }
-    select(sdks[0]);
+    const selector = sdkSelector(groups, "rust");
     const section = el(
       "section",
       { class: "perf-waterfall" },
@@ -363,9 +443,11 @@
     const empty = el("p", { class: "perf-empty", text: "No metric matches the filter.", hidden: "" });
     const { section, rows: tableRows } = latestSection(root, latest, data.latest_url);
     const waterfall = waterfallSection(latest);
+    const comparison = comparisonSection(data);
     const rows = tableRows.concat(waterfall.rows);
 
-    const cards = ids.map(function (id) {
+    // Release metrics compare versions, so they get no trend chart.
+    const cards = ids.filter((id) => data.metrics[id].family !== "release").map(function (id) {
       const metric = data.metrics[id];
       const last = metric.series[metric.series.length - 1];
       const plot = el("div", { class: "perf-plot" });
@@ -423,6 +505,10 @@
         shown += item.card.hidden ? 0 : 1;
       }
       for (const row of rows) row.hidden = !matches(row);
+      for (const card of comparison.rows) {
+        card.hidden = !matches(card);
+        shown += card.hidden ? 0 : 1;
+      }
       empty.hidden = shown > 0;
       for (const chip of chips.children) chip.setAttribute("aria-pressed", String(chip.dataset.family === family));
     };
@@ -442,7 +528,7 @@
     });
 
     grid.append(...cards.map((item) => item.card));
-    const sections = waterfall.section ? [waterfall.section, section] : [section];
+    const sections = [comparison.section, waterfall.section, section].filter(Boolean);
     root.replaceChildren(summary(data, ids), controls, grid, empty, ...sections);
     apply();
     for (const item of cards) {

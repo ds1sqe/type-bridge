@@ -12,8 +12,9 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
-from perf.harness import micro, released
+from perf.harness import micro, released, released_node
 from perf.harness.validate import check_file
 from perf.released.python import workload
 
@@ -148,7 +149,9 @@ def test_assemble_records_the_measured_version_and_release_matrix() -> None:
         "2.1.0", "release-matrix", "3.12.3",
     )  # fmt: skip
     assert (assembled.toolchains.rust, assembled.toolchains.python) == (None, "3.13.11")
-    assert released.assemble(run, "head", report(run.version), "3.12.3").version == run.version
+    assert assembled.source == "registry"
+    head = released.assemble(run, "head", report(run.version), "3.12.3")
+    assert (head.version, head.source) == (run.version, "tree")
     with pytest.raises(ValueError, match="installed type-bridge 2.2.5, expected 2.1.0"):
         released.assemble(run, "2.1.0", report("2.2.5"), "3.12.3")
 
@@ -202,3 +205,29 @@ def test_main_fails_without_a_result_on_a_version_mismatch(
     )
     assert code == 1
     assert not out.exists()
+
+
+def test_the_released_job_runs_every_sdk_and_version_into_the_store() -> None:
+    workflow = yaml.safe_load((micro.REPO_ROOT / ".github/workflows/perf.yml").read_text())
+    job = workflow["jobs"]["released"]
+
+    assert job["strategy"]["matrix"] == {
+        "sdk": ["python", "node"],
+        "version": list(released.VERSIONS),
+    }
+    assert list(released_node.VERSIONS) == list(released.VERSIONS)
+    for event in ("schedule", "workflow_dispatch", "refs/tags/v"):
+        assert event in job["if"]
+    service = job["services"]["typedb"]
+    assert service["image"] == "typedb/typedb:3.12.3"
+    assert service["options"] == "--tmpfs /var/lib/typedb/data:rw"
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "maturin build --release" in commands
+    assert "-m crates/core" not in commands
+    assert "npm ci --ignore-scripts" in commands
+    assert "npm pack" in commands
+    assert "perf.harness.released_node" in commands
+    store = workflow["jobs"]["store"]
+    assert "released" in store["needs"]
+    # A skipped released job (master pushes) must not skip the store.
+    assert store["if"].startswith("!cancelled()")
