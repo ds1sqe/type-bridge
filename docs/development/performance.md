@@ -117,16 +117,17 @@ docker rm -f -v perf-typedb
 directory must not exist yet; the databases are deleted when their
 pipeline ends.
 
-### Through Python and Node
+### Through Python, Node and C
 
-`perf/drivers/python` and `perf/drivers/node` run the same data pipelines,
-seeds and plans through the Python and Node SDKs, on the same schema
+`perf/drivers/python`, `perf/drivers/node` and `perf/drivers/c` run the same
+data pipelines, seeds and plans through the Python, Node and C SDKs, on the same schema
 (`perf/drivers/workspace`, applied with the `type-bridge` CLI), and write the
 same report format. `migration_apply` is a CLI operation with no SDK entry,
 so only the Rust report has it. Each iteration is timed in the host language;
 stage times come from a private recorder in the native module, which exists
 only when the binding is built with its `perf-stages` feature
-(`type_bridge_core._perf_stages()`, Node `_perfStages()`). Shipped wheels and
+(`type_bridge_core._perf_stages()`, Node `_perfStages()`, C
+`tb_perf_stages_json`, which no header declares). Shipped wheels and
 packages never enable it, and no shipped crate depends on `type-bridge-perf`.
 Time outside every stage is then host-language work before the native entry.
 
@@ -147,7 +148,27 @@ The Node driver takes the built package (`npm run build:types` in
 `cargo build --release -p type-bridge-node --features perf-stages` and copied
 to a `.node` file, and a workspace made by
 `python -m perf.drivers.workspace --root DIR --cli CLI create`; see the
-header of `perf/drivers/node/pipelines.cjs`. `perf.harness.pipeline` takes
+header of `perf/drivers/node/pipelines.cjs`.
+
+The C driver compiles against the C schema package that `create` generates
+into `DIR/workspace/generated/c`, links a `type-bridge-c` built with
+`--features perf-stages`, and stages each iteration's plans on one ABI 1.7
+staged transaction:
+
+```bash
+cargo build --release --manifest-path type-bridge-core/Cargo.toml \
+  -p type-bridge-c --features perf-stages
+python -m perf.drivers.workspace --root tmp/perf/c --cli CLI create
+G=tmp/perf/c/workspace/generated/c L=type-bridge-core/target/release
+cc -std=c17 -O2 -Wall -Wextra -Werror -I $G/include \
+  -I type-bridge-core/crates/c/include perf/drivers/c/pipelines.c $G/src/models.c \
+  -L $L -ltype_bridge_c -Wl,-rpath,$PWD/$L -o tmp/perf/c-pipelines
+TB_PERF_SETUP='["python","-m","perf.drivers.workspace","--root","tmp/perf/c","--cli","CLI"]' \
+  TYPEDB_USERNAME=admin TYPEDB_PASSWORD=password tmp/perf/c-pipelines \
+  --out tmp/perf/c-report.json --workspace tmp/perf/c/workspace
+```
+
+`perf.harness.pipeline` takes
 one `--report` per SDK and, with `--sdk` (repeatable), checks that the
 reports cover exactly those SDKs; ids are `pipeline.<sdk>.<pipeline>`.
 

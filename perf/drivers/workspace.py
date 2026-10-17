@@ -12,8 +12,9 @@ The Node and C drivers call it as a command for their setup::
     python -m perf.drivers.workspace --root DIR --cli PATH create
     python -m perf.drivers.workspace --root DIR --cli PATH apply|drop DATABASE
 
-``create`` copies the workspace into ``DIR/workspace``, makes the migration
-and writes ``declared-schema.json`` there. TypeDB comes from the same
+``create`` copies the workspace into ``DIR/workspace``, makes the migration,
+generates the C schema package into ``DIR/workspace/generated/c`` (the C
+driver compiles against it) and writes ``declared-schema.json`` there. TypeDB comes from the same
 ``TYPEDB_*`` variables the drivers read.
 """
 
@@ -43,6 +44,9 @@ compatibility:
 migrations:
   directory: migrations/v2
   app-label: perf
+bindings:
+  c:
+    output: generated/c
 environments:
   perf:
     database: {database}
@@ -74,6 +78,7 @@ class Workspace:
         workspace = cls(root, cli, address, http_port)
         workspace.point_at("unused")
         workspace.run("migration", "make", "--name", "initial")
+        workspace.run("schema", "generate")
         return workspace
 
     def point_at(self, database: str) -> None:
