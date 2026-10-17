@@ -902,6 +902,16 @@ run_live_lane() {
                 --address "$TYPEDB_ADDRESS" --http-port "$TYPEDB_HTTP_PORT" \
                 --output "$writes_output/reports"
         rm -rf -- "$writes_output"
+        # Three processes race staged plans on separate connections. The
+        # paused-server case runs only when TB_RACE_CONTAINER names a TypeDB
+        # container this run alone owns; it is `docker pause`d mid-commit.
+        run_step "staged writes race across processes (TypeDB 3.13.6)" \
+            run_with_timeout 30m \
+            env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+                TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE="$lane_profile" \
+                TB_RACE_ROUNDS="${TB_RACE_ROUNDS:-5}" \
+                TB_RACE_CONTAINER="${TB_RACE_CONTAINER:-}" \
+            uv run pytest tests/live/races -m slow -q -p no:cacheprovider
     fi
 
     run_step "cargo test -p type-bridge-orm --features integration-tests --test integration" \

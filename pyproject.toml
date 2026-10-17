@@ -136,6 +136,7 @@ markers = [
     "integration: marks tests as integration tests (require running TypeDB)",
     "proxy: marks tests as proxy integration tests (require proxy server + TypeDB)",
     "unit: marks tests as unit tests (fast, no external dependencies)",
+    "slow: marks long-running live tests (run with -m slow)",
 ]
 # By default, run only unit tests (exclude integration and proxy tests)
 addopts = "-m 'not integration and not proxy'"
