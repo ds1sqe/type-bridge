@@ -3,7 +3,9 @@
 //! It builds every plan from the generated crate's tokens and `SCHEMA`, then,
 //! when a live target is configured, runs the same program directly and over
 //! the proxy: seed, stage the purchase, a touch and a batch of 50 orders in
-//! one transaction, commit, and read the state back. It prints one JSON
+//! one transaction, commit, and read the state back; then the journeys (a
+//! put, an update answering rows, an insert whose players it inserts, a
+//! delete) in one transaction, and a second read. It prints one JSON
 //! report. `models` is the crate generated from
 //! tests/contracts/sdk_conformance/writes/purchase.
 
@@ -156,10 +158,94 @@ fn on_call() -> Result<Built> {
     plan.build(&models::SCHEMA)
 }
 
-const STEPS: [(&str, &[&str]); 3] = [
+/// Put a second doctor, off call: created, since none matches.
+fn put_doctor() -> Result<Built> {
+    let mut plan = Plan::builder();
+    plan.put::<Doctor>()
+        .field(DoctorType::name, "D2".to_owned())
+        .field(DoctorType::on_call, false);
+    plan.build(&models::SCHEMA)
+}
+
+/// Put the second doctor on call and answer its name (`Write{returns}`).
+fn returns() -> Result<Built> {
+    let mut plan = Plan::builder();
+    let doctor = plan.exact::<Doctor>();
+    let name = plan.field(doctor, DoctorType::name);
+    plan.where_(name.eq("D2".to_owned()));
+    plan.update(doctor, DoctorType::on_call, true);
+    plan.returning([name]);
+    plan.build(&models::SCHEMA)
+}
+
+/// A purchase whose players are the item and account this write inserts.
+fn refer() -> Result<Built> {
+    let mut plan = Plan::builder();
+    let item = plan
+        .insert::<Item>()
+        .field(ItemType::item_id, "I2".to_owned())
+        .field(ItemType::stock, 3_i64)
+        .field(ItemType::price, 10_i64)
+        .thing();
+    let buyer = plan
+        .insert::<Account>()
+        .field(AccountType::account_id, "A2".to_owned())
+        .field(AccountType::balance, 50_i64)
+        .thing();
+    plan.insert::<Purchase>()
+        .field(PurchaseType::order_id, "R1".to_owned())
+        .player(PurchaseType::buyer, buyer)
+        .player(PurchaseType::item, item);
+    plan.build(&models::SCHEMA)
+}
+
+/// Delete the first purchase.
+fn remove() -> Result<Built> {
+    let mut plan = Plan::builder();
+    let order = plan.exact::<Purchase>();
+    let key = plan.field(order, PurchaseType::order_id);
+    plan.where_(key.eq("O1".to_owned()));
+    plan.delete(order);
+    plan.build(&models::SCHEMA)
+}
+
+fn doctors_on_call() -> Result<Built> {
+    let mut plan = Plan::builder();
+    let doctor = plan.exact::<Doctor>();
+    let on_call = plan.field(doctor, DoctorType::on_call);
+    plan.where_(on_call.eq(true));
+    plan.count();
+    plan.build(&models::SCHEMA)
+}
+
+fn referred() -> Result<Built> {
+    let mut plan = Plan::builder();
+    let order = plan.exact::<Purchase>();
+    let buyer = plan.exact::<Account>();
+    let key = plan.field(order, PurchaseType::order_id);
+    plan.where_(key.eq("R1".to_owned()));
+    let buyer_key = plan.field(buyer, AccountType::account_id);
+    plan.where_(buyer_key.eq("A2".to_owned()));
+    plan.links(order, PurchaseType::buyer, buyer);
+    plan.count();
+    plan.build(&models::SCHEMA)
+}
+
+fn removed() -> Result<Built> {
+    let mut plan = Plan::builder();
+    let order = plan.exact::<Purchase>();
+    let key = plan.field(order, PurchaseType::order_id);
+    plan.where_(key.eq("O1".to_owned()));
+    plan.exists();
+    plan.build(&models::SCHEMA)
+}
+
+const STEPS: [(&str, &[&str]); 5] = [
     ("seed", &["seed"]),
     ("program", &["purchase", "touch", "batch"]),
     ("read", &["sold_out", "charged", "orders", "on_call"]),
+    ("journeys", &["put_doctor", "returns", "refer", "remove"]),
+    ("after", &["doctors_on_call", "referred", "removed"]),
 ];
 
 /// One answer as [kind, value]; rows report their count, exists 0 or 1.
@@ -174,7 +260,7 @@ fn answer(value: &PlanAnswer) -> Json {
 }
 
 fn kind(step: &str) -> TransactionOptions {
-    TransactionOptions::default().with_kind(if step == "read" {
+    TransactionOptions::default().with_kind(if matches!(step, "read" | "after") {
         TransactionKind::Read
     } else {
         TransactionKind::Write
@@ -214,6 +300,13 @@ async fn main() -> Result<()> {
         ("charged", charged()?),
         ("orders", orders()?),
         ("on_call", on_call()?),
+        ("put_doctor", put_doctor()?),
+        ("returns", returns()?),
+        ("refer", refer()?),
+        ("remove", remove()?),
+        ("doctors_on_call", doctors_on_call()?),
+        ("referred", referred()?),
+        ("removed", removed()?),
     ];
     let mut encoded = Map::new();
     for (name, plan) in &plans {

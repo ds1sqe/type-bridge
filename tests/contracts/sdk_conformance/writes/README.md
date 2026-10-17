@@ -12,7 +12,11 @@ proxy.
 - `program.json`: the steps and their data. `seed` inserts one item, account
   and doctor. `program` stages the purchase, a touch of every doctor's on-call
   value and a batch insert of 50 orders (given rows) in one transaction. `read`
-  counts the state back in a read transaction.
+  counts the state back in a read transaction. `journeys` then stages, in one
+  transaction, a put (doctor D2, created since none matches), an update that
+  answers rows (`Write{returns}`: D2 goes on call, its name is returned), an
+  insert whose relation players are the item and account the same write
+  inserts (purchase R1), and a delete (purchase O1). `after` reads them back.
 - `expected.json`: the canonical bytes of every plan (hex), every answer as
   `[kind, value]` (rows report their count, exists 0 or 1), the provider state
   and the proxy's commit outcomes.

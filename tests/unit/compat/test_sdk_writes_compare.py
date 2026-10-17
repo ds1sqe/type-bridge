@@ -64,16 +64,31 @@ def test_the_program_contract_names_every_step_plan_and_answer() -> None:
         "seed": ["seed"],
         "program": ["purchase", "touch", "batch"],
         "read": ["sold_out", "charged", "orders", "on_call"],
+        "journeys": ["put_doctor", "returns", "refer", "remove"],
+        "after": ["doctors_on_call", "referred", "removed"],
     }
     assert EXPECTED["results"]["program"] == {
         "purchase": ["matched", 1],
         "touch": ["matched", 1],
         "batch": ["matched", 50],
     }
+    # Put, update answering rows, insert with inserted players, delete.
+    assert EXPECTED["results"]["journeys"] == {
+        "put_doctor": ["matched", 1],
+        "returns": ["rows", 1],
+        "refer": ["matched", 1],
+        "remove": ["matched", 1],
+    }
+    assert EXPECTED["results"]["after"] == {
+        "doctors_on_call": ["count", 2],
+        "referred": ["count", 1],
+        "removed": ["exists", 0],
+    }
     assert len(PROGRAM["plans"]["batch"]["rows"]) == 50
+    # 1 purchase + 50 batch orders + R1 - O1.
     assert EXPECTED["state"]["orders"] == 51
-    # Seed, program and read: one signed commit each.
-    assert EXPECTED["proxy_commits"] == ["true:ok"] * 3
+    # Seed, program, read, journeys and after: one signed commit each.
+    assert EXPECTED["proxy_commits"] == ["true:ok"] * 5
 
 
 @pytest.mark.parametrize("live", [False, True])

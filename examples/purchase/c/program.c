@@ -4,7 +4,9 @@
  * It builds every plan with the ABI 1.7 plan builder against the generated
  * schema package, then, when a live target is configured, runs the same
  * program directly and over the proxy: seed, stage the purchase, a touch and
- * a batch of 50 orders in one transaction, commit, and read the state back.
+ * a batch of 50 orders in one transaction, commit, and read the state back;
+ * then the journeys (a put, an update answering rows, an insert whose
+ * players it inserts, a delete) in one transaction, and a second read.
  * It prints one JSON report. <tb_writes/models.h> is the package generated
  * from tests/contracts/sdk_conformance/writes/purchase.
  */
@@ -17,7 +19,7 @@
 #include <typebridge/type_bridge.h>
 #include <tb_writes/models.h>
 
-#define PLAN_COUNT 8u
+#define PLAN_COUNT 15u
 #define BATCH_ORDERS 50u
 
 #define CHECK(call)                                                            \
@@ -275,18 +277,143 @@ done:
   return status;
 }
 
+/* `thing.field = literal`, for an insert or put binding. */
+static type_bridge_status_t set_value(type_bridge_plan_builder_t *plan, uint32_t thing,
+                                      uint32_t field, uint32_t value) {
+  return type_bridge_plan_builder_thing_field(plan, thing, field, TYPE_BRIDGE_PLAN_OPERAND_VALUE,
+                                              value);
+}
+
+/* Match `type` whose `field` equals the string `key`. */
+static type_bridge_status_t keyed(type_bridge_plan_builder_t *plan, uint32_t type, uint32_t field,
+                                  const char *key, uint32_t *out_thing, uint32_t *out_field) {
+  type_bridge_status_t status;
+  uint32_t value;
+  CHECK(type_bridge_plan_builder_exact(plan, type, out_thing));
+  CHECK(type_bridge_plan_builder_field(plan, *out_thing, field, out_field));
+  CHECK(type_bridge_plan_builder_value_string(plan, view(key), &value));
+  CHECK(equals(plan, *out_field, value));
+done:
+  return status;
+}
+
+/* Put a second doctor, off call: created, since none matches. */
+static type_bridge_status_t put_doctor(type_bridge_plan_builder_t *plan, const identities_t *id) {
+  type_bridge_status_t status;
+  uint32_t doctor, name, off;
+  CHECK(type_bridge_plan_builder_put(plan, id->doctor, &doctor));
+  CHECK(type_bridge_plan_builder_value_string(plan, view("D2"), &name));
+  CHECK(set_value(plan, doctor, id->name, name));
+  CHECK(type_bridge_plan_builder_value_boolean(plan, 0u, &off));
+  CHECK(set_value(plan, doctor, id->on_call, off));
+done:
+  return status;
+}
+
+/* Put the second doctor on call and answer its name (`Write{returns}`). */
+static type_bridge_status_t returns(type_bridge_plan_builder_t *plan, const identities_t *id) {
+  type_bridge_status_t status;
+  uint32_t doctor, name, on;
+  CHECK(keyed(plan, id->doctor, id->name, "D2", &doctor, &name));
+  CHECK(type_bridge_plan_builder_value_boolean(plan, 1u, &on));
+  CHECK(type_bridge_plan_builder_update(plan, doctor, id->on_call, TYPE_BRIDGE_PLAN_OPERAND_VALUE,
+                                        on));
+  CHECK(type_bridge_plan_builder_returning(plan, &name, 1u));
+done:
+  return status;
+}
+
+/* A purchase whose players are the item and account this write inserts. */
+static type_bridge_status_t refer(type_bridge_plan_builder_t *plan, const identities_t *id) {
+  type_bridge_status_t status;
+  uint32_t item, buyer, order, value;
+  CHECK(type_bridge_plan_builder_insert(plan, id->item, &item));
+  CHECK(type_bridge_plan_builder_value_string(plan, view("I2"), &value));
+  CHECK(set_value(plan, item, id->item_id, value));
+  CHECK(type_bridge_plan_builder_value_long(plan, 3, &value));
+  CHECK(set_value(plan, item, id->stock, value));
+  CHECK(type_bridge_plan_builder_value_long(plan, 10, &value));
+  CHECK(set_value(plan, item, id->price, value));
+  CHECK(type_bridge_plan_builder_insert(plan, id->account, &buyer));
+  CHECK(type_bridge_plan_builder_value_string(plan, view("A2"), &value));
+  CHECK(set_value(plan, buyer, id->account_id, value));
+  CHECK(type_bridge_plan_builder_value_long(plan, 50, &value));
+  CHECK(set_value(plan, buyer, id->balance, value));
+  CHECK(type_bridge_plan_builder_insert(plan, id->purchase, &order));
+  CHECK(type_bridge_plan_builder_value_string(plan, view("R1"), &value));
+  CHECK(set_value(plan, order, id->order_id, value));
+  CHECK(type_bridge_plan_builder_thing_player(plan, order, id->buyer, buyer));
+  CHECK(type_bridge_plan_builder_thing_player(plan, order, id->item_role, item));
+done:
+  return status;
+}
+
+/* Delete the first purchase. */
+static type_bridge_status_t remove_order(type_bridge_plan_builder_t *plan, const identities_t *id) {
+  type_bridge_status_t status;
+  uint32_t order, key;
+  CHECK(keyed(plan, id->purchase, id->order_id, "O1", &order, &key));
+  CHECK(type_bridge_plan_builder_delete(plan, order));
+done:
+  return status;
+}
+
+static type_bridge_status_t doctors_on_call(type_bridge_plan_builder_t *plan,
+                                            const identities_t *id) {
+  type_bridge_status_t status;
+  uint32_t doctor, value, yes;
+  CHECK(type_bridge_plan_builder_exact(plan, id->doctor, &doctor));
+  CHECK(type_bridge_plan_builder_field(plan, doctor, id->on_call, &value));
+  CHECK(type_bridge_plan_builder_value_boolean(plan, 1u, &yes));
+  CHECK(equals(plan, value, yes));
+  CHECK(type_bridge_plan_builder_count(plan));
+done:
+  return status;
+}
+
+static type_bridge_status_t referred(type_bridge_plan_builder_t *plan, const identities_t *id) {
+  type_bridge_status_t status;
+  uint32_t order, buyer, key, buyer_key, value;
+  CHECK(type_bridge_plan_builder_exact(plan, id->purchase, &order));
+  CHECK(type_bridge_plan_builder_exact(plan, id->account, &buyer));
+  CHECK(type_bridge_plan_builder_field(plan, order, id->order_id, &key));
+  CHECK(type_bridge_plan_builder_value_string(plan, view("R1"), &value));
+  CHECK(equals(plan, key, value));
+  CHECK(type_bridge_plan_builder_field(plan, buyer, id->account_id, &buyer_key));
+  CHECK(type_bridge_plan_builder_value_string(plan, view("A2"), &value));
+  CHECK(equals(plan, buyer_key, value));
+  CHECK(type_bridge_plan_builder_links(plan, order, id->buyer, buyer));
+  CHECK(type_bridge_plan_builder_count(plan));
+done:
+  return status;
+}
+
+static type_bridge_status_t removed(type_bridge_plan_builder_t *plan, const identities_t *id) {
+  type_bridge_status_t status;
+  uint32_t order, key;
+  CHECK(keyed(plan, id->purchase, id->order_id, "O1", &order, &key));
+  CHECK(type_bridge_plan_builder_exists(plan));
+done:
+  return status;
+}
+
 typedef type_bridge_status_t (*plan_fn)(type_bridge_plan_builder_t *, const identities_t *);
 
-static const char *const NAMES[PLAN_COUNT] = {"seed",     "purchase", "touch",  "batch",
-                                              "sold_out", "charged",  "orders", "on_call"};
-static const plan_fn BUILDERS[PLAN_COUNT] = {seed,     purchase, touch,  batch,
-                                             sold_out, charged,  orders, on_call};
+static const char *const NAMES[PLAN_COUNT] = {
+    "seed",       "purchase", "touch", "batch",  "sold_out",        "charged",  "orders", "on_call",
+    "put_doctor", "returns",  "refer", "remove", "doctors_on_call", "referred", "removed"};
+static const plan_fn BUILDERS[PLAN_COUNT] = {
+    seed,       purchase, touch, batch,        sold_out,        charged,  orders, on_call,
+    put_doctor, returns,  refer, remove_order, doctors_on_call, referred, removed};
 
 /* The program: seed, then purchase, touch and batch in one transaction, then
- * the reads in one read transaction. Each step names a range of plans. */
-static const char *const STEPS[3] = {"seed", "program", "read"};
-static const size_t STEP_FIRST[3] = {0u, 1u, 4u};
-static const size_t STEP_COUNT[3] = {1u, 3u, 4u};
+ * the reads in one read transaction; then the journeys in one transaction and
+ * a second read. Each step names a range of plans. */
+#define STEP_TOTAL 5u
+static const char *const STEPS[STEP_TOTAL] = {"seed", "program", "read", "journeys", "after"};
+static const size_t STEP_FIRST[STEP_TOTAL] = {0u, 1u, 4u, 8u, 12u};
+static const size_t STEP_COUNT[STEP_TOTAL] = {1u, 3u, 4u, 4u, 3u};
+static const int STEP_READ[STEP_TOTAL] = {0, 0, 1, 0, 1};
 
 static type_bridge_status_t build_all(const type_bridge_schema_package_t *package,
                                       type_bridge_plan_t **plans) {
@@ -359,10 +486,10 @@ static type_bridge_status_t run_program(const target_t *target, type_bridge_plan
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   size_t step, index;
   printf("{");
-  for (step = 0u; step < 3u; ++step) {
+  for (step = 0u; step < STEP_TOTAL; ++step) {
     type_bridge_staged_transaction_t *transaction = NULL;
     type_bridge_pending_t *pending[4] = {NULL, NULL, NULL, NULL};
-    uint32_t kind = step == 2u ? TYPE_BRIDGE_TRANSACTION_READ : TYPE_BRIDGE_TRANSACTION_WRITE;
+    uint32_t kind = STEP_READ[step] ? TYPE_BRIDGE_TRANSACTION_READ : TYPE_BRIDGE_TRANSACTION_WRITE;
     status = open_transaction(target, kind, &transaction, &diagnostics);
     for (index = 0u; status == TYPE_BRIDGE_STATUS_OK && index < STEP_COUNT[step]; ++index)
       status = type_bridge_staged_transaction_stage(transaction, plans[STEP_FIRST[step] + index],

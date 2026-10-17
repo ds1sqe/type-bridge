@@ -4,7 +4,9 @@
  * It builds every plan from the generated package's tokens and authority,
  * then, when a live target is configured, runs the same program directly and
  * over the proxy: seed, stage the purchase, a touch and a batch of 50 orders
- * in one transaction, commit, and read the state back. It prints one JSON
+ * in one transaction, commit, and read the state back; then the journeys (a
+ * put, an update answering rows, an insert whose players it inserts, a
+ * delete) in one transaction, and a second read. It prints one JSON
  * report. It compiles as part of the generated package (`./index.js`); see
  * tests/contracts/sdk_conformance/writes/purchase.
  */
@@ -140,6 +142,72 @@ function onCall(authority: QueryV2Authority): Built {
   return plan.exists().build(authority);
 }
 
+/** Put a second doctor, off call: created, since none matches. */
+function putDoctor(authority: QueryV2Authority): Built {
+  const plan = Plan.builder();
+  plan.put(Doctor).field(Doctor.fields.name_, "D2").field(Doctor.fields.onCall, false);
+  return plan.build(authority);
+}
+
+/** Put the second doctor on call and answer its name (`Write{returns}`). */
+function returns(authority: QueryV2Authority): Built {
+  const plan = Plan.builder();
+  const doctor = plan.exact(Doctor);
+  const name = plan.field(doctor, Doctor.fields.name_);
+  plan.where(name.eq("D2"));
+  plan.update(doctor, Doctor.fields.onCall, true);
+  return plan.returning([name]).build(authority);
+}
+
+/** A purchase whose players are the item and account this write inserts. */
+function refer(authority: QueryV2Authority): Built {
+  const plan = Plan.builder();
+  const item = plan
+    .insert(Item)
+    .field(Item.fields.itemId, "I2")
+    .field(Item.fields.stock, 3n)
+    .field(Item.fields.price, 10n);
+  const buyer = plan.insert(Account).field(Account.fields.accountId, "A2").field(Account.fields.balance, 50n);
+  plan
+    .insert(Purchase)
+    .field(Purchase.fields.orderId, "R1")
+    .player(Purchase.roles.buyer, buyer.thing())
+    .player(Purchase.roles.item, item.thing());
+  return plan.build(authority);
+}
+
+/** Delete the first purchase. */
+function remove(authority: QueryV2Authority): Built {
+  const plan = Plan.builder();
+  const order = plan.exact(Purchase);
+  plan.where(plan.field(order, Purchase.fields.orderId).eq("O1"));
+  return plan.delete(order).build(authority);
+}
+
+function doctorsOnCall(authority: QueryV2Authority): Built {
+  const plan = Plan.builder();
+  const doctor = plan.exact(Doctor);
+  plan.where(plan.field(doctor, Doctor.fields.onCall).eq(true));
+  return plan.count().build(authority);
+}
+
+function referred(authority: QueryV2Authority): Built {
+  const plan = Plan.builder();
+  const order = plan.exact(Purchase);
+  const buyer = plan.exact(Account);
+  plan.where(plan.field(order, Purchase.fields.orderId).eq("R1"));
+  plan.where(plan.field(buyer, Account.fields.accountId).eq("A2"));
+  plan.links(order, Purchase.roles.buyer, buyer);
+  return plan.count().build(authority);
+}
+
+function removed(authority: QueryV2Authority): Built {
+  const plan = Plan.builder();
+  const order = plan.exact(Purchase);
+  plan.where(plan.field(order, Purchase.fields.orderId).eq("O1"));
+  return plan.exists().build(authority);
+}
+
 const BUILDERS: Record<string, (authority: QueryV2Authority) => Built> = {
   seed,
   purchase,
@@ -149,12 +217,22 @@ const BUILDERS: Record<string, (authority: QueryV2Authority) => Built> = {
   charged,
   orders,
   on_call: onCall,
+  put_doctor: putDoctor,
+  returns,
+  refer,
+  remove,
+  doctors_on_call: doctorsOnCall,
+  referred,
+  removed,
 };
 const STEPS: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["seed", ["seed"]],
   ["program", ["purchase", "touch", "batch"]],
   ["read", ["sold_out", "charged", "orders", "on_call"]],
+  ["journeys", ["put_doctor", "returns", "refer", "remove"]],
+  ["after", ["doctors_on_call", "referred", "removed"]],
 ];
+const READS: ReadonlySet<string> = new Set(["read", "after"]);
 
 type Answer = readonly [string, number];
 
@@ -192,7 +270,7 @@ async function program(
 ): Promise<Record<string, Record<string, Answer>>> {
   const results: Record<string, Record<string, Answer>> = {};
   for (const [step, names] of STEPS) {
-    results[step] = await run(await open(step === "read" ? "read" : "write"), plans, names);
+    results[step] = await run(await open(READS.has(step) ? "read" : "write"), plans, names);
   }
   return results;
 }

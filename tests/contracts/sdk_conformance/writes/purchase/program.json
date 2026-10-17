@@ -29,6 +29,25 @@
         "orders",
         "on_call"
       ]
+    },
+    {
+      "name": "journeys",
+      "kind": "write",
+      "plans": [
+        "put_doctor",
+        "returns",
+        "refer",
+        "remove"
+      ]
+    },
+    {
+      "name": "after",
+      "kind": "read",
+      "plans": [
+        "doctors_on_call",
+        "referred",
+        "removed"
+      ]
     }
   ],
   "plans": {
@@ -229,6 +248,31 @@
     },
     "on_call": {
       "exists": "a doctor on call"
+    },
+    "put_doctor": {
+      "note": "put doctor D2, off call; none matches, so it is created",
+      "put": "doctor"
+    },
+    "returns": {
+      "note": "put doctor D2 on call and answer its name (Write{returns})",
+      "returns": [
+        "name"
+      ]
+    },
+    "refer": {
+      "note": "insert item I2, account A2 and purchase R1 whose players are the item and account the same write inserts"
+    },
+    "remove": {
+      "note": "delete purchase O1"
+    },
+    "doctors_on_call": {
+      "count": "doctors on call"
+    },
+    "referred": {
+      "count": "purchase R1 whose buyer is account A2"
+    },
+    "removed": {
+      "exists": "purchase O1"
     }
   }
 }
