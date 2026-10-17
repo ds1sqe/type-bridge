@@ -728,6 +728,12 @@ run_live_lane() {
     if [[ "$typedb_server_version" == 3.11.* ]]; then
         lane_migrations=0
     fi
+    # Staged purchase plans bind given rows, which TypeDB 3.11 lacks; the V3
+    # staged suites skip there, so run them only where they prove something.
+    lane_given_rows=1
+    if [[ "$typedb_server_version" == 3.11.* ]]; then
+        lane_given_rows=0
+    fi
     # Live workspace tests author their manifests on
     # TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE; keep it on the lane's profile.
     migration_profile_env=()
@@ -950,18 +956,20 @@ run_live_lane() {
             -p type-bridge-server --features v2-query \
             --lib
 
-    run_step "type-bridge-server V3 staged live acceptance" \
-        run_with_timeout 10m \
-        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
-        cargo test --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-server --features v2-query \
-            --test v3_staged_integration_tests -- --ignored
+    if [[ "$lane_given_rows" == 1 ]]; then
+        run_step "type-bridge-server V3 staged live acceptance" \
+            run_with_timeout 10m \
+            env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            cargo test --manifest-path type-bridge-core/Cargo.toml \
+                -p type-bridge-server --features v2-query \
+                --test v3_staged_integration_tests -- --ignored
 
-    run_step "Rust SDK plan builder over the V3 staged proxy (live)" \
-        run_with_timeout 10m \
-        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
-        cargo test --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge --test plan_builder_live -- --ignored
+        run_step "Rust SDK plan builder over the V3 staged proxy (live)" \
+            run_with_timeout 10m \
+            env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            cargo test --manifest-path type-bridge-core/Cargo.toml \
+                -p type-bridge --test plan_builder_live -- --ignored
+    fi
 
     # Connects without an HTTP port, so discovery takes the band-8 gRPC
     # fallback and must reach the lane server's own band.

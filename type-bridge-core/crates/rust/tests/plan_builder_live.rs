@@ -58,6 +58,13 @@ impl type_bridge::ProxyExchange for RouterExchange {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn sdk_plan_builder_purchase_is_golden_and_commits_directly_and_over_the_proxy() {
+    if !staged_live::given_rows_supported(
+        "sdk_plan_builder_purchase_is_golden_and_commits_directly_and_over_the_proxy",
+    )
+    .await
+    {
+        return;
+    }
     use type_bridge::staged::{PlanAnswer, TransactionOptions};
     let package = purchase_models::package();
     let first = purchase_models::purchase_plan(&package, "O1", "I1", "A1").expect("plan");
@@ -132,6 +139,9 @@ async fn sdk_plan_builder_purchase_is_golden_and_commits_directly_and_over_the_p
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn sdk_plan_builder_purchase_race_never_oversells() {
+    if !staged_live::given_rows_supported("sdk_plan_builder_purchase_race_never_oversells").await {
+        return;
+    }
     use type_bridge::staged::{PlanAnswer, TransactionOptions};
     let package = purchase_models::package();
     let (name, raw) = seeded("sdk-builder-race").await;

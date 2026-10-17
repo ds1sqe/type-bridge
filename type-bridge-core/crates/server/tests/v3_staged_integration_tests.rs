@@ -95,6 +95,13 @@ fn failure_code(reply: &VerifiedStagedReplyV3) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn staged_purchase_matches_direct_transaction_answers_and_state() {
+    if !staged_live::given_rows_supported(
+        "staged_purchase_matches_direct_transaction_answers_and_state",
+    )
+    .await
+    {
+        return;
+    }
     let (_, direct) = seeded("direct").await;
     let (proxy_name, proxied) = seeded("proxy").await;
     let proxy = proxy(&proxy_name, LivePolicy::default(), true).await;
@@ -197,6 +204,11 @@ async fn unauthenticated_staged_write_is_refused_and_writes_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn dropped_reply_retry_with_the_same_key_applies_once() {
+    if !staged_live::given_rows_supported("dropped_reply_retry_with_the_same_key_applies_once")
+        .await
+    {
+        return;
+    }
     let (name, db) = seeded("idempotent").await;
     let policy = LivePolicy {
         vouch: true,
@@ -243,6 +255,13 @@ async fn dropped_reply_retry_with_the_same_key_applies_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn reply_withheld_after_commit_reports_an_unknown_outcome_and_replays_it() {
+    if !staged_live::given_rows_supported(
+        "reply_withheld_after_commit_reports_an_unknown_outcome_and_replays_it",
+    )
+    .await
+    {
+        return;
+    }
     let (name, db) = seeded("withheld").await;
     let withhold = Arc::new(AtomicBool::new(false));
     let policy = LivePolicy {
@@ -324,6 +343,13 @@ async fn plan_policy_refuses_a_staged_delete_and_nothing_commits() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn commit_hook_observes_an_stc2_conflict_between_racing_staged_purchases() {
+    if !staged_live::given_rows_supported(
+        "commit_hook_observes_an_stc2_conflict_between_racing_staged_purchases",
+    )
+    .await
+    {
+        return;
+    }
     let (name, db) = seeded("race").await;
     let policy = LivePolicy {
         vouch: true,
@@ -442,6 +468,10 @@ fn call_blocking_free(advertisement: &RemoteCapabilities) -> Vec<u8> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn sdk_staged_purchase_over_the_proxy_matches_direct() {
+    if !staged_live::given_rows_supported("sdk_staged_purchase_over_the_proxy_matches_direct").await
+    {
+        return;
+    }
     use type_bridge_orm::session::staged::PlanAnswer;
     let (_, direct) = seeded("sdk-direct").await;
     let (name, proxied) = seeded("sdk-proxy").await;
@@ -494,6 +524,10 @@ async fn sdk_staged_purchase_over_the_proxy_matches_direct() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn sdk_dropped_reply_then_commit_retry_applies_once() {
+    if !staged_live::given_rows_supported("sdk_dropped_reply_then_commit_retry_applies_once").await
+    {
+        return;
+    }
     use type_bridge_orm::session::staged::PlanAnswer;
     let (name, db) = seeded("sdk-retry").await;
     let policy = LivePolicy {

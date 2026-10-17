@@ -210,6 +210,24 @@ pub async fn connect(name: &str) -> Database {
     .expect("connected database")
 }
 
+/// Whether the live server takes `given` rows, which every staged purchase
+/// plan binds. TypeDB 3.11 does not, so those tests skip there with a reason
+/// instead of failing with `query_plan_given_transport_unsupported`; test.sh
+/// runs them only on the lanes that support given rows.
+pub async fn given_rows_supported(test: &str) -> bool {
+    let db = connect("tb_server_v3_given_rows_probe").await;
+    let supported = db.supports_given_stage();
+    if !supported {
+        eprintln!(
+            "skipping {test}: TypeDB {} does not support given rows (3.12+)",
+            db.server_version()
+                .map_or_else(|| "of unknown version".to_owned(), |v| v.to_string())
+        );
+    }
+    db.close().expect("probe connection closes");
+    supported
+}
+
 /// A fresh database holding the race schema and one stocked item.
 ///
 /// The declared authority carries no key or cardinality facts, so the live
