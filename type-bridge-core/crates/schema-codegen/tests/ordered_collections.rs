@@ -1413,7 +1413,6 @@ assert.throws(() => Local.Membership.manager(detachedTarget.connection).insert(
 assert.deepEqual(counters(detachedTarget), zeroCounters);
 
 const sameEntity = fixture([
-  iidDocument("0xb7"),
   documents(membershipDocument("0xb7", "0xa7")),
 ], sharedAuthority);
 const sameMembership = Local.Membership.manager(sameEntity.connection).insert(
@@ -1434,15 +1433,13 @@ const membershipSource = fixture([
 const exactMembership = Local.Membership.manager(membershipSource.connection).getByIid("0xb8");
 assert.equal(exactMembership.iid, "0xb8");
 const sameRelation = fixture([
-  iidDocument("0xb8"),
-  iidDocument("0xc8"),
   documents(activityLinkDocument("0xc8", "0xb8")),
 ], sharedAuthority);
 const sameLink = Local.ActivityLink.manager(sameRelation.connection).insert(
   Local.ActivityLink.create({ subject: [exactMembership] }),
 );
 assert.equal(sameLink.subject[0].iid, "0xb8");
-assert.equal(counters(sameRelation).queries.length, 3);
+assert.equal(counters(sameRelation).queries.length, 1);
 const foreignRelation = fixture([]);
 assert.throws(() => Local.ActivityLink.manager(foreignRelation.connection).insert(
   Local.ActivityLink.create({ subject: [exactMembership] }),
@@ -1577,14 +1574,13 @@ assert.deepEqual(
 );
 for (const unboundPlayer of [exactPersonProxy, exactPersonCopy]) {
   const unboundTarget = fixture([
-    iidDocument("0xbe"),
     documents(membershipDocument("0xbe", "0xa7")),
   ]);
   const created = Local.Membership.manager(unboundTarget.connection).insert(
     Local.Membership.create({ participant: [unboundPlayer] }),
   );
   assert.equal(created.iid, "0xbe");
-  assert.equal(counters(unboundTarget).queries.length, 2);
+  assert.equal(counters(unboundTarget).queries.length, 1);
   assert.equal(counters(unboundTarget).commits, 1);
 }
 
