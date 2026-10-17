@@ -10,8 +10,12 @@
  * report. It compiles as part of the generated package (`./index.js`); see
  * tests/contracts/sdk_conformance/writes/purchase.
  */
-import { Plan, RustDatabase } from "@type-bridge/node";
-import type { PendingPlanAnswer, QueryV2Authority, StagedTransaction } from "@type-bridge/node";
+import { Plan, QueryV2Error, RustDatabase } from "@type-bridge/node";
+import type {
+  PendingPlanAnswer,
+  ProviderFailure,   QueryV2Authority,
+  StagedTransaction,
+} from "@type-bridge/node";
 import { ProxyConnection } from "@type-bridge/node/runtime-projection";
 import { Account, Doctor, Item, Purchase, schemaAuthority } from "./index.js";
 
@@ -222,7 +226,21 @@ function kept(authority: QueryV2Authority): Built {
   return plan.build(authority);
 }
 
-const BUILDERS: Record<string, (authority: QueryV2Authority) => Built> = {
+/** The doctor whose name the constraints suite inserts twice. */
+function seedDoctor(authority: QueryV2Authority): Built {
+  const plan = Plan.builder();
+  plan.insert(Doctor).field(Doctor.fields.name_, "D1").field(Doctor.fields.onCall, true);
+  return plan.build(authority);
+}
+
+/** A second doctor named D1: the key rejects the commit. */
+function duplicateDoctor(authority: QueryV2Authority): Built {
+  const plan = Plan.builder();
+  plan.insert(Doctor).field(Doctor.fields.name_, "D1").field(Doctor.fields.onCall, false);
+  return plan.build(authority);
+}
+
+const PURCHASE_BUILDERS: Record<string, (authority: QueryV2Authority) => Built> = {
   seed,
   purchase,
   touch,
@@ -241,7 +259,7 @@ const BUILDERS: Record<string, (authority: QueryV2Authority) => Built> = {
   ghost,
   kept,
 };
-const STEPS: ReadonlyArray<readonly [string, readonly string[]]> = [
+const PURCHASE_STEPS: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["seed", ["seed"]],
   ["program", ["purchase", "touch", "batch"]],
   ["read", ["sold_out", "charged", "orders", "on_call"]],
@@ -250,10 +268,41 @@ const STEPS: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["rollback", ["kept"]],
 ];
 /** Plans a step stages and rolls back before staging its own. */
-const ROLLED_BACK: ReadonlyMap<string, readonly string[]> = new Map([["rollback", ["ghost"]]]);
-const READS: ReadonlySet<string> = new Set(["read", "after"]);
+const PURCHASE_ROLLED_BACK: ReadonlyMap<string, readonly string[]> = new Map([
+  ["rollback", ["ghost"]],
+]);
+const PURCHASE_READS: ReadonlySet<string> = new Set(["read", "after"]);
 
-type Answer = readonly [string, number];
+interface Suite {
+  readonly builders: Record<string, (authority: QueryV2Authority) => Built>;
+  readonly steps: ReadonlyArray<readonly [string, readonly string[]]>;
+  readonly rolledBack: ReadonlyMap<string, readonly string[]>;
+  readonly reads: ReadonlySet<string>;
+}
+
+/** The suite a run reports, named by TYPE_BRIDGE_SDK_WRITES_SUITE. */
+const SUITES: Record<string, Suite> = {
+  purchase: {
+    builders: PURCHASE_BUILDERS,
+    steps: PURCHASE_STEPS,
+    rolledBack: PURCHASE_ROLLED_BACK,
+    reads: PURCHASE_READS,
+  },
+  constraints: {
+    builders: { seed_doctor: seedDoctor, duplicate_doctor: duplicateDoctor },
+    steps: [
+      ["seed", ["seed_doctor"]],
+      ["reject", ["duplicate_doctor"]],
+    ],
+    rolledBack: new Map(),
+    reads: new Set(),
+  },
+};
+const SUITE = SUITES[process.env["TYPE_BRIDGE_SDK_WRITES_SUITE"] ?? "purchase"] as Suite;
+
+type Answer =
+  | readonly [string, number]
+  | readonly ["failure", Pick<ProviderFailure, "phase" | "reason" | "code" | "retry_safe">];
 
 /** One answer as [kind, value]; rows report their count, exists 0 or 1. */
 function answer(pending: PendingPlanAnswer): Answer {
@@ -287,7 +336,17 @@ async function run(
       tx.rollback();
     }
     const pending = names.map((name) => [name, tx.stage(plans.get(name) as Built)] as const);
-    await tx.commit();
+    try {
+      await tx.commit();
+    } catch (error) {
+      // A rejected commit answers every plan with its typed failure.
+      if (!(error instanceof QueryV2Error) || error.failure === undefined) {
+        throw error;
+      }
+      const { phase, reason, code, retry_safe } = error.failure;
+      const failed: Answer = ["failure", { phase, reason, code, retry_safe }];
+      return Object.fromEntries(names.map((name) => [name, failed]));
+    }
     return Object.fromEntries(pending.map(([name, item]) => [name, answer(item)]));
   } finally {
     tx.close();
@@ -299,9 +358,9 @@ async function program(
   plans: ReadonlyMap<string, Built>,
 ): Promise<Record<string, Record<string, Answer>>> {
   const results: Record<string, Record<string, Answer>> = {};
-  for (const [step, names] of STEPS) {
-    const kind = READS.has(step) ? "read" : "write";
-    results[step] = await run(await open(kind), plans, names, ROLLED_BACK.get(step) ?? []);
+  for (const [step, names] of SUITE.steps) {
+    const kind = SUITE.reads.has(step) ? "read" : "write";
+    results[step] = await run(await open(kind), plans, names, SUITE.rolledBack.get(step) ?? []);
   }
   return results;
 }
@@ -312,7 +371,7 @@ function hex(bytes: Uint8Array): string {
 
 async function main(): Promise<void> {
   const authority = schemaAuthority();
-  const plans = new Map(Object.entries(BUILDERS).map(([name, build]) => [name, build(authority)]));
+  const plans = new Map(Object.entries(SUITE.builders).map(([name, build]) => [name, build(authority)]));
   const results: Record<string, unknown> = {};
   const database = process.env["TYPE_BRIDGE_SDK_WRITES_DIRECT_DATABASE"];
   const endpoint = process.env["TYPE_BRIDGE_SDK_WRITES_PROXY_ENDPOINT"];

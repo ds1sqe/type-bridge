@@ -574,26 +574,93 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// The `writes` SDK conformance program's schema and managed scope.
-const WRITES_SCHEMA: &str = include_str!(
-    "../../../../tests/contracts/sdk_conformance/writes/purchase/schema/fragments/purchase.yaml"
-);
-const WRITES_WORKSPACE: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/writes/purchase/typebridge.yaml");
-const WRITES_SCOPE: &str = "sdk-writes-purchase";
 const WRITES_BINDINGS: [&str; 4] = ["python", "node", "rust", "c"];
 
-/// The program's state as the provider sees it, one count per check.
-async fn writes_state(db: &type_bridge_orm::session::database::Database) -> serde_json::Value {
-    serde_json::json!({
-        "sold_out": row_count(db, r#"match $i isa item, has item-id "I1", has stock 0; select $i;"#).await,
-        "charged": row_count(db, r#"match $a isa account, has account-id "A1", has balance 60; select $a;"#).await,
-        "orders": row_count(db, "match $p isa purchase; select $p;").await,
-        "on_call": row_count(db, "match $d isa doctor, has on-call true; select $d;").await,
-    })
+/// One suite of the `writes` SDK conformance suite: its schema fragment,
+/// workspace, managed scope, live TypeQL and state checks.
+struct WritesSuite {
+    document: &'static str,
+    schema: &'static str,
+    workspace: &'static str,
+    scope: &'static str,
+    /// Live TypeQL, matching the declared schema exactly.
+    typeql: fn() -> String,
+    /// The program's state as the provider sees it, one count per check.
+    state: &'static [(&'static str, &'static str)],
+}
+
+const WRITES_SUITES: [(&str, WritesSuite); 2] = [
+    (
+        "purchase",
+        WritesSuite {
+            document: "purchase.yaml",
+            schema: include_str!(
+                "../../../../tests/contracts/sdk_conformance/writes/purchase/schema/fragments/purchase.yaml"
+            ),
+            workspace: include_str!(
+                "../../../../tests/contracts/sdk_conformance/writes/purchase/typebridge.yaml"
+            ),
+            scope: "sdk-writes-purchase",
+            // The suite schema has no keys or cardinalities.
+            typeql: || {
+                race::SCHEMA_TYPEQL
+                    .replace(" @key", "")
+                    .replace(" @card(0..1)", "")
+            },
+            state: &[
+                (
+                    "sold_out",
+                    r#"match $i isa item, has item-id "I1", has stock 0; select $i;"#,
+                ),
+                (
+                    "charged",
+                    r#"match $a isa account, has account-id "A1", has balance 60; select $a;"#,
+                ),
+                ("orders", "match $p isa purchase; select $p;"),
+                (
+                    "on_call",
+                    "match $d isa doctor, has on-call true; select $d;",
+                ),
+            ],
+        },
+    ),
+    (
+        "constraints",
+        WritesSuite {
+            document: "constraints.yaml",
+            schema: include_str!(
+                "../../../../tests/contracts/sdk_conformance/writes/constraints/schema/fragments/constraints.yaml"
+            ),
+            workspace: include_str!(
+                "../../../../tests/contracts/sdk_conformance/writes/constraints/typebridge.yaml"
+            ),
+            scope: "sdk-writes-constraints",
+            typeql: || race::SCHEMA_TYPEQL.to_owned(),
+            state: &[
+                ("doctors", "match $d isa doctor; select $d;"),
+                (
+                    "on_call",
+                    "match $d isa doctor, has on-call true; select $d;",
+                ),
+            ],
+        },
+    ),
+];
+
+async fn writes_state(
+    suite: &WritesSuite,
+    db: &type_bridge_orm::session::database::Database,
+) -> serde_json::Value {
+    let mut state = serde_json::Map::new();
+    for (name, query) in suite.state {
+        state.insert((*name).to_owned(), row_count(db, query).await.into());
+    }
+    serde_json::Value::Object(state)
 }
 
 /// Not a test: the live fixture of the `writes` SDK conformance suite. With
-/// `TB_SDK_WRITES_FIXTURE_DIR` set it creates, per binding, an empty direct
+/// `TB_SDK_WRITES_FIXTURE_DIR` set, for the suite `TB_SDK_WRITES_SUITE`
+/// names (default `purchase`), it creates, per binding, an empty direct
 /// database and an empty database behind a vouching proxy, both holding
 /// the suite schema; the proxy serves the suite's declared schema under its
 /// managed scope, so plans built from the generated packages verify there.
@@ -606,22 +673,26 @@ async fn sdk_writes_fixture_serves_until_stopped() {
     let Ok(dir) = std::env::var("TB_SDK_WRITES_FIXTURE_DIR") else {
         return;
     };
+    let suite_name = std::env::var("TB_SDK_WRITES_SUITE").unwrap_or_else(|_| "purchase".into());
+    let (_, suite) = WRITES_SUITES
+        .iter()
+        .find(|(name, _)| *name == suite_name)
+        .expect("a known writes suite");
     assert!(
-        WRITES_WORKSPACE.contains(&format!("managed-scope: {WRITES_SCOPE}\n")),
+        suite
+            .workspace
+            .contains(&format!("managed-scope: {}\n", suite.scope)),
         "the fixture serves the workspace's managed scope"
     );
     let dir = std::path::PathBuf::from(dir);
     let documents = type_bridge_schema::SchemaDocumentSet::parse([(
-        type_bridge_contract::schema::DocumentId::new("purchase.yaml").expect("document id"),
-        WRITES_SCHEMA,
+        type_bridge_contract::schema::DocumentId::new(suite.document).expect("document id"),
+        suite.schema,
     )])
     .expect("suite schema parses");
     let declared = type_bridge_schema::normalize_documents(&documents).expect("suite schema");
-    // The declared schema has no keys or cardinalities, so neither has the
-    // live one (the live-authority check is exact).
-    let typeql = race::SCHEMA_TYPEQL
-        .replace(" @key", "")
-        .replace(" @card(0..1)", "");
+    // The live-authority check is exact: the live schema is the declared one.
+    let typeql = (suite.typeql)();
     let mut bindings = serde_json::Map::new();
     let mut held = Vec::new();
     let mut profile = None;
@@ -653,7 +724,7 @@ async fn sdk_writes_fixture_serves_until_stopped() {
             policy,
             false,
             declared.clone(),
-            WRITES_SCOPE,
+            suite.scope,
         )
         .await;
         let port = serve(&proxy).await;
@@ -669,7 +740,7 @@ async fn sdk_writes_fixture_serves_until_stopped() {
     }
     let fixture = serde_json::json!({
         "profile": profile,
-        "scope": WRITES_SCOPE,
+        "scope": suite.scope,
         "bindings": bindings,
     });
     std::fs::write(dir.join("fixture.json"), fixture.to_string()).expect("fixture written");
@@ -689,8 +760,8 @@ async fn sdk_writes_fixture_serves_until_stopped() {
             (*binding).to_owned(),
             serde_json::json!({
                 "proxy_commits": commits,
-                "direct_state": writes_state(&databases[0].1).await,
-                "proxy_state": writes_state(&databases[1].1).await,
+                "direct_state": writes_state(suite, &databases[0].1).await,
+                "proxy_state": writes_state(suite, &databases[1].1).await,
             }),
         );
     }

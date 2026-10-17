@@ -110,8 +110,16 @@ def _validate(report: LoadedJson, expected: Any, *, live: bool) -> str:
 def compare_reports(paths: list[Path], *, live: bool, root: Path = ROOT) -> dict[str, Any]:
     """Validate one report per binding against the program's expectations."""
 
-    _, expected = load_program(root=root)
     reports = [_load_json(path, path.name, require_canonical=True) for path in paths]
+    # The reports of one run name one suite; its contract is the expectation.
+    names = {
+        report.value.get("program") if type(report.value) is dict else None for report in reports
+    }
+    if len(names) != 1 or not isinstance(name := names.pop(), str) or "/" in name:
+        raise ContractError("program_mismatch", "the reports name no single program")
+    if not (root / SUITE / name).is_dir():
+        raise ContractError("program_mismatch", f"no writes suite named {name!r}")
+    _, expected = load_program(name, root=root)
     bindings = [_validate(report, expected, live=live) for report in reports]
     if sorted(bindings) != sorted(BINDINGS):
         raise ContractError("incomplete_binding_set", f"reports cover {sorted(bindings)}")

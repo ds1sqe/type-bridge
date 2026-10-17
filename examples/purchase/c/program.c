@@ -19,7 +19,7 @@
 #include <typebridge/type_bridge.h>
 #include <tb_writes/models.h>
 
-#define PLAN_COUNT 17u
+#define PLAN_COUNT 19u
 #define BATCH_ORDERS 50u
 
 #define CHECK(call)                                                            \
@@ -420,37 +420,77 @@ static type_bridge_status_t kept(type_bridge_plan_builder_t *plan, const identit
   return insert_doctor(plan, id, "D4", 0u);
 }
 
+/* The constraints suite: doctor D1, then a second D1 the key rejects. */
+static type_bridge_status_t seed_doctor(type_bridge_plan_builder_t *plan, const identities_t *id) {
+  return insert_doctor(plan, id, "D1", 1u);
+}
+
+static type_bridge_status_t duplicate_doctor(type_bridge_plan_builder_t *plan,
+                                             const identities_t *id) {
+  return insert_doctor(plan, id, "D1", 0u);
+}
+
 typedef type_bridge_status_t (*plan_fn)(type_bridge_plan_builder_t *, const identities_t *);
 
 static const char *const NAMES[PLAN_COUNT] = {
     "seed",       "purchase", "touch", "batch",  "sold_out",        "charged",  "orders", "on_call",
     "put_doctor", "returns",  "refer", "remove", "doctors_on_call", "referred", "removed",
-    "ghost",      "kept"};
+    "ghost",      "kept",     "seed_doctor", "duplicate_doctor"};
 static const plan_fn BUILDERS[PLAN_COUNT] = {
     seed,       purchase, touch, batch,        sold_out,        charged,  orders, on_call,
     put_doctor, returns,  refer, remove_order, doctors_on_call, referred, removed,
-    ghost,      kept};
+    ghost,      kept,     seed_doctor, duplicate_doctor};
 
-/* The program: seed, then purchase, touch and batch in one transaction, then
- * the reads in one read transaction; then the journeys in one transaction and
- * a second read; last, one transaction stages a plan, rolls it back, and
- * stages and commits another. Each step names a range of plans, and a range
- * it stages and rolls back first. */
-#define STEP_TOTAL 6u
-static const char *const STEPS[STEP_TOTAL] = {"seed",     "program", "read",
-                                              "journeys", "after",   "rollback"};
-static const size_t STEP_FIRST[STEP_TOTAL] = {0u, 1u, 4u, 8u, 12u, 16u};
-static const size_t STEP_COUNT[STEP_TOTAL] = {1u, 3u, 4u, 4u, 3u, 1u};
-static const int STEP_READ[STEP_TOTAL] = {0, 0, 1, 0, 1, 0};
-static const size_t DISCARD_FIRST[STEP_TOTAL] = {0u, 0u, 0u, 0u, 0u, 15u};
-static const size_t DISCARD_COUNT[STEP_TOTAL] = {0u, 0u, 0u, 0u, 0u, 1u};
+/* A suite names a range of the plans above and its steps. Each step names a
+ * range of plans, and a range it stages and rolls back first.
+ *
+ * purchase: seed, then purchase, touch and batch in one transaction, then the
+ * reads in one read transaction; then the journeys in one transaction and a
+ * second read; last, one transaction stages a plan, rolls it back, and stages
+ * and commits another.
+ *
+ * constraints: seed doctor D1, then insert D1 again; the key rejects that
+ * commit. */
+#define MAX_STEPS 6u
+typedef struct {
+  const char *name;
+  size_t plan_first, plan_count, step_total;
+  const char *steps[MAX_STEPS];
+  size_t step_first[MAX_STEPS], step_count[MAX_STEPS];
+  int step_read[MAX_STEPS];
+  size_t discard_first[MAX_STEPS], discard_count[MAX_STEPS];
+} suite_t;
 
-static type_bridge_status_t build_all(const type_bridge_schema_package_t *package,
+static const suite_t SUITES[2] = {
+    {"purchase",
+     0u,
+     17u,
+     6u,
+     {"seed", "program", "read", "journeys", "after", "rollback"},
+     {0u, 1u, 4u, 8u, 12u, 16u},
+     {1u, 3u, 4u, 4u, 3u, 1u},
+     {0, 0, 1, 0, 1, 0},
+     {0u, 0u, 0u, 0u, 0u, 15u},
+     {0u, 0u, 0u, 0u, 0u, 1u}},
+    {"constraints",
+     17u,
+     2u,
+     2u,
+     {"seed", "reject"},
+     {17u, 18u},
+     {1u, 1u},
+     {0, 0},
+     {0u, 0u},
+     {0u, 0u}},
+};
+
+static type_bridge_status_t build_all(const suite_t *suite,
+                                      const type_bridge_schema_package_t *package,
                                       type_bridge_plan_t **plans) {
   type_bridge_status_t status = TYPE_BRIDGE_STATUS_OK;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   size_t index;
-  for (index = 0u; index < PLAN_COUNT; ++index) {
+  for (index = suite->plan_first; index < suite->plan_first + suite->plan_count; ++index) {
     type_bridge_plan_builder_t *plan = NULL;
     identities_t id;
     CHECK(type_bridge_plan_builder_new(&plan));
@@ -511,43 +551,114 @@ static type_bridge_status_t open_transaction(const target_t *target, uint32_t ki
 }
 
 /* Run every step on `target`, printing `{"seed":{...},...}`. */
-static type_bridge_status_t run_program(const target_t *target, type_bridge_plan_t *const *plans) {
+static const char *failure_phase(uint32_t phase) {
+  switch (phase) {
+  case TYPE_BRIDGE_FAILURE_PHASE_QUERY: return "query";
+  case TYPE_BRIDGE_FAILURE_PHASE_COMMIT: return "commit";
+  default: return NULL;
+  }
+}
+
+static const char *failure_reason(uint32_t reason) {
+  switch (reason) {
+  case TYPE_BRIDGE_FAILURE_REASON_CONFLICT: return "conflict";
+  case TYPE_BRIDGE_FAILURE_REASON_CARDINALITY: return "cardinality";
+  case TYPE_BRIDGE_FAILURE_REASON_UNIQUE: return "unique";
+  case TYPE_BRIDGE_FAILURE_REASON_CONSTRAINT: return "constraint";
+  case TYPE_BRIDGE_FAILURE_REASON_OTHER: return "other";
+  default: return NULL;
+  }
+}
+
+static void print_name(const char *name) {
+  if (name == NULL)
+    printf("null");
+  else
+    printf("\"%s\"", name);
+}
+
+/* The typed failure of a rejected commit, or 0 when `diagnostics` has none. */
+static int typed_failure(const type_bridge_execution_diagnostics_t *diagnostics,
+                         type_bridge_execution_failure_v1_t *failure) {
+  size_t count = 0u, index;
+  if (type_bridge_execution_diagnostics_count(diagnostics, &count) != TYPE_BRIDGE_STATUS_OK)
+    return 0;
+  for (index = 0u; index < count; ++index) {
+    if (type_bridge_execution_diagnostics_failure_get_v1(diagnostics, index, failure) !=
+        TYPE_BRIDGE_STATUS_OK)
+      return 0;
+    if (failure->outcome == TYPE_BRIDGE_FAILURE_OUTCOME_REJECTED) return 1;
+  }
+  return 0;
+}
+
+/* Every plan of a rejected step answers ["failure",{phase,reason,code,retry_safe}]. */
+static void print_failure(const suite_t *suite, size_t step,
+                          const type_bridge_execution_failure_v1_t *failure) {
+  size_t index;
+  printf("%s\"%s\":{", step == 0u ? "" : ",", suite->steps[step]);
+  for (index = 0u; index < suite->step_count[step]; ++index) {
+    printf("%s\"%s\":[\"failure\",{\"code\":", index == 0u ? "" : ",",
+           NAMES[suite->step_first[step] + index]);
+    if (failure->code.length == 0u)
+      printf("null");
+    else
+      printf("\"%.*s\"", (int)failure->code.length, (const char *)failure->code.data);
+    printf(",\"phase\":");
+    print_name(failure_phase(failure->phase));
+    printf(",\"reason\":");
+    print_name(failure_reason(failure->reason));
+    printf(",\"retry_safe\":%s}]", failure->retry_safe ? "true" : "false");
+  }
+  printf("}");
+}
+
+static type_bridge_status_t run_program(const suite_t *suite, const target_t *target,
+                                        type_bridge_plan_t *const *plans) {
   type_bridge_status_t status = TYPE_BRIDGE_STATUS_OK;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   size_t step, index;
   printf("{");
-  for (step = 0u; step < STEP_TOTAL; ++step) {
+  for (step = 0u; step < suite->step_total; ++step) {
     type_bridge_staged_transaction_t *transaction = NULL;
     type_bridge_pending_t *pending[4] = {NULL, NULL, NULL, NULL};
     type_bridge_pending_t *discarded = NULL;
-    uint32_t kind = STEP_READ[step] ? TYPE_BRIDGE_TRANSACTION_READ : TYPE_BRIDGE_TRANSACTION_WRITE;
+    uint32_t kind = suite->step_read[step] ? TYPE_BRIDGE_TRANSACTION_READ : TYPE_BRIDGE_TRANSACTION_WRITE;
     status = open_transaction(target, kind, &transaction, &diagnostics);
     /* Rollback discards the staged plans and keeps the transaction usable. */
-    for (index = 0u; status == TYPE_BRIDGE_STATUS_OK && index < DISCARD_COUNT[step]; ++index) {
+    for (index = 0u; status == TYPE_BRIDGE_STATUS_OK && index < suite->discard_count[step]; ++index) {
       type_bridge_pending_free(&discarded);
-      status = type_bridge_staged_transaction_stage(transaction, plans[DISCARD_FIRST[step] + index],
+      status = type_bridge_staged_transaction_stage(transaction, plans[suite->discard_first[step] + index],
                                                     &discarded, &diagnostics);
     }
-    if (status == TYPE_BRIDGE_STATUS_OK && DISCARD_COUNT[step] != 0u)
+    if (status == TYPE_BRIDGE_STATUS_OK && suite->discard_count[step] != 0u)
       status = type_bridge_staged_transaction_rollback(transaction);
-    for (index = 0u; status == TYPE_BRIDGE_STATUS_OK && index < STEP_COUNT[step]; ++index)
-      status = type_bridge_staged_transaction_stage(transaction, plans[STEP_FIRST[step] + index],
+    for (index = 0u; status == TYPE_BRIDGE_STATUS_OK && index < suite->step_count[step]; ++index)
+      status = type_bridge_staged_transaction_stage(transaction, plans[suite->step_first[step] + index],
                                                     &pending[index], &diagnostics);
-    if (status == TYPE_BRIDGE_STATUS_OK)
-      status = type_bridge_staged_transaction_commit(transaction, &diagnostics);
     if (status == TYPE_BRIDGE_STATUS_OK) {
-      printf("%s\"%s\":{", step == 0u ? "" : ",", STEPS[step]);
-      for (index = 0u; status == TYPE_BRIDGE_STATUS_OK && index < STEP_COUNT[step]; ++index) {
+      type_bridge_execution_failure_v1_t failure;
+      status = type_bridge_staged_transaction_commit(transaction, &diagnostics);
+      if (status == TYPE_BRIDGE_STATUS_EXECUTION_FAILED && typed_failure(diagnostics, &failure)) {
+        print_failure(suite, step, &failure);
+        status = TYPE_BRIDGE_STATUS_OK;
+        goto next;
+      }
+    }
+    if (status == TYPE_BRIDGE_STATUS_OK) {
+      printf("%s\"%s\":{", step == 0u ? "" : ",", suite->steps[step]);
+      for (index = 0u; status == TYPE_BRIDGE_STATUS_OK && index < suite->step_count[step]; ++index) {
         type_bridge_plan_answer_kind_t answer = TYPE_BRIDGE_PLAN_ANSWER_ROWS;
         uint64_t value = 0u;
         status = type_bridge_pending_answer(pending[index], &answer, &value);
         printf("%s\"%s\":[\"%s\",%llu]", index == 0u ? "" : ",",
-               NAMES[STEP_FIRST[step] + index], answer_kind(answer), (unsigned long long)value);
+               NAMES[suite->step_first[step] + index], answer_kind(answer), (unsigned long long)value);
       }
       printf("}");
     } else {
-      fprintf(stderr, "step %s failed: status %d\n", STEPS[step], (int)status);
+      fprintf(stderr, "step %s failed: status %d\n", suite->steps[step], (int)status);
     }
+  next:
     type_bridge_staged_transaction_close(&transaction);
     type_bridge_pending_free(&discarded);
     for (index = 0u; index < 4u; ++index) type_bridge_pending_free(&pending[index]);
@@ -586,13 +697,21 @@ int main(void) {
   const char *database_name = env_or("TYPE_BRIDGE_SDK_WRITES_DIRECT_DATABASE", NULL);
   const char *endpoint = env_or("TYPE_BRIDGE_SDK_WRITES_PROXY_ENDPOINT", NULL);
   const char *separator = "";
+  const char *suite_name = env_or("TYPE_BRIDGE_SDK_WRITES_SUITE", "purchase");
+  const suite_t *suite = NULL;
   size_t index;
 
+  for (index = 0u; index < sizeof SUITES / sizeof SUITES[0]; ++index)
+    if (strcmp(SUITES[index].name, suite_name) == 0) suite = &SUITES[index];
+  if (suite == NULL) {
+    fprintf(stderr, "unknown writes suite %s\n", suite_name);
+    return 1;
+  }
   CHECK(tb_writes_schema_package_open(&package, &package_diagnostics));
-  CHECK(build_all(package, plans));
+  CHECK(build_all(suite, package, plans));
   printf("{\"binding\":\"c\",\"plans\":{");
-  for (index = 0u; index < PLAN_COUNT; ++index) {
-    printf("%s\"%s\":\"", index == 0u ? "" : ",", NAMES[index]);
+  for (index = suite->plan_first; index < suite->plan_first + suite->plan_count; ++index) {
+    printf("%s\"%s\":\"", index == suite->plan_first ? "" : ",", NAMES[index]);
     if (!print_hex(plans[index])) {
       status = TYPE_BRIDGE_STATUS_PANIC;
       goto done;
@@ -619,7 +738,7 @@ int main(void) {
     CHECK(type_bridge_database_open_v1(runtime, package, &config, NULL, &database, &diagnostics));
     target.database = database;
     printf("\"direct\":");
-    CHECK(run_program(&target, plans));
+    CHECK(run_program(suite, &target, plans));
     separator = ",";
   }
   if (endpoint != NULL) {
@@ -633,7 +752,7 @@ int main(void) {
     CHECK(type_bridge_proxy_connection_open_v1(package, &options, NULL, &proxy, &diagnostics));
     target.proxy = proxy;
     printf("%s\"proxy\":", separator);
-    CHECK(run_program(&target, plans));
+    CHECK(run_program(suite, &target, plans));
   }
   printf("}}\n");
 

@@ -892,8 +892,9 @@ run_live_lane() {
                 live_c17_consumer_builds_stages_and_races_the_purchase \
                 --manifest-path type-bridge-core/Cargo.toml --locked \
                 -p type-bridge-c --test schema_package_abi
-        # One staged program in Python, TypeScript, Rust and C: identical plan
-        # bytes, and identical answers and state directly and over the proxy.
+        # The writes suites (purchase, constraints) in Python, TypeScript, Rust
+        # and C: identical plan bytes, and identical answers, typed failures
+        # and state directly and over the proxy.
         writes_output="$(mktemp -d "${TMPDIR:-/tmp}/typebridge-sdk-writes.XXXXXXXXXX")"
         run_step "SDK writes: one staged program in four languages (TypeDB 3.13.6)" \
             run_with_timeout 30m \

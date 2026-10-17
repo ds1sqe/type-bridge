@@ -522,6 +522,29 @@ def test_offline_is_refused_outside_the_writes_suite(tmp_path: Path) -> None:
         RUNNER.main(["queries", "--offline", "--output", str(tmp_path / "out")])
 
 
+def test_writes_runs_every_suite_in_its_own_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = []
+
+    def writes_suite(
+        directory: Path, suite: str, environment: dict[str, str], *, live: bool
+    ) -> dict[str, Path]:
+        calls.append((directory, suite, live))
+        return {"python.json": directory / "python.json", "comparison.json": directory / "c.json"}
+
+    monkeypatch.setattr(RUNNER, "writes_suite", writes_suite)
+    files = RUNNER.writes(tmp_path, {}, live=True)
+    assert calls == [(tmp_path / suite, suite, True) for suite in RUNNER.WRITES_SUITES]
+    assert RUNNER.WRITES_SUITES == ("purchase", "constraints")
+    assert sorted(files) == sorted(
+        f"{suite}/{name}"
+        for suite in RUNNER.WRITES_SUITES
+        for name in ("python.json", "comparison.json")
+    )
+    assert files["constraints/python.json"] == tmp_path / "constraints/python.json"
+
+
 def test_writes_refuses_a_profile_without_staged_plans(tmp_path: Path) -> None:
     environment = {RUNNER.profile_matrix.SEMANTIC_PROFILE_ENV: "typedb-3.12.1/v1"}
     with pytest.raises(RUNNER.RunnerError, match="typedb-3.13.6/v1"):

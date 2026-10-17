@@ -37,7 +37,9 @@ SUITES = tuple(profile_matrix.SUITES)
 # Suites outside the FULL-C report fan-in: `writes` runs one staged program in
 # every binding and needs the staged surface of TypeDB 3.13.6.
 STAGED_SUITES = ("writes",)
-WRITES = ROOT / "tests/contracts/sdk_conformance/writes/purchase"
+WRITES = ROOT / "tests/contracts/sdk_conformance/writes"
+# Each suite directory: its own schema and generated packages, one program per SDK.
+WRITES_SUITES = ("purchase", "constraints")
 WRITES_PROGRAMS = ROOT / "examples/purchase"
 WRITES_FIXTURE_TIMEOUT = 600.0
 PYTHON_PROVIDER = ROOT / "tests/integration/schema/test_sdk_serialization_codec.py"
@@ -915,17 +917,19 @@ def cargo_target(environment: Mapping[str, str]) -> Path:
     return Path(environment.get("CARGO_TARGET_DIR", CORE / "target"))
 
 
-def writes_profile() -> str:
-    return json.loads((WRITES / "program.json").read_text(encoding="utf-8"))["semantic_profile"]
+def writes_profile(suite: str) -> str:
+    return json.loads((WRITES / suite / "program.json").read_text(encoding="utf-8"))[
+        "semantic_profile"
+    ]
 
 
-def writes_packages(directory: Path, environment: dict[str, str]) -> Path:
+def writes_packages(directory: Path, suite: str, environment: dict[str, str]) -> Path:
     """Generate the four packages from a private copy of the suite workspace."""
 
     workspace = directory / "workspace"
     workspace.mkdir()
-    shutil.copy2(WRITES / "typebridge.yaml", workspace / "typebridge.yaml")
-    shutil.copytree(WRITES / "schema", workspace / "schema")
+    shutil.copy2(WRITES / suite / "typebridge.yaml", workspace / "typebridge.yaml")
+    shutil.copytree(WRITES / suite / "schema", workspace / "schema")
     run(
         [
             "cargo",
@@ -1047,7 +1051,9 @@ def writes_programs(
 
 
 @contextmanager
-def writes_fixture(directory: Path, environment: dict[str, str]) -> Iterator[dict[str, Any]]:
+def writes_fixture(
+    directory: Path, suite: str, environment: dict[str, str]
+) -> Iterator[dict[str, Any]]:
     """Serve the server crate's writes fixture until the block ends.
 
     Yields ``fixture.json``; on exit the fixture's ``observed.json`` is in the
@@ -1071,7 +1077,10 @@ def writes_fixture(directory: Path, environment: dict[str, str]) -> Iterator[dic
         "v3_staged_integration_tests",
     ]
     run([*command, "--no-run"], env=environment)
-    fixture_env = environment | {"TB_SDK_WRITES_FIXTURE_DIR": str(fixture_dir)}
+    fixture_env = environment | {
+        "TB_SDK_WRITES_FIXTURE_DIR": str(fixture_dir),
+        "TB_SDK_WRITES_SUITE": suite,
+    }
     process = subprocess.Popen(
         [*command, "sdk_writes_fixture_serves_until_stopped", "--", "--ignored", "--exact"],
         cwd=ROOT,
@@ -1105,6 +1114,7 @@ def writes_fixture(directory: Path, environment: dict[str, str]) -> Iterator[dic
 
 def writes_run(
     programs: dict[str, tuple[list[str], Path, dict[str, str]]],
+    suite: str,
     environment: dict[str, str],
     targets: Mapping[str, Mapping[str, str]],
 ) -> dict[str, Any]:
@@ -1114,7 +1124,7 @@ def writes_run(
     for binding in BINDINGS:
         command, cwd, extra = programs[binding]
         target = targets.get(binding, {})
-        program_env = environment | extra
+        program_env = environment | extra | {"TYPE_BRIDGE_SDK_WRITES_SUITE": suite}
         for name in (
             "TYPE_BRIDGE_SDK_WRITES_DIRECT_DATABASE",
             "TYPE_BRIDGE_SDK_WRITES_PROXY_ENDPOINT",
@@ -1134,6 +1144,7 @@ def writes_run(
 
 def writes_reports(
     directory: Path,
+    suite: str,
     outputs: dict[str, Any],
     profile: str,
     observed: Mapping[str, Any] | None,
@@ -1146,7 +1157,7 @@ def writes_reports(
         report = {
             "format": writes_contract.REPORT_FORMAT,
             "binding": binding,
-            "program": "purchase",
+            "program": suite,
             "semantic_profile": profile,
             "plans": output["plans"],
             "results": output["results"],
@@ -1158,25 +1169,27 @@ def writes_reports(
     return tuple(paths)
 
 
-def writes(directory: Path, environment: dict[str, str], *, live: bool) -> dict[str, Path]:
-    """Plan bytes offline; with ``live``, results directly and over the proxy."""
+def writes_suite(
+    directory: Path, suite: str, environment: dict[str, str], *, live: bool
+) -> dict[str, Path]:
+    """One suite: plan bytes offline; with ``live``, results directly and over the proxy."""
 
-    expected_profile = writes_profile()
+    expected_profile = writes_profile(suite)
     profile = environment[profile_matrix.SEMANTIC_PROFILE_ENV]
     if profile != expected_profile:
         raise RunnerError(f"the writes suite runs on {expected_profile}, not {profile}")
-    generated = writes_packages(directory, environment)
+    generated = writes_packages(directory, suite, environment)
     programs = writes_programs(directory, generated, environment)
     observed = None
     if live:
-        with writes_fixture(directory, environment) as fixture:
+        with writes_fixture(directory, suite, environment) as fixture:
             if fixture["profile"] != profile:
                 raise RunnerError(f"the writes fixture serves {fixture['profile']}")
-            outputs = writes_run(programs, environment, fixture["bindings"])
+            outputs = writes_run(programs, suite, environment, fixture["bindings"])
         observed = fixture["observed"]
     else:
-        outputs = writes_run(programs, environment, {})
-    paths = writes_reports(directory, outputs, profile, observed)
+        outputs = writes_run(programs, suite, environment, {})
+    paths = writes_reports(directory, suite, outputs, profile, observed)
     summary = directory / "comparison.json"
     summary.write_text(
         run(
@@ -1192,6 +1205,18 @@ def writes(directory: Path, environment: dict[str, str], *, live: bool) -> dict[
         **{f"{binding}.json": path for binding, path in zip(BINDINGS, paths, strict=True)},
         "comparison.json": summary,
     }
+
+
+def writes(directory: Path, environment: dict[str, str], *, live: bool) -> dict[str, Path]:
+    """Every writes suite in its own directory, each checked by the one comparator."""
+
+    files = {}
+    for suite in WRITES_SUITES:
+        suite_directory = directory / suite
+        suite_directory.mkdir()
+        produced = writes_suite(suite_directory, suite, environment, live=live)
+        files |= {f"{suite}/{name}": path for name, path in produced.items()}
+    return files
 
 
 def execute(
@@ -1285,7 +1310,9 @@ def main(argv: list[str] | None = None) -> int:
         profile = arguments.semantic_profile
         if arguments.suite == "writes" and profile is None:
             # The program has one profile; an unset lane selects it.
-            profile = environment.get(profile_matrix.SEMANTIC_PROFILE_ENV) or writes_profile()
+            profile = environment.get(profile_matrix.SEMANTIC_PROFILE_ENV) or writes_profile(
+                WRITES_SUITES[0]
+            )
         identity = lane(profile, environment)
         environment[profile_matrix.SEMANTIC_PROFILE_ENV] = identity.semantic_profile
         environment["TYPEDB_VERSION"] = identity.live_server_version

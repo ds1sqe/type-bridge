@@ -258,13 +258,37 @@ fn kept() -> Result<Built> {
     plan.build(&models::SCHEMA)
 }
 
-const STEPS: [(&str, &[&str]); 6] = [
+/// The doctor whose name the constraints suite inserts twice.
+fn seed_doctor() -> Result<Built> {
+    let mut plan = Plan::builder();
+    plan.insert::<Doctor>()
+        .field(DoctorType::name, "D1".to_owned())
+        .field(DoctorType::on_call, true);
+    plan.build(&models::SCHEMA)
+}
+
+/// A second doctor named D1: the key rejects the commit.
+fn duplicate_doctor() -> Result<Built> {
+    let mut plan = Plan::builder();
+    plan.insert::<Doctor>()
+        .field(DoctorType::name, "D1".to_owned())
+        .field(DoctorType::on_call, false);
+    plan.build(&models::SCHEMA)
+}
+
+type Steps = &'static [(&'static str, &'static [&'static str])];
+
+const PURCHASE_STEPS: Steps = &[
     ("seed", &["seed"]),
     ("program", &["purchase", "touch", "batch"]),
     ("read", &["sold_out", "charged", "orders", "on_call"]),
     ("journeys", &["put_doctor", "returns", "refer", "remove"]),
     ("after", &["doctors_on_call", "referred", "removed"]),
     ("rollback", &["kept"]),
+];
+const CONSTRAINTS_STEPS: Steps = &[
+    ("seed", &["seed_doctor"]),
+    ("reject", &["duplicate_doctor"]),
 ];
 
 /// Plans a step stages and rolls back before staging its own.
@@ -320,7 +344,25 @@ async fn run(
     for name in names {
         pending.push((*name, tx.stage(built(name))?));
     }
-    tx.commit().await?;
+    if let Err(error) = tx.commit().await {
+        // A rejected commit answers every plan with its typed failure.
+        let Some(failure) = error.failure.as_deref() else {
+            return Err(error.into());
+        };
+        let host = failure.host_json();
+        let failed = json!(["failure", {
+            "phase": host["phase"],
+            "reason": host["reason"],
+            "code": host["code"],
+            "retry_safe": host["retry_safe"],
+        }]);
+        return Ok(Json::Object(
+            names
+                .iter()
+                .map(|name| ((*name).to_owned(), failed.clone()))
+                .collect(),
+        ));
+    }
     let mut answers = Map::new();
     for (name, item) in pending {
         answers.insert(name.to_owned(), answer(&*item.get()?));
@@ -330,25 +372,39 @@ async fn run(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let plans = vec![
-        ("seed", seed()?),
-        ("purchase", purchase()?),
-        ("touch", touch()?),
-        ("batch", batch()?),
-        ("sold_out", sold_out()?),
-        ("charged", charged()?),
-        ("orders", orders()?),
-        ("on_call", on_call()?),
-        ("put_doctor", put_doctor()?),
-        ("returns", returns()?),
-        ("refer", refer()?),
-        ("remove", remove()?),
-        ("doctors_on_call", doctors_on_call()?),
-        ("referred", referred()?),
-        ("removed", removed()?),
-        ("ghost", ghost()?),
-        ("kept", kept()?),
-    ];
+    let suite = std::env::var("TYPE_BRIDGE_SDK_WRITES_SUITE").unwrap_or_else(|_| "purchase".into());
+    let (suite_steps, plans) = match suite.as_str() {
+        "purchase" => (
+            PURCHASE_STEPS,
+            vec![
+                ("seed", seed()?),
+                ("purchase", purchase()?),
+                ("touch", touch()?),
+                ("batch", batch()?),
+                ("sold_out", sold_out()?),
+                ("charged", charged()?),
+                ("orders", orders()?),
+                ("on_call", on_call()?),
+                ("put_doctor", put_doctor()?),
+                ("returns", returns()?),
+                ("refer", refer()?),
+                ("remove", remove()?),
+                ("doctors_on_call", doctors_on_call()?),
+                ("referred", referred()?),
+                ("removed", removed()?),
+                ("ghost", ghost()?),
+                ("kept", kept()?),
+            ],
+        ),
+        "constraints" => (
+            CONSTRAINTS_STEPS,
+            vec![
+                ("seed_doctor", seed_doctor()?),
+                ("duplicate_doctor", duplicate_doctor()?),
+            ],
+        ),
+        other => panic!("unknown writes suite {other}"),
+    };
     let mut encoded = Map::new();
     for (name, plan) in &plans {
         let bytes = plan.canonical_bytes()?;
@@ -376,7 +432,7 @@ async fn main() -> Result<()> {
             .await?
             .with_schema(models::SCHEMA)?;
         let mut steps = Map::new();
-        for (step, names) in STEPS {
+        for &(step, names) in suite_steps {
             let tx = db.transaction(kind(step));
             steps.insert(
                 step.to_owned(),
@@ -394,7 +450,7 @@ async fn main() -> Result<()> {
                 .await?
                 .with_schema(models::SCHEMA)?;
         let mut steps = Map::new();
-        for (step, names) in STEPS {
+        for &(step, names) in suite_steps {
             let tx = proxy.transaction(kind(step)).await?;
             steps.insert(
                 step.to_owned(),

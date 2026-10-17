@@ -176,3 +176,26 @@ def test_the_cli_requires_live_results_only_when_asked(tmp_path: Path) -> None:
     ]
     assert COMPARE.main(paths) == 0
     assert COMPARE.main(["--live", *paths]) == 1
+
+
+def test_every_writes_suite_contract_is_consistent() -> None:
+    program, expected = COMPARE.load_program("constraints")
+    assert [step["name"] for step in program["steps"]] == ["seed", "reject"]
+    # The duplicate key is rejected while the commit runs the staged insert.
+    assert expected["results"]["reject"]["duplicate_doctor"] == [
+        "failure",
+        {"code": "CNT9", "phase": "query", "reason": "unique", "retry_safe": True},
+    ]
+
+
+def test_reports_naming_no_single_program_are_refused(tmp_path: Path) -> None:
+    paths = []
+    for binding, program in zip(
+        COMPARE.BINDINGS, ("purchase", "constraints", "purchase", "purchase")
+    ):
+        value = report(binding, live=False) | {"program": program}
+        path = tmp_path / f"{binding}.json"
+        path.write_bytes(COMPARE.canonical_json_bytes(value))
+        paths.append(path)
+    with pytest.raises(COMPARE.ContractError, match="no single program"):
+        COMPARE.compare_reports(paths, live=False)

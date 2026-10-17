@@ -22,9 +22,10 @@ import os
 import sys
 from typing import Any
 
-from type_bridge_core import ProxyConnection
+from type_bridge_core import MatchRequestError, ProxyConnection
 
 from type_bridge import Database
+from type_bridge.failure import CommitRejected, Failure
 from type_bridge.plan import Count, Exists, Matched, Plan, PlanAnswer, Rows
 
 models: Any = importlib.import_module(
@@ -231,7 +232,7 @@ def kept(authority: Any) -> Plan:
     return plan.build(authority)
 
 
-STEPS = {
+PURCHASE_STEPS = {
     "seed": ("seed",),
     "program": ("purchase", "touch", "batch"),
     "read": ("sold_out", "charged", "orders", "on_call"),
@@ -240,9 +241,9 @@ STEPS = {
     "rollback": ("kept",),
 }
 # Plans a step stages and rolls back before staging its own.
-ROLLED_BACK = {"rollback": ("ghost",)}
-READS = {"read", "after"}
-BUILDERS = {
+PURCHASE_ROLLED_BACK = {"rollback": ("ghost",)}
+PURCHASE_READS = {"read", "after"}
+PURCHASE_BUILDERS = {
     "seed": seed,
     "purchase": purchase,
     "touch": touch,
@@ -263,6 +264,35 @@ BUILDERS = {
 }
 
 
+def seed_doctor(authority: Any) -> Plan:
+    """The doctor whose name the constraints suite inserts twice."""
+    plan = Plan.builder()
+    plan.insert(Doctor).field(Doctor.name, "D1").field(Doctor.on_call, True)
+    return plan.build(authority)
+
+
+def duplicate_doctor(authority: Any) -> Plan:
+    """A second doctor named D1: the key rejects the commit."""
+    plan = Plan.builder()
+    plan.insert(Doctor).field(Doctor.name, "D1").field(Doctor.on_call, False)
+    return plan.build(authority)
+
+
+# The suite a run reports: its steps, rolled-back plans, reads and builders.
+SUITES: dict[str, tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]], set[str], Any]] = {
+    "purchase": (PURCHASE_STEPS, PURCHASE_ROLLED_BACK, PURCHASE_READS, PURCHASE_BUILDERS),
+    "constraints": (
+        {"seed": ("seed_doctor",), "reject": ("duplicate_doctor",)},
+        {},
+        set(),
+        {"seed_doctor": seed_doctor, "duplicate_doctor": duplicate_doctor},
+    ),
+}
+STEPS, ROLLED_BACK, READS, BUILDERS = SUITES[
+    os.environ.get("TYPE_BRIDGE_SDK_WRITES_SUITE", "purchase")
+]
+
+
 def answer(value: PlanAnswer) -> list[Any]:
     """One answer as [kind, value]; rows report their count, exists 0 or 1."""
     match value:
@@ -277,20 +307,42 @@ def answer(value: PlanAnswer) -> list[Any]:
     raise TypeError(f"unknown answer {value!r}")
 
 
+def failure(value: Failure) -> list[Any]:
+    """A rejected commit as ["failure", {phase, reason, code, retry_safe}]."""
+    return [
+        "failure",
+        {
+            "phase": value.phase,
+            "reason": value.reason,
+            "code": value.code,
+            "retry_safe": value.retry_safe,
+        },
+    ]
+
+
 def run(
     transaction: Any, plans: dict[str, Plan], names: tuple[str, ...], discarded: tuple[str, ...]
 ) -> dict[str, Any]:
     """Stage `names` in one transaction, commit, and read their answers.
 
     `discarded` plans are staged first and rolled back; the transaction stays
-    usable for `names`.
+    usable for `names`. A rejected commit answers every plan with its failure.
     """
-    with transaction as tx:
-        for name in discarded:
-            tx.stage(plans[name])
-        if discarded:
-            tx.rollback()
-        pending = {name: tx.stage(plans[name]) for name in names}
+    try:
+        with transaction as tx:
+            for name in discarded:
+                tx.stage(plans[name])
+            if discarded:
+                tx.rollback()
+            pending = {name: tx.stage(plans[name]) for name in names}
+    except (CommitRejected, MatchRequestError) as error:
+        # A commit-phase rejection raises CommitRejected; one at query phase,
+        # while the commit runs the staged plans, a MatchRequestError. Both
+        # carry the typed failure; any other error propagates.
+        typed = getattr(error, "failure", None)
+        if not isinstance(typed, Failure):
+            raise
+        return {name: failure(typed) for name in names}
     return {name: answer(item.result()) for name, item in pending.items()}
 
 
