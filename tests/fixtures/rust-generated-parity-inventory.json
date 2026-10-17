@@ -35,7 +35,7 @@
         },
         {
           "path": "tests/unit/compat/test_rust_generated_parity_inventory.py",
-          "anchors": ["test_core_crates_do_not_depend_upward_on_the_public_rust_client", "package == \"type-bridge\""]
+          "anchors": ["test_core_crates_do_not_depend_upward_on_the_public_rust_client", "_depends_on(document, \"type-bridge\")"]
         }
       ]
     },

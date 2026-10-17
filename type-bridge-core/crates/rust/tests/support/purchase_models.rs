@@ -62,6 +62,12 @@ thing!(
     r#"{"kind":"entity","label":"account"}"#
 );
 thing!(
+    Doctor,
+    Entity,
+    EntityModel,
+    r#"{"kind":"entity","label":"doctor"}"#
+);
+thing!(
     Purchase,
     Relation,
     RelationModel,
@@ -102,6 +108,18 @@ impl AccountType {
     );
     pub const balance: FieldToken<Account, i64> = FieldToken::new(
         r#"{"attribute":"balance","owner":{"kind":"entity","label":"account"}}"#,
+        "{}",
+    );
+}
+pub struct DoctorType;
+#[allow(non_upper_case_globals)]
+impl DoctorType {
+    pub const name: FieldToken<Doctor, String> = FieldToken::new(
+        r#"{"attribute":"name","owner":{"kind":"entity","label":"doctor"}}"#,
+        "{}",
+    );
+    pub const on_call: FieldToken<Doctor, bool> = FieldToken::new(
+        r#"{"attribute":"on-call","owner":{"kind":"entity","label":"doctor"}}"#,
         "{}",
     );
 }

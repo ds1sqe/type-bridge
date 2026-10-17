@@ -45,19 +45,26 @@ def test_repository_inventory_closes_every_cargo_product_class() -> None:
 
     assert inventory.release_version == "2.2.6"
     assert inventory.first_party_msrv == "1.88"
-    assert len(inventory.packages) == 22
+    assert len(inventory.packages) == 23
     assert len(inventory.public_packages) == 19
     assert len(inventory.first_party_packages) == 17
     assert len(inventory.immutable_packages) == 2
-    assert len(inventory.private_packages) == 3
+    assert len(inventory.private_packages) == 4
     assert [package.publish_order for package in inventory.public_packages] == list(range(1, 20))
-    assert {package.name for package in inventory.private_packages} == {
+    assert {package.name for package in inventory.binding_packages} == {
         "type-bridge-c",
         "type-bridge-core",
         "type-bridge-node",
     }
-    for package in inventory.private_packages:
+    assert [package.name for package in inventory.tooling_packages] == ["type-bridge-perf"]
+    assert set(inventory.private_packages) == {
+        *inventory.binding_packages,
+        *inventory.tooling_packages,
+    }
+    for package in inventory.binding_packages:
         assert package.role == "binding"
+    assert inventory.tooling_packages[0].role == "perf-harness"
+    for package in inventory.private_packages:
         assert package.version_policy == "lockstep"
         assert package.version == "2.2.6"
         assert package.docs_target == "none"
@@ -159,6 +166,11 @@ def test_inventory_classifies_the_real_workspace_without_omissions() -> None:
             'name = "type-bridge-c"',
             'name = "type-bridge-ffi"',
             "private binding package set must be exact",
+        ),
+        (
+            'name = "type-bridge-perf"',
+            'name = "type-bridge-bench"',
+            "private tooling package set must be exact",
         ),
         (
             "publish-order = 19",

@@ -92,3 +92,61 @@
 #perf-dashboard .perf-table {
   overflow-x: auto;
 }
+
+#perf-dashboard .perf-stage-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 1rem;
+  padding: 0;
+  font-size: 0.65rem;
+  list-style: none;
+}
+
+#perf-dashboard .perf-stage-legend li {
+  display: flex;
+  gap: 0.3rem;
+  align-items: center;
+  margin: 0;
+}
+
+#perf-dashboard .perf-swatch {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 0.1rem;
+}
+
+#perf-dashboard .perf-swatch-sdk,
+#perf-dashboard .perf-stage:not([style*="background"]) {
+  background: var(--md-default-fg-color--lighter);
+}
+
+#perf-dashboard .perf-stage-row {
+  margin: 0.6rem 0;
+}
+
+#perf-dashboard .perf-stage-row header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.65rem;
+  overflow-wrap: anywhere;
+}
+
+#perf-dashboard .perf-stage-row header span {
+  flex: none;
+  color: var(--md-default-fg-color--light);
+}
+
+#perf-dashboard .perf-stage-bar {
+  display: flex;
+  height: 1.1rem;
+  overflow: hidden;
+  border-radius: 0.2rem;
+  background: var(--md-default-fg-color--lightest);
+}
+
+#perf-dashboard .perf-stage {
+  min-width: 1px;
+  height: 100%;
+}

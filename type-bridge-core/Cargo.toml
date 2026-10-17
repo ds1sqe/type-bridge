@@ -21,6 +21,7 @@ members = [
     "crates/node",
     "crates/rust",
     "crates/toml-transpiler",
+    "crates/perf",
     "vendor/typedb-protocol-b8",
     "vendor/typedb-driver-b8",
 ]

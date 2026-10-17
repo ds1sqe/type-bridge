@@ -13,7 +13,10 @@ INVENTORY_PATH = Path(__file__).with_name("cargo_release_inventory.toml")
 PUBLIC_FIRST_PARTY = "public-first-party"
 PUBLIC_IMMUTABLE = "public-immutable"
 PRIVATE_BINDING = "private-binding"
-CLASSIFICATIONS = frozenset({PUBLIC_FIRST_PARTY, PUBLIC_IMMUTABLE, PRIVATE_BINDING})
+PRIVATE_TOOLING = "private-tooling"
+CLASSIFICATIONS = frozenset(
+    {PUBLIC_FIRST_PARTY, PUBLIC_IMMUTABLE, PRIVATE_BINDING, PRIVATE_TOOLING}
+)
 EXPECTED_PRIVATE_BINDINGS = frozenset(
     {
         "type-bridge-c",
@@ -21,6 +24,8 @@ EXPECTED_PRIVATE_BINDINGS = frozenset(
         "type-bridge-node",
     }
 )
+# Repository tooling that measures the product; never a dependency of it.
+EXPECTED_PRIVATE_TOOLING = frozenset({"type-bridge-perf"})
 
 
 class InventoryError(RuntimeError):
@@ -91,8 +96,18 @@ class CargoReleaseInventory:
 
     @property
     def private_packages(self) -> tuple[CargoInventoryPackage, ...]:
+        """Return every unpublished package: native bindings and tooling."""
+        return tuple(p for p in self.packages if not p.public)
+
+    @property
+    def binding_packages(self) -> tuple[CargoInventoryPackage, ...]:
         """Return private native binding packages."""
         return tuple(p for p in self.packages if p.classification == PRIVATE_BINDING)
+
+    @property
+    def tooling_packages(self) -> tuple[CargoInventoryPackage, ...]:
+        """Return private repository tooling packages."""
+        return tuple(p for p in self.packages if p.classification == PRIVATE_TOOLING)
 
 
 def _required_string(value: object, *, label: str) -> str:
@@ -209,12 +224,19 @@ def load_inventory(path: Path = INVENTORY_PATH) -> CargoReleaseInventory:
         raise InventoryError("Cargo inventory must contain exactly 17 first-party public packages")
     if len(inventory.immutable_packages) != 2:
         raise InventoryError("Cargo inventory must contain exactly two immutable packages")
-    private_bindings = frozenset(package.name for package in inventory.private_packages)
+    private_bindings = frozenset(package.name for package in inventory.binding_packages)
     if private_bindings != EXPECTED_PRIVATE_BINDINGS:
         raise InventoryError(
             "Cargo inventory private binding package set must be exact: "
             f"expected {sorted(EXPECTED_PRIVATE_BINDINGS)!r}, "
             f"found {sorted(private_bindings)!r}"
+        )
+    private_tooling = frozenset(package.name for package in inventory.tooling_packages)
+    if private_tooling != EXPECTED_PRIVATE_TOOLING:
+        raise InventoryError(
+            "Cargo inventory private tooling package set must be exact: "
+            f"expected {sorted(EXPECTED_PRIVATE_TOOLING)!r}, "
+            f"found {sorted(private_tooling)!r}"
         )
     return inventory
 

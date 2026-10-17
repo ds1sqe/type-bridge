@@ -28,6 +28,18 @@
     ops_per_s: "throughput",
   };
 
+  // Stages in pipeline order; others follow alphabetically.
+  const STAGE_ORDER = [
+    "tb.sdk.entry",
+    "tb.orm.plan",
+    "tb.query.compile",
+    "tb.runtime.execute",
+    "tb.decode",
+    "tb.commit",
+  ];
+  const STAGE_COLORS = ["#4e79a7", "#f28e2b", "#59a14f", "#e15759", "#76b7b2", "#edc948", "#b07aa1", "#9c755f"];
+  const STAGE_LABELS = { "tb.runtime.execute": "tb.runtime.execute (network + TypeDB)" };
+
   let library = null;
   let unmount = function () {};
 
@@ -217,6 +229,72 @@
     return { section: section, rows: rows };
   }
 
+  function stageNames(metrics) {
+    const names = new Set(metrics.flatMap((metric) => Object.keys(metric.stages)));
+    const known = STAGE_ORDER.filter((name) => names.has(name));
+    return known.concat([...names].filter((name) => !STAGE_ORDER.includes(name)).sort());
+  }
+
+  // One stacked bar per staged metric of the latest run. Time in no stage
+  // is SDK-side work and closes the bar.
+  function waterfallSection(latest) {
+    const staged = latest ? latest.metrics.filter((metric) => metric.stages) : [];
+    if (staged.length === 0) return { section: null, rows: [] };
+    const names = stageNames(staged);
+    const color = (name) => STAGE_COLORS[names.indexOf(name) % STAGE_COLORS.length];
+    const segment = function (label, value, total, unit, background) {
+      const share = total > 0 ? (100 * value) / total : 0;
+      const node = el("span", { class: "perf-stage", title: label + ": " + format(value, unit) + " (" + share.toFixed(1) + "%)" });
+      node.style.width = share + "%";
+      if (background) node.style.background = background;
+      return node;
+    };
+    const legend = el(
+      "ul",
+      { class: "perf-stage-legend" },
+      ...names.map(function (name) {
+        const swatch = el("span", { class: "perf-swatch" });
+        swatch.style.background = color(name);
+        return el("li", {}, swatch, el("code", { text: STAGE_LABELS[name] || name }));
+      }),
+      el("li", {}, el("span", { class: "perf-swatch perf-swatch-sdk" }), "outside stages (SDK)"),
+    );
+    const rows = staged.map(function (metric) {
+      const bar = el("div", { class: "perf-stage-bar", role: "img" });
+      let inside = 0;
+      for (const name of names) {
+        const value = metric.stages[name];
+        if (value === undefined) continue;
+        inside += value;
+        bar.append(segment(name, value, Math.max(metric.value, inside), metric.unit, color(name)));
+      }
+      const outside = Math.max(0, metric.value - inside);
+      if (outside > 0) bar.append(segment("outside stages (SDK)", outside, metric.value, metric.unit, null));
+      bar.setAttribute("aria-label", metric.id + " stage breakdown");
+      const row = el(
+        "div",
+        { class: "perf-stage-row" },
+        el("header", {}, el("code", { text: metric.id }), el("span", { text: "p50 " + format(metric.value, metric.unit) })),
+        bar,
+      );
+      row.dataset.family = metric.family;
+      row.dataset.id = metric.id;
+      return row;
+    });
+    const section = el(
+      "section",
+      { class: "perf-waterfall" },
+      el("h2", { text: "Stage breakdown" }),
+      el("p", {
+        text:
+          "Median time per stage of each pipeline in the latest run. tb.runtime.execute is the network round trip plus TypeDB, against a local container.",
+      }),
+      legend,
+      ...rows,
+    );
+    return { section: section, rows: rows };
+  }
+
   function mount(root) {
     const state = { alive: true, cleanups: [] };
     const status = root.querySelector(".perf-status");
@@ -254,7 +332,9 @@
     const controls = el("div", { class: "perf-controls" }, chips, search);
     const grid = el("div", { class: "perf-grid" });
     const empty = el("p", { class: "perf-empty", text: "No metric matches the filter.", hidden: "" });
-    const { section, rows } = latestSection(root, latest, data.latest_url);
+    const { section, rows: tableRows } = latestSection(root, latest, data.latest_url);
+    const waterfall = waterfallSection(latest);
+    const rows = tableRows.concat(waterfall.rows);
 
     const cards = ids.map(function (id) {
       const metric = data.metrics[id];
@@ -333,7 +413,8 @@
     });
 
     grid.append(...cards.map((item) => item.card));
-    root.replaceChildren(summary(data, ids), controls, grid, empty, section);
+    const sections = waterfall.section ? [waterfall.section, section] : [section];
+    root.replaceChildren(summary(data, ids), controls, grid, empty, ...sections);
     apply();
     for (const item of cards) {
       visible.observe(item.card);

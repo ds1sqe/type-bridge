@@ -348,6 +348,104 @@ jobs:
           path: perf-out/suite.json
           if-no-files-found: error
 
+  # Live Rust pipelines against a TypeDB 3.13.6 service on tmpfs. Pull
+  # requests skip them: a base-versus-head comparison needs two release
+  # builds and its wall times on shared runners sit above the comparison
+  # noise threshold.
+  pipeline:
+    needs: metadata
+    name: Live Rust pipelines
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      typedb:
+        image: typedb/typedb:3.13.6
+        ports:
+          - 1729:1729
+          - 8000:8000
+        options: --tmpfs /var/lib/typedb/data:rw
+    env:
+      PERF_STARTED_AT: ${{ needs.metadata.outputs.started_at }}
+      TYPEDB_ADDRESS: localhost:1729
+      TYPEDB_HTTP_PORT: "8000"
+      TYPEDB_USERNAME: admin
+      TYPEDB_PASSWORD: password
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            type-bridge-core/target
+          key: ${{ runner.os }}-cargo-perf-pipeline-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+
+      - name: Build the pipeline driver
+        run: >-
+          cargo build --locked --release --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-perf --bin type-bridge-perf-pipelines
+
+      # Ready when the gRPC port is open and the HTTP API reports the
+      # version, which the result records.
+      - name: Wait for TypeDB
+        id: typedb
+        run: |
+          for i in {1..30}; do
+            body="$(curl --fail --silent --max-time 3 http://localhost:8000/v1/version || true)"
+            version="$(python3 -c '
+          import json, sys
+          try:
+              print(json.loads(sys.argv[1])["version"])
+          except (ValueError, KeyError, TypeError):
+              pass
+          ' "$body")"
+            if nc -z localhost 1729 2>/dev/null && [ -n "$version" ]; then
+              echo "version=$version" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs ${{ job.services.typedb.id }} 2>&1 || true
+          exit 1
+
+      - name: Run the pipelines
+        run: >-
+          type-bridge-core/target/release/type-bridge-perf-pipelines
+          --out "$PERF_DIR/pipelines-report.json"
+          --work-dir "$RUNNER_TEMP/perf-pipelines"
+
+      - name: Convert to a perf result
+        run: >-
+          python -m perf.harness.pipeline
+          --report "$PERF_DIR/pipelines-report.json"
+          --typedb "${{ steps.typedb.outputs.version }}"
+          --started-at "$PERF_STARTED_AT"
+          --out "$PERF_DIR/pipeline.json"
+
+      - name: Validate the perf result
+        run: python -m perf.harness.validate "$PERF_DIR/pipeline.json"
+
+      - name: Upload the perf result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-pipeline
+          path: perf-out/pipeline.json
+          if-no-files-found: error
+
   compare:
     name: Base versus head micro benchmarks
     if: github.event_name == 'pull_request'
@@ -465,7 +563,7 @@ jobs:
       (github.event_name == 'push' && github.ref == 'refs/heads/master')
       || github.event_name == 'schedule'
       || github.event_name == 'workflow_dispatch'
-    needs: [micro, build, size, suite]
+    needs: [micro, build, size, suite, pipeline]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

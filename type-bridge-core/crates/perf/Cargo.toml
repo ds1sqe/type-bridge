@@ -1,0 +1,38 @@
+[package]
+name = "type-bridge-perf"
+version = "2.2.6"
+edition = "2024"
+rust-version = "1.88"
+description = "Private perf harness: stage-span timing and the live Rust pipelines"
+license.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Measures the public crates; never published and never a dependency of
+# a shipped crate.
+publish = false
+
+[lib]
+name = "type_bridge_perf"
+path = "src/lib.rs"
+
+[[bin]]
+name = "type-bridge-perf-pipelines"
+path = "src/bin/pipelines.rs"
+
+[dependencies]
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
+type-bridge = { path = "../rust" }
+type-bridge-cli = { path = "../cli" }
+type-bridge-orm = { path = "../orm" }
+# The shared purchase models (`crates/rust/tests/support`) compile their
+# package from Split-YAML with these.
+type-bridge-contract = { path = "../contract" }
+type-bridge-schema = { path = "../schema" }
+type-bridge-schema-codegen = { path = "../schema-codegen" }
+
+[lints]
+workspace = true

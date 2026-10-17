@@ -59,6 +59,63 @@ always compiled in. With no subscriber they cost a callsite check each: the
 them than with `tracing/max_level_off` (0.02% of about 326,000). A
 subscriber at `INFO` sees them as ordinary spans.
 
+## Live pipelines
+
+The `pipeline` job times the major pipelines through the public Rust SDK
+against a TypeDB 3.13.6 service container whose data lives on tmpfs. It runs
+on master pushes, schedule and dispatch; pull requests skip it, since a
+base-versus-head run needs two release builds and wall times on shared
+runners sit above the comparison noise threshold.
+
+| Pipeline | One iteration |
+| --- | --- |
+| `insert_one` | insert one item (one given row) |
+| `fetch_by_key` | read one item's fields by key, out of 1,000 |
+| `fetch_filtered` | read the 100 of 1,000 items with stock of at least 900 |
+| `update` | add one to one item's stock |
+| `delete` | delete one item by key |
+| `batch_given_rows_1k` | insert 1,000 items as given rows of one plan |
+| `staged_mixed` | the purchase, a touch of 10 doctors and 50 orders in one transaction |
+| `migration_apply` | apply the one-migration chain to a fresh database (in-process CLI) |
+
+Each iteration builds its plans with the SDK plan builder, stages them on a
+`Transaction`, commits and checks the answers. `type-bridge-perf` (a private
+crate, never a dependency of a shipped crate) installs a `tracing` layer that
+sums the [stage spans](#stage-spans): each span counts its wall time minus
+that of its stage children, so nested stages never count twice.
+Time inside no span is SDK-side work, for example the Rust SDK checking the
+schema package each time it builds a plan.
+
+Every pipeline gets its own database, created by applying the migration;
+after 5 warmup iterations (1 for the migration) it measures 30 (5 for the
+migration) one at a time. `python -m perf.harness.pipeline` turns the report
+into `pipeline.rust.<pipeline>` (ns: median, p90, p99, samples and the
+median of each stage) and `pipeline.rust.<pipeline>.throughput` (operations
+per second; a 1k batch is 1,000 operations). It prints each pipeline's share
+inside stages and the stage-sum gap: the distance of the stage medians plus
+the median time outside stages from the median iteration, which stays within
+5% when the medians describe a typical iteration. The `/perf/` page draws
+the latest run's stages as one bar per pipeline.
+
+```bash
+docker run -d --name perf-typedb --tmpfs /var/lib/typedb/data:rw \
+  -p 1729:1729 -p 8000:8000 typedb/typedb:3.13.6
+cargo build --release --manifest-path type-bridge-core/Cargo.toml \
+  -p type-bridge-perf --bin type-bridge-perf-pipelines
+TYPEDB_USERNAME=admin TYPEDB_PASSWORD=password \
+  type-bridge-core/target/release/type-bridge-perf-pipelines \
+  --out tmp/perf/pipelines-report.json --work-dir tmp/perf/pipelines
+uv run python -m perf.harness.pipeline --report tmp/perf/pipelines-report.json \
+  --typedb 3.13.6 --out tmp/perf/pipeline.json
+docker rm -f -v perf-typedb
+```
+
+`TYPEDB_ADDRESS` and `TYPEDB_HTTP_PORT` select another server. Add
+`--pipeline NAME` (repeatable) to run a subset, and `--iterations`,
+`--warmup` or `--migration-iterations` to change the counts. The work
+directory must not exist yet; the databases are deleted when their
+pipeline ends.
+
 ## Run the Python binding benchmarks locally
 
 `benchmarks/` is a pytest-benchmark suite over the Python binding: native
@@ -123,6 +180,9 @@ the Documentation workflow rebuilds the site from `perf-data`.
   to both bench lists in `perf.yml`.
 - **A Python binding bench** is a `test_*` function in
   `benchmarks/test_<group>_bench.py`; a new module needs only that name.
+- **A pipeline** is a name in `PIPELINES` of
+  `crates/perf/src/bin/pipelines.rs` with its seed and iteration; its ids
+  follow from the name.
 - **A new producer** writes a `perf-result/v1` file, validates it, and
   uploads it as an artifact named `perf-<family>`; the `store` job stores
   every `perf-*` artifact. Add its job to the `store` job's `needs`.

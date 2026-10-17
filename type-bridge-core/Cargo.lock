@@ -3422,6 +3422,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "type-bridge-perf"
+version = "2.2.6"
+dependencies = [
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "type-bridge",
+ "type-bridge-cli",
+ "type-bridge-contract",
+ "type-bridge-orm",
+ "type-bridge-schema",
+ "type-bridge-schema-codegen",
+]
+
+[[package]]
 name = "type-bridge-query"
 version = "2.2.6"
 dependencies = [

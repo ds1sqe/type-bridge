@@ -5,8 +5,9 @@ candidate-toolchain = "1.94.1"
 repository = "https://github.com/ds1sqe/type-bridge"
 
 # This is the closed Cargo product inventory. Publication order is dependency
-# order; immutable packages are verified in place and private bindings are
-# classified here so they cannot silently enter a crates.io release.
+# order; immutable packages are verified in place, and private bindings and
+# tooling are classified here so they cannot silently enter a crates.io
+# release.
 
 [[packages]]
 name = "type-bridge-contract"
@@ -204,5 +205,13 @@ name = "type-bridge-node"
 manifest = "crates/node/Cargo.toml"
 classification = "private-binding"
 role = "binding"
+version-policy = "lockstep"
+docs-target = "none"
+
+[[packages]]
+name = "type-bridge-perf"
+manifest = "crates/perf/Cargo.toml"
+classification = "private-tooling"
+role = "perf-harness"
 version-policy = "lockstep"
 docs-target = "none"
